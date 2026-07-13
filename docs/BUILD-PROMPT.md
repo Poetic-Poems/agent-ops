@@ -165,7 +165,11 @@ runs unattended.
    `attempt-failed` with enough detail for a future cycle to know the item
    is blocked and what would unblock it, and — if a draft PR was already
    opened — comment on it that the agent has abandoned it and why, leaving
-   the PR and branch for the human to keep or discard.
+   the PR and branch for the human to keep or discard. Because a stranded
+   Implementor may never emit a parseable final message (and so never
+   report its own `pr_url`), the Script also checks the clone for the
+   `.git/agent-ops-pr-url` breadcrumb (requirement 23) before concluding no
+   PR was ever opened.
 10. **Usage-limit detection.** Whenever any `claude` invocation fails with
     output matching a usage-limit pattern (e.g. `limit`, `rate limit`,
     `usage`), write a `limit-hit` event whose `resume_at` is parsed from the
@@ -240,51 +244,67 @@ runs unattended.
 
 ### The Implementor
 
-21. Runs inside the cycle's clone. First reads the repo's `CLAUDE.md` and
+21. Operates as a single non-interactive `claude -p` invocation with no
+    resumption: once it emits a final message with no further tool calls,
+    the process exits for good — nothing wakes it later. It must wait for
+    long-running commands (dependency installs, builds, test suites)
+    synchronously, in the foreground or by polling within the same session,
+    rather than ending its turn expecting an external notification when
+    they finish. A command too slow to wait out within the stage timeout is
+    grounds for `"status": "blocked"`, not an early, hopeful end of turn.
+22. Runs inside the cycle's clone. First reads the repo's `CLAUDE.md` and
     obeys it throughout. Creates the branch named in the work order from the
     default branch.
-22. **Claims before implementing.** Opens a draft PR immediately, labelled
+23. **Claims before implementing.** Opens a draft PR immediately, labelled
     `pr_label`, with a Conventional-Commits title (it will become the squash
     commit on `main`) and a body giving the item reference and planned
-    approach. For tech-debt items this follows the repo's claiming workflow
-    exactly (Ledger flip to `in-progress` as the first commit). For issues,
-    it comments on the issue linking the draft PR.
-23. Implements the item, then runs the same checks the repo's CI runs (as
+    approach. Immediately records the PR's URL at `.git/agent-ops-pr-url` in
+    the clone — `.git/` is never part of the tracked tree, so this can't
+    leak into a commit — so the Script can still identify the PR even if
+    this stage never reaches a parseable final message (requirement 9). For
+    tech-debt items this follows the repo's claiming workflow exactly
+    (Ledger flip to `in-progress` as the first commit). For issues, it
+    comments on the issue linking the draft PR.
+24. Implements the item, then runs the same checks the repo's CI runs (as
     documented in that repo's `CLAUDE.md` and workflow files) and fixes
     anything they surface.
-24. Updates the originating record: tech-debt entry removed and Ledger row
+25. Updates the originating record: tech-debt entry removed and Ledger row
     flipped to `resolved` per the register's rules; issues linked with a
     closing keyword in the PR body; implementation-plan task marked done.
     Adds a `CHANGELOG.md` entry when the change is notable by that repo's
     definition.
-25. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
+26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
     Reviewer flips it to ready.
-26. Ends with a single JSON object as its entire final message:
+27. Ends with a single JSON object as its entire final message:
     `{"status": "complete", "pr_url": …, "branch": …, "notes": …}` or
     `{"status": "blocked", "reason": …, "unblock_condition": …}`.
 
 ### The Reviewer
 
-27. Reviews the PR against the work order's item and acceptance notes, and
+28. Operates under the same one-shot constraint as the Implementor
+    (requirement 21): no resumption, no background notification. It waits
+    for slow commands — installs, builds, `gh pr checks --watch` — in the
+    foreground within the same session rather than ending its turn early.
+29. Reviews the PR against the work order's item and acceptance notes, and
     against the target repo's own standards and conventions; re-runs the
     repo's checks.
-28. Where it finds a problem it can fix with confidence, it fixes it
+30. Where it finds a problem it can fix with confidence, it fixes it
     directly on the branch — committing, rebasing onto the current default
     branch, or force-pushing as it judges best (permitted only on
     `branch_prefix` branches, per "The Human Gate"). Where it cannot fix
     with confidence, it leaves a PR review comment describing the problem
     for the Human Reviewer.
-29. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
+31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`). It never approves and never
     merges.
-30. Ends with a single JSON object:
+32. Ends with a single JSON object:
     `{"status": "ready" | "needs-human", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`.
 
 ### Logging and state
 
-31. The shared log is a single JSON Lines file, `state_dir/log.jsonl`,
+33. The shared log is a single JSON Lines file, `state_dir/log.jsonl`,
     appended only by the Script (agents report via their final messages; the
     Script translates those into log events). The lock in requirement 1
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
@@ -293,7 +313,7 @@ runs unattended.
     `warning`, `cycle-end`. Common fields: ISO-8601 `ts`, `cycle` id,
     `event`, and where applicable `repo`, `item`, `pr_url`, `model`,
     `detail`.
-32. Blocked semantics: an item is blocked iff its most recent
+34. Blocked semantics: an item is blocked iff its most recent
     `attempt-failed` / `unblocked` event is `attempt-failed`. An
     `attempt-failed` event must carry enough detail for a future
     Co-Ordinator to judge whether the blocker has since been removed.
@@ -304,7 +324,7 @@ runs unattended.
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13.
 3. `prompts/coordinator.md`, `prompts/implementor.md`, `prompts/reviewer.md`
-   implementing requirements 14–20, 21–26, and 27–30 respectively. Each
+   implementing requirements 14–20, 21–27, and 28–32 respectively. Each
    prompt must embed the relevant shared-repo conventions from this document
    so a stage never depends on context it wasn't given.
 4. `README.md`: what the system does, every config key, install steps

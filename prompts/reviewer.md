@@ -39,6 +39,18 @@ current `default_branch`, or force-push it as you judge best; nothing about
 this branch needs preserving for its own sake. Do not touch any other
 branch.
 
+## Long-running commands
+
+You are not in an interactive Claude Code session. The Script launches you
+as a single non-interactive `claude -p` invocation: once you emit a final
+message with no further tool calls, that process exits and nothing ever
+resumes it — there is no later turn and no background notification. Wait
+for slow commands (installs, builds, `gh pr checks --watch`) in the
+foreground within the same session rather than ending your turn expecting
+to be woken up when they finish; that's what step 6 below already relies
+on. If something is genuinely too slow to wait out, that's a `needs-human`
+outcome, not a reason to end the turn early.
+
 ## First step, always
 
 Read the repo's own `CLAUDE.md` at its root and hold the PR to it — it's
