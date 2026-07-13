@@ -1,0 +1,20 @@
+{
+  "repos": [
+    "Poetic-Poems/poetic",
+    "Poetic-Poems/poetic-fiddle"
+  ],
+  "state_dir": "~/.local/state/poetic-agents",
+  "workspace_root": "~/.cache/poetic-agents/workspaces",
+  "coordinator_model": "claude-haiku-4-5-20251001",
+  "implementor_model_default": "claude-sonnet-5",
+  "implementor_model_trivial": "claude-haiku-4-5-20251001",
+  "reviewer_model": "claude-sonnet-5",
+  "pr_label": "autonomous-agent",
+  "branch_prefix": "agent/",
+  "max_open_agent_prs": 3,
+  "timeout_coordinator": 15,
+  "timeout_implementor": 90,
+  "timeout_reviewer": 30,
+  "lock_stale_after": 3,
+  "limit_cooldown_default": 3
+}
