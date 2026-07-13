@@ -1,0 +1,19 @@
+#!/bin/bash
+#
+# commit-msg — reject commit messages that don't follow Conventional Commits.
+#
+# Enable once per clone with:
+#   git config core.hooksPath .githooks
+#
+# The Conventional Commits pattern itself lives in check-commit-format.sh,
+# alongside this hook — shared with the CI backstop
+# (.github/workflows/commit-format.yml) so there is one source of truth for
+# the regex.
+#
+# https://www.conventionalcommits.org/en/v1.0.0/
+
+commit_msg_file="$1"
+first_line=$(head -n1 "$commit_msg_file")
+hook_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+"$hook_dir/check-commit-format.sh" "$first_line"
