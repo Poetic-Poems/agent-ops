@@ -48,7 +48,15 @@ Edit `config.json` before first run. Keys:
    # or
    npm install -g @anthropic-ai/claude-code
    ```
-   Test: `claude -p "Reply with OK" --model claude-haiku-4-5-20251001`
+   Test headless auth directly:
+   ```bash
+   claude -p "Reply with OK" --model claude-haiku-4-5-20251001
+   ```
+   Also verify that the same environment cron will use can find Claude. A minimal cron-style sanity check is:
+   ```bash
+   env -i HOME="$HOME" PATH="$HOME/.local/bin:$HOME/.claude/local:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" /bin/bash -lc 'command -v claude && claude -V'
+   ```
+   If that fails, add a launcher such as `~/.local/bin/claude` or update the crontab PATH before continuing.
 
 3. **Enable cron (WSL):**
    Edit `/etc/wsl.conf` (requires `sudo`):
@@ -84,7 +92,11 @@ Edit `config.json` before first run. Keys:
    ```bash
    crontab -l
    ```
-   You should see a line containing `agent-ops/agent-cycle.sh` in the output.
+   You should see a line containing `agent-ops/agent-cycle.sh` in the output. Then confirm that cron's PATH can reach Claude:
+   ```bash
+   env -i HOME="$HOME" PATH="$HOME/.local/bin:$HOME/.claude/local:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" /bin/bash -lc 'command -v claude && claude -V'
+   ```
+   If this still fails, fix the PATH in the crontab (or install a symlink in `~/.local/bin`) before relying on scheduled runs.
 
 ## Operation
 
