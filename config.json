@@ -1,7 +1,13 @@
 {
   "repos": [
-    "Poetic-Poems/poetic",
-    "Poetic-Poems/poetic-fiddle"
+    {
+      "slug": "Poetic-Poems/poetic",
+      "sources": ["failed-runs", "tech-debt", "issues"]
+    },
+    {
+      "slug": "Poetic-Poems/poetic-fiddle",
+      "sources": ["failed-runs", "tech-debt", "issues", "implementation-plan"]
+    }
   ],
   "state_dir": "~/.local/state/poetic-agents",
   "workspace_root": "~/.cache/poetic-agents/workspaces",

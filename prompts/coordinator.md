@@ -14,18 +14,45 @@ not to ask a question.
 
 ## What you receive at invocation
 
-Appended after this prompt, the Script gives you:
+Appended after this prompt, under a `## Runtime input for this cycle`
+heading, the Script gives you one JSON object:
 
-1. The two repos, ordered — the one with the least recently updated default
-   branch first. This ordering already accounts for staleness; honour it as
-   given, don't re-derive it.
-2. For each repo, its work sources in priority order (see "Target
-   repositories" below — the Script passes you the current config, which
-   should match this table; if the two ever disagree, trust what the Script
-   gave you, since `config.json` is the live source of truth).
-3. A blocked-item extract from the shared log: every item whose most recent
-   `attempt-failed` event has no later `unblocked` event, with whatever
-   detail that `attempt-failed` event recorded about what would unblock it.
+```json
+{
+  "repos": [
+    {
+      "slug": "Poetic-Poems/poetic-fiddle",
+      "default_branch": "main",
+      "sources": ["failed-runs", "tech-debt", "issues", "implementation-plan"]
+    },
+    {
+      "slug": "Poetic-Poems/poetic",
+      "default_branch": "main",
+      "sources": ["failed-runs", "tech-debt", "issues"]
+    }
+  ],
+  "blocked": [
+    {"ts": "…", "cycle": "…", "event": "attempt-failed", "repo": "…", "item": "…", "detail": "…"}
+  ],
+  "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}
+}
+```
+
+- `repos` is already ordered — the repo with the least recently updated
+  default branch first. This ordering accounts for staleness; honour it as
+  given, don't re-derive it. Each entry's `sources` is that repo's work
+  sources, already in priority order (see "Target repositories" below for
+  the fixed default this is drawn from — trust what's actually in this
+  input over the table if the two ever disagree, since `config.json` is the
+  live source of truth).
+- `blocked` is the extract of the shared log: one entry per item whose most
+  recent `attempt-failed` event has no later `unblocked` event, carrying
+  whatever `detail` that event recorded about what would unblock it.
+- `models` is `config.json`'s `implementor_model_default` and
+  `implementor_model_trivial`, resolved for this cycle. Use these values
+  verbatim for the work order's `model` field (see "Choosing the
+  Implementor's model" below) — don't hardcode a model ID of your own, since
+  `config.json` is the one place that value is meant to be updated.
 
 ## Tools and constraints
 
@@ -124,12 +151,11 @@ that item as a live candidate for this same cycle.
 
 ## Choosing the Implementor's model
 
-Set `model` to `implementor_model_trivial` (`claude-haiku-4-5-20251001`)
-only when the item can be completed without changing any file that affects
-runtime behaviour — documentation, comments, or register/ledger entries
-only. Otherwise use `implementor_model_default` (`claude-sonnet-5`). Record
-your reasoning in `model_reason`; a future reader (human or agent) should be
-able to see why without re-deriving it.
+Set `model` to the runtime input's `models.trivial` value only when the item
+can be completed without changing any file that affects runtime behaviour —
+documentation, comments, or register/ledger entries only. Otherwise use
+`models.default`. Record your reasoning in `model_reason`; a future reader
+(human or agent) should be able to see why without re-deriving it.
 
 ## Output — your entire final message
 
@@ -157,8 +183,9 @@ If you selected an item:
 }
 ```
 
-- `source` is one of `"failed-run"`, `"tech-debt"`, `"issue"`, or
-  `"implementation-plan"`.
+- `source` is one of `"failed-runs"`, `"tech-debt"`, `"issues"`, or
+  `"implementation-plan"` — the same tokens as the `sources` lists in the
+  runtime input above.
 - `branch` uses `branch_prefix` (`agent/`) followed by a short slug; include
   the item ID where one exists (tech-debt ID, issue number).
 - `context` must be self-contained: paste the relevant text verbatim rather

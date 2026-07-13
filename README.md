@@ -19,7 +19,7 @@ Edit `config.json` before first run. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Ordered list; repos are sorted by most-recent commit on default branch. |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`failed-runs`, `tech-debt`, `issues`, `implementation-plan`). Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -107,7 +107,9 @@ One event per line (JSON). See `docs/BUILD-PROMPT.md` (requirement 31) for event
 ```bash
 ls -la ~/.local/state/poetic-agents/cycles/
 ```
-Each cycle gets a directory with coordinator/implementor/reviewer stdout/stderr.
+Each cycle gets a directory (`<cycle-id>/`) with one `<stage>.out` (the
+`claude --output-format json` envelope on stdout — this is what gets parsed)
+and one `<stage>.out.stderr` (diagnostics) per stage that ran.
 
 ## Troubleshooting
 
@@ -131,6 +133,29 @@ The Reviewer should have caught this, or it arose after the PR was ready (anothe
 
 **Usage limit hit:**
 The system logs a `limit-hit` event with the reset time if parseable. It then stands down until that time or `limit_cooldown_default`, whichever is later. Check the log for the event.
+
+## Uninstall
+
+1. **Remove the crontab line:**
+   ```bash
+   crontab -l | grep -v 'agent-ops/agent-cycle.sh' | crontab -
+   ```
+   (Or edit the Windows Task Scheduler job / `wsl.conf` change if you used
+   that alternative instead.)
+2. **Let any in-flight cycle finish**, or kill it: find the PID in
+   `~/.local/state/poetic-agents/lock.json` and `kill` it — the next
+   `crontab`-less state is safe either way since nothing else will start.
+3. **Remove state and workspaces:**
+   ```bash
+   rm -rf ~/.local/state/poetic-agents ~/.cache/poetic-agents
+   ```
+   This deletes the log, lock, and stage transcripts. Any open PRs the
+   system already raised are untouched — they're ordinary GitHub PRs on the
+   target repos and are yours to merge, close, or hand-finish.
+4. **Optional:** remove the `autonomous-agent` label from both repos
+   (`gh label delete autonomous-agent -R Poetic-Poems/poetic`, likewise for
+   `poetic-fiddle`) and uninstall the standalone `claude` CLI if nothing
+   else on the machine uses it.
 
 ## For builders: the build prompt
 
