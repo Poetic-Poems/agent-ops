@@ -181,6 +181,9 @@ runs unattended.
     foreground), `--repo <slug>` (restrict selection, for testing).
 13. The Script must pass `shellcheck` and must set its own `PATH` explicitly
     (cron's environment is minimal), covering `claude`, `gh`, `git`, `jq`.
+    The builder must also prove that a cron-style invocation can resolve
+    `claude` by running it from a minimal environment (for example with a
+    sanitized `PATH` and `HOME`) before considering the setup complete.
 
 ### The Co-Ordinator (selection only)
 
@@ -324,16 +327,23 @@ runs unattended.
    stand-down; an expired one does not.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
    back-pressure.
-7. One supervised full cycle (`--once`) against whichever repo the ordering
-   picks: it produces a labelled, mergeable, ready-for-review PR with the
-   originating register updated and a complete log trail. Report the PR URL
-   to the human rather than merging anything.
+9. A cron-style invocation from a minimal environment can resolve `claude`
+   and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
+10. One supervised full cycle (`--once`) against whichever repo the ordering
+    picks: it produces a labelled, mergeable, ready-for-review PR with the
+    originating register updated and a complete log trail. Report the PR URL
+    to the human rather than merging anything.
 
 ## Prerequisites (human steps, before first run)
 
 1. Install the standalone CLI: `curl -fsSL https://claude.ai/install.sh | bash`
    (or `npm install -g @anthropic-ai/claude-code`). Verify headless auth
    works: `claude -p "Reply with OK" --model claude-haiku-4-5-20251001`.
+   Then prove that cron can invoke Claude by running it in a minimal
+   environment with the same PATH shape cron will use, e.g.
+   `env -i HOME="$HOME" PATH="$HOME/.local/bin:$HOME/.claude/local:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" /bin/bash -lc 'command -v claude && claude -V'`.
+   If `command -v claude` fails, create a launcher in `~/.local/bin` or add
+   the correct PATH to the crontab before continuing.
 2. Enable cron in WSL: add to `/etc/wsl.conf`
    `[boot]` / `command = "service cron start"` (requires sudo), then restart
    WSL (`wsl --shutdown` from Windows). Alternative if preferred: a Windows
