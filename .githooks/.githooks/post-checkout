@@ -1,0 +1,12 @@
+#!/bin/sh
+set -eu
+
+# Update local main from origin/main after checkout operations.
+if [ "$3" = "1" ]; then
+  current_branch=$(git rev-parse --abbrev-ref HEAD 2>/dev/null || true)
+  if [ "$current_branch" = "main" ]; then
+    git remote get-url origin >/dev/null 2>&1 || exit 0
+    git fetch origin main >/dev/null 2>&1 || true
+    git pull --ff-only origin main >/dev/null 2>&1 || true
+  fi
+fi
