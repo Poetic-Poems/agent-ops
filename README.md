@@ -62,21 +62,29 @@ Edit `config.json` before first run. Keys:
 
 4. **Create the PR label in both repos:**
    ```bash
-   gh label create autonomous-agent \
-     -R Poetic-Poems/poetic \
-     --description "PR raised by the autonomous agent system"
-   
-   gh label create autonomous-agent \
-     -R Poetic-Poems/poetic-fiddle \
-     --description "PR raised by the autonomous agent system"
-   ```
+   gh api -X POST repos/Poetic-Poems/poetic/labels \
+     -f name='autonomous-agent' \
+     -f color='ededed' \
+     -f description='PR raised by the autonomous agent system'
 
-5. **Review and edit `config.json`** as needed.
+   gh api -X POST repos/Poetic-Poems/poetic-fiddle/labels \
+     -f name='autonomous-agent' \
+     -f color='ededed' \
+     -f description='PR raised by the autonomous agent system'
+   ```
+   If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
+
+5. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
 
 6. **Install the crontab:**
    ```bash
    (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
    ```
+   Verify it was installed successfully:
+   ```bash
+   crontab -l
+   ```
+   You should see a line containing `agent-ops/agent-cycle.sh` in the output.
 
 ## Operation
 
@@ -153,7 +161,7 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
    system already raised are untouched — they're ordinary GitHub PRs on the
    target repos and are yours to merge, close, or hand-finish.
 4. **Optional:** remove the `autonomous-agent` label from both repos
-   (`gh label delete autonomous-agent -R Poetic-Poems/poetic`, likewise for
+   (`gh api -X DELETE repos/Poetic-Poems/poetic/labels/autonomous-agent`, likewise for
    `poetic-fiddle`) and uninstall the standalone `claude` CLI if nothing
    else on the machine uses it.
 

@@ -342,7 +342,8 @@ runs unattended.
    Either way, cycles only run while the machine is awake — a missed cycle
    simply waits for the next tick, which is harmless.
 3. Create the label in both repos:
-   `gh label create autonomous-agent -R Poetic-Poems/<repo> --description "PR raised by the autonomous agent system"`.
+   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='autonomous-agent' -f color='ededed' -f description='PR raised by the autonomous agent system'`.
+   If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
 4. Create `Poetic-Poems/agent-ops`, clone it to `~/Code/agent-ops`, and run
    the builder session there with this document.
 5. After the acceptance checks pass, install the crontab line.
