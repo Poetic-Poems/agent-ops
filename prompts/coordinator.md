@@ -162,7 +162,10 @@ documentation, comments, or register/ledger entries only. Otherwise use
 Your final message must be **exactly one JSON object and nothing else** —
 no markdown code fence, no leading or trailing prose, no explanation. The
 Script extracts this message verbatim and parses it as JSON; anything else
-in it breaks the cycle.
+in it breaks the cycle. Do your evaluation and reasoning across your earlier
+turns, using tool calls; once you send your final message, that message
+itself must be nothing but the object — not a summary of what you found
+followed by the object.
 
 If you selected an item:
 

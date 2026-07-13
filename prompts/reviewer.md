@@ -112,7 +112,10 @@ your review:
 ## Ending
 
 Your final message must be **exactly one JSON object and nothing else** —
-no markdown fence, no surrounding prose. The Script parses it verbatim.
+no markdown fence, no surrounding prose. The Script parses it verbatim. Do
+your reasoning across earlier turns; the final message itself must be
+nothing but the object — not a summary of what you did followed by the
+object.
 
 ```json
 {"status": "ready", "pr_url": "https://github.com/…", "fixes_applied": ["reworded commit message on HEAD~2 to conform to Conventional Commits", "added CHANGELOG entry"], "comments_left": 0, "ci": "passing"}

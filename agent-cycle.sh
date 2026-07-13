@@ -105,6 +105,29 @@ extract_pr_url() {
   grep -oihE 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+' "$1" "$1.stderr" 2>/dev/null | tail -n1 || true
 }
 
+# Stage prompts require the final message to be pure JSON, but a model will
+# sometimes prepend analysis prose anyway and put the real object in a
+# trailing fenced ```json block. Try a straight parse first; fall back to the
+# last such fenced block before giving up.
+extract_json_result() {
+  local text="$1" block
+  if jq empty <<<"$text" >/dev/null 2>&1; then
+    jq -c '.' <<<"$text"
+    return 0
+  fi
+  block="$(awk '
+    /^```json[[:space:]]*$/ { capture=""; in_block=1; next }
+    /^```[[:space:]]*$/ { if (in_block) { last=capture; in_block=0 }; next }
+    in_block { capture = capture $0 "\n" }
+    END { printf "%s", last }
+  ' <<<"$text")"
+  if [[ -n "$block" ]] && jq empty <<<"$block" >/dev/null 2>&1; then
+    jq -c '.' <<<"$block"
+    return 0
+  fi
+  return 1
+}
+
 dump_stage_output() {
   local out_file="$1"
   cat "$out_file"
@@ -319,7 +342,7 @@ if (( coord_rc != 0 )); then
 fi
 
 coord_result="$(jq -r '.result // empty' "$coordinator_out" 2>/dev/null || true)"
-work_order_json="$(jq -c '.' <<<"$coord_result" 2>/dev/null || true)"
+work_order_json="$(extract_json_result "$coord_result" 2>/dev/null || true)"
 
 if [[ -z "$work_order_json" ]]; then
   detect_and_log_limit_hit "$coordinator_out" || true
@@ -379,7 +402,7 @@ log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" '{stage: "implementor", 
 (( ONCE )) && dump_stage_output "$impl_out"
 
 impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
-impl_status_json="$(jq -c '.' <<<"$impl_result" 2>/dev/null || true)"
+impl_status_json="$(extract_json_result "$impl_result" 2>/dev/null || true)"
 impl_pr_url="$(jq -r '.pr_url // empty' <<<"$impl_status_json" 2>/dev/null || true)"
 [[ -z "$impl_pr_url" ]] && impl_pr_url="$(extract_pr_url "$impl_out")"
 
@@ -417,7 +440,7 @@ log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" '{stage: "reviewer", exit
 (( ONCE )) && dump_stage_output "$rev_out"
 
 rev_result="$(jq -r '.result // empty' "$rev_out" 2>/dev/null || true)"
-rev_status_json="$(jq -c '.' <<<"$rev_result" 2>/dev/null || true)"
+rev_status_json="$(extract_json_result "$rev_result" 2>/dev/null || true)"
 
 if (( rev_rc != 0 )) || [[ -z "$rev_status_json" ]]; then
   handle_stage_failure "reviewer" "$rev_rc" "$rev_out" "$impl_pr_url"

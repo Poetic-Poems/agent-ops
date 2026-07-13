@@ -142,7 +142,10 @@ Both target repos follow these rules:
 ## Ending
 
 Your final message must be **exactly one JSON object and nothing else** —
-no markdown fence, no surrounding prose. The Script parses it verbatim.
+no markdown fence, no surrounding prose. The Script parses it verbatim. Do
+your reasoning across earlier turns; the final message itself must be
+nothing but the object — not a summary of what you did followed by the
+object.
 
 On success:
 
