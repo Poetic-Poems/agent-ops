@@ -101,7 +101,7 @@ Launches implementor and reviewer in the foreground. Leaves the PR and workspace
 ```bash
 tail -f ~/.local/state/poetic-agents/log.jsonl
 ```
-One event per line (JSON). See `prompts/coordinator.md` for event types and fields.
+One event per line (JSON). See `docs/BUILD-PROMPT.md` (requirement 31) for event types and fields.
 
 ### See stage transcripts
 ```bash
@@ -134,7 +134,7 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
 
 ## For builders: the build prompt
 
-To modify this system (add a new work source, change the selection logic, etc.), see `prompts/coordinator.md`. It is a complete specification for building the system and includes numbered requirements and acceptance checks.
+To modify this system (add a new work source, change the selection logic, etc.), see `docs/BUILD-PROMPT.md`. It is a complete specification for the system and includes numbered requirements and acceptance checks. `prompts/coordinator.md`, `prompts/implementor.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the build prompt first, then bring the affected operating prompt(s) in line with it.
 
 ## Branch workflow
 
