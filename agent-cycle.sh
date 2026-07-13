@@ -105,6 +105,15 @@ extract_pr_url() {
   grep -oihE 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+' "$1" "$1.stderr" 2>/dev/null | tail -n1 || true
 }
 
+# Fallback for when a stage exits without ever producing a final message (so
+# there's nothing to grep or parse): the Implementor writes the PR URL to a
+# breadcrumb under .git/ the moment it opens the draft PR, precisely so a
+# stranded attempt can still be found and flagged instead of going silent.
+read_pr_url_breadcrumb() {
+  local f="$1/.git/agent-ops-pr-url"
+  [[ -f "$f" ]] && head -n1 "$f" | tr -d '[:space:]'
+}
+
 # Stage prompts require the final message to be pure JSON, but a model will
 # sometimes prepend analysis prose anyway and put the real object in a
 # trailing fenced ```json block. Try a straight parse first; fall back to the
@@ -405,6 +414,7 @@ impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
 impl_status_json="$(extract_json_result "$impl_result" 2>/dev/null || true)"
 impl_pr_url="$(jq -r '.pr_url // empty' <<<"$impl_status_json" 2>/dev/null || true)"
 [[ -z "$impl_pr_url" ]] && impl_pr_url="$(extract_pr_url "$impl_out")"
+[[ -z "$impl_pr_url" ]] && impl_pr_url="$(read_pr_url_breadcrumb "$clone_dir")"
 
 if (( impl_rc != 0 )) || [[ -z "$impl_status_json" ]] || [[ "$(jq -r '.status // empty' <<<"$impl_status_json")" != "complete" ]]; then
   handle_stage_failure "implementor" "$impl_rc" "$impl_out" "$impl_pr_url"

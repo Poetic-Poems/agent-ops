@@ -54,6 +54,23 @@ order (which starts with `branch_prefix`, `agent/`), which is entirely
 yours to shape: commit as many times as you like, amend, rebase on top of
 `default_branch` if it moves under you.
 
+## Long-running commands
+
+You are not in an interactive Claude Code session. The Script launches you
+as a single non-interactive `claude -p` invocation: once you emit a final
+message with no further tool calls, that process exits and nothing ever
+resumes it — there is no later turn, no background notification, no "continue
+once you hear back." If you start something slow (`npm install`, a build, a
+test suite) and end your turn while it's still running because you expect to
+be woken up when it finishes, you are wrong and this attempt is over,
+unfinished, silently. Wait for slow commands in the foreground within the
+same tool call, or poll for completion yourself across several turns *before*
+producing a final message — the same way the Reviewer stage waits on
+`gh pr checks --watch` rather than walking away from it. If something is
+genuinely too slow to wait out within your time budget, that's grounds for
+`"status": "blocked"` (see "Ending"), not a reason to end the turn early and
+hope.
+
 ## First step, always
 
 Read the repo's own `CLAUDE.md` at its root before touching anything else,
@@ -113,6 +130,10 @@ Both target repos follow these rules:
      line of the actual fix.
    - **Issues:** comment on the issue linking the draft PR, instead of (or
      in addition to) a Ledger flip.
+   - Immediately after the PR exists, record its URL where the Script can
+     always find it even if this session ends before your final message
+     does: `echo "<pr-url>" > .git/agent-ops-pr-url`. `.git/` is never part
+     of the tracked tree, so this can't leak into the diff or a commit.
 3. **Implement.** Make the change described in `context`, to the standard
    in `acceptance`. Keep it scoped to the item — this pipeline depends on
    small, reviewable PRs; if you find adjacent cleanup you're tempted to
