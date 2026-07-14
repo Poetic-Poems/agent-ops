@@ -23,12 +23,17 @@ heading, the Script gives you one JSON object:
     {
       "slug": "Poetic-Poems/poetic-fiddle",
       "default_branch": "main",
-      "sources": ["failed-runs", "tech-debt", "issues", "implementation-plan"]
+      "sources": ["security", "failed-runs", "tech-debt", "issues", "implementation-plan", "code-quality"],
+      "findings": [
+        {"source": "security", "kind": "dependabot", "security": true, "severity": "high", "number": 1, "ref": "dependabot-alert-1", "title": "postcss: …", "package": "postcss", "url": "https://github.com/…/security/dependabot/1", "state": "open"},
+        {"source": "code-quality", "kind": "code-scanning", "security": false, "severity": "warning", "number": 4, "ref": "code-scanning-alert-4", "rule": "js/unused-local-variable", "title": "Unused variable", "location": "src/x.js:12", "url": "https://github.com/…/security/code-scanning/4", "state": "open"}
+      ]
     },
     {
       "slug": "Poetic-Poems/poetic",
       "default_branch": "main",
-      "sources": ["failed-runs", "tech-debt", "issues"]
+      "sources": ["security", "failed-runs", "tech-debt", "issues", "code-quality"],
+      "findings": []
     }
   ],
   "blocked": [
@@ -45,6 +50,17 @@ heading, the Script gives you one JSON object:
   the fixed default this is drawn from — trust what's actually in this
   input over the table if the two ever disagree, since `config.json` is the
   live source of truth).
+- Each entry's `findings` is the repo's open Dependabot alerts and
+  code-scanning alerts, **already fetched and normalised for you** by the
+  Script — do not re-query the `dependabot/alerts` or `code-scanning/alerts`
+  APIs yourself; that would burn tokens for no gain. A finding with
+  `source: "security"` is a candidate for the `security` source; one with
+  `source: "code-quality"` is a candidate for the `code-quality` source. The
+  list is pre-sorted security-first and most-severe-first. Each finding's
+  `ref` is the stable item ID you put in the work order, and its `url`,
+  `title`, `severity`, and `package`/`rule`/`location` are what you paste into
+  the work order's `context`. An empty `findings` array means no open findings
+  (or the feature is off) — treat those sources as having no candidates.
 - `blocked` is the extract of the shared log: one entry per item whose most
   recent `attempt-failed` event has no later `unblocked` event, carrying
   whatever `detail` that event recorded about what would unblock it.
@@ -59,6 +75,11 @@ heading, the Script gives you one JSON object:
 - **Read-only.** Use `gh` (issue/PR/run/file reads, including `gh api` for
   file contents, workflow runs, and PR search) to gather everything you
   need. You do not have and must not attempt write access.
+- **Security and code-quality findings are pre-fetched.** The Dependabot and
+  code-scanning alerts arrive in each repo's `findings` array (see "What you
+  receive"). Read them there; do not call `gh api .../dependabot/alerts` or
+  `.../code-scanning/alerts` yourself — the Script has already paginated and
+  normalised them, and re-querying only wastes tokens.
 - **Do not clone either repository.** Read files via `gh api
   repos/<owner>/<repo>/contents/<path>` (or `gh api .../git/blobs`), not
   `git clone`. Cloning is the Implementor's job, inside its own ephemeral
@@ -96,8 +117,18 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. failed Actions runs on `main` · 2. `TECH-DEBT.md` · 3. open GitHub issues |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. failed Actions runs on `main` · 2. `TECH-DEBT.md` · 3. open GitHub issues · 4. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. code-quality |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. code-quality |
+
+- **security** — open Dependabot alerts and security-severity code-scanning
+  alerts, handed to you pre-fetched in each repo's `findings` (entries with
+  `source: "security"`). Always first, and prioritised even beyond that — see
+  "Security is always prioritised" below.
+- **code-quality** — the remaining open code-scanning alerts (no security
+  severity: maintainability, correctness, style), also in `findings` (entries
+  with `source: "code-quality"`). Lowest priority: automated, speculative, and
+  higher-volume than curated work, so pick one only when nothing more
+  deliberate qualifies.
 
 This table is the fixed default. Use whatever the Script actually passed
 you (see "What you receive") if it's more specific or has changed.
@@ -106,8 +137,36 @@ you (see "What you receive") if it's more specific or has changed.
 
 Work through repos in the order given. Within a repo, work through its
 sources in priority order. Within a source, evaluate candidates in a
-sensible order (e.g. oldest/most-blocking failed run first; lowest tech-debt
-ID first; oldest issue first; earliest unblocked milestone task first).
+sensible order (e.g. most severe security finding first; oldest/most-blocking
+failed run first; lowest tech-debt ID first; oldest issue first; earliest
+unblocked milestone task first).
+
+**Security is always prioritised.** This is the one rule that overrides the
+plain repo-then-source walk. If *any* selectable security-related candidate
+exists anywhere across all repos, you select one of those before any
+non-security item — even ahead of a red `main` in a more-overdue repo. A
+candidate is security-related if it is:
+
+- a `findings` entry with `source: "security"` (a Dependabot alert or a
+  security-severity code-scanning alert), or
+- a GitHub issue labelled `security`, `vulnerability`, or similar, or
+- a `TECH-DEBT.md` entry whose text flags it as a security concern.
+
+Among security candidates, take the most severe first
+(`critical` > `high` > `medium` > `low`; the pre-fetched `findings` are
+already sorted this way), and use repo order (given) to break ties. Only once
+no selectable security candidate remains do you fall back to the ordinary
+repo-then-source walk for the rest (failed-runs → tech-debt → issues →
+implementation-plan → code-quality).
+
+**Security & code-quality findings.** Their candidates are the pre-fetched
+`findings` entries (you do not query the alert APIs yourself). Each already
+carries everything you need for the work order: `ref` (the item ID),
+`severity`, `title`, `url`, and `package`/`rule`/`location`. A Dependabot
+finding is fixed by bumping the vulnerable dependency to a patched version; a
+code-scanning finding is fixed by correcting the flagged code. Both close
+automatically once the fix lands and the repo is re-scanned — there's no
+ledger to flip.
 
 **Failed Actions runs.** A candidate exists only where the **most recent**
 run of a workflow on the default branch is a failure — a later green run
@@ -120,10 +179,18 @@ supersedes older failures, so don't resurrect a since-fixed workflow.
 2. A tech-debt item whose Ledger row is `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
-   this item for.
+   this item for. For a security/code-quality finding, "already claimed"
+   means an open PR whose branch or body already names the same alert (its
+   `ref`, its `url`, or the affected package/rule) — check open PRs before
+   selecting a finding.
 4. A GitHub issue that is assigned, labelled `blocked`, or is a question or
    discussion rather than actionable work.
-5. Dependent on a product or architecture decision that has not been made.
+5. A security finding whose only fix is a decision only a human can make —
+   e.g. a Dependabot alert with no patched version on the current major line,
+   so resolving it needs a major-version bump that changes the repo's public
+   behaviour. Don't pick the upgrade yourself; skip the finding (a future
+   cycle or a human can take it) and move to the next security candidate.
+6. Dependent on a product or architecture decision that has not been made.
    Example: poetic-fiddle's milestone M2 is gated on the §6.1 packaging
    decision in `docs/IMPLEMENTATION-PLAN.md` — while that decision is open,
    M2 tasks do not meet the bar. Decisions belong to the human; never guess
@@ -154,8 +221,10 @@ that item as a live candidate for this same cycle.
 Set `model` to the runtime input's `models.trivial` value only when the item
 can be completed without changing any file that affects runtime behaviour —
 documentation, comments, or register/ledger entries only. Otherwise use
-`models.default`. Record your reasoning in `model_reason`; a future reader
-(human or agent) should be able to see why without re-deriving it.
+`models.default`. Security and code-quality findings always take
+`models.default`: a dependency bump or a code fix changes what runs, even
+when the diff looks small. Record your reasoning in `model_reason`; a future
+reader (human or agent) should be able to see why without re-deriving it.
 
 ## Output — your entire final message
 
@@ -180,17 +249,23 @@ If you selected an item:
   "branch": "agent/td26051201-short-slug",
   "model": "claude-sonnet-5",
   "model_reason": "code change with tests",
-  "context": "everything the Implementor needs: the register entry or issue text verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
+  "context": "everything the Implementor needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
   "acceptance": "what done looks like, concretely",
   "unblocked": []
 }
 ```
 
-- `source` is one of `"failed-runs"`, `"tech-debt"`, `"issues"`, or
-  `"implementation-plan"` — the same tokens as the `sources` lists in the
-  runtime input above.
+- `source` is one of `"security"`, `"failed-runs"`, `"tech-debt"`,
+  `"issues"`, `"implementation-plan"`, or `"code-quality"` — the same tokens
+  as the `sources` lists in the runtime input above.
+- For a `security`/`code-quality` finding, `item` is the finding's `ref`
+  (e.g. `dependabot-alert-42`, `code-scanning-alert-17`) and `context` must
+  paste the finding verbatim — its `title`, `severity`, affected
+  `package`/`rule`/`location`, and `url` — so the Implementor can act without
+  re-querying the API.
 - `branch` uses `branch_prefix` (`agent/`) followed by a short slug; include
-  the item ID where one exists (tech-debt ID, issue number).
+  the item ID where one exists (tech-debt ID, issue number, or a finding's
+  alert number — e.g. `agent/dependabot-42-bump-postcss`).
 - `context` must be self-contained: paste the relevant text verbatim rather
   than referring to "the ticket" — the Implementor starts with nothing but
   this work order and the repo's own `CLAUDE.md`.

@@ -331,9 +331,15 @@ if (( WITH_GITHUB )); then
     td_raw="$(gh_json api "repos/$slug/contents/TECH-DEBT.md" --jq '.content' | tr -d '\n' | base64 -d 2>/dev/null | grep -iE '^\|.*\b(open|in-progress|resolved)\b' | head -n 40)"
     td_json="$(printf '%s' "$td_raw" | jq -R -s 'split("\n") | map(select(length>0))' 2>/dev/null || echo '[]')"
 
+    # Security & code-quality findings, via the same script the pipeline uses,
+    # so the dashboard shows the highest-priority work source the Co-Ordinator
+    # actually sees. Always valid JSON; degrades to [] on any failure.
+    findings="$(timeout "$GH_TIMEOUT" "$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>/dev/null || echo '[]')"
+    findings="$(jq -c 'if type == "array" then . else [] end' <<<"$findings" 2>/dev/null || echo '[]')"
+
     inputs_json="$(jq -c --arg slug "$slug" \
-      --argjson issues "$issues" --argjson failed "$failed_runs" --argjson td "$td_json" '
-      . + {($slug): {issues: $issues, failed_runs: $failed, tech_debt: $td}}' <<<"$inputs_json")"
+      --argjson issues "$issues" --argjson failed "$failed_runs" --argjson td "$td_json" --argjson findings "$findings" '
+      . + {($slug): {issues: $issues, failed_runs: $failed, tech_debt: $td, findings: $findings}}' <<<"$inputs_json")"
   done < <(jq -r '.[].slug' <<<"$repos_json")
 fi
 
