@@ -22,5 +22,14 @@
   "timeout_implementor": 90,
   "timeout_reviewer": 30,
   "lock_stale_after": 3,
-  "limit_cooldown_default": 3
+  "limit_cooldown_default": 3,
+  "review": {
+    "repos": ["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"],
+    "model": "claude-sonnet-5",
+    "pr_label": "project-review",
+    "branch_prefix": "review/",
+    "timeout_review": 120,
+    "lock_stale_after": 6,
+    "min_days_between_reviews": 6
+  }
 }

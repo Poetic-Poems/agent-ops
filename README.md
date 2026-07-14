@@ -35,6 +35,8 @@ Edit `config.json` before first run. Keys:
 | `lock_stale_after` | 3 | Hours. Stale lock is killed and warning is logged. |
 | `limit_cooldown_default` | 3 | Hours. Stand-down after a usage-limit error. |
 
+The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
+
 ## Installation
 
 1. **Create the repo:**
@@ -155,6 +157,69 @@ alerts (security-severity ones tagged `"source":"security"`, the rest
 exits 0, returning `[]` when a repo has the features off or the token can't
 read them.
 
+## Weekly project review
+
+A second, independent pipeline runs a full **project review** of each target
+repo about once a week and opens a pull request with the results — a set of
+Markdown reports (summary, findings, prioritised recommendations, ready-to-use
+improvement prompts) plus an updated `TECH-DEBT.md`. Merging that PR feeds the
+hourly pipeline above: its Co-Ordinator picks up the new tech-debt items, and
+you can hand the improvement prompts to the `project-remediation` skill.
+
+It reuses the hourly pipeline's machinery (ephemeral clones, the shared
+usage-limit stand-down, the same lock/timeout discipline) but has its own
+Script (`review-cycle.sh`), lock, PR label, and cron entry. It **defers to** a
+running hourly cycle and shares the one usage-limit signal, so the two never
+spend quota at the same moment. The `project-review` skill it runs is vendored
+at `.claude/skills/project-review/` and staged into each ephemeral clone at run
+time (never committed to the repo under review).
+
+### Configuration (`review` block in `config.json`)
+
+| Key | Default | Notes |
+|---|---|---|
+| `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Repositories to review. A plain list of slugs. |
+| `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). |
+| `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. |
+| `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
+| `review.timeout_review` | `120` | Minutes. Per-repo wall-clock timeout. |
+| `review.lock_stale_after` | `6` | Hours. Larger than the hourly pipeline's 3 h — a full review is long. |
+| `review.min_days_between_reviews` | `6` | Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as "about once a week" and stay robust to a sleeping machine. |
+
+### Install
+
+Create the review PR label in both repos (once):
+```bash
+gh api -X POST repos/Poetic-Poems/poetic/labels \
+  -f name='project-review' -f color='5319e7' \
+  -f description='PR raised by the weekly project-review pipeline'
+# ...and the same for Poetic-Poems/poetic-fiddle
+```
+
+Add the cron entry. **Recommended** — a daily tick guarded by
+`min_days_between_reviews`, robust to a machine that sleeps through a strict
+weekly tick:
+```bash
+(crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
+```
+The skip-guard ensures this actually reviews each repo only about once a week.
+For a strict weekly tick instead, use `30 3 * * 1` (Mondays 03:30) — simpler,
+but a missed Monday tick skips the whole week.
+
+### Operate
+
+```bash
+./review-cycle.sh --dry-run        # show which repos would be reviewed; launch nothing
+./review-cycle.sh --once           # one run in the foreground, verbose
+./review-cycle.sh --repo poetic    # restrict to one repo
+tail -f ~/.local/state/poetic-agents/review-log.jsonl   # this pipeline's own event stream
+```
+Stage transcripts land in `~/.local/state/poetic-agents/reviews/<review-id>/`.
+The shared `limit-hit` signal is written to the hourly pipeline's `log.jsonl`,
+so a usage limit hit during a review also stands the hourly pipeline down.
+
+See `docs/BUILD-REVIEW-PROMPT.md` for the full specification.
+
 ## Monitoring dashboard
 
 A local, single-page dashboard shows everything at a glance: whether a cycle
@@ -221,9 +286,9 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
 
 ## Uninstall
 
-1. **Remove the crontab lines** (the cycle and, if added, the dashboard heartbeat):
+1. **Remove the crontab lines** (the cycle, the weekly review, and, if added, the dashboard heartbeat):
    ```bash
-   crontab -l | grep -v 'agent-ops/agent-cycle.sh' | grep -v 'agent-ops/scripts/publish-dashboard.sh' | crontab -
+   crontab -l | grep -v 'agent-ops/agent-cycle.sh' | grep -v 'agent-ops/review-cycle.sh' | grep -v 'agent-ops/scripts/publish-dashboard.sh' | crontab -
    ```
    (Or edit the Windows Task Scheduler job / `wsl.conf` change if you used
    that alternative instead.)
@@ -247,6 +312,8 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
 To modify this system (add a new work source, change the selection logic, etc.), see `docs/BUILD-PROMPT.md`. It is a complete specification for the system and includes numbered requirements and acceptance checks. `prompts/coordinator.md`, `prompts/implementor.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the build prompt first, then bring the affected operating prompt(s) in line with it.
 
 `docs/BUILD-DASHBOARD-PROMPT.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
+
+`docs/BUILD-REVIEW-PROMPT.md` is the companion specification for the weekly project-review pipeline (`review-cycle.sh` and `prompts/project-reviewer.md`).
 
 ## Branch workflow
 
