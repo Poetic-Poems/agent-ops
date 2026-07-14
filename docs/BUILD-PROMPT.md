@@ -97,7 +97,7 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
 | `lock_stale_after` | 3 h | Greater than the sum of the stage timeouts plus slack. |
-| `limit_cooldown_default` | 3 h | Stand-down period after a usage-limit error whose reset time cannot be parsed. |
+| `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch commands.
@@ -170,13 +170,35 @@ runs unattended.
    report its own `pr_url`), the Script also checks the clone for the
    `.git/agent-ops-pr-url` breadcrumb (requirement 23) before concluding no
    PR was ever opened.
-10. **Usage-limit detection.** Whenever any `claude` invocation fails with
-    output matching a usage-limit pattern (e.g. `limit`, `rate limit`,
-    `usage`), write a `limit-hit` event whose `resume_at` is parsed from the
-    error message where possible, else now + `limit_cooldown_default`.
+10. **Usage-limit detection.** Whenever any `claude` invocation's transcript
+    matches the shared pattern in `lib/limit-detect.sh` (`LIMIT_PHRASE_REGEX`
+    — the generic `hit your .* limit` stem plus the legacy `usage limit` /
+    `rate limit` / `usage cap` / `quota exceeded` terms; sourced by both the
+    Script and `scripts/publish-dashboard.sh` so the two can't drift apart),
+    write a `limit-hit` event with `resume_at`, `class`, and `needs_human`:
+    - `resume_at` is parsed from an ISO-8601 timestamp in the message if
+      present, else from a human-readable weekly reset clause (e.g. "resets
+      Jul 17, 4am (Pacific/Auckland)" — the named zone is applied via `TZ`,
+      not left in the string for `date -d`, and never combined with `date -u`
+      in the same call, which would silently override the named zone), else
+      a fallback: now + `limit_cooldown_default` for an ordinary/transient
+      match, or now + a much longer cooldown (`LIMIT_LONG_COOLDOWN_HOURS`,
+      ~1 day) when the phrasing says "weekly" or "monthly" and no reset time
+      could be parsed at all — that fallback is too short for something that
+      recurs on a multi-day cadence.
+    - `class` is `weekly`, `monthly`, or `other`.
+    - `needs_human` is true only when no reset time was parseable AND the
+      phrasing says weekly/monthly (the spend-cap case: it clears only when a
+      human raises the cap, or the billing month rolls over — auto-retry
+      cannot fix it). A parsed reset time always means `needs_human: false`,
+      since the pipeline can resume unattended once `resume_at` passes.
+
     There is no supported API for querying a subscription plan's remaining
     quota, so this fail-safe detection *is* the quota check, and
-    back-pressure (2.2) is the primary spend control.
+    back-pressure (2.2) is the primary spend control. Treat a parsed
+    `resume_at` as an upper bound to stand down *until*, not a promise the
+    block lasts that long — a cycle that succeeds before then simply clears
+    the stand-down on its own.
 11. **Cleanup.** Always: delete the cycle's workspace, write a `cycle-end`
     event, release the lock. Tee each stage's stdout/stderr to
     `state_dir/cycles/<cycle-id>/` for debugging.

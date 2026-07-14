@@ -28,6 +28,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
 
+# shellcheck source=lib/limit-detect.sh
+. "$SCRIPT_DIR/lib/limit-detect.sh"
+
 # --- Flags ---
 DRY_RUN=0
 ONCE=0
@@ -90,15 +93,12 @@ log_unblocked_items() {
 }
 
 detect_and_log_limit_hit() {
-  local out_file="$1" resume_at
-  if ! grep -qihE 'usage limit|rate limit|usage cap|quota exceeded' "$out_file" "$out_file.stderr" 2>/dev/null; then
-    return 1
-  fi
-  resume_at="$(grep -oihE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z' "$out_file" "$out_file.stderr" 2>/dev/null | head -n1 || true)"
-  if [[ -z "$resume_at" ]]; then
-    resume_at="$(date -u -d "+${limit_cooldown_default_hours} hours" +%Y-%m-%dT%H:%M:%SZ)"
-  fi
-  log_event "limit-hit" "$(jq -nc --arg r "$resume_at" '{resume_at: $r}')"
+  local out_file="$1" text resume_at class needs_human
+  limit_phrase_in "$out_file" "$out_file.stderr" || return 1
+  text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
+  IFS=$'\t' read -r resume_at class needs_human < <(limit_decide "$text" "$limit_cooldown_default_hours")
+  log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
+    '{resume_at: $r, class: $c, needs_human: $h}')"
 }
 
 extract_pr_url() {

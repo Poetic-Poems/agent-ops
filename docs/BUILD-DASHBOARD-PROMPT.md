@@ -79,11 +79,15 @@ same way `agent-cycle.sh` reads them.
   rows. If `gh` fails, the GitHub panels mark themselves stale and the rest
   still renders.
 
-**Usage-limit detection.** The pipeline's own detector only recognises
-ISO-timestamp resets, so weekly-limit messages ("resets Jul 17, 4am …") slip
-past it and are never logged as `limit-hit`. The Publisher therefore also
-scans recent transcripts for limit phrasing and surfaces it directly, so the
-dashboard shows a stand-down the log itself missed.
+**Usage-limit detection.** The pipeline's own detector and the Publisher share
+one phrase pattern and reset-time parser (`lib/limit-detect.sh`), so a
+weekly-limit message ("resets Jul 17, 4am …") or a monthly spend-cap message
+now gets logged as `limit-hit` by the Script itself, not just spotted by the
+dashboard. The Publisher still also scans recent transcripts for limit
+phrasing directly, as a backstop for any cycle where a `limit-hit` never made
+it into the log for some other reason (a crash before `log_event` ran, or a
+cycle from before this detector existed) — so the dashboard can still show a
+stand-down the log itself missed.
 
 ## The Publisher (`scripts/publish-dashboard.sh`)
 
