@@ -114,6 +114,24 @@ read_pr_url_breadcrumb() {
   [[ -f "$f" ]] && head -n1 "$f" | tr -d '[:space:]'
 }
 
+# Deterministically pre-fetch a repo's open Dependabot and code-scanning
+# findings (requirement 3a) so the Co-Ordinator reads them instead of spending
+# model tokens paginating those APIs itself. gather-findings.sh always prints
+# valid JSON and never fails a cycle; this guards its output anyway and
+# degrades to an empty array, teeing the result into the cycle dir for
+# debugging.
+gather_findings() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>"$cycle_dir/findings-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/findings-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 # Stage prompts require the final message to be pure JSON, but a model will
 # sometimes prepend analysis prose anyway and put the real object in a
 # trailing fenced ```json block. Try a straight parse first; fall back to the
@@ -305,8 +323,14 @@ done < <(jq -r '.[].slug' <<<"$repos_json")
 
 while IFS=$'\t' read -r _ slug default_branch; do
   sources="$(jq -c --arg s "$slug" '.[] | select(.slug == $s) | .sources' <<<"$repos_json")"
-  entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
-    '{slug: $slug, default_branch: $db, sources: $sources}')"
+  # Pre-fetch security/code-quality findings only when this repo lists either
+  # source, so a repo that opts out of them costs no gh calls.
+  findings="[]"
+  if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
+    findings="$(gather_findings "$slug")"
+  fi
+  entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" --argjson findings "$findings" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"

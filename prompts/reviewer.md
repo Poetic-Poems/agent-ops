@@ -74,6 +74,15 @@ your review:
   `resolved` (with `Resolved` and `Ref` filled in) and its `## <id> ...`
   section removed — not still `in-progress` with the fix sitting
   unrecorded.
+- If this item came from a `security` or `code-quality` finding (a Dependabot
+  or code-scanning alert), there is no ledger to flip: confirm instead that
+  the diff genuinely resolves the flagged alert (the right dependency bumped
+  to a patched version, or the flagged code actually corrected — not merely
+  suppressed or the alert dismissed), that the PR body names the alert (its
+  `ref` and `url`), and — for a security fix — that no new vulnerability was
+  introduced and a `CHANGELOG.md` entry records it. Hold security fixes to a
+  higher bar; if you cannot confirm the fix is correct and complete, that is a
+  `needs-human` outcome.
 - CI runs the repo's build/lint/typecheck/format/test workflows, CodeQL,
   and the commit-format check on every PR. Read `.github/workflows/` for
   the exact commands and re-run them locally as part of your review, not

@@ -32,9 +32,10 @@ Three properties are deliberate and non-negotiable:
 
 ```
 pipeline state (this machine)            GitHub (public repos, via gh)
-  ~/.local/state/poetic-agents/            open agent PRs + checks,
-    log.jsonl, cycles/<id>/*.out,          failed runs, issues, tech-debt
-    lock.json, cron.log
+  ~/.local/state/poetic-agents/            open agent PRs + checks, failed runs,
+    log.jsonl, cycles/<id>/*.out,          issues, tech-debt, and security /
+    lock.json, cron.log                    code-quality findings (via
+                                           scripts/gather-findings.sh)
         │                                        │
         └────────────┬───────────────────────────┘
                      ▼
@@ -136,8 +137,9 @@ Panels: status header + usage-limit / failing-checks / gh-down banners;
 metric cards (spend today/total, failures, reached-ready, back-pressure gauge
 vs `max_open_agent_prs`); open PRs; recent cycles (click a row for per-stage
 detail with the parsed status, full transcript, and stderr); failures &
-blocked items; work sources per repo; spend-by-day and spend-by-model bars;
-recent log; `cron.log` tail.
+blocked items; work sources per repo (including the security and code-quality
+findings, shown first, that the Co-Ordinator prioritises); spend-by-day and
+spend-by-model bars; recent log; `cron.log` tail.
 
 ## Integration
 

@@ -396,14 +396,33 @@
     var wrap = el("div");
     slugs.forEach(function (slug) {
       var g = inputs[slug] || {};
+      var findings = g.findings || [];
+      var secCount = findings.filter(function (f){ return f.security; }).length;
+      var cqCount  = findings.length - secCount;
       var box = el("div", {class:"panel", style:"padding:14px; margin-bottom:12px"});
       box.appendChild(el("div", {style:"font-weight:650; margin-bottom:8px"}, [
         el("span",{class:"mono",text: slug}),
         el("span",{class:"muted", style:"font-weight:400", html:
-          "  ·  " + (g.failed_runs? g.failed_runs.length:0) + " failing workflows · " +
+          "  ·  " + secCount + " security findings · " +
+          (g.failed_runs? g.failed_runs.length:0) + " failing workflows · " +
           (g.issues? g.issues.length:0) + " open issues · " +
-          (g.tech_debt? g.tech_debt.length:0) + " tech-debt rows"})
+          (g.tech_debt? g.tech_debt.length:0) + " tech-debt rows · " +
+          cqCount + " code-quality findings"})
       ]));
+      if (findings.length) {
+        var sevClass = { critical:"b-red", high:"b-red", error:"b-amber", medium:"b-amber", warning:"b-amber", low:"b-grey", note:"b-grey" };
+        box.appendChild(el("div", {class:"muted", style:"margin:4px 0 2px", text:"Security & code-quality findings (Co-Ordinator picks these first):"}));
+        findings.slice(0,12).forEach(function (f){
+          var row = el("div", {style:"margin:2px 0"}, [
+            el("span", {class:"badge " + (sevClass[f.severity] || "b-grey"), text: (f.security ? "SEC " : "") + (f.severity || "?")}),
+            document.createTextNode(" "),
+            el("a", {href:f.url, target:"_blank", text: f.ref}),
+            document.createTextNode(" " + esc(f.title || ""))
+          ]);
+          box.appendChild(row);
+        });
+        if (findings.length > 12) box.appendChild(el("div", {class:"muted", style:"font-size:11.5px", text:"… and " + (findings.length - 12) + " more"}));
+      }
       if (g.failed_runs && g.failed_runs.length) {
         box.appendChild(el("div", {class:"muted", style:"margin:4px 0 2px", text:"Failing workflows on default branch:"}));
         g.failed_runs.forEach(function (r){ box.appendChild(el("div", {}, el("a",{href:r.url,target:"_blank",text:"✗ " + r.workflowName}))); });

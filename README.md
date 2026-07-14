@@ -6,7 +6,7 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
 
 Once an hour:
 
-1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (failed CI runs, tech-debt, issues, or fiddle's implementation plan).
+1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, failed CI runs, tech-debt, issues, fiddle's implementation plan, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else.
 2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request.
 3. **Reviewer** (Sonnet) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
@@ -19,7 +19,7 @@ Edit `config.json` before first run. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`failed-runs`, `tech-debt`, `issues`, `implementation-plan`). Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `code-quality` (non-security code-scanning findings) is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -82,9 +82,17 @@ Edit `config.json` before first run. Keys:
    ```
    If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
 
-5. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
+5. **Enable the security work sources on both repos.** The `security` and `code-quality` sources read GitHub's own Dependabot alerts and code-scanning (CodeQL) alerts, so those features must be turned on for the alerts to exist:
+   - In each repo's **Settings → Code security**, enable **Dependabot alerts** and **Code scanning** (a default CodeQL setup is fine). Free for public repos; private repos need GitHub Advanced Security.
+   - The `gh` token must be able to read the alerts — the `security_events` scope (or `repo` on a classic token). Verify:
+     ```bash
+     ./scripts/gather-findings.sh Poetic-Poems/poetic
+     ```
+     You should get a JSON array of findings (or `[]` if there are none). If a feature is off or the token can't read it, the script simply returns `[]` and the pipeline keeps working — you just won't get findings from that source.
 
-6. **Install the crontab:**
+6. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
+
+7. **Install the crontab:**
    ```bash
    (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
    ```
@@ -129,7 +137,23 @@ ls -la ~/.local/state/poetic-agents/cycles/
 ```
 Each cycle gets a directory (`<cycle-id>/`) with one `<stage>.out` (the
 `claude --output-format json` envelope on stdout — this is what gets parsed)
-and one `<stage>.out.stderr` (diagnostics) per stage that ran.
+and one `<stage>.out.stderr` (diagnostics) per stage that ran. When a cycle
+pre-fetches findings, that directory also holds `findings-<owner>_<repo>.json`
+(the normalised Dependabot + code-scanning alerts the Co-Ordinator was given).
+
+### See the security & code-quality findings
+The Co-Ordinator's security and code-quality candidates come from a
+deterministic pre-fetch, not the model, to save credits — the Script runs
+`scripts/gather-findings.sh` once per repo and injects the result. Run it
+yourself to see exactly what the agents see:
+```bash
+./scripts/gather-findings.sh Poetic-Poems/poetic
+```
+It prints a JSON array of the repo's open Dependabot alerts and code-scanning
+alerts (security-severity ones tagged `"source":"security"`, the rest
+`"source":"code-quality"`), most severe first. It always prints valid JSON and
+exits 0, returning `[]` when a repo has the features off or the token can't
+read them.
 
 ## Monitoring dashboard
 

@@ -130,6 +130,11 @@ Both target repos follow these rules:
      line of the actual fix.
    - **Issues:** comment on the issue linking the draft PR, instead of (or
      in addition to) a Ledger flip.
+   - **Security / code-quality findings** (`source` of `security` or
+     `code-quality`; a Dependabot or code-scanning alert): name the alert in
+     the PR body — its `ref` (e.g. `dependabot-alert-42`) and its `url` from
+     the work order's `context` — so the claim is visible to any other cycle
+     scanning open PRs. There is no ledger to flip and no issue to comment on.
    - Immediately after the PR exists, record its URL where the Script can
      always find it even if this session ends before your final message
      does: `echo "<pr-url>" > .git/agent-ops-pr-url`. `.git/` is never part
@@ -151,8 +156,16 @@ Both target repos follow these rules:
      body.
    - Implementation-plan task: mark it done where the plan tracks that
      (e.g. a checklist or status line).
+   - Security / code-quality finding: there is no ledger to flip — GitHub
+     closes the Dependabot or code-scanning alert on its own once the fix
+     lands on `default_branch` and the repo is re-scanned. Just name the
+     alert (its `ref` and `url`) in the PR body. Do **not** dismiss the
+     alert yourself; dismissal is a human decision. For a Dependabot fix,
+     bump only to a patched version within a non-breaking range — if the
+     only patched version forces a breaking major upgrade, that is grounds
+     for `"status": "blocked"`, not a change you make on your own judgement.
    - Add a `CHANGELOG.md` entry if the change is notable by the repo's own
-     definition of that.
+     definition of that (a security fix usually is).
 6. **Verify the PR itself**, against GitHub's view, not your local guess:
    `gh pr view --json mergeable,mergeStateStatus`. If it's not mergeable —
    most likely `default_branch` moved since you branched — rebase (or
