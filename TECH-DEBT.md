@@ -29,7 +29,7 @@ above.
 
 | ID | Title | Status | Resolved | Ref |
 |----|-------|--------|----------|-----|
-| TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | open | | |
+| TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | in-progress | | |
 
 ## TD26071401 Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down
 
