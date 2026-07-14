@@ -27,6 +27,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 
+# shellcheck source=lib/limit-detect.sh
+. "$SCRIPT_DIR/lib/limit-detect.sh"
+
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
 TRANSCRIPT_CAP=40000 # bytes kept per transcript / stderr
@@ -87,11 +90,11 @@ extract_status_json() {
 }
 
 # Does this text look like a usage-limit message the pipeline may not have
-# logged? (The Script only recognises ISO-timestamp resets; weekly-limit
-# phrasing slips past it, so we detect it here from the transcript directly.)
-limit_phrase_in() {
-  grep -qiE "hit your (weekly |usage )?limit|usage limit|rate limit|quota exceeded|resets [A-Z][a-z]+ [0-9]" "$@" 2>/dev/null
-}
+# logged as a limit-hit event? `limit_phrase_in` is shared with agent-cycle.sh
+# via lib/limit-detect.sh (see TD26071401) so the two can't drift apart again;
+# scanning transcripts directly here remains a useful backstop for cycles
+# where a limit-hit never got logged for some other reason (e.g. the Script
+# crashed before log_event ran, or a cycle predates this detector).
 limit_reset_text() {
   grep -hoiE "reset[s]?( at)? [^\"\\]{1,60}" "$@" 2>/dev/null | head -n1
 }
@@ -208,10 +211,16 @@ fi
 
 # Usage-limit state: prefer a logged limit-hit with a future resume_at; else
 # fall back to limit phrasing detected in the most recent cycles' transcripts.
-limit_resume="$(printf '%s\n' "$ALL_EVENTS" | jq -rs '[.[]|select(.event=="limit-hit")]|last|.resume_at // empty' 2>/dev/null)"
+last_limit_hit="$(printf '%s\n' "$ALL_EVENTS" | jq -rsc '[.[]|select(.event=="limit-hit")]|last // {}' 2>/dev/null)"
+limit_resume="$(jq -r '.resume_at // empty' <<<"$last_limit_hit" 2>/dev/null)"
+limit_needs_human="$(jq -r '.needs_human // false' <<<"$last_limit_hit" 2>/dev/null)"
 limit_active=false; limit_note=""
 if [[ -n "$limit_resume" ]] && (( $(epoch_of "$limit_resume") > now_epoch )); then
   limit_active=true; limit_note="until $limit_resume (logged)"
+  # Spend-cap-style limits carry no reset time and clear only when a human
+  # raises the cap — auto-retry cannot fix them, so flag that distinctly
+  # rather than letting the banner read like an ordinary timed cooldown.
+  [[ "$limit_needs_human" == "true" ]] && limit_note="$limit_note — needs human action (raise the cap)"
 fi
 
 # The cycles array can be multi-megabyte (full transcripts); pass it to jq via a
