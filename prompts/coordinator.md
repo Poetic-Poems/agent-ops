@@ -23,7 +23,7 @@ heading, the Script gives you one JSON object:
     {
       "slug": "Poetic-Poems/poetic-fiddle",
       "default_branch": "main",
-      "sources": ["security", "failed-runs", "tech-debt", "issues", "implementation-plan", "code-quality"],
+      "sources": ["security", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"],
       "findings": [
         {"source": "security", "kind": "dependabot", "security": true, "severity": "high", "number": 1, "ref": "dependabot-alert-1", "title": "postcss: …", "package": "postcss", "url": "https://github.com/…/security/dependabot/1", "state": "open"},
         {"source": "code-quality", "kind": "code-scanning", "security": false, "severity": "warning", "number": 4, "ref": "code-scanning-alert-4", "rule": "js/unused-local-variable", "title": "Unused variable", "location": "src/x.js:12", "url": "https://github.com/…/security/code-scanning/4", "state": "open"}
@@ -32,7 +32,7 @@ heading, the Script gives you one JSON object:
     {
       "slug": "Poetic-Poems/poetic",
       "default_branch": "main",
-      "sources": ["security", "failed-runs", "tech-debt", "issues", "code-quality"],
+      "sources": ["security", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"],
       "findings": []
     }
   ],
@@ -117,13 +117,21 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. code-quality |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. code-quality |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. project-review · 6. code-quality |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. project-review · 7. code-quality |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
   `source: "security"`). Always first, and prioritised even beyond that — see
   "Security is always prioritised" below.
+- **project-review** — the prioritised recommendations from the **most recent**
+  weekly project review, which lives on the default branch under
+  `reviews/project-review-YYYY-MM-DD/`. Read that folder's
+  `03-recommendations.md` (the `R-NN` table and per-recommendation detail) and
+  `04-improvement-prompts.md` (a ready-to-run prompt per recommendation) with
+  `gh api repos/<slug>/contents/reviews/…`. Each recommendation is a candidate;
+  its stable ref is `review-<review-date>-R-NN`. See "Project-review
+  recommendations" below for how to pick one and dedup against tech-debt.
 - **code-quality** — the remaining open code-scanning alerts (no security
   severity: maintainability, correctness, style), also in `findings` (entries
   with `source: "code-quality"`). Lowest priority: automated, speculative, and
@@ -150,7 +158,8 @@ candidate is security-related if it is:
 - a `findings` entry with `source: "security"` (a Dependabot alert or a
   security-severity code-scanning alert), or
 - a GitHub issue labelled `security`, `vulnerability`, or similar, or
-- a `TECH-DEBT.md` entry whose text flags it as a security concern.
+- a `TECH-DEBT.md` entry whose text flags it as a security concern, or
+- a `project-review` recommendation whose text flags a security concern.
 
 Among security candidates, take the most severe first
 (`critical` > `high` > `medium` > `low`; the pre-fetched `findings` are
@@ -172,6 +181,28 @@ ledger to flip.
 run of a workflow on the default branch is a failure — a later green run
 supersedes older failures, so don't resurrect a since-fixed workflow.
 
+**Project-review recommendations.** Read only the **most recent**
+`reviews/project-review-YYYY-MM-DD/` folder (list `reviews/` via `gh api
+repos/<slug>/contents/reviews` and take the latest date). A recommendation
+`R-NN` from that folder is a candidate unless:
+
+- the review already mirrored it into `TECH-DEBT.md` or filed it as an issue —
+  the tech-debt entry or issue cross-references the `R-NN`, and that curated,
+  status-tracked channel owns it, so skip it here (this is the dedup that keeps
+  the same work from being picked twice);
+- an open PR already references its ref `review-<date>-R-NN` (claimed), or a
+  merged PR references it (already done);
+- it is Large/architectural, gated on a human decision the recommendation
+  itself names, or has an unmet "Run after" prerequisite — skip, as with any
+  under-refined item.
+
+One `gh` PR search per repo for the review date (e.g. `gh pr list -R <slug>
+--state all --search "review-<date>"`) surfaces the open/merged/closed PRs
+referencing that review; match `R-NN` refs against it. When you select one,
+`item` is its ref, `context` is the recommendation's improvement prompt (from
+`04-improvement-prompts.md`) pasted verbatim plus the review folder path, and
+`acceptance` is the recommendation's *Intended end state*.
+
 **Exclude any item that is:**
 
 1. Recorded as blocked in the shared log — an `attempt-failed` event for
@@ -182,7 +213,9 @@ supersedes older failures, so don't resurrect a since-fixed workflow.
    this item for. For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
-   selecting a finding.
+   selecting a finding. For a project-review recommendation, "already claimed"
+   means an open PR referencing its ref `review-<date>-R-NN`, and "already
+   done" means a *merged* PR referencing it.
 4. A GitHub issue that is assigned, labelled `blocked`, or is a question or
    discussion rather than actionable work.
 5. A security finding whose only fix is a decision only a human can make —
@@ -256,16 +289,22 @@ If you selected an item:
 ```
 
 - `source` is one of `"security"`, `"failed-runs"`, `"tech-debt"`,
-  `"issues"`, `"implementation-plan"`, or `"code-quality"` — the same tokens
-  as the `sources` lists in the runtime input above.
+  `"issues"`, `"implementation-plan"`, `"project-review"`, or `"code-quality"`
+  — the same tokens as the `sources` lists in the runtime input above.
 - For a `security`/`code-quality` finding, `item` is the finding's `ref`
   (e.g. `dependabot-alert-42`, `code-scanning-alert-17`) and `context` must
   paste the finding verbatim — its `title`, `severity`, affected
   `package`/`rule`/`location`, and `url` — so the Implementor can act without
   re-querying the API.
+- For a `project-review` recommendation, `item` is its ref
+  (`review-<date>-R-NN`) and `context` must paste the recommendation's
+  improvement prompt (from `04-improvement-prompts.md`) verbatim, plus the
+  review folder path and the `R-NN` detail; set `acceptance` to the
+  recommendation's *Intended end state*.
 - `branch` uses `branch_prefix` (`agent/`) followed by a short slug; include
-  the item ID where one exists (tech-debt ID, issue number, or a finding's
-  alert number — e.g. `agent/dependabot-42-bump-postcss`).
+  the item ID where one exists (tech-debt ID, issue number, a finding's alert
+  number, or a review ref — e.g. `agent/dependabot-42-bump-postcss`,
+  `agent/review-2026-07-20-r03-short-slug`).
 - `context` must be self-contained: paste the relevant text verbatim rather
   than referring to "the ticket" — the Implementor starts with nothing but
   this work order and the repo's own `CLAUDE.md`.

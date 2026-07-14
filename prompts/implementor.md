@@ -135,6 +135,13 @@ Both target repos follow these rules:
      the PR body — its `ref` (e.g. `dependabot-alert-42`) and its `url` from
      the work order's `context` — so the claim is visible to any other cycle
      scanning open PRs. There is no ledger to flip and no issue to comment on.
+   - **Project-review recommendations** (`source` of `project-review`): the
+     work order's `context` is a ready-to-run improvement prompt from the
+     review — follow it. Name the ref (`item`, e.g. `review-2026-07-20-R03`)
+     in the PR body and link the review folder and recommendation, so the
+     claim (and, once the PR merges, the completion) is visible to any other
+     cycle scanning PRs. There is no ledger to flip and no issue to comment on;
+     do **not** modify the review folder — it is a point-in-time record.
    - Immediately after the PR exists, record its URL where the Script can
      always find it even if this session ends before your final message
      does: `echo "<pr-url>" > .git/agent-ops-pr-url`. `.git/` is never part
@@ -164,6 +171,13 @@ Both target repos follow these rules:
      bump only to a patched version within a non-breaking range — if the
      only patched version forces a breaking major upgrade, that is grounds
      for `"status": "blocked"`, not a change you make on your own judgement.
+   - Project-review recommendation: there is no ledger to flip and you do not
+     edit the review folder. The PR body naming the ref (`review-<date>-R-NN`)
+     is the record — its merge is what marks the recommendation done, and the
+     next weekly review re-evaluates the code and simply omits anything now
+     fixed. Deliver exactly what the improvement prompt and `acceptance`
+     describe; if the prompt turns out to depend on a decision only a human
+     can make, report `"status": "blocked"` rather than guessing.
    - Add a `CHANGELOG.md` entry if the change is notable by the repo's own
      definition of that (a security fix usually is).
 6. **Verify the PR itself**, against GitHub's view, not your local guess:

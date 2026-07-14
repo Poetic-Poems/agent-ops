@@ -57,8 +57,8 @@ cron (hourly)
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. code-quality findings |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. code-quality findings |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. project-review recommendations · 6. code-quality findings |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. project-review recommendations · 7. code-quality findings |
 
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
@@ -79,6 +79,33 @@ analysis, not just files in the tree:
   lowest-priority source: automated quality suggestions are more speculative
   and higher-volume than curated tech-debt or filed issues, so they are
   picked up only when nothing more deliberate is waiting.
+
+The `project-review` source draws on the weekly project-review pipeline's own
+output (see `docs/BUILD-REVIEW-PROMPT.md`), which lands in each repo via a
+merged PR:
+
+- **`project-review`** — the prioritised **recommendations** produced by the
+  most recent project review, which live on the default branch under
+  `reviews/project-review-YYYY-MM-DD/` as `03-recommendations.md` (the
+  recommendation table and per-`R-NN` detail) paired with
+  `04-improvement-prompts.md` (one ready-to-run agent prompt per
+  recommendation). The Co-Ordinator reads the **latest** review folder's two
+  files directly (`gh api .../contents/...`, no pre-fetch needed) and treats
+  each recommendation as a candidate. A recommendation's **stable ref** is
+  `review-<review-date>-R-NN` (e.g. `review-2026-07-20-R03`); that ref goes in
+  the branch and PR so a claim (open PR) and a completion (merged PR) are both
+  detectable later. The improvement prompt is the Implementor's brief and the
+  recommendation's *Intended end state* is its acceptance. This source sits
+  **below tech-debt and issues** deliberately: the review already mirrors its
+  debt-shaped recommendations into `TECH-DEBT.md` (cross-referencing the
+  `R-NN`), and those curated, status-tracked entries are the primary channel —
+  the `project-review` source exists to pick up the review's remaining
+  recommendations (typically smaller improvements) that were *not* also filed
+  as tech-debt or an issue, so nothing the review surfaced is silently dropped.
+  It ranks above `code-quality` because a human-approved review recommendation
+  is more deliberate than an automated quality suggestion. A recommendation
+  whose text flags a **security concern** is security-related and so is caught
+  by "security is always prioritised" like any other security candidate.
 
 Because Dependabot and code-scanning alerts live behind paginated, verbose
 GitHub APIs, the Script pre-fetches and normalises them once per cycle via
@@ -110,7 +137,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `code-quality`); structure the config so a repo or source can be added without code changes. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -266,11 +293,18 @@ runs unattended.
     `security` source's candidates are the pre-fetched `findings` with
     `source: "security"` (Dependabot alerts and security-severity
     code-scanning alerts); the `code-quality` source's candidates are the
-    `findings` with `source: "code-quality"`.
+    `findings` with `source: "code-quality"`. The `project-review` source's
+    candidates are the recommendations (`R-NN`) in the **most recent**
+    `reviews/project-review-YYYY-MM-DD/` folder on the default branch: read
+    that folder's `03-recommendations.md` and `04-improvement-prompts.md` via
+    `gh api .../contents/...` (no pre-fetch — these are ordinary tracked files,
+    like `TECH-DEBT.md`). A recommendation's stable ref is
+    `review-<review-date>-R-NN`; the paired improvement prompt is the brief.
 15a. **Security is always prioritised.** Beyond `security` being first in the
     source order, any candidate that is security-related — a `security`
-    finding, a GitHub issue labelled `security`/`vulnerability`, or a
-    tech-debt entry flagged as a security concern — outranks every
+    finding, a GitHub issue labelled `security`/`vulnerability`, a
+    tech-debt entry flagged as a security concern, or a `project-review`
+    recommendation whose text flags a security concern — outranks every
     non-security candidate across all repos and sources. If any selectable
     security candidate exists anywhere, the Co-Ordinator selects one of those
     before any non-security item, with the most severe first
@@ -283,7 +317,17 @@ runs unattended.
     - already referenced by any open PR or draft (a claim, per the repos'
       claiming workflow) — for a `security`/`code-quality` finding, that means
       an open PR whose branch or body already references the same alert
-      (`ref`, alert URL, or the affected package/rule);
+      (`ref`, alert URL, or the affected package/rule); for a `project-review`
+      recommendation, an open PR whose branch or body references its ref
+      (`review-<date>-R-NN`);
+    - a `project-review` recommendation that is already **done** — a *merged*
+      PR references its ref (`review-<date>-R-NN`) — or that is already owned
+      by a higher-priority source: the review mirrors debt-shaped
+      recommendations into `TECH-DEBT.md` (or files them as issues)
+      cross-referencing the `R-NN`, so a recommendation cross-referenced by a
+      current tech-debt entry or open issue is left to that source and skipped
+      here. (A single `gh` PR search per repo for the review date surfaces the
+      open/merged/closed PRs referencing that review; match refs against it.)
     - an issue that is assigned, labelled `blocked`, or is a question or
       discussion rather than actionable work;
     - a security finding whose only available fix is one a human must choose
@@ -311,11 +355,16 @@ runs unattended.
     `implementor_model_default`. Records the reasoning.
 20. Emits a work order as its entire final message. `source` is one of
     `security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`,
-    or `code-quality`. For a `security`/`code-quality` finding, `item` is the
-    finding's stable `ref` (e.g. `dependabot-alert-42`,
+    `project-review`, or `code-quality`. For a `security`/`code-quality`
+    finding, `item` is the finding's stable `ref` (e.g. `dependabot-alert-42`,
     `code-scanning-alert-17`) and `context` must paste the finding verbatim
     (package/rule, severity, affected location, advisory summary, and the
-    alert URL) so the Implementor can act without re-querying the API.
+    alert URL) so the Implementor can act without re-querying the API. For a
+    `project-review` recommendation, `item` is its ref
+    (`review-<review-date>-R-NN`) and `context` must paste the recommendation's
+    improvement prompt (from `04-improvement-prompts.md`) verbatim, together
+    with the review folder path and the `R-NN` detail; `acceptance` is the
+    recommendation's *Intended end state*.
 
     ```json
     {
@@ -357,7 +406,11 @@ runs unattended.
     (Ledger flip to `in-progress` as the first commit). For issues, it
     comments on the issue linking the draft PR. For `security`/`code-quality`
     findings, the draft PR body names the alert (its `ref` and URL) so the
-    claim is visible to any other cycle scanning open PRs.
+    claim is visible to any other cycle scanning open PRs. For a
+    `project-review` recommendation, the draft PR body names the ref
+    (`review-<date>-R-NN`) and links the review folder and recommendation, so
+    the claim (and, once merged, the completion) is visible to any other cycle
+    scanning PRs — there is no ledger and the review folder is not modified.
 24. Implements the item, then runs the same checks the repo's CI runs (as
     documented in that repo's `CLAUDE.md` and workflow files) and fixes
     anything they surface.
@@ -368,9 +421,13 @@ runs unattended.
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
     alert it resolves (and its URL); the Implementor never dismisses an alert
-    itself (dismissal is a human decision). Adds a `CHANGELOG.md` entry when
-    the change is notable by that repo's definition (a security fix usually
-    is).
+    itself (dismissal is a human decision). For a `project-review`
+    recommendation, there is likewise no ledger to flip and the review folder
+    (a point-in-time record) is left untouched — the PR body names the ref
+    (`review-<date>-R-NN`) so its eventual merge marks the recommendation done;
+    a later review re-evaluates the code and simply omits anything now fixed.
+    Adds a `CHANGELOG.md` entry when the change is notable by that repo's
+    definition (a security fix usually is).
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -525,9 +582,27 @@ Recorded so a future reader knows they were deliberate, not accidental.
   quota.
 - **Work-source categories are mapped to what actually exists** in the two
   repos (security findings, failed runs, tech-debt registers, GitHub issues,
-  fiddle's implementation plan, and code-quality findings). User stories and
-  road maps were dropped — neither repo has them; the config structure
-  accepts new sources when they appear.
+  fiddle's implementation plan, project-review recommendations, and
+  code-quality findings). User stories and road maps were dropped — neither
+  repo has them; the config structure accepts new sources when they appear.
+- **The weekly project review feeds the pipeline as a work source.** The
+  review pipeline (`docs/BUILD-REVIEW-PROMPT.md`) lands, in each repo, both an
+  updated `TECH-DEBT.md` (the primary, status-tracked channel — picked up by
+  the `tech-debt` source) and a `reviews/project-review-*/` folder of
+  prioritised recommendations with ready-to-run improvement prompts. The
+  `project-review` source consumes the latter so that recommendations *not*
+  also filed as tech-debt or an issue are still actioned rather than left to
+  rot in a folder. It sits just above `code-quality` (a human-approved
+  recommendation beats an automated one) and below the curated channels, and
+  dedups against them via the `R-NN` cross-reference the review writes into
+  each mirrored tech-debt entry. Because the recommendations file is
+  regenerated each week (its `R-NN` IDs are per-review, so a ref is
+  review-dated), an un-actioned recommendation is simply re-offered under a new
+  ref by the next review; persistent items live in `TECH-DEBT.md`, which has
+  stable IDs — so the regeneration doesn't strand work. Done-ness is tracked by
+  the PR referencing the ref (open = claimed, merged = done), the same
+  PR-as-source-of-truth pattern the findings sources use, so the review folder
+  stays an immutable point-in-time record.
 - **Security findings are a first-class, always-first work source.** GitHub's
   own Dependabot and code-scanning alerts are treated as work items, and any
   security-related candidate outranks all non-security work (requirement 15a),
