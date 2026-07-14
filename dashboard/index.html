@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Pipeline Dashboard</title>
+<!-- Generated data lives in a sibling file the Publisher rewrites each run.
+     A plain script tag (not a module) is used so this works from a file:// URL
+     with no server. -->
+<script src="data.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --ink: #1c2024; --muted: #656d76;
+    --line: #e2e5e9; --accent: #2b6cb0;
+    --green: #1a7f37; --green-bg: #dafbe1; --red: #b42318; --red-bg: #ffe3e0;
+    --amber: #9a6700; --amber-bg: #fff4d6; --blue: #0a5cc2; --blue-bg: #ddf0ff;
+    --grey: #57606a; --grey-bg: #eef1f4;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --panel: #161b22; --ink: #e6edf3; --muted: #8b949e;
+      --line: #2a2f37; --accent: #58a6ff;
+      --green: #3fb950; --green-bg: #12261a; --red: #f85149; --red-bg: #2a1213;
+      --amber: #d29922; --amber-bg: #2b2211; --blue: #58a6ff; --blue-bg: #0d2436;
+      --grey: #8b949e; --grey-bg: #1b2027;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--ink); font-family: var(--sans);
+         font-size: 14px; line-height: 1.5; }
+  a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  header.top { padding: 16px 20px; border-bottom: 1px solid var(--line); background: var(--panel);
+    display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; position: sticky; top: 0; z-index: 5; }
+  header.top h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
+  .grow { flex: 1 1 auto; }
+  .freshness { font-size: 12px; color: var(--muted); }
+  .controls { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
+  .controls label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
+  button.refresh { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
+    background: var(--bg); color: var(--ink); border-radius: 6px; cursor: pointer; }
+  button.refresh:hover { border-color: var(--accent); }
+  main { max-width: 1200px; margin: 0 auto; padding: 18px 20px 60px; }
+  .banner { padding: 12px 16px; border-radius: 8px; margin-bottom: 16px; font-weight: 550;
+    display: flex; gap: 10px; align-items: baseline; }
+  .banner .sub { font-weight: 400; color: var(--muted); }
+  .banner.amber { background: var(--amber-bg); color: var(--amber); border: 1px solid var(--amber); }
+  .banner.green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
+  .banner.red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+  .card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .card .v { font-size: 22px; font-weight: 650; margin-top: 2px; }
+  .card .v small { font-size: 13px; font-weight: 500; color: var(--muted); }
+  section { margin-bottom: 26px; }
+  section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
+    margin: 0 0 10px; font-weight: 600; }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 8px 12px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-size: 11px; text-transform: uppercase; letter-spacing: .4px; color: var(--muted); font-weight: 600; }
+  tbody tr.clickable { cursor: pointer; }
+  tbody tr.clickable:hover { background: var(--grey-bg); }
+  td.wrap { white-space: normal; max-width: 420px; }
+  .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
+    border: 1px solid transparent; }
+  .b-green { background: var(--green-bg); color: var(--green); }
+  .b-red { background: var(--red-bg); color: var(--red); }
+  .b-blue { background: var(--blue-bg); color: var(--blue); }
+  .b-amber { background: var(--amber-bg); color: var(--amber); }
+  .b-grey { background: var(--grey-bg); color: var(--grey); }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  .dot.live { background: var(--green); box-shadow: 0 0 0 0 rgba(63,185,80,.6); animation: pulse 1.8s infinite; }
+  .dot.idle { background: var(--grey); }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)} 70%{box-shadow:0 0 0 6px rgba(63,185,80,0)} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0)} }
+  .mono { font-family: var(--mono); font-size: 12px; }
+  .muted { color: var(--muted); }
+  .stagecells { display: flex; gap: 4px; }
+  .stagecell { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); }
+  .sc-ok { color: var(--green); } .sc-fail { color: var(--red); } .sc-none { color: var(--muted); opacity: .6; }
+  .detail { background: var(--bg); }
+  .detail td { padding: 0; border-bottom: 1px solid var(--line); }
+  .detailwrap { padding: 14px 16px; }
+  .stagebox { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; background: var(--panel); }
+  .stagebox > .head { padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center;
+    border-bottom: 1px solid var(--line); font-size: 12px; }
+  .stagebox > .head .name { font-weight: 650; text-transform: capitalize; }
+  .kv { color: var(--muted); } .kv b { color: var(--ink); font-weight: 600; }
+  pre.tx { margin: 0; padding: 10px 12px; font-family: var(--mono); font-size: 12px; line-height: 1.45;
+    white-space: pre-wrap; word-break: break-word; max-height: 340px; overflow: auto; background: var(--panel); }
+  pre.err { color: var(--red); border-top: 1px dashed var(--line); }
+  details.tx > summary { cursor: pointer; padding: 6px 12px; font-size: 12px; color: var(--muted); user-select: none; }
+  .bars { display: flex; flex-direction: column; gap: 6px; }
+  .bar { display: grid; grid-template-columns: 88px 1fr 92px; align-items: center; gap: 10px; font-size: 12px; }
+  .bar .track { background: var(--grey-bg); border-radius: 5px; height: 16px; overflow: hidden; }
+  .bar .fill { background: var(--accent); height: 100%; }
+  .gauge { height: 10px; border-radius: 5px; background: var(--grey-bg); overflow: hidden; margin-top: 6px; }
+  .gauge > span { display: block; height: 100%; }
+  .empty { padding: 18px; color: var(--muted); font-style: italic; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+  @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
+  code.inline { font-family: var(--mono); background: var(--grey-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+</style>
+</head>
+<body>
+<header class="top">
+  <h1 id="title">Agent Pipeline Dashboard</h1>
+  <span id="livestate"></span>
+  <span class="grow"></span>
+  <span class="freshness" id="freshness"></span>
+  <div class="controls">
+    <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
+    <button class="refresh" id="refreshbtn">Refresh now</button>
+  </div>
+</header>
+<main id="app"></main>
+<script>
+(function () {
+  "use strict";
+  var D = window.DASHBOARD_DATA;
+  var app = document.getElementById("app");
+
+  if (!D) {
+    app.innerHTML = '<div class="banner amber">No data yet — run <code class="inline">scripts/publish-dashboard.sh</code> to generate the dashboard.</div>';
+    return;
+  }
+
+  // ---------- helpers ----------
+  function el(tag, attrs, children) {
+    var e = document.createElement(tag);
+    if (attrs) for (var k in attrs) {
+      if (k === "class") e.className = attrs[k];
+      else if (k === "html") e.innerHTML = attrs[k];
+      else if (k === "text") e.textContent = attrs[k];
+      else if (k.slice(0,2) === "on") e.addEventListener(k.slice(2), attrs[k]);
+      else if (attrs[k] != null) e.setAttribute(k, attrs[k]);
+    }
+    if (children) (Array.isArray(children) ? children : [children]).forEach(function (c) {
+      if (c == null) return;
+      e.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+    });
+    return e;
+  }
+  function parseTs(s) { if (!s) return null; var d = new Date(s); return isNaN(d) ? null : d; }
+  function fmtTime(s) { var d = parseTs(s); return d ? d.toLocaleString(undefined, {month:"short", day:"numeric", hour:"2-digit", minute:"2-digit"}) : "—"; }
+  function fmtAgo(s) {
+    var d = parseTs(s); if (!d) return "—";
+    var sec = Math.max(0, (Date.now() - d.getTime())/1000);
+    if (sec < 90) return Math.round(sec) + "s ago";
+    if (sec < 5400) return Math.round(sec/60) + "m ago";
+    if (sec < 172800) return Math.round(sec/3600) + "h ago";
+    return Math.round(sec/86400) + "d ago";
+  }
+  function fmtDur(ms) {
+    if (ms == null) return "—";
+    var s = ms/1000;
+    if (s < 60) return s.toFixed(1) + "s";
+    return Math.floor(s/60) + "m" + String(Math.round(s%60)).padStart(2,"0") + "s";
+  }
+  function usd(n) { return n == null ? "—" : "$" + Number(n).toFixed(Number(n) < 1 ? 4 : 2); }
+  function esc(s) { return String(s == null ? "" : s); }
+
+  var OUTCOME = {
+    "pr-ready":     ["Ready for review", "b-green"],
+    "pr-raised":    ["PR raised", "b-blue"],
+    "selected":     ["Selected", "b-blue"],
+    "none-selected":["Nothing selected", "b-grey"],
+    "stand-down":   ["Stood down", "b-grey"],
+    "skipped":      ["Skipped (locked)", "b-grey"],
+    "failed":       ["Failed", "b-red"],
+    "ended":        ["Ended", "b-grey"]
+  };
+  function outcomeBadge(o) {
+    var m = OUTCOME[o] || [o, "b-grey"];
+    return el("span", {class: "badge " + m[1], text: m[0]});
+  }
+
+  var EVENT_CLASS = { "attempt-failed":"b-red","warning":"b-amber","limit-hit":"b-amber",
+    "pr-raised":"b-blue","pr-ready":"b-green","selection":"b-blue","none-selected":"b-grey",
+    "stand-down":"b-grey","cycle-skipped":"b-grey" };
+
+  // ---------- banners ----------
+  var banners = el("div");
+  var st = D.status || {};
+  if (st.limit && st.limit.active) {
+    banners.appendChild(el("div", {class:"banner amber"}, [
+      el("span", {text: "⏸ Usage limit reached."}),
+      el("span", {class:"sub", text: st.limit.note ? ("Pipeline stands down — " + st.limit.note + ".") : "Pipeline stands down until the limit resets."})
+    ]));
+  }
+  var openPrs = (D.github && D.github.prs) || [];
+  var failedChecks = openPrs.filter(function (p){ return p.checks && p.checks.failed > 0; });
+  if (failedChecks.length) {
+    banners.appendChild(el("div", {class:"banner red"}, [
+      el("span", {text: "✗ " + failedChecks.length + " open agent PR(s) with failing checks."}),
+      el("span", {class:"sub", text: "See Open pull requests below."})
+    ]));
+  }
+  if (D.github && D.github.ok === false) {
+    banners.appendChild(el("div", {class:"banner amber"}, [
+      el("span", {text: "GitHub data unavailable."}),
+      el("span", {class:"sub", text: (D.github.error || "gh could not be reached") + " — showing last local state only."})
+    ]));
+  }
+  app.appendChild(banners);
+
+  // ---------- metric cards ----------
+  var c = D.counts || {};
+  var cards = el("div", {class:"cards"});
+  function card(k, v, sub) {
+    cards.appendChild(el("div", {class:"card"}, [
+      el("div", {class:"k", text:k}),
+      el("div", {class:"v"}, [ typeof v === "string" ? document.createTextNode(v) : v,
+        sub ? el("small", {text: " " + sub}) : null ])
+    ]));
+  }
+  card("Spend today", usd(c.spend_today_usd));
+  card("Spend (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
+  card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
+  card("Reached ready", String(c.prs_reached_ready || 0));
+  // back-pressure card
+  var openN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+  var gauge = el("div", {class:"gauge"}, el("span", {
+    style: "width:" + (maxN ? Math.min(100, openN/maxN*100) : 0) + "%;background:" + (openN>=maxN && maxN ? "var(--red)" : "var(--accent)")
+  }));
+  cards.appendChild(el("div", {class:"card"}, [
+    el("div", {class:"k", text:"Open agent PRs"}),
+    el("div", {class:"v"}, [document.createTextNode(openN + " "), el("small", {text:"/ " + maxN + " max"})]),
+    gauge
+  ]));
+  app.appendChild(cards);
+
+  // ---------- open PRs ----------
+  app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));
+
+  // ---------- cycle history ----------
+  app.appendChild(sectionOf("Recent cycles", cyclesPanel(D.cycles || [])));
+
+  // ---------- failures & blocked ----------
+  app.appendChild(sectionOf("Failures & blocked items", failuresPanel()));
+
+  // ---------- inputs ----------
+  app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
+
+  // ---------- cost & cadence + log ----------
+  var two = el("div", {class:"two"});
+  two.appendChild(el("div", {}, [ el("h2", {text:"Spend by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
+  two.appendChild(el("div", {}, [ el("h2", {text:"Spend by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
+  app.appendChild(el("section", {}, two));
+
+  app.appendChild(sectionOf("Recent log events", logPanel()));
+  app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
+
+  // ---------- section builder ----------
+  function sectionOf(title, body) {
+    return el("section", {}, [ el("h2", {text:title}), body ]);
+  }
+
+  // ---------- PRs panel ----------
+  function prsPanel(prs) {
+    if (!prs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text: (D.github && D.github.ok===false) ? "GitHub unreachable." : "No open agent PRs."}));
+    var rows = prs.map(function (p) {
+      var ck = p.checks || {};
+      var ckBadge;
+      if (!ck.total) ckBadge = el("span", {class:"muted", text:"—"});
+      else if (ck.failed) ckBadge = el("span", {class:"badge b-red", text: ck.failed + " failing"});
+      else if (ck.pending) ckBadge = el("span", {class:"badge b-amber", text: ck.pending + " pending"});
+      else ckBadge = el("span", {class:"badge b-green", text: "checks pass"});
+      var mergeBadge = p.mergeable === "MERGEABLE" ? el("span",{class:"badge b-green",text:"mergeable"})
+        : p.mergeable === "CONFLICTING" ? el("span",{class:"badge b-red",text:"conflicts"})
+        : el("span",{class:"muted",text: (p.mergeStateStatus||"?").toLowerCase()});
+      return el("tr", {}, [
+        el("td", {}, el("a", {href:p.url, target:"_blank", text:"#"+p.number})),
+        el("td", {class:"wrap"}, [ el("span",{class:"mono muted", text: p.repo.split("/")[1] + " "}), esc(p.title) ]),
+        el("td", {}, p.isDraft ? el("span",{class:"badge b-grey",text:"draft"}) : el("span",{class:"badge b-blue",text:"ready"})),
+        el("td", {}, ckBadge),
+        el("td", {}, mergeBadge),
+        el("td", {class:"muted", text: fmtAgo(p.createdAt)})
+      ]);
+    });
+    return tableOf(["PR","Title","State","Checks","Merge","Opened"], rows);
+  }
+
+  // ---------- cycles panel ----------
+  function cyclesPanel(cycles) {
+    if (!cycles.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No cycles recorded yet."}));
+    var rows = [];
+    cycles.forEach(function (cy, i) {
+      var stageCells = el("div", {class:"stagecells"}, ["coordinator","implementor","reviewer"].map(function (s) {
+        var g = cy.stages && cy.stages[s];
+        if (!g) return el("span", {class:"stagecell sc-none", title:s, text: s[0].toUpperCase()});
+        var cls = g.limit_hit ? "sc-fail" : (g.is_error ? "sc-fail" : "sc-ok");
+        var lbl = s[0].toUpperCase() + (g.cost_usd ? " " + usd(g.cost_usd) : "");
+        return el("span", {class:"stagecell " + cls, title: s + (g.terminal_reason ? " — " + g.terminal_reason : ""), text: lbl});
+      }));
+      var tr = el("tr", {class:"clickable"}, [
+        el("td", {class:"muted mono", text: fmtTime(cy.started_at)}),
+        el("td", {}, outcomeBadge(cy.outcome)),
+        el("td", {class:"wrap"}, [
+          cy.repo ? el("span", {class:"mono muted", text: cy.repo.split("/")[1] + " "}) : null,
+          esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")) ]),
+        el("td", {}, stageCells),
+        el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
+        el("td", {}, cy.pr_url ? el("a", {href:cy.pr_url, target:"_blank", text:"PR"}) : document.createTextNode(""))
+      ]);
+      var detail = el("tr", {class:"detail", style:"display:none"}, el("td", {colspan:6}, cycleDetail(cy)));
+      tr.addEventListener("click", function (ev) {
+        if (ev.target.tagName === "A") return;
+        detail.style.display = detail.style.display === "none" ? "" : "none";
+      });
+      rows.push(tr); rows.push(detail);
+    });
+    return tableOf(["Started","Outcome","Item","Stages (cost)","Total","PR"], rows);
+  }
+
+  function cycleDetail(cy) {
+    var w = el("div", {class:"detailwrap"});
+    var meta = [];
+    meta.push("cycle " + cy.id);
+    if (cy.source) meta.push("source: " + cy.source);
+    if (cy.item) meta.push("item: " + cy.item);
+    if (cy.ended_at) meta.push("ended " + fmtTime(cy.ended_at));
+    w.appendChild(el("div", {class:"muted mono", style:"margin-bottom:8px; white-space:normal", text: meta.join("  ·  ")}));
+    if (cy.reason) w.appendChild(el("div", {style:"margin-bottom:8px"}, [el("b",{text:"Reason: "}), esc(cy.reason)]));
+    if (cy.fail_detail) w.appendChild(el("div", {class:"banner red", style:"margin:8px 0"}, esc(cy.fail_detail)));
+    if (cy.warning) w.appendChild(el("div", {class:"banner amber", style:"margin:8px 0"}, esc(cy.warning)));
+
+    ["coordinator","implementor","reviewer"].forEach(function (s) {
+      var g = cy.stages && cy.stages[s];
+      if (!g) return;
+      var box = el("div", {class:"stagebox"});
+      var head = el("div", {class:"head"}, [ el("span", {class:"name", text:s}) ]);
+      function kv(k,v){ head.appendChild(el("span", {class:"kv", html: k + " <b>" + esc(v) + "</b>"})); }
+      if (g.model) kv("model", g.model);
+      if (g.cost_usd != null) kv("cost", usd(g.cost_usd));
+      if (g.duration_ms != null) kv("took", fmtDur(g.duration_ms));
+      if (g.num_turns != null) kv("turns", g.num_turns);
+      if (g.terminal_reason) kv("ended", g.terminal_reason);
+      if (g.limit_hit) head.appendChild(el("span", {class:"badge b-amber", text:"usage limit"}));
+      box.appendChild(head);
+      if (g.status) box.appendChild(el("pre", {class:"tx", text: JSON.stringify(g.status, null, 2)}));
+      if (g.result) box.appendChild(el("details", {class:"tx"}, [
+        el("summary", {text:"final message (" + g.result.length + " chars)"}),
+        el("pre", {class:"tx", text: g.result})
+      ]));
+      if (g.stderr) box.appendChild(el("details", {class:"tx"}, [
+        el("summary", {text:"stderr"}),
+        el("pre", {class:"tx err", text: g.stderr})
+      ]));
+      w.appendChild(box);
+    });
+    return w;
+  }
+
+  // ---------- failures & blocked ----------
+  function failuresPanel() {
+    var wrap = el("div");
+    var blocked = D.blocked || [];
+    var failedCycles = (D.cycles || []).filter(function (cy){ return cy.outcome === "failed"; });
+
+    if (blocked.length) {
+      wrap.appendChild(el("h2", {style:"margin-top:0", text:"Blocked items (" + blocked.length + ")"}));
+      var brows = blocked.map(function (b) {
+        return el("tr", {}, [
+          el("td", {class:"mono", text: b.item}),
+          el("td", {class:"mono muted", text: b.repo ? b.repo.split("/")[1] : "—"}),
+          el("td", {class:"muted", text: fmtAgo(b.ts)}),
+          el("td", {class:"wrap", text: (b.stage ? b.stage + ": " : "") + (b.detail || "")})
+        ]);
+      });
+      wrap.appendChild(tableOf(["Item","Repo","Since","Blocker"], brows));
+    }
+
+    wrap.appendChild(el("h2", {style: blocked.length ? "" : "margin-top:0", text:"Failed cycles (" + failedCycles.length + ")"}));
+    if (!failedCycles.length) return (wrap.appendChild(el("div",{class:"panel"}, el("div",{class:"empty",text:"No failed cycles in view."}))), wrap);
+    var rows = failedCycles.map(function (cy) {
+      return el("tr", {}, [
+        el("td", {class:"muted mono", text: fmtTime(cy.started_at)}),
+        el("td", {class:"mono muted", text: cy.repo ? cy.repo.split("/")[1] : "—"}),
+        el("td", {class:"wrap", text: cy.fail_detail || "—"}),
+        el("td", {}, cy.limit_hit ? el("span",{class:"badge b-amber",text:"usage limit"}) : document.createTextNode(""))
+      ]);
+    });
+    wrap.appendChild(tableOf(["When","Repo","What failed",""], rows));
+    return wrap;
+  }
+
+  // ---------- inputs ----------
+  function inputsPanel() {
+    var inputs = (D.github && D.github.inputs) || {};
+    var slugs = Object.keys(inputs);
+    if (!slugs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text: (D.github && D.github.ok===false) ? "GitHub unreachable." : "No work-source data."}));
+    var wrap = el("div");
+    slugs.forEach(function (slug) {
+      var g = inputs[slug] || {};
+      var box = el("div", {class:"panel", style:"padding:14px; margin-bottom:12px"});
+      box.appendChild(el("div", {style:"font-weight:650; margin-bottom:8px"}, [
+        el("span",{class:"mono",text: slug}),
+        el("span",{class:"muted", style:"font-weight:400", html:
+          "  ·  " + (g.failed_runs? g.failed_runs.length:0) + " failing workflows · " +
+          (g.issues? g.issues.length:0) + " open issues · " +
+          (g.tech_debt? g.tech_debt.length:0) + " tech-debt rows"})
+      ]));
+      if (g.failed_runs && g.failed_runs.length) {
+        box.appendChild(el("div", {class:"muted", style:"margin:4px 0 2px", text:"Failing workflows on default branch:"}));
+        g.failed_runs.forEach(function (r){ box.appendChild(el("div", {}, el("a",{href:r.url,target:"_blank",text:"✗ " + r.workflowName}))); });
+      }
+      if (g.issues && g.issues.length) {
+        box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Open issues:"}));
+        g.issues.slice(0,8).forEach(function (is){ box.appendChild(el("div", {}, [ el("a",{href:is.url,target:"_blank",text:"#"+is.number}), document.createTextNode(" " + esc(is.title)) ])); });
+      }
+      if (g.tech_debt && g.tech_debt.length) {
+        box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Tech-debt ledger:"}));
+        g.tech_debt.slice(0,12).forEach(function (t){ box.appendChild(el("div", {class:"mono", style:"font-size:11.5px; white-space:normal", text: t})); });
+      }
+      wrap.appendChild(box);
+    });
+    return wrap;
+  }
+
+  // ---------- spend charts ----------
+  function spendByDay() {
+    var days = (D.counts && D.counts.by_day) || [];
+    if (!days.length) return el("div", {class:"empty", text:"No spend recorded."});
+    var max = Math.max.apply(null, days.map(function (d){ return d.usd; })) || 1;
+    return el("div", {class:"bars"}, days.map(function (d) {
+      var label = d.day.slice(4,6) + "/" + d.day.slice(6,8);
+      return el("div", {class:"bar"}, [
+        el("span", {class:"mono muted", text: label}),
+        el("div", {class:"track"}, el("div", {class:"fill", style:"width:" + (d.usd/max*100) + "%"})),
+        el("span", {class:"mono", style:"text-align:right", text: usd(d.usd) + " · " + d.n})
+      ]);
+    }));
+  }
+  function spendByModel() {
+    var ms = (D.counts && D.counts.by_model) || [];
+    if (!ms.length) return el("div", {class:"empty", text:"No spend recorded."});
+    var max = Math.max.apply(null, ms.map(function (m){ return m.usd; })) || 1;
+    return el("div", {class:"bars"}, ms.map(function (m) {
+      var short = m.model.replace("claude-","").replace(/-\d{8}$/,"");
+      return el("div", {class:"bar"}, [
+        el("span", {class:"mono muted", title:m.model, text: short}),
+        el("div", {class:"track"}, el("div", {class:"fill", style:"width:" + (m.usd/max*100) + "%"})),
+        el("span", {class:"mono", style:"text-align:right", text: usd(m.usd) + " · " + m.n})
+      ]);
+    }));
+  }
+
+  // ---------- log & cron ----------
+  function logPanel() {
+    var evs = (D.log_tail || []).slice(0, 80);
+    if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No log events."}));
+    var rows = evs.map(function (e) {
+      var extra = e.reason || e.detail || e.title || e.pr_url || e.resume_at || "";
+      return el("tr", {}, [
+        el("td", {class:"muted mono", text: fmtTime(e.ts)}),
+        el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: e.event})),
+        el("td", {class:"mono muted", text: (e.repo? e.repo.split("/")[1]:"") + (e.stage? " "+e.stage:"")}),
+        el("td", {class:"wrap muted", text: esc(extra)})
+      ]);
+    });
+    return tableOf(["Time","Event","Where","Detail"], rows);
+  }
+  function cronPanel() {
+    var lines = D.cron_tail || [];
+    if (!lines.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"cron.log is empty or absent."}));
+    return el("div", {class:"panel"}, el("pre", {class:"tx", text: lines.join("\n")}));
+  }
+
+  // ---------- table helper ----------
+  function tableOf(headers, rows) {
+    var thead = el("thead", {}, el("tr", {}, headers.map(function (h){ return el("th", {text:h}); })));
+    var tbody = el("tbody", {}, rows);
+    return el("div", {class:"panel scroll"}, el("table", {}, [thead, tbody]));
+  }
+
+  // ---------- header live state + freshness ----------
+  (function () {
+    var live = document.getElementById("livestate");
+    if (st.running && st.lock) {
+      live.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
+      live.appendChild(el("span", {class:"muted", text: " since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
+    } else {
+      live.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "idle" ]));
+      if (st.last_cycle) live.appendChild(el("span", {class:"muted", text: " · last cycle " + fmtAgo(st.last_cycle.ended_at) }));
+    }
+    var fresh = document.getElementById("freshness");
+    var gen = parseTs(D.generated_at);
+    var ageMin = gen ? (Date.now() - gen.getTime())/60000 : 999;
+    fresh.textContent = "data " + fmtAgo(D.generated_at);
+    if (ageMin > 12) { fresh.style.color = "var(--amber)"; fresh.textContent += " ⚠ (heartbeat may be stopped)"; }
+  })();
+
+  // ---------- auto-refresh (reloads the file, picking up a fresh data.js) ----------
+  var timer = null;
+  function schedule() {
+    if (timer) clearInterval(timer);
+    if (document.getElementById("autorefresh").checked) timer = setInterval(function () { location.reload(); }, 60000);
+  }
+  document.getElementById("autorefresh").addEventListener("change", schedule);
+  document.getElementById("refreshbtn").addEventListener("click", function () { location.reload(); });
+  schedule();
+})();
+</script>
+</body>
+</html>

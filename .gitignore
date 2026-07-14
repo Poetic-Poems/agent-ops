@@ -3,3 +3,7 @@ node_modules/
 *.log
 .env
 .env.local
+
+# Dashboard: the live site is generated into state_dir (outside the repo);
+# this guards against a stray local copy being committed.
+dashboard/data.js

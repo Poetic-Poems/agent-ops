@@ -131,6 +131,47 @@ Each cycle gets a directory (`<cycle-id>/`) with one `<stage>.out` (the
 `claude --output-format json` envelope on stdout — this is what gets parsed)
 and one `<stage>.out.stderr` (diagnostics) per stage that ran.
 
+## Monitoring dashboard
+
+A local, single-page dashboard shows everything at a glance: whether a cycle
+is running, usage-limit stand-downs, open agent PRs and their CI status,
+recent cycles with per-stage cost/duration/model, failures and blocked items,
+the work sources the Co-Ordinator sees, spend by day and by model, and the
+raw log — with each stage's transcript viewable inline.
+
+It is **local and private**: nothing is published to the internet, there is no
+server and no open port, and it costs nothing to run (it makes no model
+calls). `scripts/publish-dashboard.sh` reads the pipeline's state plus live
+GitHub data and regenerates a self-contained page under
+`~/.local/state/poetic-agents/dashboard/`. Home paths and any token-shaped
+strings are redacted, so a screenshot is safe to share.
+
+### View it
+```bash
+./scripts/open-dashboard.sh
+```
+This regenerates the dashboard and opens it in your browser (via `wslview` /
+`explorer.exe` on WSL). Or open `~/.local/state/poetic-agents/dashboard/index.html`
+directly. The page auto-refreshes every 60s and shows how stale its data is.
+
+If your browser refuses to load the data over a `file://` URL, serve it
+locally instead (loopback only):
+```bash
+./scripts/serve-dashboard.sh        # then open http://127.0.0.1:8787
+```
+
+### Keep it fresh
+The dashboard refreshes at the end of every cycle (a hook in `agent-cycle.sh`).
+To also keep it current between hourly cycles — reflecting in-flight runs, the
+lock, and live GitHub status — add a heartbeat to your crontab:
+```bash
+(crontab -l 2>/dev/null || true; echo "*/5 * * * * $HOME/Code/agent-ops/scripts/publish-dashboard.sh >> $HOME/.local/state/poetic-agents/dashboard.log 2>&1") | crontab -
+```
+
+The dashboard is a **reader**: it only ever reads the pipeline's state and
+GitHub, never writes into the state tree, never touches the lock, and cannot
+disturb a running cycle. See `docs/BUILD-DASHBOARD-PROMPT.md` for its design.
+
 ## Troubleshooting
 
 **Cron not running:**
@@ -156,9 +197,9 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
 
 ## Uninstall
 
-1. **Remove the crontab line:**
+1. **Remove the crontab lines** (the cycle and, if added, the dashboard heartbeat):
    ```bash
-   crontab -l | grep -v 'agent-ops/agent-cycle.sh' | crontab -
+   crontab -l | grep -v 'agent-ops/agent-cycle.sh' | grep -v 'agent-ops/scripts/publish-dashboard.sh' | crontab -
    ```
    (Or edit the Windows Task Scheduler job / `wsl.conf` change if you used
    that alternative instead.)
@@ -180,6 +221,8 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
 ## For builders: the build prompt
 
 To modify this system (add a new work source, change the selection logic, etc.), see `docs/BUILD-PROMPT.md`. It is a complete specification for the system and includes numbered requirements and acceptance checks. `prompts/coordinator.md`, `prompts/implementor.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the build prompt first, then bring the affected operating prompt(s) in line with it.
+
+`docs/BUILD-DASHBOARD-PROMPT.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
 
 ## Branch workflow
 

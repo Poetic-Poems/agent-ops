@@ -169,6 +169,11 @@ cleanup() {
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
   fi
+  # Refresh the local monitoring dashboard. Fully isolated: a failure or a slow
+  # gh call here must never affect the cycle's outcome or exit code.
+  if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
+    timeout 120 "$SCRIPT_DIR/scripts/publish-dashboard.sh" >/dev/null 2>&1 || true
+  fi
   exit "$exit_code"
 }
 trap cleanup EXIT
