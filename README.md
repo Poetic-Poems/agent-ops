@@ -6,7 +6,7 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
 
 Once an hour:
 
-1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, failed CI runs, tech-debt, issues, fiddle's implementation plan, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else.
+1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else.
 2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request.
 3. **Reviewer** (Sonnet) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
@@ -19,7 +19,7 @@ Edit `config.json` before first run. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `code-quality` (non-security code-scanning findings) is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
