@@ -220,10 +220,16 @@ cycles_file="$work_tmp/cycles.json"
 printf '%s' "$cycles_arr" > "$cycles_file"
 
 if [[ "$limit_active" != "true" ]]; then
-  # newest cycle whose transcripts show a limit message
-  lt="$(jq -r '[.[]|select(.limit_hit)][0] // {} | (.stages.implementor.limit_text // .stages.reviewer.limit_text // .stages.coordinator.limit_text // "")' "$cycles_file" 2>/dev/null)"
-  first_limit="$(jq -r 'map(select(.limit_hit))|.[0].id // empty' "$cycles_file" 2>/dev/null)"
-  if [[ -n "$first_limit" ]]; then limit_active=true; limit_note="${lt:-usage limit reported in transcript}"; fi
+  # A limit is "active" only if the most recent cycle that actually launched a
+  # stage hit one — otherwise a later successful cycle has cleared it and the
+  # banner would be a stale false positive. (Skipped/stand-down cycles launch no
+  # stage, so they don't count as recovery either way.)
+  lt="$(jq -r '
+    [ .[] | select(any(.stages[]?; .ran)) ] | (.[0] // {})
+    | if .limit_hit
+      then (.stages.implementor.limit_text // .stages.reviewer.limit_text // .stages.coordinator.limit_text // "usage limit reported in transcript")
+      else "" end' "$cycles_file" 2>/dev/null)"
+  if [[ -n "$lt" ]]; then limit_active=true; limit_note="$lt"; fi
 fi
 
 status_json="$(jq -n \
