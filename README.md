@@ -68,7 +68,7 @@ The `review` object configures the separate weekly project-review pipeline — s
    ```
    Then restart WSL: `wsl --shutdown` (from Windows).
 
-   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/agent-ops/agent-cycle.sh` hourly.
+   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
 
 4. **Create the PR label in both repos:**
    ```bash
@@ -92,17 +92,17 @@ The `review` object configures the separate weekly project-review pipeline — s
      ```
      You should get a JSON array of findings (or `[]` if there are none). If a feature is off or the token can't read it, the script simply returns `[]` and the pipeline keeps working — you just won't get findings from that source.
 
-6. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
+6. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/Poetic-Poems/Poetic-Poems/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
 
 7. **Install the crontab:**
    ```bash
-   (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
+   (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
    ```
    Verify it was installed successfully:
    ```bash
    crontab -l
    ```
-   You should see a line containing `agent-ops/agent-cycle.sh` in the output. Then confirm that cron's PATH can reach Claude:
+   You should see a line containing `Poetic-Poems/agent-ops/agent-cycle.sh` in the output. Then confirm that cron's PATH can reach Claude:
    ```bash
    env -i HOME="$HOME" PATH="$HOME/.local/bin:$HOME/.claude/local:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" /bin/bash -lc 'command -v claude && claude -V'
    ```
@@ -200,7 +200,7 @@ Add the cron entry. **Recommended** — a daily tick guarded by
 `min_days_between_reviews`, robust to a machine that sleeps through a strict
 weekly tick:
 ```bash
-(crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
+(crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
 ```
 The skip-guard ensures this actually reviews each repo only about once a week.
 For a strict weekly tick instead, use `30 3 * * 1` (Mondays 03:30) — simpler,
@@ -254,7 +254,7 @@ The dashboard refreshes at the end of every cycle (a hook in `agent-cycle.sh`).
 To also keep it current between hourly cycles — reflecting in-flight runs, the
 lock, and live GitHub status — add a heartbeat to your crontab:
 ```bash
-(crontab -l 2>/dev/null || true; echo "*/5 * * * * $HOME/Code/agent-ops/scripts/publish-dashboard.sh >> $HOME/.local/state/poetic-agents/dashboard.log 2>&1") | crontab -
+(crontab -l 2>/dev/null || true; echo "*/5 * * * * $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/scripts/publish-dashboard.sh >> $HOME/.local/state/poetic-agents/dashboard.log 2>&1") | crontab -
 ```
 
 The dashboard is a **reader**: it only ever reads the pipeline's state and
@@ -288,7 +288,7 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
 
 1. **Remove the crontab lines** (the cycle, the weekly review, and, if added, the dashboard heartbeat):
    ```bash
-   crontab -l | grep -v 'agent-ops/agent-cycle.sh' | grep -v 'agent-ops/review-cycle.sh' | grep -v 'agent-ops/scripts/publish-dashboard.sh' | crontab -
+   crontab -l | grep -v 'Poetic-Poems/agent-ops/agent-cycle.sh' | grep -v 'Poetic-Poems/agent-ops/review-cycle.sh' | grep -v 'Poetic-Poems/agent-ops/scripts/publish-dashboard.sh' | crontab -
    ```
    (Or edit the Windows Task Scheduler job / `wsl.conf` change if you used
    that alternative instead.)

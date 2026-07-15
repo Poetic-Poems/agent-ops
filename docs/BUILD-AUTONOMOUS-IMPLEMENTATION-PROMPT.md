@@ -491,7 +491,7 @@ runs unattended.
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall.
 6. The crontab line, e.g.
-   `0 * * * * $HOME/Code/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`.
+   `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`.
 
 ## Acceptance checks (the builder must run all of these before finishing)
 
@@ -531,7 +531,7 @@ runs unattended.
    `[boot]` / `command = "service cron start"` (requires sudo), then restart
    WSL (`wsl --shutdown` from Windows). Alternative if preferred: a Windows
    Task Scheduler job running
-   `wsl.exe -u wallen -e $HOME/Code/agent-ops/agent-cycle.sh` hourly.
+   `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
    Either way, cycles only run while the machine is awake — a missed cycle
    simply waits for the next tick, which is harmless.
 3. Create the label in both repos:
@@ -547,7 +547,7 @@ runs unattended.
    `repo` on a classic token). If a feature stays off, `gather-findings.sh`
    simply returns no findings for it and the rest of the pipeline is
    unaffected.
-4. Create `Poetic-Poems/agent-ops`, clone it to `~/Code/agent-ops`, and run
+4. Create `Poetic-Poems/agent-ops`, clone it to `~/Code/Poetic-Poems/agent-ops`, and run
    the builder session there with this document.
 5. After the acceptance checks pass, install the crontab line.
 
