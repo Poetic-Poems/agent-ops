@@ -1,10 +1,10 @@
 # Monitoring dashboard — build & maintenance spec
 
-Companion to `docs/BUILD-PROMPT.md` (the pipeline spec). This document
+Companion to `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (the pipeline spec). This document
 describes the local monitoring dashboard **as built**: what it is, the state
 it reads, how it is assembled, and the decisions behind it. Use it to
 understand, modify, or regenerate the dashboard. Where it says "requirement
-N", it means requirement N of `docs/BUILD-PROMPT.md`.
+N", it means requirement N of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`.
 
 ## What it is
 
