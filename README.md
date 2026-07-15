@@ -68,7 +68,7 @@ The `review` object configures the separate weekly project-review pipeline — s
    ```
    Then restart WSL: `wsl --shutdown` (from Windows).
 
-   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
+   *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
 
 4. **Create the PR label in both repos:**
    ```bash
@@ -92,11 +92,11 @@ The `review` object configures the separate weekly project-review pipeline — s
      ```
      You should get a JSON array of findings (or `[]` if there are none). If a feature is off or the token can't read it, the script simply returns `[]` and the pipeline keeps working — you just won't get findings from that source.
 
-6. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/Poetic-Poems/Poetic-Poems/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
+6. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/Poetic-Poems/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
 
 7. **Install the crontab:**
    ```bash
-   (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
+   (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
    ```
    Verify it was installed successfully:
    ```bash
@@ -200,7 +200,7 @@ Add the cron entry. **Recommended** — a daily tick guarded by
 `min_days_between_reviews`, robust to a machine that sleeps through a strict
 weekly tick:
 ```bash
-(crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/Poetic-Poems/Poetic-Poems/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
+(crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/Poetic-Poems/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
 ```
 The skip-guard ensures this actually reviews each repo only about once a week.
 For a strict weekly tick instead, use `30 3 * * 1` (Mondays 03:30) — simpler,
