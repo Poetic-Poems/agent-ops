@@ -5,18 +5,18 @@
 Give this document, whole, to a Claude Code session (Sonnet 5 or better)
 started in the existing `Poetic-Poems/agent-ops` repository, with the
 instruction "build the weekly project-review pipeline this document
-describes". It is a companion to `docs/BUILD-PROMPT.md` (the hourly
+describes". It is a companion to `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (the hourly
 implementation pipeline) and `docs/BUILD-DASHBOARD-PROMPT.md` (the monitoring
 dashboard).
 
-**Where this document is silent, follow `docs/BUILD-PROMPT.md`.** The two
+**Where this document is silent, follow `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`.** The two
 pipelines deliberately share their machinery — the lock discipline, the
 minimal-`PATH` bootstrap for cron, usage-limit detection (`lib/limit-detect.sh`),
 the JSON-Lines log format and `log_event` helper, the ephemeral-clone rule,
 the per-stage timeout with process-group kill (`run_claude_stage`), and the
 "straight-parse-else-last-fenced-```json```-block" result parser. This
 pipeline **reuses** those, and must not reinvent them. References of the form
-"requirement N" mean requirement N of `docs/BUILD-PROMPT.md`. The target
+"requirement N" mean requirement N of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`. The target
 repositories' `CLAUDE.md` files remain binding on any agent working inside
 them.
 
@@ -76,7 +76,7 @@ cron (weekly; a daily tick with a skip-guard is recommended — see R4)
 
 ## Environment facts
 
-Identical to `docs/BUILD-PROMPT.md` ("Environment facts" and "Target
+Identical to `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` ("Environment facts" and "Target
 repositories"); not repeated here. The two target repositories are the same
 `Poetic-Poems/poetic` and `Poetic-Poems/poetic-fiddle`, and their shared
 conventions (protected `main`, squash-merge so the PR title becomes the commit,
@@ -385,7 +385,7 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
    the whole week): `30 3 * * 1 …` (Mondays 03:30). Schedule it at a different
    minute from the hourly implementation cycle to avoid both firing at once
    (the review defers to a running cycle anyway, per R3).
-3. The shared prerequisites of `docs/BUILD-PROMPT.md` (the standalone `claude`
+3. The shared prerequisites of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (the standalone `claude`
    CLI, cron enabled under WSL, `gh` authenticated with push access) are
    already satisfied by the implementation pipeline; nothing further is needed.
 

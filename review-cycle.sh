@@ -10,7 +10,7 @@
 # This is a sibling of agent-cycle.sh and deliberately reuses its machinery
 # (PATH bootstrap, lock discipline, run_claude_stage, result parsing,
 # usage-limit detection). Where this script is silent, agent-cycle.sh /
-# docs/BUILD-PROMPT.md govern.
+# docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md govern.
 
 set -euo pipefail
 
