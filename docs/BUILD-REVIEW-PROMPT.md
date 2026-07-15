@@ -378,7 +378,7 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
 2. Install the cron entry. **Recommended — a daily tick guarded by
    `min_days_between_reviews`**, which is robust to a machine that sleeps:
    ```
-   30 3 * * * $HOME/Code/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1
+   30 3 * * * $HOME/Code/Poetic-Poems/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1
    ```
    The skip-guard (R4) ensures this actually reviews each repo only about once a
    week. *Strict weekly alternative* (simpler, but a missed Monday tick skips
