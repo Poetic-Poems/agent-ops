@@ -240,7 +240,7 @@
   app.appendChild(sectionOf("Recent cycles", cyclesPanel(D.cycles || [])));
 
   // ---------- failures & blocked ----------
-  app.appendChild(sectionOf("Failures & blocked items", failuresPanel()));
+  app.appendChild(sectionOf("Failures, blocked & void items", failuresPanel()));
 
   // ---------- inputs ----------
   app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
@@ -374,7 +374,25 @@
       wrap.appendChild(tableOf(["Item","Repo","Since","Blocker"], brows));
     }
 
-    wrap.appendChild(el("h2", {style: blocked.length ? "" : "margin-top:0", text:"Failed cycles (" + failedCycles.length + ")"}));
+    // Void items are listed apart from blocked ones because they call for the
+    // opposite response: a blocked item may need a human to clear its path, a
+    // void item is closed and only needs one if the verdict itself is wrong.
+    var voided = D.void || [];
+    if (voided.length) {
+      wrap.appendChild(el("h2", {style: blocked.length ? "" : "margin-top:0", text:"Void items (" + voided.length + ")"}));
+      wrap.appendChild(el("div", {class:"muted", style:"margin:-6px 0 8px", text:"No work to do — closed permanently. Only a human can reopen these (append an `unvoided` event to the log)."}));
+      var vrows = voided.map(function (v) {
+        return el("tr", {}, [
+          el("td", {class:"mono", text: v.item}),
+          el("td", {class:"mono muted", text: v.repo ? v.repo.split("/")[1] : "—"}),
+          el("td", {class:"muted", text: fmtAgo(v.ts)}),
+          el("td", {class:"wrap", text: (v.stage ? v.stage + ": " : "") + (v.detail || "") + (v.evidence ? " — " + v.evidence : "")})
+        ]);
+      });
+      wrap.appendChild(tableOf(["Item","Repo","Since","Why there is no work"], vrows));
+    }
+
+    wrap.appendChild(el("h2", {style: (blocked.length || voided.length) ? "" : "margin-top:0", text:"Failed cycles (" + failedCycles.length + ")"}));
     if (!failedCycles.length) return (wrap.appendChild(el("div",{class:"panel"}, el("div",{class:"empty",text:"No failed cycles in view."}))), wrap);
     var rows = failedCycles.map(function (cy) {
       return el("tr", {}, [

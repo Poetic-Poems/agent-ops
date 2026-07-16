@@ -98,7 +98,18 @@ selected_item=""
 log_attempt_failed() {
   local stage="$1" detail="$2" extra="${3:-{\}}"
   log_event "attempt-failed" \
-    "$(attempt_failed_fields "$stage" "$detail" "$selected_repo" "$selected_item" "$extra")"
+    "$(item_event_fields "$stage" "$detail" "$selected_repo" "$selected_item" "$extra")"
+}
+
+# Requirement 34c: an item whose premise is false is void, not blocked. It goes
+# to a different event with a different clearing rule, because the Co-Ordinator
+# is told to clear blockers that have gone away — and "the work is already done"
+# reads to it as a blocker that has gone away, when it is in fact the reason the
+# item must never be selected again.
+log_item_void() {
+  local stage="$1" detail="$2" extra="${3:-{\}}"
+  log_event "item-void" \
+    "$(item_event_fields "$stage" "$detail" "$selected_repo" "$selected_item" "$extra")"
 }
 
 log_unblocked_items() {
@@ -106,6 +117,21 @@ log_unblocked_items() {
   while IFS= read -r item; do
     [[ -n "$item" ]] && log_event "unblocked" "$(jq -nc --arg i "$item" '{item: $i}')"
   done < <(jq -r '.unblocked[]? // empty' <<<"$wo")
+}
+
+# The Co-Ordinator may void a candidate it can see conclusively is already done,
+# rather than paying an Implementor cycle to reach the same verdict. Entries are
+# objects (item/repo/reason), unlike `unblocked`'s bare ids, because a void is
+# terminal and worth recording precisely; an entry naming no item is ignored.
+log_voided_items() {
+  local wo="$1" entry item
+  while IFS= read -r entry; do
+    item="$(jq -r '.item // ""' <<<"$entry")"
+    [[ -n "$item" ]] || continue
+    log_event "item-void" "$(item_event_fields "coordinator" \
+      "$(jq -r '.reason // "no reason given"' <<<"$entry")" \
+      "$(jq -r '.repo // ""' <<<"$entry")" "$item")"
+  done < <(jq -c '.voided[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
 detect_and_log_limit_hit() {
@@ -342,16 +368,21 @@ while IFS=$'\t' read -r _ slug default_branch; do
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
-# --- Blocked-item extract (requirement 32: blocked iff most recent
-#     attempt-failed/unblocked event for that repo+item is attempt-failed) ---
+# --- Skip-list extracts (requirement 34: blocked iff the most recent
+#     attempt-failed/unblocked event for that repo+item is attempt-failed;
+#     requirement 34c: void iff the most recent item-void/unvoided event for it
+#     is item-void). Two lists, not one, because the Co-Ordinator may clear the
+#     first and may never clear the second. ---
 blocked_json="$(blocked_items "$log_file")"
+void_json="$(void_items "$log_file")"
 
 coordinator_input="$(jq -nc \
   --argjson repos "$ordered_repos_json" \
   --argjson blocked "$blocked_json" \
+  --argjson void "$void_json" \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
-  '{repos: $repos, blocked: $blocked, models: {default: $model_default, trivial: $model_trivial}}')"
+  '{repos: $repos, blocked: $blocked, void: $void, models: {default: $model_default, trivial: $model_trivial}}')"
 
 # --- 4. Co-Ordinator stage ---
 coordinator_prompt="$(cat "$PROMPTS_DIR/coordinator.md")
@@ -392,6 +423,7 @@ if (( DRY_RUN )); then
 fi
 
 log_unblocked_items "$work_order_json"
+log_voided_items "$work_order_json"
 
 # --- 5. Nothing selected ---
 selected="$(jq -r '.selected' <<<"$work_order_json")"
@@ -448,12 +480,26 @@ impl_pr_url="$(jq -r '.pr_url // empty' <<<"$impl_status_json" 2>/dev/null || tr
 
 impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || true)"
 
+# A reported `void` is the Implementor saying the work order describes no work —
+# the item is already done on default_branch, or its premise is otherwise false.
+# It is terminal (requirement 34c): no agent may clear it, because the only
+# evidence that would ever arrive ("it's already done") is the reason it is void
+# in the first place. Recording this as `blocked` instead is what let an
+# already-done recommendation be unblocked by the next Co-Ordinator and
+# re-selected indefinitely.
+if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
+  log_item_void "implementor" \
+    "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  exit 0
+fi
+
 # A reported `blocked` is a verdict, not a stage failure: the Implementor ran to
-# completion and found the work order's premise wrong — most often that the item
-# is already done on default_branch. Record it against the item, carrying the
-# model's own reason and unblock_condition so a later Co-Ordinator can judge
-# whether the blocker has since gone (requirement 34), rather than re-selecting
-# the item and paying for the same discovery every cycle.
+# completion and found real work it cannot proceed with yet. Record it against
+# the item, carrying the model's own reason and unblock_condition so a later
+# Co-Ordinator can judge whether the impediment has since gone (requirement 34),
+# rather than re-selecting the item and paying for the same discovery every
+# cycle.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
   log_attempt_failed "implementor" \
     "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \

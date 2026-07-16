@@ -10,9 +10,9 @@ N", it means requirement N of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`.
 
 A single-page dashboard for watching and debugging the autonomous agent
 pipeline: current status, usage-limit stand-downs, open agent PRs and their
-CI, recent cycles with per-stage cost/duration/model, failures and blocked
-items, the work sources the Co-Ordinator sees, spend by day and by model, the
-raw log, and each stage's transcript inline.
+CI, recent cycles with per-stage cost/duration/model, failures, blocked and
+void items, the work sources the Co-Ordinator sees, spend by day and by
+model, the raw log, and each stage's transcript inline.
 
 Three properties are deliberate and non-negotiable:
 
@@ -62,7 +62,9 @@ same way `agent-cycle.sh` reads them.
 - **`log.jsonl`** — the event stream (requirement 33). Parsed line-by-line
   with `fromjson? // empty` so a half-written trailing line (the Script may be
   appending) never aborts the parse. Blocked items use requirement 34's
-  semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`).
+  semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`); void
+  items use requirement 34c's (most recent `item-void`/`unvoided`). Both come
+  from the shared library, never from a local copy of the rule.
 - **`cycles/<cycle-id>/<stage>.out`** — the `claude --output-format json`
   envelope (requirement 11). Fields used: `result` (final message → parsed
   into the work order / status object via the same straight-parse-else-last-
@@ -118,6 +120,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                           limit_hit, limit_text } },
                events[] } ],           // most recent 40, newest first
   blocked: [ { repo, item, ts, detail, stage } ],
+  void:    [ { repo, item, ts, detail, stage, evidence } ],
   github:  { ok, error, fetched_at, prs[], inputs:{<slug>:{issues,failed_runs,tech_debt}} },
   log_tail:  [ … ],                    // recent events, newest first
   cron_tail: [ "line", … ] }
@@ -136,10 +139,10 @@ the data is and warns if the heartbeat looks stopped.
 Panels: status header + usage-limit / failing-checks / gh-down banners;
 metric cards (spend today/total, failures, reached-ready, back-pressure gauge
 vs `max_open_agent_prs`); open PRs; recent cycles (click a row for per-stage
-detail with the parsed status, full transcript, and stderr); failures &
-blocked items; work sources per repo (including the security and code-quality
-findings, shown first, that the Co-Ordinator prioritises); spend-by-day and
-spend-by-model bars; recent log; `cron.log` tail.
+detail with the parsed status, full transcript, and stderr); failures,
+blocked and void items; work sources per repo (including the security and
+code-quality findings, shown first, that the Co-Ordinator prioritises);
+spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 
 ## Integration
 
@@ -192,9 +195,9 @@ spend-by-model bars; recent log; `cron.log` tail.
   screenshot or copied file is safe and a future private repo can't leak.
 - **Limit detection is independent of the log**, because the pipeline's logger
   misses weekly-limit phrasing — the dashboard reads the transcripts directly.
-- **The blocked list is not computed here.** `blocked[]` comes from the same
-  shared implementation the Script feeds its Co-Ordinator
-  (`lib/cycle-state.sh`, per requirement 34a of
+- **The blocked and void lists are not computed here.** `blocked[]` and
+  `void[]` come from the same shared implementation the Script feeds its
+  Co-Ordinator (`lib/cycle-state.sh`, per requirement 34a of
   `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`); only the projection for
   display is local. The dashboard originally had its own near-copy of the
   rule, and the two silently disagreed — which matters more here than
@@ -203,3 +206,11 @@ spend-by-model bars; recent log; `cron.log` tail.
   monitors will agree with it right up until the moment that would have been
   useful. Anything else the page reports that the pipeline also computes
   belongs under the same rule: share the definition, don't mirror it.
+- **Blocked and void are shown as separate lists**, never merged into
+  "items not being worked". They ask opposite things of the person reading:
+  a blocked item may need them to clear its path; a void item needs nothing
+  unless the verdict itself is wrong, and reopening one is a deliberate act
+  only they can perform (appending `unvoided` to the log by hand — say so on
+  the page, since it is the only escape hatch and it exists nowhere in the
+  UI). Collapsing them costs the operator the one distinction the pipeline
+  cannot make for itself.

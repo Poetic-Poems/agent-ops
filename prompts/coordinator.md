@@ -63,7 +63,12 @@ heading, the Script gives you one JSON object:
   (or the feature is off) — treat those sources as having no candidates.
 - `blocked` is the extract of the shared log: one entry per item whose most
   recent `attempt-failed` event has no later `unblocked` event, carrying
-  whatever `detail` that event recorded about what would unblock it.
+  whatever `detail` that event recorded about what would unblock it. These are
+  items where something is **in the way** of real work.
+- `void` is the same extract over `item-void`/`unvoided` events: items that
+  describe **no work at all** — the premise was false, almost always because the
+  work was already done on the default branch. Skip them, and see "Void items"
+  below: unlike `blocked`, **you may never clear these**.
 - `models` is `config.json`'s `implementor_model_default` and
   `implementor_model_trivial`, resolved for this cycle. Use these values
   verbatim for the work order's `model` field (see "Choosing the
@@ -206,7 +211,8 @@ referencing that review; match `R-NN` refs against it. When you select one,
 **Exclude any item that is:**
 
 1. Recorded as blocked in the shared log — an `attempt-failed` event for
-   that item with no later `unblocked` event.
+   that item with no later `unblocked` event. Or recorded as void — an
+   `item-void` event with no later `unvoided` event (see "Void items").
 2. A tech-debt item whose Ledger row is `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
@@ -248,6 +254,35 @@ failing check get fixed elsewhere, did the blocking PR merge), do that
 check. If the blocker is demonstrably gone, say so in your final message
 (see `unblocked` below) so the Script can log it — and you may then treat
 that item as a live candidate for this same cycle.
+
+This applies to the `blocked` list **only**, and only to an impediment that
+has genuinely lifted. Finding that the item's *work* is already done is never
+grounds to unblock it — that means it was misfiled and belongs in `void`;
+report it in `voided` instead (below). Unblocking an item because its work is
+complete hands it straight back to the selection pool, where the next cycle
+will select it, rediscover that it is done, and file it again — forever.
+
+**Void items.** The `void` list is not a to-do list with an obstacle in front
+of it; it is a record that the item describes no work. **Never** put a void
+item in `unblocked`, never select one, and do not spend reads re-checking one.
+There is no evidence you could find that would reopen it: the only news that
+could ever arrive is "it's already done", which is why it is void. Only a human
+may reverse this. If you believe a void item is genuinely live again — a real
+regression, not a stale record — say so in `reason` and leave it alone; a human
+will decide.
+
+You do not need to police the `void` list for staleness. Voids are recorded
+against a specific item id, and a project review that runs again files its
+recommendations under fresh ids, which no existing void covers. A real
+regression will come back to you as new work, not as a resurrected void.
+
+**Voiding an item yourself.** If, while evaluating a candidate, you can see
+cheaply and conclusively that it describes no work — the recommendation's whole
+end state is already on the default branch — do not select it just to have the
+Implementor discover that at full cost. List it in `voided` with a one-line
+reason and move to the next candidate. Only do this when you are certain from
+what you have actually read; when in doubt, select it and let the Implementor
+investigate properly. A wrong `void` needs a human to undo.
 
 ## Choosing the Implementor's model
 
@@ -308,10 +343,15 @@ If you selected an item:
 - `context` must be self-contained: paste the relevant text verbatim rather
   than referring to "the ticket" — the Implementor starts with nothing but
   this work order and the repo's own `CLAUDE.md`.
-- `unblocked` lists any item identifiers you found to be no longer blocked
-  while working through the algorithm above (may be non-empty even when
+- `unblocked` lists any item identifiers whose **impediment you found to have
+  lifted** while working through the algorithm above (may be non-empty even when
   unrelated to the item you selected, and independent of whether
-  `selected` is `true`). Omit or leave empty if none.
+  `selected` is `true`). Omit or leave empty if none. An item you found to be
+  already *done* does not belong here — see `voided`.
+- `voided` lists any item identifiers you established describe no work at all,
+  each as `{"item": "…", "repo": "owner/name", "reason": "one line, citing what
+  you read"}`. Omit or leave empty if none. This is terminal and only a human
+  can reverse it, so only list an item you are certain about.
 
 If you found nothing selectable anywhere:
 
@@ -319,6 +359,7 @@ If you found nothing selectable anywhere:
 {
   "selected": false,
   "reason": "one-line reason, e.g. 'poetic: no candidates in any source; poetic-fiddle: only candidate (M2 tasks) gated on open §6.1 decision'",
-  "unblocked": []
+  "unblocked": [],
+  "voided": []
 }
 ```

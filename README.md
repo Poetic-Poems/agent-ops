@@ -133,6 +133,32 @@ tail -f ~/.local/state/poetic-agents/log.jsonl
 ```
 One event per line (JSON). See `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (requirement 31) for event types and fields.
 
+### Blocked and void items
+Two different reasons the pipeline will skip an item, with two different
+remedies:
+
+- **Blocked** — real work, something is in the way. The Co-Ordinator re-checks
+  these itself and clears them (an `unblocked` event) once the impediment has
+  gone, so usually you need do nothing.
+- **Void** — there is no work: the item is already done, or its premise was
+  false. No agent can ever clear this, by design — the only evidence that would
+  ever turn up ("it's already done") is the reason it is void, so an agent
+  allowed to clear it would free the item to be rediscovered every cycle.
+
+Both are listed on the dashboard. To reopen a void item — you believe the work
+has genuinely regressed, or the verdict was wrong — append an `unvoided` event
+by hand while no cycle is running:
+
+```bash
+printf '%s\n' "$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{ts: $ts, cycle: "manual", event: "unvoided", item: "review-2026-07-11-R-02"}')" \
+  >> ~/.local/state/poetic-agents/log.jsonl
+```
+
+Omit `repo` to reopen the item in every repo, or add it to scope the change to
+one. The item becomes a candidate again on the next cycle; if there is still no
+work, the Implementor will simply void it again.
+
 ### See stage transcripts
 ```bash
 ls -la ~/.local/state/poetic-agents/cycles/
@@ -224,9 +250,9 @@ See `docs/BUILD-REVIEW-PROMPT.md` for the full specification.
 
 A local, single-page dashboard shows everything at a glance: whether a cycle
 is running, usage-limit stand-downs, open agent PRs and their CI status,
-recent cycles with per-stage cost/duration/model, failures and blocked items,
-the work sources the Co-Ordinator sees, spend by day and by model, and the
-raw log — with each stage's transcript viewable inline.
+recent cycles with per-stage cost/duration/model, failures, blocked and void
+items, the work sources the Co-Ordinator sees, spend by day and by model, and
+the raw log — with each stage's transcript viewable inline.
 
 It is **local and private**: nothing is published to the internet, there is no
 server and no open port, and it costs nothing to run (it makes no model

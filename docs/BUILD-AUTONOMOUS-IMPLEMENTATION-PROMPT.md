@@ -240,16 +240,37 @@ runs unattended.
    case — no PR was opened — so it must not be an error: under `errexit` a
    non-zero there kills the cycle before it logs the very failure this
    requirement is about (see Gotchas).
-9a. **A reported `blocked` is a verdict, not a failure.** A stage that runs
-   to completion and ends with `{"status": "blocked", …}` (requirement 27)
-   has not failed: it has spent a full model run establishing that the work
-   order's premise is wrong — most often that the item is already done on
-   `default_branch`. Record it as an `attempt-failed` event against that
-   item, carrying the stage's own `reason` and `unblock_condition` verbatim,
-   rather than routing it through requirement 9's path (which would file it
-   as "exited 0", discarding what it found) or, worse, dropping it. This is
-   the one thing that stops the pipeline buying the same discovery every
-   cycle for as long as the item exists.
+9a. **A reported verdict is not a failure.** A stage that runs to completion
+   and ends with `{"status": "blocked", …}` or `{"status": "void", …}`
+   (requirement 27) has not failed: it has spent a full model run
+   establishing something worth keeping. Record it against the selected item,
+   carrying the stage's own words verbatim, rather than routing it through
+   requirement 9's path (which would file it as "exited 0", discarding what it
+   found) or, worse, dropping it. This is what stops the pipeline buying the
+   same discovery every cycle for as long as the item exists.
+9b. **`blocked` and `void` are different states and must not share one.**
+   This is the requirement most likely to be read as pedantry and collapsed
+   into "an item that can't proceed". Do not.
+   - **`blocked`** — the work is real, something is in the way *for now* (an
+     unmerged dependency, a red check, a decision nobody has taken). Record
+     `attempt-failed` with the stage's `reason` and `unblock_condition`. The
+     Co-Ordinator is expected to re-check these and clear them (`unblocked`)
+     when the impediment lifts.
+   - **`void`** — there is no work: the premise is false, almost always
+     because the item is already done on `default_branch`. Record `item-void`
+     with the stage's `reason` and `evidence`. **No agent may ever clear it**;
+     only a human, by appending `unvoided` to the log by hand.
+   The failure mode if you merge them is specific, silent, and was found in
+   production rather than in review. An already-done recommendation is filed
+   as `blocked`. The next Co-Ordinator, obeying its standing instruction to
+   clear blockers that have gone away, checks the item, finds the work is
+   done, correctly concludes that nothing is in its way, and logs `unblocked`.
+   The item returns to the pool, is selected, is rediscovered as already done,
+   and is filed again — indefinitely. Every component behaves exactly as
+   specified. The bug is that one channel carried two meanings, so the
+   evidence that should have shut the item forever (*the work is done*) was
+   the very evidence that reopened it. If a state can be cleared by the same
+   fact that ought to make it permanent, it is the wrong state.
 10. **Usage-limit detection.** Whenever any `claude` invocation's transcript
     matches the shared pattern in `lib/limit-detect.sh` (`LIMIT_PHRASE_REGEX`
     — the generic `hit your .* limit` stem plus the legacy `usage limit` /
@@ -368,7 +389,17 @@ runs unattended.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
-    and may then treat the item as a candidate this same cycle.
+    and may then treat the item as a candidate this same cycle. Two limits,
+    both load-bearing (requirements 9b, 34c):
+    - This applies to *impediments only*. Discovering that the item's work is
+      already **done** is never grounds to unblock it — that is a void, and
+      unblocking it hands it back to the pool to be rediscovered every cycle.
+      Say so explicitly in the prompt, with the reasoning: an agent told to
+      "clear blockers that no longer apply" will otherwise conclude, correctly
+      and disastrously, that an already-done item has no blocker.
+    - It may **never** clear a void item, and is given no field with which to
+      try. It may *create* one for a candidate it can see conclusively is
+      already done, which saves an entire Implementor run.
 19. Chooses the Implementor's model: `implementor_model_trivial` only when
     the item can be completed without changing any file that affects runtime
     behaviour (docs, comments, register entries); otherwise
@@ -453,8 +484,14 @@ runs unattended.
     with the current default branch. Leaves the PR as a **draft** — the
     Reviewer flips it to ready.
 27. Ends with a single JSON object as its entire final message:
-    `{"status": "complete", "pr_url": …, "branch": …, "notes": …}` or
-    `{"status": "blocked", "reason": …, "unblock_condition": …}`.
+    `{"status": "complete", "pr_url": …, "branch": …, "notes": …}`,
+    `{"status": "blocked", "reason": …, "unblock_condition": …}`, or
+    `{"status": "void", "reason": …, "evidence": …}`. The Implementor is the
+    only component positioned to tell `blocked` from `void` (requirement 9b) —
+    it is the one that actually reads the tree — so its prompt must draw the
+    distinction explicitly and demand evidence for `void`. Do not leave it to
+    infer that "already done" is a kind of blocker; it reads that way, and the
+    two states behave in opposite ways downstream.
 
 ### The Reviewer
 
@@ -484,13 +521,14 @@ runs unattended.
     Script translates those into log events). The lock in requirement 1
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `none-selected`, `stage-start`, `stage-end`,
-    `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`, `limit-hit`,
-    `warning`, `cycle-end`. Common fields: ISO-8601 `ts`, `cycle` id,
-    `event`, and where applicable `repo`, `item`, `pr_url`, `model`,
-    `detail`. `selection`, and any `attempt-failed` raised once an item has
-    been selected, must carry both `repo` and `item` — requirement 34 keys on
-    them, so an event that omits them cannot block the item it failed on, and
-    the omission is invisible until you notice the same work being redone.
+    `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`, `item-void`,
+    `unvoided`, `limit-hit`, `warning`, `cycle-end`. Common fields: ISO-8601
+    `ts`, `cycle` id, `event`, and where applicable `repo`, `item`, `pr_url`,
+    `model`, `detail`. `selection`, and any `attempt-failed` or `item-void`
+    raised once an item has been selected, must carry both `repo` and `item` —
+    requirements 34 and 34c key on them, so an event that omits them cannot
+    pin any state on the item it names, and the omission is invisible until you
+    notice the same work being redone.
 34. Blocked semantics: an item is blocked iff the most recent
     `attempt-failed` / `unblocked` event *for that item* is `attempt-failed`.
     An `attempt-failed` event must carry enough detail for a future
@@ -517,6 +555,30 @@ runs unattended.
     a dashboard that quietly disagrees with the Co-Ordinator about what is
     blocked is worse than no dashboard: it is where you would look to find
     this class of bug, and it would show you the wrong answer confidently.
+34c. Void semantics: an item is void iff the most recent `item-void` /
+    `unvoided` event *for that item* is `item-void`. The rule is requirement
+    34's shape over a different pair of events, and all three of its details
+    apply unchanged — key on `repo`+`item`, an event naming no item voids
+    nothing, a clear naming no repo clears everywhere. Build it as one
+    parameterised rule used twice, not two rules that happen to agree
+    (requirement 34a).
+    - An `item-void` event carries `reason` and `evidence` — the SHAs, paths,
+      or commands proving there is no work. A void is terminal, so the record
+      must let a human audit the verdict without redoing the investigation.
+    - **Only a human may clear a void**, by appending `unvoided` by hand. Give
+      the Co-Ordinator no way to emit one; the whole point is that it must not
+      reason its way out of a void, and it can reason its way out of anything.
+    - A void is keyed to a specific item id, which is what stops it becoming a
+      permanent gag. When the review pipeline runs again it files its
+      recommendations under fresh ids (`review-<new-date>-R-NN`) that no
+      existing void covers, so a genuine regression returns as new work. Voids
+      expire by irrelevance rather than by review, which is the only expiry an
+      unattended system will actually perform.
+    - The Co-Ordinator may *create* voids (requirement 18) for candidates it
+      can see conclusively are already done, and should: that is one cheap read
+      instead of a full Implementor run reaching the same answer. Creating is
+      safe where clearing is not — a wrong void costs a human one line in a
+      log, a wrong unvoid costs a cycle every hour until someone notices.
 
 ## Deliverables
 
@@ -576,6 +638,19 @@ runs unattended.
    reason — not die part-way, and not log nothing. Under `errexit` this is
    where a helper returning "not found" as a non-zero status silently kills
    the run (requirement 9).
+8a. **A void survives an agent trying to clear it.** Append an `item-void` for
+   an item, then an `unblocked` for the same item, then run a cycle: the item
+   must still be void and absent from the Co-Ordinator's candidates. This is
+   the check that would have caught requirement 9b being collapsed into one
+   state, and it fails loudly on a system that looks entirely healthy — the
+   log fills with confident, correct-looking events and the same item is
+   worked forever. Assert the negative too: `unvoided` *does* clear it, or you
+   have built a state no human can escape.
+8b. **The two states are visible apart.** A human looking at the monitor can
+   tell "waiting on something" from "there is nothing to do here" without
+   reading the log. If both render as one list, the operator cannot tell an
+   item needing their help from one needing nothing, which is how a stuck
+   pipeline and a healthy one come to look identical.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
@@ -715,8 +790,9 @@ confident, recurring no-op.
 |---|---|---|
 | A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
 | The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
-| A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementor exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own reason and unblock condition (requirement 9a). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
+| A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementor exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
 | Done-ness inferred from one channel | "Done" meant *a merged PR references it*. Work that landed as a direct commit — or before the repo required PRs — has no PR, so it reads as outstanding forever, and the item is re-selected every cycle for as long as it exists. | Don't let one provenance channel be the only proof. Cross-reference the curated register (R12a), and let the agent that actually looks at the repo settle it once (requirement 9a). Prefer evidence from the tree over evidence from process metadata. |
 | A rule with two implementations | The dashboard and the Script each computed "blocked". They disagreed, and the dashboard — the very place you would look to spot this bug — showed the wrong answer confidently. | One definition, shared (requirement 34a). If a second consumer needs it, it sources the first, and the shared unit is where the test lives. |
 | Identifiers assumed globally unique | `dependabot-alert-1` exists in *every* repo; date-numbered registers collide across repos too. Keying on the id alone makes one repo's block starve another repo's unrelated work. | Key on the scope plus the id (requirement 34). Ask what an id is unique *within* before using it as a key. |
 | A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/BUILD-REVIEW-PROMPT.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |
+| One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |

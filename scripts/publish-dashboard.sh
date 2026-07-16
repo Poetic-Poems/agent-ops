@@ -285,13 +285,19 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --argjson costs "$cost_rows"
                       | map(select(.model != "unknown" or .usd > 0)) | sort_by(-.usd))
   }')"
 
-# --- Blocked items (requirement 34 semantics) --------------------------------
-# The rule itself lives in lib/cycle-state.sh, shared with agent-cycle.sh, so
-# what the dashboard calls blocked is by construction what the Co-Ordinator is
-# told is blocked. Only the projection for display is local.
+# --- Blocked and void items (requirements 34, 34c) ---------------------------
+# Both rules live in lib/cycle-state.sh, shared with agent-cycle.sh, so what the
+# dashboard calls blocked or void is by construction what the Co-Ordinator is
+# told. Only the projection for display is local. They are shown apart because
+# they mean opposite things to a human deciding whether to intervene: a blocked
+# item is waiting on something, a void item is finished with.
 blocked_json="$(printf '%s\n' "$ALL_EVENTS" | blocked_items - | jq -c \
   'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // "")})' 2>/dev/null)"
 [[ -z "$blocked_json" ]] && blocked_json='[]'
+
+void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
+  'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // ""), evidence: (.evidence // "")})' 2>/dev/null)"
+[[ -z "$void_json" ]] && void_json='[]'
 
 # --- Log tail ----------------------------------------------------------------
 log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL" 'sort_by(.ts) | reverse | .[0:$n]' 2>/dev/null)"
@@ -359,12 +365,13 @@ data_json="$(jq -n \
   --argjson counts "$counts_json" \
   --slurpfile cyc "$cycles_file" \
   --argjson blocked "$blocked_json" \
+  --argjson void "$void_json" \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
   --arg max_prs "$max_open_agent_prs" \
   '{generated_at: $generated_at, config: $config, status: $status, counts: $counts,
-    cycles: $cyc[0], blocked: $blocked, github: $gh[0], log_tail: $lt[0],
+    cycles: $cyc[0], blocked: $blocked, void: $void, github: $gh[0], log_tail: $lt[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber)}')"
 
 # --- Redact (defensive) & write atomically -----------------------------------
