@@ -324,6 +324,12 @@ This repo follows the same conventions as its target repos:
 
 ## Development
 
+To run the unit tests (plain bash, no framework; each is self-contained and
+exits non-zero on the first failed assertion):
+```bash
+for t in test/*.test.sh; do "$t" || break; done
+```
+
 To test a full cycle without cron:
 ```bash
 ./agent-cycle.sh --once --repo poetic-fiddle 2>&1 | tee test-cycle.log
