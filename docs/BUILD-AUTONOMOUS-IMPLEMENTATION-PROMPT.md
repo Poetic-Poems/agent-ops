@@ -236,7 +236,20 @@ runs unattended.
    Implementor may never emit a parseable final message (and so never
    report its own `pr_url`), the Script also checks the clone for the
    `.git/agent-ops-pr-url` breadcrumb (requirement 23) before concluding no
-   PR was ever opened.
+   PR was ever opened. That breadcrumb lookup finding nothing is the *normal*
+   case — no PR was opened — so it must not be an error: under `errexit` a
+   non-zero there kills the cycle before it logs the very failure this
+   requirement is about (see Gotchas).
+9a. **A reported `blocked` is a verdict, not a failure.** A stage that runs
+   to completion and ends with `{"status": "blocked", …}` (requirement 27)
+   has not failed: it has spent a full model run establishing that the work
+   order's premise is wrong — most often that the item is already done on
+   `default_branch`. Record it as an `attempt-failed` event against that
+   item, carrying the stage's own `reason` and `unblock_condition` verbatim,
+   rather than routing it through requirement 9's path (which would file it
+   as "exited 0", discarding what it found) or, worse, dropping it. This is
+   the one thing that stops the pipeline buying the same discovery every
+   cycle for as long as the item exists.
 10. **Usage-limit detection.** Whenever any `claude` invocation's transcript
     matches the shared pattern in `lib/limit-detect.sh` (`LIMIT_PHRASE_REGEX`
     — the generic `hit your .* limit` stem plus the legacy `usage limit` /
@@ -328,6 +341,13 @@ runs unattended.
       current tech-debt entry or open issue is left to that source and skipped
       here. (A single `gh` PR search per repo for the review date surfaces the
       open/merged/closed PRs referencing that review; match refs against it.)
+      Note that a merged PR is a *floor*, not a proof: work that landed as a
+      direct commit, or before the repo required PRs, leaves no PR to find and
+      so reads as outstanding forever. The cross-reference is what covers that
+      gap, which is why the review spec (`docs/BUILD-REVIEW-PROMPT.md`, R12a)
+      is required to write it and not merely expected to; requirement 9a is
+      the backstop for when it is missing anyway — the item is then
+      investigated once, and the finding remembered.
     - an issue that is assigned, labelled `blocked`, or is a question or
       discussion rather than actionable work;
     - a security finding whose only available fix is one a human must choose
@@ -467,12 +487,36 @@ runs unattended.
     `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`, `limit-hit`,
     `warning`, `cycle-end`. Common fields: ISO-8601 `ts`, `cycle` id,
     `event`, and where applicable `repo`, `item`, `pr_url`, `model`,
-    `detail`.
-34. Blocked semantics: an item is blocked iff its most recent
-    `attempt-failed` / `unblocked` event is `attempt-failed`. An
-    `attempt-failed` event must carry enough detail for a future
+    `detail`. `selection`, and any `attempt-failed` raised once an item has
+    been selected, must carry both `repo` and `item` — requirement 34 keys on
+    them, so an event that omits them cannot block the item it failed on, and
+    the omission is invisible until you notice the same work being redone.
+34. Blocked semantics: an item is blocked iff the most recent
+    `attempt-failed` / `unblocked` event *for that item* is `attempt-failed`.
+    An `attempt-failed` event must carry enough detail for a future
     Co-Ordinator to judge whether the blocker has since been removed.
-    `unblocked` events may also be appended by hand by the human.
+    `unblocked` events may also be appended by hand by the human. Three
+    details decide whether this rule works at all:
+    - **Key on `repo` and `item` together.** An item id is only unique within
+      its repo — every repo has a `dependabot-alert-1`, and registers that
+      number by date collide across repos — so keying on the id alone lets one
+      repo's block starve the other's identically-named work.
+    - **An event carrying no `item` blocks nothing**, and must be dropped
+      rather than grouped under an empty key: a stage that fails before
+      anything is selected has no item to blame, and collapsing every such
+      event together yields one "blocked" entry describing no item at all.
+    - **An `unblocked` event naming no repo clears that item in every repo.**
+      The Co-Ordinator reports unblocked as a bare id (requirement 18) and a
+      human appending one by hand has no repo to hand either, so there is
+      nothing to match on. Over-clearing is the safe direction: the item
+      merely becomes a candidate again and re-blocks on its next attempt.
+34a. Whatever computes requirement 34 must be the **only** definition of it.
+    Anything else that reports blocked items — notably the monitoring
+    dashboard (`docs/BUILD-DASHBOARD-PROMPT.md`) — shares that one
+    implementation rather than reimplementing the rule. Two copies drift, and
+    a dashboard that quietly disagrees with the Co-Ordinator about what is
+    blocked is worse than no dashboard: it is where you would look to find
+    this class of bug, and it would show you the wrong answer confidently.
 
 ## Deliverables
 
@@ -483,6 +527,15 @@ runs unattended.
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
    disabled or inaccessible. Must pass `shellcheck`.
+3a. A shared library (as built, `lib/cycle-state.sh` and `lib/limit-detect.sh`)
+   holding every rule that more than one component computes — at minimum
+   requirement 34's blocked semantics, requirement 33's `attempt-failed` field
+   shape, and the usage-limit phrase pattern of requirement 10 — sourced by
+   both `agent-cycle.sh` and the dashboard's publisher rather than copied into
+   either. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
+   framework) and `shellcheck`-clean. These rules are the system's memory of
+   what it has already tried; a second copy of one is a bug with a delay
+   fuse, and both copies read correctly right up until they disagree.
 4. `prompts/coordinator.md`, `prompts/implementor.md`, `prompts/reviewer.md`
    implementing requirements 14–20, 21–27, and 28–32 respectively. Each
    prompt must embed the relevant shared-repo conventions from this document
@@ -510,6 +563,19 @@ runs unattended.
    stand-down; an expired one does not.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
    back-pressure.
+7. **A blocked verdict round-trips.** Append an `attempt-failed` for a
+   selected item, then run a cycle: the Co-Ordinator's input must list that
+   item as blocked, with its detail. This is the one check that catches the
+   writer and the reader disagreeing about the event key (requirements 33/34)
+   — nothing else in the system will tell you they disagree, because both
+   halves look correct in isolation and the only symptom is work being
+   silently redone.
+8. **A no-op Implementor is recorded.** Drive one cycle in which the
+   Implementor reports `blocked` without opening a PR: the cycle must exit 0
+   having logged an `attempt-failed` carrying that item and the stage's own
+   reason — not die part-way, and not log nothing. Under `errexit` this is
+   where a helper returning "not found" as a non-zero status silently kills
+   the run (requirement 9).
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
@@ -595,7 +661,9 @@ Recorded so a future reader knows they were deliberate, not accidental.
   rot in a folder. It sits just above `code-quality` (a human-approved
   recommendation beats an automated one) and below the curated channels, and
   dedups against them via the `R-NN` cross-reference the review writes into
-  each mirrored tech-debt entry. Because the recommendations file is
+  each mirrored tech-debt entry (required of the review by R12a of
+  `docs/BUILD-REVIEW-PROMPT.md` — for a long time this bullet merely *assumed*
+  it, which is why the dedup silently didn't work; see Gotchas). Because the recommendations file is
   regenerated each week (its `R-NN` IDs are per-review, so a ref is
   review-dated), an un-actioned recommendation is simply re-offered under a new
   ref by the next review; persistent items live in `TECH-DEBT.md`, which has
@@ -632,3 +700,23 @@ Recorded so a future reader knows they were deliberate, not accidental.
 
 No open questions remain. The choices above (platform, models, permissions,
 system location) were confirmed by the repo owner on 2026-07-13.
+
+## Gotchas
+
+Failure modes this system actually shipped with, kept because each one is
+cheap to reintroduce and expensive to notice. They share a shape: **the
+pipeline stays green while quietly doing nothing**. Nothing crashes, no alert
+fires, PRs keep appearing from the other work sources — and the only evidence
+is money spent on work that was already done. Budget for the fact that an
+autonomous system's characteristic failure is not an error; it is a silent,
+confident, recurring no-op.
+
+| Trap | What it looks like when it bites | Build it this way instead |
+|---|---|---|
+| A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
+| The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
+| A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementor exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own reason and unblock condition (requirement 9a). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
+| Done-ness inferred from one channel | "Done" meant *a merged PR references it*. Work that landed as a direct commit — or before the repo required PRs — has no PR, so it reads as outstanding forever, and the item is re-selected every cycle for as long as it exists. | Don't let one provenance channel be the only proof. Cross-reference the curated register (R12a), and let the agent that actually looks at the repo settle it once (requirement 9a). Prefer evidence from the tree over evidence from process metadata. |
+| A rule with two implementations | The dashboard and the Script each computed "blocked". They disagreed, and the dashboard — the very place you would look to spot this bug — showed the wrong answer confidently. | One definition, shared (requirement 34a). If a second consumer needs it, it sources the first, and the shared unit is where the test lives. |
+| Identifiers assumed globally unique | `dependabot-alert-1` exists in *every* repo; date-numbered registers collide across repos too. Keying on the id alone makes one repo's block starve another repo's unrelated work. | Key on the scope plus the id (requirement 34). Ask what an id is unique *within* before using it as a key. |
+| A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/BUILD-REVIEW-PROMPT.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |

@@ -121,6 +121,21 @@ Both target repos follow these rules:
    entry, and preserve the file's established format. Mark items the review
    finds already resolved rather than deleting their history, per that file's
    rules. Do not create a competing tech-debt file.
+
+   **Cross-reference each mirrored recommendation.** Where an item you file
+   covers the whole of a recommendation's *Intended end state*, record that
+   recommendation's `R-NN` against it in `TECH-DEBT.md`, where a `grep` of
+   that file will find it (the row, or the file's provenance table if it has
+   one). The implementation pipeline's Co-Ordinator uses exactly this
+   cross-reference to tell that the register entry and the recommendation are
+   the same work; without it, it re-selects and re-investigates the
+   recommendation every cycle unless a *merged* PR happens to reference it —
+   which work that lands as a direct commit never will.
+
+   Record the mapping only where the item covers the recommendation's whole
+   end state. Where the recommendation is broader, leave the remainder to the
+   review channel rather than claiming — and so silently retiring — work
+   nobody has done.
 3. **Finish the skill's book-keeping.** Complete the skill's Step 6 clean-up —
    delete the `worknotes/` directory and `review-state.json` from the review
    folder — so only the finished reports remain and neither is committed. The

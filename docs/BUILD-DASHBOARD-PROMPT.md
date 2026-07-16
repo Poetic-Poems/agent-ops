@@ -192,3 +192,14 @@ spend-by-model bars; recent log; `cron.log` tail.
   screenshot or copied file is safe and a future private repo can't leak.
 - **Limit detection is independent of the log**, because the pipeline's logger
   misses weekly-limit phrasing — the dashboard reads the transcripts directly.
+- **The blocked list is not computed here.** `blocked[]` comes from the same
+  shared implementation the Script feeds its Co-Ordinator
+  (`lib/cycle-state.sh`, per requirement 34a of
+  `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`); only the projection for
+  display is local. The dashboard originally had its own near-copy of the
+  rule, and the two silently disagreed — which matters more here than
+  anywhere else, because this page is where someone looks to find out why the
+  pipeline is repeating itself. A monitor that reimplements the thing it
+  monitors will agree with it right up until the moment that would have been
+  useful. Anything else the page reports that the pipeline also computes
+  belongs under the same rule: share the definition, don't mirror it.
