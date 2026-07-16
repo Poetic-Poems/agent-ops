@@ -291,6 +291,30 @@ R12. **Tech-debt conventions.** When the review adds tech-debt items, follow
    format — rather than inventing a competing structure. The skill updates the
    file in place; this requirement pins it to *this* repo's conventions.
 
+R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
+   item the review files — or a GitHub issue it opens — covers the whole of a
+   recommendation's *Intended end state*, record that recommendation's `R-NN`
+   against the item, somewhere a reader and a `grep` will find it from the
+   register itself (the row, or a provenance table in the same file). Do it
+   when the item is filed, not when it is resolved.
+
+   This is not book-keeping. A recommendation and its mirrored register entry
+   are two channels onto one piece of work, and the hourly implementation
+   pipeline's Co-Ordinator can tell only by finding this cross-reference
+   (`docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`, requirement 16). Absent
+   it, that Co-Ordinator has one remaining test for whether a recommendation
+   is done — a merged PR referencing it — which work that landed as a direct
+   commit can never satisfy. The recommendation then reads as outstanding
+   forever and is re-selected and re-investigated every cycle at full model
+   cost. This is not hypothetical: it is exactly what `R-01` of
+   `poetic`'s 2026-07-11 review did, nine times in two days, for a licence
+   that had been committed before the review was even written.
+
+   Record the mapping **only** where the item genuinely covers the
+   recommendation's whole end state. A recommendation broader than the item
+   mirroring it keeps its remainder in the review channel, where it stays
+   visible; claiming it here would silently retire work nobody has done.
+
 R13. **Raise one pull request.** Create the branch `review/<date>` from the
    default branch; commit the review folder and the updated `TECH-DEBT.md`;
    open **one** pull request, **ready for review** (not draft), labelled
@@ -369,6 +393,12 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
    labelled, ready, mergeable review PR, with `TECH-DEBT.md` updated per that
    repo's Ledger conventions and a clean `review-log.jsonl` trail. Report the PR
    URL(s) to the human; merge nothing.
+8. **Cross-references land (R12a):** in that run's `TECH-DEBT.md` diff, every
+   item mirroring a recommendation names its `R-NN`, and `grep -c 'R-[0-9]'`
+   on the file is non-zero whenever the review mirrored anything. Check this
+   explicitly: it is invisible in the review's own output — the reports look
+   complete either way — and only shows up weeks later as the implementation
+   pipeline paying to re-investigate recommendations that are already done.
 
 ## Prerequisites (human steps, before first run)
 
