@@ -29,6 +29,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# shellcheck source=lib/cycle-state.sh
+. "$SCRIPT_DIR/lib/cycle-state.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -284,12 +286,11 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --argjson costs "$cost_rows"
   }')"
 
 # --- Blocked items (requirement 34 semantics) --------------------------------
-blocked_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc '
-  [ .[] | select(.event=="attempt-failed" or .event=="unblocked") ]
-  | group_by((.repo // "") + "|" + (.item // ""))
-  | map(sort_by(.ts) | last)
-  | map(select(.event=="attempt-failed" and (.item // "") != ""))
-  | map({repo: .repo, item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // "")})' 2>/dev/null)"
+# The rule itself lives in lib/cycle-state.sh, shared with agent-cycle.sh, so
+# what the dashboard calls blocked is by construction what the Co-Ordinator is
+# told is blocked. Only the projection for display is local.
+blocked_json="$(printf '%s\n' "$ALL_EVENTS" | blocked_items - | jq -c \
+  'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // "")})' 2>/dev/null)"
 [[ -z "$blocked_json" ]] && blocked_json='[]'
 
 # --- Log tail ----------------------------------------------------------------

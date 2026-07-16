@@ -30,6 +30,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# shellcheck source=lib/cycle-state.sh
+. "$SCRIPT_DIR/lib/cycle-state.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -85,6 +87,20 @@ log_event() {
     '{ts: $ts, cycle: $cycle, event: $event} + $fields' >> "$log_file"
 }
 
+# The repo and item this cycle selected, once the Co-Ordinator has picked one.
+# Requirement 33 puts `repo`/`item` on an event where applicable, and the
+# requirement 34 blocked extract groups attempt-failed events by repo+item — so
+# an event raised after selection that omits them can never block the item it
+# failed on, and the same item is free to be re-selected next cycle.
+selected_repo=""
+selected_item=""
+
+log_attempt_failed() {
+  local stage="$1" detail="$2" extra="${3:-{\}}"
+  log_event "attempt-failed" \
+    "$(attempt_failed_fields "$stage" "$detail" "$selected_repo" "$selected_item" "$extra")"
+}
+
 log_unblocked_items() {
   local wo="$1" item
   while IFS= read -r item; do
@@ -103,15 +119,6 @@ detect_and_log_limit_hit() {
 
 extract_pr_url() {
   grep -oihE 'https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/[0-9]+' "$1" "$1.stderr" 2>/dev/null | tail -n1 || true
-}
-
-# Fallback for when a stage exits without ever producing a final message (so
-# there's nothing to grep or parse): the Implementor writes the PR URL to a
-# breadcrumb under .git/ the moment it opens the draft PR, precisely so a
-# stranded attempt can still be found and flagged instead of going silent.
-read_pr_url_breadcrumb() {
-  local f="$1/.git/agent-ops-pr-url"
-  [[ -f "$f" ]] && head -n1 "$f" | tr -d '[:space:]'
 }
 
 # Deterministically pre-fetch a repo's open Dependabot and code-scanning
@@ -169,7 +176,7 @@ handle_stage_failure() {
     detail="$stage exited $rc"
   fi
   detect_and_log_limit_hit "$out_file" || true
-  log_event "attempt-failed" "$(jq -nc --arg d "$detail" --arg s "$stage" '{stage: $s, detail: $d}')"
+  log_attempt_failed "$stage" "$detail"
   if [[ -n "$pr_url" ]]; then
     gh pr comment "$pr_url" --body "Autonomous agent ($stage) abandoned this PR: $detail. Left for human review." >/dev/null 2>&1 || true
   fi
@@ -337,15 +344,7 @@ rm -f "$cycle_dir/.repo_ts"
 
 # --- Blocked-item extract (requirement 32: blocked iff most recent
 #     attempt-failed/unblocked event for that repo+item is attempt-failed) ---
-blocked_json="[]"
-if [[ -s "$log_file" ]]; then
-  blocked_json="$(jq -sc '
-    [.[] | select(.event == "attempt-failed" or .event == "unblocked")]
-    | group_by((.repo // "") + "|" + (.item // ""))
-    | map(sort_by(.ts) | last)
-    | map(select(.event == "attempt-failed"))
-  ' "$log_file")"
-fi
+blocked_json="$(blocked_items "$log_file")"
 
 coordinator_input="$(jq -nc \
   --argjson repos "$ordered_repos_json" \
@@ -402,6 +401,8 @@ if [[ "$selected" != "true" ]]; then
   exit 0
 fi
 
+selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
+selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
 log_event "selection" "$(jq -c '{repo, item, source, model, title}' <<<"$work_order_json")"
 
 if (( DRY_RUN )); then
@@ -445,7 +446,25 @@ impl_pr_url="$(jq -r '.pr_url // empty' <<<"$impl_status_json" 2>/dev/null || tr
 [[ -z "$impl_pr_url" ]] && impl_pr_url="$(extract_pr_url "$impl_out")"
 [[ -z "$impl_pr_url" ]] && impl_pr_url="$(read_pr_url_breadcrumb "$clone_dir")"
 
-if (( impl_rc != 0 )) || [[ -z "$impl_status_json" ]] || [[ "$(jq -r '.status // empty' <<<"$impl_status_json")" != "complete" ]]; then
+impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || true)"
+
+# A reported `blocked` is a verdict, not a stage failure: the Implementor ran to
+# completion and found the work order's premise wrong — most often that the item
+# is already done on default_branch. Record it against the item, carrying the
+# model's own reason and unblock_condition so a later Co-Ordinator can judge
+# whether the blocker has since gone (requirement 34), rather than re-selecting
+# the item and paying for the same discovery every cycle.
+if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
+  log_attempt_failed "implementor" \
+    "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    "$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$impl_status_json")"
+  if [[ -n "$impl_pr_url" ]]; then
+    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Left for human review." >/dev/null 2>&1 || true
+  fi
+  exit 0
+fi
+
+if (( impl_rc != 0 )) || [[ -z "$impl_status_json" ]] || [[ "$impl_status" != "complete" ]]; then
   handle_stage_failure "implementor" "$impl_rc" "$impl_out" "$impl_pr_url"
   exit 0
 fi
