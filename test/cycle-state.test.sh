@@ -66,20 +66,20 @@ printf '  https://github.com/o/r/pull/7  \n' > "$clone_dir/.git/agent-ops-pr-url
 assert_eq "present breadcrumb is read and trimmed" \
   "https://github.com/o/r/pull/7" "$(read_pr_url_breadcrumb "$clone_dir")"
 
-# --- attempt_failed_fields ---
+# --- item_event_fields ---
 
 assert_eq "attempt-failed carries the item it failed on" \
-  '{"stage":"implementor","detail":"already done","repo":"o/r","item":"review-2026-07-11-R-01"}' \
-  "$(attempt_failed_fields "implementor" "already done" "o/r" "review-2026-07-11-R-01")"
+  '{"stage":"implementor","detail":"blocked on an unmerged dep","repo":"o/r","item":"review-2026-07-11-R-01"}' \
+  "$(item_event_fields "implementor" "blocked on an unmerged dep" "o/r" "review-2026-07-11-R-01")"
 
 assert_eq "extra fields are merged in" \
-  '{"stage":"implementor","detail":"already done","repo":"o/r","item":"R-01","unblock_condition":"refresh the review"}' \
-  "$(attempt_failed_fields "implementor" "already done" "o/r" "R-01" '{"unblock_condition":"refresh the review"}')"
+  '{"stage":"implementor","detail":"dep unmerged","repo":"o/r","item":"R-01","unblock_condition":"refresh the review"}' \
+  "$(item_event_fields "implementor" "dep unmerged" "o/r" "R-01" '{"unblock_condition":"refresh the review"}')"
 
 # A stage that fails before anything is selected blames no item.
 assert_eq "repo/item omitted when there is no selection" \
   '{"stage":"coordinator","detail":"unparseable final message"}' \
-  "$(attempt_failed_fields "coordinator" "unparseable final message" "" "")"
+  "$(item_event_fields "coordinator" "unparseable final message" "" "")"
 
 # --- blocked_items ---
 
@@ -137,6 +137,68 @@ cat > "$log" <<'EOF'
 EOF
 assert_eq "a repo-less unblock clears the item in every repo" \
   "0" "$(blocked_items "$log" | jq 'length')"
+
+# --- void_items (requirement 34c) ---
+
+assert_eq "missing log yields no void items" "[]" "$(void_items "$tmp_dir/nonexistent.jsonl")"
+
+: > "$log"
+assert_eq "empty log yields no void items" "[]" "$(void_items "$log")"
+
+# The production sequence this state exists to stop, replayed exactly: the
+# Implementor finds R-02 already done; the next Co-Ordinator sees the work is
+# done and reports it unblocked. Under the old single-state design that freed
+# R-02 for reselection every cycle, forever. `unblocked` must not touch a void.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"review-2026-07-11-R-02","detail":"already implemented on main","evidence":"e0ac584"}
+{"ts":"2026-07-16T09:12:21Z","event":"unblocked","item":"review-2026-07-11-R-02"}
+EOF
+assert_eq "an unblocked event cannot clear a void item" \
+  "review-2026-07-11-R-02" "$(void_items "$log" | jq -r '.[].item')"
+assert_eq "a void item is not also reported as blocked" \
+  "0" "$(blocked_items "$log" | jq 'length')"
+assert_eq "the void evidence is carried through" \
+  "e0ac584" "$(void_items "$log" | jq -r '.[].evidence')"
+
+# Only a human, appending unvoided by hand, may reopen one.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"R-02","detail":"already done"}
+{"ts":"2026-07-17T09:00:00Z","event":"unvoided","item":"R-02"}
+EOF
+assert_eq "a later unvoided event reopens the item" "0" "$(void_items "$log" | jq 'length')"
+
+# Re-voiding after an unvoid: the human reopened it, the Implementor looked
+# again and still found no work. Latest event wins, as for blocked.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T09:03:10Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"R-02","detail":"already done"}
+{"ts":"2026-07-17T09:00:00Z","event":"unvoided","item":"R-02"}
+{"ts":"2026-07-18T09:00:00Z","event":"item-void","stage":"implementor","repo":"o/poetic","item":"R-02","detail":"still nothing to do"}
+EOF
+assert_eq "an item can be voided again after being unvoided" \
+  "still nothing to do" "$(void_items "$log" | jq -r '.[].detail')"
+
+# The two states are independent channels over the same log.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-01","detail":"dep unmerged"}
+{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"R-02","detail":"already done"}
+EOF
+assert_eq "blocked and void are separate lists: blocked" "R-01" "$(blocked_items "$log" | jq -r '.[].item')"
+assert_eq "blocked and void are separate lists: void" "R-02" "$(void_items "$log" | jq -r '.[].item')"
+
+# An itemless void pins nothing, exactly as an itemless failure blocks nothing.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"coordinator","detail":"no item named"}
+EOF
+assert_eq "an itemless void voids nothing" "0" "$(void_items "$log" | jq 'length')"
+
+# A void must not be killed by a malformed line elsewhere in the log, or one
+# truncated append would silently reopen every void item.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T09:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"R-02","detail":"already done"}
+{"ts":"2026-07-16T09:01:00Z","event":"cycle-e
+EOF
+assert_eq "a malformed trailing line does not strand void items" \
+  "R-02" "$(void_items "$log" | jq -r '.[].item')"
 
 printf '\n'
 if (( failures > 0 )); then

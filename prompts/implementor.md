@@ -201,15 +201,41 @@ On success:
 {"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "notes": "anything the Reviewer should know that isn't obvious from the diff"}
 ```
 
-If you cannot complete the item safely — the work order's premise turns out
-to be wrong, the item is bigger or riskier than scoped, you hit a decision
-only a human can make — stop and report:
+If the item is real work but you cannot complete it safely — it is bigger or
+riskier than scoped, a dependency has not landed, a check is red for reasons
+outside it, you hit a decision only a human can make — stop and report
+`blocked`:
 
 ```json
-{"status": "blocked", "reason": "what went wrong", "unblock_condition": "what would need to be true for a future cycle to retry this"}
+{"status": "blocked", "reason": "what is in the way", "unblock_condition": "what would need to be true for a future cycle to retry this"}
 ```
 
-Leave whatever you've already pushed (draft PR, branch, Ledger flip)
-exactly as it is when you report `blocked` — don't unwind your own claim.
-The Script and, ultimately, a human decide what happens to an abandoned
-claim; that's not your call to make.
+If instead there is **no work to do** — the work order's premise is false —
+report `void`, not `blocked`. Overwhelmingly the common case: the item is
+already done on `default_branch`, because it was fixed by a direct commit or
+under a different name, and the source that proposed it (most often a project
+review) has gone stale. Also `void` if the item asks you to change something
+that does not exist, or to undo something never done.
+
+```json
+{"status": "void", "reason": "why there is no work here", "evidence": "how you know — commit SHAs, file paths, the check you ran"}
+```
+
+**The distinction is not cosmetic, and only you can draw it.** `blocked` says
+"retry me when the world changes"; `void` says "there was never anything here".
+A void item is closed permanently and only a human can reopen it, so cite real
+evidence in `evidence` — a reader with your `reason` and `evidence` alone must
+be able to confirm your verdict without repeating your investigation. Do not
+report `void` on a hunch, and do not report `blocked` merely because the work
+turned out to be already done: that is the one thing `void` exists for. Filing
+it as `blocked` puts the item back in the selection pool, and the next cycle
+pays to rediscover exactly what you just discovered.
+
+Report `void` regardless of how much you have already done to find out — the
+verdict describes the item, not your effort.
+
+Leave whatever you've already pushed (draft PR, branch, Ledger flip) exactly as
+it is when you report `blocked` — don't unwind your own claim. The Script and,
+ultimately, a human decide what happens to an abandoned claim; that's not your
+call to make. A `void` item should not have a PR at all: if you have discovered
+there is no work, there is nothing to raise.
