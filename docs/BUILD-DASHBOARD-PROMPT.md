@@ -84,6 +84,14 @@ same way `agent-cycle.sh` reads them.
   fenced-```json``` block that `agent-cycle.sh` uses), `total_cost_usd`,
   `duration_ms`, `num_turns`, `is_error`, `terminal_reason`/`stop_reason`,
   `modelUsage` (→ model id). `<stage>.out.stderr` is shown for debugging.
+
+  `total_cost_usd` is a **local estimate computed from token counts**, priced
+  as though the tokens had been billed per-token through the API. Under the
+  subscription auth this pipeline runs on, it is not an amount charged and not
+  a draw against any plan limit — it measures work done, not money spent. The
+  envelope carries no quota, rate-limit, or credits-remaining field of any
+  kind; do not expect one to appear here. See the design decision on plan
+  limits below before building anything that treats these dollars as budget.
   Missing/partial files degrade to a null stage — never a crash.
 - **`lock.json`** — `{pid, started_at}`. A live pid (`kill -0`) means a cycle
   is running now.
@@ -253,6 +261,34 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   dropped and never silently blank: a source added upstream then shows up
   unstyled, which is a prompt to add a colour, rather than invisibly missing
   from the mix — the one thing the column exists to show.
+- **Plan limits are not on this page, because they are not obtainable
+  (checked 2026-07-17).** The obvious feature request — show used vs remaining
+  credits for the current session and the weekly limit, in the header — was
+  investigated and dropped as not buildable, and this note exists so it is
+  investigated once rather than every time someone notices the gap. For an
+  individual Pro/Max subscriber there is no supported source: no `claude usage`
+  subcommand exists; `--output-format json` carries no quota field (see "State
+  it reads"); `/usage` is interactive-only; and the Admin/Usage API is
+  documented as *"unavailable for individual accounts"* — it needs an
+  organisation on Console API billing. The numbers do appear to be cached in
+  `~/.claude/.credentials.json`, and that is the temptation to resist: it is
+  undocumented internal structure inside a secrets file, so it can change shape
+  without notice, and Claude Code itself serves those bars from a cache up to
+  an hour stale. A stale limit bar is worse than no limit bar, because it is
+  the one number an operator would act on — and it would sit next to a
+  freshness clock implying it was current. If a supported read ever ships, the
+  header centre is where it goes.
+- **Cost is labelled as an estimate, not as spend.** The cards and charts say
+  "Est. token cost" rather than "Spend", with a note saying what the figure is.
+  They previously said "Spend today", which on subscription auth quietly
+  asserts two false things: that the money was charged, and that the dashboard
+  is tracking a budget. Someone reading a spend figure next to a pipeline that
+  can hit a usage limit will reasonably join those two facts up, and conclude
+  the dollars are what runs out. They are not related: the limit is denominated
+  in tokens and time, and no arithmetic on this page converts one into the
+  other. The figure is worth showing — it is a good proxy for how hard the
+  pipeline is working, and it is the only per-cycle cost signal there is — but
+  it has to be named for what it measures.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing

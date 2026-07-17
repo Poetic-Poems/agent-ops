@@ -113,6 +113,7 @@
   .gauge { height: 10px; border-radius: 5px; background: var(--grey-bg); overflow: hidden; margin-top: 6px; }
   .gauge > span { display: block; height: 100%; }
   .empty { padding: 18px; color: var(--muted); font-style: italic; }
+  p.costnote { margin: 10px 0 0; font-size: 12px; color: var(--muted); max-width: 78ch; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
   code.inline { font-family: var(--mono); background: var(--grey-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
@@ -264,8 +265,8 @@
         sub ? el("small", {text: " " + sub}) : null ])
     ]));
   }
-  card("Spend today", usd(c.spend_today_usd));
-  card("Spend (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
+  card("Est. token cost today", usd(c.spend_today_usd));
+  card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
   card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
   card("Reached ready", String(c.prs_reached_ready || 0));
   // back-pressure card
@@ -294,9 +295,15 @@
 
   // ---------- cost & cadence + log ----------
   var two = el("div", {class:"two"});
-  two.appendChild(el("div", {}, [ el("h2", {text:"Spend by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
-  two.appendChild(el("div", {}, [ el("h2", {text:"Spend by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
+  two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
+  two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
   app.appendChild(el("section", {}, two));
+  app.appendChild(el("p", {class:"costnote", text:
+    "Cost figures are Claude Code's own local estimate, priced as if these tokens " +
+    "had been billed per-token through the API. On a Claude subscription they are " +
+    "not money charged and not a draw against the session or weekly limit — read " +
+    "them as a measure of how much work the pipeline did, not what it cost. Plan " +
+    "limits are not readable from here; check /usage in an interactive session."}));
 
   app.appendChild(sectionOf("Recent log events", logPanel()));
   app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
@@ -509,7 +516,7 @@
   // ---------- spend charts ----------
   function spendByDay() {
     var days = (D.counts && D.counts.by_day) || [];
-    if (!days.length) return el("div", {class:"empty", text:"No spend recorded."});
+    if (!days.length) return el("div", {class:"empty", text:"No token cost recorded."});
     var max = Math.max.apply(null, days.map(function (d){ return d.usd; })) || 1;
     return el("div", {class:"bars"}, days.map(function (d) {
       var label = d.day.slice(4,6) + "/" + d.day.slice(6,8);
@@ -522,7 +529,7 @@
   }
   function spendByModel() {
     var ms = (D.counts && D.counts.by_model) || [];
-    if (!ms.length) return el("div", {class:"empty", text:"No spend recorded."});
+    if (!ms.length) return el("div", {class:"empty", text:"No token cost recorded."});
     var max = Math.max.apply(null, ms.map(function (m){ return m.usd; })) || 1;
     return el("div", {class:"bars"}, ms.map(function (m) {
       var short = m.model.replace("claude-","").replace(/-\d{8}$/,"");
