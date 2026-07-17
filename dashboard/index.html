@@ -15,6 +15,7 @@
     --green: #1a7f37; --green-bg: #dafbe1; --red: #b42318; --red-bg: #ffe3e0;
     --amber: #9a6700; --amber-bg: #fff4d6; --blue: #0a5cc2; --blue-bg: #ddf0ff;
     --grey: #57606a; --grey-bg: #eef1f4;
+    --purple: #6b40c4; --teal: #0f766e; --pink: #b8266e;
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
@@ -25,6 +26,7 @@
       --green: #3fb950; --green-bg: #12261a; --red: #f85149; --red-bg: #2a1213;
       --amber: #d29922; --amber-bg: #2b2211; --blue: #58a6ff; --blue-bg: #0d2436;
       --grey: #8b949e; --grey-bg: #1b2027;
+      --purple: #a78bfa; --teal: #2dd4bf; --pink: #f472b6;
     }
   }
   * { box-sizing: border-box; }
@@ -65,6 +67,8 @@
   tbody tr.clickable { cursor: pointer; }
   tbody tr.clickable:hover { background: var(--grey-bg); }
   td.wrap { white-space: normal; max-width: 420px; }
+  td.wrap.roomy { max-width: none; width: 100%; }
+  td.stages { white-space: normal; max-width: 132px; }
   .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
     border: 1px solid transparent; }
   .b-green { background: var(--green-bg); color: var(--green); }
@@ -72,13 +76,22 @@
   .b-blue { background: var(--blue-bg); color: var(--blue); }
   .b-amber { background: var(--amber-bg); color: var(--amber); }
   .b-grey { background: var(--grey-bg); color: var(--grey); }
+  /* Source tags are deliberately a different shape and weight from outcome
+     badges above: outlined and square-cornered rather than filled pills, so
+     the two classes of data never read as the same kind of label. */
+  .srctag { display: inline-block; padding: 0 6px; border-radius: 4px; font-family: var(--mono);
+    font-size: 10.5px; font-weight: 500; letter-spacing: .2px; line-height: 17px;
+    border: 1px solid currentColor; background: transparent; }
+  .s-red { color: var(--red); } .s-amber { color: var(--amber); } .s-blue { color: var(--blue); }
+  .s-green { color: var(--green); } .s-grey { color: var(--grey); } .s-purple { color: var(--purple); }
+  .s-teal { color: var(--teal); } .s-pink { color: var(--pink); }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
   .dot.live { background: var(--green); box-shadow: 0 0 0 0 rgba(63,185,80,.6); animation: pulse 1.8s infinite; }
   .dot.idle { background: var(--grey); }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)} 70%{box-shadow:0 0 0 6px rgba(63,185,80,0)} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0)} }
   .mono { font-family: var(--mono); font-size: 12px; }
   .muted { color: var(--muted); }
-  .stagecells { display: flex; gap: 4px; }
+  .stagecells { display: flex; flex-wrap: wrap; gap: 4px; }
   .stagecell { font-family: var(--mono); font-size: 11px; padding: 1px 6px; border-radius: 5px; border: 1px solid var(--line); }
   .sc-ok { color: var(--green); } .sc-fail { color: var(--red); } .sc-none { color: var(--muted); opacity: .6; }
   .detail { background: var(--bg); }
@@ -176,6 +189,24 @@
   function outcomeBadge(o) {
     var m = OUTCOME[o] || [o, "b-grey"];
     return el("span", {class: "badge " + m[1], text: m[0]});
+  }
+
+  // The Co-Ordinator's work sources, in its own priority order. Labels are
+  // abbreviated to keep the column narrow; the full token is in the tooltip.
+  var SOURCE = {
+    "security":            ["security",    "s-red"],
+    "review-feedback":     ["pr-feedback", "s-purple"],
+    "failed-runs":         ["failed-run",  "s-amber"],
+    "tech-debt":           ["tech-debt",   "s-blue"],
+    "issues":              ["issue",       "s-green"],
+    "implementation-plan": ["plan",        "s-teal"],
+    "project-review":      ["proj-review", "s-pink"],
+    "code-quality":        ["quality",     "s-grey"]
+  };
+  function sourceTag(s) {
+    if (!s) return el("span", {class:"muted", text:"—"});
+    var m = SOURCE[s] || [s, "s-grey"];
+    return el("span", {class: "srctag " + m[1], title: "source: " + s, text: m[0]});
   }
 
   var EVENT_CLASS = { "attempt-failed":"b-red","warning":"b-amber","limit-hit":"b-amber",
@@ -315,21 +346,22 @@
       var tr = el("tr", {class:"clickable"}, [
         el("td", {class:"muted mono", text: fmtTime(cy.started_at)}),
         el("td", {}, outcomeBadge(cy.outcome)),
-        el("td", {class:"wrap"}, [
+        el("td", {}, sourceTag(cy.source)),
+        el("td", {class:"wrap roomy"}, [
           cy.repo ? el("span", {class:"mono muted", text: cy.repo.split("/")[1] + " "}) : null,
           esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")) ]),
-        el("td", {}, stageCells),
+        el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         el("td", {}, cy.pr_url ? el("a", {href:cy.pr_url, target:"_blank", text:"PR"}) : document.createTextNode(""))
       ]);
-      var detail = el("tr", {class:"detail", style:"display:none"}, el("td", {colspan:6}, cycleDetail(cy)));
+      var detail = el("tr", {class:"detail", style:"display:none"}, el("td", {colspan:7}, cycleDetail(cy)));
       tr.addEventListener("click", function (ev) {
         if (ev.target.tagName === "A") return;
         detail.style.display = detail.style.display === "none" ? "" : "none";
       });
       rows.push(tr); rows.push(detail);
     });
-    return tableOf(["Started","Outcome","Item","Stages (cost)","Total","PR"], rows);
+    return tableOf(["Started","Outcome","Source","Item","Stages (cost)","Total","PR"], rows);
   }
 
   function cycleDetail(cy) {
