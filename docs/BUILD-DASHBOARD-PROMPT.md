@@ -46,7 +46,8 @@ pipeline state (this machine)            GitHub (public repos, via gh)
                      ▼
         open index.html in a browser  (file://, no server)
 
-Refresh triggers:  end-of-cycle hook in agent-cycle.sh  +  */5 cron heartbeat
+Refresh triggers:  end-of-cycle hook in agent-cycle.sh
+                +  */5 cron → publish-dashboard-launcher.sh (sub-minute ticks)
 ```
 
 The page (`dashboard/index.html`, the source of truth, committed) loads its
@@ -187,13 +188,22 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   the lock to clear does not. `--status` reports both the switch and whether a
   cycle is still running, because disabling stops the next cycle, not the one
   already in flight.)
-- **Heartbeat** — an optional `*/5 * * * *` crontab entry running the
-  Publisher keeps in-flight state, the lock, and live GitHub current between
-  hourly cycles.
+- **Heartbeat** — an optional `*/5 * * * *` crontab entry keeps in-flight
+  state, the lock, and GitHub current between hourly cycles. cron can't fire
+  more than once a minute, so the entry runs `publish-dashboard-launcher.sh`
+  rather than the Publisher directly: the launcher self-loops on 5-second
+  boundaries for ~295s (leaving a ~5s gap so consecutive cron runs don't
+  overlap), republishing local state — lock, running cycle, cost, log — on
+  every tick. A full GitHub-hitting publish runs only once per window (at the
+  top); the cheaper `--no-github` publish runs in between and carries the last
+  fetch forward, so the page stays near-live without hammering the GitHub API.
+  `flock` guards against a slow publish stacking up under the next tick.
 
 ## Deliverables (as built)
 
 - `scripts/publish-dashboard.sh` — the Publisher.
+- `scripts/publish-dashboard-launcher.sh` — the sub-minute heartbeat driver
+  (cron runs it every 5 min; it self-loops on 5-second boundaries).
 - `dashboard/index.html` — the page (committed source; copied beside the
   generated `data.js` at publish time).
 - `scripts/open-dashboard.sh` — regenerate + open in the browser.
