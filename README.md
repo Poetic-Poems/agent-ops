@@ -72,6 +72,7 @@ Edit `config.json` before first run. Keys:
 | `limit_cooldown_default` | 3 | Hours. Stand-down after a usage-limit error. |
 | `disable_default_ttl` | 4 | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | 24 | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
+| `dashboard_refresh_seconds` | 5 | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
 
 The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
 
@@ -370,7 +371,8 @@ strings are redacted, so a screenshot is safe to share.
 ```
 This regenerates the dashboard and opens it in your browser (via `wslview` /
 `explorer.exe` on WSL). Or open `~/.local/state/poetic-agents/dashboard/index.html`
-directly. The page auto-refreshes every 60s and shows how stale its data is.
+directly. The page auto-refreshes every `dashboard_refresh_seconds` (5s by
+default) and shows how stale its data is; untick *auto-refresh* to pause it.
 
 If your browser refuses to load the data over a `file://` URL, serve it
 locally instead (loopback only):

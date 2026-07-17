@@ -587,10 +587,22 @@
   })();
 
   // ---------- auto-refresh (reloads the file, picking up a fresh data.js) ----------
+  // Interval is configurable via config.json's dashboard_refresh_seconds
+  // (default 5s), matching the cadence publish-dashboard-launcher.sh writes at.
+  var refreshMs = Math.max(1, (D.config && +D.config.dashboard_refresh_seconds) || 5) * 1000;
+  // A short interval means frequent full reloads — preserve scroll position so
+  // the page stays usable rather than snapping to the top every few seconds.
+  window.addEventListener("beforeunload", function () {
+    try { sessionStorage.setItem("dashScrollY", String(window.scrollY)); } catch (e) {}
+  });
+  try {
+    var savedY = sessionStorage.getItem("dashScrollY");
+    if (savedY !== null) window.scrollTo(0, +savedY);
+  } catch (e) {}
   var timer = null;
   function schedule() {
     if (timer) clearInterval(timer);
-    if (document.getElementById("autorefresh").checked) timer = setInterval(function () { location.reload(); }, 60000);
+    if (document.getElementById("autorefresh").checked) timer = setInterval(function () { location.reload(); }, refreshMs);
   }
   document.getElementById("autorefresh").addEventListener("change", schedule);
   document.getElementById("refreshbtn").addEventListener("click", function () { location.reload(); });

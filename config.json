@@ -25,6 +25,7 @@
   "limit_cooldown_default": 3,
   "disable_default_ttl": 4,
   "none_selected_recheck_hours": 24,
+  "dashboard_refresh_seconds": 5,
   "review": {
     "repos": ["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"],
     "model": "claude-sonnet-5",

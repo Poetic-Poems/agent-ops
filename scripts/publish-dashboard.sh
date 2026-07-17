@@ -382,7 +382,7 @@ printf '%s' "$github_json"   > "$work_tmp/github.json"
 printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
-  --argjson config "$(jq -c '{repos, coordinator_model, implementor_model_default, implementor_model_trivial, reviewer_model, pr_label, branch_prefix, max_open_agent_prs, timeout_coordinator, timeout_implementor, timeout_reviewer, lock_stale_after, limit_cooldown_default}' "$CONFIG_FILE")" \
+  --argjson config "$(jq -c '{repos, coordinator_model, implementor_model_default, implementor_model_trivial, reviewer_model, pr_label, branch_prefix, max_open_agent_prs, timeout_coordinator, timeout_implementor, timeout_reviewer, lock_stale_after, limit_cooldown_default, dashboard_refresh_seconds}' "$CONFIG_FILE")" \
   --argjson status "$status_json" \
   --argjson counts "$counts_json" \
   --slurpfile cyc "$cycles_file" \
