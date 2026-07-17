@@ -6,7 +6,9 @@
 <title>Agent Pipeline Dashboard</title>
 <!-- Generated data lives in a sibling file the Publisher rewrites each run.
      A plain script tag (not a module) is used so this works from a file:// URL
-     with no server. -->
+     with no server. The page then refreshes itself in place (see the SPA
+     loader at the foot of the script) by re-fetching this same file — it never
+     does a full navigation, so expanded rows and scroll position survive. -->
 <script src="data.js"></script>
 <style>
   :root {
@@ -134,8 +136,8 @@
 <script>
 (function () {
   "use strict";
-  var D = window.DASHBOARD_DATA;
   var app = document.getElementById("app");
+  var D = window.DASHBOARD_DATA;
 
   if (!D) {
     app.innerHTML = '<div class="banner amber">No data yet — run <code class="inline">scripts/publish-dashboard.sh</code> to generate the dashboard.</div>';
@@ -214,99 +216,12 @@
     "pr-raised":"b-blue","pr-ready":"b-green","selection":"b-blue","none-selected":"b-grey",
     "stand-down":"b-grey","cycle-skipped":"b-grey" };
 
-  // ---------- banners ----------
-  var banners = el("div");
-  var st = D.status || {};
-  // The switch first: when it is on, every other signal below ("no cycles",
-  // "no PRs", "nothing selected") is a consequence of it rather than news, and
-  // an operator who reads them in the wrong order goes looking for a fault
-  // that isn't there.
-  if (st.switch && st.switch.disabled) {
-    var sw = st.switch;
-    var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
-    if (sw.by) detail += " — set by " + sw.by;
-    if (sw.since) detail += " at " + sw.since;
-    detail += sw.expires_at ? ("; expires " + sw.expires_at)
-                            : "; no expiry — needs `agent-cycle.sh --enable`";
-    banners.appendChild(el("div", {class:"banner amber"}, [
-      el("span", {text: "⏸ Pipeline disabled — no cycles will start."}),
-      el("span", {class:"sub", text: detail})
-    ]));
-  }
-  if (st.limit && st.limit.active) {
-    banners.appendChild(el("div", {class:"banner amber"}, [
-      el("span", {text: "⏸ Usage limit reached."}),
-      el("span", {class:"sub", text: st.limit.note ? ("Pipeline stands down — " + st.limit.note + ".") : "Pipeline stands down until the limit resets."})
-    ]));
-  }
-  var openPrs = (D.github && D.github.prs) || [];
-  var failedChecks = openPrs.filter(function (p){ return p.checks && p.checks.failed > 0; });
-  if (failedChecks.length) {
-    banners.appendChild(el("div", {class:"banner red"}, [
-      el("span", {text: "✗ " + failedChecks.length + " open agent PR(s) with failing checks."}),
-      el("span", {class:"sub", text: "See Open pull requests below."})
-    ]));
-  }
-  if (D.github && D.github.ok === false) {
-    banners.appendChild(el("div", {class:"banner amber"}, [
-      el("span", {text: "GitHub data unavailable."}),
-      el("span", {class:"sub", text: (D.github.error || "gh could not be reached") + " — showing last local state only."})
-    ]));
-  }
-  app.appendChild(banners);
-
-  // ---------- metric cards ----------
-  var c = D.counts || {};
-  var cards = el("div", {class:"cards"});
-  function card(k, v, sub) {
-    cards.appendChild(el("div", {class:"card"}, [
-      el("div", {class:"k", text:k}),
-      el("div", {class:"v"}, [ typeof v === "string" ? document.createTextNode(v) : v,
-        sub ? el("small", {text: " " + sub}) : null ])
-    ]));
-  }
-  card("Est. token cost today", usd(c.spend_today_usd));
-  card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
-  card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
-  card("Reached ready", String(c.prs_reached_ready || 0));
-  // back-pressure card
-  var openN = openPrs.length, maxN = D.max_open_agent_prs || 0;
-  var gauge = el("div", {class:"gauge"}, el("span", {
-    style: "width:" + (maxN ? Math.min(100, openN/maxN*100) : 0) + "%;background:" + (openN>=maxN && maxN ? "var(--red)" : "var(--accent)")
-  }));
-  cards.appendChild(el("div", {class:"card"}, [
-    el("div", {class:"k", text:"Open agent PRs"}),
-    el("div", {class:"v"}, [document.createTextNode(openN + " "), el("small", {text:"/ " + maxN + " max"})]),
-    gauge
-  ]));
-  app.appendChild(cards);
-
-  // ---------- open PRs ----------
-  app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));
-
-  // ---------- cycle history ----------
-  app.appendChild(sectionOf("Recent cycles", cyclesPanel(D.cycles || [])));
-
-  // ---------- failures & blocked ----------
-  app.appendChild(sectionOf("Failures, blocked & void items", failuresPanel()));
-
-  // ---------- inputs ----------
-  app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
-
-  // ---------- cost & cadence + log ----------
-  var two = el("div", {class:"two"});
-  two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
-  two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
-  app.appendChild(el("section", {}, two));
-  app.appendChild(el("p", {class:"costnote", text:
-    "Cost figures are Claude Code's own local estimate, priced as if these tokens " +
-    "had been billed per-token through the API. On a Claude subscription they are " +
-    "not money charged and not a draw against the session or weekly limit — read " +
-    "them as a measure of how much work the pipeline did, not what it cost. Plan " +
-    "limits are not readable from here; check /usage in an interactive session."}));
-
-  app.appendChild(sectionOf("Recent log events", logPanel()));
-  app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
+  // ---------- UI state preserved across in-place re-renders ----------
+  // The body is rebuilt from scratch each time the data changes; these two
+  // maps carry the operator's open/closed choices across that rebuild so a
+  // 5-second refresh never collapses what they were reading.
+  var expanded = Object.create(null);     // cycle id -> true while its detail row is open
+  var openDetails = Object.create(null);  // "cycle/stage/kind" -> true for open <details>
 
   // ---------- section builder ----------
   function sectionOf(title, body) {
@@ -350,6 +265,10 @@
         var lbl = s[0].toUpperCase() + (g.cost_usd ? " " + usd(g.cost_usd) : "");
         return el("span", {class:"stagecell " + cls, title: s + (g.terminal_reason ? " — " + g.terminal_reason : ""), text: lbl});
       }));
+      // Prefer the stable cycle id; fall back to row index so id-less rows
+      // don't collide on one key and toggle together.
+      var rowKey = cy.id != null ? "id:" + cy.id : "idx:" + i;
+      var isOpen = !!expanded[rowKey];
       var tr = el("tr", {class:"clickable"}, [
         el("td", {class:"muted mono", text: fmtTime(cy.started_at)}),
         el("td", {}, outcomeBadge(cy.outcome)),
@@ -361,10 +280,12 @@
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         el("td", {}, cy.pr_url ? el("a", {href:cy.pr_url, target:"_blank", text:"PR"}) : document.createTextNode(""))
       ]);
-      var detail = el("tr", {class:"detail", style:"display:none"}, el("td", {colspan:7}, cycleDetail(cy)));
+      var detail = el("tr", {class:"detail", style: isOpen ? "" : "display:none"}, el("td", {colspan:7}, cycleDetail(cy)));
       tr.addEventListener("click", function (ev) {
         if (ev.target.tagName === "A") return;
-        detail.style.display = detail.style.display === "none" ? "" : "none";
+        var nowOpen = detail.style.display === "none";
+        detail.style.display = nowOpen ? "" : "none";
+        if (nowOpen) expanded[rowKey] = true; else delete expanded[rowKey];
       });
       rows.push(tr); rows.push(detail);
     });
@@ -397,17 +318,28 @@
       if (g.limit_hit) head.appendChild(el("span", {class:"badge b-amber", text:"usage limit"}));
       box.appendChild(head);
       if (g.status) box.appendChild(el("pre", {class:"tx", text: JSON.stringify(g.status, null, 2)}));
-      if (g.result) box.appendChild(el("details", {class:"tx"}, [
-        el("summary", {text:"final message (" + g.result.length + " chars)"}),
-        el("pre", {class:"tx", text: g.result})
-      ]));
-      if (g.stderr) box.appendChild(el("details", {class:"tx"}, [
-        el("summary", {text:"stderr"}),
-        el("pre", {class:"tx err", text: g.stderr})
-      ]));
+      if (g.result) box.appendChild(trackedDetails(cy.id + "/" + s + "/result",
+        "final message (" + g.result.length + " chars)",
+        el("pre", {class:"tx", text: g.result})));
+      if (g.stderr) box.appendChild(trackedDetails(cy.id + "/" + s + "/stderr",
+        "stderr",
+        el("pre", {class:"tx err", text: g.stderr})));
       w.appendChild(box);
     });
     return w;
+  }
+
+  // A <details> whose open/closed state is remembered by `key` so it survives
+  // an in-place re-render (see the state maps up top).
+  function trackedDetails(key, summaryText, body) {
+    var d = el("details", {class:"tx", open: openDetails[key] ? "" : null}, [
+      el("summary", {text: summaryText}),
+      body
+    ]);
+    d.addEventListener("toggle", function () {
+      if (d.open) openDetails[key] = true; else delete openDetails[key];
+    });
+    return d;
   }
 
   // ---------- failures & blocked ----------
@@ -569,9 +501,119 @@
     return el("div", {class:"panel scroll"}, el("table", {}, [thead, tbody]));
   }
 
+  // ---------- body render ----------
+  // Rebuilds everything under <main> from the current D. Called on first paint
+  // and whenever a refresh brings genuinely new data. Scroll position is saved
+  // and restored around the swap: emptying #app collapses the page height and
+  // the browser would otherwise clamp the scroll to the top on every refresh.
+  function renderBody() {
+    var y = window.scrollY;
+    app.innerHTML = "";
+
+    // ---------- banners ----------
+    var banners = el("div");
+    var st = D.status || {};
+    // The switch first: when it is on, every other signal below ("no cycles",
+    // "no PRs", "nothing selected") is a consequence of it rather than news, and
+    // an operator who reads them in the wrong order goes looking for a fault
+    // that isn't there.
+    if (st.switch && st.switch.disabled) {
+      var sw = st.switch;
+      var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
+      if (sw.by) detail += " — set by " + sw.by;
+      if (sw.since) detail += " at " + sw.since;
+      detail += sw.expires_at ? ("; expires " + sw.expires_at)
+                              : "; no expiry — needs `agent-cycle.sh --enable`";
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⏸ Pipeline disabled — no cycles will start."}),
+        el("span", {class:"sub", text: detail})
+      ]));
+    }
+    if (st.limit && st.limit.active) {
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⏸ Usage limit reached."}),
+        el("span", {class:"sub", text: st.limit.note ? ("Pipeline stands down — " + st.limit.note + ".") : "Pipeline stands down until the limit resets."})
+      ]));
+    }
+    var openPrs = (D.github && D.github.prs) || [];
+    var failedChecks = openPrs.filter(function (p){ return p.checks && p.checks.failed > 0; });
+    if (failedChecks.length) {
+      banners.appendChild(el("div", {class:"banner red"}, [
+        el("span", {text: "✗ " + failedChecks.length + " open agent PR(s) with failing checks."}),
+        el("span", {class:"sub", text: "See Open pull requests below."})
+      ]));
+    }
+    if (D.github && D.github.ok === false) {
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "GitHub data unavailable."}),
+        el("span", {class:"sub", text: (D.github.error || "gh could not be reached") + " — showing last local state only."})
+      ]));
+    }
+    app.appendChild(banners);
+
+    // ---------- metric cards ----------
+    var c = D.counts || {};
+    var cards = el("div", {class:"cards"});
+    function card(k, v, sub) {
+      cards.appendChild(el("div", {class:"card"}, [
+        el("div", {class:"k", text:k}),
+        el("div", {class:"v"}, [ typeof v === "string" ? document.createTextNode(v) : v,
+          sub ? el("small", {text: " " + sub}) : null ])
+      ]));
+    }
+    card("Est. token cost today", usd(c.spend_today_usd));
+    card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
+    card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
+    card("Reached ready", String(c.prs_reached_ready || 0));
+    // back-pressure card
+    var openN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+    var gauge = el("div", {class:"gauge"}, el("span", {
+      style: "width:" + (maxN ? Math.min(100, openN/maxN*100) : 0) + "%;background:" + (openN>=maxN && maxN ? "var(--red)" : "var(--accent)")
+    }));
+    cards.appendChild(el("div", {class:"card"}, [
+      el("div", {class:"k", text:"Open agent PRs"}),
+      el("div", {class:"v"}, [document.createTextNode(openN + " "), el("small", {text:"/ " + maxN + " max"})]),
+      gauge
+    ]));
+    app.appendChild(cards);
+
+    // ---------- open PRs ----------
+    app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));
+
+    // ---------- cycle history ----------
+    app.appendChild(sectionOf("Recent cycles", cyclesPanel(D.cycles || [])));
+
+    // ---------- failures & blocked ----------
+    app.appendChild(sectionOf("Failures, blocked & void items", failuresPanel()));
+
+    // ---------- inputs ----------
+    app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
+
+    // ---------- cost & cadence + log ----------
+    var two = el("div", {class:"two"});
+    two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
+    two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
+    app.appendChild(el("section", {}, two));
+    app.appendChild(el("p", {class:"costnote", text:
+      "Cost figures are Claude Code's own local estimate, priced as if these tokens " +
+      "had been billed per-token through the API. On a Claude subscription they are " +
+      "not money charged and not a draw against the session or weekly limit — read " +
+      "them as a measure of how much work the pipeline did, not what it cost. Plan " +
+      "limits are not readable from here; check /usage in an interactive session."}));
+
+    app.appendChild(sectionOf("Recent log events", logPanel()));
+    app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
+
+    window.scrollTo(0, y);
+  }
+
   // ---------- header live state + freshness ----------
-  (function () {
+  // Cheap; rebuilt on every tick (even when the body is unchanged) so the "data
+  // Ns ago" clock and the running/idle dot stay live.
+  function renderHeaderStatus() {
+    var st = D.status || {};
     var live = document.getElementById("livestate");
+    live.innerHTML = "";
     if (st.running && st.lock) {
       live.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
       live.appendChild(el("span", {class:"muted", text: " since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
@@ -582,30 +624,69 @@
     var fresh = document.getElementById("freshness");
     var gen = parseTs(D.generated_at);
     var ageMin = gen ? (Date.now() - gen.getTime())/60000 : 999;
+    fresh.style.color = "";
     fresh.textContent = "data " + fmtAgo(D.generated_at);
     if (ageMin > 12) { fresh.style.color = "var(--amber)"; fresh.textContent += " ⚠ (heartbeat may be stopped)"; }
-  })();
+  }
 
-  // ---------- auto-refresh (reloads the file, picking up a fresh data.js) ----------
+  // ---------- SPA refresh ----------
+  // Re-fetch data.js in place rather than reloading the page. A fresh <script>
+  // element is injected (not fetch()) so this keeps working from a file:// URL
+  // with no server and no CORS; a cache-busting query defeats HTTP caching so
+  // each tick sees what the Publisher just wrote.
+  function loadData(cb) {
+    var s = document.createElement("script");
+    s.src = "data.js?_=" + Date.now();
+    s.onload = function () { if (s.parentNode) s.parentNode.removeChild(s); cb(window.DASHBOARD_DATA); };
+    s.onerror = function () { if (s.parentNode) s.parentNode.removeChild(s); cb(null); };
+    document.head.appendChild(s);
+  }
+
+  // Signature of everything except generated_at (which changes every publish
+  // even when nothing else did). Lets us skip the body rebuild — and so keep
+  // text selection, hovers and inner scroll intact — when the data is identical.
+  function signature(d) {
+    var clone = {};
+    for (var k in d) if (k !== "generated_at") clone[k] = d[k];
+    return JSON.stringify(clone);
+  }
+
+  var lastSig = null;
+  function applyData(nd) {
+    D = nd;
+    var sig = signature(nd);
+    if (sig === lastSig) return;   // nothing meaningful changed — leave the body as is
+    lastSig = sig;
+    renderBody();
+  }
+
+  var loading = false;
+  function tick() {
+    if (loading) return;           // don't stack fetches if one is slow
+    loading = true;
+    loadData(function (nd) {
+      loading = false;
+      if (nd) applyData(nd);
+      renderHeaderStatus();        // tick the clock even when the body didn't change
+    });
+  }
+
+  // ---------- refresh scheduling ----------
   // Interval is configurable via config.json's dashboard_refresh_seconds
   // (default 5s), matching the cadence publish-dashboard-launcher.sh writes at.
   var refreshMs = Math.max(1, (D.config && +D.config.dashboard_refresh_seconds) || 5) * 1000;
-  // A short interval means frequent full reloads — preserve scroll position so
-  // the page stays usable rather than snapping to the top every few seconds.
-  window.addEventListener("beforeunload", function () {
-    try { sessionStorage.setItem("dashScrollY", String(window.scrollY)); } catch (e) {}
-  });
-  try {
-    var savedY = sessionStorage.getItem("dashScrollY");
-    if (savedY !== null) window.scrollTo(0, +savedY);
-  } catch (e) {}
   var timer = null;
   function schedule() {
-    if (timer) clearInterval(timer);
-    if (document.getElementById("autorefresh").checked) timer = setInterval(function () { location.reload(); }, refreshMs);
+    if (timer) { clearInterval(timer); timer = null; }
+    if (document.getElementById("autorefresh").checked) timer = setInterval(tick, refreshMs);
   }
   document.getElementById("autorefresh").addEventListener("change", schedule);
-  document.getElementById("refreshbtn").addEventListener("click", function () { location.reload(); });
+  document.getElementById("refreshbtn").addEventListener("click", tick);
+
+  // ---------- first paint ----------
+  renderBody();
+  renderHeaderStatus();
+  lastSig = signature(D);
   schedule();
 })();
 </script>
