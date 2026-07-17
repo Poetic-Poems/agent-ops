@@ -54,8 +54,9 @@ base_input() {
     {
       "slug": "o/one",
       "default_branch": "main",
-      "sources": ["security", "tech-debt", "issues"],
+      "sources": ["security", "review-feedback", "tech-debt", "issues"],
       "findings": [{"ref": "dependabot-alert-1", "severity": "high"}],
+      "review_feedback": [],
       "state": {
         "slug": "o/one", "ok": true, "head_sha": "aaa111",
         "issues": [{"n": 7, "u": "2026-07-16T09:00:00Z", "l": ["bug"], "a": ""}],
@@ -68,6 +69,7 @@ base_input() {
       "default_branch": "main",
       "sources": ["issues"],
       "findings": [],
+      "review_feedback": [],
       "state": {
         "slug": "o/two", "ok": true, "head_sha": "bbb222",
         "issues": [], "workflows": [], "open_prs": []
@@ -172,6 +174,14 @@ assert_ne "a newly blocked item changes the fingerprint" \
 # The same id in a different repo is a different item (requirement 34).
 assert_ne "the same item id blocked in a different repo changes the fingerprint" \
   "$(fp_with '.blocked[0].repo = "o/two"')"
+# review-feedback. The candidate only exists while it is the agent's turn (see
+# gather-review-feedback.sh), so its arrival and its disappearance are both
+# fingerprint events. Digesting the PR's reviewDecision instead would be stably
+# CHANGES_REQUESTED before and after the fix, because the agent cannot dismiss a
+# review on its own PR — the fingerprint would never notice the work was done.
+assert_ne "a human requesting changes changes the fingerprint" \
+  "$(fp_with '.repos[0].review_feedback += [{"ref": "pr-57-review-99", "number": 57, "reviewed_at": "2026-07-17T01:22:54Z", "body": "please fix the gitignore gap"}]')"
+
 # Config and prompt: the two inputs that aren't repo state, and the two most
 # likely to be left out. Without them, editing the selection rules does nothing
 # until an unrelated commit lands and you spend the afternoon debugging an edit

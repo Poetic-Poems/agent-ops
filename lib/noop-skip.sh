@@ -38,12 +38,21 @@
 #
 #   tech-debt, implementation-plan, project-review, code | head_sha
 #   security, code-quality                               | findings (verbatim)
+#   review-feedback                                      | review_feedback (verbatim)
 #   issues                                               | issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
 #   blocked / void skip-lists                            | repo|item projections
 #   which repos, which sources, which models             | selection_config
 #   the selection rules themselves                       | coordinator_prompt_sha
+#
+# `review_feedback` is hashed verbatim, like `findings`, and that gets the rule
+# right for free in both directions: its entries only exist while it is the
+# agent's turn to answer a review (see scripts/gather-review-feedback.sh), so a
+# new review round adds one, and the agent's own push removes it. The
+# alternative — digesting the PR's `reviewDecision` — would be stably
+# CHANGES_REQUESTED before *and* after the fix, because the agent cannot dismiss
+# a review on its own PR.
 #
 # The last two are easy to forget and cost the most when forgotten: without
 # them, editing prompts/coordinator.md or adding a source to config.json would
@@ -86,6 +95,7 @@ NOOP_CANON_JQ='
         slug: .slug,
         sources: (.sources // [] | sort),
         findings: (.findings // []),
+        review_feedback: (.review_feedback // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),
         workflows: (.state.workflows // []),

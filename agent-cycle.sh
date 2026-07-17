@@ -129,6 +129,11 @@ implementor_model_default="$(cfg '.implementor_model_default')"
 implementor_model_trivial="$(cfg '.implementor_model_trivial')"
 reviewer_model="$(cfg '.reviewer_model')"
 pr_label="$(cfg '.pr_label')"
+# Read here (rather than left to the Co-Ordinator, which puts it in the work
+# order's `branch`) because requirement 3c's gatherer needs it: a PR is only
+# ours to push to if its head branch is under this prefix. The Human Gate says
+# branches outside it belong to humans.
+branch_prefix="$(cfg '.branch_prefix')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
 timeout_coordinator_min="$(cfg '.timeout_coordinator')"
 timeout_implementor_min="$(cfg '.timeout_implementor')"
@@ -300,6 +305,24 @@ gather_findings() {
 # so a degraded result must be marked, not silently accepted: an unusable
 # sample yields `{"ok": false}` here and the cycle simply declines to
 # fingerprint, which costs one Co-Ordinator run and never a missed one.
+# Pre-fetch the PRs waiting on us to answer a human's review (requirement 3c).
+# Same rationale as gather_findings, plus one specific to this source: the
+# review prose must reach the Implementor verbatim, and the candidate rule
+# ("is it our turn?") has to exist for the fingerprint anyway, so it gets one
+# definition and both consumers read it (requirement 34a).
+gather_review_feedback() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "$slug" "$pr_label" "$branch_prefix" \
+        2>"$cycle_dir/review-feedback-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/review-feedback-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 gather_source_state() {
   local slug="$1" branch="$2" out safe
   safe="${slug//\//_}"
@@ -501,15 +524,23 @@ if [[ -s "$log_file" ]]; then
 fi
 
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
+#
+# The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-
+# pressure throttles starting new work, and until the sources are gathered we do
+# not know whether the only candidate is review-feedback — which finishes work
+# already in the human's queue instead of adding to it. Standing down here would
+# deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
+# all waiting on the agent, and the one source that could clear them never
+# reached. The cost of deferring is the handful of `gh` calls in step 3.
 open_count=0
 while IFS= read -r slug; do
   n="$(gh pr list -R "$slug" --state open --label "$pr_label" --json number --jq 'length' 2>/dev/null || echo 0)"
   open_count=$(( open_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
+backpressure_tripped=0
 if (( open_count >= max_open_agent_prs )); then
-  log_event "stand-down" "$(jq -nc --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs" '{reason: $r}')"
-  exit 0
+  backpressure_tripped=1
 fi
 
 # --- 3. Repo ordering (least recently updated default branch first) ---
@@ -539,8 +570,13 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
     findings="$(gather_findings "$slug")"
   fi
-  entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" --argjson findings "$findings" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings}')"
+  review_feedback="[]"
+  if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
+    review_feedback="$(gather_review_feedback "$slug")"
+  fi
+  entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
+    --argjson findings "$findings" --argjson rf "$review_feedback" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
@@ -550,6 +586,36 @@ while IFS=$'\t' read -r _ slug default_branch; do
   source_states_json="$(jq -c --argjson s "$state" '. + [$s]' <<<"$source_states_json")"
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
+
+# --- 2.2a Back-pressure, decided (requirement 2.2a) ---
+# Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
+# purpose is to throttle new work and stop the human gate silting up — and
+# addressing a review the human has already written does neither: it is the one
+# activity that *un*-silts the gate. So when back-pressure trips we do not stand
+# down if there is review-feedback waiting; we restrict every repo's source list
+# to `review-feedback` alone.
+#
+# No new prompt machinery is needed for that, and deliberately so: the
+# Co-Ordinator is already told the runtime input's `sources` are authoritative
+# over its own table (requirement 15). Narrowing the list is therefore an
+# instruction it already knows how to obey, and the restriction cannot be
+# reasoned around — a source it cannot see is a source it cannot select.
+# The system still cannot open a new PR while the gate is full; it can only
+# finish what is already in it.
+if (( backpressure_tripped )); then
+  rf_waiting="$(jq '[.[].review_feedback[]?] | length' <<<"$ordered_repos_json")"
+  if (( rf_waiting == 0 )); then
+    log_event "stand-down" "$(jq -nc \
+      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback is waiting on us" \
+      '{reason: $r}')"
+    exit 0
+  fi
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback")))]' \
+    <<<"$ordered_repos_json")"
+  log_event "warning" "$(jq -nc \
+    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to review-feedback ($rf_waiting PR(s) awaiting our reply)" \
+    '{detail: $d}')"
+fi
 
 # --- Skip-list extracts (requirement 34: blocked iff the most recent
 #     attempt-failed/unblocked event for that repo+item is attempt-failed;

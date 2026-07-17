@@ -27,6 +27,9 @@ heading, the Script gives you one JSON object:
       "findings": [
         {"source": "security", "kind": "dependabot", "security": true, "severity": "high", "number": 1, "ref": "dependabot-alert-1", "title": "postcss: …", "package": "postcss", "url": "https://github.com/…/security/dependabot/1", "state": "open"},
         {"source": "code-quality", "kind": "code-scanning", "security": false, "severity": "warning", "number": 4, "ref": "code-scanning-alert-4", "rule": "js/unused-local-variable", "title": "Unused variable", "location": "src/x.js:12", "url": "https://github.com/…/security/code-scanning/4", "state": "open"}
+      ],
+      "review_feedback": [
+        {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "last_commit_at": "2026-07-17T01:07:22Z", "body": "…every review body and inline comment in this round, verbatim…"}
       ]
     },
     {
@@ -50,6 +53,10 @@ heading, the Script gives you one JSON object:
   the fixed default this is drawn from — trust what's actually in this
   input over the table if the two ever disagree, since `config.json` is the
   live source of truth).
+- Each entry's `review_feedback` is the repo's PRs awaiting our reply to a
+  human's review, **already fetched, filtered and assembled for you** by the
+  Script (see "Review feedback" below). An empty array means no human is
+  waiting on us — do not go looking.
 - Each entry's `findings` is the repo's open Dependabot alerts and
   code-scanning alerts, **already fetched and normalised for you** by the
   Script — do not re-query the `dependabot/alerts` or `code-scanning/alerts`
@@ -122,8 +129,8 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. project-review · 6. code-quality |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. project-review · 7. code-quality |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. project-review · 7. code-quality |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 7. project-review · 8. code-quality |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
@@ -137,6 +144,11 @@ selectable item:
   `gh api repos/<slug>/contents/reviews/…`. Each recommendation is a candidate;
   its stable ref is `review-<review-date>-R-NN`. See "Project-review
   recommendations" below for how to pick one and dedup against tech-debt.
+- **review-feedback** — pull requests this system raised where a human has
+  reviewed and asked for changes that we have not answered yet, handed to you
+  **pre-fetched** in each repo's `review_feedback` array. Second only to
+  security. See "Review feedback" below.
+
 - **code-quality** — the remaining open code-scanning alerts (no security
   severity: maintainability, correctness, style), also in `findings` (entries
   with `source: "code-quality"`). Lowest priority: automated, speculative, and
@@ -170,8 +182,15 @@ Among security candidates, take the most severe first
 (`critical` > `high` > `medium` > `low`; the pre-fetched `findings` are
 already sorted this way), and use repo order (given) to break ties. Only once
 no selectable security candidate remains do you fall back to the ordinary
-repo-then-source walk for the rest (failed-runs → tech-debt → issues →
-implementation-plan → code-quality).
+repo-then-source walk for the rest (review-feedback → failed-runs → tech-debt →
+issues → implementation-plan → project-review → code-quality).
+
+**Review feedback comes second, across all repos.** Like security, this
+outranks the plain repo-then-source walk: if any selectable `review_feedback`
+candidate exists in *any* repo, take it before any non-security work in a
+more-overdue repo. A human has already spent their time on that PR and asked
+for something specific — they are the only consumer this system has, and the
+work is nearly finished. Finishing beats starting.
 
 **Security & code-quality findings.** Their candidates are the pre-fetched
 `findings` entries (you do not query the alert APIs yourself). Each already
@@ -181,6 +200,42 @@ finding is fixed by bumping the vulnerable dependency to a patched version; a
 code-scanning finding is fixed by correcting the flagged code. Both close
 automatically once the fix lands and the repo is re-scanned — there's no
 ledger to flip.
+
+**Review feedback.** The candidates are the pre-fetched `review_feedback`
+entries, one per PR that is *waiting on us*. Do not go looking for these
+yourself and do not re-query the reviews API: the Script has already applied
+the rule that decides whose turn it is (the latest review is newer than the
+head commit — so the agent has not yet responded), assembled every review body
+and inline comment in the round, and dropped any PR the agent has already
+answered. **An entry's presence in this array is the candidate test.** If the
+array is empty, this source has no candidates; there is nothing to check.
+
+When you select one, take the **oldest `reviewed_at` first** (the array is
+already in that order — the human has been waiting longest on it), and:
+
+- `item` is the entry's `ref` (e.g. `pr-57-review-4718691960`). Use it exactly;
+  it is scoped to this review round on purpose.
+- `context` **must paste the entry's `body` verbatim** — every word of it. That
+  text is a human's specific, considered request, and it is the entire brief.
+  Do not summarise it, shorten it, re-order it, or replace any part of it with
+  your own description of what they meant. It routinely contains several
+  distinct findings of differing severity, and which ones block a merge is the
+  reviewer's call, already stated in their words. Add the entry's `url`,
+  `number`, `branch`, and `head_sha`, and — where the entry names an `item` —
+  that originating reference too.
+- `acceptance` is: every change the reviewer asked for is made (or, where the
+  Implementor disagrees on the merits, answered in a reply on the PR), CI is
+  green, and the PR is left ready for the human to re-review.
+- `model` is always `models.default`: answering a review changes code.
+- `branch` is the entry's existing `branch` — **not** a new one. This is the
+  one source where the branch and the PR already exist; the Implementor pushes
+  to them rather than creating anything.
+
+**Never** treat "the PR is open" as a reason to skip a `review_feedback`
+candidate. That is the ordinary claim rule (exclusion 3), and it does not apply
+here — for this source, the open PR *is* the item. Applying it would make every
+candidate in this array permanently unselectable, which reads as correct
+behaviour and quietly means no human review is ever answered.
 
 **Failed Actions runs.** A candidate exists only where the **most recent**
 run of a workflow on the default branch is a failure — a later green run
@@ -216,7 +271,9 @@ referencing that review; match `R-NN` refs against it. When you select one,
 2. A tech-debt item whose Ledger row is `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
-   this item for. For a security/code-quality finding, "already claimed"
+   this item for. **This exclusion does not apply to the `review-feedback`
+   source**, where the open PR is the item itself (see "Review feedback").
+   For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
    selecting a finding. For a project-review recommendation, "already claimed"
@@ -323,9 +380,13 @@ If you selected an item:
 }
 ```
 
-- `source` is one of `"security"`, `"failed-runs"`, `"tech-debt"`,
-  `"issues"`, `"implementation-plan"`, `"project-review"`, or `"code-quality"`
-  — the same tokens as the `sources` lists in the runtime input above.
+- `source` is one of `"security"`, `"review-feedback"`, `"failed-runs"`,
+  `"tech-debt"`, `"issues"`, `"implementation-plan"`, `"project-review"`, or
+  `"code-quality"` — the same tokens as the `sources` lists in the runtime
+  input above.
+- For a `review-feedback` entry, `item` is its `ref`, `branch` is its existing
+  `branch`, and the work order must also carry `"pr_url"` and `"pr_number"`
+  from the entry — the Implementor pushes to that PR instead of opening one.
 - For a `security`/`code-quality` finding, `item` is the finding's `ref`
   (e.g. `dependabot-alert-42`, `code-scanning-alert-17`) and `context` must
   paste the finding verbatim — its `title`, `severity`, affected

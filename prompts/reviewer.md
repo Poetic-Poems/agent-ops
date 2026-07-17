@@ -130,6 +130,30 @@ your review:
    Human Reviewer performs both, through the ordinary GitHub process. This
    is the only handoff point in the whole pipeline; treat it as such.
 
+### When the work order's `source` is `review-feedback`
+
+The PR already existed and was already ready; a human asked for changes and the
+Implementor has just answered them. Steps 1–5 apply unchanged — review what the
+Implementor pushed, as always — but two things differ, and taking them at face
+value would strand the PR:
+
+- **`mergeable` will be false and `mergeStateStatus` `BLOCKED`, permanently, and
+  that is correct.** The human's `CHANGES_REQUESTED` is what blocks it. Nothing
+  in this pipeline can clear that — GitHub does not let a PR's author dismiss or
+  approve a review on their own PR, and we are the author — and it is meant to
+  stay until they re-review. So in step 6 judge only CI: green checks and every
+  point in the review answered is `ready`. Reporting `needs-human` because the
+  PR is not mergeable would be true of *every* such PR and would file each one
+  as a failure.
+- **`gh pr ready` is a no-op here**; the PR never left ready. Do not put it back
+  to draft.
+
+The thing worth your attention instead is whether the review was actually
+*answered*: read the reviewer's own words in the work order's `context` and
+check each point is either fixed in the diff or explicitly replied to on the PR.
+A point silently skipped is what will waste the human's next review, and it is
+invisible in the diff — it looks exactly like a point they never raised.
+
 ## Ending
 
 Your final message must be **exactly one JSON object and nothing else** —

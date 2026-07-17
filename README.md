@@ -6,12 +6,48 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
 
 Once an hour:
 
-1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else.
-2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request.
+1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else, and answering your review feedback comes second.
+2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
 3. **Reviewer** (Sonnet) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
 
-If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down.
+If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down — cheaply, without waking the Co-Ordinator, when nothing has changed since it last found nothing to do (see [Skipping no-op cycles](#skipping-no-op-cycles)).
+
+## Responding to your review comments
+
+Request changes on an agent PR and the next cycle picks it up: it reads your
+review, pushes a fix to the same branch, replies point by point saying what it
+changed and what it didn't and why, and re-requests your review. It never opens
+a second PR for this, and it never re-does the original work — it amends what's
+there.
+
+This sits second in priority, above everything but security: you're the only
+consumer this system has, so answering you beats starting something new.
+
+Three things to know:
+
+- **The agent can't clear your `CHANGES_REQUESTED`, ever.** GitHub won't let a
+  PR's author dismiss a review on their own PR, and the agent raises PRs as
+  you (`warwickallen`). So the PR stays `BLOCKED` and un-mergeable until *you*
+  re-review. That's not a bug to route around — it's the human gate, enforced
+  by GitHub rather than by good intentions.
+- **It answers each round exactly once.** Whose turn it is comes from comparing
+  your latest review against the branch's head commit: review newer means the
+  agent owes you a reply; commit newer means it has replied and is waiting on
+  you. Request changes again and it comes straight back.
+- **Put the substance where it'll be read.** Every review body and inline
+  comment in the round is passed to the agent verbatim, whichever account wrote
+  it — so a detailed `COMMENTED` review from one account plus a bare
+  `CHANGES_REQUESTED` from another works fine. Say which findings block a merge
+  and which don't; the agent honours that split.
+
+Only PRs this system raised are eligible (labelled `autonomous-agent`, on an
+`agent/` branch). Your own branches are never touched.
+
+Back-pressure doesn't block this: if every agent PR is sitting on "changes
+requested", the cycle restricts itself to review feedback rather than standing
+down, so it can always dig itself out. It still can't open a new PR while the
+gate is full.
 
 ## Configuration
 
@@ -19,7 +55,7 @@ Edit `config.json` before first run. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes second and likewise outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
