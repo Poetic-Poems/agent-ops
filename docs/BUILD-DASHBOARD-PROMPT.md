@@ -153,9 +153,14 @@ One self-contained file: inline CSS + vanilla JS, no framework, no build step,
 no external network requests (works fully offline). Renders from
 `window.DASHBOARD_DATA`; every panel handles missing data gracefully.
 Theme-aware (light/dark via `prefers-color-scheme`); wide tables scroll
-inside their own container. Auto-refreshes every 60s via `location.reload()`
-(which re-reads the freshly generated `data.js`); the header shows how stale
-the data is and warns if the heartbeat looks stopped.
+inside their own container. Refreshes in place rather than reloading: on a
+configurable interval (`config.json`'s `dashboard_refresh_seconds`, default
+5s) it re-fetches `data.js` by injecting a cache-busted `<script>` — not
+`fetch()`, so it keeps working from a `file://` URL with no server or CORS —
+and re-renders the body **only when the data actually changed** (a signature
+compare that ignores the always-moving `generated_at`). Expanded cycle rows,
+open transcript panels and scroll position survive the re-render; the header's
+staleness clock ticks every interval and warns if the heartbeat looks stopped.
 
 Panels: status header + disabled / usage-limit / failing-checks / gh-down
 banners (the switch first: when it is set, every other quiet signal on the page
@@ -297,3 +302,21 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   the page, since it is the only escape hatch and it exists nowhere in the
   UI). Collapsing them costs the operator the one distinction the pipeline
   cannot make for itself.
+- **The page refreshes its data in place, not by reloading.** The heartbeat
+  once published every 5 minutes and the page reloaded itself every 60s with
+  `location.reload()`. When the heartbeat moved to ~5s
+  (`publish-dashboard-launcher.sh`), a full reload every few seconds was
+  unusable: it collapsed every expanded cycle row, closed open transcripts,
+  flashed the screen and snapped scroll to the top. So the one-shot render was
+  made re-runnable and the refresh now re-fetches `data.js` and re-renders in
+  place. Two properties keep that cheap and non-disruptive. It re-renders
+  **only when the data actually changed** — comparing a signature that omits
+  `generated_at` (which moves every publish) — so an idle pipeline's open tabs
+  sit perfectly still. And the fetch is an **injected cache-busted `<script>`,
+  not `fetch()`**, so the page keeps loading from a `file://` URL with no
+  server and no CORS — the same reason the initial load uses a plain
+  `<script src>`. Expanded rows, open `<details>` and scroll position are
+  carried across the re-render in two small keyed maps. One deliberate
+  consequence of only-on-change: the relative "3m ago" cells stop advancing
+  while the pipeline is idle and catch up the moment new data lands — the
+  header's own staleness clock keeps ticking, so freshness is never in doubt.
