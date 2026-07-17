@@ -65,6 +65,19 @@ same way `agent-cycle.sh` reads them.
   semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`); void
   items use requirement 34c's (most recent `item-void`/`unvoided`). Both come
   from the shared library, never from a local copy of the rule.
+- **`disabled.json`** — the switch (requirement 2.3), read through
+  `lib/toggle.sh`: the same code the pipelines gate on, so the dashboard cannot
+  disagree with them about whether cycles are meant to be running (requirement
+  34a). Surfaced as `status.switch` and rendered as the *first* banner, ahead
+  of the usage-limit one.
+
+  This panel earns its place by being the one thing a disabled pipeline looks
+  like. Everything else on the page renders a disabled pipeline exactly as it
+  renders a quiet one: no cycles, no PRs, no failures, no errors. Without the
+  banner, a switch someone set on Tuesday is indistinguishable from a week with
+  nothing to do — which is how it goes unnoticed until Friday. Show the reason,
+  who set it, and its expiry (or that it has none and needs `--enable`), since
+  those are precisely the questions an operator has next.
 - **`cycles/<cycle-id>/<stage>.out`** — the `claude --output-format json`
   envelope (requirement 11). Fields used: `result` (final message → parsed
   into the work order / status object via the same straight-parse-else-last-
@@ -136,7 +149,10 @@ inside their own container. Auto-refreshes every 60s via `location.reload()`
 (which re-reads the freshly generated `data.js`); the header shows how stale
 the data is and warns if the heartbeat looks stopped.
 
-Panels: status header + usage-limit / failing-checks / gh-down banners;
+Panels: status header + disabled / usage-limit / failing-checks / gh-down
+banners (the switch first: when it is set, every other quiet signal on the page
+is a consequence of it rather than news, and an operator reading them in the
+other order goes looking for a fault that isn't there);
 metric cards (spend today/total, failures, reached-ready, back-pressure gauge
 vs `max_open_agent_prs`); open PRs; recent cycles (click a row for per-stage
 detail with the parsed status, full transcript, and stderr); failures,
@@ -151,7 +167,12 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   so it can never change the cycle's outcome, exit code, or timing. It is the
   only change to `agent-cycle.sh`. (Never edit `agent-cycle.sh` while a cycle
   is running — editing a running bash script shifts byte offsets and corrupts
-  the live process; wait for the lock to clear first.)
+  the live process. Use `agent-cycle.sh --disable '<why>'` before editing and
+  `--enable` after: that is what the switch of requirement 2.3 is for, and it
+  also stops the *next* hourly tick from starting mid-edit, which waiting for
+  the lock to clear does not. `--status` reports both the switch and whether a
+  cycle is still running, because disabling stops the next cycle, not the one
+  already in flight.)
 - **Heartbeat** — an optional `*/5 * * * *` crontab entry running the
   Publisher keeps in-flight state, the lock, and live GitHub current between
   hourly cycles.

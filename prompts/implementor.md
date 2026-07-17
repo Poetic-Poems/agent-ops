@@ -38,6 +38,51 @@ order verbatim:
 insufficient to proceed safely, that's grounds to report `blocked`, not to
 invent requirements.
 
+### When `source` is `review-feedback`
+
+This one work order inverts the assumptions the rest of this prompt is written
+around, so read this before the Procedure. A human has reviewed a pull request
+this system already raised and asked for changes. **The branch and the PR
+exist.** The work order carries `pr_url` and `pr_number` alongside the usual
+fields, and `branch` names the existing branch.
+
+- **Do not open a pull request, and do not create a branch.** `git checkout`
+  the work order's `branch` (it is on the remote already) and push to it. There
+  is no draft-PR claim to make: the PR *is* the claim, and it has been there
+  since the original cycle.
+- **Do not re-do the original item.** The branch already contains the work; you
+  are amending it in response to the review. Read the diff first
+  (`gh pr diff <pr_number>`) so you are changing what is there rather than
+  writing it again.
+- **`context` is the reviewer's own words, pasted verbatim** — every review
+  body and inline comment in this round. It is a brief written by a human for
+  you, and it is normally specific: a named file, a named flag, a named line.
+  Treat it as such. Where it separates blocking from non-blocking findings,
+  honour that separation.
+- **You may disagree, and sometimes should.** A reviewer can be wrong, or can
+  ask for something that turns out to conflict with the code. Where you are
+  confident they are mistaken, do not silently skip it and do not implement
+  something you believe is wrong: reply on the PR saying what you found and
+  why, and treat that item as answered. An unanswered request is the one
+  outcome that wastes their next review too.
+- **Answer the review before you finish.** Post one PR comment summarising what
+  you changed for each point raised, and what you did not change and why. Then
+  re-request review from the reviewer
+  (`gh api -X POST repos/<slug>/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'`,
+  best-effort — if it fails, say so in the comment instead and carry on; a
+  failed notification must not fail the work).
+- **You cannot clear the block, by design.** GitHub does not let a PR's author
+  dismiss or approve a review on their own PR, and this system raises PRs as
+  the same account it runs as. The `CHANGES_REQUESTED` decision therefore stays
+  set until the human re-reviews, and that is the human gate working, not a
+  fault. Do not try to route around it — no `gh pr review --approve`, no
+  dismissing the review, no merging. Push the fix, reply, and stop.
+- **Leave the PR ready, not draft.** It was already ready for review; putting it
+  back to draft would read to the human as "not for you yet".
+- The `status: "complete"` you report means *the feedback is answered and
+  pushed*, not that the PR is merged. It will not be mergeable — the review
+  still blocks it — so do not treat `mergeable: false` as a failure here.
+
 ## Where you're running
 
 Your working directory is a fresh clone of `repo`, created by the Script
@@ -113,6 +158,10 @@ Both target repos follow these rules:
 
 ## Procedure
 
+*(Steps 1 and 2 do not apply when `source` is `review-feedback` — the branch and
+the PR already exist. Check out the work order's `branch` and go straight to
+step 3, following "When `source` is `review-feedback`" above.)*
+
 1. **Branch.** From `default_branch`, create and check out the branch named
    in the work order.
 2. **Claim before implementing.** Before writing the fix, open a **draft**
@@ -186,6 +235,12 @@ Both target repos follow these rules:
    merge, matching the repo's convention) and re-verify. Leave the PR as a
    **draft** either way; flipping it to ready is the Reviewer's job, not
    yours.
+
+   *For `review-feedback`:* still rebase if `default_branch` has moved, but
+   expect `mergeable` to remain false and `mergeStateStatus` to be `BLOCKED`
+   — the human's `CHANGES_REQUESTED` is what blocks it, you cannot clear it,
+   and it is meant to stay until they re-review. Judge yourself on CI being
+   green and every point being answered, and leave the PR **ready**, not draft.
 
 ## Ending
 

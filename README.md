@@ -6,12 +6,48 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
 
 Once an hour:
 
-1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else.
-2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request.
+1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else, and answering your review feedback comes second.
+2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
 3. **Reviewer** (Sonnet) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
 
-If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down.
+If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down — cheaply, without waking the Co-Ordinator, when nothing has changed since it last found nothing to do (see [Skipping no-op cycles](#skipping-no-op-cycles)).
+
+## Responding to your review comments
+
+Request changes on an agent PR and the next cycle picks it up: it reads your
+review, pushes a fix to the same branch, replies point by point saying what it
+changed and what it didn't and why, and re-requests your review. It never opens
+a second PR for this, and it never re-does the original work — it amends what's
+there.
+
+This sits second in priority, above everything but security: you're the only
+consumer this system has, so answering you beats starting something new.
+
+Three things to know:
+
+- **The agent can't clear your `CHANGES_REQUESTED`, ever.** GitHub won't let a
+  PR's author dismiss a review on their own PR, and the agent raises PRs as
+  you (`warwickallen`). So the PR stays `BLOCKED` and un-mergeable until *you*
+  re-review. That's not a bug to route around — it's the human gate, enforced
+  by GitHub rather than by good intentions.
+- **It answers each round exactly once.** Whose turn it is comes from comparing
+  your latest review against the branch's head commit: review newer means the
+  agent owes you a reply; commit newer means it has replied and is waiting on
+  you. Request changes again and it comes straight back.
+- **Put the substance where it'll be read.** Every review body and inline
+  comment in the round is passed to the agent verbatim, whichever account wrote
+  it — so a detailed `COMMENTED` review from one account plus a bare
+  `CHANGES_REQUESTED` from another works fine. Say which findings block a merge
+  and which don't; the agent honours that split.
+
+Only PRs this system raised are eligible (labelled `autonomous-agent`, on an
+`agent/` branch). Your own branches are never touched.
+
+Back-pressure doesn't block this: if every agent PR is sitting on "changes
+requested", the cycle restricts itself to review feedback rather than standing
+down, so it can always dig itself out. It still can't open a new PR while the
+gate is full.
 
 ## Configuration
 
@@ -19,7 +55,7 @@ Edit `config.json` before first run. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes second and likewise outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -34,6 +70,8 @@ Edit `config.json` before first run. Keys:
 | `timeout_reviewer` | 30 | Minutes. |
 | `lock_stale_after` | 3 | Hours. Stale lock is killed and warning is logged. |
 | `limit_cooldown_default` | 3 | Hours. Stand-down after a usage-limit error. |
+| `disable_default_ttl` | 4 | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
+| `none_selected_recheck_hours` | 24 | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 
 The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
 
@@ -125,6 +163,70 @@ Launches implementor and reviewer in the foreground. Leaves the PR and workspace
 ### Restrict to one repo (for testing)
 ```bash
 ./agent-cycle.sh --repo poetic
+```
+
+## Pausing the pipelines
+
+Both cron pipelines run the code in *this* working tree. Editing
+`agent-cycle.sh`, `lib/`, or `prompts/` while a cycle is about to start means
+the next tick sources half of one revision and half of another — so before
+working on this repo, turn the pipelines off:
+
+```bash
+./agent-cycle.sh --disable "editing lib/cycle-state.sh"   # expires after disable_default_ttl (4 h)
+./agent-cycle.sh --disable "big refactor" --for 8h        # or 90m, 2d, or `forever`
+./agent-cycle.sh --status                                 # what's set, and is anything running?
+./agent-cycle.sh --enable                                 # resume
+```
+
+The switch is one file (`$state_dir/disabled.json`) shared by **both**
+`agent-cycle.sh` and `review-cycle.sh` — they run out of the same tree, so
+stopping one and not the other stops nothing much. `agent-cycle.sh` is the only
+way to set it; `review-cycle.sh` only obeys it.
+
+Three things worth knowing:
+
+- **Disabling stops the *next* cycle, not one already running.** `--status`
+  tells you whether a cycle is in flight, and `--disable` warns you if there
+  is. Wait for it to finish before editing files it is reading.
+- **A disable expires by default.** The point is not tidiness: an agent that
+  disables the pipeline and then dies would otherwise stop every future cycle
+  silently — "no PRs" looks exactly like a quiet week. The TTL turns a
+  forgotten switch into a few lost cycles. Use `--for forever` when you mean
+  it, and `--enable` when you're done.
+- **A reason is required**, because the next person wondering why nothing has
+  happened is entitled to one. It shows up in `--status`, in the log, and on
+  the dashboard banner.
+
+## Skipping no-op cycles
+
+The Co-Ordinator costs the same to say "nothing to do" as it does to select
+work — about 2½ minutes of Haiku, reading both repos. On a quiet week that was
+24 identical answers a day, all of them paid for.
+
+So before launching it, the Script fingerprints everything the Co-Ordinator's
+verdict depends on: each repo's head commit, its pre-fetched findings, its open
+issues (with labels and assignees), the conclusion of each workflow's latest
+run, its open PRs (a PR is a claim), the blocked and void lists, the selection
+config, and a hash of `prompts/coordinator.md`. If that fingerprint matches the
+one recorded against the last `none-selected`, nothing the Co-Ordinator reads
+has moved, so its answer cannot have changed — the cycle stands down for the
+price of a few `gh` calls.
+
+The claim is only ever "nothing changed", never "there is no work". If anything
+at all is different — including a repo the Script couldn't read cleanly — the
+Co-Ordinator runs. And `none_selected_recheck_hours` (24 h) forces it to run
+anyway once a day regardless, so if some future work source is ever missed by
+the fingerprint, the cost is a day's delay rather than a pipeline that has
+quietly stopped picking up work forever.
+
+`--dry-run` and `--once` always ask the Co-Ordinator: a human asking for a
+cycle wants an answer, not a cached verdict.
+
+```bash
+# Why did a cycle stand down?
+jq -r 'select(.event == "stand-down") | "\(.ts)  \(.reason)"' \
+  ~/.local/state/poetic-agents/log.jsonl | tail -5
 ```
 
 ### See the log
@@ -249,7 +351,8 @@ See `docs/BUILD-REVIEW-PROMPT.md` for the full specification.
 ## Monitoring dashboard
 
 A local, single-page dashboard shows everything at a glance: whether a cycle
-is running, usage-limit stand-downs, open agent PRs and their CI status,
+is running, whether the pipelines are disabled and why, usage-limit
+stand-downs, open agent PRs and their CI status,
 recent cycles with per-stage cost/duration/model, failures, blocked and void
 items, the work sources the Co-Ordinator sees, spend by day and by model, and
 the raw log — with each stage's transcript viewable inline.
@@ -296,10 +399,29 @@ sudo service cron start
 ```
 
 **No cycles firing:**
-Check the cron log:
+Check the switch first — it's the one cause that leaves no trace of a problem,
+because a disabled pipeline and a quiet week look identical:
+```bash
+./agent-cycle.sh --status
+```
+If it's disabled, `--enable` resumes it. Otherwise, check the cron log:
 ```bash
 tail -50 ~/.local/state/poetic-agents/cron.log
 ```
+
+**Cycles firing but never reaching the Co-Ordinator:**
+Expected on a quiet repo — see [Skipping no-op cycles](#skipping-no-op-cycles);
+a `stand-down` whose reason begins `no-op short-circuit` is the system working.
+It becomes a *fault* only if there is genuinely work waiting, which would mean
+some source isn't covered by the fingerprint. The recheck valve
+(`none_selected_recheck_hours`) breaks the loop within a day either way, and
+`--once` forces the Co-Ordinator immediately:
+```bash
+./agent-cycle.sh --once    # bypasses the short-circuit
+```
+If `--once` then picks up work that hourly cycles were skipping, the
+fingerprint is missing a signal — a bug worth filing, in
+`scripts/gather-source-state.sh`.
 
 **Stale lock warning:**
 If a cycle was killed or hung and left a lock older than 3 hours, the next cycle will kill it and log a `warning` event. Inspect the old cycle's transcript to see what went wrong.
@@ -354,6 +476,14 @@ To run the unit tests (plain bash, no framework; each is self-contained and
 exits non-zero on the first failed assertion):
 ```bash
 for t in test/*.test.sh; do "$t" || break; done
+```
+
+Before editing anything in this repo, stop the pipelines — they run the files
+you are editing (see [Pausing the pipelines](#pausing-the-pipelines)):
+```bash
+./agent-cycle.sh --disable "working on agent-ops" && ./agent-cycle.sh --status
+# ... work ...
+./agent-cycle.sh --enable
 ```
 
 To test a full cycle without cron:

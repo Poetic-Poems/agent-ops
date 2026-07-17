@@ -17,7 +17,7 @@ path_dirs=(/usr/local/bin /usr/bin /bin "$HOME/.local/bin" "$HOME/.claude/local"
 PATH="$(IFS=:; echo "${path_dirs[*]}"):$PATH"
 export PATH
 
-for bin in claude gh git jq; do
+for bin in claude gh git jq sha256sum; do
   if ! command -v "$bin" >/dev/null 2>&1; then
     echo "agent-cycle: required binary not found on PATH: $bin" >&2
     exit 1
@@ -32,19 +32,86 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/toggle.sh
+. "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/noop-skip.sh
+. "$SCRIPT_DIR/lib/noop-skip.sh"
+
+usage() {
+  cat <<'EOF'
+usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
+       agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>]
+       agent-cycle.sh --enable
+       agent-cycle.sh --status
+
+Run one cycle of the autonomous agent pipeline, or manage the switch that
+stops cycles from starting (shared with review-cycle.sh).
+
+  --dry-run          Select an item and print the work order; implement nothing.
+  --once             One verbose cycle in the foreground.
+  --repo <slug>      Restrict selection to one configured repo (testing).
+  --disable [reason] Stop future cycles starting. A reason is required — the
+                     next person to wonder why nothing is happening is entitled
+                     to one. Expires after `disable_default_ttl` unless --for
+                     says otherwise.
+  --for <duration>   How long --disable lasts: 90m, 4h, 2d, or `forever`.
+  --enable           Clear the switch and let cycles run again.
+  --status           Report the switch and whether either pipeline is running.
+
+--dry-run and --once bypass the no-op short-circuit (requirement 3b): a human
+asking for a cycle wants the Co-Ordinator's answer, not a cached verdict. They
+do not bypass the switch — if you disabled the pipeline to edit these files,
+running them by hand is the same hazard.
+EOF
+}
 
 # --- Flags ---
 DRY_RUN=0
 ONCE=0
 REPO_FILTER=""
+MANAGE_ACTION=""
+DISABLE_REASON=""
+DISABLE_FOR=""
+set_manage_action() {
+  if [[ -n "$MANAGE_ACTION" ]]; then
+    echo "agent-cycle: --disable, --enable and --status are mutually exclusive" >&2
+    exit 64
+  fi
+  MANAGE_ACTION="$1"
+}
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --dry-run) DRY_RUN=1; shift ;;
     --once) ONCE=1; shift ;;
     --repo) REPO_FILTER="${2:-}"; shift 2 ;;
-    *) echo "agent-cycle: unknown argument: $1" >&2; exit 64 ;;
+    --disable)
+      set_manage_action disable; shift
+      # A bare `--disable "editing lib/"` reads far better than forcing
+      # `--reason`, and the next token can only be a reason if it isn't a flag.
+      if [[ $# -gt 0 && "$1" != --* ]]; then DISABLE_REASON="$1"; shift; fi
+      ;;
+    --enable) set_manage_action enable; shift ;;
+    --status) set_manage_action status; shift ;;
+    --for) DISABLE_FOR="${2:-}"; shift 2 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "agent-cycle: unknown argument: $1" >&2; usage >&2; exit 64 ;;
   esac
 done
+
+if [[ -n "$MANAGE_ACTION" ]]; then
+  if (( DRY_RUN || ONCE )) || [[ -n "$REPO_FILTER" ]]; then
+    echo "agent-cycle: --disable/--enable/--status manage the switch; they do not run a cycle" >&2
+    exit 64
+  fi
+  if [[ "$MANAGE_ACTION" != "disable" && -n "$DISABLE_FOR" ]]; then
+    echo "agent-cycle: --for only applies to --disable" >&2
+    exit 64
+  fi
+  if [[ "$MANAGE_ACTION" == "disable" && -z "$DISABLE_REASON" ]]; then
+    echo "agent-cycle: --disable needs a reason, e.g. --disable 'editing lib/cycle-state.sh'" >&2
+    exit 64
+  fi
+fi
 
 # --- Config ---
 expand_home() {
@@ -62,21 +129,32 @@ implementor_model_default="$(cfg '.implementor_model_default')"
 implementor_model_trivial="$(cfg '.implementor_model_trivial')"
 reviewer_model="$(cfg '.reviewer_model')"
 pr_label="$(cfg '.pr_label')"
+# Read here (rather than left to the Co-Ordinator, which puts it in the work
+# order's `branch`) because requirement 3c's gatherer needs it: a PR is only
+# ours to push to if its head branch is under this prefix. The Human Gate says
+# branches outside it belong to humans.
+branch_prefix="$(cfg '.branch_prefix')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
 timeout_coordinator_min="$(cfg '.timeout_coordinator')"
 timeout_implementor_min="$(cfg '.timeout_implementor')"
 timeout_reviewer_min="$(cfg '.timeout_reviewer')"
 lock_stale_after_hours="$(cfg '.lock_stale_after')"
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
+disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
+none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours // 24')"
 all_repos_json="$(cfg_json '.repos')"
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
 log_file="$state_dir/log.jsonl"
 lock_file="$state_dir/lock.json"
+review_lock_file="$state_dir/review-lock.json"
 
 cycle_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
 cycle_dir="$state_dir/cycles/$cycle_id"
-mkdir -p "$cycle_dir"
+# A management command runs no stages and writes no transcripts; giving it a
+# cycle directory would leave an empty one behind for every --status anyone
+# ever ran.
+[[ -n "$MANAGE_ACTION" ]] || mkdir -p "$cycle_dir"
 
 # --- Logging ---
 log_event() {
@@ -86,6 +164,62 @@ log_event() {
   jq -nc --arg ts "$ts" --arg cycle "$cycle_id" --arg event "$event" --argjson fields "$fields" \
     '{ts: $ts, cycle: $cycle, event: $event} + $fields' >> "$log_file"
 }
+
+# --- Management commands (--disable / --enable / --status) ---
+# Handled here, before the lock and before any `gh` call: they change no
+# pipeline state that the lock protects, and `--status` must stay usable — and
+# instant — while a cycle holds the lock, since "is one running right now?" is
+# the question it is most often asked.
+#
+# The switch's transitions are logged like any other state change. An operator
+# finding cycles stopped is owed the same evidence trail as one finding them
+# failing, and `disabled`/`enabled` events are what let the dashboard say why.
+refresh_dashboard() {
+  if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
+    timeout 120 "$SCRIPT_DIR/scripts/publish-dashboard.sh" >/dev/null 2>&1 || true
+  fi
+}
+
+if [[ -n "$MANAGE_ACTION" ]]; then
+  case "$MANAGE_ACTION" in
+    status)
+      toggle_status_report "$state_dir" "cycle=$lock_file" "review=$review_lock_file"
+      exit 0
+      ;;
+    disable)
+      by="${USER:-unknown}@$(hostname 2>/dev/null || echo '?') pid $$"
+      if ! record="$(toggle_disable "$state_dir" "$DISABLE_REASON" "$DISABLE_FOR" \
+                       "$disable_default_ttl_hours" "$by")"; then
+        exit 64
+      fi
+      log_event "disabled" "$(jq -nc --argjson r "$record" \
+        '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by}')"
+      printf 'agent-cycle: disabled — %s\n' "$(toggle_describe "$record")"
+      # Say it plainly rather than leaving it to be discovered: an agent that
+      # disables the pipeline to edit these files has not stopped the cycle
+      # that is already reading them.
+      held="$(toggle_lock_held "$lock_file")"
+      [[ -n "$held" ]] && printf 'agent-cycle: WARNING — a cycle is still running (%s); it will finish.\n' "$held"
+      held="$(toggle_lock_held "$review_lock_file")"
+      [[ -n "$held" ]] && printf 'agent-cycle: WARNING — a review cycle is still running (%s); it will finish.\n' "$held"
+      refresh_dashboard
+      exit 0
+      ;;
+    enable)
+      record="$(toggle_clear "$state_dir")"
+      if [[ -n "$record" ]]; then
+        log_event "enabled" "$(jq -nc --argjson r "$record" \
+          '{detail: "cleared by hand", was: $r}')"
+        printf 'agent-cycle: enabled — cleared the disable set at %s (%s)\n' \
+          "$(jq -r '.disabled_at // "?"' <<<"$record")" "$(jq -r '.reason // "?"' <<<"$record")"
+      else
+        printf 'agent-cycle: already enabled — no switch was set\n'
+      fi
+      refresh_dashboard
+      exit 0
+      ;;
+  esac
+fi
 
 # The repo and item this cycle selected, once the Co-Ordinator has picked one.
 # Requirement 33 puts `repo`/`item` on an event where applicable, and the
@@ -162,6 +296,43 @@ gather_findings() {
     printf '%s' "$out"
   else
     printf '[]'
+  fi
+}
+
+# Sample the change-detection signals the no-op short-circuit (requirement 3b)
+# fingerprints. Unlike gather_findings, this output is never shown to the
+# Co-Ordinator — it is a proxy for the reads the Co-Ordinator performs itself —
+# so a degraded result must be marked, not silently accepted: an unusable
+# sample yields `{"ok": false}` here and the cycle simply declines to
+# fingerprint, which costs one Co-Ordinator run and never a missed one.
+# Pre-fetch the PRs waiting on us to answer a human's review (requirement 3c).
+# Same rationale as gather_findings, plus one specific to this source: the
+# review prose must reach the Implementor verbatim, and the candidate rule
+# ("is it our turn?") has to exist for the fingerprint anyway, so it gets one
+# definition and both consumers read it (requirement 34a).
+gather_review_feedback() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "$slug" "$pr_label" "$branch_prefix" \
+        2>"$cycle_dir/review-feedback-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/review-feedback-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
+gather_source_state() {
+  local slug="$1" branch="$2" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-source-state.sh" "$slug" "$branch" \
+        2>"$cycle_dir/source-state-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "object" and has("ok")' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/source-state-$safe.json"
+    printf '%s' "$out"
+  else
+    jq -nc --arg s "$slug" '{slug: $s, ok: false}'
   fi
 }
 
@@ -277,6 +448,34 @@ run_claude_stage() {
 log_event "cycle-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo true || echo false)" \
   --argjson dry_run "$([[ $DRY_RUN == 1 ]] && echo true || echo false)" '{once: $once, dry_run: $dry_run}')"
 
+# --- 0. The switch (requirement 2.3) ---
+# Checked before the lock and before any `gh` call, because a disabled pipeline
+# should cost nothing at all — and because taking a lock a disabled cycle will
+# immediately drop only widens the window in which a real cycle sees it held.
+#
+# An expired switch is cleared here rather than ignored, and the clearing is
+# logged: cycles resuming is a state change, and an operator should be able to
+# find out from the log why they resumed without knowing to look for a file
+# that is, by then, gone. Deliberately not gated on --once or --dry-run — the
+# switch means "these files are being edited, do not run them", which is no
+# less true when a human is the one running them.
+switch_state="$(toggle_state "$state_dir")"
+case "$(jq -r '.state' <<<"$switch_state")" in
+  expired)
+    expired_record="$(jq -c '.record' <<<"$switch_state")"
+    toggle_clear "$state_dir" >/dev/null
+    log_event "enabled" "$(jq -nc --argjson r "$expired_record" \
+      '{detail: "disable expired", was: $r}')"
+    ;;
+  disabled)
+    log_event "stand-down" "$(jq -nc \
+      --arg r "disabled: $(toggle_describe "$(jq -c '.record' <<<"$switch_state")")" \
+      '{reason: $r}')"
+    (( ONCE )) && echo "agent-cycle: the pipeline is disabled — run --status for detail, --enable to resume" >&2
+    exit 0
+    ;;
+esac
+
 # --- 1. Lock ---
 acquire_lock() {
   if [[ -f "$lock_file" ]]; then
@@ -325,15 +524,23 @@ if [[ -s "$log_file" ]]; then
 fi
 
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
+#
+# The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-
+# pressure throttles starting new work, and until the sources are gathered we do
+# not know whether the only candidate is review-feedback — which finishes work
+# already in the human's queue instead of adding to it. Standing down here would
+# deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
+# all waiting on the agent, and the one source that could clear them never
+# reached. The cost of deferring is the handful of `gh` calls in step 3.
 open_count=0
 while IFS= read -r slug; do
   n="$(gh pr list -R "$slug" --state open --label "$pr_label" --json number --jq 'length' 2>/dev/null || echo 0)"
   open_count=$(( open_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
+backpressure_tripped=0
 if (( open_count >= max_open_agent_prs )); then
-  log_event "stand-down" "$(jq -nc --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs" '{reason: $r}')"
-  exit 0
+  backpressure_tripped=1
 fi
 
 # --- 3. Repo ordering (least recently updated default branch first) ---
@@ -348,6 +555,7 @@ else
 fi
 
 ordered_repos_json="[]"
+source_states_json="[]"
 while IFS= read -r slug; do
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
   commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>/dev/null || echo "1970-01-01T00:00:00Z")"
@@ -362,11 +570,52 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
     findings="$(gather_findings "$slug")"
   fi
-  entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" --argjson findings "$findings" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings}')"
+  review_feedback="[]"
+  if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
+    review_feedback="$(gather_review_feedback "$slug")"
+  fi
+  entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
+    --argjson findings "$findings" --argjson rf "$review_feedback" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
+  # Kept in a separate array, never folded into the entry above: this is the
+  # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
+  # byte the Co-Ordinator pays to read. A cost-control feature that grows the
+  # prompt it is meant to avoid buying has not saved anything.
+  state="$(gather_source_state "$slug" "$default_branch")"
+  source_states_json="$(jq -c --argjson s "$state" '. + [$s]' <<<"$source_states_json")"
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
+
+# --- 2.2a Back-pressure, decided (requirement 2.2a) ---
+# Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
+# purpose is to throttle new work and stop the human gate silting up — and
+# addressing a review the human has already written does neither: it is the one
+# activity that *un*-silts the gate. So when back-pressure trips we do not stand
+# down if there is review-feedback waiting; we restrict every repo's source list
+# to `review-feedback` alone.
+#
+# No new prompt machinery is needed for that, and deliberately so: the
+# Co-Ordinator is already told the runtime input's `sources` are authoritative
+# over its own table (requirement 15). Narrowing the list is therefore an
+# instruction it already knows how to obey, and the restriction cannot be
+# reasoned around — a source it cannot see is a source it cannot select.
+# The system still cannot open a new PR while the gate is full; it can only
+# finish what is already in it.
+if (( backpressure_tripped )); then
+  rf_waiting="$(jq '[.[].review_feedback[]?] | length' <<<"$ordered_repos_json")"
+  if (( rf_waiting == 0 )); then
+    log_event "stand-down" "$(jq -nc \
+      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback is waiting on us" \
+      '{reason: $r}')"
+    exit 0
+  fi
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback")))]' \
+    <<<"$ordered_repos_json")"
+  log_event "warning" "$(jq -nc \
+    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to review-feedback ($rf_waiting PR(s) awaiting our reply)" \
+    '{detail: $d}')"
+fi
 
 # --- Skip-list extracts (requirement 34: blocked iff the most recent
 #     attempt-failed/unblocked event for that repo+item is attempt-failed;
@@ -375,6 +624,56 @@ rm -f "$cycle_dir/.repo_ts"
 #     first and may never clear the second. ---
 blocked_json="$(blocked_items "$log_file")"
 void_json="$(void_items "$log_file")"
+
+# --- 3b. No-op short-circuit (requirement 3b) ---
+# The Co-Ordinator costs the same to tell us "nothing to do" as it does to
+# select work. On a quiet week that is 24 identical answers a day. If every
+# input to its verdict is byte-identical to the last time it declined, the
+# verdict is already known and buying it again buys nothing.
+#
+# The fingerprint must cover *every* input — see lib/noop-skip.sh for the map
+# of source to signal, and for why a gap here is a silent stall rather than a
+# visible bug. Two of them are not repo state at all and are the easiest to
+# leave out: the config that decides which repos and sources exist, and the
+# prompt that holds the selection rules. Without them, editing coordinator.md
+# would do nothing until an unrelated commit happened to land somewhere.
+selection_config_json="$(jq -nc \
+  --arg cm "$coordinator_model" \
+  --arg md "$implementor_model_default" \
+  --arg mt "$implementor_model_trivial" \
+  '{coordinator_model: $cm, models: {default: $md, trivial: $mt}}')"
+coordinator_prompt_sha="$(sha256sum "$PROMPTS_DIR/coordinator.md" | cut -d' ' -f1)"
+
+noop_input="$(jq -nc \
+  --argjson repos "$ordered_repos_json" \
+  --argjson states "$source_states_json" \
+  --argjson blocked "$blocked_json" \
+  --argjson void "$void_json" \
+  --argjson sc "$selection_config_json" \
+  --arg psha "$coordinator_prompt_sha" \
+  '{
+     repos: [ $repos[] as $r
+              | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
+     blocked: $blocked,
+     void: $void,
+     selection_config: $sc,
+     coordinator_prompt_sha: $psha
+   }')"
+noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
+
+# Computed even when the skip is bypassed, because it is also what a
+# `none-selected` records for the *next* cycle to compare against. A --once run
+# that finds nothing to do should still spare the following cron tick the same
+# question.
+noop_skip=""
+if [[ -n "$noop_fingerprint_value" ]] && ! (( DRY_RUN || ONCE )); then
+  noop_skip="$(noop_skip_reason "$noop_fingerprint_value" "$log_file" "$none_selected_recheck_hours")"
+fi
+if [[ -n "$noop_skip" ]]; then
+  log_event "stand-down" "$(jq -nc --arg r "$noop_skip" --arg f "$noop_fingerprint_value" \
+    '{reason: $r, fingerprint: $f}')"
+  exit 0
+fi
 
 coordinator_input="$(jq -nc \
   --argjson repos "$ordered_repos_json" \
@@ -429,7 +728,17 @@ log_voided_items "$work_order_json"
 selected="$(jq -r '.selected' <<<"$work_order_json")"
 if [[ "$selected" != "true" ]]; then
   reason="$(jq -r '.reason // "no reason given"' <<<"$work_order_json")"
-  log_event "none-selected" "$(jq -nc --arg r "$reason" '{reason: $r}')"
+  # The fingerprint recorded here is the one taken *before* the Co-Ordinator
+  # ran, which is the only correct choice. Anything that changed while it was
+  # working is, by definition, something it may not have seen — so it must be
+  # allowed to change the fingerprint and buy the next cycle a fresh look. A
+  # fingerprint taken now would absorb that change and skip on it.
+  #
+  # An empty fingerprint is omitted, not stored: the next cycle must find no
+  # fingerprint here rather than an empty one it might match against an equally
+  # empty sample of its own (see gather-source-state.sh).
+  log_event "none-selected" "$(jq -nc --arg r "$reason" --arg f "$noop_fingerprint_value" \
+    '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end)')"
   exit 0
 fi
 

@@ -57,8 +57,8 @@ cron (hourly)
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. project-review recommendations · 6. code-quality findings |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. failed Actions runs on `main` · 3. `TECH-DEBT.md` · 4. open GitHub issues · 5. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 6. project-review recommendations · 7. code-quality findings |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. project-review recommendations · 7. code-quality findings |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 7. project-review recommendations · 8. code-quality findings |
 
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
@@ -137,7 +137,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -151,6 +151,8 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
 | `lock_stale_after` | 3 h | Greater than the sum of the stage timeouts plus slack. |
+| `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
+| `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 
 Model IDs are pinned in config (one place to update); do not use floating
@@ -191,6 +193,70 @@ runs unattended.
       all configured repos (drafts included) is ≥ `max_open_agent_prs`,
       stand down. This is the primary throttle on both spend and on the
       human gate silting up.
+2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
+   count in 2.2 but **defer the stand-down** until the sources are gathered
+   (requirement 3c). If back-pressure has tripped *and* any `review_feedback`
+   candidate exists, do not stand down: restrict every repo's `sources` to
+   `["review-feedback"]` and continue. Only stand down when the count is over
+   and nothing is waiting on us.
+
+   Without this the pipeline deadlocks exactly when it is most stuck.
+   `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
+   system can only escape by answering them — and the plain check stands the
+   cycle down before the Co-Ordinator ever runs, so the one source that could
+   clear them is never reached. The pipeline dies silently, and the fix
+   (merge or close something by hand) is invisible unless you already know.
+
+   The restriction preserves back-pressure's stated purpose exactly: the system
+   still cannot open a *new* PR while the gate is full; it can only finish what
+   is already in it, which is the one activity that *un*-silts the gate.
+   Implement it by narrowing the `sources` lists rather than by adding a mode
+   flag: the Co-Ordinator is already told the runtime input's `sources` are
+   authoritative over its own table (requirement 15), so a source it cannot see
+   is a source it cannot select — no new prompt concept, and nothing for it to
+   reason around.
+2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
+   cycles starting. Checked *before* the lock and before any `gh` call — a
+   disabled pipeline should cost nothing — and honoured by both this Script and
+   `review-cycle.sh` (`docs/BUILD-REVIEW-PROMPT.md`, R2a) through one shared
+   implementation (requirement 34a), with `agent-cycle.sh` the only writer.
+   Managed by three flags that manage the switch and run no cycle:
+   `--disable [<reason>] [--for <90m|4h|2d|forever>]`, `--enable`, `--status`.
+   Transitions are logged (`disabled`, `enabled`).
+
+   **Why it exists.** Both cron pipelines execute code out of the agent-ops
+   working tree. An agent editing `agent-cycle.sh`, `lib/` or `prompts/` is
+   editing the files the next tick will source; a cycle firing mid-edit runs
+   half of one revision and half of another, and the resulting failure gets
+   attributed to whatever the agent happened to be writing. That is also why
+   the switch is shared rather than per-pipeline: the weekly review runs out of
+   the same tree and sources the same `lib/`, so a switch that stood down only
+   the implementation pipeline would leave the hazard in place.
+
+   Four details decide whether this helps or becomes its own outage:
+   - **A disable expires** after `disable_default_ttl` unless it explicitly
+     says `forever`. The switch's whole risk is that it is a deliberate,
+     silent, total stop: an agent that sets it and then dies — killed, timed
+     out, context exhausted, or simply finished and forgetful — has stopped
+     every future cycle, and nothing will alert, because "no PRs" is what a
+     working pipeline looks like on a quiet week. A TTL turns "forgot to
+     re-enable" into a few lost cycles. This is the stale-lock rule of
+     requirement 1 applied to the same failure.
+   - **Everything ambiguous resolves toward disabled.** An unreadable record,
+     or one whose `expires_at` won't parse, keeps the pipeline down. The file
+     exists because something meant to stop the pipeline; recovering "enabled"
+     from a truncated write runs the cycle the switch was set to prevent.
+   - **A reason is required, and an unparseable `--for` is an error.** The next
+     person to wonder why nothing is happening is entitled to a reason, and a
+     typo'd duration must not be guessed in either direction — one resumes the
+     pipeline mid-edit, the other never resumes it.
+   - **The switch stops the next cycle, not the one already running.** Say so
+     when it is set while a lock is held, in `--status` and in `--disable`'s own
+     output. An agent that disables the pipeline, assumes the coast is clear and
+     starts editing has gained nothing and doesn't know it.
+
+   Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
+   being edited, do not run them" is no less true when a human runs them.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`; sort least recent
    first. The most-overdue repo gets first look, and this ordering takes
@@ -207,6 +273,113 @@ runs unattended.
    repo's array to that repo's entry in the Co-Ordinator's runtime input as
    `findings`. Doing this in the Script — not in the Co-Ordinator — spends no
    model tokens on paginating and digesting those verbose APIs.
+3c. **Review-feedback pre-fetch (requirement 3c).** For each configured repo
+   whose `sources` include `review-feedback`, run
+   `scripts/gather-review-feedback.sh <slug> <pr_label> <branch_prefix>` and
+   attach the array to that repo's entry as `review_feedback`. It prints the
+   PRs *waiting on us to answer a human's review*: open, non-draft, carrying
+   `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
+   `CHANGES_REQUESTED`, and — the load-bearing clause — **the latest review is
+   newer than the head commit**. Each entry carries every review body and
+   inline comment in the round, verbatim.
+
+   - **The turn rule is the whole feature.** This system raises PRs as the
+     account it runs as, and GitHub forbids approving or dismissing a review on
+     your own PR. So the agent *cannot* clear `CHANGES_REQUESTED`; it stays set
+     after the fix is pushed, and nothing about the PR's own state ever says
+     "answered". Comparing the latest review against the head commit is the only
+     thing that does. Without it every PR the agent fixed would stay a candidate
+     forever — selected, re-fixed, re-selected, hourly, each cycle looking like
+     a productive one and each paying a Sonnet run to redo work already pushed.
+     Same shape as requirement 15's "a later green run supersedes".
+   - **Gather every review in the round, not just the blocking one.** The
+     substance and the formal signal routinely live in different reviews by
+     different accounts, precisely *because* an author cannot request changes on
+     their own PR. Observed here: the agent's account left a 6.5 KB `COMMENTED`
+     review with every actual finding, and the human's second account posted the
+     `CHANGES_REQUESTED` whose body reads, in full, "Refer to <link>". Gather
+     only the blocker and the Implementor receives the words "Refer to".
+   - **The ref is `pr-<n>-review-<review-id>`, not `pr-<n>`.** A blocked item
+     (requirement 34) stays blocked until cleared, so a bare `pr-57` the
+     Implementor once failed on would still be blocked when the human posted
+     fresh guidance, and that guidance would land on a dead item. Per-round refs
+     expire by irrelevance, like the review-dated `review-<date>-R-NN` refs.
+   - **Only branches under `branch_prefix`.** The Human Gate reserves every
+     other branch for humans; "they asked for changes" is not licence to push to
+     a colleague's PR.
+   - Fails safe to `[]` (exit 0). But show `gh`'s stderr: a rejected `--json`
+     field name (`headRefOid` does not exist in every `gh`) otherwise degrades
+     to an empty array indistinguishable from "nothing is under review", and the
+     source silently never fires. That cost a debugging round when this was
+     built.
+3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
+   say "nothing to do" as it does to select work. On a quiet week that is 24
+   identical answers a day, every one of them paid for. Before launching it,
+   compute a **fingerprint** of every input its verdict depends on; if the most
+   recent `none-selected` event carries the same fingerprint and is younger
+   than `none_selected_recheck_hours`, log `stand-down` with the reason and the
+   fingerprint, and exit without launching anything.
+
+   The claim this makes is deliberately narrow, and stating it precisely is
+   what keeps it safe: *every input is byte-identical to when it last declined,
+   therefore its verdict would be the same*. It is **not** the claim "there is
+   no work" — nobody but the Co-Ordinator can know that, and avoiding asking it
+   is the entire point. The rule never has to be right about the repository,
+   only about whether anything moved.
+
+   - **The fingerprint must cover every input, or the pipeline silently
+     stalls.** A source left out is a source that can gain work without waking
+     the pipeline, and the symptom is nothing at all: no error, no failed
+     stage, just tidy `stand-down` events and no PRs. Map each source to a
+     signal and keep the map in the shared library: `head_sha` covers every
+     file-backed source at once (tech-debt, implementation-plan,
+     project-review, the code); the pre-fetched `findings` cover security and
+     code-quality verbatim; an issues digest (number, `updated_at`, labels,
+     assignee — the last two because requirement 16.4 excludes on them); a
+     workflows digest for failed-runs; an open-PR digest, because a PR is a
+     claim (16.3) and closing one creates a candidate while touching no commit,
+     issue or alert; the `blocked`/`void` extracts projected to `repo|item`, so
+     a human's hand-appended `unblocked` takes effect; and — the two everyone
+     forgets — the selection config and a hash of `prompts/coordinator.md`.
+     Without those last two, editing the selection rules does nothing until an
+     unrelated commit lands, and you spend the afternoon debugging an edit that
+     was correct.
+   - **Digest what the verdict reads, not what merely changed.** Requirement 15
+     makes a failed run a candidate when a workflow's *most recent run is a
+     failure* — a fact about the conclusion. Digesting run ids instead makes
+     every scheduled workflow bust the fingerprint on its own cadence.
+     `poetic` schedules `sync-framework.yml` at `0 * * * *`: hourly, the same
+     cadence as this pipeline. That one workflow reduced the entire
+     short-circuit to a no-op that still paid for a Co-Ordinator every hour —
+     installed, logged, green, and saving nothing. Digest conclusions, and drop
+     runs still in flight (a run in progress is not yet a failure, and sampling
+     one mid-flight registers two changes for a workflow that ends where it
+     began).
+   - **A sample that failed is not a sample.** The signals this rule needs
+     beyond the Co-Ordinator's own runtime input are proxies for reads *it*
+     performs, so they must be gathered by a deterministic script
+     (`scripts/gather-source-state.sh`) that marks `ok: false` on any API
+     error. An unfingerprintable cycle simply runs the Co-Ordinator. This is
+     the one place the `[]`-on-failure convention of requirement 3a must not be
+     copied: `gather-findings.sh` may degrade, because its output *is* the
+     Co-Ordinator's input and a fingerprint recording "no findings" faithfully
+     records what the model saw. A failing issues API degrading to `[]` would
+     instead be a stable lie — it would match the next equally-failed sample
+     and skip, and go on skipping for as long as the outage lasted.
+   - **Fingerprint before the Co-Ordinator runs, and record that value.**
+     Anything that changed while it was working is something it may not have
+     seen, so it must be allowed to bust the next cycle's fingerprint. A
+     fingerprint taken afterwards would absorb that change and skip on it.
+   - **The forced recheck is the safety valve, not a nicety.**
+     `none_selected_recheck_hours` bounds how long a gap in coverage — or a
+     Co-Ordinator that would have decided differently on a second look — can
+     hold the pipeline down. At 24 h an idle day costs one Co-Ordinator run
+     instead of 24, and any stall is capped at a day. Setting it to `0` makes
+     fingerprint coverage load-bearing forever.
+   - `--dry-run` and `--once` bypass the skip (a human asking for a cycle wants
+     an answer, not a cached verdict) but still *compute and record* the
+     fingerprint, so a `--once` that finds nothing spares the next cron tick
+     the same question.
 4. **Co-Ordinator stage.** Launch the Co-Ordinator (headless, model
    `coordinator_model`, `--dangerously-skip-permissions`, stage timeout),
    passing it the ordered repo list (each entry carrying its work sources and
@@ -214,7 +387,11 @@ runs unattended.
    log. Capture its final message with Claude Code's JSON output format and
    parse the work order from it.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
-   Co-Ordinator's reason, release the lock, and exit.
+   Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
+   (omitted entirely, not stored empty, when the cycle was unfingerprintable —
+   the next cycle must find no fingerprint rather than an empty one it could
+   match against an equally empty sample of its own), release the lock, and
+   exit. This event is the only thing that makes the next cycle cheap.
 6. **Workspace.** Create `workspace_root/<cycle-id>/` and clone the selected
    repo into it, fresh from GitHub. Agents only ever run inside this
    workspace; the Script must refuse (assert) to launch a stage whose
@@ -305,7 +482,9 @@ runs unattended.
     `state_dir/cycles/<cycle-id>/` for debugging.
 12. **Flags.** `--dry-run` (run through step 5 then stop: prints the work
     order, launches no Implementor), `--once` (one verbose cycle in the
-    foreground), `--repo <slug>` (restrict selection, for testing).
+    foreground), `--repo <slug>` (restrict selection, for testing), plus the
+    switch's `--disable [<reason>] [--for <duration>]`, `--enable` and
+    `--status` (requirement 2.3), which manage the switch and run no cycle.
 13. The Script must pass `shellcheck` and must set its own `PATH` explicitly
     (cron's environment is minimal), covering `claude`, `gh`, `git`, `jq`.
     The builder must also prove that a cron-style invocation can resolve
@@ -334,6 +513,15 @@ runs unattended.
     `gh api .../contents/...` (no pre-fetch — these are ordinary tracked files,
     like `TECH-DEBT.md`). A recommendation's stable ref is
     `review-<review-date>-R-NN`; the paired improvement prompt is the brief.
+15b. **Review feedback comes second, across all repos.** Like security, this
+    outranks the plain repo-then-source walk: any selectable `review_feedback`
+    candidate in any repo is taken before any non-security work elsewhere. The
+    human is this system's only consumer and its scarcest resource; when they
+    have spent their time and asked for something specific, answering beats
+    starting something new — and the work is already 90% done. The Co-Ordinator
+    must **not** apply requirement 16's claim exclusion to this source: the open
+    PR *is* the item, and excluding it makes every candidate permanently
+    unselectable while looking entirely correct.
 15a. **Security is always prioritised.** Beyond `security` being first in the
     source order, any candidate that is security-related — a `security`
     finding, a GitHub issue labelled `security`/`vulnerability`, a
@@ -405,8 +593,14 @@ runs unattended.
     behaviour (docs, comments, register entries); otherwise
     `implementor_model_default`. Records the reasoning.
 20. Emits a work order as its entire final message. `source` is one of
-    `security`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`,
-    `project-review`, or `code-quality`. For a `security`/`code-quality`
+    `security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`,
+    `implementation-plan`, `project-review`, or `code-quality`. For a
+    `review-feedback` entry, `item` is its `ref`, `branch` is the PR's
+    **existing** branch, the order also carries `pr_url` and `pr_number`, and
+    `context` must paste the entry's `body` **verbatim** — it is a human's
+    specific, considered request and it is the entire brief. A model
+    summarising a review before handing it to the model that must act on it is
+    a lossy telephone game about what a person actually asked for. For a `security`/`code-quality`
     finding, `item` is the finding's stable `ref` (e.g. `dependabot-alert-42`,
     `code-scanning-alert-17`) and `context` must paste the finding verbatim
     (package/rule, severity, affected location, advisory summary, and the
@@ -522,9 +716,13 @@ runs unattended.
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `none-selected`, `stage-start`, `stage-end`,
     `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`, `item-void`,
-    `unvoided`, `limit-hit`, `warning`, `cycle-end`. Common fields: ISO-8601
-    `ts`, `cycle` id, `event`, and where applicable `repo`, `item`, `pr_url`,
-    `model`, `detail`. `selection`, and any `attempt-failed` or `item-void`
+    `unvoided`, `limit-hit`, `disabled`, `enabled`, `warning`, `cycle-end`.
+    Common fields: ISO-8601 `ts`, `cycle` id, `event`, and where applicable
+    `repo`, `item`, `pr_url`, `model`, `detail`. A `none-selected` also carries
+    the `fingerprint` of requirement 3b; `disabled`/`enabled` carry the switch
+    record, so the log can explain both why cycles stopped and why they
+    resumed — including when they resumed because a disable expired rather than
+    because anyone chose to re-enable it. `selection`, and any `attempt-failed` or `item-void`
     raised once an item has been selected, must carry both `repo` and `item` —
     requirements 34 and 34c key on them, so an event that omits them cannot
     pin any state on the item it names, and the omission is invisible until you
@@ -584,17 +782,32 @@ runs unattended.
 
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
-   pre-fetch, requirement 3a).
+   pre-fetch, requirement 3a; the switch, requirement 2.3; and the no-op
+   short-circuit, requirement 3b).
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
    disabled or inaccessible. Must pass `shellcheck`.
-3a. A shared library (as built, `lib/cycle-state.sh` and `lib/limit-detect.sh`)
-   holding every rule that more than one component computes — at minimum
-   requirement 34's blocked semantics, requirement 33's `attempt-failed` field
-   shape, and the usage-limit phrase pattern of requirement 10 — sourced by
-   both `agent-cycle.sh` and the dashboard's publisher rather than copied into
-   either. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
+3c. `scripts/gather-review-feedback.sh` implementing requirement 3c: given a
+   repo slug, PR label and branch prefix, prints the JSON array of PRs awaiting
+   our reply to a human's review, each carrying every review body and inline
+   comment in the round verbatim. Fails safe to `[]` (exit 0). Must pass
+   `shellcheck`.
+3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
+   given a repo slug and default branch, prints one JSON object holding that
+   repo's head SHA and its issues, workflows and open-PR digests, with `ok:
+   false` if any of it could not be fetched cleanly. Never exits non-zero — a
+   cost-control feature must not become a reliability risk — but must not
+   pretend a failed call is an empty result either (see requirement 3b). Must
+   pass `shellcheck`.
+3a. A shared library (as built, `lib/cycle-state.sh`, `lib/limit-detect.sh`,
+   `lib/toggle.sh` and `lib/noop-skip.sh`) holding every rule that more than
+   one component computes — at minimum requirement 34's blocked semantics,
+   requirement 33's `attempt-failed` field shape, the usage-limit phrase
+   pattern of requirement 10, the switch of requirement 2.3 (read by both
+   pipelines and the dashboard) and the fingerprint rule of requirement 3b —
+   sourced by `agent-cycle.sh`, `review-cycle.sh` and the dashboard's publisher
+   rather than copied into any of them. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
    framework) and `shellcheck`-clean. These rules are the system's memory of
    what it has already tried; a second copy of one is a bug with a delay
    fuse, and both copies read correctly right up until they disagree.
@@ -610,7 +823,7 @@ runs unattended.
 
 ## Acceptance checks (the builder must run all of these before finishing)
 
-1. `shellcheck agent-cycle.sh scripts/gather-findings.sh` is clean.
+1. `shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` is clean.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
@@ -625,6 +838,53 @@ runs unattended.
    stand-down; an expired one does not.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
    back-pressure.
+6a. **The switch stops both pipelines and lets go by itself.**
+   `--disable 'testing'` then a plain invocation of *both* `agent-cycle.sh` and
+   `review-cycle.sh`: each logs a stand-down carrying the reason, exits 0, and
+   launches no `claude`. `--enable` restores both. Then plant a record whose
+   `expires_at` is already past and run a cycle: it must clear the switch, log
+   `enabled` saying the disable expired, and proceed — the assertion that an
+   agent which sets the switch and dies costs a few cycles rather than every
+   future one. Assert the ambiguous cases resolve toward *disabled*: a
+   truncated record, and one whose `expires_at` is gibberish, both keep the
+   pipeline down.
+6c. **A review round is answered exactly once.** With a PR carrying an
+   unanswered `CHANGES_REQUESTED`, a cycle must select it (`source:
+   "review-feedback"`, `item` the round's ref, `branch` the PR's existing
+   branch) and the Implementor must push to that branch without opening
+   anything. Then the check that matters: run another cycle and assert the PR
+   is **no longer a candidate**, while `gh pr view --json reviewDecision` still
+   reports `CHANGES_REQUESTED`. Those two facts are true simultaneously, and
+   that is the point — the agent cannot clear a review on its own PR, so
+   nothing about the PR's state ever says "answered", and only the turn rule
+   (latest review vs head commit) distinguishes "our move" from "theirs". Get
+   it wrong and the PR is re-fixed hourly forever while every cycle looks
+   productive. Assert the reopen too: a *new* review after the agent's push
+   makes it a candidate again under a *new* ref, or a round that once went
+   `blocked` will swallow the human's next attempt to unstick it.
+6d. **Back-pressure cannot deadlock the pipeline (requirement 2.2a).** Set
+   `max_open_agent_prs` to 0 with a review-feedback candidate present: the
+   cycle must **not** stand down, and must reach the Co-Ordinator with every
+   repo's `sources` narrowed to `["review-feedback"]`. With no candidate
+   present it must stand down as before. This is the check that a system whose
+   PRs have all been sent back for changes can still dig itself out; without
+   it, the state the pipeline is least able to escape is the one it is
+   guaranteed to reach.
+6b. **The no-op short-circuit skips only what it can prove, and stops skipping
+   when anything moves.** Drive a cycle that ends `none-selected`, confirm the
+   event carries a fingerprint, then run a second cycle: it must stand down
+   *without launching the Co-Ordinator* — that saving is the entire feature, so
+   time both and see it. Then the half that actually matters, and the half a
+   builder will be tempted to skip because the happy path passed: assert
+   per-source that the fingerprint *changes* when a commit lands, an issue is
+   relabelled or assigned, a workflow's conclusion flips, a claiming PR closes,
+   an item is unblocked or unvoided, a source is added to `config.json`, or
+   `prompts/coordinator.md` is edited. Each of those is a source of work, and
+   any one of them missing from the fingerprint is an unbounded silent stall
+   that no other check in this document would catch. Assert too that a
+   scheduled workflow rerunning green does *not* change it (see requirement 3b
+   — this is where the feature quietly dies), and that a repo whose state could
+   not be sampled makes the cycle unfingerprintable rather than skippable.
 7. **A blocked verdict round-trips.** Append an `attempt-failed` for a
    selected item, then run a cycle: the Co-Ordinator's input must list that
    item as blocked, with its detail. This is the one check that catches the
@@ -700,6 +960,16 @@ cost nothing but a few `gh` calls. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
 
+The floor matters as much as the ceiling, because it is paid on every quiet
+day and nothing about it looks like waste. Before requirement 3b, an idle
+repository still bought 24 full Co-Ordinator passes a day, each one reading
+both repos and concluding, correctly and expensively, that there was nothing to
+do (measured: ~2m35s of Haiku per pass against these repos). The no-op
+short-circuit replaces those with a handful of `gh` calls and a hash, leaving
+one forced pass a day (`none_selected_recheck_hours`) as the safety valve —
+roughly a 96% cut in the idle floor, and no change at all to a busy day, where
+every cycle has something to fingerprint that moved.
+
 ## Design decisions in this revision
 
 Recorded so a future reader knows they were deliberate, not accidental.
@@ -772,6 +1042,48 @@ Recorded so a future reader knows they were deliberate, not accidental.
   category that yielded any candidate.
 - **Branch names drop the repo slug** (`agent/<item-slug>`): a branch is
   already scoped to its repository.
+- **Review feedback is a work source, and the human's turn is a timestamp
+  comparison** (requirement 3c). Before it, an agent PR that received "changes
+  requested" was a dead end: the open PR claimed its own item (requirement
+  16.3), no source read `reviewDecision`, and only a human could break the
+  deadlock — by fixing it themselves or closing the PR and losing the work. The
+  system could raise PRs but never answer the one person it raises them for.
+
+  The mechanism turns on a constraint that looks like an obstacle and is
+  actually the design: GitHub will not let a PR's author approve or dismiss a
+  review on it, and this system is the author. So the agent *cannot* clear
+  `CHANGES_REQUESTED` — which both preserves the human gate for free (there is
+  no route by which an agent marks its own work accepted) and means the PR's
+  own state can never tell us the feedback was answered. Whose turn it is has
+  to be derived, and the derivation is one comparison: latest review vs head
+  commit. That single clause is the difference between a source that converges
+  and one that re-fixes the same PR every hour forever while looking productive.
+- **The switch is one shared, expiring file** (requirement 2.3). Shared because
+  the hazard is an agent editing the agent-ops tree, and *both* pipelines run
+  out of that tree and source the same `lib/` — a per-pipeline switch would let
+  the weekly review fire into a half-written `lib/limit-detect.sh`. Expiring
+  because the switch is the only thing in this system whose deliberate purpose
+  is a total, silent stop, which makes a forgotten one indistinguishable from a
+  quiet week; `disable_default_ttl` bounds that at a few cycles, and `forever`
+  remains available for a maintenance window someone actually means. In
+  `state_dir` rather than the repo, because the repo is the thing being edited:
+  a tracked switch would arrive and depart with branch checkouts and could be
+  committed by accident. `agent-cycle.sh` is the only writer, so there is one
+  record and one implementation to keep honest.
+- **The no-op short-circuit fingerprints the Co-Ordinator's inputs rather than
+  its answer** (requirement 3b). The alternative framings are all worse: caching
+  the verdict for N hours is arbitrary and stale; asking a cheaper model whether
+  anything changed reintroduces the token cost being avoided; and letting the
+  Co-Ordinator decide when to skip asks the component being skipped to opt out.
+  Hashing the inputs makes the skip a deterministic claim about bytes, which is
+  a claim bash can make correctly and a test can pin — and it composes with the
+  existing pre-fetch design, since the two most expensive inputs (`findings`,
+  the blocked/void extracts) were already computed in the Script. It also fails
+  in the right direction by construction: anything unexpected — a changed
+  digest shape, a failed sample, a log the rule can't read — produces "no
+  match", which costs one Co-Ordinator run. The rule can only be wrong by being
+  *incomplete*, which is why requirement 3b's map of source-to-signal is
+  normative and `none_selected_recheck_hours` caps the damage at a day.
 
 No open questions remain. The choices above (platform, models, permissions,
 system location) were confirmed by the repo owner on 2026-07-13.
@@ -795,4 +1107,9 @@ confident, recurring no-op.
 | A rule with two implementations | The dashboard and the Script each computed "blocked". They disagreed, and the dashboard — the very place you would look to spot this bug — showed the wrong answer confidently. | One definition, shared (requirement 34a). If a second consumer needs it, it sources the first, and the shared unit is where the test lives. |
 | Identifiers assumed globally unique | `dependabot-alert-1` exists in *every* repo; date-numbered registers collide across repos too. Keying on the id alone makes one repo's block starve another repo's unrelated work. | Key on the scope plus the id (requirement 34). Ask what an id is unique *within* before using it as a key. |
 | A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/BUILD-REVIEW-PROMPT.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |
+| A state that can never say "done", read as if it could | `reviewDecision` stays `CHANGES_REQUESTED` after the agent pushes its fix — GitHub won't let a PR's author dismiss a review on their own PR, and the agent *is* the author. So "is there unanswered feedback?" answered from the PR's own state is always yes, forever. The PR is selected, fixed, re-selected, re-fixed, hourly, at Sonnet prices, and every cycle looks like a productive one. | Ask "what would ever change this value?" before keying on it. Where the answer is "nothing we can do", the state cannot be the signal — derive whose turn it is instead (requirement 3c: latest review vs head commit, the same shape as "a later green run supersedes"). A field that can only ever hold one value is not a condition, it is a constant. |
+| The formal signal and the substance in different places | The blocking `CHANGES_REQUESTED` review's body read, in full: "Refer to https://…#pullrequestreview-4718691960". All 6.5 KB of actual findings were in a *separate* `COMMENTED` review, by a *different account* — because the agent's own account raised the PR and therefore cannot request changes on it. A gatherer that read only the blocking review would have handed the Implementor the words "Refer to" and called the brief complete. | Gather the whole round, whoever wrote it, and pass it verbatim. When a platform rule (an author cannot review their own PR) forces a workflow to split across accounts, the split is structural and permanent — design for it rather than discovering it in the one review that mattered. |
+| A change-detection digest that tracks churn instead of meaning | The no-op short-circuit (requirement 3b) digested the *run id* of each workflow's latest run. `poetic` schedules `sync-framework.yml` at `0 * * * *` — hourly, the same cadence as the pipeline — so that one workflow busted the fingerprint on every single cycle. The feature was installed, tested, logged, green, and saved nothing; the only symptom was the bill it was built to reduce, unchanged. Found by reading the repo's actual cron lines, not by any test. | Digest the *fact the consumer reads*, not the record it lives in. Requirement 15 asks "is this workflow's latest run a failure" — that is the conclusion, not the id. Before digesting a field, ask what changes it and on what cadence; anything that moves on a timer moves faster than the thing you are trying to detect. Then assert the negative (a green rerun changes nothing), because every positive test still passes on the broken version. |
+| A cost-control feature that makes cost the *only* thing it protects | Skipping a stage to save money is a decision to do nothing, and doing nothing is what a healthy idle pipeline also looks like. Get the skip condition subtly wrong — a source outside the fingerprint, a failed API call digested as "empty" — and the pipeline stops picking up work while reporting perfect health, forever, because nothing that stands down ever fails. | Make the skip's claim narrow enough to be provable ("nothing changed"), never broad enough to be wrong ("there is no work"). Mark unusable samples rather than degrading them to empty. Cap the whole mechanism with a time-based valve (`none_selected_recheck_hours`) so a gap in coverage is a bounded delay rather than an outage, and pay the occasional wasted run for it — the run you skipped wrongly costs more than the one you ran needlessly. |
+| A switch with no way back on | An agent disables the pipeline to edit safely, then dies mid-session — killed, timed out, or just finished and forgetful. The switch stays set. No cycle runs again. Nothing alerts, because "no PRs this week" is exactly what a quiet week looks like, and the operator finds out days later. | Give any deliberate stop an expiry (requirement 2.3), and make indefinite something a human explicitly asks for. Same shape as the stale-lock rule (requirement 1): every mechanism that halts this system needs an answer to "what if whoever set it never comes back?" |
 | One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |
