@@ -193,6 +193,29 @@ R3. **Stand-down checks.** Each logs its reason and exits 0:
       process, stand down and wait for the next tick (defer to it, per
       "Relationship to the existing pipelines").
 
+R2a. **The switch.** Before the lock, read the shared switch
+   (`state_dir/disabled.json`) through `lib/toggle.sh` and stand down while it
+   is set, logging `review-stand-down` with the reason it carries — the same
+   check `agent-cycle.sh` makes, through the same code, so the two pipelines
+   cannot disagree about whether they are meant to be running (requirement
+   34a).
+
+   The switch is **shared, not per-pipeline**, and this pipeline is the reason
+   that matters rather than an afterthought. It exists because an agent editing
+   the agent-ops working tree is editing files the next cron tick will source —
+   and this script runs out of that same tree and sources that same `lib/`. An
+   agent that stood down only the implementation pipeline before editing
+   `lib/limit-detect.sh` would have left the weekly review free to fire into a
+   half-written file.
+
+   This pipeline **honours the switch but never sets it**: `agent-cycle.sh
+   --disable/--enable/--status` is the single entry point, so there is one
+   writer and one record. Reject those flags here with a pointer rather than
+   implementing a second way to write the same file. Leave an *expired* switch
+   for `agent-cycle.sh` to clear and log, too: this pipeline runs weekly, so
+   letting it clear one would mean the `enabled` event explaining why cycles
+   resumed could land days after they did.
+
 R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
    enforced).** For each configured repo, skip it *this run* when **either**:
    - an open pull request labelled `review.pr_label` already exists for it (a
@@ -258,7 +281,10 @@ R7. **Cleanup (always, via a trap).** Delete each cycle's clone, write a
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one
    verbose run in the foreground), `--repo <slug>` (restrict to one repo, for
-   testing).
+   testing). `--disable`, `--enable`, `--status` and `--for` are recognised
+   only to reject them with a pointer to `agent-cycle.sh` (R2a) — an unknown-
+   argument error would read as "this pipeline ignores the switch", which is
+   the opposite of true.
 
 ### The Reviewer-Agent (`prompts/project-reviewer.md`)
 
@@ -382,6 +408,14 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
 4. Skip-guard: with a `reviews/project-review-<today>/` folder present on a
    repo's default branch (or an open `project-review`-labelled PR for it), that
    repo is skipped, and the `min_days_between_reviews` boundary is respected.
+4a. **The switch stands this pipeline down too (R2a).** With
+   `agent-cycle.sh --disable 'testing'` set, a plain `review-cycle.sh` logs a
+   `review-stand-down` carrying the reason, exits 0, and launches no `claude`;
+   `--enable` restores it. Check this against the *review* script specifically
+   and not by inference from `agent-cycle.sh` passing — a shared switch that
+   only one pipeline reads is the whole failure mode R2a exists to prevent, and
+   it looks identical to a working one until the week a review fires into a
+   half-edited `lib/`.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `TECH-DEBT.md`
    change but **not** `.claude/skills/project-review/` — confirm the injected

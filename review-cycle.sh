@@ -40,6 +40,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# shellcheck source=lib/toggle.sh
+. "$SCRIPT_DIR/lib/toggle.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -50,6 +52,13 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --once) ONCE=1; shift ;;
     --repo) REPO_FILTER="${2:-}"; shift 2 ;;
+    --disable|--enable|--status|--for)
+      # One switch, one place to set it. Duplicating the management commands
+      # here would mean two ways to write the same file and two implementations
+      # to keep honest; this pipeline only *honours* the switch.
+      echo "review-cycle: the switch is shared and managed by agent-cycle.sh — use: agent-cycle.sh $1" >&2
+      exit 64
+      ;;
     *) echo "review-cycle: unknown argument: $1" >&2; exit 64 ;;
   esac
 done
@@ -226,6 +235,30 @@ run_claude_stage() {
 
 log_event "review-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo true || echo false)" \
   --argjson dry_run "$([[ $DRY_RUN == 1 ]] && echo true || echo false)" '{once: $once, dry_run: $dry_run}')"
+
+# --- The switch (R2a) ---
+# Shared with agent-cycle.sh via lib/toggle.sh and checked before the lock, for
+# the same reasons given there. This pipeline honours the switch but never sets
+# it: `agent-cycle.sh --disable` is the one way in, so there is one writer and
+# one record.
+#
+# Why a *shared* switch rather than one per pipeline: the hazard the switch
+# exists for is an agent editing the agent-ops working tree, and this script
+# runs out of that same tree and sources that same lib/. An agent that disabled
+# only the implementation pipeline and then started editing lib/limit-detect.sh
+# would have left the weekly review free to fire mid-edit and read half of it.
+#
+# The expired case is left for agent-cycle.sh to clear and log. This pipeline
+# runs weekly; letting it clear a switch would mean the event that explains why
+# cycles resumed could land days after they did.
+review_switch_state="$(toggle_state "$state_dir")"
+if [[ "$(jq -r '.state' <<<"$review_switch_state")" == "disabled" ]]; then
+  log_event "review-stand-down" "$(jq -nc \
+    --arg r "disabled: $(toggle_describe "$(jq -c '.record' <<<"$review_switch_state")")" \
+    '{reason: $r}')"
+  (( ONCE )) && echo "review-cycle: the pipeline is disabled — agent-cycle.sh --status for detail" >&2
+  exit 0
+fi
 
 # --- Lock (R2) ---
 acquire_lock() {

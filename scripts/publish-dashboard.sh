@@ -31,6 +31,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/toggle.sh
+. "$SCRIPT_DIR/lib/toggle.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -243,17 +245,37 @@ if [[ "$limit_active" != "true" ]]; then
   if [[ -n "$lt" ]]; then limit_active=true; limit_note="$lt"; fi
 fi
 
+# The switch (requirement 2.3), read through lib/toggle.sh — the same code the
+# cycle gates on, so the dashboard cannot disagree with it (requirement 34a).
+#
+# A disabled pipeline must be impossible to mistake for a quiet one. Without a
+# banner, "disabled" and "nothing to do" render identically: no cycles, no PRs,
+# no errors. That is how a switch someone set on Tuesday goes unnoticed until
+# Friday — and the whole reason acceptance check 8b insists an operator can
+# tell "waiting on something" from "there is nothing to do here" at a glance.
+switch_state="$(toggle_state "$state_dir")"
+switch_disabled=false
+[[ "$(jq -r '.state' <<<"$switch_state")" == "disabled" ]] && switch_disabled=true
+switch_json="$(jq -nc --argjson d "$switch_disabled" --argjson s "$switch_state" \
+  '{disabled: $d,
+    reason: ($s.record.reason // ""),
+    by: ($s.record.by // ""),
+    since: ($s.record.disabled_at // ""),
+    expires_at: ($s.record.expires_at // null)}')"
+
 status_json="$(jq -n \
   --argjson alive "$lock_alive" \
   --arg pid "$lock_pid" --arg started "$lock_started" \
   --argjson limit_active "$limit_active" --arg limit_note "$limit_note" \
+  --argjson switch "$switch_json" \
   --slurpfile cyc "$cycles_file" '
   ($cyc[0] | map(select(.dry_run|not))) as $real
   | {
       running: $alive,
       lock: (if $pid == "" then null else {pid: ($pid|tonumber), started_at: $started, alive: $alive} end),
       last_cycle: (($real[0] // $cyc[0][0]) | if . == null then null else {id, ended_at, outcome, repo, item, title} end),
-      limit: {active: $limit_active, note: $limit_note}
+      limit: {active: $limit_active, note: $limit_note},
+      switch: $switch
     }')"
 
 # --- Counts / roll-ups (scan all recent transcripts for cost) ----------------

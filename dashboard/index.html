@@ -185,6 +185,22 @@
   // ---------- banners ----------
   var banners = el("div");
   var st = D.status || {};
+  // The switch first: when it is on, every other signal below ("no cycles",
+  // "no PRs", "nothing selected") is a consequence of it rather than news, and
+  // an operator who reads them in the wrong order goes looking for a fault
+  // that isn't there.
+  if (st.switch && st.switch.disabled) {
+    var sw = st.switch;
+    var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
+    if (sw.by) detail += " — set by " + sw.by;
+    if (sw.since) detail += " at " + sw.since;
+    detail += sw.expires_at ? ("; expires " + sw.expires_at)
+                            : "; no expiry — needs `agent-cycle.sh --enable`";
+    banners.appendChild(el("div", {class:"banner amber"}, [
+      el("span", {text: "⏸ Pipeline disabled — no cycles will start."}),
+      el("span", {class:"sub", text: detail})
+    ]));
+  }
   if (st.limit && st.limit.active) {
     banners.appendChild(el("div", {class:"banner amber"}, [
       el("span", {text: "⏸ Usage limit reached."}),

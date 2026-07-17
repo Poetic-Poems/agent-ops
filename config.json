@@ -23,6 +23,8 @@
   "timeout_reviewer": 30,
   "lock_stale_after": 3,
   "limit_cooldown_default": 3,
+  "disable_default_ttl": 4,
+  "none_selected_recheck_hours": 24,
   "review": {
     "repos": ["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"],
     "model": "claude-sonnet-5",
