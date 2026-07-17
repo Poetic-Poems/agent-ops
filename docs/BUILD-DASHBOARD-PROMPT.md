@@ -154,8 +154,9 @@ banners (the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
 metric cards (spend today/total, failures, reached-ready, back-pressure gauge
-vs `max_open_agent_prs`); open PRs; recent cycles (click a row for per-stage
-detail with the parsed status, full transcript, and stderr); failures,
+vs `max_open_agent_prs`); open PRs; recent cycles (outcome and work source at
+a glance; click a row for per-stage detail with the parsed status, full
+transcript, and stderr); failures,
 blocked and void items; work sources per repo (including the security and
 code-quality findings, shown first, that the Co-Ordinator prioritises);
 spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
@@ -227,6 +228,31 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   monitors will agree with it right up until the moment that would have been
   useful. Anything else the page reports that the pipeline also computes
   belongs under the same rule: share the definition, don't mirror it.
+- **A cycle's source is a column, not a detail.** Which source the
+  Co-Ordinator drew an item from is not a fact about that one cycle so much as
+  a fact about the pipeline: read down the column and you see the mix it is
+  actually working — all security this week, or nothing but tech-debt for two
+  days. That reading only exists if every row shows it at once, which a
+  per-row expand forecloses. The detail row still repeats it verbatim
+  alongside the rest of the record; the duplication is deliberate.
+- **Distinct classes of data are distinguished by shape, not colour alone.**
+  Source tags are outlined and square; outcome badges are filled pills. Both
+  are colour-coded, and the two sit side by side, so without the shape
+  difference "Failed" and `security` would read as the same kind of label in
+  the same red. Colour then carries identity *within* a class, shape carries
+  the class itself — which is also the only reason eight source colours are
+  legible at all: eight hues is past what hue alone reliably separates,
+  especially for a colour-blind reader. Any future class of badge on this page
+  should take a third shape rather than a ninth hue.
+- **The source label/colour map is display-only, and fails open.** The
+  vocabulary itself belongs to the Co-Ordinator (`prompts/coordinator.md`'s
+  `sources` list) — the page cannot share that definition the way it shares
+  the blocked/void rule above, because `data.js` carries only whatever token
+  the pipeline already emitted. So the map styles tokens; it never decides
+  them. An unrecognised source renders in grey with its raw token, never
+  dropped and never silently blank: a source added upstream then shows up
+  unstyled, which is a prompt to add a colour, rather than invisibly missing
+  from the mix — the one thing the column exists to show.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing
