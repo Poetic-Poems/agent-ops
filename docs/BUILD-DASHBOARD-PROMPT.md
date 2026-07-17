@@ -101,7 +101,9 @@ same way `agent-cycle.sh` reads them.
   `mergeable`, `mergeStateStatus`, draft/ready; most-recent-per-workflow
   failing runs on the default branch; open issues; the `TECH-DEBT.md` ledger
   rows. If `gh` fails, the GitHub panels mark themselves stale and the rest
-  still renders.
+  still renders. On a `--no-github` refresh the fetch is skipped entirely and
+  the last successful result is carried forward (see the Publisher below), so
+  only a fetch that was *attempted and failed* ever shows as unavailable.
 
 **Usage-limit detection.** The pipeline's own detector and the Publisher share
 one phrase pattern and reset-time parser (`lib/limit-detect.sh`), so a
@@ -119,7 +121,12 @@ Reads the state above, assembles one JSON object, redacts it, and writes it
 as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`).
 It is `set -uo pipefail` (not `-e`) because most reads are best-effort, and
 ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
-`--no-github` skips the live GitHub fetch for a faster, offline run.
+`--no-github` skips the live GitHub fetch for a faster, offline run. Rather
+than blanking the GitHub panels, it reuses the last real fetch — cached at
+`<state_dir>/.dashboard-github.json` and re-marked `stale` — so the PR list,
+work sources and ok/error state all persist, and no false "GitHub unavailable"
+banner fires. That is what lets the sub-minute heartbeat refresh local state
+every few seconds while hitting the GitHub API only once per window.
 
 Redaction is unconditional: `/home/<user>` and `/Users/<user>` → `~`, and
 `ghp_/gho_/github_pat_/sk-…/Bearer …` token shapes → `[REDACTED-TOKEN]`,
@@ -142,7 +149,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                events[] } ],           // most recent 40, newest first
   blocked: [ { repo, item, ts, detail, stage } ],
   void:    [ { repo, item, ts, detail, stage, evidence } ],
-  github:  { ok, error, fetched_at, prs[], inputs:{<slug>:{issues,failed_runs,tech_debt}} },
+  github:  { ok, error, fetched_at, stale, prs[], inputs:{<slug>:{issues,failed_runs,tech_debt}} },
   log_tail:  [ … ],                    // recent events, newest first
   cron_tail: [ "line", … ] }
 ```
@@ -230,6 +237,19 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   screenshot or copied file is safe and a future private repo can't leak.
 - **Limit detection is independent of the log**, because the pipeline's logger
   misses weekly-limit phrasing — the dashboard reads the transcripts directly.
+- **A skipped GitHub fetch is not a failed one.** Once the heartbeat runs every
+  few seconds, most ticks publish with `--no-github` to spare the API, and a
+  full fetch happens only once per window. If a `--no-github` tick simply wrote
+  `github.ok = false` with empty `prs`/`inputs`, the dashboard would blank the
+  PR list and work sources — and raise the "GitHub unavailable" banner — 59
+  ticks out of 60, turning a deliberate skip into a standing false alarm. So a
+  skip carries the **last real fetch forward** (cached beside the state, marked
+  `stale`) and never touches `ok`. `ok` therefore means one thing only: the
+  most recent *attempted* fetch and whether it succeeded. `ok === false` — the
+  banner's trigger — now fires only for a fetch that ran and failed; a skip is
+  `ok` unchanged, and a never-yet-fetched page is `ok: null`, neither of which
+  is an alarm. The staleness is not hidden: `stale`/`fetched_at` say how old the
+  GitHub half is, distinct from the whole page's `generated_at`.
 - **The blocked and void lists are not computed here.** `blocked[]` and
   `void[]` come from the same shared implementation the Script feeds its
   Co-Ordinator (`lib/cycle-state.sh`, per requirement 34a of

@@ -59,6 +59,10 @@ repos_json="$(cfg_json '.repos')"
 
 out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
+# Last real GitHub fetch, kept out of the served dir. A --no-github tick reuses
+# it so a local-only refresh doesn't blank the PR list / work sources or raise a
+# false "GitHub unavailable" alarm between the once-per-window GitHub refreshes.
+gh_cache="$state_dir/.dashboard-github.json"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -370,11 +374,28 @@ if (( WITH_GITHUB )); then
       --argjson issues "$issues" --argjson failed "$failed_runs" --argjson td "$td_json" --argjson findings "$findings" '
       . + {($slug): {issues: $issues, failed_runs: $failed, tech_debt: $td, findings: $findings}}' <<<"$inputs_json")"
   done < <(jq -r '.[].slug' <<<"$repos_json")
-fi
 
-github_json="$(jq -n --argjson ok "$gh_ok" --arg err "$gh_err" --arg at "$now_iso" \
-  --argjson prs "$prs_json" --argjson inputs "$inputs_json" \
-  '{ok: $ok, error: $err, fetched_at: $at, prs: $prs, inputs: $inputs}')"
+  github_json="$(jq -n --argjson ok "$gh_ok" --arg err "$gh_err" --arg at "$now_iso" \
+    --argjson prs "$prs_json" --argjson inputs "$inputs_json" \
+    '{ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs}')"
+  # Remember this fetch (ok or failed — it is the latest real attempt) so the
+  # next --no-github tick can carry it forward rather than start from nothing.
+  printf '%s' "$github_json" > "$gh_cache"
+else
+  # Local-only refresh: don't re-hit GitHub. Reuse the last real fetch verbatim
+  # (PRs, work sources, and its ok/error state) and only flag it stale. This is
+  # why the sub-minute heartbeat can refresh local state every few seconds
+  # without the GitHub panels flickering empty or the "unavailable" banner
+  # firing 59 ticks out of 60 — that banner keys on ok === false, which now
+  # only ever reflects a fetch that was actually attempted and failed.
+  if [[ -s "$gh_cache" ]] && jq -e . "$gh_cache" >/dev/null 2>&1; then
+    github_json="$(jq -c '.stale = true' "$gh_cache")"
+  else
+    # Never fetched yet (e.g. the very first run was --no-github): a neutral
+    # not-yet state, not a failure. ok is null so no banner fires.
+    github_json='{"ok":null,"error":"","fetched_at":null,"stale":true,"prs":[],"inputs":{}}'
+  fi
+fi
 
 # --- Assemble ----------------------------------------------------------------
 # cycles/github/log_tail can each be large; hand them to jq via files.
