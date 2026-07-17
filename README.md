@@ -390,6 +390,53 @@ The dashboard is a **reader**: it only ever reads the pipeline's state and
 GitHub, never writes into the state tree, never touches the lock, and cannot
 disturb a running cycle. See `docs/BUILD-DASHBOARD-PROMPT.md` for its design.
 
+### Run as a service
+
+To have the loopback server start automatically when WSL starts — so
+`http://127.0.0.1:8787` is always up without a foreground terminal — install
+it as a SysV init script hooked into WSL's own `[boot] command`, exactly the
+way `cron` and the ArtistOS Telegram bridge already are. This distro's WSL
+instance does not run systemd as its init, so the service is started by WSL's
+minimal built-in init, which runs the `[boot] command` from `/etc/wsl.conf`
+once, as root, at startup. The server still binds `127.0.0.1` only — it opens
+a loopback port, never a network one.
+
+1. **Install the init script** — [`deploy/agent-ops-dashboard.init`](deploy/agent-ops-dashboard.init)
+   drops to the `wallen` user (never root) via `start-stop-daemon --chuid`
+   and serves `scripts/serve-dashboard.sh` on port 8787:
+
+   ```sh
+   sudo install -m 755 deploy/agent-ops-dashboard.init /etc/init.d/agent-ops-dashboard
+   ```
+
+2. **Start it at WSL boot** — add it to `/etc/wsl.conf`'s existing boot
+   command, alongside cron:
+
+   ```ini
+   [boot]
+   command = service cron start; service artistos-telegram-bridge start; service docker start; service agent-ops-dashboard start
+   ```
+
+   This takes effect on the next WSL restart (`wsl --shutdown` from Windows,
+   then reopen). To start it immediately without restarting:
+
+   ```sh
+   sudo service agent-ops-dashboard start
+   ```
+
+3. **Check it** — output goes to `../dashboard-server.log` (the workspace
+   root, alongside the `Poetic-Poems` checkout):
+
+   ```sh
+   sudo service agent-ops-dashboard status
+   tail -f ~/Code/Poetic-Poems/dashboard-server.log
+   ```
+
+Common operations: `sudo service agent-ops-dashboard restart|stop`. Only run
+one instance against port 8787 at a time — a second `python -m http.server`
+on the same port dies with `Address already in use`, so stop any foreground
+`serve-dashboard.sh` before starting the service (or vice versa).
+
 ## Troubleshooting
 
 **Cron not running:**
@@ -439,7 +486,10 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
    crontab -l | grep -v 'Poetic-Poems/agent-ops/agent-cycle.sh' | grep -v 'Poetic-Poems/agent-ops/review-cycle.sh' | grep -v 'Poetic-Poems/agent-ops/scripts/publish-dashboard.sh' | crontab -
    ```
    (Or edit the Windows Task Scheduler job / `wsl.conf` change if you used
-   that alternative instead.)
+   that alternative instead.) If you installed the dashboard boot service,
+   also remove `service agent-ops-dashboard start` from `/etc/wsl.conf`'s
+   `[boot] command`, then `sudo service agent-ops-dashboard stop` and
+   `sudo rm /etc/init.d/agent-ops-dashboard`.
 2. **Let any in-flight cycle finish**, or kill it: find the PID in
    `~/.local/state/poetic-agents/lock.json` and `kill` it — the next
    `crontab`-less state is safe either way since nothing else will start.
