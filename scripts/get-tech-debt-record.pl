@@ -36,12 +36,12 @@ open IN, '<', $fname or die "Cannot open $fname for reading: $!";
 my ($previous, @records);
 while (my $line = <IN>) {
   next unless defined $previous;
-  $previous =~ /^## (TD\d{8}) (.*)/ or next;
+  $previous =~ /^### (TD\d{8}) (.*)/ or next;
   my ($id, $title, $body, $start_line_number) = ($1, $2, '', $. - 1);
   $id =~ /$id_segment/ or next;
   $title =~ s/'/''/g;
   while ($line = <IN>) {
-    last if $line =~ /^## /;
+    last if $line =~ /^### TD\d{8}/ or $line =~ /^## /;
     $body .= '  '.$line;
   }
   push @records, {
@@ -49,7 +49,7 @@ while (my $line = <IN>) {
     title             => $title,
     body              => $body,
     start_line_number => $start_line_number,
-    end_line_number   => $. - (defined $line and $line =~ /^## /)
+    end_line_number   => $. - (defined $line and ($line =~ /^### TD\d{8}/ or $line =~ /^## /))
   };
 } continue {
   $previous = $line;

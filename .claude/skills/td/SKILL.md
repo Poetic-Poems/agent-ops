@@ -67,8 +67,9 @@ it has the full description and the suggested fix, and instruct it to:
    `npm run build`, `npm run check`, `npm run check:build`; on WSL/Linux via
    `./scripts/setup-linux.sh`).
 5. On success, remove the resolved entry from `TECH-DEBT.md` — delete the whole
-   `## <id> <title>` section (locate it by the `## <id>` heading rather than by
-   the reported line numbers, which drift once editing starts) — and flip its
+   `### <id> <title>` section under `## Current Items` (locate it by the
+   `### <id>` heading rather than by the reported line numbers, which drift once
+   editing starts) — and flip its
    Ledger row to `resolved`, filling in `Resolved` (today's date) and `Ref`
    (the PR number). If the record's body notes references to its ID
    elsewhere (e.g. in code comments), remove those too, per `CLAUDE.md`'s

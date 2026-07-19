@@ -122,8 +122,12 @@ Conventions shared by both repos (agents must honour all of these):
 - `TECH-DEBT.md` holds deferred work, with a permanent Ledger table and a
   "Claiming an item" workflow: flip the Ledger row to `in-progress` and open
   a **draft** pull request immediately, so the claim is visible; flip to
-  `resolved` and mark the PR ready when done. `scripts/get-tech-debt-record.pl`
-  resolves an ID to its record; `scripts/next-tech-debt-id.pl` allocates IDs.
+  `resolved` and mark the PR ready when done. Live item bodies live under a
+  `## Current Items` heading (above `## Ledger`) as `### <id> <title>`
+  sections — that heading is where a new item's body goes, and a resolved
+  item's `### ` section is removed from it while its Ledger row stays forever.
+  `scripts/get-tech-debt-record.pl` resolves an ID to its record;
+  `scripts/next-tech-debt-id.pl` allocates IDs.
 - CI runs on every PR (build/lint/test workflows plus CodeQL and
   commit-format checks). A PR is not finished until its checks pass and
   `gh pr view --json mergeable,mergeStateStatus` reports it mergeable.

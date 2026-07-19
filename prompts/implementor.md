@@ -211,9 +211,9 @@ step 3, following "When `source` is `review-feedback`" above.)*
    Don't report completion on the strength of the diff looking right —
    run the checks.
 5. **Close the loop on the originating record:**
-   - Tech-debt: remove the entry's `## <id> ...` section from
-     `TECH-DEBT.md` and flip its Ledger row to `resolved`, filling in
-     `Resolved` and `Ref` per that file's own format.
+   - Tech-debt: remove the entry's `### <id> ...` section from
+     `TECH-DEBT.md`'s `## Current Items` and flip its Ledger row to
+     `resolved`, filling in `Resolved` and `Ref` per that file's own format.
    - Issue: reference it with a closing keyword (`Closes #123`) in the PR
      body.
    - Implementation-plan task: mark it done where the plan tracks that

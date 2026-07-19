@@ -5,7 +5,7 @@
 # Print the next free TECH-DEBT.md ID (TD<YYMMDD><NN>) for the given date,
 # or today's date if none is given. Scans the whole file for any "TD"
 # followed by 8 digits — covering both the Ledger table and any live
-# "## TD########" entry headers — so the result stays correct even if a
+# "### TD########" entry headers — so the result stays correct even if a
 # resolved entry's Ledger row is all that's left.
 
 use strict;
