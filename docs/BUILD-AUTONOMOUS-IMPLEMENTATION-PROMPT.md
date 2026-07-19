@@ -499,6 +499,16 @@ runs unattended.
     Dependabot/code-scanning APIs itself; it reads the pre-fetched `findings`
     array the Script attached to each repo (requirement 3a), spending its
     `gh` budget only on the cheap claim/blocked checks below.
+14a. **An issue is its whole thread, not just the opening post.** Whenever it
+    evaluates or selects a GitHub issue, the Co-Ordinator reads the body *and
+    every comment* — `gh issue view <n> --comments` (or `gh api
+    repos/<slug>/issues/<n>/comments`). A bare `gh issue view <n>` or `gh api
+    .../issues/<n>` returns only the body and silently drops the comments,
+    where the parts that decide the work routinely live: added acceptance
+    criteria, clarifications or corrections to the original ask, scope cuts, a
+    "blocked"/"won't do" note, or a maintainer turning a discussion into an
+    actionable task. A later comment that contradicts the body is the current
+    instruction; the body alone is never taken as the whole ask.
 15. Walks the repos in the order given. Within a repo, checks work sources
     in the configured priority order. For "failed Actions runs", a candidate
     exists only where the **most recent** run of a workflow on the default
@@ -558,7 +568,9 @@ runs unattended.
       the backstop for when it is missing anyway — the item is then
       investigated once, and the finding remembered.
     - an issue that is assigned, labelled `blocked`, or is a question or
-      discussion rather than actionable work;
+      discussion rather than actionable work — judged over the whole thread
+      (requirement 14a), since a comment can block, close, re-scope, or answer
+      an issue that its body alone would make look selectable;
     - a security finding whose only available fix is one a human must choose
       (e.g. a Dependabot alert with no non-breaking upgrade, needing a major
       version bump that changes the repo's public behaviour) — flag it, don't
@@ -609,7 +621,14 @@ runs unattended.
     (`review-<review-date>-R-NN`) and `context` must paste the recommendation's
     improvement prompt (from `04-improvement-prompts.md`) verbatim, together
     with the review folder path and the `R-NN` detail; `acceptance` is the
-    recommendation's *Intended end state*.
+    recommendation's *Intended end state*. For an `issues` entry, `item` is the
+    issue number and `context` must paste the issue body **and every comment**
+    verbatim (each attributed to its author, in order) — not the opening post
+    alone. The Implementor starts with nothing but this work order, so a
+    clarification or acceptance criterion left in a comment is lost unless the
+    Co-Ordinator carries it across; where the comments changed the ask,
+    `acceptance` is set from the current state of the thread, not the original
+    body.
 
     ```json
     {
@@ -649,7 +668,11 @@ runs unattended.
     this stage never reaches a parseable final message (requirement 9). For
     tech-debt items this follows the repo's claiming workflow exactly
     (Ledger flip to `in-progress` as the first commit). For issues, it
-    comments on the issue linking the draft PR. For `security`/`code-quality`
+    comments on the issue linking the draft PR; the work order's `context`
+    already carries the issue body and its comments (requirement 20), but if
+    the Implementor consults the issue directly it reads the whole thread
+    (`gh issue view <n> --comments`), never a bare `gh issue view <n>` that
+    hides the comments where corrected requirements usually live. For `security`/`code-quality`
     findings, the draft PR body names the alert (its `ref` and URL) so the
     claim is visible to any other cycle scanning open PRs. For a
     `project-review` recommendation, the draft PR body names the ref
