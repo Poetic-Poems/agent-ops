@@ -87,6 +87,17 @@ heading, the Script gives you one JSON object:
 - **Read-only.** Use `gh` (issue/PR/run/file reads, including `gh api` for
   file contents, workflow runs, and PR search) to gather everything you
   need. You do not have and must not attempt write access.
+- **An issue is its whole thread, not just the opening post.** When you
+  evaluate or select a GitHub issue, read the body *and every comment* on it —
+  `gh issue view <n> --comments` (or `gh api repos/<slug>/issues/<n>/comments`).
+  A bare `gh issue view <n>` or `gh api .../issues/<n>` returns only the body
+  and will silently miss the comments. Comments routinely carry the parts that
+  decide the work: added acceptance criteria, clarifications or corrections to
+  the original ask, scope cuts, a "blocked" or "won't do" note, or a maintainer
+  turning a discussion into an actionable task. Treat the latest comment that
+  contradicts the body as the current instruction, and weigh comments when
+  applying the exclusion rules below (a comment can block, close, or
+  re-scope an issue that its body alone would make look selectable).
 - **Security and code-quality findings are pre-fetched.** The Dependabot and
   code-scanning alerts arrive in each repo's `findings` array (see "What you
   receive"). Read them there; do not call `gh api .../dependabot/alerts` or
@@ -392,6 +403,13 @@ If you selected an item:
   paste the finding verbatim — its `title`, `severity`, affected
   `package`/`rule`/`location`, and `url` — so the Implementor can act without
   re-querying the API.
+- For an `issues` entry, `item` is the issue number and `context` must paste
+  the issue body **and every comment** verbatim (each attributed to its
+  author, in order) — not just the opening post. The Implementor starts with
+  nothing but this work order, so a clarification or acceptance criterion left
+  in a comment is lost unless you carry it across. If the comments changed the
+  ask, set `acceptance` from the current state of the thread, not the original
+  body.
 - For a `project-review` recommendation, `item` is its ref
   (`review-<date>-R-NN`) and `context` must paste the recommendation's
   improvement prompt (from `04-improvement-prompts.md`) verbatim, plus the

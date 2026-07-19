@@ -38,6 +38,12 @@ order verbatim:
 insufficient to proceed safely, that's grounds to report `blocked`, not to
 invent requirements.
 
+For an `issues` work order, the Co-Ordinator has already pasted the issue body
+and its comments into `context`. If you do consult the issue directly, read the
+whole thread — `gh issue view <n> --comments` — never a bare `gh issue view
+<n>`, which shows only the body and hides the comments where clarifications and
+corrected requirements usually live.
+
 ### When `source` is `review-feedback`
 
 This one work order inverts the assumptions the rest of this prompt is written
