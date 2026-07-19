@@ -1,0 +1,53 @@
+name: "CodeQL"
+
+# Security scanning for pull requests targeting main, plus a push trigger so
+# the Security tab has a baseline on main to diff PR alerts against, and a
+# weekly schedule so newly-disclosed query rules get applied even when
+# nothing in the repo has changed.
+#
+# Only `actions` (this repo's own workflow YAML) is scanned. agent-ops is
+# Shell/Perl/HTML, none of which CodeQL supports, so there is no
+# `javascript-typescript` (or other language) matrix entry here — unlike the
+# poetic repo, whose JavaScript build scripts are scanned too.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "30 1 * * 0"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    name: Analyze (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: actions
+            build-mode: none
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+
+      - name: Perform CodeQL analysis
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: "/language:${{ matrix.language }}"
