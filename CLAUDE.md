@@ -17,20 +17,22 @@ Conventional Commits format (e.g. `docs: clarify workspace rule`).
 All Poetic repositories, this one included, operate in a multi-agent
 environment: autonomous and interactive agents, and the maintainer, may push
 branches, merge pull requests, and move `main` at any time. Before commencing
-any changes, make your own dedicated shallow clone of `origin/main` and work
+any changes, make your own dedicated fresh clone of `origin/main` and work
 in that — never in a checkout shared with anyone else, such as the user's
 working copy (which may be edited at any moment) or a clone another agent is
 already using:
 
 ```bash
-git clone --depth 1 https://github.com/Poetic-Poems/agent-ops.git <scratch-dir>/agent-ops
+git clone https://github.com/Poetic-Poems/agent-ops.git <scratch-dir>/agent-ops
 ```
 
-Deepen the clone if the task turns out to need history — for example, a
-rebase onto a `main` that has moved needs the merge base
-(`git fetch --unshallow`, or `git fetch --depth=<n>`). Commit, push the
-feature branch, and open the pull request from that clone; delete the clone
-once the work has landed.
+A full clone is the default: at this repo's size it costs nothing, and
+rebasing onto a moved `main` and inspecting history just work. If clone speed
+ever becomes a concern, prefer a blobless clone (`--filter=blob:none`), which
+keeps the full commit history; a shallow clone (`--depth 1`) has no merge
+base, so it must be deepened (`git fetch --unshallow`) before it can rebase.
+Commit, push the feature branch, and open the pull request from that clone;
+delete the clone once the work has landed.
 
 When you open (or update) a pull request, do not assume `origin/main` is
 still in the state it was when you cloned — another change may have merged

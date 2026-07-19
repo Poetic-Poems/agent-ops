@@ -237,9 +237,9 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
       clone the repo fresh from GitHub — the multi-agent ways-of-working rule
       shared by all Poetic repositories: every agent works in its own
-      dedicated clone taken from the tip of the default branch before
-      commencing any changes. (A full clone rather than a shallow one,
-      deliberately — the review examines git history.) Assert the working
+      dedicated fresh clone taken from the tip of the default branch before
+      commencing any changes. (A full clone — the review examines git
+      history.) Assert the working
       directory is under `workspace_root` before launching any stage
       (requirement 6). The user's own clones under `~/Code` are never touched.
    2. *Inject the skill.* Copy this repository's

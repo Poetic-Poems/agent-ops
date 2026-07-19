@@ -399,10 +399,10 @@ runs unattended.
 6. **Workspace.** Create `workspace_root/<cycle-id>/` and clone the selected
    repo into it, fresh from GitHub. This applies the multi-agent
    ways-of-working rule shared by all Poetic repositories: every agent works
-   in its own dedicated clone taken from the tip of the default branch
-   before commencing any changes. (A full clone rather than a shallow one,
-   deliberately — stages may rebase onto a `default_branch` that has moved
-   and need the merge base.) Agents only ever run inside this
+   in its own dedicated fresh clone taken from the tip of the default branch
+   before commencing any changes. (A full clone — stages may rebase onto a
+   `default_branch` that has moved and need the merge base.) Agents only
+   ever run inside this
    workspace; the Script must refuse (assert) to launch a stage whose
    working directory is outside `workspace_root`. The user's own clones
    under `~/Code` are never touched.
