@@ -397,7 +397,12 @@ runs unattended.
    match against an equally empty sample of its own), release the lock, and
    exit. This event is the only thing that makes the next cycle cheap.
 6. **Workspace.** Create `workspace_root/<cycle-id>/` and clone the selected
-   repo into it, fresh from GitHub. Agents only ever run inside this
+   repo into it, fresh from GitHub. This applies the multi-agent
+   ways-of-working rule shared by all Poetic repositories: every agent works
+   in its own dedicated clone taken from the tip of the default branch
+   before commencing any changes. (A full clone rather than a shallow one,
+   deliberately — stages may rebase onto a `default_branch` that has moved
+   and need the merge base.) Agents only ever run inside this
    workspace; the Script must refuse (assert) to launch a stage whose
    working directory is outside `workspace_root`. The user's own clones
    under `~/Code` are never touched.
@@ -1006,7 +1011,11 @@ Recorded so a future reader knows they were deliberate, not accidental.
   process model, and the cheap Co-Ordinator session is not held open while
   an implementation runs for an hour.
 - **Agents work in ephemeral clones**, never in the user's working copies
-  under `~/Code`, which the user may be editing at any moment.
+  under `~/Code`, which the user may be editing at any moment. This is the
+  multi-agent ways-of-working rule shared by all Poetic repositories: every
+  agent — autonomous or interactive — makes its own dedicated clone from the
+  default branch before commencing any changes, and never assumes the default
+  branch still matches what it cloned when it opens the pull request.
 - **Draft-PR claiming is fused with the review flow**: the Implementor's
   draft PR is simultaneously the repos' standard claim marker and the
   Reviewer's input; the Reviewer flipping it to ready is the hand-off to the
