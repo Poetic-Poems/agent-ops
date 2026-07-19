@@ -235,9 +235,13 @@ R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
 R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
    never blocks the other and only one heavy `claude` runs at a time):
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
-      clone the repo fresh from GitHub. Assert the working directory is under
-      `workspace_root` before launching any stage (requirement 6). The user's
-      own clones under `~/Code` are never touched.
+      clone the repo fresh from GitHub — the multi-agent ways-of-working rule
+      shared by all Poetic repositories: every agent works in its own
+      dedicated fresh clone taken from the tip of the default branch before
+      commencing any changes. (A full clone — the review examines git
+      history.) Assert the working
+      directory is under `workspace_root` before launching any stage
+      (requirement 6). The user's own clones under `~/Code` are never touched.
    2. *Inject the skill.* Copy this repository's
       `.claude/skills/project-review/` into
       `<clone>/.claude/skills/project-review/`, then append
