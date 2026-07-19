@@ -95,7 +95,14 @@ same way `agent-cycle.sh` reads them.
   limits below before building anything that treats these dollars as budget.
   Missing/partial files degrade to a null stage — never a crash.
 - **`lock.json`** — `{pid, started_at}`. A live pid (`kill -0`) means a cycle
-  is running now.
+  is running now. The cycle id is `<started>-<pid>` and the lock carries that
+  same pid, so the running cycle's own events are exactly those whose id ends in
+  `-<pid>`. From them the Publisher derives `status.current` — what the live
+  cycle is working on right now: the running stage (the last `stage-start` with
+  no matching `stage-end`) and the item the Co-Ordinator selected
+  (`repo`/`item`/`source`/`title`). It is `null` when idle, and its fields fill
+  in as the cycle progresses — `repo`/`item`/`title` appear only once selection
+  has happened, since the Co-Ordinator stage runs before it has chosen anything.
 - **`cron.log`** — tail shown, for "cron fired but nothing happened".
 - **GitHub, via `gh`** (best-effort; the machine is authenticated and the
   repos are public): open PRs carrying `pr_label` with `statusCheckRollup`,
@@ -138,7 +145,8 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
 ```
 { generated_at, max_open_agent_prs,
   config:  { models, timeouts, pr_label, branch_prefix, repos, … },
-  status:  { running, lock:{pid,started_at,alive}, last_cycle, limit:{active,note} },
+  status:  { running, lock:{pid,started_at,alive},
+             current:{stage,repo,item,source,title}, last_cycle, limit:{active,note} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,
              spend_today_usd, spend_total_usd, by_day[], by_model[] },
   cycles:  [ { id, started_at, ended_at, outcome, repo, item, source, title,
@@ -170,8 +178,9 @@ compare that ignores the always-moving `generated_at`). Expanded cycle rows,
 open transcript panels and scroll position survive the re-render; the header's
 staleness clock ticks every interval and warns if the heartbeat looks stopped.
 
-Panels: status header + disabled / usage-limit / failing-checks / gh-down
-banners (the switch first: when it is set, every other quiet signal on the page
+Panels: status header (running/idle, and while a cycle runs the stage, repo,
+work source and item it is working on) + disabled / usage-limit /
+failing-checks / gh-down banners (the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
 metric cards (spend today/total, failures, reached-ready, back-pressure gauge
@@ -332,6 +341,22 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   the page, since it is the only escape hatch and it exists nowhere in the
   UI). Collapsing them costs the operator the one distinction the pipeline
   cannot make for itself.
+- **The live indicator says what, not just that.** The header's running dot
+  once reported only that a cycle was in flight and since when; the item it was
+  working on lived several panels down, in the cycles table. But "what is the
+  pipeline doing right now?" is the exact question a glance at the header is
+  for, and making the operator scroll to answer it defeats the point of having a
+  live indicator at all. So the running state now carries `status.current` — the
+  live stage and the selected work — rendered inline beside the dot, reusing the
+  same source-tag vocabulary as the cycles column so the two read as one thing.
+  It is *derived, not newly logged*: the id/pid tie between the lock and the
+  running cycle's events is enough to reconstruct it from state already on disk,
+  so the reader gains the answer without the pipeline emitting anything new or
+  the Publisher making an extra call. The fields appear in the order the cycle
+  learns them — stage first, then repo/item/title once the Co-Ordinator selects
+  — which doubles as a coarse progress read: a header stuck on `coordinator`
+  with no item is a cycle still choosing; one naming an item under `implementor`
+  is a cycle at work.
 - **The page refreshes its data in place, not by reloading.** The heartbeat
   once published every 5 minutes and the page reloaded itself every 60s with
   `location.reload()`. When the heartbeat moved to ~5s
