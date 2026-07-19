@@ -217,6 +217,17 @@ if [[ -f "$lock_file" ]]; then
   [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null && lock_alive=true
 fi
 
+# The events of the cycle that holds the lock right now, so the header can say
+# what is being worked on and not just that something is. The cycle id is
+# "<ts>-<pid>" (agent-cycle.sh) and the lock stores that same pid, so the live
+# cycle's events are exactly those whose id ends in "-<lock_pid>".
+running_events='[]'
+if [[ "$lock_alive" == "true" && -n "$lock_pid" ]]; then
+  running_events="$(printf '%s\n' "$ALL_EVENTS" \
+    | jq -sc --arg pid "$lock_pid" '[ .[] | select((.cycle // "") | endswith("-" + $pid)) ] | sort_by(.ts)' 2>/dev/null)"
+  [[ -z "$running_events" || "$running_events" == "null" ]] && running_events='[]'
+fi
+
 # Usage-limit state: prefer a logged limit-hit with a future resume_at; else
 # fall back to limit phrasing detected in the most recent cycles' transcripts.
 last_limit_hit="$(printf '%s\n' "$ALL_EVENTS" | jq -rsc '[.[]|select(.event=="limit-hit")]|last // {}' 2>/dev/null)"
@@ -270,6 +281,7 @@ switch_json="$(jq -nc --argjson d "$switch_disabled" --argjson s "$switch_state"
 status_json="$(jq -n \
   --argjson alive "$lock_alive" \
   --arg pid "$lock_pid" --arg started "$lock_started" \
+  --argjson running "$running_events" \
   --argjson limit_active "$limit_active" --arg limit_note "$limit_note" \
   --argjson switch "$switch_json" \
   --slurpfile cyc "$cycles_file" '
@@ -277,6 +289,25 @@ status_json="$(jq -n \
   | {
       running: $alive,
       lock: (if $pid == "" then null else {pid: ($pid|tonumber), started_at: $started, alive: $alive} end),
+      # What the live cycle is doing right now, derived from its own events: the
+      # last stage whose stage-start has no matching stage-end (the running one),
+      # and the work its coordinator selected. Null until a cycle holds the lock;
+      # its fields fill in as the cycle progresses (repo/item/title appear only
+      # once the coordinator has selected — the coordinator stage runs first).
+      current: (
+        ($running // []) | if length == 0 then null else
+        {
+          stage: (
+            (reduce (.[] | select(.event=="stage-start" or .event=="stage-end")) as $x
+              ({}; .[$x.stage] = $x.event))
+            | to_entries | map(select(.value=="stage-start")) | (.[-1].key // null)
+          ),
+          repo:   ([ .[] | select(.event=="selection") | .repo ]   | last),
+          item:   ([ .[] | select(.event=="selection") | .item ]   | last),
+          source: ([ .[] | select(.event=="selection") | .source ] | last),
+          title:  ([ .[] | select(.event=="selection") | .title ]  | last)
+        } end
+      ),
       last_cycle: (($real[0] // $cyc[0][0]) | if . == null then null else {id, ended_at, outcome, repo, item, title} end),
       limit: {active: $limit_active, note: $limit_note},
       switch: $switch
