@@ -616,7 +616,22 @@
     live.innerHTML = "";
     if (st.running && st.lock) {
       live.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
-      live.appendChild(el("span", {class:"muted", text: " since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
+      // What is being worked on right now. The coordinator stage runs before it
+      // has selected anything, so repo/item/title may not be known yet — show
+      // whatever is: the stage first (always present once a stage is live), then
+      // the selected work as it becomes known.
+      var cur = st.current || {};
+      var label = cur.title || cur.item;                    // human-readable work item
+      if (cur.stage || label || cur.repo) {
+        var what = el("span", {class:"muted"}, " · ");
+        if (cur.stage) what.appendChild(el("span", {class:"mono", title:"current stage", text: cur.stage}));
+        if (cur.stage === "coordinator" && !label) what.appendChild(document.createTextNode(" choosing work"));
+        if (cur.repo)   { what.appendChild(document.createTextNode(" · ")); what.appendChild(el("span", {class:"mono", text: cur.repo.split("/")[1]})); }
+        if (cur.source) { what.appendChild(document.createTextNode(" ")); what.appendChild(sourceTag(cur.source)); }
+        if (label)      what.appendChild(document.createTextNode(" " + (label.length > 70 ? label.slice(0,69) + "…" : label)));
+        live.appendChild(what);
+      }
+      live.appendChild(el("span", {class:"muted", text: " · since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
     } else {
       live.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "idle" ]));
       if (st.last_cycle) live.appendChild(el("span", {class:"muted", text: " · last cycle " + fmtAgo(st.last_cycle.ended_at) }));
