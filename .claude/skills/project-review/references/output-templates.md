@@ -121,13 +121,36 @@ If the project already has a tech-debt file, **preserve its format and its exist
 ```markdown
 # Tech debt register
 
-Known technical debt, in severity order. Each entry records what the debt is, why it was (or is being) tolerated, and what it costs. Last reviewed: <YYYY-MM-DD> (project-review).
+Deferred work and known compromises, most severe first. Each live item is a level-three `### <id> <title>` section under the "Current Items" heading; when an item is resolved its `### ` section is removed but its Ledger row is kept forever, so IDs are never reused. Last reviewed: <YYYY-MM-DD> (project-review).
 
-## <Short title> · **<Severity>** · Status: Open
+`<id>` is `TD<YYMMDD><NN>`: a "TD" prefix, the date, then a zero-padded per-day sequence number — one more than the highest `NN` for that date in the Ledger (use the repo's `next-tech-debt-id` helper if it has one, otherwise count from the Ledger, which is the source of truth for the next free ID).
+
+## Review provenance
+
+Where an item mirrors a recommendation, map it here so the review and the register are not double-counted.
+
+| Recommendation | Ledger ID |
+|----------------|-----------|
+| R-<NN> — <short title> | <id> |
+
+## Current Items
+
+The open items, each as a `### <id> <title>` section. This heading is permanent: when there are no current items it stays here (empty), so it is always obvious where a new item's body belongs.
+
+### <id> <short title>
+- **Severity:** <Critical / High / Medium / Low>
 - **What:** <The compromise, with paths.>
-- **Why it exists:** <The historical or pragmatic reason, if discernible; otherwise "Unknown — predates this register.".>
+- **Why it exists:** <The reason, if discernible; otherwise "Unknown — predates this register.".>
 - **Ongoing cost:** <What it slows, risks, or breaks.>
-- **Suggested remedy:** <One or two lines; cross-reference R-<NN>/F-<CODE>-<NN> where applicable.>
+- **Suggested remedy:** <One or two lines; cross-reference R-<NN> / F-<CODE>-<NN> where applicable.>
+
+## Ledger
+
+Every tech-debt ID ever allocated, in ID order. A row is never removed — even after its `### ` body is — so a resolved item's ID is never reused.
+
+| ID | Title | Status | Resolved | Ref |
+|----|-------|--------|----------|-----|
+| <id> | <short title> | Open | | |
 ```
 
 Tech debt overlaps with, but is not identical to, the findings: debt is a known compromise that lives with the project; the register is the durable file that survives after the dated review folder is archived. Duplication between the two is acceptable and expected.

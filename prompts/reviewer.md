@@ -71,9 +71,9 @@ your review:
   the PR title).
 - `TECH-DEBT.md` has a permanent Ledger table (`open` / `in-progress` /
   `resolved`). If this item came from tech debt, its Ledger row must be
-  `resolved` (with `Resolved` and `Ref` filled in) and its `## <id> ...`
-  section removed — not still `in-progress` with the fix sitting
-  unrecorded.
+  `resolved` (with `Resolved` and `Ref` filled in) and its `### <id> ...`
+  section removed from `## Current Items` — not still `in-progress` with the
+  fix sitting unrecorded.
 - If this item came from a `security` or `code-quality` finding (a Dependabot
   or code-scanning alert), there is no ledger to flip: confirm instead that
   the diff genuinely resolves the flagged alert (the right dependency bumped

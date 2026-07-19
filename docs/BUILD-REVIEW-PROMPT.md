@@ -91,8 +91,8 @@ yet have a `reviews/` folder, and the skill will create one on its first run.
 
 The skill is **vendored** into this repository at
 `.claude/skills/project-review/` — a pinned copy of the upstream skill at
-`~/Code/claude-skills/skills/project-review` (upstream commit `f752445`,
-vendored 2026-07-15). Only the runtime surface is vendored: `SKILL.md` and
+`~/Code/claude-skills/skills/project-review` (upstream commit `2c8e18c`,
+vendored 2026-07-19). Only the runtime surface is vendored: `SKILL.md` and
 `references/` (the four reference documents the skill reads); the upstream
 `evals/` directory is dev-only and is intentionally omitted.
 
@@ -313,9 +313,11 @@ R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
 
 R12. **Tech-debt conventions.** When the review adds tech-debt items, follow
    the repo's Ledger workflow exactly — allocate IDs with
-   `scripts/next-tech-debt-id.pl`, add Ledger rows, and preserve the existing
-   format — rather than inventing a competing structure. The skill updates the
-   file in place; this requirement pins it to *this* repo's conventions.
+   `scripts/next-tech-debt-id.pl`, add each item's body under the
+   `## Current Items` heading as a `### <id> <title>` section, add Ledger rows,
+   and preserve the existing format — rather than inventing a competing
+   structure. The skill updates the file in place; this requirement pins it to
+   *this* repo's conventions.
 
 R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    item the review files — or a GitHub issue it opens — covers the whole of a
