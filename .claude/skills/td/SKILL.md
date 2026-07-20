@@ -2,18 +2,19 @@
 name: td
 description: >-
   Launch an agent to work on a single item from TECH-DEBT.md. Use when the user
-  invokes /td <id-segment> — it resolves the tech-debt record whose ID contains
-  <id-segment> and hands it to a subagent to fix. Resolution goes through
+  invokes /td <id-segment> — it resolves the tech-debt record whose ID ends
+  with <id-segment> and hands it to a subagent to fix. Resolution goes through
   scripts/get-tech-debt-record.pl; if the segment matches more than one record,
   matches none, or is missing/invalid, stop and ask rather than guessing.
 ---
 
 # Work a tech-debt item (/td)
 
-Parse `/td <id-segment>`. `<id-segment>` is a fragment of a `TECH-DEBT.md`
-record ID (e.g. `1`, `708`, `D26`, `TD26070803`). Resolve it to **exactly one**
-record, then hand that record to a subagent to fix. Never assume which item is
-meant when the result is anything other than a single clean match.
+Parse `/td <id-segment>`. `<id-segment>` is the trailing part of a
+`TECH-DEBT.md` record ID (e.g. `3`, `803`, `070803`, `TD26070803`). Resolve it
+to **exactly one** record, then hand that record to a subagent to fix. Never
+assume which item is meant when the result is anything other than a single
+clean match.
 
 ## 1. Resolve the segment to one record
 

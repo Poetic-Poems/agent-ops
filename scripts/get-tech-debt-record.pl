@@ -2,11 +2,11 @@
 
 # get-tech-debt-record.pl ID_SEGMENT
 #
-# Find tech-debt records for which ID_SEGMENT matches to part of the record's
+# Find tech-debt records for which ID_SEGMENT matches the end of the record's
 # ID.  E.g., all of the below will match the ID "TD26070801".
 #     get-tech-debt-record.pl 1
-#     get-tech-debt-record.pl 708
-#     get-tech-debt-record.pl D26
+#     get-tech-debt-record.pl 801
+#     get-tech-debt-record.pl 070801
 #     get-tech-debt-record.pl TD26070801
 #
 # The matched records are printed as a YAML map having these keys:
@@ -38,7 +38,7 @@ while (my $line = <IN>) {
   next unless defined $previous;
   $previous =~ /^### (TD\d{8}) (.*)/ or next;
   my ($id, $title, $body, $start_line_number) = ($1, $2, '', $. - 1);
-  $id =~ /$id_segment/ or next;
+  $id =~ /$id_segment$/ or next;
   $title =~ s/'/''/g;
   while ($line = <IN>) {
     last if $line =~ /^### TD\d{8}/ or $line =~ /^## /;
