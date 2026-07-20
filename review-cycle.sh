@@ -188,6 +188,7 @@ dump_stage_output() {
 
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
+lease_held=0
 clone_dir=""
 cleanup() {
   local exit_code=$?
@@ -197,6 +198,12 @@ cleanup() {
   log_event "review-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
+  fi
+  # Publish this node's state to the fleet, once the review is fully recorded
+  # (R2c). Gated on the lease for the same reason as the implementation cycle:
+  # a node that stood down for another's lease must not overwrite its state.
+  if (( lease_held )); then
+    timeout 300 "$SCRIPT_DIR/scripts/state-sync.sh" push || true
   fi
   # Refresh the local monitoring dashboard. Fully isolated and time-bounded: a
   # failure or slow gh call here must never affect this run's outcome.
@@ -307,6 +314,25 @@ acquire_lock() {
   lock_acquired=1
 }
 acquire_lock
+
+# --- The lease (R2c) ---
+# The same fleet-level arbitration the implementation cycle takes, for the same
+# reason: the review spends too, and two nodes reviewing the same repositories
+# would open competing review pull requests. Both pipelines take the *same*
+# lease, so whichever runs refreshes it for the other — they are one node's
+# claim to be the one that acts, not two claims to two jobs.
+if ! (( DRY_RUN || ONCE )); then
+  lease_out=""
+  lease_rc=0
+  lease_out="$("$SCRIPT_DIR/scripts/state-sync.sh" lease 2>&1)" || lease_rc=$?
+  [[ -n "$lease_out" ]] && printf '%s\n' "$lease_out"
+  if (( lease_rc == 3 )); then
+    log_event "stand-down" "$(jq -nc --arg r "the lease is held by another node" \
+      --arg d "$lease_out" '{reason: $r, detail: $d}')"
+    exit 0
+  fi
+  lease_held=1
+fi
 
 # --- Stand-down checks (R3) ---
 # 3.1 Usage-limit cooldown (shared signal, read from log.jsonl exactly as agent-cycle.sh 2.1).

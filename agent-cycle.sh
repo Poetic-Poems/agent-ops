@@ -406,6 +406,7 @@ handle_stage_failure() {
 
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
+lease_held=0
 clone_dir=""
 cleanup() {
   local exit_code=$?
@@ -415,6 +416,18 @@ cleanup() {
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
+  fi
+  # Publish this node's state to the fleet (requirement 2.5). Here, at the end,
+  # rather than anywhere earlier: the cycle's record is only complete once
+  # `cycle-end` is logged, and a half-written cycle replicated to every standby
+  # node is worse than one that arrives an hour late. Gated on the lease
+  # because a node that stood down for another node's lease must not overwrite
+  # that node's state with its own — which also means `--dry-run` and `--once`,
+  # neither of which takes a lease, publish nothing. Isolated like the dashboard
+  # refresh below: a sync failure is a replication problem, never a cycle
+  # outcome.
+  if (( lease_held )); then
+    timeout 300 "$SCRIPT_DIR/scripts/state-sync.sh" push || true
   fi
   # Refresh the local monitoring dashboard. Fully isolated: a failure or a slow
   # gh call here must never affect the cycle's outcome or exit code.
@@ -533,6 +546,35 @@ acquire_lock() {
   lock_acquired=1
 }
 acquire_lock
+
+# --- 1a. The lease (requirement 2.5) ---
+# `lock.json` keeps two cycles apart on one node; the lease keeps two *nodes*
+# apart. Taken after the lock so that a node which is already busy does not
+# spend a network round trip to discover it, and before any work so that a node
+# standing down for another's lease has cost nothing but the request.
+#
+# Exit status 3 means another node holds an unexpired lease. That is a normal
+# outcome — the fleet arbitrating itself — so it is logged as a stand-down and
+# the cycle ends successfully. `--dry-run` and `--once` skip the lease entirely:
+# a human asking for a cycle on a standby node is asking deliberately, and
+# neither mode spends unattended.
+if ! (( DRY_RUN || ONCE )); then
+  lease_out=""
+  lease_rc=0
+  lease_out="$("$SCRIPT_DIR/scripts/state-sync.sh" lease 2>&1)" || lease_rc=$?
+  [[ -n "$lease_out" ]] && printf '%s\n' "$lease_out"
+  if (( lease_rc == 3 )); then
+    log_event "stand-down" "$(jq -nc --arg r "the lease is held by another node" \
+      --arg d "$lease_out" '{reason: $r, detail: $d}')"
+    exit 0
+  fi
+  # Anything other than 3 — including a failure to reach GitHub, which
+  # state-sync.sh reports and passes over — leaves this node running, and
+  # therefore holding the lease as far as the rest of the cycle is concerned.
+  lease_held=1
+else
+  lease_held=0
+fi
 
 # --- 2. Stand-down checks ---
 # 2.1 Usage-limit cooldown
