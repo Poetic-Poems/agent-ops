@@ -1,0 +1,148 @@
+# deploy/docker/compose.yaml — one node of the agent-ops operation.
+#
+#   cd deploy/docker && cp .env.example .env && $EDITOR .env && docker compose up -d
+#
+# Every node runs this same file with the same image; the only thing that
+# differs between them is .env — the node's name, its role, and its tokens.
+# That is the whole point: a node is not configured, it is instantiated.
+#
+# Which services start is decided by COMPOSE_PROFILES in .env, so the command
+# above is the same everywhere:
+#
+#   tailnet      the dashboard, reachable over the owner's tailnet (the normal
+#                deployment; needs TS_AUTHKEY)
+#   local        the dashboard on the host's own loopback instead, for a
+#                machine with no tailnet or no authkey to hand
+#   auto-update  watchtower, which pulls new images and restarts into them
+#
+# The scheduler belongs to no profile: it runs on every node under every
+# profile, because a node that runs no cycles and no heartbeat is not a node.
+
+name: agent-ops
+
+# Everything the two agent-ops services share. They are the same image running
+# different commands over the same state — the dashboard renders what the
+# scheduler's cycles record — so their environment and volumes are defined once
+# here and merged into both.
+x-agent-ops: &agent-ops
+  # The registry image is the deployment artefact, and there is deliberately no
+  # `build:` stanza: a node holds this file and its .env, not a clone, so a
+  # build context would be a path that does not exist there. To run an image
+  # built locally (docker build -f deploy/docker/Dockerfile -t agent-ops .),
+  # set AGENT_OPS_IMAGE in .env.
+  image: ${AGENT_OPS_IMAGE:-ghcr.io/poetic-poems/agent-ops:latest}
+  restart: unless-stopped
+  environment:
+    # A node stands down unless it is explicitly told otherwise
+    # (IMPLEMENTATION-PIPELINE-SPEC requirement 2.4). Defaulting the default is
+    # deliberate: an .env copied from the example, or a variable lost in a
+    # restart, must not turn a spare node into a second worker.
+    AGENT_OPS_ROLE: ${ROLE:-standby}
+    NODE_NAME: ${NODE_NAME:-unnamed}
+    GH_TOKEN: ${GH_TOKEN:-}
+    GIT_USER_NAME: ${GIT_USER_NAME:-}
+    GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+    TZ: ${TZ:-Pacific/Auckland}
+  volumes:
+    # The three things that must survive a container being replaced by a newer
+    # image. Everything else in the container is rebuilt from the image.
+    - state:/home/agent/.local/state/poetic-agents
+    - claude-config:/home/agent/.claude
+    - workspaces:/home/agent/.cache/poetic-agents/workspaces
+  labels:
+    # Only containers carrying this label are watchtower's business — the
+    # laptop runs unrelated containers that are none of it.
+    com.centurylinklabs.watchtower.enable: "true"
+
+services:
+  # The pipelines themselves: supercronic running deploy/docker/crontab. On a
+  # standby node this still runs, and each cycle line writes one log line and
+  # exits — the schedule is identical everywhere, and failing over is a change
+  # of ROLE rather than an edit to a crontab.
+  scheduler:
+    <<: *agent-ops
+    command: ["supercronic", "/app/deploy/docker/crontab"]
+
+  # --- tailnet profile ---------------------------------------------------
+  # Tailscale in a sidecar, with the dashboard sharing its network namespace.
+  # This is what lets a remote browser reach a server that binds 127.0.0.1:
+  # the two containers *are* one loopback, so Serve can proxy to the dashboard
+  # while nothing on any network can. The privacy model of DASHBOARD-SPEC
+  # survives the move to containers without the server changing a line.
+  tailscale:
+    image: tailscale/tailscale:latest
+    profiles: [tailnet]
+    hostname: ${NODE_NAME:-agent-ops}
+    restart: unless-stopped
+    environment:
+      TS_AUTHKEY: ${TS_AUTHKEY:-}
+      TS_HOSTNAME: ${NODE_NAME:-agent-ops}
+      TS_STATE_DIR: /var/lib/tailscale
+      # Serve (never Funnel): the dashboard is published to the owner's tailnet
+      # and to nothing else. See ts-serve.json.
+      TS_SERVE_CONFIG: /config/serve.json
+    volumes:
+      - tailscale-state:/var/lib/tailscale
+      - ./ts-serve.json:/config/serve.json:ro
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    cap_add:
+      - NET_ADMIN
+      - NET_RAW
+    labels:
+      com.centurylinklabs.watchtower.enable: "true"
+
+  dashboard:
+    <<: *agent-ops
+    profiles: [tailnet]
+    command: ["/app/scripts/serve-dashboard.sh", "8787"]
+    # No `ports` and no `networks` are possible here, by construction: this
+    # container has no network stack of its own. It reaches the tailnet, and is
+    # reached, only through the sidecar above.
+    network_mode: service:tailscale
+    depends_on:
+      - tailscale
+
+  # --- local profile -----------------------------------------------------
+  # The same dashboard for a node with no tailnet. It uses the host's network
+  # namespace rather than publishing a port, because publishing one would reach
+  # nothing: the server binds 127.0.0.1 inside its own namespace, and a
+  # published port arrives on the container's external address. Sharing the
+  # host's namespace puts the bind on the host's loopback, so the page is
+  # readable at http://127.0.0.1:8787 from that machine and from nowhere else —
+  # the same guarantee the tailnet profile gets from the sidecar.
+  dashboard-local:
+    <<: *agent-ops
+    profiles: [local]
+    command: ["/app/scripts/serve-dashboard.sh", "${DASHBOARD_PORT:-8787}"]
+    network_mode: host
+
+  # --- auto-update profile -----------------------------------------------
+  # How a node picks up new code: CI builds an image from main, watchtower
+  # notices the new tag and restarts the services into it. There is no `git
+  # pull` anywhere in this design.
+  watchtower:
+    image: containrrr/watchtower:latest
+    profiles: [auto-update]
+    restart: unless-stopped
+    environment:
+      # Opt-in by label: watchtower must not touch containers this stack does
+      # not own.
+      WATCHTOWER_LABEL_ENABLE: "true"
+      WATCHTOWER_CLEANUP: "true"
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-300}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  # Cycle records, logs, locks, the published dashboard — the node's memory of
+  # what it has done. Phase E of the migration makes this the thing that syncs
+  # between nodes; until then it is per-node.
+  state:
+  # Claude's OAuth credentials, which refresh themselves and cannot be
+  # regenerated from the image. The one volume whose loss costs a manual login.
+  claude-config:
+  # Throwaway clones. Kept in a volume rather than the container layer so a
+  # restart mid-cycle does not orphan a large tree inside a dead container.
+  workspaces:
+  tailscale-state:

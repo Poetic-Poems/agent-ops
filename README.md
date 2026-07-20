@@ -86,18 +86,28 @@ run straight out of a checkout, driven by the user crontab.
 
 ### As a container
 
-```bash
-docker build -f deploy/docker/Dockerfile -t agent-ops .
+A node is one Compose project. Every node runs the same file and the same
+image; the only thing that differs between two nodes is its `.env`.
 
-# the scheduler: the same three cron entries the laptop crontab has
-docker run -d --name agent-ops-scheduler \
-  -e AGENT_OPS_ROLE=standby -e NODE_NAME=my-node -e GH_TOKEN=… \
-  -v agent-ops-state:/home/agent/.local/state/poetic-agents \
-  -v agent-ops-claude:/home/agent/.claude \
-  agent-ops supercronic /app/deploy/docker/crontab
+```bash
+cd deploy/docker
+cp .env.example .env
+$EDITOR .env          # name the node, set its role, paste its tokens
+docker compose up -d
+docker compose exec scheduler claude   # authenticate this node, once
 ```
 
-Three things are worth knowing before the compose stack lands:
+`COMPOSE_PROFILES` in that `.env` decides what the node runs:
+
+| Profile | What it adds |
+|---|---|
+| `tailnet` | Tailscale sidecar + the dashboard, served to your tailnet over HTTPS at `https://<node>.<tailnet>` — never to the public internet |
+| `local` | the dashboard on the machine's own loopback instead (`http://127.0.0.1:8787`), for a node with no tailnet or no authkey |
+| `auto-update` | watchtower, which pulls new images and restarts into them |
+
+The scheduler is in no profile: it runs on every node, whatever else does.
+
+Four things are worth knowing:
 
 - **`/app` is the deployment.** The image is built from this repository, so a
   node updates by pulling a new image — never by pulling a branch inside a
@@ -107,11 +117,16 @@ Three things are worth knowing before the compose stack lands:
   entrypoint seeds `settings.json` only when it is absent, and refuses to start
   if `state_dir` is not writable by the container user (uid 1000 by default;
   rebuild with `--build-arg PUID=…` to match a host directory).
-- **Authenticate once per node**: `docker exec -it agent-ops-scheduler claude`
-  and complete the login. Until then every cycle fails at its first stage; the
+- **Authenticate once per node**: `docker compose exec scheduler claude` and
+  complete the login. Until then every cycle fails at its first stage; the
   entrypoint warns about it on each start.
+- **The dashboard is never published by a port.** Its server binds `127.0.0.1`
+  by design, so `ports:` would reach nothing. The `tailnet` profile shares the
+  Tailscale sidecar's network namespace instead; the `local` profile shares the
+  host's. If the host already has something on 8787 — the laptop's legacy SysV
+  dashboard does — set `DASHBOARD_PORT` in `.env`.
 
-Set `AGENT_OPS_ROLE=active` on exactly one node (see
+Set `ROLE=active` in the `.env` of exactly one node (see
 [Which node runs the cycles](#which-node-runs-the-cycles)).
 
 ### On the host
@@ -253,8 +268,11 @@ AGENT_OPS_ROLE=active     # this machine runs the hourly cycle and the daily rev
 AGENT_OPS_ROLE=standby    # ...anything else does not
 ```
 
-Set it in the crontab (a bare `AGENT_OPS_ROLE=active` line above the schedule
-lines) or in the environment of whatever runs the scripts. Only the exact value
+On a containerised node, set `ROLE=active` in `deploy/docker/.env` — the
+scheduler service passes it through as `AGENT_OPS_ROLE`, and defaults it to
+`standby` when it is missing. On the host, set it in the crontab (a bare
+`AGENT_OPS_ROLE=active` line above the schedule lines) or in the environment of
+whatever runs the scripts. Only the exact value
 `active` counts — case and surrounding whitespace are ignored, but **unset,
 empty or misspelt all mean standby**. That is deliberate: a machine wrongly
 standby costs one skipped cycle, while a second machine wrongly active costs

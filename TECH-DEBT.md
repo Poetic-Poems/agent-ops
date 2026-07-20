@@ -84,6 +84,30 @@ and publish a manifest list from CI. Everything else in the image is already
 architecture-independent — Ubuntu, NodeSource and the GitHub CLI apt repository
 all publish arm64.
 
+### TD26072003 The local dashboard profile needs Linux host networking
+
+The `local` profile in `deploy/docker/compose.yaml` gives `dashboard-local`
+`network_mode: host`, because `scripts/serve-dashboard.sh` binds `127.0.0.1`
+and a published port would therefore reach nothing. Host networking is a Linux
+container-runtime feature: on Docker Desktop for macOS or Windows the container
+would share the Desktop VM's loopback, not the user's, and the page would be
+unreachable. Nothing is blocked today — every node is Linux (cloud VMs and WSL2)
+and the normal deployment is the `tailnet` profile — but the fallback profile is
+less portable than it looks, and the failure mode is a page that simply does not
+answer.
+
+It also means the port is the host's: on a machine already serving something on
+8787 (the laptop, via the legacy SysV dashboard) the container dies with
+`Address already in use` until `DASHBOARD_PORT` is set.
+
+Fix: make the bind address a setting of the server (default `127.0.0.1`,
+unchanged), have the `local` profile set it to `0.0.0.0` inside the container
+and publish `127.0.0.1:${DASHBOARD_PORT}:8787`. The exposure is then identical —
+the host's loopback and nothing else — while working on any runtime, and the
+port becomes the container's again. `DASHBOARD-SPEC.md`'s loopback requirement
+would need rewording to say what it protects (the host's loopback) rather than
+naming the literal bind.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -97,3 +121,4 @@ above.
 | TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | resolved | 2026-07-14 | #11 |
 | TD26072001 | shellcheck not clean at info level on two scripts | resolved | 2026-07-20 | #38 |
 | TD26072002 | The node image is amd64-only | open | | |
+| TD26072003 | The local dashboard profile needs Linux host networking | open | | |
