@@ -19,6 +19,47 @@ sequential number (starting at 1 for the first entry of a day). I.e.:
 date **in the Ledger table**, not just what's currently visible above it — a
 resolved entry's body is removed, but its Ledger row stays forever, so the
 Ledger (not memory or scrollback) is the source of truth for the next free ID.
+Compute it with `scripts/next-tech-debt-id.pl --ref origin/main` (after a
+`git fetch origin`) rather than counting by hand — the `--ref` makes the
+allocation reflect the shared state instead of a possibly stale checkout. It
+still cannot see IDs allocated on unmerged branches, so also skim open pull
+requests and `td/*` branches when filing.
+
+IDs are only unique within this repository: sister repositories allocate from
+the same date-based sequence, so the bare ID may exist in several of them.
+When referring to an item anywhere outside this repository (a sister repo's
+docs, a cross-repo PR, chat), qualify it with the repo name — e.g.
+`agent-ops TD26072001`.
+
+## Claiming an item
+
+This repository is worked by concurrent agents: autonomous and interactive
+sessions may pick up items at the same time, so a claim must be checked and
+taken against the shared state, never against what a local checkout happens
+to say. Before starting work on an open item:
+
+1. `git fetch origin`, then confirm the item's Ledger row is `open` (not
+   `in-progress`) **as of `origin/main`** — e.g. via
+   `perl scripts/get-tech-debt-record.pl --ref origin/main <id>`.
+2. Confirm nobody holds a claim: `git ls-remote origin "refs/heads/td/<id>"`
+   must print nothing, and skim open pull requests for the ID (which also
+   catches claims made on unconventionally named branches).
+3. Create the claim branch, named exactly **`td/<id>`**, from `origin/main`;
+   flip the item's Ledger row Status to `in-progress`; commit and push. The
+   branch name is the claim lock: git refuses the push if the branch already
+   exists, so a rejected push means another agent won the race — abandon
+   quietly; never force-push over it.
+4. Open a **draft** pull request right away — before the fix is finished — so
+   `gh pr list` shows the claim too. The Ledger status flip can be its first
+   commit.
+5. Do the work, pushing further commits to the same branch/PR.
+6. Once verified, flip the Ledger row to `resolved` (fill in `Resolved` and
+   `Ref`), remove the entry's `### <id>` section from Current Items, and mark
+   the PR ready for review.
+
+If a claim is abandoned, close the draft PR and delete the `td/<id>` branch —
+that releases the lock. The in-progress flip only ever lived on the branch,
+so `main`'s Ledger still says `open` and nothing needs reverting.
 
 ## Current Items
 

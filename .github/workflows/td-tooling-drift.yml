@@ -1,0 +1,29 @@
+name: Tech-debt tooling drift check
+
+# This repo holds manual copies of the tech-debt tooling that is canonical in
+# Poetic-Poems/poetic (this repo does not framework-sync). This check fails
+# when the copies drift from poetic main, so divergence is noticed instead of
+# festering.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'   # weekly, Monday 06:17 UTC
+  workflow_dispatch:
+
+jobs:
+  drift:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Compare tech-debt scripts against poetic main
+        run: |
+          set -euo pipefail
+          status=0
+          for f in scripts/get-tech-debt-record.pl scripts/next-tech-debt-id.pl; do
+            curl -fsSL "https://raw.githubusercontent.com/Poetic-Poems/poetic/main/$f" -o /tmp/upstream
+            if ! diff -u /tmp/upstream "$f"; then
+              echo "::error file=$f::$f has drifted from Poetic-Poems/poetic main"
+              status=1
+            fi
+          done
+          exit $status
