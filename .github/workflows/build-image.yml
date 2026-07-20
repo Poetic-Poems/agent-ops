@@ -1,0 +1,159 @@
+name: Build the node image
+
+# The image is the deployment artefact: /app inside it *is* agent-ops, and a
+# node updates by pulling a new image rather than by pulling a branch. So this
+# workflow is what turns a merge into a deployment — build, prove the image
+# works, and publish it to GHCR, where every node's watchtower is watching.
+#
+# On a pull request it stops at "prove it works": no login, no push, nothing
+# published from code nobody has reviewed.
+#
+# There is deliberately no `paths:` filter. Every file in this repository is
+# copied into the image, so there is no such thing as a change that cannot
+# affect it — and the tests below are the only place the `test/` suite runs in
+# CI, which a docs-only pull request has no business skipping.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A superseded build of the same branch is of no interest to anyone: only the
+# newest commit can become an image. `main` is excluded from cancellation
+# because each merge's image is published under its own SHA tag, and cancelling
+# one would leave a commit with no image.
+concurrency:
+  group: build-image-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+env:
+  IMAGE: ghcr.io/poetic-poems/agent-ops
+
+jobs:
+  build:
+    name: Build, test and publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # Only needed for the publish step, which runs on main alone. The job
+      # asks for it unconditionally because a job's permissions cannot be
+      # granted per-step; nothing else here uses it.
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build the image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          # Loaded into the runner's Docker rather than pushed, so every check
+          # below runs against the very bytes that will be published.
+          load: true
+          tags: agent-ops:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The acceptance checks of docs/IMPLEMENTATION-PIPELINE-SPEC.md (1b), run
+      # here so a broken image cannot reach a node. `docker run` goes through
+      # the entrypoint, which is itself part of what is being tested: it must
+      # prepare a fresh container's state and exec what it was given.
+      - name: Verify the toolchain
+        run: |
+          docker run --rm agent-ops:ci bash -lc '
+            set -e
+            for bin in bash git jq curl python3 perl flock sha256sum rsync node claude gh supercronic; do
+              command -v "$bin" >/dev/null || { echo "missing: $bin" >&2; exit 1; }
+              printf "%-12s %s\n" "$bin" "$(command -v "$bin")"
+            done
+            node --version
+            gh --version | head -n1
+            claude --version
+          '
+
+      - name: Verify the container crontab
+        run: docker run --rm agent-ops:ci supercronic -test /app/deploy/docker/crontab
+
+      - name: Run the test suite inside the image
+        run: |
+          docker run --rm agent-ops:ci bash -lc '
+            failed=0
+            for t in /app/test/*.test.sh; do
+              if bash "$t" > /tmp/out 2>&1; then
+                echo "PASS $(basename "$t")"
+              else
+                echo "FAIL $(basename "$t")"
+                cat /tmp/out
+                failed=1
+              fi
+            done
+            exit "$failed"
+          '
+
+      # The role guard (requirement 2.4) with no role set: the image's own
+      # default must be to spend nothing.
+      - name: Verify a node with no role stands down
+        run: |
+          out="$(docker run --rm agent-ops:ci /app/agent-cycle.sh)"
+          echo "$out"
+          case "$out" in
+            *"skipped — this node is standby"*) ;;
+            *) echo "expected the role guard to stand the node down" >&2; exit 1 ;;
+          esac
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # A second build rather than a `docker push`: everything is already in
+      # the build cache, so this costs seconds and produces the same image,
+      # while letting buildx write the manifest the registry wants.
+      #
+      # Two tags: `latest`, which is what a node's watchtower follows, and the
+      # commit SHA, which is how a node is pinned to a known-good build or
+      # rolled back to one (AGENT_OPS_IMAGE in deploy/docker/.env).
+      - name: Publish to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ github.sha }}
+          cache-from: type=gha
+          # `image.source` is what links the package to this repository, so the
+          # package page carries the README and the commit history rather than
+          # standing on its own with no explanation.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.description=The agent-ops node image: the pipelines and their whole toolchain.
+            org.opencontainers.image.licenses=NOASSERTION
+
+      - name: Say what was published
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          {
+            echo "### Published"
+            echo
+            echo '```'
+            echo "docker pull ${IMAGE}:latest"
+            echo "docker pull ${IMAGE}:${GITHUB_SHA}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
