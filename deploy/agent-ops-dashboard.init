@@ -21,16 +21,38 @@
 # [boot] command) — left alone, $HOME would stay /root through the chuid
 # and break config.json's ~-expansion and the dashboard's state-dir lookup,
 # and a bare boot PATH may not include jq/python3.
+#
+# Every setting below is a default that /etc/default/agent-ops-dashboard may
+# override, so a host with a different user, home or checkout path needs no
+# edit to this file. This is the legacy single-laptop path; a containerised
+# node runs serve-dashboard.sh directly and lets the container runtime
+# capture its output (see deploy/docker/).
+
+# shellcheck disable=SC1091  # optional host-local override file
+[ -r /etc/default/agent-ops-dashboard ] && . /etc/default/agent-ops-dashboard
 
 NAME=agent-ops-dashboard
-RUNAS=wallen
-RUNHOME=/home/wallen
-APPDIR=/home/wallen/Code/Poetic-Poems/agent-ops
-PORT=8787
-PIDFILE=/var/run/$NAME.pid
-LOGFILE=$RUNHOME/Code/Poetic-Poems/dashboard-server.log
+RUNAS=${RUNAS:-wallen}
+RUNHOME=${RUNHOME:-/home/$RUNAS}
+APPDIR=${APPDIR:-$RUNHOME/Code/Poetic-Poems/agent-ops}
+PORT=${PORT:-8787}
+PIDFILE=${PIDFILE:-/var/run/$NAME.pid}
 PATH_ENV=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$RUNHOME/.local/bin
-CMD="HOME=$RUNHOME; export HOME; PATH=$PATH_ENV; export PATH; exec $APPDIR/scripts/serve-dashboard.sh $PORT >>$LOGFILE 2>&1"
+# The server's own log belongs with the rest of the pipeline's state, not
+# beside the checkout: state_dir is the one directory a node backs up and a
+# container mounts. Read it from config.json (expanding a leading ~ against
+# the run user's home, as the shell scripts do) and fall back to the
+# documented default if jq or the config is unreadable at boot. PATH is
+# forced for the lookup because root's boot PATH may not include jq.
+if [ -z "$LOGFILE" ]; then
+  state_dir=$(PATH=$PATH_ENV jq -r '.state_dir' "$APPDIR/config.json" 2>/dev/null || true)
+  case "$state_dir" in
+    "~"*) state_dir=$RUNHOME${state_dir#\~} ;;
+    ""|null) state_dir=$RUNHOME/.local/state/poetic-agents ;;
+  esac
+  LOGFILE=$state_dir/dashboard-server.log
+fi
+CMD="HOME=$RUNHOME; export HOME; PATH=$PATH_ENV; export PATH; mkdir -p \"\$(dirname $LOGFILE)\"; exec $APPDIR/scripts/serve-dashboard.sh $PORT >>$LOGFILE 2>&1"
 
 case "$1" in
   start)
