@@ -231,7 +231,14 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   generated `data.js` at publish time).
 - `scripts/open-dashboard.sh` — regenerate + open in the browser.
 - `scripts/serve-dashboard.sh` — optional loopback-only server (`file://`
-  fallback).
+  fallback). It writes no log of its own: whatever supervises it captures its
+  output. `deploy/agent-ops-dashboard.init` (the legacy WSL SysV path) sends
+  that output to `<state_dir>/dashboard-server.log`, so every artefact the
+  dashboard produces lands under `state_dir` and nothing is written beside the
+  checkout. All of its settings (`RUNAS`, `RUNHOME`, `APPDIR`, `PORT`,
+  `PIDFILE`, `LOGFILE`) are defaults overridable from
+  `/etc/default/agent-ops-dashboard`, so the script carries no host-specific
+  path that must be edited in place.
 - The cleanup hook in `agent-cycle.sh`; a `.gitignore` entry for
   `dashboard/data.js`; the README "Monitoring dashboard" section.
 

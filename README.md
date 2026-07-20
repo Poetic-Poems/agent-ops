@@ -411,6 +411,11 @@ a loopback port, never a network one.
    sudo install -m 755 deploy/agent-ops-dashboard.init /etc/init.d/agent-ops-dashboard
    ```
 
+   Its `RUNAS`, `RUNHOME`, `APPDIR`, `PORT`, `PIDFILE` and `LOGFILE` settings
+   are defaults; a host that differs (another user, another checkout path)
+   overrides them in `/etc/default/agent-ops-dashboard` rather than editing
+   the installed script.
+
 2. **Start it at WSL boot** — add it to `/etc/wsl.conf`'s existing boot
    command, alongside cron:
 
@@ -426,13 +431,17 @@ a loopback port, never a network one.
    sudo service agent-ops-dashboard start
    ```
 
-3. **Check it** — output goes to `../dashboard-server.log` (the workspace
-   root, alongside the `Poetic-Poems` checkout):
+3. **Check it** — output goes to `dashboard-server.log` inside `state_dir`,
+   with the rest of the pipeline's state:
 
    ```sh
    sudo service agent-ops-dashboard status
-   tail -f ~/Code/Poetic-Poems/dashboard-server.log
+   tail -f ~/.local/state/poetic-agents/dashboard-server.log
    ```
+
+   (An installation that predates this and still logs beside the checkout
+   just has a stale `~/Code/Poetic-Poems/dashboard-server.log` left over;
+   reinstall the init script and delete it.)
 
 Common operations: `sudo service agent-ops-dashboard restart|stop`. Only run
 one instance against port 8787 at a time — a second `python -m http.server`
