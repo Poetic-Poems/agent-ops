@@ -1,26 +1,27 @@
-# Weekly Project-Review Pipeline — build prompt
+# Weekly Project-Review Pipeline — as-built specification
 
-## How to use this document
+## About this document
 
-Give this document, whole, to a Claude Code session (Sonnet 5 or better)
-started in the existing `Poetic-Poems/agent-ops` repository, with the
-instruction "build the weekly project-review pipeline this document
-describes". It is a companion to `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (the hourly
-implementation pipeline) and `docs/BUILD-DASHBOARD-PROMPT.md` (the monitoring
-dashboard).
+This is the as-built requirements specification for the weekly
+project-review pipeline. It is a companion to
+`docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the hourly implementation pipeline)
+and `docs/DASHBOARD-SPEC.md` (the monitoring dashboard), and like them it
+describes the system as it exists — any change to this pipeline lands
+together with the edit that keeps this document accurate (see `CLAUDE.md`,
+"As-built specifications").
 
-**Where this document is silent, follow `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`.** The two
+**Where this document is silent, follow `docs/IMPLEMENTATION-PIPELINE-SPEC.md`.** The two
 pipelines deliberately share their machinery — the lock discipline, the
 minimal-`PATH` bootstrap for cron, usage-limit detection (`lib/limit-detect.sh`),
 the JSON-Lines log format and `log_event` helper, the ephemeral-clone rule,
 the per-stage timeout with process-group kill (`run_claude_stage`), and the
 "straight-parse-else-last-fenced-```json```-block" result parser. This
 pipeline **reuses** those, and must not reinvent them. References of the form
-"requirement N" mean requirement N of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`. The target
+"requirement N" mean requirement N of `docs/IMPLEMENTATION-PIPELINE-SPEC.md`. The target
 repositories' `CLAUDE.md` files remain binding on any agent working inside
 them.
 
-## What to build
+## What it is
 
 A second, independent pipeline that runs alongside the hourly implementation
 pipeline. Once a week, for each target repository, it produces a full project
@@ -74,9 +75,9 @@ cron (weekly; a daily tick with a skip-guard is recommended — see R4)
    GitHub process, and decides how to action its recommendations. Not launched
    by any part of this system.
 
-## Environment facts
+## Environment
 
-Identical to `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` ("Environment facts" and "Target
+Identical to `docs/IMPLEMENTATION-PIPELINE-SPEC.md` ("Environment" and "Target
 repositories"); not repeated here. The two target repositories are the same
 `Poetic-Poems/poetic` and `Poetic-Poems/poetic-fiddle`, and their shared
 conventions (protected `main`, squash-merge so the PR title becomes the commit,
@@ -118,9 +119,9 @@ Two decisions are deliberate:
 
 ## Configuration
 
-Add one `review` object to the existing `config.json` (do not create a second
-config file). The values below are the confirmed defaults; document each key in
-the README.
+One `review` object in the existing `config.json` (one config file — never a
+second one) holds every tunable for this pipeline. The values below are the
+confirmed defaults; the README documents each key.
 
 ```json
 "review": {
@@ -333,7 +334,7 @@ R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    This is not book-keeping. A recommendation and its mirrored register entry
    are two channels onto one piece of work, and the hourly implementation
    pipeline's Co-Ordinator can tell only by finding this cross-reference
-   (`docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`, requirement 16). Absent
+   (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 16). Absent
    it, that Co-Ordinator has one remaining test for whether a recommendation
    is done — a merged PR referencing it — which work that landed as a direct
    commit can never satisfy. The recommendation then reads as outstanding
@@ -382,27 +383,32 @@ R16. **Streams.** Review *operational* events go to the review pipeline's own
 R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
    transcripts are the durable record. Surfacing them in the monitoring
    dashboard is a worthwhile follow-on but is **out of scope** for this
-   document (the dashboard has its own spec, `docs/BUILD-DASHBOARD-PROMPT.md`);
+   document (the dashboard has its own spec, `docs/DASHBOARD-SPEC.md`);
    note it there if you extend it.
 
-## Deliverables
+## Components
+
+What exists, and the requirements each part answers to:
 
 1. `review-cycle.sh` implementing R1–R8 and R16. `shellcheck`-clean; sets its
    own `PATH`.
 2. `prompts/project-reviewer.md` implementing R9–R15. It must embed the
    relevant shared-repo conventions (as the other operating prompts do) so the
    stage never depends on context it was not given.
-3. `.claude/skills/project-review/` — the vendored skill (already present;
-   keep it pinned, and re-sync from upstream deliberately).
-4. `config.json` — the added `review` block.
+3. `.claude/skills/project-review/` — the vendored skill (pinned; re-sync
+   from upstream deliberately).
+4. `config.json` — the `review` block.
 5. `README.md` — a "Weekly project review" section: what it does and why (the
    loop it closes), every `review.*` config key, how to install the cron entry,
    how to operate it (`--dry-run`, `--once`, `--repo`, reading
    `review-log.jsonl` and the transcripts), how the outputs feed the
    implementation pipeline / `project-remediation`, and how to uninstall.
-6. The crontab line(s) (see Prerequisites).
+6. The crontab line(s) (see "Host provisioning").
 
-## Acceptance checks (run all before finishing)
+## Acceptance checks
+
+Every change to this pipeline must leave all of these passing; before opening
+a pull request, run the ones the change touches and any it could regress.
 
 1. `shellcheck review-cycle.sh` is clean.
 2. `--dry-run` completes against the real repos: the stand-down and skip-guard
@@ -440,7 +446,10 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
    complete either way — and only shows up weeks later as the implementation
    pipeline paying to re-investigate recommendations that are already done.
 
-## Prerequisites (human steps, before first run)
+## Host provisioning (human steps)
+
+All of this is in place on the current host; it is needed again only when
+standing the pipeline up on a new machine.
 
 1. Create the review label in both repos:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='project-review' -f color='5319e7' -f description='PR raised by the weekly project-review pipeline'`
@@ -455,7 +464,7 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
    the whole week): `30 3 * * 1 …` (Mondays 03:30). Schedule it at a different
    minute from the hourly implementation cycle to avoid both firing at once
    (the review defers to a running cycle anyway, per R3).
-3. The shared prerequisites of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (the standalone `claude`
+3. The shared prerequisites of `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the standalone `claude`
    CLI, cron enabled under WSL, `gh` authenticated with push access) are
    already satisfied by the implementation pipeline; nothing further is needed.
 
@@ -470,7 +479,9 @@ itself makes no model calls.
 
 ## Design decisions
 
-Recorded so a future reader knows they were deliberate.
+Recorded so a future reader knows they were deliberate. History and
+superseded approaches belong here, never in the requirements above, which
+state only what is.
 
 - **A separate pipeline, not a new stage of `agent-cycle.sh`.** A review is
   weekly, long, and whole-repo; the implementation cycle is hourly, short, and
@@ -498,6 +509,6 @@ Recorded so a future reader knows they were deliberate.
 - **`min_days_between_reviews` is 6, not 7**, so a review that lands a day late
   one week is not deferred a full extra week the next.
 
-No open questions remain; the shared platform, models, permissions, and system
-location were confirmed with the repo owner for the implementation pipeline and
-carry over unchanged.
+The shared platform, models, permissions, and system location were confirmed
+with the repo owner for the implementation pipeline and carry over unchanged;
+no open questions remain.

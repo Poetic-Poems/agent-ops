@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # gather-source-state.sh — sample the cheap change-detection signals for one
-# repo's work sources (docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md,
+# repo's work sources (docs/IMPLEMENTATION-PIPELINE-SPEC.md,
 # requirement 3b).
 #
 # Given a repo slug and its default branch, print one JSON object digesting

@@ -4,9 +4,34 @@ Operations tooling for the Poetic autonomous agent pipelines: the hourly
 implementation cycle (`agent-cycle.sh`), the weekly project-review cycle
 (`review-cycle.sh`), and the local dashboard (`dashboard/`). `README.md`
 explains what the pipelines do and how to configure, install, pause, and
-monitor them; `docs/BUILD-*.md` are the prompts used to (re)build each
-component; `prompts/` holds the runtime prompts the pipelines pass to their
-agents.
+monitor them; `docs/*-SPEC.md` are the as-built requirement specifications
+for each component; `prompts/` holds the runtime prompts the pipelines pass
+to their agents.
+
+## As-built specifications
+
+Each component has an as-built requirements specification in `docs/`:
+
+- `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the hourly implementation
+  pipeline (`agent-cycle.sh`, `lib/`, `scripts/`, and the three stage
+  prompts).
+- `docs/REVIEW-PIPELINE-SPEC.md` — the weekly project-review pipeline
+  (`review-cycle.sh`, `prompts/project-reviewer.md`, the vendored skill).
+- `docs/DASHBOARD-SPEC.md` — the monitoring dashboard
+  (`scripts/publish-dashboard.sh`, `dashboard/index.html`).
+
+These are requirement documents, and they are **as-built**: at all times they
+describe the system that actually exists. Any change that alters what a
+component does, requires, or produces must land in the same pull request as
+the spec edit that keeps its document accurate — update the affected numbered
+requirement (and any acceptance check anchored to it), or add one for new
+behaviour. Requirements state only what is, never what used to be or what is
+planned; history and rationale belong in the specs' design-decision and
+gotcha sections. If you find a spec and the code disagreeing, that is a bug:
+fix whichever is wrong rather than working around the mismatch.
+
+The specs outrank the operating prompts: `prompts/*.md` implement the specs'
+requirements, so bring the spec in line first, then the affected prompt(s).
 
 ## Branch workflow
 

@@ -6,11 +6,11 @@
 # the clone, runs the Reviewer-Agent (which produces the review reports, updates
 # TECH-DEBT.md, and raises one ready-for-review PR), then cleans up.
 #
-# Full specification: docs/BUILD-REVIEW-PROMPT.md. Config: config.json (.review).
+# Full specification: docs/REVIEW-PIPELINE-SPEC.md. Config: config.json (.review).
 # This is a sibling of agent-cycle.sh and deliberately reuses its machinery
 # (PATH bootstrap, lock discipline, run_claude_stage, result parsing,
 # usage-limit detection). Where this script is silent, agent-cycle.sh /
-# docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md govern.
+# docs/IMPLEMENTATION-PIPELINE-SPEC.md govern.
 
 set -euo pipefail
 
@@ -73,7 +73,7 @@ cfg() { jq -r "$1" "$CONFIG_FILE"; }
 cfg_json() { jq -c "$1" "$CONFIG_FILE"; }
 
 if [[ "$(cfg 'has("review")')" != "true" ]]; then
-  echo "review-cycle: config.json has no .review block (see docs/BUILD-REVIEW-PROMPT.md)" >&2
+  echo "review-cycle: config.json has no .review block (see docs/REVIEW-PIPELINE-SPEC.md)" >&2
   exit 1
 fi
 
