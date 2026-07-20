@@ -78,6 +78,44 @@ The `review` object configures the separate weekly project-review pipeline — s
 
 ## Installation
 
+There are two ways to run a node. The **container image** (`deploy/docker/`)
+carries the whole toolchain and needs nothing installed on the host but Docker;
+it is how a cloud VM runs, and how the laptop will run once the migration is
+complete. The **host install** below is the laptop's current path: the scripts
+run straight out of a checkout, driven by the user crontab.
+
+### As a container
+
+```bash
+docker build -f deploy/docker/Dockerfile -t agent-ops .
+
+# the scheduler: the same three cron entries the laptop crontab has
+docker run -d --name agent-ops-scheduler \
+  -e AGENT_OPS_ROLE=standby -e NODE_NAME=my-node -e GH_TOKEN=… \
+  -v agent-ops-state:/home/agent/.local/state/poetic-agents \
+  -v agent-ops-claude:/home/agent/.claude \
+  agent-ops supercronic /app/deploy/docker/crontab
+```
+
+Three things are worth knowing before the compose stack lands:
+
+- **`/app` is the deployment.** The image is built from this repository, so a
+  node updates by pulling a new image — never by pulling a branch inside a
+  running container.
+- **`~/.claude` and `state_dir` must be volumes.** Claude's OAuth credentials
+  refresh and write back, and `state_dir` is the pipelines' memory. The
+  entrypoint seeds `settings.json` only when it is absent, and refuses to start
+  if `state_dir` is not writable by the container user (uid 1000 by default;
+  rebuild with `--build-arg PUID=…` to match a host directory).
+- **Authenticate once per node**: `docker exec -it agent-ops-scheduler claude`
+  and complete the login. Until then every cycle fails at its first stage; the
+  entrypoint warns about it on each start.
+
+Set `AGENT_OPS_ROLE=active` on exactly one node (see
+[Which node runs the cycles](#which-node-runs-the-cycles)).
+
+### On the host
+
 1. **Create the repo:**
    ```bash
    gh repo create Poetic-Poems/agent-ops --public --description "Autonomous agent pipeline for poetic and poetic-fiddle"
