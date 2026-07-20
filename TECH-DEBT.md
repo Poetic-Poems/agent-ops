@@ -28,18 +28,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072001 shellcheck not clean at info level on two scripts
-
-`shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` — acceptance check 1 of
-`docs/IMPLEMENTATION-PIPELINE-SPEC.md` — exits non-zero on two info-level
-findings: SC2015 in `scripts/gather-review-feedback.sh` (line 139,
-`A && B || C` used as if-then-else) and SC2086 in
-`scripts/publish-dashboard-launcher.sh` (line 39, unquoted `$github`). Both
-are benign as written, but they keep the check red, which would mask any new
-finding. Suggested fix: restructure the two lines — the `$github` expansion
-is unquoted deliberately so an empty value vanishes rather than becoming an
-empty argument, so pass it via an array or an explicit conditional instead.
-
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -51,4 +39,4 @@ above.
 | ID | Title | Status | Resolved | Ref |
 |----|-------|--------|----------|-----|
 | TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | resolved | 2026-07-14 | #11 |
-| TD26072001 | shellcheck not clean at info level on two scripts | in-progress | | |
+| TD26072001 | shellcheck not clean at info level on two scripts | resolved | 2026-07-20 | #38 |
