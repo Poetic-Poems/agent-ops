@@ -95,6 +95,14 @@ a node updates by pulling a new image rather than by pulling a branch.
   credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
   and a node that is not `active` (requirement 2.4) costs nothing but its
   cron-log lines.
+- The image is built by CI, not by hand:
+  `.github/workflows/build-image.yml` builds it on every pull request and
+  every merge, runs the acceptance checks below *inside* it, and — on `main`
+  only — publishes it to `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
+  (what a node's watchtower follows) and the commit SHA (how a node is pinned
+  or rolled back, through `AGENT_OPS_IMAGE`). A pull request builds and tests
+  but publishes nothing. This is the whole update path: merge produces an
+  image, and nodes replace containers.
 - The image creates the volume mount points (`~/.claude`, `state_dir`,
   `workspace_root`) owned by `agent`, because a container runtime seeds a new
   named volume from the image's mount point — ownership included — and creates
@@ -1053,6 +1061,12 @@ What exists, and the requirements each part answers to:
    path.
 8. `deploy/agent-ops-dashboard.init` and `deploy/tailscaled.init` — the legacy
    WSL SysV path for the laptop, superseded on a containerised node.
+9. `.github/workflows/build-image.yml` — the build-and-publish path for
+   component 7's image: build, verify the toolchain, validate the crontab, run
+   the `test/` suite inside the image, and check the role guard; then publish
+   to GHCR on `main` only. It carries `packages: write` and authenticates as
+   the workflow's own `GITHUB_TOKEN`, so nothing about publishing depends on a
+   human's credentials.
 
 ## Acceptance checks
 
@@ -1067,10 +1081,13 @@ pull request, run the ones the change touches and any it could regress.
 1b. **The image builds and carries the whole toolchain.**
    `docker build -f deploy/docker/Dockerfile -t agent-ops .` succeeds, and
    inside it, as user `agent`: `bash`, `git`, `jq`, `curl`, `python3`, `perl`,
-   `flock`, `sha256sum`, `node`, `claude`, `gh` (≥ 2.60) and `supercronic` all
-   resolve; `supercronic -test /app/deploy/docker/crontab` reports the crontab
-   valid; the `test/` suite passes inside the container; and `/app/agent-cycle.sh`
-   with no role set exits 0 through the requirement 2.4 guard.
+   `flock`, `sha256sum`, `rsync`, `node`, `claude`, `gh` (≥ 2.60) and
+   `supercronic` all resolve; `supercronic -test /app/deploy/docker/crontab`
+   reports the crontab valid; the `test/` suite passes inside the container;
+   and `/app/agent-cycle.sh` with no role set exits 0 through the requirement
+   2.4 guard. `.github/workflows/build-image.yml` runs every one of these on
+   every pull request, so a change that breaks the image cannot be merged —
+   and it is the only place the `test/` suite runs in CI.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;

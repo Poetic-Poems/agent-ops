@@ -114,7 +114,10 @@ Four things are worth knowing:
 
 - **`/app` is the deployment.** The image is built from this repository, so a
   node updates by pulling a new image — never by pulling a branch inside a
-  running container.
+  running container. Every merge to `main` builds one and publishes it to
+  `ghcr.io/poetic-poems/agent-ops` as `latest` (what watchtower follows) and as
+  the commit SHA. To pin a node to a known-good build, or to roll one back, set
+  `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env`.
 - **`~/.claude` and `state_dir` must be volumes.** Claude's OAuth credentials
   refresh and write back, and `state_dir` is the pipelines' memory. The
   entrypoint seeds `settings.json` only when it is absent, and refuses to start
