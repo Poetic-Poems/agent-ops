@@ -135,8 +135,11 @@ The `review` object configures the separate weekly project-review pipeline — s
 
 7. **Install the crontab:**
    ```bash
-   (crontab -l 2>/dev/null || true; echo "0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
+   (crontab -l 2>/dev/null || true; echo "AGENT_OPS_ROLE=active"; echo "0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1") | crontab -
    ```
+   The `AGENT_OPS_ROLE=active` line is what marks this machine as the one that
+   runs unattended cycles (see "Which node runs the cycles" below). Without it
+   every tick stands down, which is the point: only one machine may spend.
    Verify it was installed successfully:
    ```bash
    crontab -l
@@ -198,6 +201,38 @@ Three things worth knowing:
 - **A reason is required**, because the next person wondering why nothing has
   happened is entitled to one. It shows up in `--status`, in the log, and on
   the dashboard banner.
+
+## Which node runs the cycles
+
+The pipelines are meant to be installable on more than one machine — a laptop,
+a cloud VM, several — but exactly **one** of them may actually run unattended
+cycles. Two machines cycling on the same repositories would open competing pull
+requests for the same item and pay twice to do it. The environment variable
+`AGENT_OPS_ROLE` names the one that does:
+
+```bash
+AGENT_OPS_ROLE=active     # this machine runs the hourly cycle and the daily review tick
+AGENT_OPS_ROLE=standby    # ...anything else does not
+```
+
+Set it in the crontab (a bare `AGENT_OPS_ROLE=active` line above the schedule
+lines) or in the environment of whatever runs the scripts. Only the exact value
+`active` counts — case and surrounding whitespace are ignored, but **unset,
+empty or misspelt all mean standby**. That is deliberate: a machine wrongly
+standby costs one skipped cycle, while a second machine wrongly active costs
+money and leaves duplicate pull requests for someone to clean up.
+
+A standby tick writes one line to the cron log and exits; it creates no cycle,
+logs no event, and spends nothing. Failing over is a matter of setting `active`
+on the new machine and clearing it on the old.
+
+What the role does *not* stop:
+
+- `--dry-run` and `--once` — a human asking for a cycle is not an unattended
+  one, and both run on any machine.
+- `--disable`, `--enable` and `--status` — the switch is shared state and must
+  be readable and settable from wherever you happen to be.
+- The dashboard, which is worth serving on every node.
 
 ## Skipping no-op cycles
 
@@ -331,6 +366,8 @@ weekly tick:
 ```bash
 (crontab -l 2>/dev/null || true; echo "30 3 * * * $HOME/Code/Poetic-Poems/agent-ops/review-cycle.sh >> $HOME/.local/state/poetic-agents/review-cron.log 2>&1") | crontab -
 ```
+This needs the same `AGENT_OPS_ROLE=active` line in the crontab as the hourly
+cycle ("Which node runs the cycles"); one line covers both pipelines.
 The skip-guard ensures this actually reviews each repo only about once a week.
 For a strict weekly tick instead, use `30 3 * * 1` (Mondays 03:30) — simpler,
 but a missed Monday tick skips the whole week.
@@ -531,6 +568,11 @@ If it's disabled, `--enable` resumes it. Otherwise, check the cron log:
 ```bash
 tail -50 ~/.local/state/poetic-agents/cron.log
 ```
+A line reading `skipped — this node is standby` means this machine is not the
+active one (see [Which node runs the cycles](#which-node-runs-the-cycles)):
+either that is correct and another machine is doing the work, or the crontab is
+missing its `AGENT_OPS_ROLE=active` line. A line naming an unrecognised role
+(`AGENT_OPS_ROLE=activ is not a role`) is a typo standing the node down.
 
 **Cycles firing but never reaching the Co-Ordinator:**
 Expected on a quiet repo — see [Skipping no-op cycles](#skipping-no-op-cycles);

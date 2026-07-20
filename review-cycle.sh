@@ -42,6 +42,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/role.sh
+. "$SCRIPT_DIR/lib/role.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -62,6 +64,17 @@ while [[ $# -gt 0 ]]; do
     *) echo "review-cycle: unknown argument: $1" >&2; exit 64 ;;
   esac
 done
+
+# --- Role guard (R2b) ---
+# The implementation pipeline's requirement 2.4, applied here for the same
+# reasons and through the same shared definition: only a node whose
+# AGENT_OPS_ROLE is `active` runs an unattended review, and a standby tick
+# leaves nothing behind but the cron-log line. Checked before the config is
+# read; --dry-run and --once bypass it.
+if ! (( DRY_RUN || ONCE )) && ! role_is_active; then
+  printf '%s %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(role_skip_message review-cycle)"
+  exit 0
+fi
 
 # --- Config ---
 expand_home() {

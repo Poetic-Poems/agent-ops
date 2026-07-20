@@ -217,6 +217,19 @@ R2a. **The switch.** Before the lock, read the shared switch
    letting it clear one would mean the `enabled` event explaining why cycles
    resumed could land days after they did.
 
+R2b. **The role guard.** Before the switch, the config and the lock, stand the
+   run down unless `AGENT_OPS_ROLE` is `active` — the implementation pipeline's
+   requirement 2.4, through the same shared `lib/role.sh`, so "active" has one
+   definition and a node cannot be standby for one pipeline and active for the
+   other. Unset, empty or any other value is a standby: it writes one line to
+   stdout (which cron redirects into `review-cron.log`) and exits 0, leaving
+   nothing in `state_dir` — not even a `review-start` event. `--dry-run` and
+   `--once` bypass it, as they do there.
+
+   The ordering matters and is deliberate: the guard comes first because a
+   standby node has no business reading, logging or clearing state that belongs
+   to the active one.
+
 R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
    enforced).** For each configured repo, skip it *this run* when **either**:
    - an open pull request labelled `review.pr_label` already exists for it (a
@@ -390,8 +403,8 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
 
 What exists, and the requirements each part answers to:
 
-1. `review-cycle.sh` implementing R1–R8 and R16. `shellcheck`-clean; sets its
-   own `PATH`.
+1. `review-cycle.sh` implementing R1–R8 and R16 (including the role guard,
+   R2b, through `lib/role.sh`). `shellcheck`-clean; sets its own `PATH`.
 2. `prompts/project-reviewer.md` implementing R9–R15. It must embed the
    relevant shared-repo conventions (as the other operating prompts do) so the
    stage never depends on context it was not given.
@@ -420,6 +433,10 @@ a pull request, run the ones the change touches and any it could regress.
 4. Skip-guard: with a `reviews/project-review-<today>/` folder present on a
    repo's default branch (or an open `project-review`-labelled PR for it), that
    repo is skipped, and the `min_days_between_reviews` boundary is respected.
+4b. **The role guard stands this pipeline down too (R2b).** `test/role.test.sh`
+   passes: a `review-cycle.sh` with `AGENT_OPS_ROLE` unset or standby exits 0
+   with one line and writes nothing under `state_dir`, while `--dry-run` runs
+   regardless of the role.
 4a. **The switch stands this pipeline down too (R2a).** With
    `agent-cycle.sh --disable 'testing'` set, a plain `review-cycle.sh` logs a
    `review-stand-down` carrying the reason, exits 0, and launches no `claude`;
@@ -463,7 +480,9 @@ standing the pipeline up on a new machine.
    week. *Strict weekly alternative* (simpler, but a missed Monday tick skips
    the whole week): `30 3 * * 1 …` (Mondays 03:30). Schedule it at a different
    minute from the hourly implementation cycle to avoid both firing at once
-   (the review defers to a running cycle anyway, per R3).
+   (the review defers to a running cycle anyway, per R3). The crontab
+   environment must also set `AGENT_OPS_ROLE=active` on the node that is to run
+   the reviews (R2b); without it every tick stands down.
 3. The shared prerequisites of `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the standalone `claude`
    CLI, cron enabled under WSL, `gh` authenticated with push access) are
    already satisfied by the implementation pipeline; nothing further is needed.

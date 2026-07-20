@@ -265,6 +265,41 @@ runs unattended.
 
    Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
    being edited, do not run them" is no less true when a human runs them.
+2.4. **The role guard.** The environment variable `AGENT_OPS_ROLE` names the
+   one node that runs unattended cycles. Compared case-insensitively and
+   ignoring surrounding whitespace against the single value `active`;
+   **anything else — unset, empty, misspelt, or a word from some other
+   vocabulary — is a standby**, and a standby exits 0 after writing one line to
+   stdout (which cron redirects into `cron.log`) naming the role it saw.
+
+   Checked *before the configuration is read*, and therefore before the lock,
+   the log and the cycle directory: a standby tick must leave no trace in
+   `state_dir` at all. That is stricter than the switch, which logs its
+   stand-down, and deliberately so — a standby's `state_dir` holds no work of
+   its own, so an hourly event written there is noise in a stream that is
+   otherwise a record of cycles, and an hourly empty cycle directory is
+   indistinguishable from a cycle that died before it logged anything.
+
+   Bypassed by `--dry-run` and `--once`, which are a human asking for a cycle
+   rather than an unattended one, and by `--disable`/`--enable`/`--status`,
+   which manage shared state and must answer on every node. Not bypassed by
+   `--repo`, which narrows an otherwise ordinary cycle. The switch is checked
+   *after* the guard, so a standby node neither logs nor clears it: the record
+   belongs to the active node, and expiry is its business to notice.
+
+   **Why fail-closed.** The pipelines are meant to run on several machines
+   (the laptop and any number of cloud nodes) with exactly one spending. The
+   two mistakes are not symmetric: a node wrongly standby costs one skipped
+   cycle, visible on the dashboard within the hour and fixed by one variable; a
+   second node wrongly active opens competing pull requests for the same item,
+   pays for both, and leaves a mess in the target repos for a human to
+   untangle. So the guard resolves every ambiguity toward standby, exactly as
+   requirement 2.3 resolves every ambiguity toward disabled. The guard is a
+   local, zero-cost check, not a distributed lock: it stops a misconfigured
+   node, not two nodes both deliberately configured as active.
+
+   Implemented in `lib/role.sh`, shared with `review-cycle.sh`
+   (`docs/REVIEW-PIPELINE-SPEC.md`, R2b) so "active" has one definition.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`; sort least recent
    first. The most-overdue repo gets first look, and this ordering takes
@@ -820,8 +855,8 @@ What exists, and the requirements each part answers to:
 
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
-   pre-fetch, requirement 3a; the switch, requirement 2.3; and the no-op
-   short-circuit, requirement 3b).
+   pre-fetch, requirement 3a; the switch, requirement 2.3; the role guard,
+   requirement 2.4; and the no-op short-circuit, requirement 3b).
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -839,11 +874,12 @@ What exists, and the requirements each part answers to:
    pretend a failed call is an empty result either (see requirement 3b). Must
    pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
-   `lib/toggle.sh` and `lib/noop-skip.sh`) holding every rule that more than
-   one component computes — at minimum requirement 34's blocked semantics,
-   requirement 33's `attempt-failed` field shape, the usage-limit phrase
-   pattern of requirement 10, the switch of requirement 2.3 (read by both
-   pipelines and the dashboard) and the fingerprint rule of requirement 3b —
+   `lib/toggle.sh`, `lib/noop-skip.sh` and `lib/role.sh`) holding every rule
+   that more than one component computes — at minimum requirement 34's blocked
+   semantics, requirement 33's `attempt-failed` field shape, the usage-limit
+   phrase pattern of requirement 10, the switch of requirement 2.3 (read by
+   both pipelines and the dashboard), the role guard of requirement 2.4 (read
+   by both pipelines) and the fingerprint rule of requirement 3b —
    sourced by `agent-cycle.sh`, `review-cycle.sh` and the dashboard's publisher
    rather than copied into any of them. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
    framework) and `shellcheck`-clean. These rules are the system's memory of
@@ -857,7 +893,9 @@ What exists, and the requirements each part answers to:
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall.
 6. The crontab line, e.g.
-   `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`.
+   `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`,
+   with `AGENT_OPS_ROLE=active` set in the crontab's environment on the node
+   that is to run the cycles (requirement 2.4).
 
 ## Acceptance checks
 
@@ -865,6 +903,10 @@ Every change to the system must leave all of these passing; before opening a
 pull request, run the ones the change touches and any it could regress.
 
 1. `shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` is clean.
+1a. **The role guard holds in both directions.** `test/role.test.sh` passes:
+   every value that is not `active` stands the node down with a cron-log line,
+   exit 0 and nothing written under `state_dir`; `--dry-run`, `--once` and the
+   switch commands run regardless of the role.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
