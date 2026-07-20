@@ -22,3 +22,10 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 */5 * * * *  /app/scripts/publish-dashboard-launcher.sh
 0   * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
 29  3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
+
+# Keep this node's memory current. On the active node this is a no-op (it is
+# the source, and restoring onto it would overwrite the cycle it is recording);
+# on a standby node it is the whole point — a spare that has to relearn what
+# has already been tried is not a spare. Every seven minutes rather than every
+# five so it does not queue behind the dashboard heartbeat every single time.
+*/7 * * * *  /app/scripts/state-sync.sh restore >> $LOGDIR/state-sync.log 2>&1

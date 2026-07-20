@@ -38,9 +38,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
 # The pipelines' hard requirements (bash, git, jq, curl, python3, perl,
-# coreutils) plus the small comforts an operator needs when they exec into a
-# node to work out what went wrong. util-linux is already in the base image
-# and carries `flock`, which the dashboard heartbeat relies on.
+# coreutils, and rsync for scripts/state-sync.sh) plus the small comforts an
+# operator needs when they exec into a node to work out what went wrong.
+# util-linux is already in the base image and carries `flock`, which the
+# dashboard heartbeat relies on.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -52,6 +53,7 @@ RUN apt-get update \
         less \
         perl \
         python3 \
+        rsync \
         tzdata \
         vim-tiny \
     && rm -rf /var/lib/apt/lists/*

@@ -67,8 +67,8 @@ a node updates by pulling a new image rather than by pulling a branch.
 - Base `ubuntu:24.04`, non-root user `agent` (uid/gid from the `PUID`/`PGID`
   build args, default 1000) with `HOME=/home/agent`, so `config.json`'s
   `~`-relative `state_dir` and `workspace_root` resolve under that home.
-- Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils` and
-  `flock`; `gh` from GitHub's apt repository (the distro package is too old for
+- Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
+  `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use); Node.js from NodeSource at the same major as
   the laptop; the `claude` CLI from `@anthropic-ai/claude-code`; and
   `supercronic`, a pinned release binary verified by SHA-1, which runs the
@@ -84,7 +84,9 @@ a node updates by pulling a new image rather than by pulling a branch.
   start if `state_dir` is not writable, rather than letting a mis-owned volume
   become a silent failure to record anything.
 - `deploy/docker/crontab` carries the same three pipeline schedules as the
-  laptop crontab — the 5-minute dashboard heartbeat, the hourly cycle, the daily
+  laptop crontab, plus a fourth line the laptop has no use for — a
+  `state-sync.sh restore` every seven minutes, which keeps a standby node's
+  memory current and does nothing at all on the active one (requirement 2.5) — the 5-minute dashboard heartbeat, the hourly cycle, the daily
   review tick — with the same redirections into `state_dir`, so the dashboard's
   log-derived views work identically. It deliberately omits the laptop's
   personal `update-main-branches.sh` entry: that refreshes interactive
@@ -224,7 +226,10 @@ values below are the confirmed defaults; the README must document each key.
 |---|---|---|
 | `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
-| `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here. |
+| `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
+| `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op. |
+| `lease_ttl_hours` | 3 h | How long `leader.json` stands before another node may take it. Long enough to outlive one cycle of any plausible length, short enough that a node which dies does not hold the operation down for a working day. |
+| `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is not pruned by this. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
@@ -377,6 +382,65 @@ runs unattended.
 
    Implemented in `lib/role.sh`, shared with `review-cycle.sh`
    (`docs/REVIEW-PIPELINE-SPEC.md`, R2b) so "active" has one definition.
+2.5. **State replication and the lease.** The pipelines' memory —
+   `state_dir` — is replicated between nodes through the private repository
+   named by `state_repo`, by `scripts/state-sync.sh`. Every mode of that script
+   is a silent no-op when `state_repo` is unset, so a single-node operation
+   behaves exactly as it did before the fleet existed.
+
+   **What replicates.** Everything under `state_dir` except the live locks
+   (`lock.json`, `review-lock.json`), the dashboard's own machinery
+   (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
+   `.dashboard-github.json`), `state-sync.log`, and `leader.json`. The
+   exclusions are not tidiness: a restored `lock.json` is a lock no process
+   holds, and would stand every later cycle down until it went stale; the
+   dashboard is generated from the state beside it, so copying it would be
+   copying a derivative of what is already being copied. `log.jsonl`,
+   `review-log.jsonl`, `cycles/`, `reviews/`, `disabled.json` and the cron logs
+   do replicate — they are what makes a spare node warm rather than merely
+   installed. Git stores no empty directories, so a cycle that stood down
+   before its first stage replicates as its `log.jsonl` entry alone.
+
+   **Push.** The active node mirrors `state_dir` into the state repository at
+   the *end* of a cycle, from the same cleanup that releases the lock: a
+   half-written cycle replicated to every standby is worse than a complete one
+   that arrives an hour later. It is a single rolling commit — `commit --amend`
+   plus a force-push — because the state files carry their own history
+   (`log.jsonl` is append-only, every cycle keeps its own directory) and a
+   commit per push would be a second, redundant history whose only lasting
+   effect is a repository that grows without bound. The mirror keeps the newest
+   `cycles_retained` cycle directories; the node's own `state_dir` is never
+   pruned. A push that finds nothing changed does not force-push.
+
+   **Restore.** A standby node mirrors the repository back into its `state_dir`
+   from its own schedule. It is a mirror, not a merge: a cycle pruned upstream
+   goes here too. It is a no-op on the active node — restoring onto the source
+   of truth would overwrite the cycle it is in the middle of recording — and
+   silent when nothing changed, because it runs every few minutes on every
+   standby node and a log of "nothing happened" is a log nobody reads.
+
+   **The lease.** `leader.json` at the root of the state repository —
+   `{"node": …, "updated": …}` — records which node is running, and is taken
+   after the lock and before any work. If it names another node and was
+   refreshed less than `lease_ttl_hours` ago, this cycle logs a stand-down and
+   exits 0; otherwise this node claims or refreshes it. The write is a
+   compare-and-set on the file's blob sha, so two nodes claiming at once
+   produces one winner and one stand-down. It is read and written through the
+   REST contents API rather than the mirror, because a check that happens
+   before a cycle does anything should cost one request rather than a clone;
+   for the same reason it is excluded from the mirroring, which would otherwise
+   delete it. `--dry-run` and `--once` take no lease, and therefore also push
+   nothing.
+
+   **Why the lease fails open.** A node that cannot reach GitHub for a moment
+   proceeds, with a warning. This is the opposite choice to requirement 2.4,
+   and deliberately: the role guard is a local, deterministic check where
+   ambiguity means misconfiguration, while the lease depends on the network,
+   where ambiguity means weather. Failing closed there would let one failed
+   request stop the whole operation, quietly, while looking healthy — and the
+   cost of being wrong is bounded, because duplicating work needs a *second*
+   node already deliberately configured active. The lease is the safety net
+   under the role guard, not a replacement for it.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`; sort least recent
    first. The most-overdue repo gets first look, and this ordering takes
@@ -950,6 +1014,14 @@ What exists, and the requirements each part answers to:
    cost-control feature must not become a reliability risk — but must not
    pretend a failed call is an empty result either (see requirement 3b). Must
    pass `shellcheck`.
+3d. `scripts/state-sync.sh` implementing requirement 2.5: `push`, `restore` and
+   `lease`. Called by both pipelines (the lease before any work, the push from
+   the cleanup that ends a cycle) and by the container crontab (the restore).
+   Every mode is a no-op when `state_repo` is unset. Needs `rsync` and `git`,
+   and degrades to a warning and exit 0 when either is missing, because a node
+   that cannot replicate is still a node that can run. Unit-tested against a
+   local bare repository and a stubbed `gh` (`test/state-sync.test.sh`); must
+   pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh` and `lib/role.sh`) holding every rule
    that more than one component computes — at minimum requirement 34's blocked
@@ -1008,6 +1080,15 @@ pull request, run the ones the change touches and any it could regress.
    through the requirement 2.4 guard with `ROLE=standby`; and a second
    `up -d` reports every container `Running` without recreating one.
    `docker compose --profile tailnet config` is valid.
+1d. **State replicates, and only one node runs.** `test/state-sync.test.sh`
+   passes: a push carries the logs, cycles, reviews and switch but not the
+   locks, the dashboard or the lease; an unchanged push does not force-push; a
+   changed one amends rather than accumulating history; the mirror keeps
+   `cycles_retained` cycles while the node keeps its own; a restore is a mirror
+   that leaves the node's local-only files alone, and is a silent no-op on the
+   active node and when nothing changed; a fresh foreign lease stands a cycle
+   down with a logged stand-down and no selection, while an expired one is
+   taken over.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing

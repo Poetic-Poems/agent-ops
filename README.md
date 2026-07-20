@@ -57,7 +57,10 @@ Edit `config.json` before first run. Keys:
 |---|---|---|
 | `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes second and likewise outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
-| `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory. |
+| `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. |
+| `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
+| `lease_ttl_hours` | 3 | Hours. How long one node's claim to be running stands before another may take it. |
+| `cycles_retained` | 200 | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | For code changes. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
@@ -280,7 +283,11 @@ money and leaves duplicate pull requests for someone to clean up.
 
 A standby tick writes one line to the cron log and exits; it creates no cycle,
 logs no event, and spends nothing. Failing over is a matter of setting `active`
-on the new machine and clearing it on the old.
+on the new machine and clearing it on the old. A standby is not idle, though —
+it keeps its copy of the pipelines' memory current, so it can take over knowing
+what has already been tried (see [Keeping every node
+warm](#keeping-every-node-warm)), and a shared lease catches the case where two
+machines are set `active` by mistake.
 
 What the role does *not* stop:
 
@@ -289,6 +296,44 @@ What the role does *not* stop:
 - `--disable`, `--enable` and `--status` — the switch is shared state and must
   be readable and settable from wherever you happen to be.
 - The dashboard, which is worth serving on every node.
+
+## Keeping every node warm
+
+A spare node with no memory is not much of a spare: it would re-select work the
+fleet has already done, re-learn every no-op the hard way, and show a dashboard
+of its own idleness. So the pipelines' memory replicates.
+
+`scripts/state-sync.sh` mirrors `state_dir` through the private repository named
+by `state_repo`, in three modes:
+
+| Mode | Who runs it | When |
+|---|---|---|
+| `push` | the active node | at the end of every cycle, from the same cleanup that releases the lock |
+| `restore` | every standby node | every seven minutes, from the node's crontab |
+| `lease` | the active node | before any work, as the first thing after the lock |
+
+What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,
+`reviews/`, the switch, the cron logs. What stays behind is anything local or
+derived — the live locks (a restored lock is a lock nobody holds, and it would
+stand the node down until it went stale), the generated dashboard, and each
+node's own logs. The published copy keeps the newest `cycles_retained` cycles;
+your own `state_dir` is never pruned. A push that finds nothing changed does
+nothing, and the whole history is a single amended commit, so the repository
+does not grow.
+
+**The lease** is the safety net under `AGENT_OPS_ROLE`. `leader.json` in the
+state repository records which node is running and when it last said so; a node
+that finds another name there, refreshed within `lease_ttl_hours`, stands down
+and says whose it is. It is deliberately not the primary defence — the role is —
+but it is what catches the human mistake the role cannot: two nodes both set
+`active`. If GitHub cannot be reached, the check proceeds with a warning rather
+than stopping the operation: it takes a *second* deliberately-active node before
+anything is duplicated, and an operation that stops quietly is worse than one
+that risks that.
+
+Every node needs a `GH_TOKEN` that can read the state repository (and, on the
+active node, write it). Leave `state_repo` out of `config.json` and none of this
+happens at all.
 
 ## Skipping no-op cycles
 
