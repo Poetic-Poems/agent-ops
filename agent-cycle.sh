@@ -36,6 +36,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/noop-skip.sh
 . "$SCRIPT_DIR/lib/noop-skip.sh"
+# shellcheck source=lib/role.sh
+. "$SCRIPT_DIR/lib/role.sh"
 
 usage() {
   cat <<'EOF'
@@ -62,6 +64,12 @@ stops cycles from starting (shared with review-cycle.sh).
 asking for a cycle wants the Co-Ordinator's answer, not a cached verdict. They
 do not bypass the switch — if you disabled the pipeline to edit these files,
 running them by hand is the same hazard.
+
+Environment:
+  AGENT_OPS_ROLE   `active` on the one node that runs unattended cycles;
+                   anything else (including unset) makes this a standby, which
+                   skips them. --dry-run and --once bypass it; the switch
+                   commands work on any node.
 EOF
 }
 
@@ -111,6 +119,21 @@ if [[ -n "$MANAGE_ACTION" ]]; then
     echo "agent-cycle: --disable needs a reason, e.g. --disable 'editing lib/cycle-state.sh'" >&2
     exit 64
   fi
+fi
+
+# --- Role guard (requirement 2.4) ---
+# Before the config is even read: a standby node must leave no trace of the
+# tick beyond the cron log — no cycle directory, no log.jsonl event — so its
+# state stays a faithful mirror of the active node's (see scripts/state-sync.sh)
+# and its dashboard shows the fleet's work rather than its own idling.
+#
+# Bypassed by --dry-run and --once (a human asking for a cycle is not an
+# unattended one) and by the switch commands, which must stay usable on every
+# node. Not bypassed by --repo alone: that flag narrows an otherwise ordinary
+# cycle.
+if [[ -z "$MANAGE_ACTION" ]] && ! (( DRY_RUN || ONCE )) && ! role_is_active; then
+  printf '%s %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(role_skip_message agent-cycle)"
+  exit 0
 fi
 
 # --- Config ---
