@@ -81,11 +81,15 @@ The `review` object configures the separate weekly project-review pipeline — s
 
 ## Installation
 
-There are two ways to run a node. The **container image** (`deploy/docker/`)
-carries the whole toolchain and needs nothing installed on the host but Docker;
-it is how a cloud VM runs, and how the laptop will run once the migration is
-complete. The **host install** below is the laptop's current path: the scripts
-run straight out of a checkout, driven by the user crontab.
+**Run a node as a container.** The image (`deploy/docker/`) carries the whole
+toolchain and needs nothing on the host but Docker, and it is the deployment
+artefact: `/app` inside it *is* agent-ops, so a node updates by pulling a new
+image rather than by pulling a branch. The full runbook — bring-up, operations,
+the failover drill, troubleshooting — is **[deploy/docker/README.md](deploy/docker/README.md)**.
+
+The **host install** further below is the laptop's legacy path, kept working
+until it is cut over: the scripts run straight out of a checkout, driven by the
+user crontab and a SysV init script.
 
 ### As a container
 
@@ -93,12 +97,19 @@ A node is one Compose project. Every node runs the same file and the same
 image; the only thing that differs between two nodes is its `.env`.
 
 ```bash
-cd deploy/docker
-cp .env.example .env
+mkdir -p ~/poetic-node && cd ~/poetic-node
+base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
+curl -fsSLO "$base/compose.yaml"
+curl -fsSLO "$base/ts-serve.json"
+curl -fsSL  "$base/.env.example" -o .env
 $EDITOR .env          # name the node, set its role, paste its tokens
 docker compose up -d
 docker compose exec scheduler claude   # authenticate this node, once
 ```
+
+The node holds those three files and no clone. On a fresh cloud VM,
+[`deploy/docker/cloud-init.yaml`](deploy/docker/cloud-init.yaml) does all of
+that unattended except the Claude login.
 
 `COMPOSE_PROFILES` in that `.env` decides what the node runs:
 
@@ -133,9 +144,15 @@ Four things are worth knowing:
   dashboard does — set `DASHBOARD_PORT` in `.env`.
 
 Set `ROLE=active` in the `.env` of exactly one node (see
-[Which node runs the cycles](#which-node-runs-the-cycles)).
+[Which node runs the cycles](#which-node-runs-the-cycles)), and read
+[deploy/docker/README.md](deploy/docker/README.md) for everything after that.
 
-### On the host
+### On the host (legacy)
+
+The laptop's current path, and the only one that needs a checkout. A
+containerised node needs none of this — Docker and the `.env` above are the
+whole of it. These steps stay documented and working until the laptop is cut
+over.
 
 1. **Create the repo:**
    ```bash
@@ -533,7 +550,12 @@ The dashboard is a **reader**: it only ever reads the pipeline's state and
 GitHub, never writes into the state tree, never touches the lock, and cannot
 disturb a running cycle. See `docs/DASHBOARD-SPEC.md` for its design.
 
-### Run as a service
+### Run as a service (legacy WSL path)
+
+On a containerised node the dashboard is already a service — the `dashboard`
+service in `deploy/docker/compose.yaml`, restarted by Docker and reached over
+the tailnet through the sidecar. Everything from here to the end of this section
+is the laptop's SysV path, kept until it is cut over.
 
 To have the loopback server start automatically when WSL starts — so
 `http://127.0.0.1:8787` is always up without a foreground terminal — install
@@ -599,8 +621,14 @@ devices signed into *your* Tailscale account, and nothing ever gets a public
 URL. (Never use `tailscale funnel`, which is the public-internet variant —
 that would publish the pipeline's telemetry to anyone with the link.)
 
+A containerised node has this already: the `tailnet` profile runs Tailscale as
+a sidecar and the dashboard inside its network namespace, which is the same
+arrangement — loopback server, Serve in front, no Funnel — assembled by
+`docker compose up -d` instead of by hand. The steps below are the laptop's
+manual equivalent.
+
 Prerequisite: the loopback server must be running — install it as a boot
-service first (see [Run as a service](#run-as-a-service)).
+service first (see [Run as a service](#run-as-a-service-legacy-wsl-path)).
 
 1. **Install Tailscale in WSL** and check the daemon binary landed:
 

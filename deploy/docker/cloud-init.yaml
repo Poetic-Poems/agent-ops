@@ -1,0 +1,76 @@
+#cloud-config
+#
+# cloud-init user-data for an agent-ops node on a fresh Ubuntu VM.
+#
+# Performs steps 1–3 of deploy/docker/README.md unattended: install Docker,
+# fetch the stack, start it. Step 4 — the one interactive Claude login — has to
+# happen over SSH afterwards:
+#
+#   ssh <node> 'cd /opt/poetic-node && sudo docker compose exec scheduler claude'
+#
+# BEFORE YOU PASTE THIS AS USER-DATA, replace every __PLACEHOLDER__ below. The
+# result contains two secrets and should be treated as one: cloud-init
+# user-data is readable from inside the instance and is often retained by the
+# provider's console. Prefer short-lived, single-node credentials — a
+# fine-grained GitHub token scoped to the Poetic-Poems repositories, and a
+# single-use Tailscale pre-auth key. Never commit a filled-in copy of this
+# file.
+#
+# The node deliberately holds no clone of agent-ops: compose.yaml and
+# ts-serve.json are fetched from the repository, and everything else arrives in
+# the image. Updating is watchtower's job, not git's.
+
+package_update: true
+package_upgrade: true
+
+packages:
+  - ca-certificates
+  - curl
+
+write_files:
+  # The node's identity and secrets. Written with restrictive permissions
+  # because it is the one file here worth stealing.
+  - path: /opt/poetic-node/.env
+    permissions: "0600"
+    owner: root:root
+    content: |
+      NODE_NAME=__NODE_NAME__
+
+      # A new node joins as a standby, always. Promoting it is a deliberate,
+      # separate act — see the failover drill in deploy/docker/README.md —
+      # because two nodes set `active` at once is the one mistake this system
+      # cannot make cheap.
+      ROLE=standby
+
+      COMPOSE_PROFILES=tailnet,auto-update
+
+      GH_TOKEN=__GH_TOKEN__
+      TS_AUTHKEY=__TS_AUTHKEY__
+
+      # TZ=Pacific/Auckland
+
+      # Set this to the instance's egress MTU if it is below 1500 — several
+      # providers hand out 1450 or 1400, and a bridge at 1500 in front of that
+      # breaks every TLS connection from inside the container while leaving DNS
+      # and plain HTTP working. See deploy/docker/README.md.
+      #DOCKER_MTU=1500
+
+runcmd:
+  # Docker, from Docker's own installer rather than the distro package: the
+  # stack needs a compose v2 plugin, which `docker.io` does not carry.
+  - [sh, -c, "curl -fsSL https://get.docker.com | sh"]
+
+  # The stack itself. Pinned to `main`, which is the same branch CI builds the
+  # image from, so the compose file and the image it runs stay in step.
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/compose.yaml https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/ts-serve.json https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/ts-serve.json"]
+
+  - [sh, -c, "cd /opt/poetic-node && docker compose up -d"]
+
+  # A note where the next person will look, since the node is not finished
+  # until someone has logged Claude in.
+  - [sh, -c, "printf 'agent-ops node: authenticate Claude once with\\n  cd /opt/poetic-node && sudo docker compose exec scheduler claude\\n' > /etc/motd"]
+
+final_message: |
+  agent-ops node up. Remaining manual step: authenticate Claude, once —
+    cd /opt/poetic-node && sudo docker compose exec scheduler claude
