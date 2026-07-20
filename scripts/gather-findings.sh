@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # gather-findings.sh — pre-fetch a repo's open security and code-quality
-# findings for the Co-Ordinator (docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md, requirement 3a).
+# findings for the Co-Ordinator (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 3a).
 #
 # Given a GitHub repo slug (owner/repo), pull the repo's open Dependabot
 # alerts and open code-scanning alerts via `gh api`, normalise each into a

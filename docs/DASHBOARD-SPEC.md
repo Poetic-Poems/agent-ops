@@ -1,10 +1,13 @@
-# Monitoring dashboard — build & maintenance spec
+# Monitoring Dashboard — as-built specification
 
-Companion to `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (the pipeline spec). This document
+Companion to `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the pipeline spec). This document
 describes the local monitoring dashboard **as built**: what it is, the state
 it reads, how it is assembled, and the decisions behind it. Use it to
-understand, modify, or regenerate the dashboard. Where it says "requirement
-N", it means requirement N of `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`.
+understand, modify, or regenerate the dashboard — and keep it accurate: any
+change to the dashboard lands together with the edit that keeps this
+document describing what actually exists (see `CLAUDE.md`, "As-built
+specifications"). Where it says "requirement N", it means requirement N of
+`docs/IMPLEMENTATION-PIPELINE-SPEC.md`.
 
 ## What it is
 
@@ -215,7 +218,7 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   fetch forward, so the page stays near-live without hammering the GitHub API.
   `flock` guards against a slow publish stacking up under the next tick.
 
-## Deliverables (as built)
+## Components (as built)
 
 - `scripts/publish-dashboard.sh` — the Publisher.
 - `scripts/publish-dashboard-launcher.sh` — the sub-minute heartbeat driver
@@ -272,7 +275,7 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 - **The blocked and void lists are not computed here.** `blocked[]` and
   `void[]` come from the same shared implementation the Script feeds its
   Co-Ordinator (`lib/cycle-state.sh`, per requirement 34a of
-  `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`); only the projection for
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md`); only the projection for
   display is local. The dashboard originally had its own near-copy of the
   rule, and the two silently disagreed — which matters more here than
   anywhere else, because this page is where someone looks to find out why the

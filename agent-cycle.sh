@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # agent-cycle.sh — orchestrates one cycle of the autonomous agent pipeline.
-# Full specification: docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md. Config: config.json.
+# Full specification: docs/IMPLEMENTATION-PIPELINE-SPEC.md. Config: config.json.
 
 set -euo pipefail
 

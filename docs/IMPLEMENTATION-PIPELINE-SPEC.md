@@ -1,21 +1,23 @@
-# Scheduled Autonomous Implementation Agent System — build prompt
+# Hourly Autonomous Implementation Pipeline — as-built specification
 
-## How to use this document
+## About this document
 
-Give this document, whole, to a Claude Code session (Sonnet 5 or better)
-started in an empty repository that will become `Poetic-Poems/agent-ops`,
-with the instruction "build the system this document describes". Everything
-the builder needs is here. Where this document is silent, follow the
-conventions of the two target repositories (their `CLAUDE.md` files are
-binding on any agent working inside them).
+This is the as-built requirements specification for the hourly implementation
+pipeline: the numbered requirements the system satisfies, the components that
+satisfy them, the acceptance checks that prove it, and the reasoning behind
+them. It describes the system as it exists, and it must keep doing so — any
+change to the pipeline lands together with the edit that keeps this document
+accurate (see `CLAUDE.md`, "As-built specifications"). Where this document is
+silent, follow the conventions of the two target repositories (their
+`CLAUDE.md` files are binding on any agent working inside them).
 
-## What to build
+## What it is
 
 A pipeline that, once an hour, picks **at most one** well-scoped item of
 pending work from one of two GitHub repositories, implements it on a feature
 branch in an ephemeral clone, reviews and corrects the result, and leaves a
-mergeable pull request for a human to approve. It runs unattended on this
-machine (WSL2 Ubuntu). The only human involvement is final pull-request
+mergeable pull request for a human to approve. It runs unattended on the
+host machine (WSL2 Ubuntu). The only human involvement is final pull-request
 review and merge.
 
 ```
@@ -42,14 +44,16 @@ cron (hourly)
    every pull request, through the ordinary GitHub process. Not launched by
    any part of this system.
 
-## Environment facts (verified 2026-07-13)
+## Environment (verified 2026-07-20)
 
-- WSL2 Ubuntu; `bash`; `git`; `jq` assumed available (verify, install if not).
-- `gh` is installed and authenticated as `warwickallen`, with push access to
-  both target repositories.
-- The standalone `claude` CLI is **not installed** (Claude Code currently
-  runs only via the VS Code extension) — see "Prerequisites (human steps)".
-- `cron` is **not running** and there is no crontab — see "Prerequisites".
+- WSL2 Ubuntu; `bash`, `git`, `jq` and `gh` available.
+- `gh` is authenticated as `warwickallen`, with push access to both target
+  repositories.
+- The standalone `claude` CLI is installed and resolvable from cron's
+  minimal environment.
+- `cron` is running (started by WSL's `[boot]` command) with the crontab
+  entries installed: the hourly cycle, the daily review tick, and the
+  dashboard heartbeat (see `README.md`, "Installation").
 - Headless `claude -p` invocations authenticate with the user's existing
   Claude subscription login; `gh` uses its existing token. No new keys.
 
@@ -81,7 +85,7 @@ analysis, not just files in the tree:
   picked up only when nothing more deliberate is waiting.
 
 The `project-review` source draws on the weekly project-review pipeline's own
-output (see `docs/BUILD-REVIEW-PROMPT.md`), which lands in each repo via a
+output (see `docs/REVIEW-PIPELINE-SPEC.md`), which lands in each repo via a
 merged PR:
 
 - **`project-review`** — the prioritised **recommendations** produced by the
@@ -222,7 +226,7 @@ runs unattended.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
-   `review-cycle.sh` (`docs/BUILD-REVIEW-PROMPT.md`, R2a) through one shared
+   `review-cycle.sh` (`docs/REVIEW-PIPELINE-SPEC.md`, R2a) through one shared
    implementation (requirement 34a), with `agent-cycle.sh` the only writer.
    Managed by three flags that manage the switch and run no cycle:
    `--disable [<reason>] [--for <90m|4h|2d|forever>]`, `--enable`, `--status`.
@@ -496,9 +500,9 @@ runs unattended.
     `--status` (requirement 2.3), which manage the switch and run no cycle.
 13. The Script must pass `shellcheck` and must set its own `PATH` explicitly
     (cron's environment is minimal), covering `claude`, `gh`, `git`, `jq`.
-    The builder must also prove that a cron-style invocation can resolve
+    When provisioning a host, prove that a cron-style invocation can resolve
     `claude` by running it from a minimal environment (for example with a
-    sanitized `PATH` and `HOME`) before considering the setup complete.
+    sanitized `PATH` and `HOME`) before relying on scheduled runs.
 
 ### The Co-Ordinator (selection only)
 
@@ -572,7 +576,7 @@ runs unattended.
       Note that a merged PR is a *floor*, not a proof: work that landed as a
       direct commit, or before the repo required PRs, leaves no PR to find and
       so reads as outstanding forever. The cross-reference is what covers that
-      gap, which is why the review spec (`docs/BUILD-REVIEW-PROMPT.md`, R12a)
+      gap, which is why the review spec (`docs/REVIEW-PIPELINE-SPEC.md`, R12a)
       is required to write it and not merely expected to; requirement 9a is
       the backstop for when it is missing anyway — the item is then
       investigated once, and the finding remembered.
@@ -780,7 +784,7 @@ runs unattended.
       merely becomes a candidate again and re-blocks on its next attempt.
 34a. Whatever computes requirement 34 must be the **only** definition of it.
     Anything else that reports blocked items — notably the monitoring
-    dashboard (`docs/BUILD-DASHBOARD-PROMPT.md`) — shares that one
+    dashboard (`docs/DASHBOARD-SPEC.md`) — shares that one
     implementation rather than reimplementing the rule. Two copies drift, and
     a dashboard that quietly disagrees with the Co-Ordinator about what is
     blocked is worse than no dashboard: it is where you would look to find
@@ -810,7 +814,9 @@ runs unattended.
       safe where clearing is not — a wrong void costs a human one line in a
       log, a wrong unvoid costs a cycle every hour until someone notices.
 
-## Deliverables
+## Components
+
+What exists, and the requirements each part answers to:
 
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
@@ -832,7 +838,7 @@ runs unattended.
    cost-control feature must not become a reliability risk — but must not
    pretend a failed call is an empty result either (see requirement 3b). Must
    pass `shellcheck`.
-3a. A shared library (as built, `lib/cycle-state.sh`, `lib/limit-detect.sh`,
+3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh` and `lib/noop-skip.sh`) holding every rule that more than
    one component computes — at minimum requirement 34's blocked semantics,
    requirement 33's `attempt-failed` field shape, the usage-limit phrase
@@ -853,7 +859,10 @@ runs unattended.
 6. The crontab line, e.g.
    `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`.
 
-## Acceptance checks (the builder must run all of these before finishing)
+## Acceptance checks
+
+Every change to the system must leave all of these passing; before opening a
+pull request, run the ones the change touches and any it could regress.
 
 1. `shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` is clean.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
@@ -906,8 +915,8 @@ runs unattended.
    when anything moves.** Drive a cycle that ends `none-selected`, confirm the
    event carries a fingerprint, then run a second cycle: it must stand down
    *without launching the Co-Ordinator* — that saving is the entire feature, so
-   time both and see it. Then the half that actually matters, and the half a
-   builder will be tempted to skip because the happy path passed: assert
+   time both and see it. Then the half that actually matters, and the half
+   it is tempting to skip because the happy path passed: assert
    per-source that the fingerprint *changes* when a commit lands, an issue is
    relabelled or assigned, a workflow's conclusion flips, a claiming PR closes,
    an item is unblocked or unvoided, a source is added to `config.json`, or
@@ -950,7 +959,10 @@ runs unattended.
     originating register updated and a complete log trail. Report the PR URL
     to the human rather than merging anything.
 
-## Prerequisites (human steps, before first run)
+## Host provisioning (human steps)
+
+All of this is in place on the current host; it is needed again only when
+standing the system up on a new machine.
 
 1. Install the standalone CLI: `curl -fsSL https://claude.ai/install.sh | bash`
    (or `npm install -g @anthropic-ai/claude-code`). Verify headless auth
@@ -980,8 +992,8 @@ runs unattended.
    `repo` on a classic token). If a feature stays off, `gather-findings.sh`
    simply returns no findings for it and the rest of the pipeline is
    unaffected.
-4. Create `Poetic-Poems/agent-ops`, clone it to `~/Code/Poetic-Poems/agent-ops`, and run
-   the builder session there with this document.
+4. Create `Poetic-Poems/agent-ops` and clone it to
+   `~/Code/Poetic-Poems/agent-ops`.
 5. After the acceptance checks pass, install the crontab line.
 
 ## Cost profile
@@ -1002,9 +1014,11 @@ one forced pass a day (`none_selected_recheck_hours`) as the safety valve —
 roughly a 96% cut in the idle floor, and no change at all to a busy day, where
 every cycle has something to fingerprint that moved.
 
-## Design decisions in this revision
+## Design decisions
 
 Recorded so a future reader knows they were deliberate, not accidental.
+History and superseded approaches belong here (and in Gotchas), never in the
+requirements above, which state only what is.
 
 - **The Script orchestrates every launch; the Co-Ordinator only selects.**
   Per-stage timeouts, clean kills, and restartability come free from the
@@ -1033,7 +1047,7 @@ Recorded so a future reader knows they were deliberate, not accidental.
   code-quality findings). User stories and road maps were dropped — neither
   repo has them; the config structure accepts new sources when they appear.
 - **The weekly project review feeds the pipeline as a work source.** The
-  review pipeline (`docs/BUILD-REVIEW-PROMPT.md`) lands, in each repo, both an
+  review pipeline (`docs/REVIEW-PIPELINE-SPEC.md`) lands, in each repo, both an
   updated `TECH-DEBT.md` (the primary, status-tracked channel — picked up by
   the `tech-debt` source) and a `reviews/project-review-*/` folder of
   prioritised recommendations with ready-to-run improvement prompts. The
@@ -1043,7 +1057,7 @@ Recorded so a future reader knows they were deliberate, not accidental.
   recommendation beats an automated one) and below the curated channels, and
   dedups against them via the `R-NN` cross-reference the review writes into
   each mirrored tech-debt entry (required of the review by R12a of
-  `docs/BUILD-REVIEW-PROMPT.md` — for a long time this bullet merely *assumed*
+  `docs/REVIEW-PIPELINE-SPEC.md` — for a long time this bullet merely *assumed*
   it, which is why the dedup silently didn't work; see Gotchas). Because the recommendations file is
   regenerated each week (its `R-NN` IDs are per-review, so a ref is
   review-dated), an un-actioned recommendation is simply re-offered under a new
@@ -1121,8 +1135,8 @@ Recorded so a future reader knows they were deliberate, not accidental.
   *incomplete*, which is why requirement 3b's map of source-to-signal is
   normative and `none_selected_recheck_hours` caps the damage at a day.
 
-No open questions remain. The choices above (platform, models, permissions,
-system location) were confirmed by the repo owner on 2026-07-13.
+The choices above (platform, models, permissions, system location) were
+confirmed by the repo owner on 2026-07-13; no open questions remain.
 
 ## Gotchas
 
@@ -1142,7 +1156,7 @@ confident, recurring no-op.
 | Done-ness inferred from one channel | "Done" meant *a merged PR references it*. Work that landed as a direct commit — or before the repo required PRs — has no PR, so it reads as outstanding forever, and the item is re-selected every cycle for as long as it exists. | Don't let one provenance channel be the only proof. Cross-reference the curated register (R12a), and let the agent that actually looks at the repo settle it once (requirement 9a). Prefer evidence from the tree over evidence from process metadata. |
 | A rule with two implementations | The dashboard and the Script each computed "blocked". They disagreed, and the dashboard — the very place you would look to spot this bug — showed the wrong answer confidently. | One definition, shared (requirement 34a). If a second consumer needs it, it sources the first, and the shared unit is where the test lives. |
 | Identifiers assumed globally unique | `dependabot-alert-1` exists in *every* repo; date-numbered registers collide across repos too. Keying on the id alone makes one repo's block starve another repo's unrelated work. | Key on the scope plus the id (requirement 34). Ask what an id is unique *within* before using it as a key. |
-| A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/BUILD-REVIEW-PROMPT.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |
+| A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/REVIEW-PIPELINE-SPEC.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |
 | A state that can never say "done", read as if it could | `reviewDecision` stays `CHANGES_REQUESTED` after the agent pushes its fix — GitHub won't let a PR's author dismiss a review on their own PR, and the agent *is* the author. So "is there unanswered feedback?" answered from the PR's own state is always yes, forever. The PR is selected, fixed, re-selected, re-fixed, hourly, at Sonnet prices, and every cycle looks like a productive one. | Ask "what would ever change this value?" before keying on it. Where the answer is "nothing we can do", the state cannot be the signal — derive whose turn it is instead (requirement 3c: latest review vs head commit, the same shape as "a later green run supersedes"). A field that can only ever hold one value is not a condition, it is a constant. |
 | The formal signal and the substance in different places | The blocking `CHANGES_REQUESTED` review's body read, in full: "Refer to https://…#pullrequestreview-4718691960". All 6.5 KB of actual findings were in a *separate* `COMMENTED` review, by a *different account* — because the agent's own account raised the PR and therefore cannot request changes on it. A gatherer that read only the blocking review would have handed the Implementor the words "Refer to" and called the brief complete. | Gather the whole round, whoever wrote it, and pass it verbatim. When a platform rule (an author cannot review their own PR) forces a workflow to split across accounts, the split is structural and permanent — design for it rather than discovering it in the one review that mattered. |
 | A change-detection digest that tracks churn instead of meaning | The no-op short-circuit (requirement 3b) digested the *run id* of each workflow's latest run. `poetic` schedules `sync-framework.yml` at `0 * * * *` — hourly, the same cadence as the pipeline — so that one workflow busted the fingerprint on every single cycle. The feature was installed, tested, logged, green, and saved nothing; the only symptom was the bill it was built to reduce, unchanged. Found by reading the repo's actual cron lines, not by any test. | Digest the *fact the consumer reads*, not the record it lives in. Requirement 15 asks "is this workflow's latest run a failure" — that is the conclusion, not the id. Before digesting a field, ask what changes it and on what cadence; anything that moves on a timer moves faster than the thing you are trying to detect. Then assert the negative (a green rerun changes nothing), because every positive test still passes on the broken version. |

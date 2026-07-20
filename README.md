@@ -234,7 +234,7 @@ jq -r 'select(.event == "stand-down") | "\(.ts)  \(.reason)"' \
 ```bash
 tail -f ~/.local/state/poetic-agents/log.jsonl
 ```
-One event per line (JSON). See `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md` (requirement 31) for event types and fields.
+One event per line (JSON). See `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (requirement 33) for event types and fields.
 
 ### Blocked and void items
 Two different reasons the pipeline will skip an item, with two different
@@ -347,7 +347,7 @@ Stage transcripts land in `~/.local/state/poetic-agents/reviews/<review-id>/`.
 The shared `limit-hit` signal is written to the hourly pipeline's `log.jsonl`,
 so a usage limit hit during a review also stands the hourly pipeline down.
 
-See `docs/BUILD-REVIEW-PROMPT.md` for the full specification.
+See `docs/REVIEW-PIPELINE-SPEC.md` for the full specification.
 
 ## Monitoring dashboard
 
@@ -390,7 +390,7 @@ lock, and live GitHub status — add a heartbeat to your crontab:
 
 The dashboard is a **reader**: it only ever reads the pipeline's state and
 GitHub, never writes into the state tree, never touches the lock, and cannot
-disturb a running cycle. See `docs/BUILD-DASHBOARD-PROMPT.md` for its design.
+disturb a running cycle. See `docs/DASHBOARD-SPEC.md` for its design.
 
 ### Run as a service
 
@@ -507,13 +507,13 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
    `poetic-fiddle`) and uninstall the standalone `claude` CLI if nothing
    else on the machine uses it.
 
-## For builders: the build prompt
+## For maintainers: the as-built specifications
 
-To modify this system (add a new work source, change the selection logic, etc.), see `docs/BUILD-AUTONOMOUS-IMPLEMENTATION-PROMPT.md`. It is a complete specification for the system and includes numbered requirements and acceptance checks. `prompts/coordinator.md`, `prompts/implementor.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the build prompt first, then bring the affected operating prompt(s) in line with it.
+To modify this system (add a new work source, change the selection logic, etc.), start from `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the as-built requirements specification for the pipeline, with numbered requirements and acceptance checks. The specs are maintained as-built: a change to a component lands in the same pull request as the spec edit that keeps its document accurate (see `CLAUDE.md`, "As-built specifications"). `prompts/coordinator.md`, `prompts/implementor.md`, and `prompts/reviewer.md` are the operating prompts actually fed to each stage's headless `claude -p` invocation — update the spec first, then bring the affected operating prompt(s) in line with it.
 
-`docs/BUILD-DASHBOARD-PROMPT.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
+`docs/DASHBOARD-SPEC.md` is the companion specification for the monitoring dashboard (`scripts/publish-dashboard.sh` and `dashboard/index.html`).
 
-`docs/BUILD-REVIEW-PROMPT.md` is the companion specification for the weekly project-review pipeline (`review-cycle.sh` and `prompts/project-reviewer.md`).
+`docs/REVIEW-PIPELINE-SPEC.md` is the companion specification for the weekly project-review pipeline (`review-cycle.sh` and `prompts/project-reviewer.md`).
 
 ## Branch workflow
 

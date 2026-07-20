@@ -10,7 +10,7 @@
 #
 # Safe to run any time: it only reads the pipeline's state, never writes into
 # it, never touches the lock, and cannot disturb a running cycle. Costs
-# nothing to run (no model calls). Companion doc: docs/BUILD-DASHBOARD-PROMPT.md.
+# nothing to run (no model calls). Companion doc: docs/DASHBOARD-SPEC.md.
 
 set -uo pipefail
 
