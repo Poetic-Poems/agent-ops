@@ -104,6 +104,18 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 
 ENV HOME=/home/agent
 
+# The mount points for the persistent volumes, created here and owned by
+# `agent`. This is not tidiness: Docker seeds a new named volume from whatever
+# is at its mount point in the image, ownership included, and creates the
+# directory as root when there is nothing there. Without these lines the very
+# first `docker compose up` gives the container three root-owned volumes it
+# cannot write, and every service restart-loops on its first mkdir.
+RUN mkdir -p /home/agent/.claude \
+             /home/agent/.local/state/poetic-agents/cycles \
+             /home/agent/.local/state/poetic-agents/reviews \
+             /home/agent/.cache/poetic-agents/workspaces \
+    && chown -R "$PUID:$PGID" /home/agent
+
 COPY --chown=agent:agent . /app
 
 USER agent

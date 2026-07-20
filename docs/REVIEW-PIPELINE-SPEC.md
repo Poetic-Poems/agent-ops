@@ -487,8 +487,9 @@ standing the pipeline up on a new machine.
    On a containerised node this entry is not installed by hand at all: it is
    the third line of `deploy/docker/crontab`, which the scheduler service runs
    under supercronic (see the node image section of
-   `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). The role variable comes from the
-   node's `.env` there rather than from a crontab line.
+   `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). The role comes from `ROLE` in the
+   node's `deploy/docker/.env` rather than from a crontab line, and defaults to
+   standby when it is missing.
 3. The shared prerequisites of `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the standalone `claude`
    CLI, cron enabled under WSL, `gh` authenticated with push access) are
    already satisfied by the implementation pipeline; nothing further is needed.

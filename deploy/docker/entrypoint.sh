@@ -21,6 +21,24 @@ expand_home() {
   printf '%s\n' "$p"
 }
 
+# Every path below is a mount point for a volume that outlives the container,
+# and the way that goes wrong is ownership: a volume created before the image
+# knew to seed it, or a host directory bind-mounted from another uid, leaves a
+# directory this user cannot write. Say so once, plainly, rather than letting
+# the first write fail and the service restart-loop on a bare "Permission
+# denied" with no clue as to which volume or which uid.
+require_writable() {
+  local dir="$1" what="$2"
+  if [[ ! -w "$dir" ]]; then
+    say "ERROR: $dir ($what) is not writable by $(id -un) (uid $(id -u))"
+    say "       it is owned by uid $(stat -c %u "$dir" 2>/dev/null || echo '?'); the volume was"
+    say "       probably created by an older image or bind-mounted from another user."
+    say "       Recreate it (docker compose down -v, if losing it is acceptable) or"
+    say "       rebuild with --build-arg PUID=<owner> --build-arg PGID=<group>."
+    exit 1
+  fi
+}
+
 # --- Claude configuration ---
 # Seeded only when absent. ~/.claude is a persistent volume holding
 # .credentials.json, whose OAuth tokens refresh and write back; overwriting
@@ -29,6 +47,7 @@ expand_home() {
 # no marketplaces, least of all the laptop's local-directory marketplace,
 # which does not exist here and would break every headless `claude -p`.
 mkdir -p "$HOME/.claude"
+require_writable "$HOME/.claude" "the Claude configuration volume"
 if [[ ! -e "$HOME/.claude/settings.json" ]]; then
   cp "$APP_DIR/deploy/docker/claude-settings.json" "$HOME/.claude/settings.json"
   say "seeded ~/.claude/settings.json"
@@ -63,13 +82,10 @@ fi
 # dashboard has somewhere to serve from on a node that has never run one.
 state_dir="$(expand_home "$(jq -r '.state_dir' "$CONFIG_FILE")")"
 workspace_root="$(expand_home "$(jq -r '.workspace_root' "$CONFIG_FILE")")"
-mkdir -p "$state_dir" "$state_dir/cycles" "$state_dir/reviews" "$workspace_root"
-
-if [[ ! -w "$state_dir" ]]; then
-  say "ERROR: $state_dir is not writable by $(id -un) (uid $(id -u))"
-  say "       the state volume is probably owned by another uid; rebuild with --build-arg PUID=<owner>"
-  exit 1
-fi
+mkdir -p "$state_dir" "$workspace_root"
+require_writable "$state_dir" "the state volume"
+require_writable "$workspace_root" "the workspaces volume"
+mkdir -p "$state_dir/cycles" "$state_dir/reviews"
 
 say "node ${NODE_NAME:-<unnamed>}, role ${AGENT_OPS_ROLE:-standby}, state $state_dir"
 

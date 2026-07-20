@@ -93,8 +93,46 @@ a node updates by pulling a new image rather than by pulling a branch.
   credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
   and a node that is not `active` (requirement 2.4) costs nothing but its
   cron-log lines.
+- The image creates the volume mount points (`~/.claude`, `state_dir`,
+  `workspace_root`) owned by `agent`, because a container runtime seeds a new
+  named volume from the image's mount point — ownership included — and creates
+  it as root when the image has nothing there.
 - The image is x86-64 only, because the pinned `supercronic` asset is
   (`TECH-DEBT.md`, TD26072002).
+
+### The node stack (`deploy/docker/compose.yaml`)
+
+A node is a single Compose project. Every node runs the same file and the same
+image; the only thing that differs between two nodes is `deploy/docker/.env` —
+its name, its role and its tokens. `deploy/docker/.env.example` documents that
+file and carries placeholders only; `.env` itself is never committed.
+
+- **`scheduler`** — `supercronic /app/deploy/docker/crontab`, in no profile, so
+  it runs on every node. `AGENT_OPS_ROLE` comes from `ROLE` in `.env` and
+  **defaults to `standby`** if unset, so a half-configured node cannot become a
+  second worker.
+- **`dashboard`** (profile `tailnet`) — `scripts/serve-dashboard.sh` sharing the
+  `tailscale` sidecar's network namespace (`network_mode: service:tailscale`).
+  That shared namespace is what lets Tailscale Serve reach a server bound to
+  `127.0.0.1` while nothing on any network can, so containerisation costs the
+  dashboard's privacy model nothing. The sidecar's `ts-serve.json` proxies
+  `https://<node>.<tailnet>` to `http://127.0.0.1:8787` and allows no Funnel.
+- **`dashboard-local`** (profile `local`) — the same server on a node with no
+  tailnet, using the host's network namespace rather than a published port,
+  because a published port would reach nothing (`DASHBOARD-SPEC`). The page is
+  then readable on that host's loopback and nowhere else. `DASHBOARD_PORT`
+  exists because the host may already have something on 8787 — the laptop's
+  legacy SysV dashboard does.
+- **`watchtower`** (profile `auto-update`) — how a node picks up new code: it
+  polls for a new image tag and restarts the services into it. Enabled by
+  label, so it touches this stack's containers and no others on the host.
+- Which profiles a node runs is set by `COMPOSE_PROFILES` in its `.env`, so the
+  operator's command is `docker compose up -d` on every node regardless.
+- Three named volumes carry everything that must survive a container being
+  replaced: `state` (the node's cycle records, logs and locks), `claude-config`
+  (the OAuth credentials, which refresh themselves and cannot be rebuilt from
+  the image), and `workspaces`. A node updates by replacing its containers;
+  these are what it keeps.
 
 ### Target repositories
 
@@ -935,10 +973,12 @@ What exists, and the requirements each part answers to:
    `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`,
    with `AGENT_OPS_ROLE=active` set in the crontab's environment on the node
    that is to run the cycles (requirement 2.4).
-7. `deploy/docker/` — the node image (see "The node image" above): `Dockerfile`,
-   `entrypoint.sh`, `crontab` and the minimal `claude-settings.json` seed. The
-   container crontab is the schedule component 6 describes, expressed for a
-   node; both exist because the laptop still runs the host-cron path.
+7. `deploy/docker/` — the node image and the node stack (see "The node image"
+   and "The node stack" above): `Dockerfile`, `entrypoint.sh`, `crontab` and the
+   minimal `claude-settings.json` seed; `compose.yaml`, `ts-serve.json` and
+   `.env.example`. The container crontab is the schedule component 6 describes,
+   expressed for a node; both exist because the laptop still runs the host-cron
+   path.
 8. `deploy/agent-ops-dashboard.init` and `deploy/tailscaled.init` — the legacy
    WSL SysV path for the laptop, superseded on a containerised node.
 
@@ -948,6 +988,10 @@ Every change to the system must leave all of these passing; before opening a
 pull request, run the ones the change touches and any it could regress.
 
 1. `shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` is clean.
+1a. **The role guard holds in both directions.** `test/role.test.sh` passes:
+   every value that is not `active` stands the node down with a cron-log line,
+   exit 0 and nothing written under `state_dir`; `--dry-run`, `--once` and the
+   switch commands run regardless of the role.
 1b. **The image builds and carries the whole toolchain.**
    `docker build -f deploy/docker/Dockerfile -t agent-ops .` succeeds, and
    inside it, as user `agent`: `bash`, `git`, `jq`, `curl`, `python3`, `perl`,
@@ -955,10 +999,15 @@ pull request, run the ones the change touches and any it could regress.
    resolve; `supercronic -test /app/deploy/docker/crontab` reports the crontab
    valid; the `test/` suite passes inside the container; and `/app/agent-cycle.sh`
    with no role set exits 0 through the requirement 2.4 guard.
-1a. **The role guard holds in both directions.** `test/role.test.sh` passes:
-   every value that is not `active` stands the node down with a cron-log line,
-   exit 0 and nothing written under `state_dir`; `--dry-run`, `--once` and the
-   switch commands run regardless of the role.
+1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
+   from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
+   `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
+   `curl http://127.0.0.1:$DASHBOARD_PORT/` and `/data.js` return 200; the
+   scheduler's log shows supercronic reading the crontab and the 5-minute
+   heartbeat firing; `agent-cycle.sh` and `review-cycle.sh` stand the node down
+   through the requirement 2.4 guard with `ROLE=standby`; and a second
+   `up -d` reports every container `Running` without recreating one.
+   `docker compose --profile tailnet config` is valid.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
