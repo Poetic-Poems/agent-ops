@@ -439,6 +439,71 @@ one instance against port 8787 at a time — a second `python -m http.server`
 on the same port dies with `Address already in use`, so stop any foreground
 `serve-dashboard.sh` before starting the service (or vice versa).
 
+### View it away from home (Tailscale)
+
+The dashboard's privacy comes from never being published, and the only
+supported remote-access path keeps it that way: a **tailnet** — your own
+private WireGuard mesh, via [Tailscale](https://tailscale.com). The server
+keeps binding `127.0.0.1` only; `tailscale serve` proxies HTTPS to it for
+devices signed into *your* Tailscale account, and nothing ever gets a public
+URL. (Never use `tailscale funnel`, which is the public-internet variant —
+that would publish the pipeline's telemetry to anyone with the link.)
+
+Prerequisite: the loopback server must be running — install it as a boot
+service first (see [Run as a service](#run-as-a-service)).
+
+1. **Install Tailscale in WSL** and check the daemon binary landed:
+
+   ```sh
+   curl -fsSL https://tailscale.com/install.sh | sh
+   command -v tailscaled
+   ```
+
+   (The package ships only a systemd unit, which this WSL distro's init
+   ignores — hence the init script in the next step.)
+
+2. **Install the init script** — [`deploy/tailscaled.init`](deploy/tailscaled.init)
+   runs `tailscaled` at boot. Root this time, deliberately: it needs
+   `/dev/net/tun` and `/var/lib/tailscale`; the dashboard server itself
+   stays unprivileged and loopback-only.
+
+   ```sh
+   sudo install -m 755 deploy/tailscaled.init /etc/init.d/tailscaled
+   sudo service tailscaled start
+   ```
+
+   Then add `service tailscaled start` to `/etc/wsl.conf`'s `[boot]`
+   command, alongside cron and the dashboard service:
+
+   ```ini
+   [boot]
+   command = service cron start; service artistos-telegram-bridge start; service docker start; service agent-ops-dashboard start; service tailscaled start
+   ```
+
+3. **Join your tailnet** (one-time): run `sudo tailscale up`, open the
+   printed URL in a browser, and sign in (creating the account on first
+   use). In the [admin console](https://login.tailscale.com/admin/dns),
+   enable **MagicDNS** and **HTTPS certificates** — `tailscale serve` needs
+   both to mint the dashboard's certificate.
+
+4. **Proxy the dashboard onto the tailnet** (one-time; the setting persists
+   in tailscaled's state across restarts):
+
+   ```sh
+   sudo tailscale serve --bg 8787
+   tailscale serve status    # shows the https://… URL it is served at
+   ```
+
+5. **On your phone or laptop**: install the Tailscale app, sign into the
+   same account, and open the URL from `tailscale serve status`
+   (`https://<machine>.<tailnet>.ts.net`). The page auto-refreshes there
+   exactly as it does locally.
+
+The machine (and WSL) must be awake for this — but that is already true of
+the pipeline itself, so anything the dashboard would show you is only ever
+produced while it is reachable. To stop sharing: `sudo tailscale serve
+reset`; to leave the tailnet entirely: `sudo tailscale logout`.
+
 ## Troubleshooting
 
 **Cron not running:**
@@ -491,7 +556,11 @@ The system logs a `limit-hit` event with the reset time if parseable. It then st
    that alternative instead.) If you installed the dashboard boot service,
    also remove `service agent-ops-dashboard start` from `/etc/wsl.conf`'s
    `[boot] command`, then `sudo service agent-ops-dashboard stop` and
-   `sudo rm /etc/init.d/agent-ops-dashboard`.
+   `sudo rm /etc/init.d/agent-ops-dashboard`. If you set up tailnet access,
+   likewise `sudo tailscale serve reset`, remove `service tailscaled start`
+   from the `[boot] command`, `sudo service tailscaled stop`, and
+   `sudo rm /etc/init.d/tailscaled` (then `sudo tailscale logout` and
+   uninstall the package if nothing else uses Tailscale).
 2. **Let any in-flight cycle finish**, or kill it: find the PID in
    `~/.local/state/poetic-agents/lock.json` and `kill` it — the next
    `crontab`-less state is safe either way since nothing else will start.

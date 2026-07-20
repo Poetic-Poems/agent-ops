@@ -23,7 +23,11 @@ Three properties are deliberate and non-negotiable:
   onto local disk and opened in a browser. There is no server and no open
   port (an optional loopback-only server exists purely as a `file://`
   fallback), and no GitHub Pages. The pipeline's operational telemetry —
-  costs, cadence, failure detail, agent reasoning — never leaves the machine.
+  costs, cadence, failure detail, agent reasoning — never leaves the machine
+  except, when the optional tailnet access documented in the README is
+  installed, to the owner's own signed-in devices: `tailscale serve` proxies
+  the unchanged loopback server over the owner's private tailnet, and
+  nothing ever gets a public URL.
 - **Free to run.** The generator is `bash` + `jq` + `gh` on the existing cron
   cadence; the page is a static file; there are **no model calls anywhere**.
 - **A reader, never a participant.** It only reads the pipeline's state and
@@ -252,6 +256,15 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   cost and exposure. The machine is authenticated and the repos are public, so
   the local Publisher fetches all GitHub data itself; a localhost page can't be
   viewed while the machine sleeps anyway, which was the Action's only draw.
+- **Remote access is tailnet-scoped, never public.** The README's "View it
+  away from home" section layers `tailscale serve` in front of the untouched
+  loopback server (`deploy/tailscaled.init` runs the daemon on this
+  systemd-less WSL distro): the server still binds `127.0.0.1`, Tailscale
+  authenticates each viewing device against the owner's own tailnet, and
+  traffic is end-to-end WireGuard. This loses nothing while the machine
+  sleeps — the pipeline only produces telemetry while awake. Public exposure
+  (`tailscale funnel`, Pages, shareable tunnel URLs) stays rejected for the
+  reasons above.
 - **The page fetches nothing external.** All GitHub reads happen in the
   Publisher via `gh`; the page reads only its local `data.js`. Offline-capable,
   dependency-free, no CORS or rate-limit concerns.
