@@ -51,4 +51,4 @@ above.
 | ID | Title | Status | Resolved | Ref |
 |----|-------|--------|----------|-----|
 | TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | resolved | 2026-07-14 | #11 |
-| TD26072001 | shellcheck not clean at info level on two scripts | open | | |
+| TD26072001 | shellcheck not clean at info level on two scripts | in-progress | | |
