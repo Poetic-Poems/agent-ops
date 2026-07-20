@@ -134,6 +134,23 @@ services:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
 
+networks:
+  default:
+    driver_opts:
+      # Docker gives a bridge network an MTU of 1500 regardless of the host's.
+      # Where the host's egress is smaller — a WireGuard or Tailscale link, some
+      # cloud instances, this laptop's WSL interface at 1300 — the mismatch is a
+      # black hole: DNS resolves and plain HTTP works, while anything with a
+      # full-sized packet in it (every TLS handshake, so every `gh`, `claude`
+      # and `git clone`) hangs and then resets. It looks like a broken token or
+      # a broken registry, and it is neither.
+      #
+      # So set DOCKER_MTU in .env to the host's egress MTU
+      # (`ip route get 1.1.1.1` names the interface; `ip link show <if>` gives
+      # its MTU) whenever that is below 1500. The default changes nothing on a
+      # node whose network is ordinary.
+      com.docker.network.driver.mtu: ${DOCKER_MTU:-1500}
+
 volumes:
   # Cycle records, logs, locks, the published dashboard — the node's memory of
   # what it has done. Phase E of the migration makes this the thing that syncs

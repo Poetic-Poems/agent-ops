@@ -1048,7 +1048,10 @@ What exists, and the requirements each part answers to:
    so a stage never depends on context it wasn't given.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
-   stage transcripts), and how to uninstall.
+   stage transcripts), and how to uninstall. It presents the container as the
+   way a node runs and points at the runbook for the detail; the host install
+   and the WSL SysV dashboard service remain documented as the laptop's legacy
+   path, which must keep working until it is cut over.
 6. The crontab line, e.g.
    `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`,
    with `AGENT_OPS_ROLE=active` set in the crontab's environment on the node
@@ -1056,7 +1059,11 @@ What exists, and the requirements each part answers to:
 7. `deploy/docker/` — the node image and the node stack (see "The node image"
    and "The node stack" above): `Dockerfile`, `entrypoint.sh`, `crontab` and the
    minimal `claude-settings.json` seed; `compose.yaml`, `ts-serve.json` and
-   `.env.example`. The container crontab is the schedule component 6 describes,
+   `.env.example`; and the node runbook `deploy/docker/README.md` with the
+   unattended `cloud-init.yaml` that performs its first three steps. The
+   runbook is the operator-facing counterpart to those two sections: bring-up,
+   everyday commands, updating, changing a node's role, the failover drill and
+   a symptom-to-cause table. The container crontab is the schedule component 6 describes,
    expressed for a node; both exist because the laptop still runs the host-cron
    path.
 8. `deploy/agent-ops-dashboard.init` and `deploy/tailscaled.init` — the legacy
