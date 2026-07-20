@@ -30,12 +30,12 @@ lck="$logdir/dashboard.lck"
 mkdir -p "$logdir"
 
 while (( EPOCHSECONDS < endat )); do
-  github=--no-github
+  github=(--no-github)
   sleep $(( 5 - EPOCHSECONDS % 5 ))
-  (( EPOCHSECONDS % 300 < 5 )) && github=
+  (( EPOCHSECONDS % 300 < 5 )) && github=()
   # -E 111: distinguish "another publish holds the lock" (skip, don't stack
   # up) from a genuine publish failure, and leave a trace so a stuck lock
   # doesn't look like a quiet system.
-  flock -n -E 111 "$lck" "$cmd" $github >>"$log" 2>&1
+  flock -n -E 111 "$lck" "$cmd" "${github[@]}" >>"$log" 2>&1
   (( $? == 111 )) && printf '%(%Y-%m-%dT%H:%M:%S%z)T skipped: publish already running\n' -1 >>"$log"
 done
