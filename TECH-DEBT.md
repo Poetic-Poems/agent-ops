@@ -69,6 +69,21 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
+### TD26072002 The node image is amd64-only
+
+`deploy/docker/Dockerfile` fetches a pinned `supercronic-linux-amd64` release
+binary and verifies its SHA-1, so the image builds and runs on x86-64 only.
+Every node today is x86-64 (the laptop under WSL2 and the intended cloud VMs),
+so nothing is blocked — but an arm64 VM (often the cheaper instance class) or an
+Apple-silicon machine cannot build or run it, and the failure would be a
+mid-build checksum mismatch rather than a clear message.
+
+Fix: select the release asset and its checksum from `TARGETARCH` in a
+multi-platform build (`docker buildx build --platform linux/amd64,linux/arm64`),
+and publish a manifest list from CI. Everything else in the image is already
+architecture-independent — Ubuntu, NodeSource and the GitHub CLI apt repository
+all publish arm64.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -81,3 +96,4 @@ above.
 |----|-------|--------|----------|-----|
 | TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | resolved | 2026-07-14 | #11 |
 | TD26072001 | shellcheck not clean at info level on two scripts | resolved | 2026-07-20 | #38 |
+| TD26072002 | The node image is amd64-only | open | | |

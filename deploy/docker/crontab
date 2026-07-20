@@ -1,0 +1,24 @@
+# deploy/docker/crontab — the pipeline schedule inside a node, run by
+# supercronic (the scheduler service). Five-field cron format; the shell that
+# runs each command inherits this container's environment, so $LOGDIR below is
+# the one set here.
+#
+# It replaces the laptop crontab's pipeline lines and nothing else: the
+# personal update-main-branches.sh entry is deliberately absent, because it
+# refreshes the owner's interactive checkouts and a node has none — the cycles
+# clone their targets fresh from GitHub every time.
+#
+# The redirections match the laptop's so the dashboard's log-derived views
+# keep working: cron.log and review-cron.log live in state_dir and are read
+# back by scripts/publish-dashboard.sh.
+#
+# Whether the cycle lines do anything at all is decided by AGENT_OPS_ROLE
+# (requirement 2.4): on a standby node each one writes a single line to its log
+# and exits. The schedule is therefore identical on every node, and failing
+# over is a matter of changing one variable, not editing this file.
+
+LOGDIR=/home/agent/.local/state/poetic-agents
+
+*/5 * * * *  /app/scripts/publish-dashboard-launcher.sh
+0   * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
+29  3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1

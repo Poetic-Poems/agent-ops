@@ -72,7 +72,9 @@ done
 # leaves nothing behind but the cron-log line. Checked before the config is
 # read; --dry-run and --once bypass it.
 if ! (( DRY_RUN || ONCE )) && ! role_is_active; then
-  printf '%s %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(role_skip_message review-cycle)"
+  # The trailing newline is added here because command substitution eats the
+  # one role_skip_message prints, and a cron log wants whole lines.
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(role_skip_message review-cycle)"
   exit 0
 fi
 

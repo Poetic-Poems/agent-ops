@@ -483,6 +483,12 @@ standing the pipeline up on a new machine.
    (the review defers to a running cycle anyway, per R3). The crontab
    environment must also set `AGENT_OPS_ROLE=active` on the node that is to run
    the reviews (R2b); without it every tick stands down.
+
+   On a containerised node this entry is not installed by hand at all: it is
+   the third line of `deploy/docker/crontab`, which the scheduler service runs
+   under supercronic (see the node image section of
+   `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). The role variable comes from the
+   node's `.env` there rather than from a crontab line.
 3. The shared prerequisites of `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the standalone `claude`
    CLI, cron enabled under WSL, `gh` authenticated with push access) are
    already satisfied by the implementation pipeline; nothing further is needed.

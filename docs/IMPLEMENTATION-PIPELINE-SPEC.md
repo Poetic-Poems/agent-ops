@@ -57,6 +57,45 @@ cron (hourly)
 - Headless `claude -p` invocations authenticate with the user's existing
   Claude subscription login; `gh` uses its existing token. No new keys.
 
+### The node image (`deploy/docker/`)
+
+The same pipeline also runs from a container image, so a node can be a cloud VM
+as readily as the laptop. The image is the *only* deployment artefact: it is
+built from this repository, `/app` inside it **is** the deployed agent-ops, and
+a node updates by pulling a new image rather than by pulling a branch.
+
+- Base `ubuntu:24.04`, non-root user `agent` (uid/gid from the `PUID`/`PGID`
+  build args, default 1000) with `HOME=/home/agent`, so `config.json`'s
+  `~`-relative `state_dir` and `workspace_root` resolve under that home.
+- Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils` and
+  `flock`; `gh` from GitHub's apt repository (the distro package is too old for
+  the flags the pipelines use); Node.js from NodeSource at the same major as
+  the laptop; the `claude` CLI from `@anthropic-ai/claude-code`; and
+  `supercronic`, a pinned release binary verified by SHA-1, which runs the
+  container's crontab as an ordinary process with no cron daemon and no root.
+- `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
+  idempotent: it seeds `~/.claude/settings.json` from
+  `deploy/docker/claude-settings.json` **only when absent** (that directory is a
+  persistent volume holding refreshing OAuth credentials, and the seed carries
+  model/effort defaults only — no plugins and no local marketplaces), sets the
+  git identity from `GIT_USER_NAME`/`GIT_USER_EMAIL`, runs `gh auth setup-git`
+  when `GH_TOKEN` is present so https pushes authenticate, creates `state_dir`
+  and `workspace_root`, and then execs the service it was given. It refuses to
+  start if `state_dir` is not writable, rather than letting a mis-owned volume
+  become a silent failure to record anything.
+- `deploy/docker/crontab` carries the same three pipeline schedules as the
+  laptop crontab — the 5-minute dashboard heartbeat, the hourly cycle, the daily
+  review tick — with the same redirections into `state_dir`, so the dashboard's
+  log-derived views work identically. It deliberately omits the laptop's
+  personal `update-main-branches.sh` entry: that refreshes interactive
+  checkouts, and a node has none.
+- Nothing host-specific and nothing secret is baked in. `GH_TOKEN`, the Claude
+  credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
+  and a node that is not `active` (requirement 2.4) costs nothing but its
+  cron-log lines.
+- The image is x86-64 only, because the pinned `supercronic` asset is
+  (`TECH-DEBT.md`, TD26072002).
+
 ### Target repositories
 
 | Repo | GitHub | Work sources, in priority order |
@@ -896,6 +935,12 @@ What exists, and the requirements each part answers to:
    `0 * * * * $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh >> $HOME/.local/state/poetic-agents/cron.log 2>&1`,
    with `AGENT_OPS_ROLE=active` set in the crontab's environment on the node
    that is to run the cycles (requirement 2.4).
+7. `deploy/docker/` — the node image (see "The node image" above): `Dockerfile`,
+   `entrypoint.sh`, `crontab` and the minimal `claude-settings.json` seed. The
+   container crontab is the schedule component 6 describes, expressed for a
+   node; both exist because the laptop still runs the host-cron path.
+8. `deploy/agent-ops-dashboard.init` and `deploy/tailscaled.init` — the legacy
+   WSL SysV path for the laptop, superseded on a containerised node.
 
 ## Acceptance checks
 
@@ -903,6 +948,13 @@ Every change to the system must leave all of these passing; before opening a
 pull request, run the ones the change touches and any it could regress.
 
 1. `shellcheck agent-cycle.sh scripts/*.sh lib/*.sh` is clean.
+1b. **The image builds and carries the whole toolchain.**
+   `docker build -f deploy/docker/Dockerfile -t agent-ops .` succeeds, and
+   inside it, as user `agent`: `bash`, `git`, `jq`, `curl`, `python3`, `perl`,
+   `flock`, `sha256sum`, `node`, `claude`, `gh` (≥ 2.60) and `supercronic` all
+   resolve; `supercronic -test /app/deploy/docker/crontab` reports the crontab
+   valid; the `test/` suite passes inside the container; and `/app/agent-cycle.sh`
+   with no role set exits 0 through the requirement 2.4 guard.
 1a. **The role guard holds in both directions.** `test/role.test.sh` passes:
    every value that is not `active` stands the node down with a cron-log line,
    exit 0 and nothing written under `state_dir`; `--dry-run`, `--once` and the

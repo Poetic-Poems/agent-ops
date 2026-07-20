@@ -232,7 +232,12 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 - `scripts/open-dashboard.sh` — regenerate + open in the browser.
 - `scripts/serve-dashboard.sh` — optional loopback-only server (`file://`
   fallback). It writes no log of its own: whatever supervises it captures its
-  output. `deploy/agent-ops-dashboard.init` (the legacy WSL SysV path) sends
+  output — a container runtime keeps it in the service's logs, and on the
+  legacy WSL path the init script redirects it (below). Its `127.0.0.1` bind is
+  a requirement, not an accident, and it constrains how a container may expose
+  it: publishing a port to a container whose server binds loopback reaches
+  nothing, so remote access is arranged around the bind (a shared network
+  namespace with a Tailscale sidecar) rather than by widening it. `deploy/agent-ops-dashboard.init` (the legacy WSL SysV path) sends
   that output to `<state_dir>/dashboard-server.log`, so every artefact the
   dashboard produces lands under `state_dir` and nothing is written beside the
   checkout. All of its settings (`RUNAS`, `RUNHOME`, `APPDIR`, `PORT`,

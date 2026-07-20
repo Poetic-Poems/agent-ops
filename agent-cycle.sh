@@ -132,7 +132,9 @@ fi
 # node. Not bypassed by --repo alone: that flag narrows an otherwise ordinary
 # cycle.
 if [[ -z "$MANAGE_ACTION" ]] && ! (( DRY_RUN || ONCE )) && ! role_is_active; then
-  printf '%s %s' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(role_skip_message agent-cycle)"
+  # The trailing newline is added here because command substitution eats the
+  # one role_skip_message prints, and a cron log wants whole lines.
+  printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$(role_skip_message agent-cycle)"
   exit 0
 fi
 

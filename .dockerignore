@@ -1,0 +1,11 @@
+# The image is a deployment of this repository, not a copy of a working tree:
+# history, editor droppings and anything a local run generated stay out.
+.git
+.gitignore
+.githooks
+.github
+node_modules
+*.log
+.env
+.env.local
+dashboard/data.js
