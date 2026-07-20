@@ -136,7 +136,9 @@ while IFS= read -r pr; do
               --jq '[.[] | select(.submitted_at != null)
                          | {id, state, at: .submitted_at, who: .user.login, body: (.body // "")}]' \
               2>/dev/null || true)"
-  [[ -n "$reviews" ]] && jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || continue
+  if [[ -z "$reviews" ]] || ! jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1; then
+    continue
+  fi
 
   # Only reviews *after* the head commit are unaddressed. An older round was
   # answered by the commit that superseded it, and replaying it would ask the
