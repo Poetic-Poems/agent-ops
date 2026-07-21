@@ -143,6 +143,12 @@ file and carries placeholders only; `.env` itself is never committed.
   (the OAuth credentials, which refresh themselves and cannot be rebuilt from
   the image), and `workspaces`. A node updates by replacing its containers;
   these are what it keeps.
+- The dashboard service of either profile `depends_on` the scheduler. Both mount
+  the `state` volume, and on a node's first start that volume is empty and is
+  seeded from the image's mount point; two containers seeding it at once race,
+  and one aborts the `up` with `mkdir … /cycles: file exists`. The dependency
+  routes the first-run seed through a single container. On every later start the
+  volume already exists, so it only orders startup.
 
 ### Target repositories
 

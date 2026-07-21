@@ -100,8 +100,15 @@ services:
     # container has no network stack of its own. It reaches the tailnet, and is
     # reached, only through the sidecar above.
     network_mode: service:tailscale
+    # Wait for the scheduler as well as the sidecar. On a node's first start the
+    # shared `state` volume is empty and Docker seeds it from the image's mount
+    # point; two containers seeding the same fresh volume at once race, and one
+    # loses with `mkdir … /cycles: file exists`, aborting the whole `up`. Letting
+    # the scheduler seed it first makes that impossible. On every later start the
+    # volume already exists, so this only orders startup.
     depends_on:
       - tailscale
+      - scheduler
 
   # --- local profile -----------------------------------------------------
   # The same dashboard for a node with no tailnet. It uses the host's network
@@ -116,6 +123,11 @@ services:
     profiles: [local]
     command: ["/app/scripts/serve-dashboard.sh", "${DASHBOARD_PORT:-8787}"]
     network_mode: host
+    # Depend on the scheduler so the shared `state` volume is seeded by one
+    # container on a node's first start, not two at once. See the `dashboard`
+    # service above for why.
+    depends_on:
+      - scheduler
 
   # --- auto-update profile -----------------------------------------------
   # How a node picks up new code: CI builds an image from main, watchtower
