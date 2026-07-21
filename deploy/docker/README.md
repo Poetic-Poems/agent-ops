@@ -210,6 +210,7 @@ when it returns.
 | Symptom | Cause | Fix |
 |---|---|---|
 | A service restart-loops with `... is not writable by agent` | A volume created by an older image, or bind-mounted from another uid | `docker compose down -v` if losing it is acceptable, or rebuild with `--build-arg PUID=<owner>` |
+| A fresh node's first `up` aborts with `mkdir … /cycles: file exists` | Two services seeding the same new `state` volume at once — the current `compose.yaml` prevents this by starting the dashboard after the scheduler, so you only see it on a compose file fetched before that fix | `docker compose down -v`, then `docker compose up -d scheduler` before `docker compose up -d` |
 | Every cycle fails at its first stage | Claude was never authenticated on this node | Step 4 above |
 | `WARNING: GH_TOKEN is unset` | No token in `.env` | Add it; this node can otherwise neither read nor push anything |
 | `cannot clone …agent-ops-state` | The token cannot read the private state repo | Widen the token's repository access |
