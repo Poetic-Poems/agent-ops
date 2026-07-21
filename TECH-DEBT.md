@@ -153,6 +153,28 @@ the recorded blocker no longer holds). Failing that, document
 supersede-with-a-fresh-id as the canonical unblock path, so the next
 person doesn't burn cycles posting evidence to a thread nothing reads.
 
+### TD26072102 No sanctioned way to watch a node's cycle events from outside
+
+Observing a running node — cycle starts, selections, PRs raised, stand-downs
+— currently means knowing to run
+`docker compose exec -T scheduler tail -f /home/agent/.local/state/poetic-agents/log.jsonl`
+(or `cron.log`) from the node's stack directory, an incantation that appears
+only in worked examples in the cutover checklist. Interactive AI agents hit
+permission friction on it: each user must allow-list the docker-exec command
+per machine (done on Ockham 2026-07-21, in that workspace's Claude settings
+— which travels to no other machine, node, or teammate), and a permission
+classifier may still deny ad-hoc variants, as one did mid-rehearsal. Humans
+on a fresh host have nothing discoverable at all. The dashboard renders
+cycle state but is not a substitute for following events as they happen.
+
+Fix: a small read-only wrapper, e.g. `scripts/watch-node.sh [cron|events]
+[-f]`, that resolves the stack directory and runs the exec/tail itself;
+document it in the README and cutover checklist. Agents and humans then
+share one discoverable entry point, and an allow-list rule covers the one
+script rather than a docker incantation. Alternatively (or additionally),
+extend the dashboard to stream recent events, which would remove the need
+for a CLI path for humans.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -169,3 +191,4 @@ above.
 | TD26072003 | The local dashboard profile needs Linux host networking | open | | |
 | TD26072004 | An active node's state_dir grows without bound | open | | |
 | TD26072101 | A blocked item's new evidence can never unblock it | open | | |
+| TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
