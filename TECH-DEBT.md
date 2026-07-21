@@ -128,6 +128,31 @@ does this machine keep?" against "how much do we ship to every node?") — run
 from the same cleanup that pushes, and generous enough that the local copy stays
 the longer record of the two.
 
+### TD26072101 A blocked item's new evidence can never unblock it
+
+The Co-Ordinator reconstructs blocked and void state from cycle-history
+events keyed by item id, honouring a blocked marker until a later
+`unblocked` event. But nothing makes it re-read the underlying item when
+that item changes: source-state carries each open issue's `updated_at`
+(so the change busts the no-op fingerprint and a cycle *runs*), yet the
+Co-Ordinator repeats the historical verdict without revisiting the thread
+the marker was minted from.
+
+Observed 2026-07-21: poetic-fiddle issue #52 (a live production 500) was
+reopened with a complete in-thread diagnosis — the very evidence its
+"blocked awaiting Sentry/Vercel logs" marker said was missing. The 11:00Z
+Co-Ordinator reported "one open issue (#52) but it's blocked" and selected
+other work; `unblocked` stayed empty. The workaround (which is also the
+spec's regression path) was to close #52 and re-file the work under a
+fresh id (poetic-fiddle #86), which no marker covers.
+
+Fix: in `prompts/coordinator.md`, require that when a blocked item's
+`updated_at` is newer than the event that blocked it, the Co-Ordinator
+re-reads the item before honouring the marker (and emits `unblocked` when
+the recorded blocker no longer holds). Failing that, document
+supersede-with-a-fresh-id as the canonical unblock path, so the next
+person doesn't burn cycles posting evidence to a thread nothing reads.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -143,3 +168,4 @@ above.
 | TD26072002 | The node image is amd64-only | open | | |
 | TD26072003 | The local dashboard profile needs Linux host networking | open | | |
 | TD26072004 | An active node's state_dir grows without bound | open | | |
+| TD26072101 | A blocked item's new evidence can never unblock it | open | | |
