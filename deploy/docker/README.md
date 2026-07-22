@@ -203,6 +203,31 @@ docker compose down -v         # discards them, including the Claude login
 published at the end of its last cycle — but it does mean a fresh Claude login
 when it returns.
 
+### A second node on one host
+
+Two stacks share a machine happily — it is how a second active node is soaked
+before any VM exists. The one rule: a different `COMPOSE_PROJECT_NAME`, or the
+two stacks silently share volumes and fight over one identity.
+
+```bash
+mkdir ~/poetic-node-2 && cd ~/poetic-node-2
+# compose.yaml + .env as in "Bring up a node", then in .env:
+#   COMPOSE_PROJECT_NAME=agent-ops-2   # distinct volumes — non-negotiable
+#   NODE_NAME=<host>-2                 # its own name, its own state branch
+#   GH_TOKEN=<its own PAT>             # one token per node, so one node can be revoked
+#   DASHBOARD_PORT=8789                # the first node has 8787
+#   ROLE=standby                       # promote only after the checks below
+docker compose up -d
+docker compose exec scheduler claude   # authenticate once, then exit
+```
+
+Before setting `ROLE=active` on the newcomer: `docker compose images` in
+**both** directories — the two nodes must run the same image digest (a claim
+scheme only arbitrates between nodes that share it); then watch the fleet
+strip on either dashboard until the new node's heartbeat shows. `CYCLE_MINUTE`
+can stay unset — the hash default already lands the two nodes on different
+minutes.
+
 ---
 
 ## When it misbehaves
@@ -215,8 +240,9 @@ when it returns.
 | `WARNING: GH_TOKEN is unset` | No token in `.env` | Add it; this node can otherwise neither read nor push anything |
 | `cannot clone …agent-ops-state` | The token cannot read the private state repo | Widen the token's repository access |
 | `gh auth status` says the token is invalid, but the same token works on the host; `git clone` resets; `claude` hangs | The bridge MTU exceeds the host's egress MTU — full-sized packets vanish, so every TLS handshake fails while DNS and plain HTTP still work | Set `DOCKER_MTU` in `.env` to the host's egress MTU and `docker compose up -d` |
-| The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on exactly one node |
+| The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on any node that should spend — several may be |
 | A cycle logs `claim-lost` and moves on | A peer node won that item's claim | Working as intended — the next candidate (or the next cycle) picks different work |
+| A cycle died mid-run around an image update | watchtower (or a manual `up -d`) recreated the scheduler while a cycle was running — the roll kills the whole process group (TD26072301) | Nothing to repair: the lock is taken over as stale next hour and the claim GC releases anything it held. But before any *manual* `docker compose up -d`, run `--status` and wait for a running cycle to finish |
 | The dashboard URL times out | The server binds `127.0.0.1`, so a published port reaches nothing | Use the `tailnet` profile (sidecar namespace) or `local` (host namespace) — never `ports:` |
 | `Address already in use` on the `local` profile | Something already holds the port on that host — on the laptop, the legacy SysV dashboard | Set `DASHBOARD_PORT` in `.env` |
 | Nothing happens on any node | The shared switch is set | `--status` to see the reason, `--enable` to clear it |
