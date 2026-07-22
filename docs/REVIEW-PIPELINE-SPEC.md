@@ -255,7 +255,9 @@ R2c. **The fleet's memory and state publication.** After the lock and before
    The review needs this for the same reason the implementation cycle does: it
    spends, and two nodes reviewing the same repositories would open competing
    review pull requests. R4's skip-guard would not save them — two nodes
-   starting within the same minute both see no open review PR.
+   starting within the same minute both see no open review PR. The
+   review-branch claim (R5.0) is what closes that window: the second node
+   loses the create-ref and skips the repo before cloning anything.
 
 R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
    enforced).** For each configured repo, skip it *this run* when **either**:
@@ -275,6 +277,24 @@ R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
 
 R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
    never blocks the other and only one heavy `claude` runs at a time):
+   0. *Claim the review branch* (R5c; implementation spec requirement 17a).
+      `review/<review_date>` is a date-only name: every active node computes
+      the same one on the same day, and without a lock the loser discovers
+      the collision only after spending a full model review — at push time.
+      Before anything expensive, claim the branch through `lib/claim.sh`
+      (`claim branch <slug> review/<date> <default_branch>`): one create-ref,
+      which GitHub 422s for the second caller even at the same SHA, plus the
+      registry entry that back-pressure, the dashboard and gc read
+      (`CLAIM_SOURCE=project-review`). A lost claim logs `review-skipped`
+      ("already claimed by another node"); a claim *error* also skips the
+      repo, fail closed — a node that cannot reach GitHub to claim could not
+      have pushed a review either. Releases mirror the implementation
+      pipeline's hooks: a failed clone or failed reviewer releases fully
+      (`release branch` — the ref is deleted only if it is unmoved **and**
+      no open PR uses it, so a review the model pushed before dying
+      survives, as does an abandoned-but-open PR); a raised PR releases the
+      registry entry only (`release file` — the PR supersedes the claim and
+      the branch is its head). `--dry-run` exits before any claim.
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
       clone the repo fresh from GitHub — the multi-agent ways-of-working rule
       shared by all Poetic repositories: every agent works in its own
@@ -484,6 +504,15 @@ a pull request, run the ones the change touches and any it could regress.
    fleet switch, so `test/toggle.test.sh`'s offline e2e runs the real
    `review-cycle.sh` against a set `fleet/disabled.json` and asserts the
    `review-stand-down` names it.
+4d. **The review-branch claim gates the review (R5.0).**
+   `test/review-claim.test.sh` passes: against a stubbed `lib/claim.sh` seam
+   (`CLAIM_GH`) and a fail-fast `gh`, a *lost* claim logs `review-skipped`
+   naming another node and never attempts a clone; a claim *error* skips the
+   same way, fail closed; a *won* claim proceeds (the stub records
+   `claim branch <slug> review/<date> <default-branch>` in that order), and
+   when the clone then fails, `release branch` is invoked for the same key —
+   the leak the implementation pipeline fixed in its own workspace path
+   (#55) must not be reintroduced here.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `TECH-DEBT.md`
    change but **not** `.claude/skills/project-review/` — confirm the injected
