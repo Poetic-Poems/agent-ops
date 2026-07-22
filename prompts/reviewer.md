@@ -33,11 +33,12 @@ read/write access within this clone: edit files, run the toolchain, commit,
 push, use `git` and `gh` freely.
 
 **The only branch this system protects is `default_branch`.** Never commit
-or push to it. The PR's own branch (`branch` above, under `branch_prefix`,
-`agent/`) is entirely at your disposal — commit, amend, rebase onto the
-current `default_branch`, or force-push it as you judge best; nothing about
-this branch needs preserving for its own sake. Do not touch any other
-branch.
+or push to it. The PR's own branch (`branch` above — `td/<ID>` for
+tech-debt, `agent/<item-ref>` otherwise) is entirely at your disposal —
+commit, amend, rebase onto the current `default_branch`, or force-push it
+as you judge best; nothing about its *contents* needs preserving for its
+own sake, but never rename or delete it — its name is the fleet-wide claim
+on this item. Do not touch any other branch.
 
 ## Long-running commands
 

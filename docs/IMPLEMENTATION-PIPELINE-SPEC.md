@@ -251,7 +251,9 @@ values below are the confirmed defaults; the README must document each key.
 | `reviewer_model` | `claude-sonnet-5` | |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `max_open_agent_prs` | `3` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos. |
+| `max_open_agent_prs` | `3` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
+| `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
+| `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 30 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
@@ -295,9 +297,13 @@ runs unattended.
    1. *Usage-limit cooldown*: if the shared log's most recent `limit-hit`
       event has a `resume_at` still in the future, stand down.
    2. *Back-pressure*: if the number of open PRs labelled `pr_label` across
-      all configured repos (drafts included) is ≥ `max_open_agent_prs`,
-      stand down. This is the primary throttle on both spend and on the
-      human gate silting up.
+      all configured repos (drafts included), **plus the live claim-registry
+      entries for those repos** (requirement 17a — work a node has claimed
+      but not yet surfaced as a PR; each entry is dropped the moment its PR
+      exists), is ≥ `max_open_agent_prs`, stand down. This is the primary
+      throttle on both spend and on the human gate silting up. The count is
+      approximate by design: N nodes can pass it simultaneously, so the
+      stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirement 3c). If back-pressure has tripped *and* any `review_feedback`
@@ -757,7 +763,12 @@ runs unattended.
       followed by an `unblocked` event for that item);
     - a tech-debt item whose Ledger row is `in-progress`;
     - already referenced by any open PR or draft (a claim, per the repos'
-      claiming workflow) — for a `security`/`code-quality` finding, that means
+      claiming workflow), or already held by a live **claim branch** on the
+      target repository (`td/<ID>` or `agent/<item-ref>` existing on origin —
+      a peer node's claim that has not yet surfaced as a draft PR; the
+      Script's own atomic claim in requirement 17a is the hard gate, this
+      exclusion merely avoids proposing work that will lose the race) — for
+      a `security`/`code-quality` finding, that means
       an open PR whose branch or body already references the same alert
       (`ref`, alert URL, or the affected package/rule); for a `project-review`
       recommendation, an open PR whose branch or body references its ref
@@ -790,12 +801,56 @@ runs unattended.
       packaging decision in its implementation plan — while that decision
       is open, M2 tasks do not meet the bar. Decisions belong to the human;
       never attempt to make one.)
-17. From the remaining candidates, selects the first that is a stand-alone
-    unit of work, clearly scoped, and adequately refined. Do not guess: if
-    in doubt about an item, skip it. If nothing in the current category
+17. From the remaining candidates, ranks the qualifying items best-first and
+    returns up to `candidates_max` of them, each a stand-alone unit of work,
+    clearly scoped, and adequately refined; the ranking preserves the
+    priority walk, and the alternates exist because a peer node may win the
+    claim on the first choice — not to lower the bar. Do not guess: if in
+    doubt about an item, skip it. If nothing in the current category
     qualifies, fall through to the next category, then the next repo. Only
     after exhausting all repos does it return `{"selected": false}` with a
     one-line reason.
+17a. **The claim.** The Script — never the model — takes an atomic per-item
+    claim before the Implementor starts, walking the ranked candidates in
+    order and handing the first successful claim onward (`lib/claim.sh`).
+    The primitive is create-only, so GitHub arbitrates every race:
+    - *Branch claims* (every source except `review-feedback`): a REST
+      create-ref (`POST /git/refs`) on the target repository at the default
+      branch's head. The claim branch **is** the working branch, derived
+      deterministically so every node computes the same name for the same
+      item: `td/<ID>` for tech-debt — the same lock the human claiming
+      workflow in TECH-DEBT.md takes, so agents and humans contend safely —
+      and `agent/<item-ref>` for everything else. A 422 (ref exists, even at
+      the same SHA — which a plain `git push` of an identical ref would
+      no-op) means a peer holds the item: log `claim-lost` and move to the
+      next candidate.
+    - *File claims* (`review-feedback`, which amends an existing PR and has
+      no new branch to create): a create-only contents-API PUT (no `sha`) of
+      `claims/<repo>/<ref>.json` in the state repository.
+    - Every won claim also writes a best-effort **registry entry** at
+      `claims/<repo>/<key>.json` in the state repository — the lock is the
+      ref or file above; the registry is what back-pressure counts (2.2)
+      and what gc sweeps — recording the base SHA, node, cycle, item and
+      timestamp.
+    - *Release*: an open PR supersedes the claim — the registry entry is
+      dropped the moment `pr-raised` is logged, and the branch lives on as
+      the PR's head. Every path that ends the cycle without a PR (a void
+      verdict, a blocked verdict with no PR, a stage failure or timeout)
+      releases fully; a claim branch is deleted **only** when it still
+      points at the SHA the claim recorded and no open PR uses it — pushed
+      work is never deleted. Entries older than `claim_ttl_hours` are swept
+      by `lib/claim.sh gc` under the same only-if-untouched rule (a node
+      that died mid-cycle must not hold its item forever).
+    - Claims **fail closed** per candidate: any outcome other than a won
+      claim (a lost race, or GitHub unreachable) moves to the next
+      candidate, and a cycle whose every candidate is lost stands down with
+      reason "every candidate is already claimed elsewhere". A node that
+      cannot reach GitHub to claim could not have pushed the work either.
+    - When `state_repo` is unset (a single-node operation), file claims are
+      vacuously won and the registry is skipped; branch claims still work.
+    - `--dry-run` claims nothing. `--once` claims exactly like an unattended
+      cycle: a supervised run contends with the fleet on equal terms, which
+      closes the race the lease never covered.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -814,7 +869,16 @@ runs unattended.
     the item can be completed without changing any file that affects runtime
     behaviour (docs, comments, register entries); otherwise
     `implementor_model_default`. Records the reasoning.
-20. Emits a work order as its entire final message. `source` is one of
+20. Emits its entire final message as one JSON object: `selected`,
+    `unblocked`, `voided`, and a ranked `candidates` array of up to
+    `candidates_max` work orders (the Script accepts the former
+    single-selection shape — the work-order fields at the top level — for
+    one release, treating it as a one-candidate list). Candidates carry no
+    `branch`: the Script derives and injects the claim branch (requirement
+    17a), except for `review-feedback`, whose `branch` is the PR's existing
+    branch carried from the entry. For a `failed-runs` entry, `item` is
+    `failed-run-` plus the workflow file's basename without extension —
+    deterministic, so every node derives the same claim key. `source` is one of
     `security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`,
     `implementation-plan`, `project-review`, or `code-quality`. For a
     `review-feedback` entry, `item` is its `ref`, `branch` is the PR's
@@ -867,9 +931,11 @@ runs unattended.
     they finish. A command too slow to wait out within the stage timeout is
     grounds for `"status": "blocked"`, not an early, hopeful end of turn.
 22. Runs inside the cycle's clone. First reads the repo's `CLAUDE.md` and
-    obeys it throughout. Creates the branch named in the work order from the
-    default branch.
-23. **Claims before implementing.** Opens a draft PR immediately, labelled
+    obeys it throughout. Checks out the branch named in the work order —
+    already created on origin by the Script as the item's claim (requirement
+    17a) — and never creates, renames, or deletes a branch of its own.
+23. **Makes the claim visible before implementing.** The branch is the
+    lock, but humans read PRs, not refs: opens a draft PR immediately, labelled
     `pr_label`, with a Conventional-Commits title (it will become the squash
     commit on `main`) and a body giving the item reference and planned
     approach. Immediately records the PR's URL at `.git/agent-ops-pr-url` in
@@ -947,9 +1013,11 @@ runs unattended.
     appended only by the Script (agents report via their final messages; the
     Script translates those into log events). The lock in requirement 1
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
-    `stand-down`, `selection`, `none-selected`, `stage-start`, `stage-end`,
-    `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`, `item-void`,
-    `unvoided`, `limit-hit`, `disabled`, `enabled`, `warning`, `cycle-end`.
+    `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
+    `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
+    `item-void`, `unvoided`, `limit-hit`, `disabled`, `enabled`, `warning`,
+    `cycle-end`. A `claim-lost` names the repo, item and branch a peer node
+    won (requirement 17a); `selection` carries the claimed `branch`.
     Common fields: ISO-8601 `ts`, `cycle` id, `node`, `event`, and where
     applicable `repo`, `item`, `pr_url`, `model`, `detail`. The cycle id is
     `<UTC-timestamp>-<node>-<pid>` — the node's `NODE_NAME` (hostname when
@@ -1049,6 +1117,13 @@ What exists, and the requirements each part answers to:
    that cannot replicate is still a node that can run. Unit-tested against a
    local bare repository and a stubbed `gh` (`test/state-sync.test.sh`); must
    pass `shellcheck`.
+3e. `lib/claim.sh` implementing requirement 17a: `claim` (kinds `branch` and
+   `file`), `release`, `count` and `gc`, exit codes 0 won/done, 3 lost, 1
+   error. Called by `agent-cycle.sh` (the claim loop after selection, the
+   release hooks on every no-PR ending, the `count` inside back-pressure).
+   `CLAIM_GH` substitutes a stub for tests, following `STATE_SYNC_GH`.
+   Unit-tested with concurrent-claim races against a filesystem-CAS stub
+   (`test/claim.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh` and `lib/role.sh`) holding every rule
    that more than one component computes — at minimum requirement 34's blocked

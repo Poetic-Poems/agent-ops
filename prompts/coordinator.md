@@ -282,7 +282,13 @@ referencing that review; match `R-NN` refs against it. When you select one,
 2. A tech-debt item whose Ledger row is `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
-   this item for. **This exclusion does not apply to the `review-feedback`
+   this item for. A live **claim branch** on the target repository is a
+   claim too, even before its draft PR appears: `td/<ID>` or
+   `agent/<item-ref>` existing on origin means a peer node holds the item —
+   one `git ls-remote origin 'refs/heads/td/*' 'refs/heads/agent/*'` per
+   repo shows them all. (The Script's own atomic claim is the hard gate;
+   this exclusion just saves you proposing work that will lose the race.)
+   **This exclusion does not apply to the `review-feedback`
    source**, where the open PR is the item itself (see "Review feedback").
    For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
@@ -304,12 +310,16 @@ referencing that review; match `R-NN` refs against it. When you select one,
    one on their behalf, and never treat "I could pick a reasonable default"
    as grounds to proceed.
 
-**From the remaining candidates**, select the first that is a stand-alone
-unit of work, clearly scoped, and adequately refined — small enough for one
-Implementor session, with enough detail (in the tech-debt entry, issue text,
-or plan item) that an Implementor won't have to invent requirements. If you
-are unsure whether an item clears this bar, skip it; do not select on a
-guess.
+**From the remaining candidates**, rank the qualifying items best-first and
+return up to `candidates_max` of them (see "Output"). Each must be a
+stand-alone unit of work, clearly scoped, and adequately refined — small
+enough for one Implementor session, with enough detail (in the tech-debt
+entry, issue text, or plan item) that an Implementor won't have to invent
+requirements. If you are unsure whether an item clears this bar, skip it;
+do not rank on a guess. Your ranking preserves the priority walk: an item
+found earlier in the source order outranks one found later, and the
+alternates exist because a peer node may win the claim on your first
+choice — not to lower the bar.
 
 If nothing in the current source qualifies, fall through to the next source
 in that repo; if nothing in that repo qualifies at all, fall through to the
@@ -372,22 +382,33 @@ turns, using tool calls; once you send your final message, that message
 itself must be nothing but the object — not a summary of what you found
 followed by the object.
 
-If you selected an item:
+If you selected work, return your ranked candidates — best first, up to
+`candidates_max` from the runtime input. The Script works down the list,
+claiming each candidate atomically against the other nodes and handing the
+first successful claim to the Implementor; the alternates cost nothing when
+the first claim succeeds, and save the whole cycle when a peer node got
+there first. Every candidate must clear the same bar as your first choice —
+an alternate you would not stand behind as the selection does not belong in
+the list, and one strong candidate alone is a perfectly good list.
 
 ```json
 {
   "selected": true,
-  "repo": "Poetic-Poems/poetic-fiddle",
-  "default_branch": "main",
-  "source": "tech-debt",
-  "item": "TD26051201",
-  "title": "one-line description",
-  "branch": "agent/td26051201-short-slug",
-  "model": "claude-sonnet-5",
-  "model_reason": "code change with tests",
-  "context": "everything the Implementor needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
-  "acceptance": "what done looks like, concretely",
-  "unblocked": []
+  "unblocked": [],
+  "voided": [],
+  "candidates": [
+    {
+      "repo": "Poetic-Poems/poetic-fiddle",
+      "default_branch": "main",
+      "source": "tech-debt",
+      "item": "TD26051201",
+      "title": "one-line description",
+      "model": "claude-sonnet-5",
+      "model_reason": "code change with tests",
+      "context": "everything the Implementor needs: the register entry, issue text, or finding verbatim, file paths, related conventions found while evaluating, why the item is unblocked and in scope",
+      "acceptance": "what done looks like, concretely"
+    }
+  ]
 }
 ```
 
@@ -415,10 +436,17 @@ If you selected an item:
   improvement prompt (from `04-improvement-prompts.md`) verbatim, plus the
   review folder path and the `R-NN` detail; set `acceptance` to the
   recommendation's *Intended end state*.
-- `branch` uses `branch_prefix` (`agent/`) followed by a short slug; include
-  the item ID where one exists (tech-debt ID, issue number, a finding's alert
-  number, or a review ref — e.g. `agent/dependabot-42-bump-postcss`,
-  `agent/review-2026-07-20-r03-short-slug`).
+- Do **not** choose a branch name. The Script derives and creates the claim
+  branch itself, deterministically — `td/<ID>` for tech-debt (the very lock
+  the human claiming workflow in TECH-DEBT.md takes, so agents and humans
+  contend safely) and `agent/<item-ref>` for everything else — and injects
+  it into the work order once the claim succeeds. The one exception is
+  `review-feedback`, whose `branch` is the PR's **existing** branch, carried
+  from the entry.
+- For a `failed-runs` entry, `item` is `failed-run-` plus the workflow
+  file's basename without its extension (e.g. `failed-run-build-poems` for
+  `.github/workflows/build-poems.yml`) — deterministic, so every node
+  derives the same claim key for the same failure.
 - `context` must be self-contained: paste the relevant text verbatim rather
   than referring to "the ticket" — the Implementor starts with nothing but
   this work order and the repo's own `CLAUDE.md`.

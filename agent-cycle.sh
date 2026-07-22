@@ -167,6 +167,7 @@ lock_stale_after_hours="$(cfg '.lock_stale_after')"
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours // 24')"
+candidates_max="$(cfg '.candidates_max // 3')"
 all_repos_json="$(cfg_json '.repos')"
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
@@ -265,6 +266,41 @@ log_attempt_failed() {
   local stage="$1" detail="$2" extra="${3:-{\}}"
   log_event "attempt-failed" \
     "$(item_event_fields "$stage" "$detail" "$selected_repo" "$selected_item" "$extra")"
+}
+
+# --- The claim this cycle holds (requirement 17a) ---
+# Set by the claim loop after selection; released on every path that ends the
+# cycle without an open PR. "have-pr" keeps the branch (the PR supersedes the
+# claim — its head must survive) and drops only the registry entry; "no-pr"
+# releases fully, and lib/claim.sh deletes a claim branch only if it is
+# exactly where the claim left it — pushed work is never deleted.
+claim_active=0
+claim_kind=""
+claim_key=""
+
+release_claim() {  # release_claim have-pr|no-pr
+  (( claim_active )) || return 0
+  if [[ "$1" == "have-pr" ]]; then
+    "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_key" \
+      >>"$cycle_dir/claim.log" 2>&1 || true
+  else
+    "$SCRIPT_DIR/lib/claim.sh" release "$claim_kind" "$selected_repo" "$claim_key" \
+      >>"$cycle_dir/claim.log" 2>&1 || true
+  fi
+  claim_active=0
+}
+
+# The claim/working branch is derived here, deterministically, never by the
+# model: two nodes must compute the same name for the same item or the lock
+# locks nothing. Tech-debt takes the human protocol's own `td/<ID>` — agents
+# and humans then contend on the same ref and git arbitrates; everything else
+# is `agent/<item-ref>`.
+claim_branch_for() {  # <source> <item>
+  local source="$1" item="$2"
+  case "$source" in
+    tech-debt) printf 'td/%s' "$item" ;;
+    *)         printf 'agent/%s' "${item//[^A-Za-z0-9._-]/-}" ;;
+  esac
 }
 
 # Requirement 34c: an item whose premise is false is void, not blocked. It goes
@@ -408,6 +444,9 @@ handle_stage_failure() {
   log_attempt_failed "$stage" "$detail"
   if [[ -n "$pr_url" ]]; then
     gh pr comment "$pr_url" --body "Autonomous agent ($stage) abandoned this PR: $detail. Left for human review." >/dev/null 2>&1 || true
+    release_claim have-pr
+  else
+    release_claim no-pr
   fi
 }
 
@@ -612,6 +651,18 @@ while IFS= read -r slug; do
   open_count=$(( open_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
+# Live claims count toward the cap too: a claim is work in flight that has
+# not yet surfaced as a PR (its registry entry is dropped the moment the PR
+# exists), and N nodes counting only PRs would collectively overshoot by the
+# work each other had claimed but not yet raised. Still approximate — two
+# nodes can pass this check simultaneously — with a stated bound of
+# max_open_agent_prs + (nodes - 1), transient.
+while IFS= read -r slug; do
+  n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" 2>/dev/null || echo 0)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  open_count=$(( open_count + n ))
+done < <(jq -r '.[].slug' <<<"$all_repos_json")
+
 backpressure_tripped=0
 if (( open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
@@ -715,7 +766,8 @@ selection_config_json="$(jq -nc \
   --arg cm "$coordinator_model" \
   --arg md "$implementor_model_default" \
   --arg mt "$implementor_model_trivial" \
-  '{coordinator_model: $cm, models: {default: $md, trivial: $mt}}')"
+  --argjson cmax "$candidates_max" \
+  '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}')"
 coordinator_prompt_sha="$(sha256sum "$PROMPTS_DIR/coordinator.md" | cut -d' ' -f1)"
 
 noop_input="$(jq -nc \
@@ -755,7 +807,10 @@ coordinator_input="$(jq -nc \
   --argjson void "$void_json" \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
-  '{repos: $repos, blocked: $blocked, void: $void, models: {default: $model_default, trivial: $model_trivial}}')"
+  --argjson cmax "$candidates_max" \
+  '{repos: $repos, blocked: $blocked, void: $void,
+    models: {default: $model_default, trivial: $model_trivial},
+    candidates_max: $cmax}')"
 
 # --- 4. Co-Ordinator stage ---
 coordinator_prompt="$(cat "$PROMPTS_DIR/coordinator.md")
@@ -816,13 +871,71 @@ if [[ "$selected" != "true" ]]; then
   exit 0
 fi
 
-selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
-selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
-log_event "selection" "$(jq -c '{repo, item, source, model, title}' <<<"$work_order_json")"
+# --- 5b. Candidates, and the claim (requirement 17a) ---
+# The Co-Ordinator returns a ranked candidate list; the former single-selection
+# shape is accepted for one release as a one-candidate list. The claim itself
+# is taken by the Script, never the model: keys are derived deterministically
+# (two nodes must compute the same name for the same item), the write is
+# create-only so GitHub arbitrates the race, and a lost race just moves down
+# the ranking instead of costing the cycle.
+if jq -e '.candidates | type == "array"' <<<"$work_order_json" >/dev/null 2>&1; then
+  candidates_json="$(jq -c '.candidates' <<<"$work_order_json")"
+else
+  candidates_json="$(jq -c '[del(.selected, .unblocked, .voided)]' <<<"$work_order_json")"
+fi
 
 if (( DRY_RUN )); then
+  # A dry run claims nothing: record the top of the ranking and stop.
+  log_event "selection" "$(jq -c '.[0] | {repo, item, source, model, title}' <<<"$candidates_json")"
   exit 0
 fi
+
+claimed_json=""
+n_cand="$(jq 'length' <<<"$candidates_json")"
+for (( ci = 0; ci < n_cand; ci++ )); do
+  cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
+  c_repo="$(jq -r '.repo // ""' <<<"$cand")"
+  c_item="$(jq -r '.item // ""' <<<"$cand")"
+  c_source="$(jq -r '.source // ""' <<<"$cand")"
+  c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
+  [[ -n "$c_repo" && -n "$c_item" ]] || continue
+  claim_rc=0
+  if [[ "$c_source" == "review-feedback" ]]; then
+    # No new branch to create — the PR already exists; the lock is a
+    # create-only registry file keyed on the feedback round.
+    claim_kind="file"; claim_key="$c_item"
+    c_branch="$(jq -r '.branch // ""' <<<"$cand")"
+    CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
+      "$SCRIPT_DIR/lib/claim.sh" claim file "$c_repo" "$c_item" \
+      >>"$cycle_dir/claim.log" 2>&1 || claim_rc=$?
+  else
+    c_branch="$(claim_branch_for "$c_source" "$c_item")"
+    claim_kind="branch"; claim_key="$c_branch"
+    CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
+      "$SCRIPT_DIR/lib/claim.sh" claim branch "$c_repo" "$c_branch" "$c_db" \
+      >>"$cycle_dir/claim.log" 2>&1 || claim_rc=$?
+  fi
+  if (( claim_rc == 0 )); then
+    claim_active=1
+    claimed_json="$(jq -c --arg b "$c_branch" '. + {branch: $b}' <<<"$cand")"
+    break
+  fi
+  # 3 = a peer holds it. Anything else fails closed for this candidate — a
+  # node that cannot reach GitHub to claim could not push the work either.
+  log_event "claim-lost" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg b "$c_branch" \
+    --argjson rc "$claim_rc" '{repo: $r, item: $i, branch: $b, rc: $rc}')"
+done
+
+if [[ -z "$claimed_json" ]]; then
+  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" \
+    '{reason: "every candidate is already claimed elsewhere", candidates: $n}')"
+  exit 0
+fi
+
+work_order_json="$claimed_json"
+selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
+selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
+log_event "selection" "$(jq -c '{repo, item, source, model, title, branch}' <<<"$work_order_json")"
 
 # --- 6. Workspace ---
 repo_slug="$(jq -r '.repo' <<<"$work_order_json")"
@@ -874,6 +987,9 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
   log_item_void "implementor" \
     "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
     "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  # A void item has no work, so its claim must not outlive the verdict — the
+  # branch (if untouched) and the registry entry both go.
+  release_claim no-pr
   exit 0
 fi
 
@@ -889,6 +1005,9 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
     "$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$impl_status_json")"
   if [[ -n "$impl_pr_url" ]]; then
     gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Left for human review." >/dev/null 2>&1 || true
+    release_claim have-pr
+  else
+    release_claim no-pr
   fi
   exit 0
 fi
@@ -898,7 +1017,12 @@ if (( impl_rc != 0 )) || [[ -z "$impl_status_json" ]] || [[ "$impl_status" != "c
   exit 0
 fi
 
-[[ -n "$impl_pr_url" ]] && log_event "pr-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$repo_slug" '{pr_url: $u, repo: $r}')"
+if [[ -n "$impl_pr_url" ]]; then
+  log_event "pr-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$repo_slug" '{pr_url: $u, repo: $r}')"
+  # The open PR is now the visible claim; the registry entry has done its job
+  # (and back-pressure counts the PR from here on, not the claim).
+  release_claim have-pr
+fi
 
 # --- 8. Reviewer stage ---
 reviewer_prompt="$(cat "$PROMPTS_DIR/reviewer.md")

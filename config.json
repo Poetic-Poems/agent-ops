@@ -22,6 +22,8 @@
   "pr_label": "autonomous-agent",
   "branch_prefix": "agent/",
   "max_open_agent_prs": 3,
+  "candidates_max": 3,
+  "claim_ttl_hours": 6,
   "timeout_coordinator": 15,
   "timeout_implementor": 90,
   "timeout_reviewer": 30,
