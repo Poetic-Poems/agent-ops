@@ -36,6 +36,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/noop-skip.sh
 . "$SCRIPT_DIR/lib/noop-skip.sh"
+# shellcheck source=lib/fleet.sh
+. "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
 
@@ -458,7 +460,6 @@ handle_stage_failure() {
 
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
-lease_held=0
 clone_dir=""
 cleanup() {
   local exit_code=$?
@@ -469,18 +470,13 @@ cleanup() {
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
   fi
-  # Publish this node's state to the fleet (requirement 2.5). Here, at the end,
-  # rather than anywhere earlier: the cycle's record is only complete once
-  # `cycle-end` is logged, and a half-written cycle replicated to every standby
-  # node is worse than one that arrives an hour late. Gated on the lease
-  # because a node that stood down for another node's lease must not overwrite
-  # that node's state with its own — which also means `--dry-run` and `--once`,
-  # neither of which takes a lease, publish nothing. Isolated like the dashboard
-  # refresh below: a sync failure is a replication problem, never a cycle
-  # outcome.
-  if (( lease_held )); then
-    timeout 300 "$SCRIPT_DIR/scripts/state-sync.sh" push || true
-  fi
+  # Publish this node's state to the fleet (requirement 2.5) — its own
+  # `nodes/<NODE_NAME>` branch, so there is nothing another node's push could
+  # overwrite and nothing to gate. Here at the end so the cycle's record is
+  # complete once `cycle-end` is logged; the every-few-minutes crontab push
+  # keeps the heartbeat fresh in between. Isolated like the dashboard refresh
+  # below: a sync failure is a replication problem, never a cycle outcome.
+  timeout 300 "$SCRIPT_DIR/scripts/state-sync.sh" push || true
   # Refresh the local monitoring dashboard. Fully isolated: a failure or a slow
   # gh call here must never affect the cycle's outcome or exit code.
   if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
@@ -599,39 +595,23 @@ acquire_lock() {
 }
 acquire_lock
 
-# --- 1a. The lease (requirement 2.5) ---
-# `lock.json` keeps two cycles apart on one node; the lease keeps two *nodes*
-# apart. Taken after the lock so that a node which is already busy does not
-# spend a network round trip to discover it, and before any work so that a node
-# standing down for another's lease has cost nothing but the request.
-#
-# Exit status 3 means another node holds an unexpired lease. That is a normal
-# outcome — the fleet arbitrating itself — so it is logged as a stand-down and
-# the cycle ends successfully. `--dry-run` and `--once` skip the lease entirely:
-# a human asking for a cycle on a standby node is asking deliberately, and
-# neither mode spends unattended.
-if ! (( DRY_RUN || ONCE )); then
-  lease_out=""
-  lease_rc=0
-  lease_out="$("$SCRIPT_DIR/scripts/state-sync.sh" lease 2>&1)" || lease_rc=$?
-  [[ -n "$lease_out" ]] && printf '%s\n' "$lease_out"
-  if (( lease_rc == 3 )); then
-    log_event "stand-down" "$(jq -nc --arg r "the lease is held by another node" \
-      --arg d "$lease_out" '{reason: $r, detail: $d}')"
-    exit 0
-  fi
-  # Anything other than 3 — including a failure to reach GitHub, which
-  # state-sync.sh reports and passes over — leaves this node running, and
-  # therefore holding the lease as far as the rest of the cycle is concerned.
-  lease_held=1
-else
-  lease_held=0
-fi
+# --- 1a. The fleet's memory (requirement 2.5) ---
+# `lock.json` keeps two cycles apart on one node; per-item claims (requirement
+# 17a) keep two *nodes* off the same work. Nothing arbitrates "the" active
+# node any more — what the fleet shares instead is memory: the union of every
+# node's event log, materialised by `state-sync.sh fetch` into the peers
+# directory. Snapshotted here, once, so every reader below (the usage-limit
+# cooldown, the blocked and void extractions, the no-op fingerprint) sees one
+# consistent stream — a lesson any node learned spares the whole fleet.
+peers_dir="$(fleet_peers_dir "$workspace_root")"
+union_log="$cycle_dir/.fleet-log.jsonl"
+fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 
 # --- 2. Stand-down checks ---
-# 2.1 Usage-limit cooldown
-if [[ -s "$log_file" ]]; then
-  resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$log_file" 2>/dev/null || true)"
+# 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
+# so a limit any node hit stands this one down too)
+if [[ -s "$union_log" ]]; then
+  resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
   if [[ -n "$resume_at" ]]; then
     resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
     now_epoch="$(date +%s)"
@@ -753,8 +733,8 @@ fi
 #     requirement 34c: void iff the most recent item-void/unvoided event for it
 #     is item-void). Two lists, not one, because the Co-Ordinator may clear the
 #     first and may never clear the second. ---
-blocked_json="$(blocked_items "$log_file")"
-void_json="$(void_items "$log_file")"
+blocked_json="$(blocked_items "$union_log")"
+void_json="$(void_items "$union_log")"
 
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
@@ -799,7 +779,7 @@ noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 # question.
 noop_skip=""
 if [[ -n "$noop_fingerprint_value" ]] && ! (( DRY_RUN || ONCE )); then
-  noop_skip="$(noop_skip_reason "$noop_fingerprint_value" "$log_file" "$none_selected_recheck_hours")"
+  noop_skip="$(noop_skip_reason "$noop_fingerprint_value" "$union_log" "$none_selected_recheck_hours")"
 fi
 if [[ -n "$noop_skip" ]]; then
   log_event "stand-down" "$(jq -nc --arg r "$noop_skip" --arg f "$noop_fingerprint_value" \

@@ -59,7 +59,8 @@ Edit `config.json` before first run. Keys:
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
-| `lease_ttl_hours` | 3 | Hours. How long one node's claim to be running stands before another may take it. |
+| `candidates_max` | 3 | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
+| `claim_ttl_hours` | 6 | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `cycles_retained` | 200 | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | For code changes. |
@@ -298,16 +299,16 @@ scheduler service passes it through as `AGENT_OPS_ROLE`, and defaults it to
 whatever runs the scripts. Only the exact value
 `active` counts — case and surrounding whitespace are ignored, but **unset,
 empty or misspelt all mean standby**. That is deliberate: a machine wrongly
-standby costs one skipped cycle, while a second machine wrongly active costs
-money and leaves duplicate pull requests for someone to clean up.
+standby costs skipped cycles, while a machine wrongly active spends money
+nobody chose to spend. Any number of machines may be `active` at once —
+per-item claims keep them off each other's work — so the role does not elect
+a leader; it says whether *this* machine spends unattended.
 
 A standby tick writes one line to the cron log and exits; it creates no cycle,
-logs no event, and spends nothing. Failing over is a matter of setting `active`
-on the new machine and clearing it on the old. A standby is not idle, though —
-it keeps its copy of the pipelines' memory current, so it can take over knowing
-what has already been tried (see [Keeping every node
-warm](#keeping-every-node-warm)), and a shared lease catches the case where two
-machines are set `active` by mistake.
+logs no event, and spends nothing. A standby is not idle, though — it
+publishes its heartbeat and follows every peer's memory (see [Keeping every
+node warm](#keeping-every-node-warm)), so promoting it is one variable, not a
+hand-off.
 
 What the role does *not* stop:
 
@@ -319,41 +320,36 @@ What the role does *not* stop:
 
 ## Keeping every node warm
 
-A spare node with no memory is not much of a spare: it would re-select work the
-fleet has already done, re-learn every no-op the hard way, and show a dashboard
-of its own idleness. So the pipelines' memory replicates.
+A node that knows only its own history would re-try what a peer has already
+tried and re-learn every no-op the hard way. So every node publishes its
+memory, and every node follows everyone else's.
 
-`scripts/state-sync.sh` mirrors `state_dir` through the private repository named
-by `state_repo`, in three modes:
+`scripts/state-sync.sh` works through the private repository named by
+`state_repo`, one branch per node, in two modes — both on every node:
 
-| Mode | Who runs it | When |
+| Mode | When | What |
 |---|---|---|
-| `push` | the active node | at the end of every cycle, from the same cleanup that releases the lock |
-| `restore` | every standby node | every seven minutes, from the node's crontab |
-| `lease` | the active node | before any work, as the first thing after the lock |
+| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle}`) |
+| `fetch` | every seven minutes | materialises every peer's branch under the peers directory, whole, and prunes a peer whose branch is gone |
 
 What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,
 `reviews/`, the switch, the cron logs. What stays behind is anything local or
-derived — the live locks (a restored lock is a lock nobody holds, and it would
-stand the node down until it went stale), the generated dashboard, and each
-node's own logs. The published copy keeps the newest `cycles_retained` cycles;
-your own `state_dir` is never pruned. A push that finds nothing changed does
-nothing, and the whole history is a single amended commit, so the repository
-does not grow.
+derived — the live locks (peers read logs, never locks), the generated
+dashboard, and each node's own sync log. Each branch keeps the newest
+`cycles_retained` cycles and is a single amended commit, so the repository
+does not grow; your own `state_dir` keeps the longer record, pruned to
+`state_local_cycles_retained` by the same push. No two nodes share a branch,
+so pushes cannot collide and nothing arbitrates them.
 
-**The lease** is the safety net under `AGENT_OPS_ROLE`. `leader.json` in the
-state repository records which node is running and when it last said so; a node
-that finds another name there, refreshed within `lease_ttl_hours`, stands down
-and says whose it is. It is deliberately not the primary defence — the role is —
-but it is what catches the human mistake the role cannot: two nodes both set
-`active`. If GitHub cannot be reached, the check proceeds with a warning rather
-than stopping the operation: it takes a *second* deliberately-active node before
-anything is duplicated, and an operation that stops quietly is worse than one
-that risks that.
+The pipelines read the **union** of all those logs — a blocked item, a void
+verdict, a no-op fingerprint or a usage-limit hit learned by any node stands
+the rest of the fleet down (or spares it a re-check) within one fetch
+interval. The union is advisory speed; the per-item claims are the lock
+underneath. Cross-node work arbitration has no other mechanism — there is no
+lease and no leader.
 
-Every node needs a `GH_TOKEN` that can read the state repository (and, on the
-active node, write it). Leave `state_repo` out of `config.json` and none of this
-happens at all.
+Every node needs a `GH_TOKEN` that can read and write the state repository.
+Leave `state_repo` out of `config.json` and none of this happens at all.
 
 ## Skipping no-op cycles
 

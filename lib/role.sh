@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 #
-# lib/role.sh — which node may run unattended cycles.
+# lib/role.sh — whether this node runs unattended cycles.
 #
-# The pipelines are meant to run on more than one machine (a laptop and any
-# number of cloud nodes), but exactly one of them may actually spend: two
-# nodes cycling on the same repos would open competing pull requests for the
-# same item and pay twice to do it. `AGENT_OPS_ROLE` names that machine.
+# The pipelines run on any number of machines, and any number of them may be
+# `active` at once: per-item claims (requirement 17a) keep concurrent actives
+# off the same work, so the role no longer elects "the" worker — it decides
+# whether *this* machine spends at all. A standby still pushes its heartbeat,
+# fetches its peers and serves the dashboard; it just runs no cycles until
+# someone flips one variable.
 #
 # Fail-closed by design: only the literal value `active` runs unattended
 # cycles. Unset, empty, misspelt or any other value is a standby, because the
 # failure modes are not symmetric — a standby that should have been active
-# costs one skipped cycle, an accidental second active costs money and makes a
-# mess a human has to clean up in the target repos.
+# costs skipped cycles, an accidental active costs money unattended.
 #
 # Shared by agent-cycle.sh and review-cycle.sh so there is one definition of
 # "active", the same way lib/toggle.sh is the one definition of the switch.

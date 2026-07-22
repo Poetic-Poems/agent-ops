@@ -12,7 +12,6 @@
   "state_dir": "~/.local/state/poetic-agents",
   "workspace_root": "~/.cache/poetic-agents/workspaces",
   "state_repo": "Poetic-Poems/agent-ops-state",
-  "lease_ttl_hours": 3,
   "cycles_retained": 200,
   "state_local_cycles_retained": 1000,
   "coordinator_model": "claude-haiku-4-5-20251001",

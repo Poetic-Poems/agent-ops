@@ -230,16 +230,17 @@ R2b. **The role guard.** Before the switch, the config and the lock, stand the
    standby node has no business reading, logging or clearing state that belongs
    to the active one.
 
-R2c. **The lease and state replication.** After the lock and before any work,
-   take the fleet's lease through `scripts/state-sync.sh lease`
-   (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 2.5). It is the *same*
-   lease the implementation cycle takes, not a second one: it records which
-   node is acting, and either pipeline refreshes it for the other. If another
-   node holds an unexpired lease, log a `review-stand-down` and exit 0. At the
-   end of the run — from the cleanup that releases the lock, once the review is
-   fully recorded — publish this node's `state_dir` with
-   `scripts/state-sync.sh push`, gated on having held the lease. `--dry-run`
-   and `--once` take no lease and publish nothing.
+R2c. **The fleet's memory and state publication.** After the lock and before
+   any work, snapshot the fleet's shared event stream — this node's
+   `log.jsonl` unioned with every peer's, via `lib/fleet.sh`
+   (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, requirement 2.5) — so the
+   usage-limit checks below see a limit *any* node hit; the union is
+   re-snapshotted between repos. There is no lease: per-item claims
+   (requirement 17a of the implementation spec) arbitrate work. At the
+   end of the run — from the cleanup that releases the lock, once the review
+   is fully recorded — publish this node's `state_dir` to its own
+   `nodes/<NODE_NAME>` branch with `scripts/state-sync.sh push`,
+   unconditionally: no other node's push can collide with it.
 
    The review needs this for the same reason the implementation cycle does: it
    spends, and two nodes reviewing the same repositories would open competing
@@ -423,7 +424,7 @@ R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
 What exists, and the requirements each part answers to:
 
 1. `review-cycle.sh` implementing R1–R8 and R16 (including the role guard,
-   R2b, through `lib/role.sh`, and the lease and state push of R2c, through
+   R2b, through `lib/role.sh`, and the union snapshot and state push of R2c, through
    `scripts/state-sync.sh`). `shellcheck`-clean; sets its own `PATH`.
 2. `prompts/project-reviewer.md` implementing R9–R15. It must embed the
    relevant shared-repo conventions (as the other operating prompts do) so the
@@ -457,11 +458,11 @@ a pull request, run the ones the change touches and any it could regress.
    passes: a `review-cycle.sh` with `AGENT_OPS_ROLE` unset or standby exits 0
    with one line and writes nothing under `state_dir`, while `--dry-run` runs
    regardless of the role.
-4c. **The lease stands this pipeline down too (R2c).** With a fresh
-   `leader.json` naming another node, `review-cycle.sh` logs a
-   `review-stand-down`, exits 0 and clones nothing; with the lease its own or
-   expired, it proceeds and its cleanup pushes the state
-   (`test/state-sync.test.sh` covers the shared machinery).
+4c. **A peer's usage-limit hit stands this pipeline down too (R2c/R6).** With
+   a peer's materialised log carrying a `limit-hit` whose `resume_at` is in
+   the future, `review-cycle.sh` logs a `review-stand-down`, exits 0 and
+   clones nothing; its cleanup still pushes this node's state to its own
+   branch (`test/state-sync.test.sh` covers the shared machinery).
 4a. **The switch stands this pipeline down too (R2a).** With
    `agent-cycle.sh --disable 'testing'` set, a plain `review-cycle.sh` logs a
    `review-stand-down` carrying the reason, exits 0, and launches no `claude`;

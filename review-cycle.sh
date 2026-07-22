@@ -44,6 +44,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
+# shellcheck source=lib/fleet.sh
+. "$SCRIPT_DIR/lib/fleet.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -196,7 +198,6 @@ dump_stage_output() {
 
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
-lease_held=0
 clone_dir=""
 cleanup() {
   local exit_code=$?
@@ -208,11 +209,9 @@ cleanup() {
     rm -f "$lock_file"
   fi
   # Publish this node's state to the fleet, once the review is fully recorded
-  # (R2c). Gated on the lease for the same reason as the implementation cycle:
-  # a node that stood down for another's lease must not overwrite its state.
-  if (( lease_held )); then
-    timeout 300 "$SCRIPT_DIR/scripts/state-sync.sh" push || true
-  fi
+  # (R2c) — its own `nodes/<NODE_NAME>` branch, so there is nothing another
+  # node's push could overwrite and nothing to gate.
+  timeout 300 "$SCRIPT_DIR/scripts/state-sync.sh" push || true
   # Refresh the local monitoring dashboard. Fully isolated and time-bounded: a
   # failure or slow gh call here must never affect this run's outcome.
   if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
@@ -323,29 +322,20 @@ acquire_lock() {
 }
 acquire_lock
 
-# --- The lease (R2c) ---
-# The same fleet-level arbitration the implementation cycle takes, for the same
-# reason: the review spends too, and two nodes reviewing the same repositories
-# would open competing review pull requests. Both pipelines take the *same*
-# lease, so whichever runs refreshes it for the other — they are one node's
-# claim to be the one that acts, not two claims to two jobs.
-if ! (( DRY_RUN || ONCE )); then
-  lease_out=""
-  lease_rc=0
-  lease_out="$("$SCRIPT_DIR/scripts/state-sync.sh" lease 2>&1)" || lease_rc=$?
-  [[ -n "$lease_out" ]] && printf '%s\n' "$lease_out"
-  if (( lease_rc == 3 )); then
-    log_event "stand-down" "$(jq -nc --arg r "the lease is held by another node" \
-      --arg d "$lease_out" '{reason: $r, detail: $d}')"
-    exit 0
-  fi
-  lease_held=1
-fi
+# --- The fleet's memory (R2c) ---
+# No lease: per-item claims (IMPLEMENTATION-PIPELINE-SPEC requirement 17a)
+# keep nodes off each other's work. What the review shares with the fleet is
+# the event stream — the union of every node's shared log, snapshotted once
+# here so the usage-limit checks below see a limit *any* node hit (they all
+# spend one Claude account).
+peers_dir="$(fleet_peers_dir "$workspace_root")"
+union_log="$review_dir/.fleet-log.jsonl"
+fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 
 # --- Stand-down checks (R3) ---
-# 3.1 Usage-limit cooldown (shared signal, read from log.jsonl exactly as agent-cycle.sh 2.1).
-if [[ -s "$log_file" ]]; then
-  resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$log_file" 2>/dev/null || true)"
+# 3.1 Usage-limit cooldown (shared signal, read from the fleet union exactly as agent-cycle.sh 2.1).
+if [[ -s "$union_log" ]]; then
+  resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
   if [[ -n "$resume_at" ]]; then
     resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
     now_epoch="$(date +%s)"
@@ -513,8 +503,11 @@ while IFS= read -r entry; do
 
   # Re-check the shared usage-limit signal between repos: a limit hit while
   # reviewing the first repo must stop us before launching the second (R6).
-  if [[ -s "$log_file" ]]; then
-    resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$log_file" 2>/dev/null || true)"
+  # The union is re-snapshotted here — this node's own hit lands in its log
+  # immediately, and a peer's arrives with the next fetch.
+  fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+  if [[ -s "$union_log" ]]; then
+    resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
     if [[ -n "$resume_at" ]]; then
       resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
       if (( resume_epoch > $(date +%s) )); then
