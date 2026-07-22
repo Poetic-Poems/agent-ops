@@ -174,7 +174,14 @@ log_file="$state_dir/log.jsonl"
 lock_file="$state_dir/lock.json"
 review_lock_file="$state_dir/review-lock.json"
 
-cycle_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# The node's name travels in the cycle id and in every event this cycle
+# writes: once several nodes run at once, a record that does not say which
+# machine produced it cannot be combined with its peers'. Sanitised because
+# the id is also a directory name; the pid stays LAST — the dashboard finds
+# the running cycle by its "-<pid>" suffix.
+node_name="${NODE_NAME:-$(hostname)}"
+node_name="${node_name//[^A-Za-z0-9._-]/-}"
+cycle_id="$(date -u +%Y%m%dT%H%M%SZ)-$node_name-$$"
 cycle_dir="$state_dir/cycles/$cycle_id"
 # A management command runs no stages and writes no transcripts; giving it a
 # cycle directory would leave an empty one behind for every --status anyone
@@ -186,8 +193,8 @@ log_event() {
   local event="$1" fields="${2:-{\}}"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq -nc --arg ts "$ts" --arg cycle "$cycle_id" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts, cycle: $cycle, event: $event} + $fields' >> "$log_file"
+  jq -nc --arg ts "$ts" --arg cycle "$cycle_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
+    '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file"
 }
 
 # --- Management commands (--disable / --enable / --status) ---

@@ -114,6 +114,12 @@ make_cycle "$a" "20200101T000000Z-1" 99 model-old
 # so only itself is at stake in the final batch.
 mkdir -p "$a/.local/state/poetic-agents/cycles/${today_day}T235959Z-99"
 printf '{"partial":' > "$a/.local/state/poetic-agents/cycles/${today_day}T235959Z-99/coordinator.out"
+# The newest *parseable* cycle gets an event stream entry carrying the node
+# field the pipelines stamp; the publisher must surface it per cycle. (The
+# torn cycle above is skipped from the detail list — its stages don't parse —
+# so it cannot anchor this assertion.)
+printf '{"ts":"2026-01-01T00:00:00Z","cycle":"%sT030000Z-13","node":"nodeA-test","event":"cycle-start"}\n' \
+  "$today_day" > "$a/.local/state/poetic-agents/log.jsonl"
 
 run_publish "$a"
 assert_eq "publish exits 0" "0" "$?"
@@ -130,6 +136,8 @@ assert_eq "by_model rolls up per model" \
   "0.75" "$(jq -r '.counts.by_model[] | select(.model=="model-a") | .usd' <<<"$data")"
 assert_eq "by_day buckets by the cycle directory's day" \
   "1" "$(jq -r --arg d "$today_day" '.counts.by_day[] | select(.day==$d) | .usd' <<<"$data")"
+assert_eq "a cycle surfaces the node that produced it" "nodeA-test" \
+  "$(jq -r '.cycles[0].node' <<<"$data")"
 
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"

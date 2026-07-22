@@ -362,6 +362,12 @@ assert_contains "a cycle without the lease says whose it is" "other-node holds t
 assert_contains "a cycle without the lease records a stand-down" \
   '"reason":"the lease is held by another node"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
+assert_contains "cycle events carry the node's name" '"node":"cycle-node"' \
+  "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
+assert_eq "the cycle id carries the node with the pid last" "1" \
+  "$(jq -r 'select(.event=="cycle-start") | .cycle' \
+       "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null \
+     | grep -qE -- '-cycle-node-[0-9]+$' && echo 1 || echo 0)"
 assert_eq "a cycle without the lease selects nothing" "0" \
   "$(grep -c 'coordinator' "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null || true)"
 
@@ -376,6 +382,8 @@ out="$(env HOME="$cycle_home" AGENT_OPS_ROLE=active NODE_NAME=cycle-node \
 assert_eq "a review without the lease exits 0" "0" "$rc"
 assert_contains "a review without the lease records a stand-down" \
   '"reason":"the lease is held by another node"' \
+  "$(cat "$cycle_home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
+assert_contains "review events carry the node's name" '"node":"cycle-node"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null)"
 
 printf '\n%s\n' "----------------------------------------"
