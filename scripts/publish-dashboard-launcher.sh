@@ -12,7 +12,13 @@
 set -uo pipefail
 
 startat=$EPOCHSECONDS
-endat=$(( startat + 295 ))
+# LAUNCHER_WINDOW exists for the test suite, which cannot wait five minutes;
+# cron always runs the default.
+endat=$(( startat + ${LAUNCHER_WINDOW:-295} ))
+# A tick started in the window's final seconds finishes after it, and the
+# overrun collides with the next cron-fired launcher. Ten seconds covers a
+# publish that misses its 5-second budget once.
+tick_margin=10
 
 scriptdir="$(cd "$(dirname "$0")" && pwd)"
 appdir="$(dirname "$scriptdir")"
@@ -29,7 +35,7 @@ lck="$logdir/dashboard.lck"
 # publish-dashboard.sh gets a chance to create it — make sure it exists.
 mkdir -p "$logdir"
 
-while (( EPOCHSECONDS < endat )); do
+while (( EPOCHSECONDS < endat - tick_margin )); do
   github=(--no-github)
   sleep $(( 5 - EPOCHSECONDS % 5 ))
   (( EPOCHSECONDS % 300 < 5 )) && github=()
@@ -37,5 +43,12 @@ while (( EPOCHSECONDS < endat )); do
   # up) from a genuine publish failure, and leave a trace so a stuck lock
   # doesn't look like a quiet system.
   flock -n -E 111 "$lck" "$cmd" "${github[@]}" >>"$log" 2>&1
-  (( $? == 111 )) && printf '%(%Y-%m-%dT%H:%M:%S%z)T skipped: publish already running\n' -1 >>"$log"
+  rc=$?
+  (( rc == 111 )) && printf '%(%Y-%m-%dT%H:%M:%S%z)T skipped: publish already running\n' -1 >>"$log"
 done
+
+# A healthy window must end 0. Without this, the script's status is that of
+# the last loop-body command — the `(( rc == 111 ))` bookkeeping above, which
+# is 1 (false) after every *successful* publish — and supercronic reports the
+# whole window as failed every five minutes, drowning real failures in noise.
+exit 0

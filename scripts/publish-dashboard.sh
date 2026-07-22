@@ -149,7 +149,9 @@ stage_json() {
 cycle_json() {
   local cid="$1"
   local ev coord impl rev
-  ev="$(printf '%s\n' "$ALL_EVENTS" | jq -c --arg c "$cid" 'select(.cycle == $c)' 2>/dev/null | jq -sc '.' 2>/dev/null)"
+  # events_file is the whole log slurped once (see below): one jq here rather
+  # than piping the full event stream through two more, forty times a publish.
+  ev="$(jq -c --arg c "$cid" '[ .[] | select(.cycle == $c) ]' "$events_file" 2>/dev/null)"
   [[ -z "$ev" || "$ev" == "null" ]] && ev='[]'
   coord="$(stage_json "$cid" coordinator)"
   impl="$(stage_json "$cid" implementor)"
@@ -193,6 +195,12 @@ cycle_json() {
 
 # --- Slurp all events once (shared by cycle_json and summaries) ---------------
 ALL_EVENTS="$(read_events)"
+# The same events as one JSON array on disk, for the per-cycle filters: a file
+# beats re-piping the whole stream once per cycle, and files (unlike argv) have
+# no 128 KB cap.
+events_file="$work_tmp/events.json"
+printf '%s\n' "$ALL_EVENTS" | jq -sc '.' > "$events_file" 2>/dev/null \
+  || printf '[]' > "$events_file"
 
 # --- Recent cycle ids, newest first ------------------------------------------
 mapfile -t cycle_ids < <(
@@ -200,14 +208,26 @@ mapfile -t cycle_ids < <(
     | sort -ru | head -n "$MAX_CYCLES"
 )
 
-cycles_arr='[]'
+# Each cycle's JSON goes to its own file and the set is slurped once at the
+# end. The obvious `arr="$(jq '. + [$c]' <<<"$arr")"` re-parses a growing
+# multi-megabyte array once per cycle (quadratic in history shown), and
+# passing a cycle via --argjson puts transcript-bearing JSON on argv, which
+# caps at 128 KB — the cap the header comment above warns about.
+cycles_file="$work_tmp/cycles.json"
+cycle_files=()
+cycle_n=0
 for cid in "${cycle_ids[@]}"; do
   [[ -n "$cid" ]] || continue
-  cj="$(cycle_json "$cid" 2>/dev/null)"
+  cf="$work_tmp/cycle.$(( cycle_n++ )).json"
+  cycle_json "$cid" > "$cf" 2>/dev/null
   # A cycle mid-flight has partial transcripts; skip anything that didn't parse.
-  [[ -n "$cj" ]] && jq -e . <<<"$cj" >/dev/null 2>&1 \
-    && cycles_arr="$(jq -c --argjson c "$cj" '. + [$c]' <<<"$cycles_arr")"
+  jq -e . "$cf" >/dev/null 2>&1 && cycle_files+=("$cf")
 done
+if (( ${#cycle_files[@]} > 0 )); then
+  jq -sc '.' "${cycle_files[@]}" > "$cycles_file"
+else
+  printf '[]' > "$cycles_file"
+fi
 
 # --- Status ------------------------------------------------------------------
 lock_pid=""; lock_started=""; lock_alive=false
@@ -241,11 +261,6 @@ if [[ -n "$limit_resume" ]] && (( $(epoch_of "$limit_resume") > now_epoch )); th
   # rather than letting the banner read like an ordinary timed cooldown.
   [[ "$limit_needs_human" == "true" ]] && limit_note="$limit_note — needs human action (raise the cap)"
 fi
-
-# The cycles array can be multi-megabyte (full transcripts); pass it to jq via a
-# file from here on. Here-strings/stdin (<<<) are fine — only argv is capped.
-cycles_file="$work_tmp/cycles.json"
-printf '%s' "$cycles_arr" > "$cycles_file"
 
 if [[ "$limit_active" != "true" ]]; then
   # A limit is "active" only if the most recent cycle that actually launched a
@@ -314,23 +329,29 @@ status_json="$(jq -n \
     }')"
 
 # --- Counts / roll-ups (scan all recent transcripts for cost) ----------------
+# Envelopes are read in batches — one jq per 25 files, each row's day derived
+# from input_filename — rather than two jq forks per file plus a re-parse of a
+# growing array per row: with months of history that is thousands of processes
+# and tens of seconds per publish. A torn envelope (a stage mid-write) costs at
+# most the remainder of its batch for one tick; the next tick reads it whole,
+# and sorting puts the newest (the only ones ever mid-write) in the last batch.
+# The rows go to jq as a file: at 60 days of history they outgrow argv's cap.
 day_cut="$(date -u -d "-${COST_SCAN_DAYS} days" +%Y%m%d 2>/dev/null || echo 00000000)"
-cost_rows='[]'
-while IFS= read -r f; do
-  [[ -n "$f" ]] || continue
-  cid="$(basename "$(dirname "$f")")"; day="${cid:0:8}"
-  [[ "$day" > "$day_cut" || "$day" == "$day_cut" ]] || continue
-  row="$(jq -c --arg day "$day" '{
-    day: $day,
-    cost: (.total_cost_usd // 0),
-    model: ((.modelUsage // {}) | keys | (.[0] // "unknown"))
-  }' "$f" 2>/dev/null)"
-  [[ -n "$row" ]] && cost_rows="$(jq -c --argjson r "$row" '. + [$r]' <<<"$cost_rows")"
-done < <(find "$cycles_dir" -name '*.out' -type f 2>/dev/null)
+costs_file="$work_tmp/costs.json"
+find "$cycles_dir" -name '*.out' -type f -print0 2>/dev/null | sort -z \
+  | xargs -0 -r -n 25 jq -c '{
+      day: (input_filename | split("/") | .[-2] | .[0:8]),
+      cost: (.total_cost_usd // 0),
+      model: ((.modelUsage // {}) | keys | (.[0] // "unknown"))
+    }' 2>/dev/null \
+  | jq -sc --arg cut "$day_cut" '[ .[] | select(.day >= $cut) ]' \
+  > "$costs_file" 2>/dev/null
+jq -e 'type == "array"' "$costs_file" >/dev/null 2>&1 || printf '[]' > "$costs_file"
 
 today="$(date -u +%Y%m%d)"
-counts_json="$(jq -n --slurpfile cyc "$cycles_file" --argjson costs "$cost_rows" --arg today "$today" '
+counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$costs_file" --arg today "$today" '
   ($cyc[0]) as $cycles
+  | ($cost_rows[0]) as $costs
   | {
     cycles_shown: ($cycles | length),
     failures_shown: ($cycles | map(select(.outcome=="failed")) | length),

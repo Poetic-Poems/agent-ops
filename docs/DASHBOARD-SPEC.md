@@ -136,6 +136,14 @@ Reads the state above, assembles one JSON object, redacts it, and writes it
 as `window.DASHBOARD_DATA = {…}` to `data.js` (atomically: temp file + `mv`).
 It is `set -uo pipefail` (not `-e`) because most reads are best-effort, and
 ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
+It stays inside the heartbeat's 5-second budget as history accumulates: the
+transcript cost scan reads envelopes in batches (one `jq` per 25 files, the
+cycle's day derived from `input_filename`; a torn mid-write envelope costs at
+most the rest of its batch for one tick), the per-cycle records and event
+filters work through files slurped once rather than arrays re-parsed per
+append, and every potentially large intermediate reaches `jq` as a file,
+never argv (a single argument caps at 128 KB, which transcript-bearing JSON
+exceeds).
 `--no-github` skips the live GitHub fetch for a faster, offline run. Rather
 than blanking the GitHub panels, it reuses the last real fetch — cached at
 `<state_dir>/.dashboard-github.json` and re-marked `stale` — so the PR list,
@@ -220,7 +228,12 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   every tick. A full GitHub-hitting publish runs only once per window (at the
   top); the cheaper `--no-github` publish runs in between and carries the last
   fetch forward, so the page stays near-live without hammering the GitHub API.
-  `flock` guards against a slow publish stacking up under the next tick.
+  `flock` guards against a slow publish stacking up under the next tick. No
+  tick starts inside the window's final ten seconds, so the launcher does not
+  overrun into the next cron fire, and a healthy window ends `exit 0` — its
+  exit status is explicit, not whatever the final tick's lock bookkeeping
+  happened to return (`LAUNCHER_WINDOW` shortens the window for the test
+  suite only).
 
 ## Components (as built)
 
@@ -254,6 +267,10 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 ## Verifying a change
 
 - `shellcheck scripts/*.sh agent-cycle.sh` clean.
+- `test/publish-dashboard.test.sh` passes: the launcher exits 0 on a healthy
+  (shortened) window and while another publish holds the lock; the batched
+  cost scan matches the per-file semantics (day cut-off, torn-file tolerance)
+  and the whole publish stays within its process budget on a long history.
 - `scripts/publish-dashboard.sh` against the real `state_dir` produces valid
   JSON (`data.js` minus the wrapper passes `jq empty`), and `grep` finds no
   `/home/…` path or token in the output.

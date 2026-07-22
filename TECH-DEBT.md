@@ -175,6 +175,19 @@ script rather than a docker incantation. Alternatively (or additionally),
 extend the dashboard to stream recent events, which would remove the need
 for a CLI path for humans.
 
+### TD26072201 The publisher's per-cycle detail loop still forks ~300 jq serially
+
+The transcript cost scan and the array accumulations are batched now, but
+`cycle_json`/`stage_json` in `scripts/publish-dashboard.sh` still fork
+roughly a dozen `jq` per shown cycle — about 5 s for the 40-cycle detail
+window against real transcripts under WSL2, which is the whole 5-second
+heartbeat budget on its own. The cost is bounded (`MAX_CYCLES`, not history
+length), and the launcher's lock plus its end-of-window margin absorb the
+occasional overshoot, so this is a budget squeeze rather than a failure.
+Fix: assemble the detail window in one `jq` program over the 40 cycles'
+envelope and event files (they are already individual files on disk),
+which should take a `--no-github` publish to around a second.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -192,3 +205,4 @@ above.
 | TD26072004 | An active node's state_dir grows without bound | open | | |
 | TD26072101 | A blocked item's new evidence can never unblock it | open | | |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
+| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
