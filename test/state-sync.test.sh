@@ -10,6 +10,9 @@
 #                     lock nobody holds.
 #   what does not     a push that finds no change must not force-push, or the
 #                     state repository churns once an hour for no reason.
+#   what is kept      the push bounds the node's own cycles/ and reviews/ to
+#                     state_local_cycles_retained — the local record must stay
+#                     longer than the mirror's, and the newest must survive.
 #   who may run       a fresh lease belonging to another node must stop a cycle
 #                     before it spends anything.
 #
@@ -184,6 +187,43 @@ assert_eq "the newest cycle survives the prune" "1" \
   "$(test -e "$pushed/cycles/20260720T010000Z-1" && echo 1 || echo 0)"
 assert_eq "the node keeps its own history" "1" \
   "$(test -e "$state/cycles/20260101T000000Z-0" && echo 1 || echo 0)"
+
+# --- Local retention ---
+# The push also bounds the node's own state_dir (state_local_cycles_retained,
+# overridden small here): newest kept, oldest deleted, reviews included — and
+# a push with nothing to replicate still prunes, because the prune runs before
+# the no-change early-return.
+lr_home="$(new_node local-retention-node)"
+lr_state="$lr_home/.local/state/poetic-agents"
+printf 'log\n' > "$lr_state/log.jsonl"
+i=0
+while (( i < 5 )); do
+  d="$(printf '%s/cycles/20260201T%06dZ-%d' "$lr_state" "$i" "$i")"
+  mkdir -p "$d"; printf 'filler\n' > "$d/coordinator.out"
+  r="$(printf '%s/reviews/20260201T%06dZ-%d' "$lr_state" "$i" "$i")"
+  mkdir -p "$r"; printf 'filler\n' > "$r/review.out"
+  i=$(( i + 1 ))
+done
+out="$(sync_as "$lr_home" active push STATE_SYNC_LOCAL_RETAINED=3)"
+assert_contains "a push reports the local prune" "pruned 2 cycles record(s)" "$out"
+assert_eq "local cycles are pruned to the cap" "3" \
+  "$(find "$lr_state/cycles" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+assert_eq "the oldest local cycle is deleted" "0" \
+  "$(test -e "$lr_state/cycles/20260201T000000Z-0" && echo 1 || echo 0)"
+assert_eq "the newest local cycle survives" "1" \
+  "$(test -e "$lr_state/cycles/20260201T000004Z-4" && echo 1 || echo 0)"
+assert_eq "local reviews are pruned to the cap" "3" \
+  "$(find "$lr_state/reviews" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+
+# A stale directory reappearing below the retention cut is pruned by the next
+# push even when the mirror has nothing new to take.
+mkdir -p "$lr_state/cycles/20250101T000000Z-9"
+printf 'stale\n' > "$lr_state/cycles/20250101T000000Z-9/coordinator.out"
+out="$(sync_as "$lr_home" active push STATE_SYNC_LOCAL_RETAINED=3)"
+assert_contains "a no-change push still prunes" "pruned 1 cycles record(s)" "$out"
+assert_contains "and does not force-push" "no state change" "$out"
+assert_eq "the stale directory is gone" "0" \
+  "$(test -e "$lr_state/cycles/20250101T000000Z-9" && echo 1 || echo 0)"
 
 # --- The lease survives the mirroring ---
 # leader.json lives in the state repository but in no node's state_dir, so a
