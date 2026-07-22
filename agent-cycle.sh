@@ -431,6 +431,12 @@ dump_stage_output() {
   local out_file="$1"
   cat "$out_file"
   [[ -s "$out_file.stderr" ]] && cat "$out_file.stderr" >&2
+  # An empty stderr file must not become this function's return value: the
+  # call sites are `(( ONCE )) && dump_stage_output …`, and the command after
+  # a final `&&` is exactly where `set -e` applies — a stage whose stderr was
+  # empty killed a --once cycle here, after the stage ended and before its
+  # failure handling (limit detection, attempt-failed, claim release) ran.
+  return 0
 }
 
 handle_stage_failure() {
@@ -945,6 +951,9 @@ clone_dir="$workspace_root/$cycle_id"
 assert_in_workspace "$clone_dir"
 if ! gh repo clone "$repo_slug" "$clone_dir" -- --quiet 2>"$cycle_dir/clone.err"; then
   log_event "attempt-failed" "$(jq -nc --arg d "$(cat "$cycle_dir/clone.err")" '{stage: "workspace", detail: $d}')"
+  # The claim was taken before the clone; a cycle that ends here must not
+  # keep holding the item (requirement 17a's release rules).
+  release_claim no-pr
   exit 0
 fi
 
