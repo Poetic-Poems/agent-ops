@@ -187,9 +187,14 @@ R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID and
    logging a `warning`.
 
 R3. **Stand-down checks.** Each logs its reason and exits 0:
-   1. *Usage-limit cooldown* — read the shared `log.jsonl`'s most recent
-      `limit-hit` event; if its `resume_at` is still in the future, stand down
-      (identical to requirement 2.1).
+   1. *Usage-limit cooldown* — identical to requirement 2.1: the log
+      union's most recent `limit-hit` and the live `fleet/limit.json` flag
+      are both read, and the **later** `resume_at` wins; if it is still in
+      the future, stand down. When *this* pipeline hits a limit it writes
+      the same two carriers the implementation cycle does — the `limit-hit`
+      event to the shared `log.jsonl`, and the fleet flag, extend-only,
+      best-effort (a `warning` is logged when the flag write fails and the
+      union carries the signal instead).
    2. *Implementation pipeline busy* — if `lock.json` is held by a live
       process, stand down and wait for the next tick (defer to it, per
       "Relationship to the existing pipelines").
@@ -216,6 +221,11 @@ R2a. **The switch.** Before the lock, read the shared switch
    for `agent-cycle.sh` to clear and log, too: this pipeline runs weekly, so
    letting it clear one would mean the `enabled` event explaining why cycles
    resumed could land days after they did.
+
+   The **fleet switch** (`fleet/disabled.json`; implementation spec 2.3a) is
+   honoured on exactly the same terms, checked right after the local one:
+   stand down while it is set, never write it, never clear it — not even
+   expired, for the same days-late-`enabled` reason.
 
 R2b. **The role guard.** Before the switch, the config and the lock, stand the
    run down unless `AGENT_OPS_ROLE` is `active` — the implementation pipeline's
@@ -470,7 +480,10 @@ a pull request, run the ones the change touches and any it could regress.
    and not by inference from `agent-cycle.sh` passing — a shared switch that
    only one pipeline reads is the whole failure mode R2a exists to prevent, and
    it looks identical to a working one until the week a review fires into a
-   half-edited `lib/`.
+   half-edited `lib/`. The same one-pipeline-blind hazard applies to the
+   fleet switch, so `test/toggle.test.sh`'s offline e2e runs the real
+   `review-cycle.sh` against a set `fleet/disabled.json` and asserts the
+   `review-stand-down` names it.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `TECH-DEBT.md`
    change but **not** `.claude/skills/project-review/` — confirm the injected

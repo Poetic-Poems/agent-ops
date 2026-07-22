@@ -254,14 +254,18 @@ assert_eq "the union is time-ordered" "1" \
 # The management switch logs through the same log_event as every pipeline
 # event, with no model call and no GitHub write — the cheapest offline proof
 # that events carry the node's name.
+# TOGGLE_GH is pinned to /bin/false so the fleet-flag writes that --disable
+# and --enable now attempt (requirement 2.3a) go to a stub that fails like an
+# unreachable state repo — never to the real one — and the local switch keeps
+# working regardless, which is exactly the degraded mode being asserted here.
 cycle_home="$(new_node cycle-node)"
 env HOME="$cycle_home" AGENT_OPS_ROLE=standby NODE_NAME=cycle-node \
-  STATE_SYNC_REMOTE="$remote" \
+  STATE_SYNC_REMOTE="$remote" TOGGLE_GH=/bin/false \
   "$SCRIPT_DIR/agent-cycle.sh" --disable "state-sync test" >/dev/null 2>&1
 assert_contains "switch events carry the node's name" '"node":"cycle-node"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
 env HOME="$cycle_home" AGENT_OPS_ROLE=standby NODE_NAME=cycle-node \
-  STATE_SYNC_REMOTE="$remote" \
+  STATE_SYNC_REMOTE="$remote" TOGGLE_GH=/bin/false \
   "$SCRIPT_DIR/agent-cycle.sh" --enable >/dev/null 2>&1
 assert_contains "the enable is logged too" '"event":"enabled"' \
   "$(cat "$cycle_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"

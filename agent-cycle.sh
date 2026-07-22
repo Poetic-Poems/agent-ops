@@ -170,6 +170,8 @@ limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours // 24')"
 candidates_max="$(cfg '.candidates_max // 3')"
+state_repo="$(cfg '.state_repo // ""')"
+[[ "$state_repo" == "null" ]] && state_repo=""
 all_repos_json="$(cfg_json '.repos')"
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
@@ -230,6 +232,18 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       log_event "disabled" "$(jq -nc --argjson r "$record" \
         '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by}')"
       printf 'agent-cycle: disabled — %s\n' "$(toggle_describe "$record")"
+      # The same record goes up as the fleet switch (requirement 2.3a): with
+      # several nodes active, "stop the pipelines" has to mean all of them.
+      # Best-effort — the local switch above already holds this node either
+      # way, and the operator is told which of the two situations they are in.
+      if [[ -n "$state_repo" ]]; then
+        if fleet_flag_write "$state_repo" disabled "$record" \
+             "fleet: disabled by $by — $DISABLE_REASON"; then
+          printf 'agent-cycle: fleet switch set — every node will stand down\n'
+        else
+          printf 'agent-cycle: WARNING — could not set the fleet switch (state repo unreachable?); only this node is disabled\n' >&2
+        fi
+      fi
       # Say it plainly rather than leaving it to be discovered: an agent that
       # disables the pipeline to edit these files has not stopped the cycle
       # that is already reading them.
@@ -249,6 +263,16 @@ if [[ -n "$MANAGE_ACTION" ]]; then
           "$(jq -r '.disabled_at // "?"' <<<"$record")" "$(jq -r '.reason // "?"' <<<"$record")"
       else
         printf 'agent-cycle: already enabled — no switch was set\n'
+      fi
+      # Clear the fleet switch too — and complain loudly if that fails,
+      # because a fleet flag left set keeps every node down after the
+      # operator believes they have re-enabled the operation.
+      if [[ -n "$state_repo" ]]; then
+        if fleet_flag_delete "$state_repo" "$state_dir" disabled; then
+          printf 'agent-cycle: fleet switch clear\n'
+        else
+          printf 'agent-cycle: WARNING — could not clear the fleet switch; every node still stands down. Re-run --enable, or delete fleet/disabled.json in %s by hand.\n' "$state_repo" >&2
+        fi
       fi
       refresh_dashboard
       exit 0
@@ -345,6 +369,13 @@ detect_and_log_limit_hit() {
   IFS=$'\t' read -r resume_at class needs_human < <(limit_decide "$text" "$limit_cooldown_default_hours")
   log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
     '{resume_at: $r, class: $c, needs_human: $h}')"
+  # Tell the fleet now, not a fetch interval from now: publish the stand-down
+  # as fleet/limit.json (extend-only; requirement 2.1). Best-effort — the
+  # limit-hit event above is already in this node's log, and the union carries
+  # it to every peer on their next fetch regardless.
+  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$needs_human" "$node_name" \
+    || log_event "warning" "$(jq -nc \
+         '{detail: "could not publish fleet/limit.json — peers will pick the cooldown up from the log union instead"}')"
 }
 
 extract_pr_url() {
@@ -562,6 +593,34 @@ case "$(jq -r '.state' <<<"$switch_state")" in
     ;;
 esac
 
+# --- 0a. The fleet switch (requirement 2.3a) ---
+# The same switch, one level up: fleet/disabled.json on the state repository's
+# main. Local first because it is free; this one costs a single contents read
+# — still before the lock, still before anything that spends. Absent means
+# enabled; unreachable falls back to the last fetched copy, and to enabled
+# with none — safe, because a node that charges ahead blind meets per-item
+# claims that fail closed (requirement 17a).
+#
+# An expired fleet disable is cleared by whichever node sees it first: the
+# delete is sha-guarded and idempotent, so a lost race just means a peer got
+# there — there is no singleton chore here (requirement 2.5).
+fleet_switch_state="$(fleet_disabled_state "$state_repo" "$state_dir")"
+case "$(jq -r '.state' <<<"$fleet_switch_state")" in
+  expired)
+    fleet_flag_delete "$state_repo" "$state_dir" disabled || true
+    log_event "enabled" "$(jq -nc \
+      --argjson r "$(jq -c '.record' <<<"$fleet_switch_state")" \
+      '{detail: "fleet disable expired", was: $r}')"
+    ;;
+  disabled)
+    log_event "stand-down" "$(jq -nc \
+      --arg r "fleet switch: $(toggle_describe "$(jq -c '.record' <<<"$fleet_switch_state")")" \
+      '{reason: $r}')"
+    (( ONCE )) && echo "agent-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
+    exit 0
+    ;;
+esac
+
 # --- 1. Lock ---
 acquire_lock() {
   if [[ -f "$lock_file" ]]; then
@@ -609,17 +668,38 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 
 # --- 2. Stand-down checks ---
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
-# so a limit any node hit stands this one down too)
-if [[ -s "$union_log" ]]; then
-  resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
-  if [[ -n "$resume_at" ]]; then
-    resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
-    now_epoch="$(date +%s)"
-    if (( resume_epoch > now_epoch )); then
-      log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
-      exit 0
-    fi
+# so a limit any node hit stands this one down too). Two carriers of the same
+# signal, and the later resume wins: the log union is as fresh as the last
+# state-sync fetch, while fleet/limit.json is read live — it is what lets a
+# limit one node hit a minute ago stop this cycle now, not a fetch interval
+# from now.
+resume_at=""
+resume_epoch=0
+union_resume=""
+[[ -s "$union_log" ]] && union_resume="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
+fleet_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir")"
+for cand in "$union_resume" "$fleet_resume"; do
+  [[ -n "$cand" ]] || continue
+  cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
+  if (( cand_epoch > resume_epoch )); then
+    resume_epoch="$cand_epoch"
+    resume_at="$cand"
   fi
+done
+now_epoch="$(date +%s)"
+if (( resume_epoch > now_epoch )); then
+  log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
+  exit 0
+fi
+
+# 2.1a Claim GC — sweep registry entries older than claim_ttl_hours (17a).
+# Every node runs it, because it needs no coordination: a registry delete is
+# sha-guarded, and a claim branch is deleted only if it is unmoved AND has no
+# PR, so the worst race outcome is a no-op. Runs before 2.2 so the count
+# there does not include entries this sweep just retired. Skipped on
+# --dry-run: a cycle that promises to change nothing must not delete refs.
+if ! (( DRY_RUN )); then
+  "$SCRIPT_DIR/lib/claim.sh" gc >>"$cycle_dir/claim.log" 2>&1 || true
 fi
 
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.

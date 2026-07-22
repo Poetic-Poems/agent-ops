@@ -104,6 +104,8 @@ lock_stale_after_hours="$(cfg '.review.lock_stale_after')"
 min_days_between_reviews="$(cfg '.review.min_days_between_reviews')"
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 review_repos_json="$(cfg_json '.review.repos')"
+state_repo="$(cfg '.state_repo // ""')"
+[[ "$state_repo" == "null" ]] && state_repo=""
 
 mkdir -p "$state_dir" "$state_dir/reviews" "$workspace_root"
 log_file="$state_dir/log.jsonl"                 # shared stream (limit-hit lives here)
@@ -141,6 +143,11 @@ log_shared_limit_hit() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   jq -nc --arg ts "$ts" --arg cycle "$review_id" --arg node "$node_name" --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
     '{ts: $ts, cycle: $cycle, node: $node, event: "limit-hit", resume_at: $r, class: $c, needs_human: $h}' >> "$log_file"
+  # And to the fleet flag (extend-only, best-effort), so peers stand down now
+  # rather than at their next state-sync fetch — REVIEW-PIPELINE-SPEC R3.
+  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$needs_human" "$node_name" \
+    || log_event "warning" "$(jq -nc \
+         '{detail: "could not publish fleet/limit.json — peers will pick the cooldown up from the log union instead"}')"
 }
 
 # Returns 0 (and logs limit-hit to the shared log) if the stage transcript shows
@@ -289,6 +296,18 @@ if [[ "$(jq -r '.state' <<<"$review_switch_state")" == "disabled" ]]; then
   exit 0
 fi
 
+# The fleet switch (requirement 2.3a), honoured on the same terms: this
+# pipeline stands down for it but never sets or clears it — an expired fleet
+# flag, like an expired local one, is agent-cycle.sh's to clear and log.
+fleet_review_switch="$(fleet_disabled_state "$state_repo" "$state_dir")"
+if [[ "$(jq -r '.state' <<<"$fleet_review_switch")" == "disabled" ]]; then
+  log_event "review-stand-down" "$(jq -nc \
+    --arg r "fleet switch: $(toggle_describe "$(jq -c '.record' <<<"$fleet_review_switch")")" \
+    '{reason: $r}')"
+  (( ONCE )) && echo "review-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
+  exit 0
+fi
+
 # --- Lock (R2) ---
 acquire_lock() {
   if [[ -f "$lock_file" ]]; then
@@ -333,17 +352,25 @@ union_log="$review_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 
 # --- Stand-down checks (R3) ---
-# 3.1 Usage-limit cooldown (shared signal, read from the fleet union exactly as agent-cycle.sh 2.1).
-if [[ -s "$union_log" ]]; then
-  resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
-  if [[ -n "$resume_at" ]]; then
-    resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
-    now_epoch="$(date +%s)"
-    if (( resume_epoch > now_epoch )); then
-      log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
-      exit 0
-    fi
+# 3.1 Usage-limit cooldown, exactly as agent-cycle.sh 2.1: the log union (as
+# fresh as the last fetch) and fleet/limit.json (read live), later resume wins.
+resume_at=""
+resume_epoch=0
+union_resume=""
+[[ -s "$union_log" ]] && union_resume="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
+fleet_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir")"
+for cand in "$union_resume" "$fleet_resume"; do
+  [[ -n "$cand" ]] || continue
+  cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
+  if (( cand_epoch > resume_epoch )); then
+    resume_epoch="$cand_epoch"
+    resume_at="$cand"
   fi
+done
+now_epoch="$(date +%s)"
+if (( resume_epoch > now_epoch )); then
+  log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
+  exit 0
 fi
 
 # 3.2 Defer to a running implementation cycle: if lock.json is held by a LIVE
@@ -504,17 +531,25 @@ while IFS= read -r entry; do
   # Re-check the shared usage-limit signal between repos: a limit hit while
   # reviewing the first repo must stop us before launching the second (R6).
   # The union is re-snapshotted here — this node's own hit lands in its log
-  # immediately, and a peer's arrives with the next fetch.
+  # immediately — and fleet/limit.json is re-read live, which is how a hit a
+  # *peer* took during our first review reaches us before their branch does.
   fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
-  if [[ -s "$union_log" ]]; then
-    resume_at="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
-    if [[ -n "$resume_at" ]]; then
-      resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
-      if (( resume_epoch > $(date +%s) )); then
-        log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
-        break
-      fi
+  resume_at=""
+  resume_epoch=0
+  union_resume=""
+  [[ -s "$union_log" ]] && union_resume="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
+  fleet_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir")"
+  for cand in "$union_resume" "$fleet_resume"; do
+    [[ -n "$cand" ]] || continue
+    cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
+    if (( cand_epoch > resume_epoch )); then
+      resume_epoch="$cand_epoch"
+      resume_at="$cand"
     fi
+  done
+  if (( resume_epoch > $(date +%s) )); then
+    log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
+    break
   fi
 
   review_one "$slug" "$default_branch"

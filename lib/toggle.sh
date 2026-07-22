@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# lib/toggle.sh — the pipelines' enable/disable switch (requirement 2.3).
+# lib/toggle.sh — the pipelines' enable/disable switch (requirement 2.3), and
+# the fleet flags that lift it and the usage-limit stand-down to every node
+# at once (requirements 2.3a and 2.1 — see the fleet section below).
 #
 # Sourced by agent-cycle.sh, review-cycle.sh and scripts/publish-dashboard.sh,
 # so what stops a cycle, what `--status` prints, and what the dashboard shows
@@ -115,15 +117,33 @@ toggle_parse_ttl() {
 # expired switch is a state change worth logging: an operator seeing cycles
 # resume deserves to find out why in the log.
 toggle_state() {
-  local f rec exp exp_epoch now
+  local f
   f="$(toggle_file "$1")"
   if [[ ! -f "$f" ]]; then
     printf '{"state":"enabled"}'
     return 0
   fi
-  rec="$(jq -c '.' "$f" 2>/dev/null || true)"
-  if [[ -z "$rec" ]]; then
-    printf '%s' '{"state":"disabled","record":{"reason":"unreadable disable record — treating as disabled","expires_at":null,"by":"","disabled_at":""}}'
+  # The file exists, so something meant to disable: an empty or unreadable
+  # record resolves toward disabled inside _toggle_eval via the sentinel.
+  _toggle_eval "$(cat "$f" 2>/dev/null || true)" present
+}
+
+# _toggle_eval RAW [present]
+# Evaluate the raw bytes of a switch record into the state object above.
+# Shared by toggle_state (local file) and fleet_disabled_state (fetched flag).
+# With no RAW there are two readings, and the caller says which applies:
+# `present` means "the record exists but is empty/unreadable" (disabled — see
+# the header: recovering enabled from a truncated write is the wrong
+# direction); otherwise no record exists at all (enabled).
+_toggle_eval() {
+  local raw="$1" presence="${2:-}" rec exp exp_epoch now
+  rec="$(jq -c '.' <<<"$raw" 2>/dev/null || true)"
+  if [[ -z "$rec" || "$rec" == "null" ]]; then
+    if [[ -z "$raw" && "$presence" != "present" ]]; then
+      printf '{"state":"enabled"}'
+    else
+      printf '%s' '{"state":"disabled","record":{"reason":"unreadable disable record — treating as disabled","expires_at":null,"by":"","disabled_at":""}}'
+    fi
     return 0
   fi
   exp="$(jq -r '.expires_at // ""' <<<"$rec" 2>/dev/null || true)"
@@ -247,4 +267,173 @@ toggle_status_report() {
     printf 'Wait for the running cycle to finish before editing files it reads.\n'
   fi
   return 0
+}
+
+# ===== Fleet flags (requirements 2.3a and 2.1) ================================
+#
+# The switch above stops one node. A fleet of active nodes needs two signals
+# that reach all of them at once, without waiting for the next state-sync
+# fetch interval:
+#
+#   fleet/disabled.json — the switch, one level up. Same record shape as
+#     state_dir/disabled.json; set and cleared by `agent-cycle.sh
+#     --disable/--enable`, which writes both levels.
+#   fleet/limit.json — a usage-limit stand-down. Every node spends the same
+#     Claude account, so the first node to hit the limit publishes
+#     {resume_at, class, needs_human, node, ts} and the rest stop trying.
+#     Writers may only ever *extend* resume_at, never shorten it — two nodes
+#     hitting the limit in the same minute must converge on the later resume,
+#     whatever order their writes land in.
+#
+# Both live as files on the state repository's main branch, written through
+# the contents API — the same CAS the claim registry uses (requirement 17a):
+# a PUT with a stale sha loses, and the loser re-reads before retrying. There
+# is no single writer and no chore to elect one; every operation here is
+# idempotent, so "whoever gets there first" is the whole protocol.
+#
+# Failure directions, chosen deliberately:
+#   404             → the flag is clear. Definitive, not an error.
+#   unreachable     → fall back to the copy cached at the last successful
+#     fetch (stale beats blind), and to *enabled* when there is none. Failing
+#     open here is safe because it is not the last line of defence: a node
+#     that charges ahead while GitHub is down meets per-item claims that fail
+#     closed (requirement 17a) and stands itself down anyway.
+#   present-but-garbage → disabled, exactly as for the local record: the flag
+#     exists because something meant to stop the fleet.
+#
+# `TOGGLE_GH` substitutes for `gh` in the tests, like CLAIM_GH/STATE_SYNC_GH.
+# An empty state-repo slug turns every function here into a quiet no-op: with
+# no state repository this is a single-node operation and the local switch
+# already covers it.
+
+_fleet_gh() { "${TOGGLE_GH:-gh}" "$@"; }
+
+# fleet_flag_path NAME
+fleet_flag_path() { printf 'fleet/%s.json' "$1"; }
+
+# fleet_cache_file STATE_DIR NAME
+# Where the last successfully fetched copy of a flag lives locally.
+fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
+
+# fleet_flag_fetch STATE_REPO STATE_DIR NAME
+# Print the flag's raw bytes, or nothing when it is clear. Always returns 0;
+# the caller cannot tell "clear" from "unreachable with no cache", which is
+# the point — both read as "nothing stands you down" (see the header for why
+# that is safe).
+fleet_flag_fetch() {
+  local repo="$1" state_dir="$2" name="$3" cache resp raw
+  [[ -n "$repo" ]] || return 0
+  cache="$(fleet_cache_file "$state_dir" "$name")"
+  mkdir -p "${cache%/*}" 2>/dev/null || true
+  if resp="$(_fleet_gh api "repos/$repo/contents/$(fleet_flag_path "$name")?ref=main" 2>"$cache.err")"; then
+    raw="$(jq -r '.content // ""' <<<"$resp" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null || true)"
+    printf '%s' "$raw" > "$cache"
+    printf '%s' "$raw"
+    return 0
+  fi
+  if grep -qiE 'HTTP 404|Not Found' "$cache.err" 2>/dev/null; then
+    rm -f "$cache"
+    return 0
+  fi
+  [[ -f "$cache" ]] && cat "$cache"
+  return 0
+}
+
+# fleet_flag_write STATE_REPO NAME BODY MESSAGE
+# One CAS attempt: read the current sha, PUT against it. Returns non-zero on
+# a lost race or an unreachable repo — the caller decides whether to re-read
+# and retry (the limit publisher does) or to warn (the disable path does).
+fleet_flag_write() {
+  local repo="$1" name="$2" body="$3" msg="$4" path payload sha
+  [[ -n "$repo" ]] || return 0
+  path="$(fleet_flag_path "$name")"
+  payload="$(printf '%s\n' "$body" | base64 -w0)"
+  sha="$(_fleet_gh api "repos/$repo/contents/$path?ref=main" --jq '.sha' 2>/dev/null || true)"
+  if [[ -n "$sha" ]]; then
+    _fleet_gh api -X PUT "repos/$repo/contents/$path" -f message="$msg" \
+      -f content="$payload" -f branch=main -f sha="$sha" >/dev/null 2>&1
+  else
+    _fleet_gh api -X PUT "repos/$repo/contents/$path" -f message="$msg" \
+      -f content="$payload" -f branch=main >/dev/null 2>&1
+  fi
+}
+
+# fleet_flag_delete STATE_REPO STATE_DIR NAME
+# Clear a flag. Absent (404) already counts as cleared; anything else that
+# stops the delete returns non-zero, because "cleared" reported for a flag
+# that is still set keeps the whole fleet standing down after the operator
+# believes they resumed it. A successful clear also drops the local cache —
+# a stale cached copy must not resurrect a flag the fleet no longer has.
+fleet_flag_delete() {
+  local repo="$1" state_dir="$2" name="$3" path errf resp sha
+  [[ -n "$repo" ]] || return 0
+  path="$(fleet_flag_path "$name")"
+  errf="$(fleet_cache_file "$state_dir" "$name").err"
+  mkdir -p "${errf%/*}" 2>/dev/null || true
+  if ! resp="$(_fleet_gh api "repos/$repo/contents/$path?ref=main" 2>"$errf")"; then
+    grep -qiE 'HTTP 404|Not Found' "$errf" 2>/dev/null || return 1
+    rm -f "$(fleet_cache_file "$state_dir" "$name")"
+    return 0
+  fi
+  sha="$(jq -r '.sha // empty' <<<"$resp" 2>/dev/null || true)"
+  [[ -n "$sha" ]] || return 1
+  _fleet_gh api -X DELETE "repos/$repo/contents/$path" \
+    -f message="fleet: clear $name" -f branch=main -f sha="$sha" >/dev/null 2>&1 || return 1
+  rm -f "$(fleet_cache_file "$state_dir" "$name")"
+  return 0
+}
+
+# fleet_disabled_state STATE_REPO STATE_DIR
+# The fleet switch, in exactly toggle_state's vocabulary — the pipelines
+# handle both switches with the same case statement.
+fleet_disabled_state() {
+  local raw
+  raw="$(fleet_flag_fetch "$1" "$2" disabled)"
+  if [[ -z "$raw" ]]; then
+    printf '{"state":"enabled"}'
+    return 0
+  fi
+  _toggle_eval "$raw" present
+}
+
+# fleet_limit_resume_at STATE_REPO STATE_DIR
+# Print fleet/limit.json's resume_at, or nothing. Garbage prints nothing: a
+# limit flag is machine-written, and an unreadable one failing open costs at
+# most one wasted attempt that re-hits the limit and republishes it.
+fleet_limit_resume_at() {
+  local raw
+  raw="$(fleet_flag_fetch "$1" "$2" limit)"
+  [[ -n "$raw" ]] || return 0
+  jq -r '.resume_at // empty' <<<"$raw" 2>/dev/null || true
+  return 0
+}
+
+# fleet_limit_publish STATE_REPO STATE_DIR RESUME_AT CLASS NEEDS_HUMAN NODE
+# Publish a usage-limit stand-down, extend-only: a flag already resuming at
+# or after RESUME_AT is left alone. Two attempts — re-read between them — so
+# losing the CAS to a peer publishing the same limit converges instead of
+# failing. Returns non-zero only when the flag could not be written at all;
+# the caller logs that and relies on the log union to carry the signal.
+fleet_limit_publish() {
+  local repo="$1" state_dir="$2" resume_at="$3" class="$4" needs_human="$5" node="$6"
+  local new_epoch body cur cur_at cur_epoch
+  [[ -n "$repo" ]] || return 0
+  new_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
+  (( new_epoch > 0 )) || return 0
+  body="$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson h "${needs_human:-false}" \
+    --arg n "$node" --arg ts "$(_toggle_iso)" \
+    '{resume_at: $r, class: $c, needs_human: $h, node: $n, ts: $ts}')"
+  for _ in 1 2; do
+    cur="$(fleet_flag_fetch "$repo" "$state_dir" limit)"
+    if [[ -n "$cur" ]]; then
+      cur_at="$(jq -r '.resume_at // empty' <<<"$cur" 2>/dev/null || true)"
+      if [[ -n "$cur_at" ]]; then
+        cur_epoch="$(date -d "$cur_at" +%s 2>/dev/null || echo 0)"
+        (( cur_epoch >= new_epoch )) && return 0
+      fi
+    fi
+    fleet_flag_write "$repo" limit "$body" \
+      "fleet: usage limit hit on $node — stand down until $resume_at" && return 0
+  done
+  return 1
 }
