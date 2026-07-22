@@ -164,33 +164,27 @@ docker compose up -d
 Compose recreates the scheduler with the new environment. Nothing else needs
 restarting, and the state volumes are untouched.
 
-### The failover drill
+### Changing who spends
 
-Worth rehearsing before you need it. Standing the old node down **first** is
-what keeps exactly one node spending at any moment:
+Any number of nodes may be `active` at once — per-item claims keep them off
+each other's work — so promoting or demoting a node is one variable and one
+`up -d`, in any order:
 
-1. On the current active node: set `ROLE=standby`, `docker compose up -d`.
-2. On the new one: set `ROLE=active`, `docker compose up -d`.
-3. Watch the next hourly tick on both:
-   - the old node logs `skipped — this node is standby`;
-   - the new one runs, and its log records the lease.
+1. Set `ROLE=active` (or `standby`) in the node's `.env`.
+2. `docker compose up -d`.
+3. Watch the next hourly tick: an active node runs a cycle; a standby logs
+   `skipped — this node is standby`. Either way its heartbeat keeps
+   publishing.
 
-If you do it the other way round, the lease catches you: the new node finds
-`leader.json` naming the old one, refreshed within `lease_ttl_hours`, and stands
-down until that expires. Safe, but it costs up to three hours of cycles — hence
-the order above.
-
-To confirm the new active node inherited the fleet's memory rather than starting
-blank:
+To confirm a node is following the fleet's memory rather than only its own:
 
 ```bash
-docker compose exec scheduler tail -n 5 /home/agent/.local/state/poetic-agents/log.jsonl
-docker compose exec scheduler ls /home/agent/.local/state/poetic-agents/cycles | tail -n 3
+docker compose exec scheduler ls /home/agent/.cache/poetic-agents/workspaces/.agent-ops-peers
+docker compose exec scheduler tail -n 3 /home/agent/.cache/poetic-agents/workspaces/.agent-ops-peers/*/log.jsonl
 ```
 
-Those should show the *other* node's recent cycles. That is the whole purpose of
-the state sync: a spare that has to relearn what has already been tried is not a
-spare.
+Those should name the *other* nodes and show their recent events. That is the
+whole purpose of the fetch: a lesson any node learned spares the rest.
 
 ### Taking a node out of service
 
@@ -216,7 +210,7 @@ when it returns.
 | `cannot clone …agent-ops-state` | The token cannot read the private state repo | Widen the token's repository access |
 | `gh auth status` says the token is invalid, but the same token works on the host; `git clone` resets; `claude` hangs | The bridge MTU exceeds the host's egress MTU — full-sized packets vanish, so every TLS handshake fails while DNS and plain HTTP still work | Set `DOCKER_MTU` in `.env` to the host's egress MTU and `docker compose up -d` |
 | The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on exactly one node |
-| A cycle stands down naming another node | That node holds the lease | Expected during a failover; it clears after `lease_ttl_hours` |
+| A cycle logs `claim-lost` and moves on | A peer node won that item's claim | Working as intended — the next candidate (or the next cycle) picks different work |
 | The dashboard URL times out | The server binds `127.0.0.1`, so a published port reaches nothing | Use the `tailnet` profile (sidecar namespace) or `local` (host namespace) — never `ports:` |
 | `Address already in use` on the `local` profile | Something already holds the port on that host — on the laptop, the legacy SysV dashboard | Set `DASHBOARD_PORT` in `.env` |
 | Nothing happens on any node | The shared switch is set | `--status` to see the reason, `--enable` to clear it |

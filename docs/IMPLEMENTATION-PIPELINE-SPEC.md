@@ -84,10 +84,12 @@ a node updates by pulling a new image rather than by pulling a branch.
   start if `state_dir` is not writable, rather than letting a mis-owned volume
   become a silent failure to record anything.
 - `deploy/docker/crontab` carries the same three pipeline schedules as the
-  laptop crontab, plus a fourth line the laptop has no use for — a
-  `state-sync.sh restore` every seven minutes, which keeps a standby node's
-  memory current and does nothing at all on the active one (requirement 2.5) — the 5-minute dashboard heartbeat, the hourly cycle, the daily
-  review tick — with the same redirections into `state_dir`, so the dashboard's
+  laptop crontab — the 5-minute dashboard heartbeat, the hourly cycle, the
+  daily review tick — plus two fleet lines (requirement 2.5): a
+  `state-sync.sh push` every five minutes, which publishes this node's state
+  and heartbeat to its own branch, and a `state-sync.sh fetch` every seven,
+  which materialises every peer's for the union readers. The same
+  redirections into `state_dir` apply, so the dashboard's
   log-derived views work identically. It deliberately omits the laptop's
   personal `update-main-branches.sh` entry: that refreshes interactive
   checkouts, and a node has none.
@@ -242,7 +244,6 @@ values below are the confirmed defaults; the README must document each key.
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op. |
-| `lease_ttl_hours` | 3 h | How long `leader.json` stands before another node may take it. Long enough to outlive one cycle of any plausible length, short enough that a node which dies does not hold the operation down for a working day. |
 | `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | 1000 | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -390,31 +391,32 @@ runs unattended.
    *after* the guard, so a standby node neither logs nor clears it: the record
    belongs to the active node, and expiry is its business to notice.
 
-   **Why fail-closed.** The pipelines are meant to run on several machines
-   (the laptop and any number of cloud nodes) with exactly one spending. The
-   two mistakes are not symmetric: a node wrongly standby costs one skipped
-   cycle, visible on the dashboard within the hour and fixed by one variable; a
-   second node wrongly active opens competing pull requests for the same item,
-   pays for both, and leaves a mess in the target repos for a human to
-   untangle. So the guard resolves every ambiguity toward standby, exactly as
-   requirement 2.3 resolves every ambiguity toward disabled. The guard is a
-   local, zero-cost check, not a distributed lock: it stops a misconfigured
-   node, not two nodes both deliberately configured as active.
+   **Why fail-closed.** The pipelines run on several machines (the laptop
+   and any number of cloud nodes), and any number of them may be active at
+   once — per-item claims (requirement 17a) keep concurrent actives off the
+   same work, so the role no longer elects "the" worker; it decides whether
+   *this* machine spends unattended at all. The two mistakes are still not
+   symmetric: a node wrongly standby costs skipped cycles, visible on the
+   dashboard within the hour and fixed by one variable; a node wrongly
+   active spends money nobody chose to spend. So the guard resolves every
+   ambiguity toward standby, exactly as requirement 2.3 resolves every
+   ambiguity toward disabled. The guard is a local, zero-cost check: spend
+   is opted into per machine, deliberately, never inherited from a typo.
 
    Implemented in `lib/role.sh`, shared with `review-cycle.sh`
    (`docs/REVIEW-PIPELINE-SPEC.md`, R2b) so "active" has one definition.
-2.5. **State replication and the lease.** The pipelines' memory —
-   `state_dir` — is replicated between nodes through the private repository
-   named by `state_repo`, by `scripts/state-sync.sh`. Every mode of that script
-   is a silent no-op when `state_repo` is unset, so a single-node operation
-   behaves exactly as it did before the fleet existed.
+2.5. **The fleet's shared memory.** The pipelines' memory — `state_dir` — is
+   published between nodes through the private repository named by
+   `state_repo`, by `scripts/state-sync.sh`, one branch per node. Every mode
+   of that script is a silent no-op when `state_repo` is unset, so a
+   single-node operation behaves exactly as it did before the fleet existed.
 
    **What replicates.** Everything under `state_dir` except the live locks
    (`lock.json`, `review-lock.json`), the dashboard's own machinery
    (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
-   `.dashboard-github.json`), `state-sync.log`, and `leader.json`. The
-   exclusions are not tidiness: a restored `lock.json` is a lock no process
-   holds, and would stand every later cycle down until it went stale; the
+   `.dashboard-github.json`), and `state-sync.log`. The
+   exclusions are not tidiness: a copied `lock.json` is a lock no process
+   holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied. `log.jsonl`,
    `review-log.jsonl`, `cycles/`, `reviews/`, `disabled.json` and the cron logs
@@ -422,52 +424,47 @@ runs unattended.
    installed. Git stores no empty directories, so a cycle that stood down
    before its first stage replicates as its `log.jsonl` entry alone.
 
-   **Push.** The active node mirrors `state_dir` into the state repository at
-   the *end* of a cycle, from the same cleanup that releases the lock: a
-   half-written cycle replicated to every standby is worse than a complete one
-   that arrives an hour later. It is a single rolling commit — `commit --amend`
-   plus a force-push — because the state files carry their own history
-   (`log.jsonl` is append-only, every cycle keeps its own directory) and a
-   commit per push would be a second, redundant history whose only lasting
-   effect is a repository that grows without bound. The mirror keeps the newest
-   `cycles_retained` cycle directories. The node's own history is bounded
-   separately, by the same push and before any mirroring: local `cycles/` and
-   `reviews/` are pruned to the newest `state_local_cycles_retained` each — a
-   deliberately longer record than the mirror's, so everything the mirror
-   wants is always still on disk and the machine remains the fuller history of
-   the two, with a floor of one so the cycle being recorded is always kept. A
-   push that finds nothing changed does not force-push, though it still
-   prunes.
+   **Push.** Every node — active or standby — mirrors its `state_dir` into
+   its **own branch**, `nodes/<NODE_NAME>`, every few minutes from the
+   crontab and again from the cleanup that ends a cycle. No two nodes share
+   a branch, so pushes cannot contend and nothing arbitrates them. Each push
+   stamps `heartbeat.json` (`{node, role, ts, last_cycle}`) into the branch
+   root — on a standby, which has no cycles to publish, the heartbeat is the
+   entire point, and it is what lets the fleet dashboard tell a quiet node
+   from a dead one. Each branch is a single rolling commit — `commit
+   --amend` plus a force-push — because the state files carry their own
+   history (`log.jsonl` is append-only, every cycle keeps its own directory)
+   and a commit per push would be a second, redundant history whose only
+   lasting effect is a repository that grows without bound. A mid-cycle push
+   is fine: consumers read logs rather than adopting state, and the
+   dashboard tolerates a torn transcript for one tick. The branch keeps the
+   newest `cycles_retained` cycle directories. The node's own history is
+   bounded separately, by the same push and before any mirroring: local
+   `cycles/` and `reviews/` are pruned to the newest
+   `state_local_cycles_retained` each — a deliberately longer record than
+   the branch's, so everything the branch wants is always still on disk and
+   the machine remains the fuller history of the two, with a floor of one so
+   the cycle being recorded is always kept. A mirror-level `flock`
+   serialises the cron push against the end-of-cycle push.
 
-   **Restore.** A standby node mirrors the repository back into its `state_dir`
-   from its own schedule. It is a mirror, not a merge: a cycle pruned upstream
-   goes here too. It is a no-op on the active node — restoring onto the source
-   of truth would overwrite the cycle it is in the middle of recording — and
-   silent when nothing changed, because it runs every few minutes on every
-   standby node and a log of "nothing happened" is a log nobody reads.
+   **Fetch.** Every node materialises every *other* node's branch, whole,
+   under the peers directory (`lib/fleet.sh`, `<workspace_root>/
+   .agent-ops-peers/<node>/`), on its own schedule: `git archive` into a
+   temporary directory swapped atomically into place, so a union reader
+   never sees half a peer. A branch that has been deleted is a node that has
+   left the fleet — its peer copy is pruned on the next fetch. Nothing is
+   ever written into a node's own `state_dir` from outside.
 
-   **The lease.** `leader.json` at the root of the state repository —
-   `{"node": …, "updated": …}` — records which node is running, and is taken
-   after the lock and before any work. If it names another node and was
-   refreshed less than `lease_ttl_hours` ago, this cycle logs a stand-down and
-   exits 0; otherwise this node claims or refreshes it. The write is a
-   compare-and-set on the file's blob sha, so two nodes claiming at once
-   produces one winner and one stand-down. It is read and written through the
-   REST contents API rather than the mirror, because a check that happens
-   before a cycle does anything should cost one request rather than a clone;
-   for the same reason it is excluded from the mirroring, which would otherwise
-   delete it. `--dry-run` and `--once` take no lease, and therefore also push
-   nothing.
-
-   **Why the lease fails open.** A node that cannot reach GitHub for a moment
-   proceeds, with a warning. This is the opposite choice to requirement 2.4,
-   and deliberately: the role guard is a local, deterministic check where
-   ambiguity means misconfiguration, while the lease depends on the network,
-   where ambiguity means weather. Failing closed there would let one failed
-   request stop the whole operation, quietly, while looking healthy — and the
-   cost of being wrong is bounded, because duplicating work needs a *second*
-   node already deliberately configured active. The lease is the safety net
-   under the role guard, not a replacement for it.
+   **The union.** What the fleet shares is memory, not authority: the
+   blocked and void extractions (requirements 34/34c), the no-op fingerprint
+   (3b) and the usage-limit cooldown (2.1) all read `fleet_logs` — this
+   node's own log concatenated with every peer's, sorted into time order —
+   so a lesson any node learned stands the whole fleet down, or spares it a
+   re-check, within one fetch interval. The union is advisory speed; the
+   claims of requirement 17a are the lock underneath it. Cross-node work
+   arbitration has no other mechanism: there is no lease and no leader, and
+   `claims/` on the state repository's `main` branch — which per-node
+   branches never touch — is owned exclusively by `lib/claim.sh`.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`; sort least recent
    first. The most-overdue repo gets first look, and this ordering takes
@@ -850,8 +847,7 @@ runs unattended.
     - When `state_repo` is unset (a single-node operation), file claims are
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
-      cycle: a supervised run contends with the fleet on equal terms, which
-      closes the race the lease never covered.
+      cycle: a supervised run contends with the fleet on equal terms.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -1110,14 +1106,14 @@ What exists, and the requirements each part answers to:
    cost-control feature must not become a reliability risk — but must not
    pretend a failed call is an empty result either (see requirement 3b). Must
    pass `shellcheck`.
-3d. `scripts/state-sync.sh` implementing requirement 2.5: `push`, `restore` and
-   `lease`. Called by both pipelines (the lease before any work, the push from
-   the cleanup that ends a cycle) and by the container crontab (the restore).
-   Every mode is a no-op when `state_repo` is unset. Needs `rsync` and `git`,
-   and degrades to a warning and exit 0 when either is missing, because a node
-   that cannot replicate is still a node that can run. Unit-tested against a
-   local bare repository and a stubbed `gh` (`test/state-sync.test.sh`); must
-   pass `shellcheck`.
+3d. `scripts/state-sync.sh` implementing requirement 2.5: `push` and `fetch`.
+   Called by both pipelines (the push from the cleanup that ends a cycle) and
+   by the container crontab (the every-few-minutes push and the fetch).
+   Every mode is a no-op when `state_repo` is unset. Needs `rsync`, `git`
+   (and `tar` for the fetch), and degrades to a warning and exit 0 when one
+   is missing, because a node that cannot replicate is still a node that can
+   run. Unit-tested against a local bare repository
+   (`test/state-sync.test.sh`); must pass `shellcheck`.
 3e. `lib/claim.sh` implementing requirement 17a: `claim` (kinds `branch` and
    `file`), `release`, `count` and `gc`, exit codes 0 won/done, 3 lost, 1
    error. Called by `agent-cycle.sh` (the claim loop after selection, the
@@ -1199,17 +1195,20 @@ pull request, run the ones the change touches and any it could regress.
    through the requirement 2.4 guard with `ROLE=standby`; and a second
    `up -d` reports every container `Running` without recreating one.
    `docker compose --profile tailnet config` is valid.
-1d. **State replicates, and only one node runs.** `test/state-sync.test.sh`
+1d. **State replicates per node, and comes back as peers.**
+   `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the
-   locks, the dashboard or the lease; an unchanged push does not force-push; a
-   changed one amends rather than accumulating history; the mirror keeps
+   locks or the dashboard, onto the node's own `nodes/<NODE_NAME>` branch
+   with a heartbeat naming the node, its role and its newest cycle; a second
+   push amends rather than accumulating history; a standby pushes its own
+   branch and never a peer's; the branch keeps
    `cycles_retained` cycles while the node's own `cycles/` and `reviews/` are
-   pruned to the newest `state_local_cycles_retained` by the same push, a
-   no-change push included, newest always kept; a restore is a mirror
-   that leaves the node's local-only files alone, and is a silent no-op on the
-   active node and when nothing changed; a fresh foreign lease stands a cycle
-   down with a logged stand-down and no selection, while an expired one is
-   taken over.
+   pruned to the newest `state_local_cycles_retained` by the same push,
+   newest always kept; a fetch materialises a peer whole
+   under the peers directory, leaves the node's own `state_dir` alone, never
+   includes the node itself, and prunes a peer whose branch is gone; the
+   union read (`lib/fleet.sh`) carries both nodes' events in time order; and
+   pipeline events written through `log_event` carry the node's name.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
