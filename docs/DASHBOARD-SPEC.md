@@ -64,15 +64,38 @@ page next to it each run. Opening the page needs nothing else.
 
 ## State it reads (verified 2026-07-14)
 
-All paths derive from `config.json` (tilde-expanded `state_dir`), read the
-same way `agent-cycle.sh` reads them.
+All paths derive from `config.json` (tilde-expanded `state_dir` and
+`workspace_root`), read the same way `agent-cycle.sh` reads them.
 
-- **`log.jsonl`** — the event stream (requirement 33). Parsed line-by-line
+- **`log.jsonl` — the FLEET's, not just ours** (requirements 33 and 2.5): this
+  node's log unioned with every peer's fetched copy, via the same
+  `lib/fleet.sh` read the pipelines use. Parsed line-by-line
   with `fromjson? // empty` so a half-written trailing line (the Script may be
   appending) never aborts the parse. Blocked items use requirement 34's
   semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`); void
   items use requirement 34c's (most recent `item-void`/`unvoided`). Both come
-  from the shared library, never from a local copy of the rule.
+  from the shared library, never from a local copy of the rule. With no peers
+  the union reduces exactly to the old local read.
+- **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
+  tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
+  entry ({node, role, heartbeat, last cycle}; older than 30 minutes → `stale:
+  true` — three missed pushes, not clock jitter); its `cycles/<id>/` transcripts
+  render peer cycles with exactly the fidelity of local ones, and its `.out`
+  envelopes join the fleet-wide cost roll-ups (every node spends one Claude
+  account, so per-node spend would be the misleading number). The merged cycle
+  detail list is capped at `MAX_CYCLES` *fleet-wide*, newest first across all
+  nodes — that cap is what holds `data.js` near its single-node size however
+  many nodes report. An id that exists on disk always renders from the owning
+  node's directory (the D-before-E source ranking in the Publisher); an id
+  known only from events renders from its events alone.
+- **`fleet-cache/{disabled,limit}.json`** — the fleet flags' cached copies
+  (requirement 2.3a), maintained by `lib/toggle.sh` and refreshed by this
+  Publisher's own GitHub tick. Read as plain files, so a `--no-github` tick and
+  a standby node surface them with no API call. Surfaced as `fleet.flags` and
+  rendered as banners: the fleet switch (suppressed when the local switch
+  banner already covers it — the setting node writes both levels), and the
+  fleet-wide usage-limit stand-down (shown when the local log union has not
+  caught up — a standby with no state yet, or a hit seconds old elsewhere).
 - **`disabled.json`** — the switch (requirement 2.3), read through
   `lib/toggle.sh`: the same code the pipelines gate on, so the dashboard cannot
   disagree with them about whether cycles are meant to be running (requirement
@@ -160,10 +183,11 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
 
 ```
 { generated_at, max_open_agent_prs,
+  node,                                // which node's Publisher wrote this page
   config:  { models, timeouts, pr_label, branch_prefix, repos, … },
   status:  { running, lock:{pid,started_at,alive},
              current:{stage,repo,item,source,title}, last_cycle, limit:{active,note} },
-  counts:  { cycles_shown, failures_shown, prs_reached_ready,
+  counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd, by_day[], by_model[] },
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
@@ -171,13 +195,25 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
                           limit_hit, limit_text } },
-               events[] } ],           // most recent 40, newest first
-  blocked: [ { repo, item, ts, detail, stage } ],
+               events[] } ],           // most recent 40 FLEET-WIDE, newest first
+  blocked: [ { repo, item, ts, detail, stage } ],       // from the log union
   void:    [ { repo, item, ts, detail, stage, evidence } ],
-  github:  { ok, error, fetched_at, stale, prs[], inputs:{<slug>:{issues,failed_runs,tech_debt}} },
-  log_tail:  [ … ],                    // recent events, newest first
+  github:  { ok, error, fetched_at, stale, prs[], claims[],
+             inputs:{<slug>:{issues,failed_runs,tech_debt}} },
+  fleet:   { nodes:  [ { node, role, heartbeat_ts, heartbeat_age_s,
+                         last_cycle, self, stale } ],   // self first
+             flags:  { disabled, limit },               // cached fleet flags (2.3a)
+             claims: [ { repo, key, kind, node, cycle, item, source, ts, sha } ] },
+  log_tail:  [ … ],                    // recent events, newest first, fleet-wide
   cron_tail: [ "line", … ] }
 ```
+
+`fleet.claims` is the live claim registry (implementation spec 17a), fetched
+with a handful of contents-API reads on the GitHub tick and carried between
+ticks by the same cache as `github` (it rides in `github.claims`; `fleet.claims`
+is the surfaced view). Every node renders the same fleet, so any node's URL
+answers "what is the operation doing" — `node` (header: "· <name>") is what
+tells two otherwise identical tabs apart.
 
 ## The Site (`dashboard/index.html`)
 
@@ -194,12 +230,22 @@ compare that ignores the always-moving `generated_at`). Expanded cycle rows,
 open transcript panels and scroll position survive the re-render; the header's
 staleness clock ticks every interval and warns if the heartbeat looks stopped.
 
-Panels: status header (running/idle, and while a cycle runs the stage, repo,
-work source and item it is working on) + disabled / usage-limit /
-failing-checks / gh-down banners (the switch first: when it is set, every other quiet signal on the page
+Panels: status header (running/idle, "· <node>" naming the page's own node,
+and while a cycle runs the stage, repo,
+work source and item it is working on) + disabled / fleet-switch / usage-limit
+/ fleet-limit / failing-checks / gh-down / stale-peer banners (the switch
+first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
-metric cards (spend today/total, failures, reached-ready, back-pressure gauge
+**the fleet strip** — one card per node (name, role, heartbeat freshness, last
+cycle; stale peers bordered red; click a card to filter the cycle list to that
+node, click again to clear — the filter survives refreshes like every other
+UI state); **live claims** — the registry rows, i.e. work no other node will
+pick up. Both, plus the cycles table's Node column, appear only once the fleet
+has more than one node (or a claim exists): a single-node page renders exactly
+as it always did.
+Then metric cards (spend today/total — fleet-wide, one shared account —
+failures, reached-ready, back-pressure gauge
 vs `max_open_agent_prs`); open PRs; recent cycles (outcome and work source at
 a glance; click a row for per-stage detail with the parsed status, full
 transcript, and stderr); failures,

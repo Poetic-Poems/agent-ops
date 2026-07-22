@@ -58,6 +58,9 @@
   .card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
   .card .v { font-size: 22px; font-weight: 650; margin-top: 2px; }
   .card .v small { font-size: 13px; font-weight: 500; color: var(--muted); }
+  .card.clickable { cursor: pointer; }
+  .card.nodestale { border-color: var(--red); }
+  .card.nodeselected { outline: 2px solid var(--accent); }
   section { margin-bottom: 26px; }
   section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
     margin: 0 0 10px; font-weight: 600; }
@@ -124,6 +127,7 @@
 <body>
 <header class="top">
   <h1 id="title">Agent Pipeline Dashboard</h1>
+  <span class="mono muted" id="nodename" title="the node whose publisher rendered this page"></span>
   <span id="livestate"></span>
   <span class="grow"></span>
   <span class="freshness" id="freshness"></span>
@@ -217,11 +221,32 @@
     "stand-down":"b-grey","cycle-skipped":"b-grey" };
 
   // ---------- UI state preserved across in-place re-renders ----------
-  // The body is rebuilt from scratch each time the data changes; these two
-  // maps carry the operator's open/closed choices across that rebuild so a
+  // The body is rebuilt from scratch each time the data changes; these maps
+  // carry the operator's open/closed choices across that rebuild so a
   // 5-second refresh never collapses what they were reading.
   var expanded = Object.create(null);     // cycle id -> true while its detail row is open
   var openDetails = Object.create(null);  // "cycle/stage/kind" -> true for open <details>
+  var nodeFilter = null;                  // node name while the cycle list is filtered to one node
+
+  // ---------- fleet helpers ----------
+  function fleetNodes()  { return (D.fleet && D.fleet.nodes)  || []; }
+  function fleetClaims() { return (D.fleet && D.fleet.claims) || []; }
+  function fleetFlags()  { return (D.fleet && D.fleet.flags)  || {}; }
+  // The fleet chrome appears only once there is a fleet: with a single node
+  // every extra strip, column and panel is noise, so the page renders exactly
+  // as it did single-node until a peer shows up (or a claim exists).
+  function fleetVisible() { return fleetNodes().length > 1 || fleetClaims().length > 0; }
+
+  function nodeTag(n) {
+    if (!n) return el("span", {class:"muted", text:"—"});
+    var self = D.node && n === D.node;
+    return el("span", {class:"badge " + (self ? "b-blue" : "b-grey"), title: self ? n + " (this node)" : n,
+                       text: n.length > 18 ? n.slice(0, 17) + "…" : n});
+  }
+  function roleBadge(role) {
+    return role === "active" ? el("span", {class:"badge b-green", text:"active"})
+         : el("span", {class:"badge b-grey", text: role || "standby"});
+  }
 
   // ---------- section builder ----------
   function sectionOf(title, body) {
@@ -253,9 +278,55 @@
     return tableOf(["PR","Title","State","Checks","Merge","Opened"], rows);
   }
 
+  // ---------- fleet strip ----------
+  // One card per node: role, heartbeat freshness, last cycle. Clicking a card
+  // filters the cycle list to that node; clicking it again clears the filter.
+  function fleetStrip() {
+    var wrap = el("div", {class:"cards"});
+    fleetNodes().forEach(function (n) {
+      var hbText = n.self ? "this node" :
+        (n.heartbeat_age_s == null ? "no heartbeat" : "heartbeat " + fmtAgo(n.heartbeat_ts));
+      var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
+                            title: nodeFilter === n.node ? "click to show every node's cycles" : "click to filter cycles to " + n.node}, [
+        el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]),
+        el("div", {class:"v", style:"font-size:14px", text: hbText}),
+        el("small", {class:"muted", text: n.stale ? "STALE — last push >30 min ago" :
+          (n.last_cycle ? "last cycle " + esc(n.last_cycle).slice(0, 16) : "no cycles yet")})
+      ]);
+      card.addEventListener("click", function () {
+        nodeFilter = (nodeFilter === n.node) ? null : n.node;
+        renderBody();
+      });
+      wrap.appendChild(card);
+    });
+    return wrap;
+  }
+
+  // ---------- claims panel ----------
+  // The live claim registry: work the fleet holds that has not yet surfaced
+  // as a PR. Every row here is an item no other node will pick up.
+  function claimsPanel() {
+    var claims = fleetClaims();
+    if (!claims.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No live claims — nothing is mid-flight."}));
+    var rows = claims.map(function (c) {
+      return el("tr", {}, [
+        el("td", {class:"mono", text: (c.repo || "?").split("/")[1] || c.repo}),
+        el("td", {class:"mono wrap", text: c.key || "?"}),
+        el("td", {}, nodeTag(c.node)),
+        el("td", {}, sourceTag(c.source)),
+        el("td", {class:"wrap", text: c.item || ""}),
+        el("td", {class:"muted", text: fmtAgo(c.ts)})
+      ]);
+    });
+    return tableOf(["Repo","Claim","Node","Source","Item","Held"], rows);
+  }
+
   // ---------- cycles panel ----------
   function cyclesPanel(cycles) {
-    if (!cycles.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No cycles recorded yet."}));
+    if (nodeFilter) cycles = cycles.filter(function (cy) { return cy.node === nodeFilter; });
+    if (!cycles.length) return el("div", {class:"panel"}, el("div", {class:"empty",
+      text: nodeFilter ? "No cycles from " + nodeFilter + " in the fleet window." : "No cycles recorded yet."}));
+    var showNode = fleetVisible();
     var rows = [];
     cycles.forEach(function (cy, i) {
       var stageCells = el("div", {class:"stagecells"}, ["coordinator","implementor","reviewer"].map(function (s) {
@@ -269,7 +340,7 @@
       // don't collide on one key and toggle together.
       var rowKey = cy.id != null ? "id:" + cy.id : "idx:" + i;
       var isOpen = !!expanded[rowKey];
-      var tr = el("tr", {class:"clickable"}, [
+      var cells = [
         el("td", {class:"muted mono", text: fmtTime(cy.started_at)}),
         el("td", {}, outcomeBadge(cy.outcome)),
         el("td", {}, sourceTag(cy.source)),
@@ -279,8 +350,10 @@
         el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         el("td", {}, cy.pr_url ? el("a", {href:cy.pr_url, target:"_blank", text:"PR"}) : document.createTextNode(""))
-      ]);
-      var detail = el("tr", {class:"detail", style: isOpen ? "" : "display:none"}, el("td", {colspan:7}, cycleDetail(cy)));
+      ];
+      if (showNode) cells.splice(1, 0, el("td", {}, nodeTag(cy.node)));
+      var tr = el("tr", {class:"clickable"}, cells);
+      var detail = el("tr", {class:"detail", style: isOpen ? "" : "display:none"}, el("td", {colspan: showNode ? 8 : 7}, cycleDetail(cy)));
       tr.addEventListener("click", function (ev) {
         if (ev.target.tagName === "A") return;
         var nowOpen = detail.style.display === "none";
@@ -289,7 +362,10 @@
       });
       rows.push(tr); rows.push(detail);
     });
-    return tableOf(["Started","Outcome","Source","Item","Stages (cost)","Total","PR"], rows);
+    var headers = showNode
+      ? ["Started","Node","Outcome","Source","Item","Stages (cost)","Total","PR"]
+      : ["Started","Outcome","Source","Item","Stages (cost)","Total","PR"];
+    return tableOf(headers, rows);
   }
 
   function cycleDetail(cy) {
@@ -529,10 +605,41 @@
         el("span", {class:"sub", text: detail})
       ]));
     }
+    // The fleet switch (2.3a) — suppressed when the local switch banner is
+    // already up: the node that set it writes both levels, and two banners
+    // saying one thing reads like two problems.
+    var ff = fleetFlags();
+    if (ff.disabled && !(st.switch && st.switch.disabled)) {
+      var fdetail = ff.disabled.reason ? ("“" + ff.disabled.reason + "”") : "no reason recorded";
+      if (ff.disabled.by) fdetail += " — set by " + ff.disabled.by;
+      fdetail += ff.disabled.expires_at ? ("; expires " + ff.disabled.expires_at)
+                                        : "; no expiry — needs `agent-cycle.sh --enable`";
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⏸ Fleet switch is set — every node stands down."}),
+        el("span", {class:"sub", text: fdetail})
+      ]));
+    }
     if (st.limit && st.limit.active) {
       banners.appendChild(el("div", {class:"banner amber"}, [
         el("span", {text: "⏸ Usage limit reached."}),
         el("span", {class:"sub", text: st.limit.note ? ("Pipeline stands down — " + st.limit.note + ".") : "Pipeline stands down until the limit resets."})
+      ]));
+    } else if (ff.limit && ff.limit.resume_at && parseTs(ff.limit.resume_at) && parseTs(ff.limit.resume_at) > new Date()) {
+      // The fleet limit flag (2.1) matters here exactly when the local log
+      // union hasn't caught up — a standby with no state yet, or a hit
+      // seconds old on another node.
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⏸ Fleet-wide usage-limit stand-down."}),
+        el("span", {class:"sub", text: "Until " + ff.limit.resume_at + " — published by " + (ff.limit.node || "?") +
+          (ff.limit.needs_human ? "; needs human action (raise the cap)." : ".")})
+      ]));
+    }
+    var staleNodes = fleetNodes().filter(function (n) { return n.stale; });
+    if (staleNodes.length) {
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⚠ Peer state is stale."}),
+        el("span", {class:"sub", text: staleNodes.map(function (n) { return n.node; }).join(", ") +
+          " last pushed more than 30 minutes ago — the fleet view may lag; check state-sync on those nodes."})
       ]));
     }
     var openPrs = (D.github && D.github.prs) || [];
@@ -550,6 +657,9 @@
       ]));
     }
     app.appendChild(banners);
+
+    // ---------- fleet strip ----------
+    if (fleetVisible()) app.appendChild(sectionOf("Fleet", fleetStrip()));
 
     // ---------- metric cards ----------
     var c = D.counts || {};
@@ -580,8 +690,12 @@
     // ---------- open PRs ----------
     app.appendChild(sectionOf("Open pull requests", prsPanel(openPrs)));
 
+    // ---------- live claims ----------
+    if (fleetVisible()) app.appendChild(sectionOf("Live claims", claimsPanel()));
+
     // ---------- cycle history ----------
-    app.appendChild(sectionOf("Recent cycles", cyclesPanel(D.cycles || [])));
+    app.appendChild(sectionOf(nodeFilter ? "Recent cycles — " + nodeFilter + " only (click its card to clear)" : "Recent cycles",
+      cyclesPanel(D.cycles || [])));
 
     // ---------- failures & blocked ----------
     app.appendChild(sectionOf("Failures, blocked & void items", failuresPanel()));
@@ -612,6 +726,9 @@
   // Ns ago" clock and the running/idle dot stay live.
   function renderHeaderStatus() {
     var st = D.status || {};
+    // Which node's publisher produced this page — every node renders the same
+    // fleet, so this is what tells two otherwise identical tabs apart.
+    document.getElementById("nodename").textContent = D.node ? "· " + D.node : "";
     var live = document.getElementById("livestate");
     live.innerHTML = "";
     if (st.running && st.lock) {
