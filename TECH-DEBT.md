@@ -186,3 +186,4 @@ above.
 | TD26072101 | A blocked item's new evidence can never unblock it | open | | |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
+| TD26072301 | A watchtower roll mid-cycle kills the running pipeline | open | | |

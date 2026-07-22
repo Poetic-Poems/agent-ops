@@ -285,11 +285,11 @@ Three things worth knowing:
 
 ## Which node runs the cycles
 
-The pipelines are meant to be installable on more than one machine — a laptop,
-a cloud VM, several — but exactly **one** of them may actually run unattended
-cycles. Two machines cycling on the same repositories would open competing pull
-requests for the same item and pay twice to do it. The environment variable
-`AGENT_OPS_ROLE` names the one that does:
+The pipelines run on any number of machines — a laptop, a cloud VM, several —
+and **any number of them may cycle at once**: per-item claims (requirement
+17a) keep concurrent actives off each other's work, and per-node minute
+offsets (D5) keep them from even firing together. The environment variable
+`AGENT_OPS_ROLE` says whether *this* machine spends unattended:
 
 ```bash
 AGENT_OPS_ROLE=active     # this machine runs the hourly cycle and the daily review tick
