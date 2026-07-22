@@ -129,9 +129,15 @@ docker compose exec scheduler ls /home/agent/.local/state/poetic-agents/cycles |
 | A shell on the node | `docker compose exec scheduler bash` |
 | The cron logs | `docker compose exec scheduler tail -n 50 /home/agent/.local/state/poetic-agents/cron.log` |
 
-The switch (`--disable`) is shared state: it stops **every** node, because it
-lives in the replicated `state_dir`. The role decides which node runs; the
-switch decides whether any node does.
+The switch (`--disable`) stops **every** node: as well as the local record it
+publishes `fleet/disabled.json` to the state repository's main, which each
+node reads live at cycle start (and falls back to a cached copy of when
+GitHub is unreachable). `--enable` clears both, and says so — if the fleet
+flag could not be cleared it warns loudly, because every node is still
+standing down at that point. The role decides whether *this* node spends;
+the switch decides whether *any* node does. A usage-limit hit travels the
+same way (`fleet/limit.json`), so the first node to hit the shared Claude
+limit stands the whole fleet down within a cycle tick.
 
 ### Updating
 

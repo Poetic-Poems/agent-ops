@@ -263,7 +263,11 @@ working on this repo, turn the pipelines off:
 The switch is one file (`$state_dir/disabled.json`) shared by **both**
 `agent-cycle.sh` and `review-cycle.sh` — they run out of the same tree, so
 stopping one and not the other stops nothing much. `agent-cycle.sh` is the only
-way to set it; `review-cycle.sh` only obeys it.
+way to set it; `review-cycle.sh` only obeys it. And it reaches the whole
+fleet: `--disable` also publishes `fleet/disabled.json` to the state
+repository (warning loudly if it cannot), every node checks that flag at
+cycle start, and `--enable` clears both levels — so one command from any
+node stands the entire operation down, or up.
 
 Three things worth knowing:
 

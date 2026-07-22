@@ -55,6 +55,8 @@ cron_log="$state_dir/cron.log"
 cycles_dir="$state_dir/cycles"
 pr_label="$(cfg '.pr_label')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
+state_repo="$(cfg '.state_repo // ""')"
+[[ "$state_repo" == "null" ]] && state_repo=""
 repos_json="$(cfg_json '.repos')"
 
 out_dir="$state_dir/dashboard"
@@ -428,6 +430,14 @@ if (( WITH_GITHUB )); then
       --argjson issues "$issues" --argjson failed "$failed_runs" --argjson td "$td_json" --argjson findings "$findings" '
       . + {($slug): {issues: $issues, failed_runs: $failed, tech_debt: $td, findings: $findings}}' <<<"$inputs_json")"
   done < <(jq -r '.[].slug' <<<"$repos_json")
+
+  # Refresh the fleet-flag cache while we are talking to GitHub anyway
+  # (requirement 2.3a): the cycles fall back to these cached copies when the
+  # state repo is unreachable, and a standby node — which runs no cycles —
+  # has no other refresher. The publisher only warms the cache; nothing here
+  # acts on the flags.
+  fleet_flag_fetch "$state_repo" "$state_dir" disabled >/dev/null || true
+  fleet_flag_fetch "$state_repo" "$state_dir" limit    >/dev/null || true
 
   github_json="$(jq -n --argjson ok "$gh_ok" --arg err "$gh_err" --arg at "$now_iso" \
     --argjson prs "$prs_json" --argjson inputs "$inputs_json" \

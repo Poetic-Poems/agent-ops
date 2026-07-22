@@ -243,7 +243,7 @@ values below are the confirmed defaults; the README must document each key.
 | `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
-| `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op. |
+| `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
 | `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | 1000 | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -295,8 +295,25 @@ runs unattended.
    alive, log a `warning` (a stale cycle indicates a fault — it should not
    occur in normal operation), take the lock, and continue.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
-   1. *Usage-limit cooldown*: if the shared log's most recent `limit-hit`
-      event has a `resume_at` still in the future, stand down.
+   1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
+      the **later** `resume_at` wins. The log union's most recent `limit-hit`
+      is as fresh as the last state-sync fetch; `fleet/limit.json` on the
+      state repository's main is read live, which is what lets a limit one
+      node hit a minute ago stop this cycle now rather than a fetch interval
+      from now. If the winning `resume_at` is still in the future, stand
+      down. The flag is written by whichever node hits a limit (requirement
+      10's `limit_decide` supplies `resume_at`/`class`/`needs_human`, plus
+      the node's name and a timestamp), **extend-only**: a writer never
+      shortens an existing `resume_at`, so concurrent hits converge on the
+      latest resume whatever order their contents-API writes land in. The
+      write is best-effort — on failure the node logs a `warning` and relies
+      on the union to carry its `limit-hit` to the fleet.
+   1a. *Claim GC*: run `lib/claim.sh gc` (requirement 17a) — best-effort,
+      skipped on `--dry-run` — so registry entries a dead node left behind
+      are swept before back-pressure counts them. Every node runs it; no
+      coordination is needed, because a registry delete is sha-guarded and a
+      claim branch is deleted only if unmoved and PR-less, so the worst race
+      outcome is a no-op.
    2. *Back-pressure*: if the number of open PRs labelled `pr_label` across
       all configured repos (drafts included), **plus the live claim-registry
       entries for those repos** (requirement 17a — work a node has claimed
@@ -369,6 +386,29 @@ runs unattended.
 
    Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
    being edited, do not run them" is no less true when a human runs them.
+2.3a. **The fleet switch.** The same switch, one level up: `fleet/disabled.json`
+   on the state repository's main, holding the same record shape and read
+   through the same evaluation. With several nodes active, "stop the
+   pipelines" has to mean all of them, so `--disable` writes both levels
+   (local first — it always works — then the fleet, with a loud warning
+   naming the degraded state when the fleet write fails) and `--enable`
+   clears both (and must **never** report the fleet flag cleared when it is
+   not: an operator who believes they resumed the operation while every node
+   still stands down is the worst lie this switch can tell). Both pipelines
+   check it at cycle start, after the local switch and still before the
+   lock; it costs one contents-API read.
+
+   Failure directions, deliberately: a 404 is *clear*, definitively; an
+   unreachable state repo falls back to the copy cached at the last
+   successful fetch (`state_dir/fleet-cache/`), and to enabled when there is
+   none — safe to fail open because a node that charges ahead blind meets
+   per-item claims that fail closed (requirement 17a); a flag that exists
+   but does not parse is *disabled*, exactly as for the local record. An
+   expired fleet disable is cleared by whichever cycle sees it first — the
+   delete is sha-guarded and idempotent, so a lost race means a peer got
+   there, and there is no singleton chore (requirement 2.5). The weekly
+   review honours the fleet switch but never sets or clears it, mirroring
+   its relationship to the local one (`docs/REVIEW-PIPELINE-SPEC.md`, R2a).
 2.4. **The role guard.** The environment variable `AGENT_OPS_ROLE` names the
    one node that runs unattended cycles. Compared case-insensitively and
    ignoring surrounding whitespace against the single value `active`;
@@ -838,7 +878,9 @@ runs unattended.
       points at the SHA the claim recorded and no open PR uses it — pushed
       work is never deleted. Entries older than `claim_ttl_hours` are swept
       by `lib/claim.sh gc` under the same only-if-untouched rule (a node
-      that died mid-cycle must not hold its item forever).
+      that died mid-cycle must not hold its item forever); every cycle runs
+      the sweep at start (2.1a), so a dead node's claims outlive it by at
+      most the TTL plus one cycle interval.
     - Claims **fail closed** per candidate: any outcome other than a won
       claim (a lost race, or GitHub unreachable) moves to the next
       candidate, and a cycle whose every candidate is lost stands down with
@@ -1088,8 +1130,8 @@ What exists, and the requirements each part answers to:
 
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
-   pre-fetch, requirement 3a; the switch, requirement 2.3; the role guard,
-   requirement 2.4; and the no-op short-circuit, requirement 3b).
+   pre-fetch, requirement 3a; the switches, requirements 2.3 and 2.3a; the
+   role guard, requirement 2.4; and the no-op short-circuit, requirement 3b).
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -1125,8 +1167,10 @@ What exists, and the requirements each part answers to:
    `lib/toggle.sh`, `lib/noop-skip.sh` and `lib/role.sh`) holding every rule
    that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 33's `attempt-failed` field shape, the usage-limit
-   phrase pattern of requirement 10, the switch of requirement 2.3 (read by
-   both pipelines and the dashboard), the role guard of requirement 2.4 (read
+   phrase pattern of requirement 10, the switch of requirement 2.3 and the
+   fleet flags of requirements 2.3a and 2.1 (`lib/toggle.sh`'s `fleet_*`
+   functions; `TOGGLE_GH` substitutes a stub for tests, following
+   `CLAIM_GH`), the role guard of requirement 2.4 (read
    by both pipelines) and the fingerprint rule of requirement 3b —
    sourced by `agent-cycle.sh`, `review-cycle.sh` and the dashboard's publisher
    rather than copied into any of them. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
@@ -1209,6 +1253,16 @@ pull request, run the ones the change touches and any it could regress.
    includes the node itself, and prunes a peer whose branch is gone; the
    union read (`lib/fleet.sh`) carries both nodes' events in time order; and
    pipeline events written through `log_event` carry the node's name.
+1e. **The fleet flags reach every node.** `test/toggle.test.sh` passes,
+   including its fleet section against the contents-API stub (`TOGGLE_GH`):
+   a flag one node writes reads as disabled on another; an unreachable
+   state repo falls back to the cached copy, and to enabled with none; a
+   404 is clear and clears the cache; a garbage flag is disabled; the limit
+   flag only ever extends; a delete never reports cleared for a flag still
+   set; and — end to end, offline — `--disable` on node A publishes
+   `fleet/disabled.json` and both real pipelines on node B stand down
+   naming the fleet switch, `--enable` on A genuinely removes the flag, and
+   a `fleet/limit.json` published by A stands B down until its `resume_at`.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
