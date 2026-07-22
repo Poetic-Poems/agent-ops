@@ -835,7 +835,8 @@ runs unattended.
     - *Release*: an open PR supersedes the claim — the registry entry is
       dropped the moment `pr-raised` is logged, and the branch lives on as
       the PR's head. Every path that ends the cycle without a PR (a void
-      verdict, a blocked verdict with no PR, a stage failure or timeout)
+      verdict, a blocked verdict with no PR, a failed workspace clone, a
+      stage failure or timeout)
       releases fully; a claim branch is deleted **only** when it still
       points at the SHA the claim recorded and no open PR uses it — pushed
       work is never deleted. Entries older than `claim_ttl_hours` are swept

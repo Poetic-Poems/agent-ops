@@ -189,6 +189,9 @@ dump_stage_output() {
   local out_file="$1"
   cat "$out_file"
   [[ -s "$out_file.stderr" ]] && cat "$out_file.stderr" >&2
+  # See agent-cycle.sh's dump_stage_output: an empty stderr file must not
+  # become the return value that a `(( ONCE )) && …` call site hands set -e.
+  return 0
 }
 
 # --- Cleanup (always runs on exit) ---
