@@ -26,6 +26,10 @@ package_upgrade: true
 packages:
   - ca-certificates
   - curl
+  # Unattended VMs must patch themselves: nobody logs in to run apt on a
+  # fleet node, and the container updates via watchtower but the host OS has
+  # no equivalent without this.
+  - unattended-upgrades
 
 write_files:
   # The node's identity and secrets. Written with restrictive permissions
