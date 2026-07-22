@@ -165,6 +165,7 @@ cycle_json() {
     | ($e | map(.event)) as $types
     | {
         id: $cid,
+        node: ([ $e[] | select(.node) | .node ] | last),
         started_at: (([ $e[] | select(.event=="cycle-start") | .ts ] | first) // ($e[0].ts // null)),
         ended_at:   ([ $e[] | select(.event=="cycle-end") | .ts ] | last),
         dry_run:    (($e[] | select(.event=="cycle-start") | .dry_run) // false),
@@ -239,8 +240,9 @@ fi
 
 # The events of the cycle that holds the lock right now, so the header can say
 # what is being worked on and not just that something is. The cycle id is
-# "<ts>-<pid>" (agent-cycle.sh) and the lock stores that same pid, so the live
-# cycle's events are exactly those whose id ends in "-<lock_pid>".
+# "<ts>-<node>-<pid>" (agent-cycle.sh; older records "<ts>-<pid>") and the lock
+# stores that same pid — last in either shape — so the live cycle's events are
+# exactly those whose id ends in "-<lock_pid>".
 running_events='[]'
 if [[ "$lock_alive" == "true" && -n "$lock_pid" ]]; then
   running_events="$(printf '%s\n' "$ALL_EVENTS" \

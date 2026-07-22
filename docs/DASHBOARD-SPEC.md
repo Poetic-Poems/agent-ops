@@ -102,8 +102,9 @@ same way `agent-cycle.sh` reads them.
   limits below before building anything that treats these dollars as budget.
   Missing/partial files degrade to a null stage — never a crash.
 - **`lock.json`** — `{pid, started_at}`. A live pid (`kill -0`) means a cycle
-  is running now. The cycle id is `<started>-<pid>` and the lock carries that
-  same pid, so the running cycle's own events are exactly those whose id ends in
+  is running now. The cycle id is `<started>-<node>-<pid>` (older records
+  `<started>-<pid>`) and the lock carries that same pid — last in either shape —
+  so the running cycle's own events are exactly those whose id ends in
   `-<pid>`. From them the Publisher derives `status.current` — what the live
   cycle is working on right now: the running stage (the last `stage-start` with
   no matching `stage-end`) and the item the Co-Ordinator selected
@@ -164,7 +165,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              current:{stage,repo,item,source,title}, last_cycle, limit:{active,note} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,
              spend_today_usd, spend_total_usd, by_day[], by_model[] },
-  cycles:  [ { id, started_at, ended_at, outcome, repo, item, source, title,
+  cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
                stages:{ coordinator|implementor|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,

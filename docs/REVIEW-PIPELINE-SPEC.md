@@ -404,10 +404,13 @@ R16. **Streams.** Review *operational* events go to the review pipeline's own
    the `log_event` shape (requirement 33). Events: `review-start`,
    `review-skipped`, `review-stand-down`, `review-stage-start`,
    `review-stage-end`, `review-pr-raised`, `review-attempt-failed`,
-   `review-end`, and `warning`. Common fields: ISO-8601 `ts`, a `review` id, an
-   `event`, and where applicable `repo`, `pr_url`, `model`, `detail`. The one
-   exception is the shared `limit-hit` event, which is written to `log.jsonl`
-   (R6), because usage-limit stand-down is shared across both pipelines.
+   `review-end`, and `warning`. Common fields: ISO-8601 `ts`, a `review` id
+   (`<UTC-timestamp>-<node>-<pid>`, pid last, exactly as requirement 33 shapes
+   the cycle id), `node`, an `event`, and where applicable `repo`, `pr_url`,
+   `model`, `detail`. The one exception is the shared `limit-hit` event, which
+   is written to `log.jsonl` (R6), because usage-limit stand-down is shared
+   across both pipelines — it carries `node` too, so a fleet view can say
+   which machine hit the limit.
 
 R17. The `review-log.jsonl` and the `state_dir/reviews/<review-id>/`
    transcripts are the durable record. Surfacing them in the monitoring

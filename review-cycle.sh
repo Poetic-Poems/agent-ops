@@ -109,7 +109,12 @@ review_log_file="$state_dir/review-log.jsonl"   # this pipeline's own operationa
 lock_file="$state_dir/review-lock.json"         # our own lock, not the cycle's lock.json
 impl_lock_file="$state_dir/lock.json"           # the implementation pipeline's lock
 
-review_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+# Node identity, exactly as agent-cycle.sh stamps it: the id carries the
+# machine's name (sanitised — it is also a directory name) with the pid last,
+# and every event names the node, so multi-node records stay combinable.
+node_name="${NODE_NAME:-$(hostname)}"
+node_name="${node_name//[^A-Za-z0-9._-]/-}"
+review_id="$(date -u +%Y%m%dT%H%M%SZ)-$node_name-$$"
 review_date="$(date -u +%Y-%m-%d)"
 review_dir="$state_dir/reviews/$review_id"
 mkdir -p "$review_dir"
@@ -121,8 +126,8 @@ log_event() {
   local event="$1" fields="${2:-{\}}"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq -nc --arg ts "$ts" --arg review "$review_id" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts, review: $review, event: $event} + $fields' >> "$review_log_file"
+  jq -nc --arg ts "$ts" --arg review "$review_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
+    '{ts: $ts, review: $review, node: $node, event: $event} + $fields' >> "$review_log_file"
 }
 
 # The one shared signal: a usage-limit hit is written to log.jsonl in the exact
@@ -132,8 +137,8 @@ log_event() {
 log_shared_limit_hit() {
   local resume_at="$1" class="$2" needs_human="$3" ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq -nc --arg ts "$ts" --arg cycle "$review_id" --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
-    '{ts: $ts, cycle: $cycle, event: "limit-hit", resume_at: $r, class: $c, needs_human: $h}' >> "$log_file"
+  jq -nc --arg ts "$ts" --arg cycle "$review_id" --arg node "$node_name" --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
+    '{ts: $ts, cycle: $cycle, node: $node, event: "limit-hit", resume_at: $r, class: $c, needs_human: $h}' >> "$log_file"
 }
 
 # Returns 0 (and logs limit-hit to the shared log) if the stage transcript shows

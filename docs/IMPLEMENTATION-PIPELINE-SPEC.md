@@ -950,8 +950,14 @@ runs unattended.
     `stand-down`, `selection`, `none-selected`, `stage-start`, `stage-end`,
     `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`, `item-void`,
     `unvoided`, `limit-hit`, `disabled`, `enabled`, `warning`, `cycle-end`.
-    Common fields: ISO-8601 `ts`, `cycle` id, `event`, and where applicable
-    `repo`, `item`, `pr_url`, `model`, `detail`. A `none-selected` also carries
+    Common fields: ISO-8601 `ts`, `cycle` id, `node`, `event`, and where
+    applicable `repo`, `item`, `pr_url`, `model`, `detail`. The cycle id is
+    `<UTC-timestamp>-<node>-<pid>` — the node's `NODE_NAME` (hostname when
+    unset), sanitised for use in a directory name, with the pid always last
+    because the dashboard matches the running cycle by its `-<pid>` suffix.
+    `node` says which machine wrote the record, which is what lets several
+    nodes' records be combined; records written before the field existed
+    simply lack it, and every reader treats it as optional. A `none-selected` also carries
     the `fingerprint` of requirement 3b; `disabled`/`enabled` carry the switch
     record, so the log can explain both why cycles stopped and why they
     resumed — including when they resumed because a disable expired rather than
