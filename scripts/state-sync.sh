@@ -50,6 +50,9 @@ Environment:
   STATE_SYNC_REMOTE     override the remote URL (tests point it at a bare repo).
   STATE_SYNC_MIRROR     override the local mirror checkout's location.
   STATE_SYNC_GH         override the `gh` used for the lease (tests stub it).
+  STATE_SYNC_LOCAL_RETAINED
+                        override `state_local_cycles_retained` (tests use a
+                        small value).
 EOF
 }
 
@@ -83,6 +86,7 @@ state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 lease_ttl_hours="$(cfg '.lease_ttl_hours // 3')"
 cycles_retained="$(cfg '.cycles_retained // 200')"
+local_retained="${STATE_SYNC_LOCAL_RETAINED:-$(cfg '.state_local_cycles_retained // 1000')}"
 
 node_name="${NODE_NAME:-$(hostname)}"
 remote_url="${STATE_SYNC_REMOTE:-https://github.com/$state_repo.git}"
@@ -171,10 +175,37 @@ kept_cycles() {
     | sort -r | head -n "$cycles_retained"
 }
 
+# The node's own history is bounded too (TD26072004): without this, a
+# long-lived active node accretes one cycle directory an hour forever.
+# Newest-first, so the cycle being recorded right now is always kept; the
+# floor of 1 keeps a nonsense retention value from deleting it.
+prune_local() {
+  local dir="$1" retained="$2" doomed pruned=0
+  [[ -d "$dir" ]] || return 0
+  (( retained >= 1 )) || retained=1
+  while IFS= read -r doomed; do
+    [[ -n "$doomed" ]] || continue
+    rm -rf -- "${dir:?}/$doomed"
+    pruned=$(( pruned + 1 ))
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+             | sort -r | tail -n "+$(( retained + 1 ))")
+  (( pruned > 0 )) && say "pruned $pruned $(basename "$dir") record(s), keeping the newest $retained"
+  return 0
+}
+
 do_push() {
   role_is_active || exit 0
   require rsync
   require git
+
+  # Bound this node's own history before mirroring any of it: the local cap
+  # (`state_local_cycles_retained`) sits deliberately far above the mirror's
+  # (`cycles_retained`), so everything the mirror wants is always still here
+  # and the machine stays the longer record of the two. Before the no-change
+  # early-return below, so a push with nothing to replicate still prunes.
+  prune_local "$state_dir/cycles"  "$local_retained"
+  prune_local "$state_dir/reviews" "$local_retained"
+
   mirror_refresh || exit 1
 
   # Everything but the cycle directories, which need a filter of their own.

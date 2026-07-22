@@ -243,7 +243,8 @@ values below are the confirmed defaults; the README must document each key.
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op. |
 | `lease_ttl_hours` | 3 h | How long `leader.json` stands before another node may take it. Long enough to outlive one cycle of any plausible length, short enough that a node which dies does not hold the operation down for a working day. |
-| `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is not pruned by this. |
+| `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
+| `state_local_cycles_retained` | 1000 | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
@@ -423,8 +424,14 @@ runs unattended.
    (`log.jsonl` is append-only, every cycle keeps its own directory) and a
    commit per push would be a second, redundant history whose only lasting
    effect is a repository that grows without bound. The mirror keeps the newest
-   `cycles_retained` cycle directories; the node's own `state_dir` is never
-   pruned. A push that finds nothing changed does not force-push.
+   `cycles_retained` cycle directories. The node's own history is bounded
+   separately, by the same push and before any mirroring: local `cycles/` and
+   `reviews/` are pruned to the newest `state_local_cycles_retained` each — a
+   deliberately longer record than the mirror's, so everything the mirror
+   wants is always still on disk and the machine remains the fuller history of
+   the two, with a floor of one so the cycle being recorded is always kept. A
+   push that finds nothing changed does not force-push, though it still
+   prunes.
 
    **Restore.** A standby node mirrors the repository back into its `state_dir`
    from its own schedule. It is a mirror, not a merge: a cycle pruned upstream
@@ -1114,7 +1121,9 @@ pull request, run the ones the change touches and any it could regress.
    passes: a push carries the logs, cycles, reviews and switch but not the
    locks, the dashboard or the lease; an unchanged push does not force-push; a
    changed one amends rather than accumulating history; the mirror keeps
-   `cycles_retained` cycles while the node keeps its own; a restore is a mirror
+   `cycles_retained` cycles while the node's own `cycles/` and `reviews/` are
+   pruned to the newest `state_local_cycles_retained` by the same push, a
+   no-change push included, newest always kept; a restore is a mirror
    that leaves the node's local-only files alone, and is a silent no-op on the
    active node and when nothing changed; a fresh foreign lease stands a cycle
    down with a logged stand-down and no selection, while an expired one is

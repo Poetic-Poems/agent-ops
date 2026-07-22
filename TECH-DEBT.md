@@ -108,26 +108,6 @@ port becomes the container's again. `DASHBOARD-SPEC.md`'s loopback requirement
 would need rewording to say what it protects (the host's loopback) rather than
 naming the literal bind.
 
-### TD26072004 An active node's state_dir grows without bound
-
-`cycles_retained` (requirement 2.5) bounds the *replicated* copy of the state,
-because that repository is force-pushed after every cycle and its size is a
-cost paid on every clone. The node's own `state_dir` is deliberately not pruned
-by it — deleting a machine's local history as a side effect of replicating it
-would be a surprising thing for a sync to do — so an active node accumulates one
-cycle directory an hour forever. Today that is 200 directories and 8 MB after a
-week; a year of running would be roughly 9,000 and a quarter of a gigabyte.
-
-Nothing is at risk yet, and a standby node is already bounded (its restore is a
-mirror, so it holds exactly what the repository holds). The dashboard reads only
-the newest 40 cycles in detail, so the tail is not even being looked at.
-
-Fix: a retention pass over the local `state_dir` — its own key rather than
-`cycles_retained`, since the two answer different questions ("how much history
-does this machine keep?" against "how much do we ship to every node?") — run
-from the same cleanup that pushes, and generous enough that the local copy stays
-the longer record of the two.
-
 ### TD26072101 A blocked item's new evidence can never unblock it
 
 The Co-Ordinator reconstructs blocked and void state from cycle-history
@@ -202,7 +182,7 @@ above.
 | TD26072001 | shellcheck not clean at info level on two scripts | resolved | 2026-07-20 | #38 |
 | TD26072002 | The node image is amd64-only | open | | |
 | TD26072003 | The local dashboard profile needs Linux host networking | open | | |
-| TD26072004 | An active node's state_dir grows without bound | open | | |
+| TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | A blocked item's new evidence can never unblock it | open | | |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
