@@ -33,6 +33,10 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/fleet.sh
+. "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/role.sh
+. "$SCRIPT_DIR/lib/role.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -52,6 +56,10 @@ state_dir="$(expand_home "$(cfg '.state_dir')")"
 log_file="$state_dir/log.jsonl"
 lock_file="$state_dir/lock.json"
 cron_log="$state_dir/cron.log"
+workspace_root="$(expand_home "$(cfg '.workspace_root')")"
+peers_dir="$(fleet_peers_dir "$workspace_root")"
+self_node="${NODE_NAME:-$(hostname 2>/dev/null || echo node)}"
+self_node="${self_node//[^A-Za-z0-9._-]/-}"
 cycles_dir="$state_dir/cycles"
 pr_label="$(cfg '.pr_label')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
@@ -79,7 +87,12 @@ now_epoch="$(date +%s)"
 # --- Helpers -----------------------------------------------------------------
 # Parse each line of the log independently so a half-written trailing line
 # (the Script may be appending as we read) never aborts the whole parse.
-read_events() { jq -c -R 'fromjson? // empty' "$log_file" 2>/dev/null; }
+# The stream is the FLEET's: this node's log unioned with every fetched
+# peer's (lib/fleet.sh), so blocked/void, the log tail, and the cycle list
+# below all show what the whole operation did, from any node's dashboard.
+# Events carry `node` (requirement 33); with no peers this reduces exactly
+# to the old local read.
+read_events() { fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromjson? // empty' 2>/dev/null; }
 
 gh_json() { timeout "$GH_TIMEOUT" gh "$@" 2>/dev/null; }
 
@@ -110,10 +123,10 @@ limit_reset_text() {
 }
 
 # --- Build one stage's JSON for a cycle --------------------------------------
-stage_json() {
-  local cid="$1" stage="$2"
-  local out="$cycles_dir/$cid/$stage.out"
-  local err="$cycles_dir/$cid/$stage.out.stderr"
+stage_json() {  # <cycle-id> <stage> <cycles-dir>
+  local cid="$1" stage="$2" cdir="$3"
+  local out="$cdir/$cid/$stage.out"
+  local err="$cdir/$cid/$stage.out.stderr"
   [[ -f "$out" ]] || { printf 'null'; return; }
 
   local envelope result status_json err_text limit=false limit_txt=""
@@ -148,16 +161,19 @@ stage_json() {
 }
 
 # --- Build one cycle's JSON (stages + log-derived outcome) --------------------
-cycle_json() {
-  local cid="$1"
+cycle_json() {  # <cycle-id> <cycles-dir> — the dir is the owning node's, so a
+                # peer's transcripts render with the same fidelity as our own
+  local cid="$1" cdir="${2:-$cycles_dir}"
   local ev coord impl rev
-  # events_file is the whole log slurped once (see below): one jq here rather
-  # than piping the full event stream through two more, forty times a publish.
+  # events_file is the whole fleet's log slurped once (see below): one jq here
+  # rather than piping the full event stream through two more, forty times a
+  # publish. Cycle ids are node-unique (they embed the node name), so the
+  # union needs no per-node partitioning.
   ev="$(jq -c --arg c "$cid" '[ .[] | select(.cycle == $c) ]' "$events_file" 2>/dev/null)"
   [[ -z "$ev" || "$ev" == "null" ]] && ev='[]'
-  coord="$(stage_json "$cid" coordinator)"
-  impl="$(stage_json "$cid" implementor)"
-  rev="$(stage_json "$cid" reviewer)"
+  coord="$(stage_json "$cid" coordinator "$cdir")"
+  impl="$(stage_json "$cid" implementor "$cdir")"
+  rev="$(stage_json "$cid" reviewer "$cdir")"
 
   jq -n \
     --arg cid "$cid" \
@@ -205,11 +221,32 @@ events_file="$work_tmp/events.json"
 printf '%s\n' "$ALL_EVENTS" | jq -sc '.' > "$events_file" 2>/dev/null \
   || printf '[]' > "$events_file"
 
-# --- Recent cycle ids, newest first ------------------------------------------
-mapfile -t cycle_ids < <(
-  { ls -1 "$cycles_dir" 2>/dev/null; printf '%s\n' "$ALL_EVENTS" | jq -r '.cycle // empty' 2>/dev/null; } \
-    | sort -ru | head -n "$MAX_CYCLES"
-)
+# --- Recent cycle ids, newest first, fleet-wide -------------------------------
+# One "<id>\t<cycles-dir>" line per known cycle: ours (from the local dir and
+# the union's event stream — an id only in events renders from its events
+# alone), and each fetched peer's (from its materialised cycles/). Ids begin
+# with a UTC timestamp, so one reverse sort interleaves every node's history
+# into fleet time order; MAX_CYCLES then caps the *fleet-wide* detail list,
+# which is what keeps data.js near its single-node size however many nodes
+# report (the transcripts are the bytes that matter).
+# The middle column ranks the source: D rows point at a directory that
+# really holds the cycle's transcripts, E rows are ids known only from the
+# event stream (pruned locally, or a peer's that predates its fetch). Sorting
+# id-desc then D-before-E and keeping the first row per id means an id that
+# exists on disk always renders from the right node's directory — without
+# the ranking, the union's E row for a peer's cycle could win and silently
+# strip its stages.
+cycle_rows="$work_tmp/cycle-rows"
+tab="$(printf '\t')"
+{
+  ls -1 "$cycles_dir" 2>/dev/null | sed "s|\$|\tD\t$cycles_dir|"
+  printf '%s\n' "$ALL_EVENTS" | jq -r '.cycle // empty' 2>/dev/null | sed "s|\$|\tE\t$cycles_dir|"
+  for pd in "$peers_dir"/*/cycles; do
+    [[ -d "$pd" ]] || continue
+    ls -1 "$pd" 2>/dev/null | sed "s|\$|\tD\t$pd|"
+  done
+} | sort -t "$tab" -k1,1r -k2,2 | awk -F'\t' '!seen[$1]++' | cut -f1,3 \
+  | head -n "$MAX_CYCLES" > "$cycle_rows"
 
 # Each cycle's JSON goes to its own file and the set is slurped once at the
 # end. The obvious `arr="$(jq '. + [$c]' <<<"$arr")"` re-parses a growing
@@ -219,13 +256,13 @@ mapfile -t cycle_ids < <(
 cycles_file="$work_tmp/cycles.json"
 cycle_files=()
 cycle_n=0
-for cid in "${cycle_ids[@]}"; do
+while IFS=$'\t' read -r cid cdir; do
   [[ -n "$cid" ]] || continue
   cf="$work_tmp/cycle.$(( cycle_n++ )).json"
-  cycle_json "$cid" > "$cf" 2>/dev/null
+  cycle_json "$cid" "${cdir:-$cycles_dir}" > "$cf" 2>/dev/null
   # A cycle mid-flight has partial transcripts; skip anything that didn't parse.
   jq -e . "$cf" >/dev/null 2>&1 && cycle_files+=("$cf")
-done
+done < "$cycle_rows"
 if (( ${#cycle_files[@]} > 0 )); then
   jq -sc '.' "${cycle_files[@]}" > "$cycles_file"
 else
@@ -342,7 +379,14 @@ status_json="$(jq -n \
 # The rows go to jq as a file: at 60 days of history they outgrow argv's cap.
 day_cut="$(date -u -d "-${COST_SCAN_DAYS} days" +%Y%m%d 2>/dev/null || echo 00000000)"
 costs_file="$work_tmp/costs.json"
-find "$cycles_dir" -name '*.out' -type f -print0 2>/dev/null | sort -z \
+# Fleet-wide: every node spends the same Claude account, so the roll-ups scan
+# the peers' replicated transcripts too (bounded — a peer's branch carries at
+# most cycles_retained cycles). Missing dirs are fine; find just skips them.
+cost_dirs=("$cycles_dir")
+for pd in "$peers_dir"/*/cycles; do
+  [[ -d "$pd" ]] && cost_dirs+=("$pd")
+done
+find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
   | xargs -0 -r -n 25 jq -c '{
       day: (input_filename | split("/") | .[-2] | .[0:8]),
       cost: (.total_cost_usd // 0),
@@ -388,6 +432,42 @@ log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL
 # --- cron.log tail -----------------------------------------------------------
 cron_tail_json='[]'
 [[ -f "$cron_log" ]] && cron_tail_json="$(tail -n 40 "$cron_log" 2>/dev/null | jq -R -s 'split("\n") | map(select(length>0))' 2>/dev/null || echo '[]')"
+
+# --- The fleet (requirement 2.5 / DASHBOARD-SPEC "one fleet view") -----------
+# Who exists and how alive they are, from the peers the last state-sync fetch
+# materialised. Self is listed too — definitionally fresh — so every node's
+# dashboard shows the same set. A peer's heartbeat is its freshness: pushed
+# every 5 minutes, fetched every 7, so anything older than 30 minutes means
+# missed pushes or missed fetches, and the entry is flagged stale rather than
+# silently trusted.
+nodes_rows="$work_tmp/nodes.rows"
+last_local_cycle="$(ls -1 "$cycles_dir" 2>/dev/null | sort | tail -n1)"
+jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
+  '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
+    last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false}' > "$nodes_rows"
+for hb in "$peers_dir"/*/heartbeat.json; do
+  [[ -f "$hb" ]] || continue
+  jq -c --argjson now "$now_epoch" '
+    . as $h
+    | (try ($h.ts | fromdateiso8601) catch 0) as $t
+    | {node: ($h.node // "unknown"), role: ($h.role // "unknown"),
+       heartbeat_ts: ($h.ts // null),
+       heartbeat_age_s: (if $t > 0 then ([$now - $t, 0] | max) else null end),
+       last_cycle: ($h.last_cycle // null), self: false,
+       stale: (if $t > 0 then (($now - $t) > 1800) else true end)}' \
+    "$hb" 2>/dev/null >> "$nodes_rows" || true
+done
+fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"
+[[ -z "$fleet_nodes_json" ]] && fleet_nodes_json='[]'
+
+# The fleet flags, from the local cache lib/toggle.sh keeps (the GitHub tick
+# below refreshes it; requirement 2.3a). Read as files so a --no-github tick
+# costs no API call and a standby node still shows them.
+fleet_flags_json="$(jq -nc \
+  --argjson d "$(jq -c '.' "$(fleet_cache_file "$state_dir" disabled)" 2>/dev/null || echo null)" \
+  --argjson l "$(jq -c '.' "$(fleet_cache_file "$state_dir" limit)" 2>/dev/null || echo null)" \
+  '{disabled: $d, limit: $l}' 2>/dev/null)"
+[[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null}'
 
 # --- Live GitHub (best-effort) -----------------------------------------------
 prs_json='[]'; inputs_json='{}'; gh_ok=false; gh_err=""
@@ -435,13 +515,40 @@ if (( WITH_GITHUB )); then
   # (requirement 2.3a): the cycles fall back to these cached copies when the
   # state repo is unreachable, and a standby node — which runs no cycles —
   # has no other refresher. The publisher only warms the cache; nothing here
-  # acts on the flags.
+  # acts on the flags. Re-read after the refresh so this very publish shows
+  # what was just fetched, not last tick's copy.
   fleet_flag_fetch "$state_repo" "$state_dir" disabled >/dev/null || true
   fleet_flag_fetch "$state_repo" "$state_dir" limit    >/dev/null || true
+  fleet_flags_json="$(jq -nc \
+    --argjson d "$(jq -c '.' "$(fleet_cache_file "$state_dir" disabled)" 2>/dev/null || echo null)" \
+    --argjson l "$(jq -c '.' "$(fleet_cache_file "$state_dir" limit)" 2>/dev/null || echo null)" \
+    '{disabled: $d, limit: $l}' 2>/dev/null)"
+  [[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null}'
+
+  # The live claim registry (implementation spec 17a): what the fleet holds
+  # right now, per repo. A handful of contents-API reads on the once-per-window
+  # GitHub tick; carried forward through gh_cache on --no-github ticks like
+  # every other GitHub-sourced fact. Failures degrade to the empty list.
+  claims_rows="$work_tmp/claims.rows"
+  : > "$claims_rows"
+  if [[ -n "$state_repo" ]]; then
+    while IFS= read -r cdir; do
+      [[ -n "$cdir" ]] || continue
+      while IFS= read -r cfile; do
+        [[ -n "$cfile" ]] || continue
+        entry="$(gh_json api "repos/$state_repo/contents/claims/$cdir/$cfile" --jq '.content' \
+          | tr -d '\n' | base64 -d 2>/dev/null \
+          | jq -c --arg r "${cdir//__//}" --arg k "${cfile%.json}" '. + {repo: $r, key: $k}' 2>/dev/null)" || entry=""
+        [[ -n "$entry" ]] && printf '%s\n' "$entry" >> "$claims_rows"
+      done < <(gh_json api "repos/$state_repo/contents/claims/$cdir" --jq '.[] | select(.type=="file") | .name')
+    done < <(gh_json api "repos/$state_repo/contents/claims" --jq '.[] | select(.type=="dir") | .name')
+  fi
+  claims_json="$(jq -sc 'sort_by(.ts) | reverse' "$claims_rows" 2>/dev/null)"
+  [[ -z "$claims_json" ]] && claims_json='[]'
 
   github_json="$(jq -n --argjson ok "$gh_ok" --arg err "$gh_err" --arg at "$now_iso" \
-    --argjson prs "$prs_json" --argjson inputs "$inputs_json" \
-    '{ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs}')"
+    --argjson prs "$prs_json" --argjson inputs "$inputs_json" --argjson claims "$claims_json" \
+    '{ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs, claims: $claims}')"
   # Remember this fetch (ok or failed — it is the latest real attempt) so the
   # next --no-github tick can carry it forward rather than start from nothing.
   printf '%s' "$github_json" > "$gh_cache"
@@ -463,10 +570,13 @@ fi
 
 # --- Assemble ----------------------------------------------------------------
 # cycles/github/log_tail can each be large; hand them to jq via files.
+# fleet.claims rides in github (fetched on the tick, carried by gh_cache
+# between ticks); it is surfaced under fleet because that is what it is.
 printf '%s' "$github_json"   > "$work_tmp/github.json"
 printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
+  --arg self_node "$self_node" \
   --argjson config "$(jq -c '{repos, coordinator_model, implementor_model_default, implementor_model_trivial, reviewer_model, pr_label, branch_prefix, max_open_agent_prs, timeout_coordinator, timeout_implementor, timeout_reviewer, lock_stale_after, limit_cooldown_default, dashboard_refresh_seconds}' "$CONFIG_FILE")" \
   --argjson status "$status_json" \
   --argjson counts "$counts_json" \
@@ -476,10 +586,13 @@ data_json="$(jq -n \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
+  --argjson fleet_nodes "$fleet_nodes_json" \
+  --argjson fleet_flags "$fleet_flags_json" \
   --arg max_prs "$max_open_agent_prs" \
-  '{generated_at: $generated_at, config: $config, status: $status, counts: $counts,
+  '{generated_at: $generated_at, node: $self_node, config: $config, status: $status, counts: $counts,
     cycles: $cyc[0], blocked: $blocked, void: $void, github: $gh[0], log_tail: $lt[0],
-    cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber)}')"
+    cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
+    fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 
 # --- Redact (defensive) & write atomically -----------------------------------
 redact() {

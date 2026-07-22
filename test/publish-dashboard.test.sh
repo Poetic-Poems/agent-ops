@@ -203,6 +203,52 @@ kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 assert_eq "launcher exits 0 while another publish holds the lock" "0" "$rc"
 assert_contains "skipped ticks are logged" "skipped: publish already running" "$(cat "$log")"
 
+# --- The fleet view (DASHBOARD-SPEC "one fleet view from every node") -----------
+# A synthetic peer materialised the way state-sync fetch would: its own state
+# tree under the peers directory, with a heartbeat, a log and one cycle whose
+# transcript carries a cost, a foreign path and a token — the peer's records
+# must merge into every roll-up AND pass through the same redaction as our own.
+f="$(new_home nodeF)"
+peer="$f/.cache/poetic-agents/workspaces/.agent-ops-peers/peer1"
+mkdir -p "$peer/cycles/${today_day}T040000Z-peer1-77" "$f/.local/state/poetic-agents/fleet-cache"
+printf '{"node":"peer1","role":"active","ts":"%s","last_cycle":"%sT040000Z-peer1-77"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" > "$peer/heartbeat.json"
+printf '{"ts":"2026-01-01T04:00:00Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"cycle-start"}\n' \
+  "$today_day" > "$peer/log.jsonl"
+printf '{"type":"result","subtype":"success","total_cost_usd":0.25,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"model-p":{}},"result":"peer secret ghp_9876543210abcdefXYZ9876 in /home/peeruser/thing"}' \
+  > "$peer/cycles/${today_day}T040000Z-peer1-77/coordinator.out"
+make_cycle "$f" "${today_day}T050000Z-self-55" 0.50 model-a
+printf '{"ts":"2026-01-01T05:00:00Z","cycle":"%sT050000Z-self-55","node":"nodeF-self","event":"cycle-start"}\n' \
+  "$today_day" > "$f/.local/state/poetic-agents/log.jsonl"
+# A cached fleet limit flag (requirement 2.1): shown without any GitHub call.
+printf '{"resume_at":"2031-01-01T00:00:00Z","class":"monthly-spend","needs_human":true,"node":"peer1","ts":"2026-01-01T04:01:00Z"}' \
+  > "$f/.local/state/poetic-agents/fleet-cache/limit.json"
+
+run_publish "$f" NODE_NAME=nodeF-self
+assert_eq "a fleet publish exits 0" "0" "$?"
+fdata="$(data_of "$f")"
+
+assert_eq "the page names its own node" "nodeF-self" "$(jq -r '.node' <<<"$fdata")"
+assert_eq "fleet.nodes carries self and the peer" "2" "$(jq '.fleet.nodes | length' <<<"$fdata")"
+assert_eq "self is listed first and marked" "true" "$(jq -r '.fleet.nodes[0].self' <<<"$fdata")"
+assert_eq "the peer's role comes from its heartbeat" "active" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peer1") | .role' <<<"$fdata")"
+assert_eq "a fresh heartbeat is not stale" "false" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peer1") | .stale' <<<"$fdata")"
+assert_eq "the peer's cycle merges into the fleet list" "1" \
+  "$(jq '[.cycles[] | select(.node=="peer1")] | length' <<<"$fdata")"
+assert_eq "and renders with its transcript's cost, from the peer's own directory" "0.25" \
+  "$(jq -r '.cycles[] | select(.node=="peer1") | .stages.coordinator.cost_usd' <<<"$fdata")"
+assert_eq "spend roll-ups are fleet-wide (one shared account)" "0.75" \
+  "$(jq -r '.counts.spend_today_usd' <<<"$fdata")"
+assert_eq "the cached fleet limit flag is surfaced" "2031-01-01T00:00:00Z" \
+  "$(jq -r '.fleet.flags.limit.resume_at' <<<"$fdata")"
+assert_eq "claims default to empty without a GitHub tick" "[]" \
+  "$(jq -c '.fleet.claims' <<<"$fdata")"
+raw_fleet="$(cat "$f/.local/state/poetic-agents/dashboard/data.js")"
+assert_lacks "a peer's token is redacted like our own" "ghp_9876543210abcdefXYZ9876" "$raw_fleet"
+assert_lacks "a peer's home path is redacted like our own" "/home/peeruser" "$raw_fleet"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"
