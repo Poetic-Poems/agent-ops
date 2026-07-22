@@ -453,15 +453,60 @@ if (( DRY_RUN )); then
 fi
 
 # --- Per-repo review (R5), sequential ---
+
+# release_review_claim <slug> <branch> <safe> no-pr|have-pr
+# Mirrors agent-cycle.sh's release hooks (implementation spec 17a): "have-pr"
+# drops only the registry entry — the PR supersedes the claim and the branch
+# is its head; "no-pr" releases fully, and lib/claim.sh deletes the ref only
+# if it still points where the claim left it AND no open PR uses it, so a
+# review the model pushed before failing is never deleted.
+release_review_claim() {
+  local slug="$1" branch="$2" safe="$3" mode="$4"
+  if [[ "$mode" == "have-pr" ]]; then
+    "$SCRIPT_DIR/lib/claim.sh" release file "$slug" "$branch" \
+      >>"$review_dir/claim-$safe.log" 2>&1 || true
+  else
+    "$SCRIPT_DIR/lib/claim.sh" release branch "$slug" "$branch" \
+      >>"$review_dir/claim-$safe.log" 2>&1 || true
+  fi
+}
+
 review_one() {
   local slug="$1" default_branch="$2"
-  local safe branch out_file result status_json pr_url rc
+  local safe branch out_file result status_json pr_url rc claim_rc
 
   safe="${slug//\//_}"
+  branch="${branch_prefix}${review_date}"
+
+  # --- Claim the review branch first (R5c; implementation spec 17a) ---
+  # `review/<date>` is a date-only name: with several nodes active, every one
+  # of them computes the same name on the same day, and without a claim the
+  # loser finds out only after spending a full model review — at push time.
+  # One create-ref through lib/claim.sh makes the ref itself the lock (GitHub
+  # 422s a second create even at the same SHA) and records the registry entry
+  # that back-pressure, the dashboard and gc read. Losing the race and being
+  # unable to reach GitHub both end this repo's review here, fail closed: a
+  # node that could not claim could not have pushed a review either.
+  claim_rc=0
+  CLAIM_NODE="$node_name" CLAIM_CYCLE="$review_id" \
+    CLAIM_ITEM="project-review-$review_date" CLAIM_SOURCE="project-review" \
+    "$SCRIPT_DIR/lib/claim.sh" claim branch "$slug" "$branch" "$default_branch" \
+    >>"$review_dir/claim-$safe.log" 2>&1 || claim_rc=$?
+  if (( claim_rc == 3 )); then
+    log_event "review-skipped" "$(jq -nc --arg r "$slug" --arg b "$branch" \
+      '{repo: $r, detail: ("review branch " + $b + " is already claimed by another node")}')"
+    return 0
+  elif (( claim_rc != 0 )); then
+    log_event "review-skipped" "$(jq -nc --arg r "$slug" --arg b "$branch" \
+      '{repo: $r, detail: ("could not claim " + $b + " — standing this repo down, fail closed")}')"
+    return 0
+  fi
+
   clone_dir="$workspace_root/${review_id}-${safe}"
   assert_in_workspace "$clone_dir"
   if ! gh repo clone "$slug" "$clone_dir" -- --quiet 2>"$review_dir/clone-$safe.err"; then
     log_event "review-attempt-failed" "$(jq -nc --arg r "$slug" --arg d "$(cat "$review_dir/clone-$safe.err")" '{repo: $r, stage: "workspace", detail: $d}')"
+    release_review_claim "$slug" "$branch" "$safe" no-pr
     rm -rf "$clone_dir"; clone_dir=""
     return 0
   fi
@@ -472,7 +517,6 @@ review_one() {
   cp -r "$SKILL_SRC" "$clone_dir/.claude/skills/project-review"
   printf '/.claude/skills/project-review/\n' >> "$clone_dir/.git/info/exclude"
 
-  branch="${branch_prefix}${review_date}"
   local reviewer_input
   reviewer_input="$(jq -nc --arg repo "$slug" --arg db "$default_branch" --arg date "$review_date" \
     --arg branch "$branch" --arg label "$pr_label" \
@@ -514,11 +558,16 @@ $(jq . <<<"$reviewer_input")
     if [[ -n "$pr_url" ]]; then
       gh pr comment "$pr_url" --body "Autonomous project-review agent abandoned this PR: $detail. Left for human review." >/dev/null 2>&1 || true
     fi
+    # no-pr is safe even when an abandoned PR exists: lib/claim.sh keeps the
+    # ref whenever it has moved or an open PR uses it, and drops the registry
+    # entry either way.
+    release_review_claim "$slug" "$branch" "$safe" no-pr
     rm -rf "$clone_dir"; clone_dir=""
     return 0
   fi
 
   log_event "review-pr-raised" "$(jq -nc --arg r "$slug" --arg u "$pr_url" '{repo: $r, pr_url: $u}')"
+  release_review_claim "$slug" "$branch" "$safe" have-pr
   [[ -n "$pr_url" ]] && echo "$pr_url"
   rm -rf "$clone_dir"; clone_dir=""
   return 0

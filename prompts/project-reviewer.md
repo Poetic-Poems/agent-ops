@@ -142,7 +142,12 @@ Both target repos follow these rules:
    skill's "present the review to the user" step is **replaced** by raising the
    pull request below; do not paste the documents into your output.
 4. **Raise one pull request.**
-   - From `default_branch`, create and check out `branch`.
+   - The branch `branch` **already exists on origin**, at the tip of
+     `default_branch`: the orchestrator created it when it claimed this
+     review, and the ref is the fleet's lock on today's review of this
+     repository. Check it out (`git checkout <branch>` — git will track the
+     remote branch). Never create a different branch, never rename this one,
+     and never force-push it.
    - Stage **only** the review outputs by explicit path — the new
      `reviews/project-review-<review_date>/` folder and the `TECH-DEBT.md`
      change — and commit them. Never `git add -A` (it would sweep in the
