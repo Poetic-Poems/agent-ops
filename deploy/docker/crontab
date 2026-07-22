@@ -14,8 +14,14 @@
 #
 # Whether the cycle lines do anything at all is decided by AGENT_OPS_ROLE
 # (requirement 2.4): on a standby node each one writes a single line to its log
-# and exits. The schedule is therefore identical on every node, and failing
-# over is a matter of changing one variable, not editing this file.
+# and exits.
+#
+# THIS FILE IS A FALLBACK. At container start, entrypoint.sh renders
+# crontab.tmpl over it (render-crontab.sh), replacing the cycle and review
+# minutes with this node's own offsets — a stable hash of NODE_NAME, or
+# CYCLE_MINUTE from .env — so several active nodes spread across the hour
+# instead of all firing together on one shared account. What is baked here
+# runs only when that render fails, and the entrypoint says so when it does.
 
 LOGDIR=/home/agent/.local/state/poetic-agents
 

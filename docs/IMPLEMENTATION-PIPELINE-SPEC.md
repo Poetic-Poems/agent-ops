@@ -93,6 +93,22 @@ a node updates by pulling a new image rather than by pulling a branch.
   log-derived views work identically. It deliberately omits the laptop's
   personal `update-main-branches.sh` entry: that refreshes interactive
   checkouts, and a node has none.
+- **The cycle and review minutes are per-node** (design decision D5). At
+  every container start, `entrypoint.sh` runs
+  `deploy/docker/render-crontab.sh`, which renders `crontab.tmpl` over the
+  baked crontab with this node's offsets: `CYCLE_MINUTE` from the
+  environment when it is a minute in 1..59, else `1 + (sha256(NODE_NAME)
+  mod 59)` — deterministic, needing no coordination, and never minute 0,
+  which poetic's hourly sync workflow owns. The review runs at
+  `(CYCLE_MINUTE + 29) mod 60` past 03:00, keeping one node's two heavy
+  pipelines maximally apart. Why: every active node spends one Claude
+  account and pushes to the same repositories; the claims (17a) make
+  simultaneous firing *correct*, the offsets make it *cheap*. An invalid
+  `CYCLE_MINUTE` warns loudly and uses the hash — a typo must not silently
+  land a node on minute 0 — and any render failure leaves the baked
+  crontab, a valid schedule, byte-untouched (`test/render-crontab.test.sh`
+  pins all of this). The offsets therefore arrive with the image alone;
+  setting `CYCLE_MINUTE` explicitly requires the compose file that maps it.
 - Nothing host-specific and nothing secret is baked in. `GH_TOKEN`, the Claude
   credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
   and a node that is not `active` (requirement 2.4) costs nothing but its

@@ -1,0 +1,19 @@
+# deploy/docker/crontab.tmpl — the template render-crontab.sh renders over
+# deploy/docker/crontab at every container start (design decision D5). The
+# two at-sign placeholders below are this node's cycle offsets: several
+# active nodes on one shared Claude account must not all fire at once, so
+# each node lands on its own minute — a stable hash of NODE_NAME by default,
+# CYCLE_MINUTE in .env to choose. Minute 0 is deliberately never used:
+# poetic's hourly sync workflow owns the top of the hour.
+#
+# Everything not a placeholder is documented in the baked crontab, which is
+# also the fallback whenever this template cannot be rendered.
+
+LOGDIR=/home/agent/.local/state/poetic-agents
+
+*/5 * * * *  /app/scripts/publish-dashboard-launcher.sh
+@CYCLE_MINUTE@ * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
+@REVIEW_MINUTE@ 3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
+
+*/5 * * * *  /app/scripts/state-sync.sh push  >> $LOGDIR/state-sync.log 2>&1
+*/7 * * * *  /app/scripts/state-sync.sh fetch >> $LOGDIR/state-sync.log 2>&1

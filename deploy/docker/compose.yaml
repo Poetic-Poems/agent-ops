@@ -39,6 +39,9 @@ x-agent-ops: &agent-ops
     # restart, must not turn a spare node into a second worker.
     AGENT_OPS_ROLE: ${ROLE:-standby}
     NODE_NAME: ${NODE_NAME:-unnamed}
+    # The minute of each hour this node's cycle fires (1-59). Unset means a
+    # stable hash of NODE_NAME — see deploy/docker/render-crontab.sh.
+    CYCLE_MINUTE: ${CYCLE_MINUTE:-}
     GH_TOKEN: ${GH_TOKEN:-}
     GIT_USER_NAME: ${GIT_USER_NAME:-}
     GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
