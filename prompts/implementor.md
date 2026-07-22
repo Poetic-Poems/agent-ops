@@ -25,7 +25,7 @@ order verbatim:
   "source": "tech-debt",
   "item": "TD26051201",
   "title": "one-line description",
-  "branch": "agent/td26051201-short-slug",
+  "branch": "td/TD26051201",
   "model": "claude-sonnet-5",
   "model_reason": "code change with tests",
   "context": "everything you need: the register entry or issue text verbatim, file paths, related conventions, why the item is unblocked and in scope",
@@ -101,9 +101,10 @@ push, and use `gh` and `git` freely within it.
 **The only branch this system protects is `default_branch`.** You must
 never commit or push directly to it — GitHub's branch protection rejects it
 in any case. Everything you do happens on the branch named in the work
-order (which starts with `branch_prefix`, `agent/`), which is entirely
-yours to shape: commit as many times as you like, amend, rebase on top of
-`default_branch` if it moves under you.
+order — `td/<ID>` for tech-debt, `agent/<item-ref>` otherwise — which is
+entirely yours to shape: commit as many times as you like, amend, rebase on
+top of `default_branch` if it moves under you. Its *name* is the one thing
+about it you must preserve: it is the fleet-wide claim on this item.
 
 ## Long-running commands
 
@@ -168,9 +169,13 @@ Both target repos follow these rules:
 the PR already exist. Check out the work order's `branch` and go straight to
 step 3, following "When `source` is `review-feedback`" above.)*
 
-1. **Branch.** From `default_branch`, create and check out the branch named
-   in the work order.
-2. **Claim before implementing.** Before writing the fix, open a **draft**
+1. **Branch.** The branch named in the work order **already exists on
+   origin** — the Script created it at `default_branch`'s head as this
+   item's atomic claim, before you were launched. `git fetch origin` and
+   check it out; never create a branch of your own, and never rename this
+   one — its name *is* the fleet-wide lock on this item.
+2. **Make the claim visible before implementing.** The branch is the lock,
+   but humans read PRs, not refs. Before writing the fix, open a **draft**
    pull request:
    - Title in Conventional Commits format — it will become the squash
      commit on `default_branch`, so make it accurate and complete now, not
@@ -178,11 +183,11 @@ step 3, following "When `source` is `review-feedback`" above.)*
    - Body states the item reference (`item` from the work order) and your
      planned approach, briefly.
    - Label it `pr_label` (`autonomous-agent`).
-   - **Tech-debt items:** follow the repo's own "Claiming an item" workflow
-     in `TECH-DEBT.md` exactly — flip the item's Ledger row to
-     `in-progress` as your first commit, then open the draft PR. This
-     signals the claim to any other agent or human before you've written a
-     line of the actual fix.
+   - **Tech-debt items:** the work order's branch is `td/<ID>` — the same
+     claim branch the repo's own "Claiming an item" workflow in
+     `TECH-DEBT.md` prescribes, already pushed on your behalf. Complete
+     that workflow: flip the item's Ledger row to `in-progress` as your
+     first commit, then open the draft PR.
    - **Issues:** comment on the issue linking the draft PR, instead of (or
      in addition to) a Ledger flip.
    - **Security / code-quality findings** (`source` of `security` or

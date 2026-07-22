@@ -109,11 +109,15 @@ fi
 # degrades to an empty array indistinguishable from "nothing is under review",
 # and the source silently never fires. That is the `[]`-on-error trap in the
 # Gotchas table, and it cost a debugging round here before this line existed.
+# Heads may be `agent/…` or — for tech-debt items, whose claim branch is the
+# human protocol's own `td/<ID>` — `td/…`; the label filter above is the
+# primary "ours" signal either way.
 prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
         --json number,title,headRefName,commits,isDraft,reviewDecision,url,body \
         --jq "[.[] | select(.isDraft | not)
                    | select(.reviewDecision == \"CHANGES_REQUESTED\")
-                   | select(.headRefName | startswith(\"$branch_prefix\"))]" \
+                   | select((.headRefName | startswith(\"$branch_prefix\"))
+                            or (.headRefName | startswith(\"td/\")))]" \
         || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
   printf '[]'
