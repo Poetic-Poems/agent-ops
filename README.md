@@ -776,26 +776,120 @@ This repo follows the same conventions as its target repos:
 
 ## Development
 
-To run the unit tests (plain bash, no framework; each is self-contained and
-exits non-zero on the first failed assertion):
+The image is the deployment, but it is never the workshop. Changes are made
+in an ordinary git checkout, land on `main` through a pull request, and reach
+the fleet as a freshly built image. Nothing is ever edited inside a running
+container — there is no useful way to: `/app` is baked in at build time, and
+the next image roll would discard the edit anyway.
+
+### Making a change when every instance is a container
+
+Work in a dedicated fresh clone on a feature branch and open a pull request —
+the workflow in [Branch workflow](#branch-workflow) and `CLAUDE.md`. With the
+legacy host install cut over, a checkout is purely a development artefact: no
+cron entry and no pipeline runs out of it, so editing one cannot destabilise
+a running cycle. The rule in [Pausing the
+pipelines](#pausing-the-pipelines) — disable before editing — protected the
+host install, where cron ran the very files being edited; on a fleet of
+containers, editing is always safe and the switch is about *rollout*, not
+editing.
+
+Because rollout is where the care has moved to: every merge to `main` builds
+and publishes a new image, and every node on the `auto-update` profile
+restarts into it within watchtower's poll interval (about five minutes) —
+killing any cycle that happens to be mid-flight (`TD26072301` in
+`TECH-DEBT.md`; the stale-lock takeover and the claim GC tidy up behind it,
+but an Implementor's half-finished work dies with the roll). For routine
+changes that risk is accepted. For a change that touches cycle state, claims,
+or the state-sync format, stand the fleet down first, merge, watch the roll,
+then resume — the switch works from any node:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --disable "rolling out PR #NN"
+# merge; watchtower rolls every auto-update node onto the new image
+docker compose exec scheduler /app/agent-cycle.sh --enable
+```
+
+### Running the tests
+
+The unit tests are plain bash, no framework; each is self-contained and
+exits non-zero on the first failed assertion. They run straight out of the
+checkout — no node, no Docker, no installation:
+
 ```bash
 for t in test/*.test.sh; do "$t" || break; done
 ```
 
-Before editing anything in this repo, stop the pipelines — they run the files
-you are editing (see [Pausing the pipelines](#pausing-the-pipelines)):
+CI runs the same suite *inside* the freshly built image on every push —
+along with toolchain, crontab and role-guard checks (see
+`.github/workflows/build-image.yml`) — so an image that reaches `ghcr.io`
+has already passed everything above.
+
+### Trying a change on a real node before it merges
+
+Build the image from the checkout and point a stack at it —
+`AGENT_OPS_IMAGE` in `.env` exists for exactly this:
+
 ```bash
-./agent-cycle.sh --disable "working on agent-ops" && ./agent-cycle.sh --status
-# ... work ...
-./agent-cycle.sh --enable
+docker build -f deploy/docker/Dockerfile -t agent-ops .
+# in the stack's .env:  AGENT_OPS_IMAGE=agent-ops
+docker compose up -d
+docker compose exec scheduler /app/agent-cycle.sh --dry-run
+docker compose exec scheduler /app/agent-cycle.sh --once --repo poetic-fiddle
 ```
 
-To test a full cycle without cron:
-```bash
-./agent-cycle.sh --once --repo poetic-fiddle 2>&1 | tee test-cycle.log
-```
+Do this on a scratch stack or a standby node, never the fleet's workhorse. A
+second stack on the same host needs its own `COMPOSE_PROJECT_NAME`, node
+name and token (see
+[A second node on one host](deploy/docker/README.md#a-second-node-on-one-host));
+`--dry-run` and `--once` run regardless of role, so the guinea-pig node can
+stay `standby` throughout. To mock a usage-limit event for testing the
+cooldown, from a shell on that node (`docker compose exec scheduler bash`):
 
-To mock a usage-limit event for testing the cooldown:
 ```bash
 jq -n '{ts: now | todate, cycle: "test", event: "limit-hit", resume_at: (now + 7200 | todate), detail: "test injection"}' >> ~/.local/state/poetic-agents/log.jsonl
 ```
+
+### Taking one node out while the rest keep working
+
+Yes — role and lifecycle are per-node; only the switch is not. `--disable`
+stops the *fleet* (it publishes `fleet/disabled.json`, which every node
+obeys), so it is the wrong tool for taking a single node aside. Per node:
+
+- **Stop it spending**: set `ROLE=standby` in its `.env`, then
+  `docker compose up -d`. It keeps its heartbeat and keeps following the
+  fleet's memory, so promoting it back is the same one variable.
+- **Stop it entirely**: `docker compose stop scheduler`, or
+  `docker compose down` (which keeps the volumes). The rest of the fleet
+  carries on; per-item claims mean no other node was depending on this one.
+- **Hold it on a known image** while the rest follow `latest`: pin
+  `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env`.
+
+One caution before any *manual* `docker compose up -d` on a live node: after
+a watchtower roll, compose's recorded config-hash no longer matches, so
+`up -d` recreates the scheduler even when nothing in the compose file
+changed — killing a running cycle exactly as a roll does. Run `--status`
+first and let a cycle in flight finish.
+
+### How a change propagates — and what survives it
+
+Containers are disposable and, in effect, immutable: an update *is* the
+destruction of the old container and the creation of a new one from the new
+image, whether watchtower performs it or a manual
+`docker compose pull && docker compose up -d` does. That is not a cost to
+work around but the design — nothing worth keeping lives in a container.
+What carries across every roll:
+
+- **The node's `.env`** — a file on the host, outside Docker entirely. The
+  GitHub PAT (`GH_TOKEN`) is injected from it into each new container at
+  start, so the recreated container uses the same token as the destroyed
+  one; nothing is re-issued, and the token needs replacing only on its own
+  expiry (or if leaked).
+- **The `claude-config` volume** — Claude's OAuth credentials, which refresh
+  themselves in place. The manual `docker compose exec scheduler claude`
+  login is once per *node*, not per container: no re-authentication after an
+  image update, a `stop`/`start`, or a role change. The only thing that
+  costs a fresh login is destroying the volume itself
+  (`docker compose down -v`).
+- **The `state` and `workspaces` volumes** — the pipelines' memory and any
+  in-progress clone.
