@@ -88,9 +88,11 @@ artefact: `/app` inside it *is* agent-ops, so a node updates by pulling a new
 image rather than by pulling a branch. The full runbook — bring-up, operations,
 the failover drill, troubleshooting — is **[deploy/docker/README.md](deploy/docker/README.md)**.
 
-The **host install** further below is the laptop's legacy path, kept working
-until it is cut over: the scripts run straight out of a checkout, driven by the
-user crontab and a SysV init script.
+The **host install** further below is the laptop's old path, in which the
+scripts ran straight out of a checkout under the user crontab and a SysV init
+script. That cut-over is done — the laptop now runs as a container node like
+every other — so those sections are retained only as a record of the retired
+deployment; nothing runs that way any more.
 
 ### As a container
 
@@ -141,19 +143,21 @@ Four things are worth knowing:
 - **The dashboard is never published by a port.** Its server binds `127.0.0.1`
   by design, so `ports:` would reach nothing. The `tailnet` profile shares the
   Tailscale sidecar's network namespace instead; the `local` profile shares the
-  host's. If the host already has something on 8787 — the laptop's legacy SysV
-  dashboard does — set `DASHBOARD_PORT` in `.env`.
+  host's. If the host already has something on 8787, set `DASHBOARD_PORT` in
+  `.env`.
 
-Set `ROLE=active` in the `.env` of exactly one node (see
-[Which node runs the cycles](#which-node-runs-the-cycles)), and read
+Set `ROLE=active` in the `.env` of every node meant to spend — any number may
+be, since per-item claims keep them off each other's work (see
+[Which node runs the cycles](#which-node-runs-the-cycles)); the rest stay
+`standby`. Then read
 [deploy/docker/README.md](deploy/docker/README.md) for everything after that.
 
-### On the host (legacy)
+### On the host (legacy, decommissioned)
 
-The laptop's current path, and the only one that needs a checkout. A
-containerised node needs none of this — Docker and the `.env` above are the
-whole of it. These steps stay documented and working until the laptop is cut
-over.
+How the laptop ran before the cut-over — straight out of a checkout, under the
+user crontab and a SysV init script. **No node runs this way now**; the steps
+are kept as a record of the retired path, not as an install route. A new node
+is a container: Docker and the `.env` above are the whole of it.
 
 1. **Create the repo:**
    ```bash
@@ -248,17 +252,22 @@ Launches implementor and reviewer in the foreground. Leaves the PR and workspace
 
 ## Pausing the pipelines
 
-Both cron pipelines run the code in *this* working tree. Editing
-`agent-cycle.sh`, `lib/`, or `prompts/` while a cycle is about to start means
-the next tick sources half of one revision and half of another — so before
-working on this repo, turn the pipelines off:
+Each node runs the pipelines from the image baked into it, not from a
+checkout, so editing this repo no longer risks a running cycle (that hazard
+belonged to the old host install; see [Development](#development)). What the
+switch is for now is standing the fleet down deliberately — around a rollout
+that would otherwise roll a node mid-cycle, or simply to stop spend. It does
+so everywhere at once. On a container node you drive it through the scheduler:
 
 ```bash
-./agent-cycle.sh --disable "editing lib/cycle-state.sh"   # expires after disable_default_ttl (4 h)
-./agent-cycle.sh --disable "big refactor" --for 8h        # or 90m, 2d, or `forever`
-./agent-cycle.sh --status                                 # what's set, and is anything running?
-./agent-cycle.sh --enable                                 # resume
+docker compose exec scheduler /app/agent-cycle.sh --disable "rolling out PR #NN"  # expires after disable_default_ttl (4 h)
+docker compose exec scheduler /app/agent-cycle.sh --disable "big refactor" --for 8h  # or 90m, 2d, or `forever`
+docker compose exec scheduler /app/agent-cycle.sh --status   # what's set, and is anything running?
+docker compose exec scheduler /app/agent-cycle.sh --enable   # resume
 ```
+
+(From a shell on the node — `docker compose exec scheduler bash` — the bare
+`./agent-cycle.sh …` form works, since `/app` is the working directory.)
 
 The switch is one file (`$state_dir/disabled.json`) shared by **both**
 `agent-cycle.sh` and `review-cycle.sh` — they run out of the same tree, so
@@ -273,7 +282,8 @@ Three things worth knowing:
 
 - **Disabling stops the *next* cycle, not one already running.** `--status`
   tells you whether a cycle is in flight, and `--disable` warns you if there
-  is. Wait for it to finish before editing files it is reading.
+  is. Wait for it to finish before rolling a new image onto the node — a
+  watchtower roll or a manual `up -d` kills a cycle mid-flight (`TD26072301`).
 - **A disable expires by default.** The point is not tidiness: an agent that
   disables the pipeline and then dies would otherwise stop every future cycle
   silently — "no PRs" looks exactly like a quiet week. The TTL turns a
@@ -550,12 +560,14 @@ The dashboard is a **reader**: it only ever reads the pipeline's state and
 GitHub, never writes into the state tree, never touches the lock, and cannot
 disturb a running cycle. See `docs/DASHBOARD-SPEC.md` for its design.
 
-### Run as a service (legacy WSL path)
+### Run as a service (legacy WSL path, decommissioned)
 
 On a containerised node the dashboard is already a service — the `dashboard`
 service in `deploy/docker/compose.yaml`, restarted by Docker and reached over
 the tailnet through the sidecar. Everything from here to the end of this section
-is the laptop's SysV path, kept until it is cut over.
+is the laptop's old SysV path, retired at the cut-over and kept only as a record
+of it — the laptop now serves its dashboard from the container like every other
+node.
 
 To have the loopback server start automatically when WSL starts — so
 `http://127.0.0.1:8787` is always up without a foreground terminal — install
@@ -624,11 +636,12 @@ that would publish the pipeline's telemetry to anyone with the link.)
 A containerised node has this already: the `tailnet` profile runs Tailscale as
 a sidecar and the dashboard inside its network namespace, which is the same
 arrangement — loopback server, Serve in front, no Funnel — assembled by
-`docker compose up -d` instead of by hand. The steps below are the laptop's
-manual equivalent.
+`docker compose up -d` instead of by hand. The steps below were the laptop's
+manual equivalent before the cut-over, kept for reference; a node set up today
+gets all of this from the `tailnet` profile.
 
 Prerequisite: the loopback server must be running — install it as a boot
-service first (see [Run as a service](#run-as-a-service-legacy-wsl-path)).
+service first (see [Run as a service](#run-as-a-service-legacy-wsl-path-decommissioned)).
 
 1. **Install Tailscale in WSL** and check the daemon binary landed:
 
