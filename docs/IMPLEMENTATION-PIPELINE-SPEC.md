@@ -172,8 +172,8 @@ file and carries placeholders only; `.env` itself is never committed.
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. project-review recommendations · 7. code-quality findings |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 7. project-review recommendations · 8. code-quality findings |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. project-review recommendations · 8. code-quality findings |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 8. project-review recommendations · 9. code-quality findings |
 
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
@@ -222,6 +222,24 @@ merged PR:
   whose text flags a **security concern** is security-related and so is caught
   by "security is always prioritised" like any other security candidate.
 
+The `review-feedback` and `abandoned-drafts` sources are both *finishing*
+sources — they carry an already-open pull request the rest of the way rather than
+starting new work — and both are pre-fetched:
+
+- **`review-feedback`** — pull requests this system raised on which a human has
+  requested changes we have not yet answered (requirement 3c). Ranked second, and
+  across all repos (requirement 15b).
+- **`abandoned-drafts`** — draft pull requests this system raised and then
+  abandoned: still open, still draft, carrying `pr_label` on a branch under
+  `branch_prefix` (or `td/`), and untouched for at least
+  `abandoned_draft_after_hours` (requirement 3e). A stage that timed out, hit a
+  usage limit, or died leaves its draft PR behind as a stalled claim; finishing it
+  costs less than starting fresh and turns the back-pressure slot it occupies —
+  which nothing would otherwise clear — into a PR a human can merge.
+  Ranked third, and across all repos (requirement 15c). Alone among the sources
+  its candidacy turns on the passage of time, which the no-op fingerprint must
+  account for (requirement 3b).
+
 Because Dependabot and code-scanning alerts live behind paginated, verbose
 GitHub APIs, the Script pre-fetches and normalises them once per cycle via
 `scripts/gather-findings.sh` (a deterministic, model-free script) and injects
@@ -256,7 +274,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `abandoned-drafts`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -271,6 +289,7 @@ values below are the confirmed defaults; the README must document each key.
 | `max_open_agent_prs` | `3` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 30 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
+| `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit untouched (`updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
 | `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
@@ -340,10 +359,15 @@ runs unattended.
       stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
-   (requirement 3c). If back-pressure has tripped *and* any `review_feedback`
-   candidate exists, do not stand down: restrict every repo's `sources` to
-   `["review-feedback"]` and continue. Only stand down when the count is over
-   and nothing is waiting on us.
+   (requirements 3c and 3e). If back-pressure has tripped *and* any
+   `review_feedback` or `abandoned_drafts` candidate exists, do not stand down:
+   restrict every repo's `sources` to `["review-feedback", "abandoned-drafts"]`
+   and continue. Only stand down when the count is over and nothing is waiting to
+   be finished. Both are *finishing* sources — they complete an already-open PR
+   rather than opening a new one — and an abandoned draft is doubly apt here,
+   because it is itself occupying one of the very back-pressure slots the cap
+   counts — a slot nothing will ever clear on its own until the draft is finished
+   and a human can merge it.
 
    Without this the pipeline deadlocks exactly when it is most stuck.
    `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
@@ -576,6 +600,41 @@ runs unattended.
      to an empty array indistinguishable from "nothing is under review", and the
      source silently never fires. That cost a debugging round when this was
      built.
+3e. **Abandoned-drafts pre-fetch.** For each configured repo whose `sources`
+   include `abandoned-drafts`, run `scripts/gather-abandoned-drafts.sh <slug>
+   <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
+   to that repo's entry as `abandoned_drafts`. It prints the draft PRs *this
+   system raised and then abandoned*: open, **draft**, carrying `pr_label`, head
+   branch under `branch_prefix` (or `td/`), and with `updatedAt` older than
+   `now − abandoned_draft_after_hours`. Each entry carries the round's ref, the PR
+   number and URL, the existing branch, the head SHA, the `updatedAt`, and the
+   draft PR's own body verbatim (the original plan).
+
+   - **A draft is the claim; a stale draft is an abandoned claim.** Requirement 23
+     has the Implementor open a draft PR the moment it starts, as the visible
+     claim. A draft that has sat untouched past the threshold is therefore a claim
+     whose owner never returned — a stage that timed out, hit a usage limit, or
+     died. `updatedAt` advances on any push, comment, label or title edit, so a
+     draft that is merely being worked (or that a peer node has picked up) keeps
+     resetting its clock and never qualifies; the threshold sits comfortably
+     beyond a whole cycle for exactly this reason.
+   - **Ready PRs are not ours to touch here.** A non-draft PR is finished work
+     waiting on the human; answering it is `review-feedback`'s job, and
+     force-pushing it would violate the Human Gate. Only drafts qualify.
+   - **The ref is scoped to the head SHA** — `pr-<n>-abandoned-<head-sha>`, not
+     `pr-<n>-abandoned` — so a block recorded against one abandoned state does not
+     swallow a later, possibly-finishable state after fresh commits land, while a
+     draft re-abandoned at the same head keeps the same ref and stays blocked.
+     Same reasoning as requirement 3c's per-round refs.
+   - **Its candidacy turns on the clock**, uniquely among the sources, and that is
+     the deciding reason it is pre-fetched rather than left to the Co-Ordinator:
+     the staleness transition moves no commit, issue, alert or even the PR's own
+     `updatedAt`, so only an array computed against the clock here makes it visible
+     to the no-op fingerprint (requirement 3b). As with requirement 3c the rule
+     must exist for the fingerprint anyway, so it gets one definition
+     (requirement 34a).
+   - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
+     3c. `shellcheck`-clean.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -598,7 +657,13 @@ runs unattended.
      signal and keep the map in the shared library: `head_sha` covers every
      file-backed source at once (tech-debt, implementation-plan,
      project-review, the code); the pre-fetched `findings` cover security and
-     code-quality verbatim; an issues digest (number, `updated_at`, labels,
+     code-quality verbatim; the pre-fetched `review_feedback` and
+     `abandoned_drafts` arrays cover those two finishing sources verbatim — and
+     `abandoned_drafts` is the one source whose candidacy turns on the clock, so
+     hashing the array (which gains an entry the cycle a draft goes stale) is the
+     *only* thing that busts the fingerprint at that transition, since the open-PR
+     digest below moves for a new or updated PR but not for the mere passage of
+     time; an issues digest (number, `updated_at`, labels,
      assignee — the last two because requirement 16.4 excludes on them); a
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
@@ -801,6 +866,16 @@ runs unattended.
     must **not** apply requirement 16's claim exclusion to this source: the open
     PR *is* the item, and excluding it makes every candidate permanently
     unselectable while looking entirely correct.
+15c. **Abandoned drafts come third, across all repos.** After security and
+    review-feedback, and likewise outranking the plain repo-then-source walk: any
+    selectable `abandoned_drafts` candidate in any repo is taken before any fresh
+    work in a more-overdue repo. A previous cycle already implemented most of the
+    work behind that draft, so finishing beats starting; and every hour it sits
+    stalled it holds a back-pressure slot that throttles new work fleet-wide. As
+    with review-feedback, the Co-Ordinator must **not** apply requirement 16's
+    claim exclusion to this source — the open draft PR *is* the item, and the
+    pre-fetch (requirement 3e) has already established it is stale and ours, so
+    treating it as a claim would make every candidate permanently unselectable.
 15a. **Security is always prioritised.** Beyond `security` being first in the
     source order, any candidate that is security-related — a `security`
     finding, a GitHub issue labelled `security`/`vulnerability`, a
@@ -867,19 +942,22 @@ runs unattended.
     claim before the Implementor starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
     The primitive is create-only, so GitHub arbitrates every race:
-    - *Branch claims* (every source except `review-feedback`): a REST
-      create-ref (`POST /git/refs`) on the target repository at the default
-      branch's head. The claim branch **is** the working branch, derived
-      deterministically so every node computes the same name for the same
-      item: `td/<ID>` for tech-debt — the same lock the human claiming
-      workflow in TECH-DEBT.md takes, so agents and humans contend safely —
-      and `agent/<item-ref>` for everything else. A 422 (ref exists, even at
-      the same SHA — which a plain `git push` of an identical ref would
+    - *Branch claims* (every source except `review-feedback` and
+      `abandoned-drafts`): a REST create-ref (`POST /git/refs`) on the target
+      repository at the default branch's head. The claim branch **is** the
+      working branch, derived deterministically so every node computes the same
+      name for the same item: `td/<ID>` for tech-debt — the same lock the human
+      claiming workflow in TECH-DEBT.md takes, so agents and humans contend
+      safely — and `agent/<item-ref>` for everything else. A 422 (ref exists,
+      even at the same SHA — which a plain `git push` of an identical ref would
       no-op) means a peer holds the item: log `claim-lost` and move to the
       next candidate.
-    - *File claims* (`review-feedback`, which amends an existing PR and has
-      no new branch to create): a create-only contents-API PUT (no `sha`) of
-      `claims/<repo>/<ref>.json` in the state repository.
+    - *File claims* (`review-feedback` and `abandoned-drafts`, which finish an
+      existing PR and have no new branch to create): a create-only contents-API
+      PUT (no `sha`) of `claims/<repo>/<ref>.json` in the state repository. For
+      `abandoned-drafts` the ref is scoped to the draft's head SHA
+      (`pr-<n>-abandoned-<head-sha>`), so two nodes racing to finish the same
+      draft contend on the same file and one wins.
     - Every won claim also writes a best-effort **registry entry** at
       `claims/<repo>/<key>.json` in the state repository — the lock is the
       ref or file above; the registry is what back-pressure counts (2.2)
@@ -930,18 +1008,25 @@ runs unattended.
     single-selection shape — the work-order fields at the top level — for
     one release, treating it as a one-candidate list). Candidates carry no
     `branch`: the Script derives and injects the claim branch (requirement
-    17a), except for `review-feedback`, whose `branch` is the PR's existing
-    branch carried from the entry. For a `failed-runs` entry, `item` is
-    `failed-run-` plus the workflow file's basename without extension —
+    17a), except for `review-feedback` and `abandoned-drafts`, whose `branch` is
+    the PR's existing branch carried from the entry. For a `failed-runs` entry,
+    `item` is `failed-run-` plus the workflow file's basename without extension —
     deterministic, so every node derives the same claim key. `source` is one of
-    `security`, `review-feedback`, `failed-runs`, `tech-debt`, `issues`,
-    `implementation-plan`, `project-review`, or `code-quality`. For a
+    `security`, `review-feedback`, `abandoned-drafts`, `failed-runs`, `tech-debt`,
+    `issues`, `implementation-plan`, `project-review`, or `code-quality`. For a
     `review-feedback` entry, `item` is its `ref`, `branch` is the PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
     `context` must paste the entry's `body` **verbatim** — it is a human's
     specific, considered request and it is the entire brief. A model
     summarising a review before handing it to the model that must act on it is
-    a lossy telephone game about what a person actually asked for. For a `security`/`code-quality`
+    a lossy telephone game about what a person actually asked for. For an
+    `abandoned-drafts` entry, `item` is its `ref`, `branch` is the draft PR's
+    **existing** branch, the order also carries `pr_url` and `pr_number`, and
+    `context` must carry the draft PR's own `body` verbatim (the original plan)
+    plus the existing branch and head SHA, telling the Implementor to read the
+    existing diff and *finish* the draft rather than restart it; `acceptance` is
+    completion to the originating item's standard with the PR left a **draft** for
+    the Reviewer to flip to ready. For a `security`/`code-quality`
     finding, `item` is the finding's stable `ref` (e.g. `dependabot-alert-42`,
     `code-scanning-alert-17`) and `context` must paste the finding verbatim
     (package/rule, severity, affected location, advisory summary, and the
@@ -1157,6 +1242,11 @@ What exists, and the requirements each part answers to:
    our reply to a human's review, each carrying every review body and inline
    comment in the round verbatim. Fails safe to `[]` (exit 0). Must pass
    `shellcheck`.
+3f. `scripts/gather-abandoned-drafts.sh` implementing requirement 3e: given a
+   repo slug, PR label, branch prefix and staleness threshold, prints the JSON
+   array of this system's own abandoned draft PRs (open, draft, ours, untouched
+   past the threshold), each carrying the draft PR's body verbatim and a
+   head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -1286,6 +1376,10 @@ pull request, run the ones the change touches and any it could regress.
 2a. `scripts/gather-findings.sh Poetic-Poems/poetic` prints a valid JSON
    array (possibly empty), and prints `[]` and exits 0 for a repo with the
    features disabled — never a non-zero exit that would abort the cycle.
+2b. `scripts/gather-abandoned-drafts.sh Poetic-Poems/does-not-exist autonomous-agent agent/ 3`
+   prints `[]` and exits 0 — a missing repo, a disabled feature, an API error, or
+   an unparseable threshold never aborts the cycle. Its candidate rule is
+   regression-tested in `test/abandoned-drafts.test.sh`.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning.
@@ -1318,13 +1412,26 @@ pull request, run the ones the change touches and any it could regress.
    makes it a candidate again under a *new* ref, or a round that once went
    `blocked` will swallow the human's next attempt to unstick it.
 6d. **Back-pressure cannot deadlock the pipeline (requirement 2.2a).** Set
-   `max_open_agent_prs` to 0 with a review-feedback candidate present: the
-   cycle must **not** stand down, and must reach the Co-Ordinator with every
-   repo's `sources` narrowed to `["review-feedback"]`. With no candidate
-   present it must stand down as before. This is the check that a system whose
-   PRs have all been sent back for changes can still dig itself out; without
-   it, the state the pipeline is least able to escape is the one it is
-   guaranteed to reach.
+   `max_open_agent_prs` to 0 with a *finishing* candidate present — a
+   review-feedback round *or* an abandoned draft: the cycle must **not** stand
+   down, and must reach the Co-Ordinator with every repo's `sources` narrowed to
+   `["review-feedback", "abandoned-drafts"]`. With neither present it must stand
+   down as before. This is the check that a system whose PRs have all been sent
+   back for changes — or all stalled as abandoned drafts, the very slots the cap
+   is counting — can still dig itself out; without it, the state the pipeline is
+   least able to escape is the one it is guaranteed to reach.
+6e. **An abandoned draft is finished, not restarted (requirements 3e, 15c).**
+   With an open *draft* PR carrying `pr_label` on a `branch_prefix` (or `td/`)
+   branch whose `updatedAt` is older than `abandoned_draft_after_hours`, a cycle
+   must select it (`source: "abandoned-drafts"`, `item` the head-SHA-scoped ref,
+   `branch` the PR's existing branch), and the Implementor must check out that
+   branch and push to it without opening a new PR or branch. Assert the freshness
+   gate: the same PR with a recent `updatedAt` is **not** a candidate — a draft
+   merely being worked, or one a peer node just touched, must never be stolen.
+   Assert a *ready* PR of ours is never an abandoned-drafts candidate (that is
+   review-feedback's job). And assert the claim uses a file claim, not a
+   create-ref against the already-existing branch (requirement 17a), or every
+   attempt would 422 and no abandoned draft could ever be picked up.
 6b. **The no-op short-circuit skips only what it can prove, and stops skipping
    when anything moves.** Drive a cycle that ends `none-selected`, confirm the
    event carries a fingerprint, then run a second cycle: it must stand down
@@ -1333,8 +1440,12 @@ pull request, run the ones the change touches and any it could regress.
    it is tempting to skip because the happy path passed: assert
    per-source that the fingerprint *changes* when a commit lands, an issue is
    relabelled or assigned, a workflow's conclusion flips, a claiming PR closes,
-   an item is unblocked or unvoided, a source is added to `config.json`, or
-   `prompts/coordinator.md` is edited. Each of those is a source of work, and
+   a draft PR of ours crosses the `abandoned_draft_after_hours` staleness
+   threshold (assert this one especially — it is the sole transition that moves
+   no other signal, so the `abandoned_drafts` array is the only thing that can
+   carry it), an item is unblocked or unvoided, a source is added to
+   `config.json`, or `prompts/coordinator.md` is edited. Each of those is a
+   source of work, and
    any one of them missing from the fingerprint is an unbounded silent stall
    that no other check in this document would catch. Assert too that a
    scheduled workflow rerunning green does *not* change it (see requirement 3b
@@ -1448,6 +1559,24 @@ requirements above, which state only what is.
   draft PR is simultaneously the repos' standard claim marker and the
   Reviewer's input; the Reviewer flipping it to ready is the hand-off to the
   human gate.
+- **An abandoned draft PR is itself a work source.** Draft-PR claiming (above)
+  has a failure mode: a stage that dies mid-implementation leaves its draft PR
+  behind as a claim nobody will ever finish, silting a back-pressure slot until a
+  human notices. Rather than rely on that, the `abandoned-drafts` source
+  (requirement 3e) treats a draft this system raised, still open and untouched for
+  `abandoned_draft_after_hours`, as selectable work — the pipeline finishes its own
+  stalled drafts. It ranks third, after security and review-feedback and ahead of
+  all fresh work (requirement 15c): finishing beats starting, and it turns a slot
+  silted with a dead draft into a PR a human can merge; under back-pressure it is
+  one of the two
+  finishing sources the cycle narrows to (requirement 2.2a). Three choices make it
+  safe: the draft/label/branch filter keeps it to *our* stalled work (never a
+  human's PR, never a ready one); the ref is scoped to the head SHA, so a
+  re-abandoned draft that has since gained commits is a new item rather than one
+  stuck behind an old block; and, because its candidacy uniquely turns on the
+  clock, the candidate array is fed to the no-op fingerprint verbatim so the
+  staleness transition — which moves no other signal — still wakes the pipeline
+  (requirement 3b).
 - **Back-pressure on open agent PRs replaces a quota-balance check** as the
   primary throttle, because no supported API exposes a subscription plan's
   remaining quota; usage-limit errors are handled fail-safe via detection

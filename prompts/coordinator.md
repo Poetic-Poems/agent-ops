@@ -57,6 +57,11 @@ heading, the Script gives you one JSON object:
   human's review, **already fetched, filtered and assembled for you** by the
   Script (see "Review feedback" below). An empty array means no human is
   waiting on us — do not go looking.
+- Each entry's `abandoned_drafts` is the repo's own draft PRs that a previous
+  cycle raised and then abandoned — open, still draft, carrying our label on a
+  branch we own, and untouched for at least the staleness threshold — **already
+  fetched and filtered for you** by the Script (see "Abandoned drafts" below). An
+  empty array means no draft of ours has stalled — do not go looking.
 - Each entry's `findings` is the repo's open Dependabot alerts and
   code-scanning alerts, **already fetched and normalised for you** by the
   Script — do not re-query the `dependabot/alerts` or `code-scanning/alerts`
@@ -140,8 +145,8 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. project-review · 7. code-quality |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **review-feedback** · 3. failed Actions runs on `main` · 4. `TECH-DEBT.md` · 5. open GitHub issues · 6. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 7. project-review · 8. code-quality |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. project-review · 8. code-quality |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 8. project-review · 9. code-quality |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
@@ -159,6 +164,13 @@ selectable item:
   reviewed and asked for changes that we have not answered yet, handed to you
   **pre-fetched** in each repo's `review_feedback` array. Second only to
   security. See "Review feedback" below.
+- **abandoned-drafts** — draft pull requests this system raised and then
+  abandoned: open, still draft, ours by label, on a branch we own, and untouched
+  past the staleness threshold, handed to you **pre-fetched** in each repo's
+  `abandoned_drafts` array. Third, after security and review-feedback: finishing a
+  stalled draft of ours beats starting anything new, and it turns the
+  back-pressure slot the draft is silting into a PR a human can merge. See
+  "Abandoned drafts" below.
 
 - **code-quality** — the remaining open code-scanning alerts (no security
   severity: maintainability, correctness, style), also in `findings` (entries
@@ -193,8 +205,9 @@ Among security candidates, take the most severe first
 (`critical` > `high` > `medium` > `low`; the pre-fetched `findings` are
 already sorted this way), and use repo order (given) to break ties. Only once
 no selectable security candidate remains do you fall back to the ordinary
-repo-then-source walk for the rest (review-feedback → failed-runs → tech-debt →
-issues → implementation-plan → project-review → code-quality).
+repo-then-source walk for the rest (review-feedback → abandoned-drafts →
+failed-runs → tech-debt → issues → implementation-plan → project-review →
+code-quality).
 
 **Review feedback comes second, across all repos.** Like security, this
 outranks the plain repo-then-source walk: if any selectable `review_feedback`
@@ -202,6 +215,15 @@ candidate exists in *any* repo, take it before any non-security work in a
 more-overdue repo. A human has already spent their time on that PR and asked
 for something specific — they are the only consumer this system has, and the
 work is nearly finished. Finishing beats starting.
+
+**Abandoned drafts come third, across all repos.** After security and
+review-feedback, and likewise ahead of the plain repo-then-source walk: if any
+selectable `abandoned_drafts` candidate exists in *any* repo, take it before any
+fresh work in a more-overdue repo. A previous cycle already implemented most of
+the work behind that draft, so finishing beats starting here too — and every hour
+it sits stalled it occupies a back-pressure slot that throttles new work
+fleet-wide. Only once no security, review-feedback, or abandoned-draft candidate
+remains do you fall to the ordinary repo-then-source walk.
 
 **Security & code-quality findings.** Their candidates are the pre-fetched
 `findings` entries (you do not query the alert APIs yourself). Each already
@@ -248,6 +270,41 @@ here — for this source, the open PR *is* the item. Applying it would make ever
 candidate in this array permanently unselectable, which reads as correct
 behaviour and quietly means no human review is ever answered.
 
+**Abandoned drafts.** The candidates are the pre-fetched `abandoned_drafts`
+entries, one per draft PR of ours that has stalled. Do not go looking for these
+yourself: the Script has already applied the rule that defines "abandoned" — open,
+still a draft, carrying our label on a branch we own, and untouched for at least
+the staleness threshold — and dropped any draft that is merely being worked. **An
+entry's presence in this array is the candidate test.** If the array is empty,
+this source has no candidates.
+
+When you select one, take the **oldest `updated_at` first** (the array is already
+in that order — that draft has been stalled longest), and:
+
+- `item` is the entry's `ref` (e.g. `pr-80-abandoned-1a2b3c4d5e6f`). Use it
+  exactly; it is scoped to this draft's current head on purpose, so a later push
+  becomes a fresh item that no old block covers.
+- `context` must carry the entry's `body` (the draft PR's own description — the
+  original plan) verbatim, plus its `url`, `number`, `branch`, `head_sha`, and —
+  where the entry names an `item` — that originating reference too. State plainly
+  that the branch and draft PR **already exist** and the Implementor's job is to
+  read the existing diff and *finish* the work, not restart it.
+- `acceptance` is: the work the draft set out to do is complete to the standard of
+  the originating item, CI is green, and the PR is left a **draft** for the
+  Reviewer to flip to ready — the ordinary end state, because finishing a draft
+  rejoins the normal flow.
+- `model` is always `models.default`: finishing a draft changes code.
+- `branch` is the entry's existing `branch` — **not** a new one. As with
+  review-feedback, the branch and PR already exist; the Implementor pushes to
+  them. Carry the entry's `pr_url` and `pr_number` into the work order too.
+
+**Never** treat "the PR is open" (exclusion 3) as a reason to skip an
+`abandoned_drafts` candidate. As with review-feedback, for this source the open
+draft PR *is* the item — the Script has already established it is stale and ours.
+Applying the claim exclusion would make every candidate permanently unselectable
+while reading as correct behaviour, and quietly mean no abandoned draft is ever
+finished.
+
 **Failed Actions runs.** A candidate exists only where the **most recent**
 run of a workflow on the default branch is a failure — a later green run
 supersedes older failures, so don't resurrect a since-fixed workflow.
@@ -288,8 +345,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    one `git ls-remote origin 'refs/heads/td/*' 'refs/heads/agent/*'` per
    repo shows them all. (The Script's own atomic claim is the hard gate;
    this exclusion just saves you proposing work that will lose the race.)
-   **This exclusion does not apply to the `review-feedback`
-   source**, where the open PR is the item itself (see "Review feedback").
+   **This exclusion does not apply to the `review-feedback` or
+   `abandoned-drafts` sources**, where the open PR is the item itself (see
+   "Review feedback" and "Abandoned drafts"). For `abandoned-drafts` the Script
+   has already checked the draft is stale and ours, so an open draft PR of ours
+   is a candidate there, not a claim to skip.
    For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
@@ -412,13 +472,17 @@ the list, and one strong candidate alone is a perfectly good list.
 }
 ```
 
-- `source` is one of `"security"`, `"review-feedback"`, `"failed-runs"`,
-  `"tech-debt"`, `"issues"`, `"implementation-plan"`, `"project-review"`, or
-  `"code-quality"` — the same tokens as the `sources` lists in the runtime
-  input above.
+- `source` is one of `"security"`, `"review-feedback"`, `"abandoned-drafts"`,
+  `"failed-runs"`, `"tech-debt"`, `"issues"`, `"implementation-plan"`,
+  `"project-review"`, or `"code-quality"` — the same tokens as the `sources`
+  lists in the runtime input above.
 - For a `review-feedback` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"`
   from the entry — the Implementor pushes to that PR instead of opening one.
+- For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
+  `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
+  the entry — the Implementor finishes that existing draft PR instead of opening
+  one.
 - For a `security`/`code-quality` finding, `item` is the finding's `ref`
   (e.g. `dependabot-alert-42`, `code-scanning-alert-17`) and `context` must
   paste the finding verbatim — its `title`, `severity`, affected
@@ -440,9 +504,10 @@ the list, and one strong candidate alone is a perfectly good list.
   branch itself, deterministically — `td/<ID>` for tech-debt (the very lock
   the human claiming workflow in TECH-DEBT.md takes, so agents and humans
   contend safely) and `agent/<item-ref>` for everything else — and injects
-  it into the work order once the claim succeeds. The one exception is
-  `review-feedback`, whose `branch` is the PR's **existing** branch, carried
-  from the entry.
+  it into the work order once the claim succeeds. The two exceptions are
+  `review-feedback` and `abandoned-drafts`, whose `branch` is the PR's
+  **existing** branch, carried from the entry — for those the PR already exists
+  and there is no new branch to create.
 - For a `failed-runs` entry, `item` is `failed-run-` plus the workflow
   file's basename without its extension (e.g. `failed-run-build-poems` for
   `.github/workflows/build-poems.yml`) — deterministic, so every node

@@ -89,6 +89,42 @@ fields, and `branch` names the existing branch.
   pushed*, not that the PR is merged. It will not be mergeable — the review
   still blocks it — so do not treat `mergeable: false` as a failure here.
 
+### When `source` is `abandoned-drafts`
+
+Like `review-feedback`, this work order inverts the assumptions the rest of this
+prompt is written around, so read this before the Procedure. A previous cycle
+raised a draft pull request for this item and then abandoned it — it timed out,
+hit a usage limit, or died — leaving the work part-finished. **The branch and the
+draft PR exist.** The work order carries `pr_url` and `pr_number` alongside the
+usual fields, and `branch` names the existing branch. Your job is to *finish* it.
+
+- **Do not open a pull request, and do not create a branch.** `git fetch origin`
+  and `git checkout` the work order's `branch` (it is on the remote already), and
+  push to it. The draft PR is already the claim; it has been there since the cycle
+  that abandoned it.
+- **Read what is already there before you add to it.** A previous cycle
+  implemented some of this — `gh pr diff <pr_number>`, and the PR body (the
+  original plan, pasted into the work order's `context`), tell you how far it got.
+  Continue from there rather than starting the item over; finishing a draft
+  instead of starting fresh only pays off if you build on the work already done.
+- **The originating claim is already made.** If this began as a tech-debt item its
+  Ledger row is already `in-progress`, and any issue was already commented on, by
+  the cycle that opened the draft — do not redo that. You still **close the loop**
+  on completion (Procedure step 5): flip the Ledger row to `resolved`, add the
+  `Closes #…` reference or `CHANGELOG.md` entry, exactly as for a normal item.
+- **Finish to the work order's `acceptance`, and verify like CI does** (Procedure
+  steps 3–4). Keep it scoped to what the draft set out to do; if the draft's whole
+  approach turns out to be wrong, that is grounds for `blocked` (explain on the
+  PR), not a rewrite into a different change.
+- **Leave the PR a draft.** Unlike `review-feedback`, finishing an abandoned draft
+  rejoins the *normal* flow: the Reviewer stage picks up your completed branch and
+  flips the draft to ready. Do not flip it yourself.
+- If you find the draft's work is **already done** on `default_branch` — a human
+  or another PR finished it while this draft sat — report `void` with evidence
+  rather than forcing a redundant change onto the branch. The draft PR already
+  exists (a previous cycle raised it), so the "a void item should not have a PR"
+  rule below does not bind here: leave the stale draft for a human to close.
+
 ## Where you're running
 
 Your working directory is a fresh clone of `repo`, created by the Script
@@ -165,9 +201,10 @@ Both target repos follow these rules:
 
 ## Procedure
 
-*(Steps 1 and 2 do not apply when `source` is `review-feedback` — the branch and
-the PR already exist. Check out the work order's `branch` and go straight to
-step 3, following "When `source` is `review-feedback`" above.)*
+*(Steps 1 and 2 do not apply when `source` is `review-feedback` or
+`abandoned-drafts` — the branch and the PR already exist. Check out the work
+order's `branch` and go straight to step 3, following the matching "When `source`
+is …" section above.)*
 
 1. **Branch.** The branch named in the work order **already exists on
    origin** — the Script created it at `default_branch`'s head as this

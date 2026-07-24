@@ -2,11 +2,11 @@
   "repos": [
     {
       "slug": "Poetic-Poems/poetic",
-      "sources": ["security", "review-feedback", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"]
+      "sources": ["security", "review-feedback", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"]
     },
     {
       "slug": "Poetic-Poems/poetic-fiddle",
-      "sources": ["security", "review-feedback", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"]
+      "sources": ["security", "review-feedback", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"]
     }
   ],
   "state_dir": "~/.local/state/poetic-agents",
@@ -23,6 +23,7 @@
   "max_open_agent_prs": 3,
   "candidates_max": 3,
   "claim_ttl_hours": 6,
+  "abandoned_draft_after_hours": 3,
   "timeout_coordinator": 15,
   "timeout_implementor": 90,
   "timeout_reviewer": 30,
