@@ -246,6 +246,7 @@ minutes.
 | The dashboard URL times out | The server binds `127.0.0.1`, so a published port reaches nothing | Use the `tailnet` profile (sidecar namespace) or `local` (host namespace) — never `ports:` |
 | `Address already in use` on the `local` profile | Something already holds the port on that host — on the laptop, the legacy SysV dashboard | Set `DASHBOARD_PORT` in `.env` |
 | Nothing happens on any node | The shared switch is set | `--status` to see the reason, `--enable` to clear it |
+| `watchtower` crash-loops (`Restarting`) with `client version 1.25 is too old. Minimum supported API version is 1.40` | The unmaintained `containrrr/watchtower` image defaults to an ancient Docker API version that a modern daemon (Docker 25+, e.g. a fresh Ubuntu 26.04 host) rejects — so the node stops auto-updating and drifts off the fleet digest | `compose.yaml` now pins `DOCKER_API_VERSION` (default `1.40`) for watchtower; a node provisioned before that needs its `compose.yaml` re-fetched, then `docker compose up -d watchtower`. Override the version in `.env` only if a daemon needs a different one |
 
 ---
 
