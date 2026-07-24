@@ -2,11 +2,11 @@
   "repos": [
     {
       "slug": "Poetic-Poems/poetic",
-      "sources": ["security", "review-feedback", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"]
+      "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"]
     },
     {
       "slug": "Poetic-Poems/poetic-fiddle",
-      "sources": ["security", "review-feedback", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"]
+      "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"]
     }
   ],
   "state_dir": "~/.local/state/poetic-agents",

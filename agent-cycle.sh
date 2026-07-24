@@ -447,6 +447,26 @@ gather_abandoned_drafts() {
   fi
 }
 
+# Pre-fetch the ready-but-conflicted PRs this system raised (requirement 3g).
+# Same rationale as gather_abandoned_drafts: its candidacy turns on a transition
+# the open-PR digest does not carry (a PR flips to CONFLICTING a cycle after its
+# base moved, as GitHub recomputes mergeability asynchronously), so the array
+# must be computed here and fed to the fingerprint verbatim for the no-op
+# short-circuit to notice it (see scripts/gather-merge-conflicts.sh and
+# lib/noop-skip.sh).
+gather_merge_conflicts() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" \
+        2>"$cycle_dir/merge-conflicts-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 gather_source_state() {
   local slug="$1" branch="$2" out safe
   safe="${slug//\//_}"
@@ -792,9 +812,14 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "abandoned-drafts")' <<<"$sources" >/dev/null 2>&1; then
     abandoned_drafts="$(gather_abandoned_drafts "$slug")"
   fi
+  merge_conflicts="[]"
+  if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
+    merge_conflicts="$(gather_merge_conflicts "$slug")"
+  fi
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad}')"
+    --argjson mc "$merge_conflicts" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
@@ -808,12 +833,14 @@ rm -f "$cycle_dir/.repo_ts"
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
 # purpose is to throttle new work and stop the human gate silting up — and the
-# two *finishing* sources do neither: `review-feedback` answers a review the
-# human has already written, and `abandoned-drafts` carries a stalled draft this
-# system started to completion. Both are the activity that *un*-silts the gate —
-# indeed an abandoned draft is itself occupying one of the very back-pressure
-# slots the cap is counting. So when back-pressure trips we do not stand down if
-# either has work waiting; we restrict every repo's source list to those two.
+# three *finishing* sources do neither: `review-feedback` answers a review the
+# human has already written, `merge-conflicts` rebases a ready PR the human is
+# waiting to merge, and `abandoned-drafts` carries a stalled draft this system
+# started to completion. All are the activity that *un*-silts the gate — indeed
+# an abandoned draft is itself occupying one of the very back-pressure slots the
+# cap is counting, and a conflicted PR is one the human cannot merge to free a
+# slot until it is rebased. So when back-pressure trips we do not stand down if
+# any has work waiting; we restrict every repo's source list to those three.
 #
 # No new prompt machinery is needed for that, and deliberately so: the
 # Co-Ordinator is already told the runtime input's `sources` are authoritative
@@ -823,17 +850,17 @@ rm -f "$cycle_dir/.repo_ts"
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
 if (( backpressure_tripped )); then
-  finishing_waiting="$(jq '[.[].review_feedback[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
+  finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
-  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "abandoned-drafts")))]' \
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback or abandoned-draft completion)" \
+    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 
@@ -995,11 +1022,12 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
   claim_rc=0
-  if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" ]]; then
+  if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" || "$c_source" == "merge-conflicts" ]]; then
     # No new branch to create — the PR already exists (a human's review round for
-    # review-feedback, this system's own stalled draft for abandoned-drafts). The
-    # lock is a create-only registry file keyed on the item ref, not a branch
-    # create that would 422 against the branch already there.
+    # review-feedback, this system's own stalled draft for abandoned-drafts, a
+    # ready-but-conflicted PR of ours for merge-conflicts). The lock is a
+    # create-only registry file keyed on the item ref, not a branch create that
+    # would 422 against the branch already there.
     claim_kind="file"; claim_key="$c_item"
     c_branch="$(jq -r '.branch // ""' <<<"$cand")"
     CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \

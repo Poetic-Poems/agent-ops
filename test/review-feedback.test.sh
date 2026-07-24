@@ -173,11 +173,12 @@ ordered='[
   {"slug": "o/one", "sources": ["security", "review-feedback", "tech-debt", "issues"], "review_feedback": [{"ref": "pr-57-review-2"}]},
   {"slug": "o/two", "sources": ["security", "review-feedback", "issues"], "review_feedback": []}
 ]'
-# Narrowing is to the two *finishing* sources (review-feedback and
-# abandoned-drafts); this fixture only carries review-feedback, so the result is
-# review-feedback alone. Kept in step with agent-cycle.sh's filter (requirement
-# 2.2a); the abandoned-drafts side is exercised in test/abandoned-drafts.test.sh.
-restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "abandoned-drafts")))]' <<<"$ordered"; }
+# Narrowing is to the three *finishing* sources (review-feedback, merge-conflicts
+# and abandoned-drafts); this fixture only carries review-feedback, so the result
+# is review-feedback alone. Kept in step with agent-cycle.sh's filter (requirement
+# 2.2a); the merge-conflicts and abandoned-drafts sides are exercised in their own
+# tests.
+restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' <<<"$ordered"; }
 
 assert_eq "restriction leaves only review-feedback selectable" \
   '["review-feedback"] ["review-feedback"]' \

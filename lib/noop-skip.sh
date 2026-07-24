@@ -39,6 +39,7 @@
 #   tech-debt, implementation-plan, project-review, code | head_sha
 #   security, code-quality                               | findings (verbatim)
 #   review-feedback                                      | review_feedback (verbatim)
+#   merge-conflicts                                      | merge_conflicts (verbatim)
 #   abandoned-drafts                                     | abandoned_drafts (verbatim)
 #   issues                                               | issues digest
 #   failed-runs                                          | workflows digest
@@ -55,16 +56,30 @@
 # CHANGES_REQUESTED before *and* after the fix, because the agent cannot dismiss
 # a review on its own PR.
 #
-# `abandoned_drafts` is hashed verbatim for a sharper reason: it is the one
-# candidate rule that turns on the *clock*, not on an event. A draft PR becomes
-# abandoned merely by sitting untouched past the threshold, which moves no commit,
-# issue, alert or even the PR's own `updated_at` — so the `open_prs` digest alone
-# would sit unchanged across the exact moment the work appears, and the pipeline
-# would skip it until the forced recheck. gather-abandoned-drafts.sh computes
-# candidacy against the clock and this array carries the result, so a draft
-# crossing the threshold *adds an entry* and busts the fingerprint the cycle it
-# goes stale. Without this line the whole source is a silent stall waiting to
-# happen.
+# `abandoned_drafts` is hashed verbatim for a sharper reason: it is one of two
+# candidate rules that turn on something *no event on the PR itself carries*. A
+# draft PR becomes abandoned merely by sitting untouched past the threshold, which
+# moves no commit, issue, alert or even the PR's own `updated_at` — so the
+# `open_prs` digest alone would sit unchanged across the exact moment the work
+# appears, and the pipeline would skip it until the forced recheck.
+# gather-abandoned-drafts.sh computes candidacy against the clock and this array
+# carries the result, so a draft crossing the threshold *adds an entry* and busts
+# the fingerprint the cycle it goes stale. Without this line the whole source is a
+# silent stall waiting to happen.
+#
+# `merge_conflicts` is hashed verbatim for the same class of reason. A ready PR
+# turns CONFLICTING when its *base* advances — someone merges another PR to `main`
+# — which is not an event on this PR: its head does not move and its `updated_at`
+# does not change, so the `open_prs` digest (which keys on number, updated_at,
+# head ref and draft flag) does not move for it. Worse, the base advance and the
+# conflict appearing are two separate cycles: the cycle the base moves, the repo's
+# head SHA changes and busts the fingerprint, but GitHub has not yet recomputed
+# mergeability (`UNKNOWN`), so nothing is gathered; a later cycle mergeability
+# resolves to CONFLICTING with the repo head SHA unchanged since — so without this
+# array the fingerprint would match the earlier none-selected and skip the very
+# cycle the work becomes visible. gather-merge-conflicts.sh samples mergeability
+# and this array carries the result, so the flip to CONFLICTING *adds an entry*
+# and busts the fingerprint. Same failure shape as abandoned-drafts; same fix.
 #
 # The last two are easy to forget and cost the most when forgotten: without
 # them, editing prompts/coordinator.md or adding a source to config.json would
@@ -108,6 +123,7 @@ NOOP_CANON_JQ='
         sources: (.sources // [] | sort),
         findings: (.findings // []),
         review_feedback: (.review_feedback // []),
+        merge_conflicts: (.merge_conflicts // []),
         abandoned_drafts: (.abandoned_drafts // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),
