@@ -39,6 +39,7 @@
 #   tech-debt, implementation-plan, project-review, code | head_sha
 #   security, code-quality                               | findings (verbatim)
 #   review-feedback                                      | review_feedback (verbatim)
+#   abandoned-drafts                                     | abandoned_drafts (verbatim)
 #   issues                                               | issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
@@ -53,6 +54,17 @@
 # alternative — digesting the PR's `reviewDecision` — would be stably
 # CHANGES_REQUESTED before *and* after the fix, because the agent cannot dismiss
 # a review on its own PR.
+#
+# `abandoned_drafts` is hashed verbatim for a sharper reason: it is the one
+# candidate rule that turns on the *clock*, not on an event. A draft PR becomes
+# abandoned merely by sitting untouched past the threshold, which moves no commit,
+# issue, alert or even the PR's own `updated_at` — so the `open_prs` digest alone
+# would sit unchanged across the exact moment the work appears, and the pipeline
+# would skip it until the forced recheck. gather-abandoned-drafts.sh computes
+# candidacy against the clock and this array carries the result, so a draft
+# crossing the threshold *adds an entry* and busts the fingerprint the cycle it
+# goes stale. Without this line the whole source is a silent stall waiting to
+# happen.
 #
 # The last two are easy to forget and cost the most when forgotten: without
 # them, editing prompts/coordinator.md or adding a source to config.json would
@@ -96,6 +108,7 @@ NOOP_CANON_JQ='
         sources: (.sources // [] | sort),
         findings: (.findings // []),
         review_feedback: (.review_feedback // []),
+        abandoned_drafts: (.abandoned_drafts // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),
         workflows: (.state.workflows // []),

@@ -170,6 +170,10 @@ limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours // 24')"
 candidates_max="$(cfg '.candidates_max // 3')"
+# How long a draft PR this system raised may sit untouched before it counts as
+# abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
+# beyond a whole cycle, so a draft merely being worked never qualifies.
+abandoned_draft_after_hours="$(cfg '.abandoned_draft_after_hours // 3')"
 state_repo="$(cfg '.state_repo // ""')"
 [[ "$state_repo" == "null" ]] && state_repo=""
 all_repos_json="$(cfg_json '.repos')"
@@ -418,6 +422,25 @@ gather_review_feedback() {
         2>"$cycle_dir/review-feedback-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/review-feedback-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
+# Pre-fetch the draft PRs this system raised and then abandoned (requirement 3e).
+# Same rationale as gather_review_feedback, plus the one specific to this source:
+# its candidacy turns on the clock (a draft crossing the staleness threshold), so
+# the array must be computed here and fed to the fingerprint verbatim for the
+# no-op short-circuit to notice the transition (see scripts/gather-abandoned-drafts.sh
+# and lib/noop-skip.sh).
+gather_abandoned_drafts() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "$slug" "$pr_label" "$branch_prefix" "$abandoned_draft_after_hours" \
+        2>"$cycle_dir/abandoned-drafts-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/abandoned-drafts-$safe.json"
     printf '%s' "$out"
   else
     printf '[]'
@@ -765,9 +788,13 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
     review_feedback="$(gather_review_feedback "$slug")"
   fi
+  abandoned_drafts="[]"
+  if jq -e 'any(.[]; . == "abandoned-drafts")' <<<"$sources" >/dev/null 2>&1; then
+    abandoned_drafts="$(gather_abandoned_drafts "$slug")"
+  fi
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
-    --argjson findings "$findings" --argjson rf "$review_feedback" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf}')"
+    --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
@@ -780,11 +807,13 @@ rm -f "$cycle_dir/.repo_ts"
 
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
-# purpose is to throttle new work and stop the human gate silting up — and
-# addressing a review the human has already written does neither: it is the one
-# activity that *un*-silts the gate. So when back-pressure trips we do not stand
-# down if there is review-feedback waiting; we restrict every repo's source list
-# to `review-feedback` alone.
+# purpose is to throttle new work and stop the human gate silting up — and the
+# two *finishing* sources do neither: `review-feedback` answers a review the
+# human has already written, and `abandoned-drafts` carries a stalled draft this
+# system started to completion. Both are the activity that *un*-silts the gate —
+# indeed an abandoned draft is itself occupying one of the very back-pressure
+# slots the cap is counting. So when back-pressure trips we do not stand down if
+# either has work waiting; we restrict every repo's source list to those two.
 #
 # No new prompt machinery is needed for that, and deliberately so: the
 # Co-Ordinator is already told the runtime input's `sources` are authoritative
@@ -794,17 +823,17 @@ rm -f "$cycle_dir/.repo_ts"
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
 if (( backpressure_tripped )); then
-  rf_waiting="$(jq '[.[].review_feedback[]?] | length' <<<"$ordered_repos_json")"
-  if (( rf_waiting == 0 )); then
+  finishing_waiting="$(jq '[.[].review_feedback[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
+  if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback is waiting on us" \
+      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
-  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback")))]' \
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "abandoned-drafts")))]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to review-feedback ($rf_waiting PR(s) awaiting our reply)" \
+    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 
@@ -966,9 +995,11 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
   claim_rc=0
-  if [[ "$c_source" == "review-feedback" ]]; then
-    # No new branch to create — the PR already exists; the lock is a
-    # create-only registry file keyed on the feedback round.
+  if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" ]]; then
+    # No new branch to create — the PR already exists (a human's review round for
+    # review-feedback, this system's own stalled draft for abandoned-drafts). The
+    # lock is a create-only registry file keyed on the item ref, not a branch
+    # create that would 422 against the branch already there.
     claim_kind="file"; claim_key="$c_item"
     c_branch="$(jq -r '.branch // ""' <<<"$cand")"
     CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
