@@ -57,6 +57,12 @@ heading, the Script gives you one JSON object:
   human's review, **already fetched, filtered and assembled for you** by the
   Script (see "Review feedback" below). An empty array means no human is
   waiting on us — do not go looking.
+- Each entry's `merge_conflicts` is the repo's own PRs that are otherwise ready
+  (for review or for merge) but whose only blocker is a conflict with their base
+  branch — open, non-draft, ours by label on a branch we own, and definitively
+  conflicting — **already fetched and filtered for you** by the Script (see "Merge
+  conflicts" below). An empty array means nothing of ours is conflicted — do not
+  go looking.
 - Each entry's `abandoned_drafts` is the repo's own draft PRs that a previous
   cycle raised and then abandoned — open, still draft, carrying our label on a
   branch we own, and untouched for at least the staleness threshold — **already
@@ -145,8 +151,8 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. project-review · 8. code-quality |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 8. project-review · 9. code-quality |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. project-review · 9. code-quality |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 9. project-review · 10. code-quality |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
@@ -164,13 +170,19 @@ selectable item:
   reviewed and asked for changes that we have not answered yet, handed to you
   **pre-fetched** in each repo's `review_feedback` array. Second only to
   security. See "Review feedback" below.
+- **merge-conflicts** — pull requests this system raised that are otherwise ready
+  (for review or for merge) but blocked by a conflict with their base, handed to
+  you **pre-fetched** in each repo's `merge_conflicts` array. Third, after security
+  and review-feedback: a rebase-and-resolve on a PR a human is waiting to land beats
+  starting anything new, and until it merges cleanly nothing else on the PR can
+  proceed. See "Merge conflicts" below.
 - **abandoned-drafts** — draft pull requests this system raised and then
   abandoned: open, still draft, ours by label, on a branch we own, and untouched
   past the staleness threshold, handed to you **pre-fetched** in each repo's
-  `abandoned_drafts` array. Third, after security and review-feedback: finishing a
-  stalled draft of ours beats starting anything new, and it turns the
-  back-pressure slot the draft is silting into a PR a human can merge. See
-  "Abandoned drafts" below.
+  `abandoned_drafts` array. Fourth, after security, review-feedback, and
+  merge-conflicts: finishing a stalled draft of ours beats starting anything new,
+  and it turns the back-pressure slot the draft is silting into a PR a human can
+  merge. See "Abandoned drafts" below.
 
 - **code-quality** — the remaining open code-scanning alerts (no security
   severity: maintainability, correctness, style), also in `findings` (entries
@@ -205,9 +217,9 @@ Among security candidates, take the most severe first
 (`critical` > `high` > `medium` > `low`; the pre-fetched `findings` are
 already sorted this way), and use repo order (given) to break ties. Only once
 no selectable security candidate remains do you fall back to the ordinary
-repo-then-source walk for the rest (review-feedback → abandoned-drafts →
-failed-runs → tech-debt → issues → implementation-plan → project-review →
-code-quality).
+repo-then-source walk for the rest (review-feedback → merge-conflicts →
+abandoned-drafts → failed-runs → tech-debt → issues → implementation-plan →
+project-review → code-quality).
 
 **Review feedback comes second, across all repos.** Like security, this
 outranks the plain repo-then-source walk: if any selectable `review_feedback`
@@ -216,14 +228,23 @@ more-overdue repo. A human has already spent their time on that PR and asked
 for something specific — they are the only consumer this system has, and the
 work is nearly finished. Finishing beats starting.
 
-**Abandoned drafts come third, across all repos.** After security and
+**Merge conflicts come third, across all repos.** After security and
 review-feedback, and likewise ahead of the plain repo-then-source walk: if any
-selectable `abandoned_drafts` candidate exists in *any* repo, take it before any
-fresh work in a more-overdue repo. A previous cycle already implemented most of
-the work behind that draft, so finishing beats starting here too — and every hour
-it sits stalled it occupies a back-pressure slot that throttles new work
-fleet-wide. Only once no security, review-feedback, or abandoned-draft candidate
-remains do you fall to the ordinary repo-then-source walk.
+selectable `merge_conflicts` candidate exists in *any* repo, take it before any
+fresh work in a more-overdue repo. That PR is otherwise ready — a human is waiting
+to land it — and until the conflict is resolved nothing else on it (a re-review, a
+merge) can proceed. A rebase-and-resolve is finishing, not starting, so it beats
+fresh work here too.
+
+**Abandoned drafts come fourth, across all repos.** After security,
+review-feedback, and merge-conflicts, and likewise ahead of the plain
+repo-then-source walk: if any selectable `abandoned_drafts` candidate exists in
+*any* repo, take it before any fresh work in a more-overdue repo. A previous cycle
+already implemented most of the work behind that draft, so finishing beats
+starting here too — and every hour it sits stalled it occupies a back-pressure
+slot that throttles new work fleet-wide. Only once no security, review-feedback,
+merge-conflict, or abandoned-draft candidate remains do you fall to the ordinary
+repo-then-source walk.
 
 **Security & code-quality findings.** Their candidates are the pre-fetched
 `findings` entries (you do not query the alert APIs yourself). Each already
@@ -269,6 +290,44 @@ candidate. That is the ordinary claim rule (exclusion 3), and it does not apply
 here — for this source, the open PR *is* the item. Applying it would make every
 candidate in this array permanently unselectable, which reads as correct
 behaviour and quietly means no human review is ever answered.
+
+**Merge conflicts.** The candidates are the pre-fetched `merge_conflicts`
+entries, one per PR of ours that is otherwise ready but conflicts with its base.
+Do not go looking for these yourself: the Script has already applied the rule —
+open, non-draft, ours by label on a branch we own, and `mergeable` definitively
+`CONFLICTING` (never the transient `UNKNOWN`) — and dropped anything still
+mergeable or still being computed. **An entry's presence in this array is the
+candidate test.** If the array is empty, this source has no candidates.
+
+When you select one, take the **oldest `updated_at` first** (the array is already
+in that order — that PR has been blocked longest), and:
+
+- `item` is the entry's `ref` (e.g. `pr-57-conflict-1a2b3c4d5e6f`). Use it
+  exactly; it is scoped to this PR's current head on purpose, so a later push
+  becomes a fresh item that no old block covers.
+- `context` must carry the entry's `body` (the PR's own description) verbatim,
+  plus its `url`, `number`, `branch`, `base`, `head_sha`, and — where the entry
+  names an `item` — that originating reference too. State plainly that the branch
+  and PR **already exist**, that the Implementor's job is narrowly to *rebase the
+  branch onto `base` and resolve the conflict* (not to re-do or extend the work),
+  and that a conflict needing genuine human judgement is grounds to leave it for a
+  human rather than force a resolution.
+- `acceptance` is: the branch is rebased or merged cleanly onto `base`, the
+  conflict is gone (`gh pr view --json mergeable` no longer reports
+  `CONFLICTING`), CI is green, and the PR is left in the same ready state it was
+  in — for the human or Reviewer to carry on. This source does **not** complete
+  the underlying item (its ledger/issue stays as it was); it only unblocks the PR.
+- `model` is always `models.default`: resolving a conflict changes code.
+- `branch` is the entry's existing `branch` — **not** a new one. As with
+  review-feedback and abandoned-drafts, the branch and PR already exist; the
+  Implementor pushes to them. Carry the entry's `pr_url` and `pr_number` into the
+  work order too.
+
+**Never** treat "the PR is open" (exclusion 3) as a reason to skip a
+`merge_conflicts` candidate. As with the other finishing sources, for this source
+the open PR *is* the item. Applying the claim exclusion would make every candidate
+permanently unselectable while reading as correct behaviour, and quietly mean no
+conflicted PR is ever unblocked.
 
 **Abandoned drafts.** The candidates are the pre-fetched `abandoned_drafts`
 entries, one per draft PR of ours that has stalled. Do not go looking for these
@@ -345,11 +404,12 @@ referencing that review; match `R-NN` refs against it. When you select one,
    one `git ls-remote origin 'refs/heads/td/*' 'refs/heads/agent/*'` per
    repo shows them all. (The Script's own atomic claim is the hard gate;
    this exclusion just saves you proposing work that will lose the race.)
-   **This exclusion does not apply to the `review-feedback` or
-   `abandoned-drafts` sources**, where the open PR is the item itself (see
-   "Review feedback" and "Abandoned drafts"). For `abandoned-drafts` the Script
-   has already checked the draft is stale and ours, so an open draft PR of ours
-   is a candidate there, not a claim to skip.
+   **This exclusion does not apply to the `review-feedback`, `merge-conflicts`,
+   or `abandoned-drafts` sources**, where the open PR is the item itself (see
+   "Review feedback", "Merge conflicts", and "Abandoned drafts"). For
+   `abandoned-drafts` the Script has already checked the draft is stale and ours,
+   and for `merge-conflicts` that the PR is ours and conflicting, so an open PR of
+   ours is a candidate there, not a claim to skip.
    For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
@@ -472,13 +532,17 @@ the list, and one strong candidate alone is a perfectly good list.
 }
 ```
 
-- `source` is one of `"security"`, `"review-feedback"`, `"abandoned-drafts"`,
-  `"failed-runs"`, `"tech-debt"`, `"issues"`, `"implementation-plan"`,
-  `"project-review"`, or `"code-quality"` — the same tokens as the `sources`
-  lists in the runtime input above.
+- `source` is one of `"security"`, `"review-feedback"`, `"merge-conflicts"`,
+  `"abandoned-drafts"`, `"failed-runs"`, `"tech-debt"`, `"issues"`,
+  `"implementation-plan"`, `"project-review"`, or `"code-quality"` — the same
+  tokens as the `sources` lists in the runtime input above.
 - For a `review-feedback` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"`
   from the entry — the Implementor pushes to that PR instead of opening one.
+- For a `merge-conflicts` entry, `item` is its `ref`, `branch` is its existing
+  `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
+  the entry — the Implementor rebases that existing PR onto its base and resolves
+  the conflict instead of opening one.
 - For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor finishes that existing draft PR instead of opening
@@ -504,10 +568,10 @@ the list, and one strong candidate alone is a perfectly good list.
   branch itself, deterministically — `td/<ID>` for tech-debt (the very lock
   the human claiming workflow in TECH-DEBT.md takes, so agents and humans
   contend safely) and `agent/<item-ref>` for everything else — and injects
-  it into the work order once the claim succeeds. The two exceptions are
-  `review-feedback` and `abandoned-drafts`, whose `branch` is the PR's
-  **existing** branch, carried from the entry — for those the PR already exists
-  and there is no new branch to create.
+  it into the work order once the claim succeeds. The three exceptions are
+  `review-feedback`, `merge-conflicts`, and `abandoned-drafts`, whose `branch` is
+  the PR's **existing** branch, carried from the entry — for those the PR already
+  exists and there is no new branch to create.
 - For a `failed-runs` entry, `item` is `failed-run-` plus the workflow
   file's basename without its extension (e.g. `failed-run-build-poems` for
   `.github/workflows/build-poems.yml`) — deterministic, so every node

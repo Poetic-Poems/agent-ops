@@ -102,7 +102,7 @@ assert_eq "a new head after fresh commits yields a different ref, so an old bloc
 
 # --- Back-pressure narrowing (requirement 2.2a) ---
 #
-# When back-pressure trips, the cycle narrows to the two *finishing* sources
+# When back-pressure trips, the cycle narrows to the three *finishing* sources
 # rather than standing down, so a gate full of stalled work can still be cleared.
 # Tested here rather than live because reaching the branch needs
 # max_open_agent_prs exceeded *and* a finishing candidate waiting at the same
@@ -111,20 +111,20 @@ ordered='[
   {"slug": "o/one", "sources": ["security", "review-feedback", "abandoned-drafts", "tech-debt"], "review_feedback": [], "abandoned_drafts": [{"ref": "pr-80-abandoned-1a2b3c4d5e6f"}]},
   {"slug": "o/two", "sources": ["security", "review-feedback", "abandoned-drafts", "issues"], "review_feedback": [], "abandoned_drafts": []}
 ]'
-restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "abandoned-drafts")))]' <<<"$ordered"; }
+restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' <<<"$ordered"; }
 
-assert_eq "restriction leaves only the two finishing sources selectable" \
+assert_eq "restriction leaves only the finishing sources present in this fixture selectable" \
   '["review-feedback","abandoned-drafts"] ["review-feedback","abandoned-drafts"]' \
   "$(restrict | jq -r '[.[] | (.sources | tojson)] | join(" ")')"
 assert_eq "security and fresh sources are narrowed away — a full gate means finish, don't start" \
   "0" "$(restrict | jq '[.[].sources[] | select(. == "security" or . == "tech-debt" or . == "issues")] | length')"
 
-# The count that decides stand-down vs restrict: both finishing sources, across
-# all repos.
-assert_eq "finishing candidates count review-feedback AND abandoned-drafts across all repos" \
-  "1" "$(jq '[.[].review_feedback[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
+# The count that decides stand-down vs restrict: all three finishing sources,
+# across all repos.
+assert_eq "finishing candidates count review-feedback, merge-conflicts AND abandoned-drafts across all repos" \
+  "1" "$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
 assert_eq "with nothing waiting to finish, the count is 0 and the cycle stands down as before" \
-  "0" "$(jq '[.[] | .review_feedback = [] | .abandoned_drafts = []] | [.[].review_feedback[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
+  "0" "$(jq '[.[] | .review_feedback = [] | .merge_conflicts = [] | .abandoned_drafts = []] | [.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
 
 # --- The gatherer itself fails safe ---
 

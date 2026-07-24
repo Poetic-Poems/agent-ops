@@ -172,8 +172,8 @@ file and carries placeholders only; `.env` itself is never committed.
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. project-review recommendations · 8. code-quality findings |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **review-feedback** · 3. **abandoned-drafts** · 4. failed Actions runs on `main` · 5. `TECH-DEBT.md` · 6. open GitHub issues · 7. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 8. project-review recommendations · 9. code-quality findings |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. project-review recommendations · 9. code-quality findings |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 9. project-review recommendations · 10. code-quality findings |
 
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
@@ -222,13 +222,22 @@ merged PR:
   whose text flags a **security concern** is security-related and so is caught
   by "security is always prioritised" like any other security candidate.
 
-The `review-feedback` and `abandoned-drafts` sources are both *finishing*
-sources — they carry an already-open pull request the rest of the way rather than
-starting new work — and both are pre-fetched:
+The `review-feedback`, `merge-conflicts` and `abandoned-drafts` sources are all
+*finishing* sources — they carry an already-open pull request the rest of the way
+rather than starting new work — and all are pre-fetched:
 
 - **`review-feedback`** — pull requests this system raised on which a human has
   requested changes we have not yet answered (requirement 3c). Ranked second, and
   across all repos (requirement 15b).
+- **`merge-conflicts`** — pull requests this system raised that are otherwise
+  ready (for review or for merge) but whose `mergeable` is definitively
+  `CONFLICTING` because the base advanced underneath them (requirement 3g). A
+  rebase-and-resolve makes the PR mergeable again; until it is, a human cannot land
+  it and nothing else on it can proceed. Ranked third, and across all repos
+  (requirement 15d). Like `abandoned-drafts` its candidacy turns on something no
+  event on the PR itself carries — the base moving, which GitHub reflects in
+  `mergeable` a beat later — so the no-op fingerprint must account for it
+  (requirement 3b).
 - **`abandoned-drafts`** — draft pull requests this system raised and then
   abandoned: still open, still draft, carrying `pr_label` on a branch under
   `branch_prefix` (or `td/`), and untouched for at least
@@ -236,9 +245,9 @@ starting new work — and both are pre-fetched:
   usage limit, or died leaves its draft PR behind as a stalled claim; finishing it
   costs less than starting fresh and turns the back-pressure slot it occupies —
   which nothing would otherwise clear — into a PR a human can merge.
-  Ranked third, and across all repos (requirement 15c). Alone among the sources
-  its candidacy turns on the passage of time, which the no-op fingerprint must
-  account for (requirement 3b).
+  Ranked fourth, and across all repos (requirement 15c). Uniquely, its candidacy
+  turns on the passage of time itself, which the no-op fingerprint must account
+  for (requirement 3b) as it must for merge-conflicts' base-driven flip.
 
 Because Dependabot and code-scanning alerts live behind paginated, verbose
 GitHub APIs, the Script pre-fetches and normalises them once per cycle via
@@ -274,7 +283,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `abandoned-drafts`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -359,15 +368,16 @@ runs unattended.
       stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
-   (requirements 3c and 3e). If back-pressure has tripped *and* any
-   `review_feedback` or `abandoned_drafts` candidate exists, do not stand down:
-   restrict every repo's `sources` to `["review-feedback", "abandoned-drafts"]`
-   and continue. Only stand down when the count is over and nothing is waiting to
-   be finished. Both are *finishing* sources — they complete an already-open PR
-   rather than opening a new one — and an abandoned draft is doubly apt here,
-   because it is itself occupying one of the very back-pressure slots the cap
-   counts — a slot nothing will ever clear on its own until the draft is finished
-   and a human can merge it.
+   (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
+   `review_feedback`, `merge_conflicts` or `abandoned_drafts` candidate exists, do
+   not stand down: restrict every repo's `sources` to
+   `["review-feedback", "merge-conflicts", "abandoned-drafts"]` and continue. Only
+   stand down when the count is over and nothing is waiting to be finished. All
+   three are *finishing* sources — they complete an already-open PR rather than
+   opening a new one — and two are doubly apt here, because they already hold
+   back-pressure slots the cap counts: an abandoned draft occupies a slot nothing
+   will clear until the draft is finished, and a conflicted PR occupies one the
+   human cannot merge to free until it is rebased.
 
    Without this the pipeline deadlocks exactly when it is most stuck.
    `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
@@ -635,6 +645,39 @@ runs unattended.
      (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
      3c. `shellcheck`-clean.
+3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
+   include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
+   <pr_label> <branch_prefix>` and attach the array to that repo's entry as
+   `merge_conflicts`. It prints the PRs *this system raised that are otherwise
+   ready but conflict with their base*: open, **non-draft**, carrying `pr_label`,
+   head branch under `branch_prefix` (or `td/`), and with `mergeable` exactly
+   `CONFLICTING`. Each entry carries a head-SHA-scoped ref, the PR number and URL,
+   the existing branch, its `base`, the head SHA, the `updatedAt`, and the PR's
+   own body verbatim.
+
+   - **Only *ready* PRs, and only *definite* conflicts.** A draft's conflict is
+     abandoned-drafts' to resolve (as part of finishing the draft); this source is
+     for PRs otherwise ready for review or merge, where the conflict is the sole
+     blocker. And `mergeable` must be `CONFLICTING`, never `UNKNOWN`: GitHub
+     computes mergeability asynchronously, so a PR whose base just moved reports
+     `UNKNOWN` for a beat. Treating that as a conflict would send the Implementor
+     to rebase a PR that may not conflict; skipping it means the PR is simply
+     reconsidered next cycle, once GitHub has settled the answer.
+   - **The ref is scoped to the head SHA** — `pr-<n>-conflict-<head-sha>`, not
+     `pr-<n>-conflict` — so a block recorded against one conflicted state does not
+     swallow a later, possibly-resolvable one after fresh commits land, while a
+     resolution (which moves the head) retires the ref and a conflict re-detected
+     at the same head keeps it. Same reasoning as requirements 3c and 3e.
+   - **Its candidacy turns on the base moving**, an event no signal on the PR
+     itself carries, which is the deciding reason it is pre-fetched rather than
+     left to the Co-Ordinator: the base advance moves the repo head SHA one cycle,
+     but mergeability resolves to `CONFLICTING` a later cycle with the repo head
+     SHA unchanged since — so only an array computed here makes the transition
+     visible to the no-op fingerprint (requirement 3b). As with requirements 3c
+     and 3e the rule must exist for the fingerprint anyway, so it gets one
+     definition (requirement 34a).
+   - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
+     3c. `shellcheck`-clean.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -657,13 +700,16 @@ runs unattended.
      signal and keep the map in the shared library: `head_sha` covers every
      file-backed source at once (tech-debt, implementation-plan,
      project-review, the code); the pre-fetched `findings` cover security and
-     code-quality verbatim; the pre-fetched `review_feedback` and
-     `abandoned_drafts` arrays cover those two finishing sources verbatim — and
-     `abandoned_drafts` is the one source whose candidacy turns on the clock, so
-     hashing the array (which gains an entry the cycle a draft goes stale) is the
-     *only* thing that busts the fingerprint at that transition, since the open-PR
-     digest below moves for a new or updated PR but not for the mere passage of
-     time; an issues digest (number, `updated_at`, labels,
+     code-quality verbatim; the pre-fetched `review_feedback`, `merge_conflicts`
+     and `abandoned_drafts` arrays cover those three finishing sources verbatim —
+     and the latter two matter especially, because each turns on a transition the
+     open-PR digest does not carry: `abandoned_drafts` gains an entry the cycle a
+     draft goes stale (the mere passage of time), and `merge_conflicts` the cycle a
+     ready PR's `mergeable` resolves to `CONFLICTING` after its base moved. Hashing
+     those arrays is the *only* thing that busts the fingerprint at those
+     transitions, since the open-PR digest below moves for a new or updated PR but
+     not for time passing or a base advancing elsewhere; an issues digest
+     (number, `updated_at`, labels,
      assignee — the last two because requirement 16.4 excludes on them); a
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
@@ -866,16 +912,29 @@ runs unattended.
     must **not** apply requirement 16's claim exclusion to this source: the open
     PR *is* the item, and excluding it makes every candidate permanently
     unselectable while looking entirely correct.
-15c. **Abandoned drafts come third, across all repos.** After security and
+15d. **Merge conflicts come third, across all repos.** After security and
     review-feedback, and likewise outranking the plain repo-then-source walk: any
-    selectable `abandoned_drafts` candidate in any repo is taken before any fresh
-    work in a more-overdue repo. A previous cycle already implemented most of the
-    work behind that draft, so finishing beats starting; and every hour it sits
-    stalled it holds a back-pressure slot that throttles new work fleet-wide. As
-    with review-feedback, the Co-Ordinator must **not** apply requirement 16's
-    claim exclusion to this source — the open draft PR *is* the item, and the
-    pre-fetch (requirement 3e) has already established it is stale and ours, so
-    treating it as a claim would make every candidate permanently unselectable.
+    selectable `merge_conflicts` candidate in any repo is taken before any fresh
+    work in a more-overdue repo. The PR is otherwise ready — a human is waiting to
+    land it — and until the conflict is resolved nothing else on it can proceed, so
+    a rebase-and-resolve is finishing, not starting. As with review-feedback, the
+    Co-Ordinator must **not** apply requirement 16's claim exclusion to this
+    source — the open PR *is* the item, and the pre-fetch (requirement 3g) has
+    already established it is ours and conflicting. The Implementor's job here is
+    narrow: rebase onto the base and resolve the conflict, without completing or
+    re-doing the underlying item (that is what merges the PR, and remains the
+    human's call).
+15c. **Abandoned drafts come fourth, across all repos.** After security,
+    review-feedback and merge-conflicts, and likewise outranking the plain
+    repo-then-source walk: any selectable `abandoned_drafts` candidate in any repo
+    is taken before any fresh work in a more-overdue repo. A previous cycle already
+    implemented most of the work behind that draft, so finishing beats starting;
+    and every hour it sits stalled it holds a back-pressure slot that throttles new
+    work fleet-wide. As with review-feedback, the Co-Ordinator must **not** apply
+    requirement 16's claim exclusion to this source — the open draft PR *is* the
+    item, and the pre-fetch (requirement 3e) has already established it is stale
+    and ours, so treating it as a claim would make every candidate permanently
+    unselectable.
 15a. **Security is always prioritised.** Beyond `security` being first in the
     source order, any candidate that is security-related — a `security`
     finding, a GitHub issue labelled `security`/`vulnerability`, a
@@ -942,9 +1001,10 @@ runs unattended.
     claim before the Implementor starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
     The primitive is create-only, so GitHub arbitrates every race:
-    - *Branch claims* (every source except `review-feedback` and
-      `abandoned-drafts`): a REST create-ref (`POST /git/refs`) on the target
-      repository at the default branch's head. The claim branch **is** the
+    - *Branch claims* (every source except the three finishing ones —
+      `review-feedback`, `merge-conflicts` and `abandoned-drafts`): a REST
+      create-ref (`POST /git/refs`) on the target repository at the default
+      branch's head. The claim branch **is** the
       working branch, derived deterministically so every node computes the same
       name for the same item: `td/<ID>` for tech-debt — the same lock the human
       claiming workflow in TECH-DEBT.md takes, so agents and humans contend
@@ -952,12 +1012,13 @@ runs unattended.
       even at the same SHA — which a plain `git push` of an identical ref would
       no-op) means a peer holds the item: log `claim-lost` and move to the
       next candidate.
-    - *File claims* (`review-feedback` and `abandoned-drafts`, which finish an
-      existing PR and have no new branch to create): a create-only contents-API
-      PUT (no `sha`) of `claims/<repo>/<ref>.json` in the state repository. For
-      `abandoned-drafts` the ref is scoped to the draft's head SHA
-      (`pr-<n>-abandoned-<head-sha>`), so two nodes racing to finish the same
-      draft contend on the same file and one wins.
+    - *File claims* (`review-feedback`, `merge-conflicts` and `abandoned-drafts`,
+      which finish an existing PR and have no new branch to create): a create-only
+      contents-API PUT (no `sha`) of `claims/<repo>/<ref>.json` in the state
+      repository. For `abandoned-drafts` the ref is scoped to the draft's head SHA
+      (`pr-<n>-abandoned-<head-sha>`), and for `merge-conflicts` likewise to the
+      PR's head SHA (`pr-<n>-conflict-<head-sha>`), so two nodes racing to finish
+      or rebase the same PR contend on the same file and one wins.
     - Every won claim also writes a best-effort **registry entry** at
       `claims/<repo>/<key>.json` in the state repository — the lock is the
       ref or file above; the registry is what back-pressure counts (2.2)
@@ -1008,18 +1069,28 @@ runs unattended.
     single-selection shape — the work-order fields at the top level — for
     one release, treating it as a one-candidate list). Candidates carry no
     `branch`: the Script derives and injects the claim branch (requirement
-    17a), except for `review-feedback` and `abandoned-drafts`, whose `branch` is
-    the PR's existing branch carried from the entry. For a `failed-runs` entry,
+    17a), except for the finishing sources `review-feedback`, `merge-conflicts`
+    and `abandoned-drafts`, whose `branch` is the PR's existing branch carried from
+    the entry. For a `failed-runs` entry,
     `item` is `failed-run-` plus the workflow file's basename without extension —
     deterministic, so every node derives the same claim key. `source` is one of
-    `security`, `review-feedback`, `abandoned-drafts`, `failed-runs`, `tech-debt`,
-    `issues`, `implementation-plan`, `project-review`, or `code-quality`. For a
+    `security`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`,
+    `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`,
+    or `code-quality`. For a
     `review-feedback` entry, `item` is its `ref`, `branch` is the PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
     `context` must paste the entry's `body` **verbatim** — it is a human's
     specific, considered request and it is the entire brief. A model
     summarising a review before handing it to the model that must act on it is
-    a lossy telephone game about what a person actually asked for. For an
+    a lossy telephone game about what a person actually asked for. For a
+    `merge-conflicts` entry, `item` is its `ref`, `branch` is the PR's
+    **existing** branch, the order also carries `pr_url`, `pr_number` and the PR's
+    `base`, and `context` must carry the PR's own `body` verbatim plus the existing
+    branch, base and head SHA, telling the Implementor to rebase onto `base` and
+    resolve the conflict — not to re-do or extend the work; `acceptance` is the PR
+    mergeable again (no longer `CONFLICTING`) with CI green and the PR left in the
+    ready state it was already in, the underlying item deliberately left for its
+    own eventual merge. For an
     `abandoned-drafts` entry, `item` is its `ref`, `branch` is the draft PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
     `context` must carry the draft PR's own `body` verbatim (the original plan)
@@ -1247,6 +1318,11 @@ What exists, and the requirements each part answers to:
    array of this system's own abandoned draft PRs (open, draft, ours, untouched
    past the threshold), each carrying the draft PR's body verbatim and a
    head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
+3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g: given a
+   repo slug, PR label and branch prefix, prints the JSON array of this system's
+   own ready-but-conflicted PRs (open, non-draft, ours, `mergeable` definitively
+   `CONFLICTING`), each carrying the PR's body verbatim, its base, and a
+   head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -1380,6 +1456,10 @@ pull request, run the ones the change touches and any it could regress.
    prints `[]` and exits 0 — a missing repo, a disabled feature, an API error, or
    an unparseable threshold never aborts the cycle. Its candidate rule is
    regression-tested in `test/abandoned-drafts.test.sh`.
+2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
+   prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
+   never aborts the cycle. Its candidate rule is regression-tested in
+   `test/merge-conflicts.test.sh`.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning.
@@ -1413,13 +1493,15 @@ pull request, run the ones the change touches and any it could regress.
    `blocked` will swallow the human's next attempt to unstick it.
 6d. **Back-pressure cannot deadlock the pipeline (requirement 2.2a).** Set
    `max_open_agent_prs` to 0 with a *finishing* candidate present — a
-   review-feedback round *or* an abandoned draft: the cycle must **not** stand
-   down, and must reach the Co-Ordinator with every repo's `sources` narrowed to
-   `["review-feedback", "abandoned-drafts"]`. With neither present it must stand
-   down as before. This is the check that a system whose PRs have all been sent
-   back for changes — or all stalled as abandoned drafts, the very slots the cap
-   is counting — can still dig itself out; without it, the state the pipeline is
-   least able to escape is the one it is guaranteed to reach.
+   review-feedback round, a merge-conflicted PR *or* an abandoned draft: the cycle
+   must **not** stand down, and must reach the Co-Ordinator with every repo's
+   `sources` narrowed to
+   `["review-feedback", "merge-conflicts", "abandoned-drafts"]`. With none present
+   it must stand down as before. This is the check that a system whose PRs have all
+   been sent back for changes — or all stalled as abandoned drafts or wedged on
+   conflicts, the very slots the cap is counting — can still dig itself out;
+   without it, the state the pipeline is least able to escape is the one it is
+   guaranteed to reach.
 6e. **An abandoned draft is finished, not restarted (requirements 3e, 15c).**
    With an open *draft* PR carrying `pr_label` on a `branch_prefix` (or `td/`)
    branch whose `updatedAt` is older than `abandoned_draft_after_hours`, a cycle
@@ -1432,6 +1514,19 @@ pull request, run the ones the change touches and any it could regress.
    review-feedback's job). And assert the claim uses a file claim, not a
    create-ref against the already-existing branch (requirement 17a), or every
    attempt would 422 and no abandoned draft could ever be picked up.
+6f. **A conflicted PR is rebased, not restarted (requirements 3g, 15d).** With an
+   open *non-draft* PR carrying `pr_label` on a `branch_prefix` (or `td/`) branch
+   whose `mergeable` is `CONFLICTING`, a cycle must select it (`source:
+   "merge-conflicts"`, `item` the head-SHA-scoped ref, `branch` the PR's existing
+   branch), and the Implementor must check out that branch, rebase onto the base
+   and push without opening a new PR or branch. Assert the guards: a PR whose
+   `mergeable` is `UNKNOWN` is **not** a candidate — mergeability is computed
+   asynchronously and guessing would rebase a PR that may not conflict; a *draft*
+   conflicted PR is not a candidate here (that is abandoned-drafts' job once it
+   goes stale); and a *mergeable* PR is never a candidate. And assert the claim
+   uses a file claim, not a create-ref against the already-existing branch
+   (requirement 17a), or every attempt would 422 and no conflicted PR could be
+   picked up.
 6b. **The no-op short-circuit skips only what it can prove, and stops skipping
    when anything moves.** Drive a cycle that ends `none-selected`, confirm the
    event carries a fingerprint, then run a second cycle: it must stand down
@@ -1443,8 +1538,11 @@ pull request, run the ones the change touches and any it could regress.
    a draft PR of ours crosses the `abandoned_draft_after_hours` staleness
    threshold (assert this one especially — it is the sole transition that moves
    no other signal, so the `abandoned_drafts` array is the only thing that can
-   carry it), an item is unblocked or unvoided, a source is added to
-   `config.json`, or `prompts/coordinator.md` is edited. Each of those is a
+   carry it), a ready PR of ours turns `CONFLICTING` after its base moved (assert
+   this one too — like the staleness transition it moves no other fingerprinted
+   signal once the base advance is a cycle past, so the `merge_conflicts` array is
+   the only thing that can carry it), an item is unblocked or unvoided, a source is
+   added to `config.json`, or `prompts/coordinator.md` is edited. Each of those is a
    source of work, and
    any one of them missing from the fingerprint is an unbounded silent stall
    that no other check in this document would catch. Assert too that a
@@ -1568,7 +1666,7 @@ requirements above, which state only what is.
   stalled drafts. It ranks third, after security and review-feedback and ahead of
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
   silted with a dead draft into a PR a human can merge; under back-pressure it is
-  one of the two
+  one of the three
   finishing sources the cycle narrows to (requirement 2.2a). Three choices make it
   safe: the draft/label/branch filter keeps it to *our* stalled work (never a
   human's PR, never a ready one); the ref is scoped to the head SHA, so a
@@ -1577,6 +1675,24 @@ requirements above, which state only what is.
   clock, the candidate array is fed to the no-op fingerprint verbatim so the
   staleness transition — which moves no other signal — still wakes the pipeline
   (requirement 3b).
+- **A merge conflict on an otherwise-ready PR is itself a work source.** A PR this
+  system raised can go green, be reviewed, even be approved, and then conflict when
+  the base advances underneath it — leaving a finished PR a human cannot merge and
+  a back-pressure slot nothing will clear. The `merge-conflicts` source
+  (requirement 3g) treats such a PR — open, non-draft, ours, `mergeable`
+  definitively `CONFLICTING` — as selectable work: the pipeline rebases and
+  resolves its own conflicts. It ranks third, after security and review-feedback
+  and ahead of all fresh work (requirement 15d): a human is waiting to land it and
+  nothing else on it can proceed first; under back-pressure it is one of the three
+  finishing sources the cycle narrows to (requirement 2.2a). It deliberately does
+  *not* complete the underlying item — that is the eventual merge's job — so it
+  touches only what the rebase requires. Two choices make it safe: `mergeable` must
+  be `CONFLICTING`, never the asynchronously-computed `UNKNOWN`, so it never
+  rebases a PR that may not conflict; and, because its candidacy turns on the base
+  moving — which no signal on the PR itself carries — the candidate array is fed to
+  the no-op fingerprint verbatim so the conflict appearing still wakes the pipeline
+  (requirement 3b), the same fix abandoned-drafts needs for its clock-based
+  candidacy.
 - **Back-pressure on open agent PRs replaces a quota-balance check** as the
   primary throttle, because no supported API exposes a subscription plan's
   remaining quota; usage-limit errors are handled fail-safe via detection

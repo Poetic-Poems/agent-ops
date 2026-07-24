@@ -89,6 +89,55 @@ fields, and `branch` names the existing branch.
   pushed*, not that the PR is merged. It will not be mergeable — the review
   still blocks it — so do not treat `mergeable: false` as a failure here.
 
+### When `source` is `merge-conflicts`
+
+Like `review-feedback`, this work order inverts the assumptions the rest of this
+prompt is written around, so read this before the Procedure. A pull request this
+system raised is otherwise ready — for review or for merge — but its base branch
+has moved underneath it and it now **conflicts**. **The branch and the PR exist.**
+The work order carries `pr_url`, `pr_number` and `base` alongside the usual
+fields, and `branch` names the existing branch. Your job is narrow: make it
+mergeable again, and nothing more.
+
+- **Do not open a pull request, and do not create a branch.** `git fetch origin`
+  and `git checkout` the work order's `branch` (it is on the remote already). The
+  PR is already the claim; it has been there since the cycle that raised it.
+- **Resolve the conflict; do not re-do or extend the work.** Rebase the branch
+  onto its `base` (`git rebase origin/<base>`), or merge `base` in where the
+  repo's convention prefers a merge — match what the repo does. Resolve each
+  conflict by preserving *both* sides' intent: the PR's own change and whatever
+  landed on `base` that now clashes with it. Read the diff (`gh pr diff
+  <pr_number>`) and the conflicting commits on `base` so you know what you are
+  reconciling. This is not licence to change the PR's scope — you are reconciling
+  it with a moved base, not rewriting it.
+- **You will force-push, and here that is correct.** A rebase rewrites the
+  branch's commits, so the push needs `git push --force-with-lease`. This is a
+  branch this system owns (the label and `branch_prefix`/`td/` check guaranteed
+  that before you were handed the item), so a lease-guarded force-push is safe —
+  and `--force-with-lease` still refuses if a peer moved the branch under you.
+- **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
+  resolving a conflict does **not** complete the underlying work — the item is
+  done when the PR *merges*, which is still the human's or Reviewer's call. So do
+  **not** flip a Ledger row to `resolved`, add a `Closes #…`, or write a
+  `CHANGELOG.md` entry here; those already happened (or will happen) on the PR's
+  own terms. Touch only what resolving the conflict requires.
+- **Verify like CI does, then confirm the conflict is gone** (Procedure steps 3–4
+  and 6). Run the repo's lint/typecheck/format/test/build — a rebase can
+  reintroduce a break a clean tree had hidden. Then `gh pr view --json
+  mergeable,mergeStateStatus` must no longer report `CONFLICTING`/`DIRTY`.
+- **Leave the PR in the state you found it.** It was ready (for review or for
+  merge); it stays ready. Do not draft it, do not merge it, do not approve it. The
+  `status: "complete"` you report means *the conflict is resolved, pushed, and CI
+  is green* — not that the PR is merged.
+- If the conflict cannot be resolved mechanically — it needs a genuine human
+  judgement about which side wins, or reconciling it would mean redoing
+  substantial work — report `"status": "blocked"` and say so in a PR comment,
+  leaving the branch for a human rather than forcing a resolution you are unsure
+  of. If instead `base` already contains the PR's change (the work landed another
+  way and the PR is now redundant), report `void` with evidence: the PR already
+  exists, so the "a void item should not have a PR" rule below does not bind, and
+  a human can close the stale PR.
+
 ### When `source` is `abandoned-drafts`
 
 Like `review-feedback`, this work order inverts the assumptions the rest of this
@@ -201,10 +250,10 @@ Both target repos follow these rules:
 
 ## Procedure
 
-*(Steps 1 and 2 do not apply when `source` is `review-feedback` or
-`abandoned-drafts` — the branch and the PR already exist. Check out the work
-order's `branch` and go straight to step 3, following the matching "When `source`
-is …" section above.)*
+*(Steps 1 and 2 do not apply when `source` is `review-feedback`,
+`merge-conflicts`, or `abandoned-drafts` — the branch and the PR already exist.
+Check out the work order's `branch` and go straight to step 3, following the
+matching "When `source` is …" section above.)*
 
 1. **Branch.** The branch named in the work order **already exists on
    origin** — the Script created it at `default_branch`'s head as this
@@ -289,6 +338,11 @@ is …" section above.)*
    — the human's `CHANGES_REQUESTED` is what blocks it, you cannot clear it,
    and it is meant to stay until they re-review. Judge yourself on CI being
    green and every point being answered, and leave the PR **ready**, not draft.
+
+   *For `merge-conflicts`:* the rebase *is* the task, not a contingency — the
+   base has moved and the "When `source` is `merge-conflicts`" section above is
+   how you resolve it. Afterwards `mergeable` should read true again; leave the PR
+   in the **ready** state it was already in, neither drafting nor merging it.
 
 ## Ending
 
