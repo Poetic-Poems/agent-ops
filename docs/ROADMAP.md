@@ -27,7 +27,7 @@ deliberately, by editing this table in a PR that says why.
 | D1 | First phase | **Untether first** — generalise the pipeline out of Poetic-Poems before building platform or launch features. |
 | D2 | Delivery model | **Deliberately open** (self-hosted product vs hosted SaaS vs both) until the explicit decision gate at Phase 4. Until then, every phase does only work that serves both paths. |
 | D3 | Target customers | Solo developers and small teams; open-source maintainers; mid-size engineering organisations. Not (yet) agencies running many client repos. |
-| D4 | Model-usage billing | **BYO Anthropic API key is the primary, first-class path** (including Claude via Bedrock and Vertex). Claude subscription OAuth is retained as a supported self-hosted configuration, documented with its constraints (interactive login per node; own-use only). Usage resale is deferred until a hosted SaaS exists and has traction, but metering hooks are designed in from Phase 1 so resale needs no re-architecture. |
+| D4 | Model-usage billing | **BYO API key is the primary, first-class path** — Anthropic first (including Claude via Bedrock and Vertex), and likewise for every other supported provider (D12). Claude subscription OAuth is retained as a supported self-hosted configuration, documented with its constraints (interactive login per node; own-use only). Usage resale is deferred until a hosted SaaS exists and has traction, but metering hooks are designed in from Phase 1 so resale needs no re-architecture. |
 | D5 | Licensing | **Source-available** (BSL/FSL-family): code public and auditable, free to self-host for your own use, no competing hosted offering. The exact licence is an open question with a Phase 1 decide-by gate. |
 | D6 | Technology | **Strangler rewrite.** The proven bash cycle engine is retained. All *new* product surface — control plane, config APIs, packaging — is written in a proper language; engine pieces migrate across only when a change touches them anyway. |
 | D7 | Product scope | **The whole suite**: the implementation pipeline, the weekly review pipeline, and the dashboard. They compound — reviews feed the pipeline the work it does, and the dashboard is the product's face. |
@@ -35,6 +35,7 @@ deliberately, by editing this table in a PR that says why.
 | D9 | Build mode | **Mixed.** Architectural moves happen in interactive sessions; everything decomposable is authored as agent-workable items that the fleet works down itself. The roadmap doubles as dogfooding evidence. |
 | D10 | Pacing | **Phase-gated, no dates.** Progress is gates passed, not calendar time. |
 | D11 | Go-to-market | **A parallel lightweight workstream from Phase 1**: the name is chosen early (it gates the repo split), design partners are recruited during untethering, and pricing is tested before anything launches. |
+| D12 | Model providers | **Not limited to the Claude family.** Customers choose the model for each actor from any supported provider. Claude is the first-supported and reference provider; how non-Claude providers are executed (the substrate question) is parked in Open questions with a decide-by gate. |
 
 ## End state
 
@@ -49,7 +50,8 @@ chooses:
   are all non-interactive.
 - Non-intrusive updates: a rollout never destroys in-progress work.
 - Deeply customisable: per-actor model selection (Co-Ordinator, Implementor
-  at both tiers, Reviewer at both tiers, Enabler), schedules, work sources,
+  at both tiers, Reviewer at both tiers, Enabler) from any supported
+  provider — not only the Claude family — plus schedules, work sources,
   prompts, and repo conventions.
 - Several supported hosting options.
 - Source-available, under a marketable product name.
@@ -103,6 +105,9 @@ product name and carries its licence.
 - [ ] Formalise the metering schema: per-cycle, per-stage token and cost
       accounting as a stable, documented format (largely exists in the logs
       today; make it a contract). *[fleet]*
+- [ ] Provider-qualified model identifiers in the config schema, so models
+      from other providers can arrive later without a breaking change
+      (D12). *[fleet]*
 - [ ] Choose the product name (GTM workstream) and create the product
       repository; move the pipeline; reduce agent-ops to consumer config +
       deployment (D8). *[interactive]*
@@ -163,6 +168,8 @@ dashboard; a feedback channel exists and is producing roadmap items.
       dashboard. *[fleet]*
 - [ ] Support channel and telemetry (opt-in, privacy-respecting) for
       failure patterns. *[interactive]*
+- [ ] First non-Claude model provider supported end to end, chosen by
+      design-partner demand (D12). *[interactive]*
 
 ## Phase 4 — Delivery decision and launch
 
@@ -210,6 +217,7 @@ Parked deliberately, each with a decide-by gate:
 | Product name | Phase 1 repo split |
 | Exact source-available licence (BSL 1.1 / FSL / Elastic 2.0) | Phase 1 exit |
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
+| Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
 | State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale demands |
 | Multi-forge support (GitLab, Bitbucket, Gitea) | Revisit on design-partner demand, Phase 3 |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
@@ -217,7 +225,9 @@ Parked deliberately, each with a decide-by gate:
 ## Assumptions
 
 - GitHub is the only forge until demand says otherwise.
-- The headless Claude CLI remains the execution substrate; the product's
-  value is the orchestration around it, not a bespoke agent runtime.
+- The headless Claude CLI is the execution substrate for the Claude
+  provider; the product's value is the orchestration, which is
+  model-agnostic by design (D12). Non-Claude providers arrive behind the
+  substrate abstraction, not by rewriting the engine per provider.
 - The human merge remains the only gate: the product never auto-merges,
   whatever the customer's configuration.
