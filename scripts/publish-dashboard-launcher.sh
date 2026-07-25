@@ -61,6 +61,42 @@ gh_max_age="${LAUNCHER_GITHUB_MAX_AGE:-285}"
 # publish-dashboard.sh gets a chance to create it — make sure it exists.
 mkdir -p "$logdir"
 
+# A container killed mid-append (a watchtower roll, TD26072301) can leave the
+# log's size recorded while the data blocks behind the last few writes never
+# reach disk: they read back as NUL bytes. `ockham-container` carries one such
+# hole — 652 bytes, four whole lines, between two intact ones.
+#
+# The lost lines are lost. What matters is what the hole does to every *later*
+# read: one NUL anywhere makes the whole file binary, and grep then stops
+# printing matches for all 8 MB of plain text around it. GNU grep at least says
+# "binary file matches"; ugrep, which is what `grep` resolves to on the node
+# owner's own shell, prints nothing and exits 1 — indistinguishable from "the
+# heartbeat has never logged a refresh". That is precisely the wrong failure
+# for the one file you open when something is wrong, and it persists for the
+# life of the log.
+#
+# So strip the NULs once per window and record what was dropped, rather than
+# closing the gap silently — the loss is a fact about the node worth keeping.
+# Cost when there is nothing to do (the normal case) is one read of the log and
+# no write; the rewrite is safe because every writer here reopens by name per
+# append, so none of them holds a descriptor across the rename.
+repair_log() {
+  [[ -s "$log" ]] || return 0
+  local size clean tmp
+  size="$(stat -c %s "$log" 2>/dev/null)" || return 0
+  clean="$(tr -d '\0' < "$log" 2>/dev/null | wc -c)" || return 0
+  (( clean < size )) || return 0
+  tmp="$log.repair.$$"
+  if tr -d '\0' < "$log" > "$tmp" 2>/dev/null; then
+    printf '%(%Y-%m-%dT%H:%M:%S%z)T repaired: dropped %s NUL byte(s) — an unclean stop lost the log lines in flight (TD26072301)\n' \
+      -1 "$(( size - clean ))" >> "$tmp"
+    mv "$tmp" "$log"
+  else
+    rm -f "$tmp"
+  fi
+}
+repair_log
+
 while (( EPOCHSECONDS < endat - tick_margin )); do
   github=(--no-github)
   sleep $(( 5 - EPOCHSECONDS % 5 ))

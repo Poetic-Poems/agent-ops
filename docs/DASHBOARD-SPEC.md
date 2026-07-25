@@ -314,7 +314,14 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   and a healthy window ends `exit 0` — its exit status is explicit, not
   whatever the final tick's lock bookkeeping happened to return
   (`LAUNCHER_WINDOW` shortens the window, and `LAUNCHER_PUBLISH_CMD` swaps in
-  a stub Publisher, for the test suite only).
+  a stub Publisher, for the test suite only). Each window also opens by
+  repairing its own log: a container killed mid-append (TD26072301) leaves the
+  file's size recorded with the last writes' data blocks missing, and they read
+  back as NULs. The lost lines are lost, but one NUL makes the whole file
+  binary, and grep then stops printing matches for every intact line around it
+  — GNU grep says "binary file matches", ugrep says nothing at all and exits 1.
+  The launcher strips them and appends a line recording how many bytes went, so
+  the loss stays on the record instead of being closed over silently.
 
 ## Components (as built)
 
@@ -359,7 +366,11 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
   within about five minutes of `generated_at`. Those two facts are the whole
   of "the PR panels are live"; nothing else on the page distinguishes a
-  refresh that is happening from one that is not.
+  refresh that is happening from one that is not. (If that `grep` comes back
+  empty or says "binary file matches", check for a hole before concluding the
+  heartbeat is dead — `tr -d '\0' < dashboard.log | wc -c` against the file's
+  size. The launcher repairs one at the top of each window, so this should
+  only ever be true of a log written by a node that has not yet rolled.)
 - `scripts/publish-dashboard.sh` against the real `state_dir` produces valid
   JSON (`data.js` minus the wrapper passes `jq empty`), and `grep` finds no
   `/home/…` path or token in the output.
