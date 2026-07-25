@@ -37,6 +37,12 @@
 # the other two do (requirement 34a): the Script decides an engagement from it
 # and the dashboard reports what came of one, and a rule that decides when to
 # spend money would drift, in a second copy, in the direction of spending it.
+#
+# And one *carry-forward* (requirement 3h): the refinements. When the Enabler
+# specifies an under-specified item that has no thread to write into, the spec
+# it produced lives only in the log, and `refinements_map` is what puts it back
+# in front of the Co-Ordinator that will next select the item. Same log, same
+# keying, same tolerance of a torn line.
 
 # read_pr_url_breadcrumb CLONE_DIR
 # Print the PR URL the Implementor left under .git/ the moment it opened its
@@ -149,6 +155,61 @@ void_items() {
   _latest_unresolved "item-void" "unvoided" "${1:--}"
 }
 
+# The refinements a later Co-Ordinator must be given (requirement 3h), as one jq
+# program over the fleet's whole event stream: the latest `item-refined` event
+# per repo+item, for items that are not void.
+#
+# Keyed repo → item → payload rather than by item alone, for requirement 34's
+# reason: an item id is only unique within its repo, and a refinement written
+# for one repo's TD26071805 is not a specification of the other's.
+#
+# Void items are dropped because a refined specification of work that does not
+# exist is worse than none: it would arrive in the Co-Ordinator's input arguing,
+# in detail and in the pipeline's own voice, for an item requirement 34c says
+# must never be selected again.
+# shellcheck disable=SC2016  # jq's $set/$clear/$r, not the shell's.
+REFINEMENTS_MAP_JQ='
+  def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
+  . as $all
+  | ($all | latest_unresolved("item-void"; "unvoided")) as $void
+  | [ $all[]
+      | select(.event == "item-refined"
+               and (.item // "") != "" and (.repo // "") != "")
+      | . as $r
+      | select($void
+               | any((.item // "") == ($r.item // "")
+                     and ((.repo // "") == "" or (.repo // "") == ($r.repo // "")))
+               | not) ]
+  | sort_by(.ts)
+  | reduce .[] as $r ({};
+      .[$r.repo][($r.item | tostring)] =
+        ({ts: ($r.ts // ""), cycle: ($r.cycle // "")}
+         + (if ($r.spec // "") == "" then {} else {spec: $r.spec} end)
+         + (if ($r.comment_url // "") == "" then {} else {comment_url: $r.comment_url} end)))
+'
+
+# refinements_map [LOG_FILE]
+# Print, as a JSON object keyed repo → item, the latest refinement recorded for
+# every item that has one and is not void. Reads LOG_FILE, or stdin if it is
+# omitted or "-".
+#
+# Always succeeds, printing {} for a missing, empty or unreadable log, for the
+# same reason `_latest_unresolved` prints []: this is computed inside a cycle
+# running under `set -e`, and a log it cannot parse must cost the Co-Ordinator
+# one input, never the cycle.
+refinements_map() {
+  local src="${1:--}" out=""
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$REFINEMENTS_MAP_JQ" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$REFINEMENTS_MAP_JQ" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='{}'
+  printf '%s' "$out"
+}
+
 # The Enabler's eligibility rule (requirement 35a), as one jq program over the
 # fleet's whole event stream. It re-uses the blocked and void extracts above
 # rather than re-deriving either: the set it computes is a subset of "blocked
@@ -204,6 +265,14 @@ void_items() {
 # register entry rather than the PR — so without this the Enabler would have to
 # re-derive from the id the very artefact the block is about. Empty when the
 # block had no PR, which is most of them.
+#
+# Two more fields carry the refinement class (requirements 34e, 36b). `kind` is
+# the block's own marker, so an engagement can tell an under-specified item from
+# an impeded one and knows which duty it is there to perform; it is `""` for
+# every ordinary block, which is what keeps this class invisible to the rest of
+# the rule. `refined_before` is the latest `item-refined` for the same repo+item
+# — the thrash guard's input, and the record of what the last engagement already
+# said, so a second one need not guess at it.
 # shellcheck disable=SC2016  # jq's $ vars ($all/$b/$open/…), not the shell's.
 ENABLER_ELIGIBLE_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
@@ -225,6 +294,9 @@ ENABLER_ELIGIBLE_JQ='
                     and (.outcome // "") != "escalation-failed"
                     and .ts > $b.ts) ]
          | sort_by(.ts)) as $examined
+      | ([ $all[]
+           | select(.event == "item-refined" and same_item($b)) ]
+         | sort_by(.ts) | last) as $refined
       | ([ $all[]
            | select(.event == "stage-end" and (.stage // "") == "coordinator"
                     and (.exit_code // 1) == 0
@@ -255,6 +327,12 @@ ENABLER_ELIGIBLE_JQ='
          stage: ($b.stage // ""), detail: ($b.detail // ""),
          unblock_condition: ($b.unblock_condition // ""),
          pr_url: ($b.pr_url // ""),
+         kind: ($b.kind // ""),
+         refined_before: (if $refined == null then null
+                          else {ts: ($refined.ts // ""), cycle: ($refined.cycle // ""),
+                                comment_url: ($refined.comment_url // ""),
+                                spec: ($refined.spec // "")}
+                          end),
          escalation: (if $escalation == null then null
                       else {issue_number: ($escalation.issue_number | tostring | tonumber),
                             issue_url: ($escalation.issue_url // ""),

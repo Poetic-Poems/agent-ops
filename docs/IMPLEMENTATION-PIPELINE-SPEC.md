@@ -49,9 +49,10 @@ cron (hourly)
 7. The **Enabler** — a headless Claude Code invocation, engaged rarely and at
    the end of a cycle, that re-examines items recorded as blocked which the
    pipeline has not cleared by itself. It unblocks, voids, or leaves them
-   blocked with a fresher condition; where only a human can move an item, it
-   composes a GitHub issue that the Script files, assigned to that human. It
-   writes no code and raises no pull request.
+   blocked with a fresher condition; where an item was never specified well
+   enough to select, it specifies it (requirement 36b); and where only a human
+   can move an item, it composes a GitHub issue that the Script files, assigned
+   to that human. It writes no code and raises no pull request.
 
 ## Environment (verified 2026-07-20)
 
@@ -307,6 +308,8 @@ values below are the confirmed defaults; the README must document each key.
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). This is the bound on how long evidence that arrives *after* a block — the failure mode of `TECH-DEBT.md` TD26072101 — can sit unread, and the only lever that re-opens an examined item. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
+| `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Empty disables the projection only: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
+| `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
@@ -693,6 +696,28 @@ runs unattended.
      definition (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
      3c. `shellcheck`-clean.
+3h. **Refinement carry-forward.** The Co-Ordinator's runtime input carries a
+   `refinements` map — repo → item → the latest `item-refined` payload
+   (requirement 33), for items that are not void — built from the fleet's log
+   union by `refinements_map` in `lib/cycle-state.sh`, alongside the `blocked`
+   and `void` extracts and keyed the same way (requirement 34's repo+item rule:
+   a refinement written for one repo's `TD26071805` is not a specification of
+   the other's).
+
+   It exists because a refinement has to land where a *future* Co-Ordinator will
+   read it, and for most item types there is nowhere. An issue has a thread, and
+   requirement 36b puts the refinement there as one authoritative comment that
+   requirement 20 already pastes into the work order; a `TECH-DEBT.md` row, a
+   review recommendation, a plan task or a finding has no such surface, and no
+   actor here may edit the register. So for those the specification lives in the
+   log and this map is what returns it to selection. Without it the Enabler would
+   write a refinement, the item would be unblocked, and the next work order would
+   be composed as though nothing had been settled — paying for the refinement and
+   discarding it.
+
+   Void items are excluded: a refined specification of work that does not exist
+   would arrive in the Co-Ordinator's input arguing, in the pipeline's own voice
+   and in detail, for an item requirement 34c says must never be selected again.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -729,7 +754,10 @@ runs unattended.
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
      issue or alert; the `blocked`/`void` extracts projected to `repo|item`, so
-     a human's hand-appended `unblocked` takes effect; the Enabler's eligible
+     a human's hand-appended `unblocked` takes effect; the `refinements` map of
+     requirement 3h projected to `repo|item|ts`, listed in its own right rather
+     than left to the `unblocked` that always accompanies it, because "covered
+     by something else" is how a source ends up covered by nothing; the Enabler's eligible
      set projected to `repo|item|reason` together with its config and prompt
      hash (requirement 35b); and — the two everyone
      forgets — the selection config and a hash of `prompts/coordinator.md`.
@@ -1024,15 +1052,62 @@ runs unattended.
       packaging decision in its implementation plan — while that decision
       is open, M2 tasks do not meet the bar. Decisions belong to the human;
       never attempt to make one.)
+
+    The last two exclusions, and requirement 17's "if in doubt, skip it", are
+    reported rather than acted on silently — see requirement 16a.
+16a. **Under-specified and decision-gated skips are reported, not silent.** The
+    Co-Ordinator's final message carries an optional `needs_refinement` array,
+    alongside `unblocked` and `voided`, whose entries are
+    `{repo, item, source, reason, missing, evidence}`: `reason` is one line on
+    why the item fails the selection bar, `missing` is what a selectable version
+    would need (acceptance criteria, a scope bound, a named decision,
+    reproduction steps), and `evidence` is what the Co-Ordinator actually read.
+
+    An item qualifies only if it was **reached and evaluated in this cycle's own
+    priority walk** and failed selection *solely* because it is too
+    under-specified to rank against requirement 17's bar, or because it is gated
+    on an unmade human decision (the last two exclusions of requirement 16).
+    Items excluded for any other reason — claimed, already blocked, void,
+    assigned, a question or discussion issue — are not reported: they are
+    already handled, and reporting one would re-block an item whose clock is
+    already running.
+
+    Three limits keep it side-work. The Co-Ordinator must **not** sweep for
+    under-specified items beyond the walk it was doing anyway (flags accumulate
+    across cycles by themselves, and a sweep would spend a selection pass on
+    something nobody asked for); it must not re-report an item already recorded
+    as blocked (requirement 16's first exclusion means it never re-evaluates one
+    anyway, and requirement 34e refuses the re-report if it does); and reporting
+    never changes what the cycle selects. An empty array is the normal case.
+
+    What this replaces is a silent skip, and the silence was the defect. An item
+    nobody had specified was re-read and re-skipped by every cycle for as long as
+    it existed: the pipeline paid to rediscover the same non-answer hourly, the
+    item never became selectable by any route, and the one person who could have
+    written the missing criteria was never told it existed. The pipeline looked
+    healthy throughout, which is this system's signature failure mode
+    (requirement 3b, requirement 34d) in its purest form — an item that starves
+    while every component behaves exactly as specified.
 17. From the remaining candidates, ranks the qualifying items best-first and
     returns up to `candidates_max` of them, each a stand-alone unit of work,
     clearly scoped, and adequately refined; the ranking preserves the
     priority walk, and the alternates exist because a peer node may win the
     claim on the first choice — not to lower the bar. Do not guess: if in
-    doubt about an item, skip it. If nothing in the current category
+    doubt about an item, skip it — and report it under requirement 16a rather
+    than skipping it silently. If nothing in the current category
     qualifies, fall through to the next category, then the next repo. Only
     after exhausting all repos does it return `{"selected": false}` with a
     one-line reason.
+17b. **A refined item is selected on what the refinement says.** Where
+    requirement 3h's `refinements` map names an item the Co-Ordinator is putting
+    in a work order, an entry carrying a `spec` is pasted into the work order's
+    `context` **verbatim** — it exists nowhere else, and the Implementor starts
+    with nothing but the work order, so a summarised refinement is one that was
+    written by an expensive model and read by nobody. An entry carrying a
+    `comment_url` needs no special handling: the refinement is a comment on the
+    item's own issue, which requirement 20 already pastes in full, and
+    requirement 14a already makes the latest contradicting comment the current
+    instruction.
 17a. **The claim.** The Script — never the model — takes an atomic per-item
     claim before the Implementor starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
@@ -1104,7 +1179,9 @@ runs unattended.
     `implementor_model_default`. Records the reasoning.
 20. Emits its entire final message as one JSON object: `selected`,
     `unblocked`, `voided` (entries of `{item, repo, reason, evidence}`,
-    requirement 34d), and a ranked `candidates` array of up to
+    requirement 34d), `needs_refinement` (entries of
+    `{repo, item, source, reason, missing, evidence}`, requirement 16a), and a
+    ranked `candidates` array of up to
     `candidates_max` work orders (the Script accepts the former
     single-selection shape — the work-order fields at the top level — for
     one release, treating it as a one-candidate list). Candidates carry no
@@ -1363,14 +1440,21 @@ runs unattended.
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
-    `item-void`, `unvoided`, `enabler-examined`, `escalated`, `limit-hit`,
-    `disabled`, `enabled`, `warning`, `cycle-end`. A `claim-lost` names the repo,
+    `item-void`, `unvoided`, `item-refined`, `enabler-examined`, `escalated`,
+    `limit-hit`, `disabled`, `enabled`, `warning`, `cycle-end`. A `claim-lost` names the repo,
     item and branch a peer node won (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
     the event means the pull request is not a draft, not that somebody said so.
     An `attempt-failed` carries `pr_url` when the failing stage was working on
-    one (requirement 32a). A `stage-start`/`stage-end` pair's `stage` is
+    one (requirement 32a), and — for the refinement class of requirement 34e —
+    `kind: "needs-refinement"`, the `unblock_condition` taken from the report's
+    `missing`, its `evidence` and reporting `source`, plus
+    `needs_refinement_label` when the Script managed to project the label. An
+    `item-refined` carries `repo`, `item` and either the `spec` the Enabler
+    wrote or the `comment_url` of the comment it posted (requirement 36b); the
+    common `cycle` and `ts` are what requirement 3h reads it back by. A
+    `stage-start`/`stage-end` pair's `stage` is
     `coordinator`, `implementor`, `reviewer` or `enabler`; the last is the one
     that may appear on a cycle which selected nothing, since it runs from the
     cleanup of requirement 11. An `enabler-examined` carries `repo`, `item`, the
@@ -1490,6 +1574,59 @@ runs unattended.
     on a repository with outstanding work. That is the shape of the failure this
     guards: not a wrong answer, but a silent one.
 
+34e. **Under-specification is a class of block, not a parallel state.** Each
+    well-formed `needs_refinement` entry (requirement 16a) is recorded by the
+    **Script** as an `attempt-failed` against that repo+item with
+    `stage: "coordinator"` and `kind: "needs-refinement"`, the entry's `missing`
+    promoted to `unblock_condition` and its `reason` and `evidence` carried on
+    the event. Everything downstream then follows from requirement 34 with no
+    new machinery: the item is excluded from selection (16.1), becomes eligible
+    for the Enabler on the ordinary threshold (35a), is cleared by an
+    `unblocked` from either the Enabler or the Co-Ordinator's own cheap
+    re-check (18), and can be voided if it turns out to describe no work. A
+    parallel state would have had to re-earn every one of those properties, and
+    would have earned each of them slightly differently.
+
+    The threshold delay is a feature here, not a cost of the reuse: it gives the
+    human — or requirement 18's re-check, which can clear a refinement block
+    whose `unblock_condition` has demonstrably been met, such as a patched
+    version appearing for a skipped security finding — several cycles to settle
+    the item before the expensive stage is bought.
+
+    Two entries are refused, both on the Script's side of the boundary:
+    - **A malformed entry** — missing `repo`, `item`, `reason`, `missing` or
+      `evidence`, judged on requirement 34d's emptiness discipline — is logged
+      as a `warning` and dropped. The fields are what the Enabler starts from,
+      so an entry short of one starves the very stage the report exists to
+      reach.
+    - **A re-report of an item that is already blocked** is logged as a
+      `warning` and dropped. Requirement 35a measures the Enabler threshold from
+      the *latest* `attempt-failed`, so a Co-Ordinator that re-reported the same
+      item every cycle would push that clock forward hourly and the item would
+      never become eligible — the identical silent starvation this path exists
+      to end, wearing an event trail that looks like progress.
+
+    **The label is a projection, never the record.** Where (and only where) the
+    item is a GitHub issue — the `issues` source, whose ref is a bare number —
+    the Script applies `needs_refinement_label` to it as it records the block,
+    records on the event which label it applied, and removes that label when the
+    block is cleared or the item is voided. Nothing ever reads the label back.
+    Work items here are heterogeneous — issues, `TECH-DEBT.md` rows, review
+    recommendations, findings, plan tasks, per-round PR refs — and a label can
+    reach exactly one of those sources, so a pipeline that read it would see a
+    fraction of its own state and be confidently wrong about the rest. The label
+    is recorded on the event rather than assumed from config because it is what
+    a later cycle removes: a label the Script did not apply is one it must not
+    claim to have removed. A repo where the label does not exist gets a
+    `warning` and the block regardless — losing the projection costs a human's
+    filter, losing the block would cost the item its escape path.
+
+    On `--dry-run` the block is recorded like the other verdicts this path
+    already logs, and **no label is applied or removed**: a label is an outward
+    change to a repository, which requirement 12's run promises not to make.
+    Since the event records only what was actually applied, nothing later tries
+    to remove a label that was never there.
+
 ### The Enabler
 
 35. **Engagement.** At the end of a cycle — from the cleanup of requirement 11,
@@ -1568,6 +1705,14 @@ runs unattended.
     not act on, so the item is exactly where it was, and counting the marker
     would retire the item on the strength of a failed `gh issue create`.
 
+    A coordinator-stage refinement block (requirement 34e) is eligible on
+    exactly these terms — the `kind` marker changes nothing about the rule, and
+    deliberately so. Each entry additionally carries that `kind`, so the
+    engagement knows which duty it is there to perform (requirement 36b), and
+    `refined_before`: the latest `item-refined` event for the same repo+item, or
+    `null`. That field is the thrash guard's input and the record of what the
+    last engagement already specified, so a later one need not reconstruct it.
+
     Like requirements 34 and 34c, this rule has exactly **one** implementation
     (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, which
     shares the blocked and void extracts rather than re-deriving either, always
@@ -1609,6 +1754,23 @@ runs unattended.
     `config.json` configures, so an Enabler claim can never inflate
     back-pressure (requirement 2.2) with work that raises no PR; and `gc` sweeps
     any directory it finds.
+35d. **Refinement items are capped per engagement.** Before the claims of 35c,
+    the eligible set is reduced to every ordinary blocked item plus at most
+    `refinement_max_per_engagement` items of the refinement class, oldest block
+    first — deterministically, so every node in the fleet reduces to the same set
+    and they contend on the same claims rather than each engaging a different
+    third of the backlog. Applied *before* claiming, because a claim taken and
+    then not examined is a tombstone standing for `claim_ttl_hours` over an item
+    nobody looked at.
+
+    Ordinary blocked items are never displaced: they have no cap, and the
+    refinement class cannot crowd them out. That asymmetry is the point. The
+    backlog of items silently skipped before requirement 16a existed is
+    unbounded and none of it is urgent, while the blocked items already in the
+    queue include the pull request nobody can see (requirement 32a) — so an
+    engagement that spent itself on old vagueness would make the pipeline slower
+    at exactly the thing the Enabler exists for. Items over the cap are not lost:
+    they are blocked, and they arrive at a later engagement.
 36. **The Enabler's powers.** It may read anything through `gh` — issues, PRs,
     reviews, checks, runs, alerts, file contents — and reads an issue or PR as
     its **whole thread** (requirement 14a's rule, for the same reason and with
@@ -1633,7 +1795,8 @@ runs unattended.
     and `unblock_condition`, the `pr_url` the blocking event named if it named
     one — under requirement 32a a pull request nobody could hand off is a blocked
     item like any other, and for a finishing source the item id names a register
-    entry rather than the PR — and the last `escalation` if there is one), plus
+    entry rather than the PR — the `kind` and `refined_before` of requirement
+    35a, and the last `escalation` if there is one), plus
     `escalation_label`, `assignee`, and this cycle's `cycle` id and `node` — the
     last two because requirement 36a's issue footer carries them, and a model
     cannot know its own cycle.
@@ -1647,6 +1810,7 @@ runs unattended.
          "reason": "…", "evidence": "…", "comments_posted": ["…"],
          "complete_handoff": false,
          "unblock_condition": "still-blocked only",
+         "refined_spec": "refinement only, and only for a non-issue item",
          "issue": {"title": "…", "body": "…"}}
       ],
       "notes": "…"
@@ -1660,8 +1824,8 @@ runs unattended.
 
     | Verdict | The Script does |
     |---|---|
-    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft |
-    | `void` | logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence |
+    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft. On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
+    | `void` | logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e |
     | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
     | any | logs `enabler-examined` with `repo`, `item`, `blocked_ts`, `outcome` and `detail` |
@@ -1689,6 +1853,66 @@ runs unattended.
     rather than against the closure. That loop is the reason the ask must be
     executable without further investigation: an escalation a reader has to
     interpret has failed even where its verdict was right.
+36b. **The refinement duty.** For an item carrying `kind: "needs-refinement"`
+    (requirement 34e) the Enabler reads the item and its whole context and then:
+
+    - **Specifies it**, where the work can be specified without deciding
+      anything that belongs to a human — a missing acceptance criterion derivable
+      from the code, a scope bound the repo's conventions already imply, a
+      reproduction reconstructible from a failing run. The verdict is
+      `unblocked`, and *where the refinement lands is decided by the item type*,
+      because it has to land where a future Co-Ordinator will read it:
+      - an **issue** item: **one** authoritative comment on the issue carrying
+        the refined specification (goal, scope bounds, acceptance criteria,
+        pointers to the relevant files and conventions), its URL returned in
+        `comments_posted`. Requirements 14a and 20 already have the Co-Ordinator
+        read the whole thread and paste it, so this needs no new carrier;
+      - **any other item type**: the specification is returned in `refined_spec`
+        as self-contained markdown, because there is no thread to write into and
+        no actor here may edit the register. Requirement 3h is its carrier.
+    - **Escalates**, where a human must decide, answer, or act first — through
+      the unchanged protocol of requirement 36a, in a **separate** issue. Never
+      the work item's own issue: that protocol ends with "close this issue when
+      you are done", which on the item's own issue asks the human to close the
+      work itself and removes it from the `issues` source. The ask is phrased so
+      the human's answers land as comments on the escalation issue *before* they
+      close it, since the closure is what returns the item to a later engagement
+      and their comments are what let that engagement complete the refinement.
+      Where the work item is itself an issue, the Enabler also posts one
+      one-line comment on it linking to the escalation, so the context stays
+      visible where the work lives.
+    - **Leaves it blocked**, where the gating decision is recorded as
+      deliberately parked — an open question with a decide-by gate in a roadmap
+      or plan, or a thread saying the decision is intentionally deferred. The
+      verdict is `still-blocked` with that as the `unblock_condition`. Escalating
+      a decision the human has already chosen to defer asks them to re-make it,
+      and spends the one resource this system exists to conserve.
+
+    `void` and `still-blocked` keep their ordinary meanings and evidence bars.
+
+    **The Script's side.** On an `unblocked` verdict for a refinement item it
+    records `item-refined` (requirement 33) carrying the `refined_spec` and/or
+    the first URL in `comments_posted`, alongside the ordinary unblock handling,
+    and removes the projected label. A verdict carrying neither gets a `warning`:
+    the block clears and the item returns to the pool exactly as under-specified
+    as it was, which is the one outcome this path must not produce silently.
+
+    **The thrash guard.** An item is refined at most once between human touches.
+    Where `refined_before` is set, a second refinement is not the answer: two
+    models disagreeing about whether a specification is adequate is a
+    disagreement only a human can settle, and a third pass settles it only by
+    coincidence. The prompt says so, and the Script enforces it — an `unblocked`
+    verdict on a refinement item whose `refined_before` is set is **refused**,
+    logged as a `warning`, and recorded with the outcome `refinement-refused`,
+    leaving the item blocked. Mechanical for requirement 34d's reason: "do not
+    do this" is already in the prompt, and the model that would do it anyway is
+    one that has convinced itself.
+
+    The single exception is the eligibility reason `issue-closed`, and it is
+    what makes "per human touch" a rule the Script can check rather than a hope:
+    that reason exists only because a human acted on an escalation about this
+    very item (requirement 35a), so the refinement it authorises is the first
+    since they did.
 37. **Failure containment.** The Enabler must never change a cycle's outcome.
     A timeout, a non-zero exit, or an unparseable final message produces the
     stage's `stage-end`, a `warning`, and **no state events at all**: no
@@ -1758,11 +1982,21 @@ What exists, and the requirements each part answers to:
    `CLAIM_GH` substitutes a stub for tests, following `STATE_SYNC_GH`.
    Unit-tested with concurrent-claim races against a filesystem-CAS stub
    (`test/claim.test.sh`); must pass `shellcheck`.
+3h. `lib/refinement.sh` implementing the refinement class: requirement 16a's
+   well-formedness bar for a `needs_refinement` entry, requirement 34e's block
+   fields and label projection (`REFINEMENT_GH` substitutes a stub for tests,
+   following `CLAIM_GH`), requirement 35d's per-engagement cap, and requirement
+   36b's `item-refined` payload and thrash guard. Sourced after
+   `lib/void-guard.sh`, whose `entry_field_text` it shares rather than keeping a
+   second opinion about what counts as a filled-in field (requirement 34a).
+   Unit-tested (`test/needs-refinement.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
-   `lib/toggle.sh`, `lib/noop-skip.sh` and `lib/role.sh`) holding every rule
+   `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh` and
+   `lib/refinement.sh`) holding every rule
    that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
-   dashboard reports what came of it), requirement 33's `attempt-failed` field shape, the usage-limit
+   dashboard reports what came of it), requirement 3h's refinement
+   carry-forward, requirement 33's `attempt-failed` field shape, the usage-limit
    phrase pattern of requirement 10, the switch of requirement 2.3 and the
    fleet flags of requirements 2.3a and 2.1 (`lib/toggle.sh`'s `fleet_*`
    functions; `TOGGLE_GH` substitutes a stub for tests, following
@@ -1775,7 +2009,7 @@ What exists, and the requirements each part answers to:
    fuse, and both copies read correctly right up until they disagree.
 4. `prompts/coordinator.md`, `prompts/implementor.md`, `prompts/reviewer.md`
    and `prompts/enabler.md` implementing requirements 14–20, 21–27, 28–32 and
-   36 respectively. Each prompt must embed the relevant shared-repo conventions
+   36/36b respectively. Each prompt must embed the relevant shared-repo conventions
    from this document so a stage never depends on context it wasn't given. The
    Enabler's additionally carries the escalation issue's template, since the
    quality of that issue is the whole of requirement 36a's ask of a human.
@@ -2076,6 +2310,24 @@ pull request, run the ones the change touches and any it could regress.
     the verification's examined event it is not eligible again. This is the check
     that the protocol the issue promises its reader — close it and the work
     resumes — is the protocol the code implements.
+11d. **An under-specified item is reported, blocked, refined and carried
+    forward (requirements 16a, 34e, 35d, 36b, 3h).**
+    `test/needs-refinement.test.sh` passes: a well-formed report becomes a
+    coordinator-stage `attempt-failed` marked `kind: "needs-refinement"` whose
+    `unblock_condition` is the report's `missing`, while an entry short of any
+    required field is dropped; the label is projected onto an issue-type item
+    and not onto a tech-debt one, and is found for removal when the block clears
+    and when the item is voided; such a block is Enabler-eligible on the
+    ordinary `enabler_after_coordinator_cycles` threshold and its entry carries
+    `kind` and `refined_before`; the per-engagement cap keeps ordinary items and
+    drops refinement items beyond it, `0` removing the class entirely; an
+    `unblocked` verdict's `refined_spec` becomes an `item-refined` event that
+    reaches the next cycle's `refinements` map, and a void item's does not; and
+    a second refinement of an already-refined item is refused unless a human has
+    just closed an escalation about it. Both directions matter here for the same
+    reason as requirement 35a's rule: too eager and two models re-specify each
+    other's work forever, too shy and the item starves exactly as it did before
+    any of this existed.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or returns prose instead of JSON: the
     cycle still exits 0, logs `stage-end` and one `warning`, writes **no**
@@ -2113,6 +2365,12 @@ standing the system up on a new machine.
    still raised — the create is retried unlabelled — but it arrives with only
    the assignment to distinguish it, so the human's filter and the duplicate
    guard both lose their handle.
+3d. Create the refinement label in both repos, the same way:
+   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='needs-refinement' -f color='fbca04' -f description='The autonomous pipeline cannot tell what done would mean for this item'`
+   (`needs_refinement_label`, requirement 34e). Without it the block is still
+   recorded and the item still reaches the Enabler — the projection is a
+   courtesy to whoever is browsing the issue list, not the record — but the
+   Script logs a warning each time it cannot apply it.
 3a. Enable the security work sources on both repos so the alerts the
    `security`/`code-quality` sources read actually exist: turn on the
    Dependabot alerts and code-scanning (CodeQL) features (Settings → Code
@@ -2387,6 +2645,30 @@ requirements above, which state only what is.
   that actually needs judgement, and it keeps "no agent decides that this work is
   accepted" true by construction rather than by instruction. The same split as
   the rest of the pipeline: models report, the Script records.
+- **An item nobody has specified is blocked by that fact** (requirements 16a,
+  34e, 36b). The Co-Ordinator used to skip an under-specified or decision-gated
+  item in silence, which meant every later cycle re-read and re-skipped it, no
+  route ever made it selectable, and the human who could have written the
+  missing criteria was never told it existed. Modelling that as a *class of
+  block* rather than a new state was the whole design: selection exclusion,
+  the Enabler threshold, the per-item claim, the escalation protocol and its
+  duplicate guard, the issue-closed recheck and the human's hand-appended
+  `unblocked` all key on `attempt-failed`/`unblocked` and needed no notion of
+  why the item stopped. A parallel "unrefined" state would have re-earned each
+  of those properties, slightly differently, and the differences would have been
+  discovered one at a time.
+
+  Three consequences follow that are easy to mistake for oversights. The label
+  is a **projection** — applied to an issue-type item, removed with the block,
+  never read back — because a label can only reach the `issues` source and the
+  work items here are heterogeneous; a pipeline reading it would see a fraction
+  of its own state. The refinement itself lands **where a future Co-Ordinator
+  already reads**: an issue's thread for an issue, and requirement 3h's log-borne
+  map for everything else, rather than a new write power over registers nobody
+  else may edit. And an item is refined **once between human touches**, because
+  a cheap model re-flagging an expensive model's specification is two models
+  disagreeing, which a third pass settles only by luck; the escalation is not a
+  fallback there, it is the correct answer.
 
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.

@@ -29,6 +29,8 @@
   "enabler_after_coordinator_cycles": 3,
   "enabler_recheck_hours": 72,
   "enabler_escalation_label": "enabler-escalation",
+  "needs_refinement_label": "needs-refinement",
+  "refinement_max_per_engagement": 3,
   "timeout_coordinator": 15,
   "timeout_implementor": 90,
   "timeout_reviewer": 30,

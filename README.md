@@ -14,7 +14,10 @@ Once an hour:
 And, at the end of a cycle, rarely: the **Enabler** (Opus) re-examines an item
 that has been blocked for several cycles, unblocks it if it can and raises an
 issue assigned to you if only you can — see
-[Blocked items and the Enabler](#blocked-items-and-the-enabler).
+[Blocked items and the Enabler](#blocked-items-and-the-enabler). It also writes
+the specification for an item too vague to select, which is otherwise skipped
+in silence forever — see
+[Items nobody has specified](#items-nobody-has-specified).
 
 If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down — cheaply, without waking the Co-Ordinator, when nothing has changed since it last found nothing to do (see [Skipping no-op cycles](#skipping-no-op-cycles)).
 
@@ -107,6 +110,8 @@ Edit `config.json` before first run. Keys:
 | `enabler_after_coordinator_cycles` | 3 | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
 | `enabler_recheck_hours` | 72 | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. Create it in each target repo (`gh label create enabler-escalation -R Poetic-Poems/<repo>`); without it the issue is still raised, just unlabelled. |
+| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). Create it in each target repo (`gh label create needs-refinement -R Poetic-Poems/<repo>`); without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list. Leave it empty to switch the labelling off. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
+| `refinement_max_per_engagement` | 3 | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `3` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
@@ -530,6 +535,54 @@ happen:
 # What the Enabler has been doing, and what it asked for
 jq -r 'select(.event == "enabler-examined" or .event == "escalated")
        | "\(.ts)  \(.event)  \(.item)  \(.outcome // .issue_url // "")"' \
+  ~/.local/state/poetic-agents/log.jsonl | tail -10
+```
+
+### Items nobody has specified
+
+There is a third reason the pipeline skips an item, and it used to be invisible:
+nobody ever wrote down what the work is. "Tidy up the sync script" names no end
+state; an issue that is really a question has no acceptance criteria; a
+milestone task waits on a decision that is yours. The Co-Ordinator cannot rank
+any of those, so it skipped them — and every cycle after it skipped them too,
+forever, without recording anything. Nothing looked wrong. The work simply
+never happened, and you were never told it was waiting on you.
+
+Now the Co-Ordinator reports such an item, and the Script records it as blocked
+with what is missing. Nothing else changes about that cycle. If the item is a
+GitHub issue it also picks up the `needs-refinement` label, so you can see the
+same thing the pipeline can:
+
+```bash
+gh issue list -R Poetic-Poems/poetic --label needs-refinement
+```
+
+After the usual few cycles — during which you, or the pipeline's own re-check,
+may well settle it first — the Enabler picks it up and does one of three things:
+
+- **specifies it**, where that can be done without deciding anything that is
+  yours to decide: one comment on the issue carrying the goal, scope, acceptance
+  criteria and relevant files, or, for a tech-debt entry or a review
+  recommendation, a specification carried in the log and pasted into the next
+  work order. The item is unblocked and the label comes off;
+- **asks you**, through the ordinary escalation issue — a separate one, never
+  the work item's own issue, and cross-linked from it where the item is an
+  issue. Answer in comments on the escalation and then close it: the same
+  protocol as any other escalation, and your answers are what let the next
+  engagement finish the job;
+- **leaves it**, where you have already parked the decision deliberately (an
+  open question with a decide-by date in a plan or roadmap). It will not ask you
+  to re-make a decision you have made.
+
+An item is specified **once** between times you touch it. If the Co-Ordinator
+flags an item the Enabler has already specified, that is two models disagreeing
+about whether the specification is good enough, and you get an escalation rather
+than a second rewrite.
+
+```bash
+# What the pipeline has specified for itself lately
+jq -r 'select(.event == "item-refined")
+       | "\(.ts)  \(.repo)  \(.item)  \(.comment_url // "spec recorded in the log")"' \
   ~/.local/state/poetic-agents/log.jsonl | tail -10
 ```
 

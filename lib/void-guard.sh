@@ -74,18 +74,25 @@
 # Environment:
 #   VOID_GUARD_GH  override `gh` (tests stub it).
 
-# void_entry_evidence ENTRY_JSON
-# Print the entry's evidence as a single string — objects and arrays are
-# rendered as JSON so a caller can test emptiness without caring which shape
-# the model chose. Prints nothing when there is no usable evidence.
+# entry_field_text ENTRY_JSON FIELD
+# Print one field of a model-supplied entry as a single string — objects and
+# arrays are rendered as JSON so a caller can test emptiness without caring
+# which shape the model chose. Prints nothing when the field holds nothing
+# usable.
 #
 # `null`, `{}`, `[]`, `""` and whitespace all count as nothing. A model asked
 # for a field will fill it with something; the empty container is the something
 # it reaches for first, and accepting it would make the requirement decorative.
-void_entry_evidence() {
-  local entry="$1" text
-  text="$(jq -r '
-    (.evidence // null)
+#
+# Generalised from `void_entry_evidence` (below) when the same discipline was
+# needed field by field on the Co-Ordinator's `needs_refinement` entries
+# (requirement 34e, `lib/refinement.sh`). One definition, per requirement 34a:
+# two copies of "what counts as a filled-in field" would agree until the day one
+# of them was relaxed.
+entry_field_text() {
+  local entry="$1" field="$2" text
+  text="$(jq -r --arg f "$field" '
+    (.[$f] // null)
     | if . == null then ""
       elif type == "string" then .
       elif (type == "object" or type == "array") then (if length == 0 then "" else tojson end)
@@ -96,6 +103,12 @@ void_entry_evidence() {
   text="${text%"${text##*[![:space:]]}"}"
   [[ "$text" == "null" ]] && text=""
   printf '%s' "$text"
+}
+
+# void_entry_evidence ENTRY_JSON
+# Print the entry's evidence, or nothing when it carries none that counts.
+void_entry_evidence() {
+  entry_field_text "$1" evidence
 }
 
 # void_candidate_prs ENTRY_JSON REPOS_JSON
