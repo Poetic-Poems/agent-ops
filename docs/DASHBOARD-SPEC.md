@@ -75,7 +75,11 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`); void
   items use requirement 34c's (most recent `item-void`/`unvoided`). Both come
   from the shared library, never from a local copy of the rule. With no peers
-  the union reduces exactly to the old local read.
+  the union reduces exactly to the old local read. Each blocked row is joined
+  against the `escalated` and `enabler-examined` events *later than that block*
+  (implementation spec 35, 36a), which is what gives the row its escalation link
+  and the Enabler's last verdict; a mark older than the block belongs to an
+  earlier one and is ignored.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
   entry ({node, role, heartbeat, last cycle}; older than 30 minutes → `stale:
@@ -196,7 +200,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                           terminal_reason, model, status, result, stderr,
                           limit_hit, limit_text } },
                events[] } ],           // most recent 40 FLEET-WIDE, newest first
-  blocked: [ { repo, item, ts, detail, stage } ],       // from the log union
+  blocked: [ { repo, item, ts, detail, stage,           // from the log union
+               escalation_issue, escalation_url,        // an open ask of the human
+               enabler_outcome, enabler_ts } ],         //   … or the last verdict
   void:    [ { repo, item, ts, detail, stage, evidence } ],
   github:  { ok, error, fetched_at, stale, prs[], claims[],
              inputs:{<slug>:{issues,failed_runs,tech_debt}} },
@@ -513,6 +519,18 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   the page, since it is the only escape hatch and it exists nowhere in the
   UI). Collapsing them costs the operator the one distinction the pipeline
   cannot make for itself.
+
+  The blocked list then makes one further distinction *within* itself, in its
+  `Escalated` column: an item waiting on a human through an open issue, versus
+  one still the pipeline's own to clear. That column is a link when the Enabler
+  has raised an escalation (implementation spec 36a) and the Enabler's last
+  verdict otherwise, because those are two quite different messages to the
+  reader — "nothing will happen here until you act" and "the pipeline looked at
+  this properly and is still working on it". Before it, both rendered as an
+  identical row of prose, and the one item on the page that had been *addressed
+  to the operator* looked exactly like the four that had not. The link is
+  deliberately the escalation issue rather than a copy of its text: the issue is
+  where the ask is maintained, and closing it is the whole protocol.
 - **The live indicator says what, not just that.** The header's running dot
   once reported only that a cycle was in flight and since when; the item it was
   working on lived several panels down, in the cycles table. But "what is the

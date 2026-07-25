@@ -436,6 +436,23 @@
     return d;
   }
 
+  // Whose move it is on a blocked item. An open escalation issue is a request
+  // addressed to the person reading this page, so it is a link and it wins: the
+  // pipeline has stopped and is waiting for them. Otherwise this shows the
+  // Enabler's last verdict, which says the item has at least been looked at
+  // properly and by when it will be looked at again. Nothing at all means the
+  // item is still the pipeline's own to clear.
+  function escalationCell(b) {
+    if (b.escalation_url) {
+      return el("a", {href: b.escalation_url, target:"_blank",
+                      text: "#" + (b.escalation_issue || "?") + " — needs you"});
+    }
+    if (b.enabler_outcome) {
+      return el("span", {class:"muted", text: b.enabler_outcome + " " + fmtAgo(b.enabler_ts)});
+    }
+    return document.createTextNode("—");
+  }
+
   // ---------- failures & blocked ----------
   function failuresPanel() {
     var wrap = el("div");
@@ -449,10 +466,11 @@
           el("td", {class:"mono", text: b.item}),
           el("td", {class:"mono muted", text: b.repo ? b.repo.split("/")[1] : "—"}),
           el("td", {class:"muted", text: fmtAgo(b.ts)}),
-          el("td", {class:"wrap", text: (b.stage ? b.stage + ": " : "") + (b.detail || "")})
+          el("td", {class:"wrap", text: (b.stage ? b.stage + ": " : "") + (b.detail || "")}),
+          el("td", {}, escalationCell(b))
         ]);
       });
-      wrap.appendChild(tableOf(["Item","Repo","Since","Blocker"], brows));
+      wrap.appendChild(tableOf(["Item","Repo","Since","Blocker","Escalated"], brows));
     }
 
     // Void items are listed apart from blocked ones because they call for the

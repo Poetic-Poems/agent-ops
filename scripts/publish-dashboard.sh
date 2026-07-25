@@ -430,6 +430,30 @@ blocked_json="$(printf '%s\n' "$ALL_EVENTS" | blocked_items - | jq -c \
   'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // "")})' 2>/dev/null)"
 [[ -z "$blocked_json" ]] && blocked_json='[]'
 
+# What the Enabler has made of each blocked item (implementation spec 35, 36a),
+# joined onto the row rather than listed apart. An escalated item is still a
+# blocked item — what changes is *who* it is waiting for, and that is the one
+# thing about a blocked row an operator most needs at a glance: their own name on
+# an open issue, or the pipeline's last verdict if it is still the pipeline's
+# move. Only marks newer than the block count, so a re-blocked item does not
+# inherit the resolved escalation of an older one.
+blocked_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson rows "$blocked_json" '
+  . as $events
+  | [ $rows[]
+      | . as $r
+      | ([ $events[] | select(.event == "escalated" and (.item // "") == $r.item
+                              and (.repo // "") == $r.repo and .ts > $r.ts) ] | last) as $esc
+      | ([ $events[] | select(.event == "enabler-examined" and (.item // "") == $r.item
+                              and (.repo // "") == $r.repo and .ts > $r.ts) ] | last) as $exam
+      | $r
+        + (if $esc == null then {}
+           else {escalation_issue: ($esc.issue_number // null),
+                 escalation_url: ($esc.issue_url // "")} end)
+        + (if $exam == null then {}
+           else {enabler_outcome: ($exam.outcome // ""), enabler_ts: ($exam.ts // "")} end) ]' \
+  2>/dev/null || true)"
+[[ -z "$blocked_json" ]] && blocked_json='[]'
+
 void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
   'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // ""), evidence: (.evidence // "")})' 2>/dev/null)"
 [[ -z "$void_json" ]] && void_json='[]'
