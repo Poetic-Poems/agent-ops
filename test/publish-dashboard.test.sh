@@ -315,16 +315,49 @@ assert_contains "and keeps what it had" "nothing wrong here" "$(cat "$launcher_l
 # must merge into every roll-up AND pass through the same redaction as our own.
 f="$(new_home nodeF)"
 peer="$f/.cache/poetic-agents/workspaces/.agent-ops-peers/peer1"
-mkdir -p "$peer/cycles/${today_day}T040000Z-peer1-77" "$f/.local/state/poetic-agents/fleet-cache"
+peer2="$f/.cache/poetic-agents/workspaces/.agent-ops-peers/peer2"
+mkdir -p "$peer/cycles/${today_day}T040000Z-peer1-77" "$peer2" "$f/.local/state/poetic-agents/fleet-cache"
 printf '{"node":"peer1","role":"active","ts":"%s","last_cycle":"%sT040000Z-peer1-77"}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" > "$peer/heartbeat.json"
-printf '{"ts":"2026-01-01T04:00:00Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"cycle-start"}\n' \
-  "$today_day" > "$peer/log.jsonl"
+# peer1 is mid-cycle: a `cycle-start` with no `cycle-end`, a coordinator stage
+# that finished, an implementor stage that has not, and the selection between
+# them. That is the whole of what a peer publishes about what it is doing —
+# it publishes no lock — so it is the whole of what its card can be built from.
+{
+  printf '{"ts":"2026-01-01T04:00:00Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"cycle-start"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T04:00:01Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-start","stage":"coordinator"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T04:00:02Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-end","stage":"coordinator","exit_code":0}\n' "$today_day"
+  printf '{"ts":"2026-01-01T04:00:03Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"selection","repo":"Poetic-Poems/poetic","item":"TD26071401","source":"tech-debt","title":"share the limit detector"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T04:00:04Z","cycle":"%sT040000Z-peer1-77","node":"peer1","event":"stage-start","stage":"implementor"}\n' "$today_day"
+} > "$peer/log.jsonl"
 printf '{"type":"result","subtype":"success","total_cost_usd":0.25,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"model-p":{}},"result":"peer secret ghp_9876543210abcdefXYZ9876 in /home/peeruser/thing"}' \
   > "$peer/cycles/${today_day}T040000Z-peer1-77/coordinator.out"
-make_cycle "$f" "${today_day}T050000Z-self-55" 0.50 model-a
-printf '{"ts":"2026-01-01T05:00:00Z","cycle":"%sT050000Z-self-55","node":"nodeF-self","event":"cycle-start"}\n' \
-  "$today_day" > "$f/.local/state/poetic-agents/log.jsonl"
+# peer2 is between cycles: its last one ran to `cycle-end`.
+printf '{"node":"peer2","role":"active","ts":"%s","last_cycle":"%sT033000Z-peer2-88"}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$today_day" > "$peer2/heartbeat.json"
+{
+  printf '{"ts":"2026-01-01T03:30:00Z","cycle":"%sT033000Z-peer2-88","node":"peer2","event":"cycle-start"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T03:30:01Z","cycle":"%sT033000Z-peer2-88","node":"peer2","event":"selection","repo":"Poetic-Poems/poetic-fiddle","item":"issue-9","source":"issues","title":"an issue"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T03:40:00Z","cycle":"%sT033000Z-peer2-88","node":"peer2","event":"cycle-end","exit_code":0}\n' "$today_day"
+} > "$peer2/log.jsonl"
+# This node holds a live lock (this test process is the pid), so its own row is
+# read from the lock rather than derived. The `-skipped` cycle after it is the
+# case that makes the distinction load-bearing: a tick that starts, finds the
+# lock held and ends is the newest `cycle-start` on this node while the cycle
+# actually holding the lock is still running.
+self_cid="${today_day}T050000Z-nodeF-self-$$"
+make_cycle "$f" "$self_cid" 0.50 model-a
+{
+  printf '{"ts":"2026-01-01T05:00:00Z","cycle":"%s","node":"nodeF-self","event":"cycle-start"}\n' "$self_cid"
+  printf '{"ts":"2026-01-01T05:00:01Z","cycle":"%s","node":"nodeF-self","event":"stage-start","stage":"coordinator"}\n' "$self_cid"
+  printf '{"ts":"2026-01-01T05:00:02Z","cycle":"%s","node":"nodeF-self","event":"stage-end","stage":"coordinator","exit_code":0}\n' "$self_cid"
+  printf '{"ts":"2026-01-01T05:00:03Z","cycle":"%s","node":"nodeF-self","event":"selection","repo":"Poetic-Poems/poetic","item":"TD26072004","source":"tech-debt","title":"bound the local history"}\n' "$self_cid"
+  printf '{"ts":"2026-01-01T05:00:04Z","cycle":"%s","node":"nodeF-self","event":"stage-start","stage":"implementor"}\n' "$self_cid"
+  printf '{"ts":"2026-01-01T05:10:00Z","cycle":"%sT051000Z-nodeF-self-skipped","node":"nodeF-self","event":"cycle-start"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T05:10:01Z","cycle":"%sT051000Z-nodeF-self-skipped","node":"nodeF-self","event":"cycle-skipped","detail":"lock held"}\n' "$today_day"
+  printf '{"ts":"2026-01-01T05:10:02Z","cycle":"%sT051000Z-nodeF-self-skipped","node":"nodeF-self","event":"cycle-end","exit_code":0}\n' "$today_day"
+} > "$f/.local/state/poetic-agents/log.jsonl"
+printf '{"pid":%s,"started_at":"2026-01-01T05:00:00Z"}' "$$" > "$f/.local/state/poetic-agents/lock.json"
 # A cached fleet limit flag (requirement 2.1): shown without any GitHub call.
 printf '{"resume_at":"2031-01-01T00:00:00Z","class":"monthly-spend","needs_human":true,"node":"peer1","ts":"2026-01-01T04:01:00Z"}' \
   > "$f/.local/state/poetic-agents/fleet-cache/limit.json"
@@ -332,9 +365,10 @@ printf '{"resume_at":"2031-01-01T00:00:00Z","class":"monthly-spend","needs_human
 run_publish "$f" NODE_NAME=nodeF-self
 assert_eq "a fleet publish exits 0" "0" "$?"
 fdata="$(data_of "$f")"
+node_live() { jq -r --arg n "$1" --arg k "$2" '.fleet.nodes[] | select(.node==$n) | .live[$k]' <<<"$fdata"; }
 
 assert_eq "the page names its own node" "nodeF-self" "$(jq -r '.node' <<<"$fdata")"
-assert_eq "fleet.nodes carries self and the peer" "2" "$(jq '.fleet.nodes | length' <<<"$fdata")"
+assert_eq "fleet.nodes carries self and both peers" "3" "$(jq '.fleet.nodes | length' <<<"$fdata")"
 assert_eq "self is listed first and marked" "true" "$(jq -r '.fleet.nodes[0].self' <<<"$fdata")"
 assert_eq "the peer's role comes from its heartbeat" "active" \
   "$(jq -r '.fleet.nodes[] | select(.node=="peer1") | .role' <<<"$fdata")"
@@ -353,6 +387,52 @@ assert_eq "claims default to empty without a GitHub tick" "[]" \
 raw_fleet="$(cat "$f/.local/state/poetic-agents/dashboard/data.js")"
 assert_lacks "a peer's token is redacted like our own" "ghp_9876543210abcdefXYZ9876" "$raw_fleet"
 assert_lacks "a peer's home path is redacted like our own" "/home/peeruser" "$raw_fleet"
+
+# --- What each node is doing (DASHBOARD-SPEC "the live state is per node") -------
+# The header's old single live readout is now one per node, so every node needs
+# its own answer — and a peer's has to come from its published log, since a peer
+# publishes no lock.
+assert_eq "a peer mid-cycle is reported running" "true" "$(node_live peer1 running)"
+assert_eq "from its own cycle, not the fleet's newest" "${today_day}T040000Z-peer1-77" \
+  "$(node_live peer1 cycle)"
+assert_eq "its live stage is the stage-start with no stage-end" "implementor" \
+  "$(node_live peer1 stage)"
+assert_eq "its work carries the item the Co-Ordinator selected" "TD26071401" \
+  "$(node_live peer1 item)"
+assert_eq "and the source, so the card can tag it like the cycles column" "tech-debt" \
+  "$(node_live peer1 source)"
+assert_eq "and the repo it is working in" "Poetic-Poems/poetic" "$(node_live peer1 repo)"
+assert_eq "a peer whose cycle ended is idle" "false" "$(node_live peer2 running)"
+assert_eq "and reports when it ended" "2026-01-01T03:40:00Z" "$(node_live peer2 ended_at)"
+assert_eq "each node answers for itself, not for the fleet" "issue-9" "$(node_live peer2 item)"
+
+assert_eq "a live lock makes this node running" "true" "$(jq -r '.status.running' <<<"$fdata")"
+assert_eq "and its row says so too" "true" "$(node_live nodeF-self running)"
+assert_eq "our own row is the lock's cycle, not the newest cycle-start" "$self_cid" \
+  "$(node_live nodeF-self cycle)"
+assert_eq "so a skipped tick cannot masquerade as what we are doing" "implementor" \
+  "$(node_live nodeF-self stage)"
+assert_eq "and the work is the one the lock's cycle selected" "TD26072004" \
+  "$(node_live nodeF-self item)"
+assert_eq "the fleet's newest cycle names the node that ran it" "nodeF-self" \
+  "$(jq -r '.status.last_cycle.node' <<<"$fdata")"
+
+# With the lock gone, our own row falls back to the same derivation the peers
+# use — and must then report the cycle as over rather than eternally running.
+rm -f "$f/.local/state/poetic-agents/lock.json"
+run_publish "$f" NODE_NAME=nodeF-self
+fdata="$(data_of "$f")"
+assert_eq "no lock, no running claim" "false" "$(jq -r '.status.running' <<<"$fdata")"
+assert_eq "and the node's own row agrees" "false" "$(node_live nodeF-self running)"
+assert_eq "falling back to its newest cycle" "${today_day}T051000Z-nodeF-self-skipped" \
+  "$(node_live nodeF-self cycle)"
+
+# A node that has never run a cycle has no live state at all — null, not a
+# fabricated idle record. (`live` is absent from the page's reading of it.)
+g="$(new_home nodeG)"
+run_publish "$g" NODE_NAME=nodeG-self
+assert_eq "a node with no history reports no live state" "null" \
+  "$(jq -r '.fleet.nodes[0].live' <<<"$(data_of "$g")")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then

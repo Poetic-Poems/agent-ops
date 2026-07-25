@@ -54,6 +54,9 @@
   .banner.green { background: var(--green-bg); color: var(--green); border: 1px solid var(--green); }
   .banner.red { background: var(--red-bg); color: var(--red); border: 1px solid var(--red); }
   .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin-bottom: 22px; }
+  /* The fleet cards carry a whole live-state readout each — stage, repo, work
+     source and item — so they get a wider track than the metric cards do. */
+  .cards.fleet { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
   .card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
   .card .v { font-size: 22px; font-weight: 650; margin-top: 2px; }
@@ -61,6 +64,12 @@
   .card.clickable { cursor: pointer; }
   .card.nodestale { border-color: var(--red); }
   .card.nodeselected { outline: 2px solid var(--accent); }
+  .card .state { font-size: 14px; font-weight: 650; margin-top: 4px; }
+  .card .work { font-size: 12.5px; margin-top: 4px; white-space: normal; word-break: break-word; }
+  .card .when { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .card .hb { font-size: 11.5px; color: var(--muted); margin-top: 6px;
+    border-top: 1px solid var(--line); padding-top: 5px; }
+  .card .hb.stale { color: var(--red); }
   section { margin-bottom: 26px; }
   section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
     margin: 0 0 10px; font-weight: 600; }
@@ -266,6 +275,48 @@
          : el("span", {class:"badge b-grey", text: role || "standby"});
   }
 
+  // What a node is working on, in the order a cycle learns it: the stage first
+  // (present as soon as one is live), then the selected work once the
+  // Co-Ordinator has chosen. One renderer, used by the per-node fleet cards and
+  // — when there is no fleet to summarise — by the header, so the two cannot
+  // drift into describing the same thing two ways.
+  function workDetail(cur) {
+    cur = cur || {};
+    var label = cur.title || cur.item;
+    if (!cur.stage && !cur.repo && !label) return null;
+    var what = el("span", {class:"muted"}), first = true;
+    // The stage is absent on a finished cycle (it is the *live* stage), so the
+    // separator has to follow what was actually written rather than assume it.
+    function sep() { if (!first) what.appendChild(document.createTextNode(" · ")); first = false; }
+    if (cur.stage) { sep(); what.appendChild(el("span", {class:"mono", title:"current stage", text: cur.stage})); }
+    if (cur.stage === "coordinator" && !label) what.appendChild(document.createTextNode(" choosing work"));
+    if (cur.repo)   { sep(); what.appendChild(el("span", {class:"mono", text: cur.repo.split("/")[1]})); }
+    if (cur.source) { what.appendChild(document.createTextNode(" ")); what.appendChild(sourceTag(cur.source)); }
+    if (label)      what.appendChild(document.createTextNode(" " + (label.length > 70 ? label.slice(0,69) + "…" : label)));
+    return what;
+  }
+
+  function cycleById(id) {
+    var cs = D.cycles || [];
+    if (!id) return null;
+    for (var i = 0; i < cs.length; i++) if (cs[i].id === id) return cs[i];
+    return null;
+  }
+
+  // A peer's "running" is derived from the log it last published, so a node
+  // killed mid-cycle (no `cycle-end` ever written) goes on looking busy for
+  // ever. `lock_stale_after` is the pipeline's own bound on that — the age at
+  // which it would take such a lock over — so past it the card stops asserting
+  // and says the node may be gone. Our own row is exempt: a live pid is not an
+  // inference.
+  function livenessDoubt(n) {
+    if (!n || n.self || !n.live || n.live.running !== true) return null;
+    var t = parseTs(n.live.since);
+    var hours = Math.max(1, +((D.config || {}).lock_stale_after) || 4);
+    if (!t || (Date.now() - t.getTime())/3600000 <= hours) return null;
+    return "no cycle-end after " + hours + "h — the node may have died mid-cycle";
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -297,27 +348,92 @@
   }
 
   // ---------- fleet strip ----------
-  // One card per node: role, heartbeat freshness, last cycle. Clicking a card
-  // filters the cycle list to that node; clicking it again clears the filter.
+  // One card per node, each carrying that node's own live state — running or
+  // idle, the stage and item in flight, and how fresh the answer is. This is
+  // the readout the header used to carry alone, back when a node and the
+  // pipeline were the same thing; with a fleet there is no single "what is it
+  // doing", so the question is answered per node here and only summarised up
+  // top. Clicking a card filters the cycle list to that node; clicking it
+  // again clears the filter.
   function fleetStrip() {
-    var wrap = el("div", {class:"cards"});
-    fleetNodes().forEach(function (n) {
-      var hbText = n.self ? "this node" :
-        (n.heartbeat_age_s == null ? "no heartbeat" : "heartbeat " + fmtAgo(n.heartbeat_ts));
-      var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
-                            title: nodeFilter === n.node ? "click to show every node's cycles" : "click to filter cycles to " + n.node}, [
-        el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]),
-        el("div", {class:"v", style:"font-size:14px", text: hbText}),
-        el("small", {class:"muted", text: n.stale ? "STALE — last push >30 min ago" :
-          (n.last_cycle ? "last cycle " + esc(n.last_cycle).slice(0, 16) : "no cycles yet")})
-      ]);
-      card.addEventListener("click", function () {
-        nodeFilter = (nodeFilter === n.node) ? null : n.node;
-        renderBody();
-      });
-      wrap.appendChild(card);
-    });
+    var wrap = el("div", {class:"cards fleet", id:"fleetstrip"});
+    fleetNodes().forEach(function (n) { wrap.appendChild(nodeCard(n)); });
     return wrap;
+  }
+
+  // Is this node's state knowable at all? A peer's is only ever as fresh as its
+  // last push, so once that has gone stale the card reports "unknown" rather
+  // than half-hour-old news dressed as current.
+  function nodeUnknown(n) { return !n.self && n.stale; }
+  function nodeRunning(n) { return !nodeUnknown(n) && !!(n.live && n.live.running === true); }
+
+  function nodeCard(n) {
+    var live = n.live || null;
+    var unknown = nodeUnknown(n), running = nodeRunning(n);
+    var doubt = livenessDoubt(n);
+    var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
+                          title: nodeFilter === n.node ? "click to show every node's cycles" : "click to filter cycles to " + n.node});
+    card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]));
+
+    var state = el("div", {class:"state"});
+    if (unknown) {
+      state.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "state unknown" ]));
+    } else if (running) {
+      state.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
+      if (doubt) state.appendChild(el("span", {class:"badge b-amber", style:"margin-left:6px",
+                                               title: doubt, text:"may be dead"}));
+    } else {
+      state.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "idle" ]));
+    }
+    card.appendChild(state);
+
+    if (unknown) {
+      card.appendChild(el("div", {class:"work muted",
+        text:"nothing this node published can still be called current."}));
+    } else if (running) {
+      var w = workDetail(live);
+      if (w) card.appendChild(el("div", {class:"work"}, w));
+      if (live.since) card.appendChild(el("div", {class:"when",
+        text: "since " + fmtTime(live.since) + " (" + fmtAgo(live.since) + ")"}));
+    } else if (live && live.ended_at) {
+      // The outcome comes from the cycle list rather than from a second copy of
+      // the outcome rule; a cycle that has aged out of that list simply shows
+      // its time.
+      var last = cycleById(live.cycle);
+      card.appendChild(el("div", {class:"work"}, [
+        el("span", {class:"muted", text:"last cycle " + fmtAgo(live.ended_at) + " "}),
+        last ? outcomeBadge(last.outcome) : null
+      ]));
+      var lw = last ? workDetail(last) : null;
+      if (lw) card.appendChild(el("div", {class:"when"}, lw));
+    } else if (live) {
+      // A cycle that started, never logged `cycle-end`, and is not running now.
+      // That is the trace a node killed mid-cycle leaves (TD26072301), and it
+      // is worth saying rather than smoothing into a plain "idle" — nothing
+      // else on the page distinguishes it from a cycle that finished.
+      card.appendChild(el("div", {class:"work"}, [
+        el("span", {class:"muted", text:"last cycle " + fmtAgo(live.since) + " "}),
+        el("span", {class:"badge b-amber", text:"no clean end",
+          title:"a cycle-start with no cycle-end, and nothing running now — the node was stopped mid-cycle, or its log lost the tail"})
+      ]));
+    } else {
+      card.appendChild(el("div", {class:"work muted",
+        text: n.last_cycle ? "last cycle " + esc(n.last_cycle).slice(0, 16) : "no cycles yet"}));
+    }
+
+    card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
+      title: n.self ? "read from this node's own lock and log"
+                    : "derived from the state this peer last pushed — no fresher than its heartbeat",
+      text: n.self ? "this node — read live"
+           : n.stale ? "STALE — last push >30 min ago"
+           : n.heartbeat_age_s == null ? "no heartbeat"
+           : "as of its last push, " + fmtAgo(n.heartbeat_ts)}));
+
+    card.addEventListener("click", function () {
+      nodeFilter = (nodeFilter === n.node) ? null : n.node;
+      renderBody();
+    });
+    return card;
   }
 
   // ---------- claims panel ----------
@@ -770,9 +886,61 @@
     window.scrollTo(0, y);
   }
 
+  // The header of a single-node page: this node's live state in full, off its
+  // own lock. With no fleet strip to carry it, the header is the only place the
+  // answer can go — and a one-node page renders exactly as it always did.
+  function localHeader(live, st) {
+    if (st.running && st.lock) {
+      live.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
+      var what = workDetail(st.current);
+      if (what) { live.appendChild(el("span", {class:"muted", text:" · "})); live.appendChild(what); }
+      live.appendChild(el("span", {class:"muted", text: " · since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
+    } else {
+      live.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "idle" ]));
+      if (st.last_cycle) live.appendChild(el("span", {class:"muted", text: " · last cycle " + fmtAgo(st.last_cycle.ended_at) }));
+    }
+  }
+
+  // The header of a fleet page: how much of the fleet is working, not what any
+  // one node is working on. Naming a single item up here would mean picking one
+  // node's work to stand for every node's, which is exactly the reading that
+  // stopped being true when the second container came up; the per-node answers
+  // are on the cards a scroll below.
+  function fleetHeader(live) {
+    var nodes = fleetNodes();
+    var running = nodes.filter(nodeRunning);
+    var stale = nodes.filter(function (n) { return n.stale; });
+    var doubted = nodes.filter(function (n) { return !!livenessDoubt(n); });
+    live.appendChild(el("span", {title:"per-node state is on the fleet cards below"}, [
+      el("span", {class:"dot " + (running.length ? "live" : "idle")}),
+      running.length ? running.length + " of " + nodes.length + " nodes running"
+                     : (nodes.length === 1 ? "idle" : "all " + nodes.length + " nodes idle")
+    ]));
+    // Who and on what, but only while that still fits in a header — past a few
+    // nodes the list stops being a glance and the cards are the place to look.
+    if (running.length && running.length <= 3) {
+      live.appendChild(el("span", {class:"muted", title: running.map(function (n) { return n.node; }).join(", "),
+        text: " · " + running.map(function (n) {
+          var w = n.live || {};
+          return n.node + (w.repo ? " → " + w.repo.split("/")[1] : (w.stage ? " → " + w.stage : ""));
+        }).join(", ")}));
+    } else if (!running.length && (D.status || {}).last_cycle) {
+      live.appendChild(el("span", {class:"muted", text: " · last cycle " + fmtAgo(D.status.last_cycle.ended_at) +
+        " on " + (D.status.last_cycle.node || "?")}));
+    }
+    if (doubted.length) live.appendChild(el("span", {class:"badge b-amber", style:"margin-left:8px",
+      title: doubted.map(function (n) { return n.node + ": " + livenessDoubt(n); }).join("; "),
+      text: doubted.length + " may be dead"}));
+    if (stale.length) live.appendChild(el("span", {class:"badge b-red", style:"margin-left:8px",
+      title: stale.map(function (n) { return n.node; }).join(", ") + " last pushed more than 30 minutes ago",
+      text: stale.length + " stale"}));
+  }
+
   // ---------- header live state + freshness ----------
   // Cheap; rebuilt on every tick (even when the body is unchanged) so the "data
-  // Ns ago" clock and the running/idle dot stay live.
+  // Ns ago" clock and the running/idle dot stay live. The fleet strip is rebuilt
+  // on the same tick for the same reason: its cards carry "since 18m ago"
+  // clocks, and the body around them only re-renders when the data changes.
   function renderHeaderStatus() {
     var st = D.status || {};
     // Which node's publisher produced this page — every node renders the same
@@ -780,28 +948,9 @@
     document.getElementById("nodename").textContent = D.node ? "· " + D.node : "";
     var live = document.getElementById("livestate");
     live.innerHTML = "";
-    if (st.running && st.lock) {
-      live.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
-      // What is being worked on right now. The coordinator stage runs before it
-      // has selected anything, so repo/item/title may not be known yet — show
-      // whatever is: the stage first (always present once a stage is live), then
-      // the selected work as it becomes known.
-      var cur = st.current || {};
-      var label = cur.title || cur.item;                    // human-readable work item
-      if (cur.stage || label || cur.repo) {
-        var what = el("span", {class:"muted"}, " · ");
-        if (cur.stage) what.appendChild(el("span", {class:"mono", title:"current stage", text: cur.stage}));
-        if (cur.stage === "coordinator" && !label) what.appendChild(document.createTextNode(" choosing work"));
-        if (cur.repo)   { what.appendChild(document.createTextNode(" · ")); what.appendChild(el("span", {class:"mono", text: cur.repo.split("/")[1]})); }
-        if (cur.source) { what.appendChild(document.createTextNode(" ")); what.appendChild(sourceTag(cur.source)); }
-        if (label)      what.appendChild(document.createTextNode(" " + (label.length > 70 ? label.slice(0,69) + "…" : label)));
-        live.appendChild(what);
-      }
-      live.appendChild(el("span", {class:"muted", text: " · since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
-    } else {
-      live.appendChild(el("span", {}, [ el("span",{class:"dot idle"}), "idle" ]));
-      if (st.last_cycle) live.appendChild(el("span", {class:"muted", text: " · last cycle " + fmtAgo(st.last_cycle.ended_at) }));
-    }
+    if (fleetVisible()) fleetHeader(live); else localHeader(live, st);
+    var strip = document.getElementById("fleetstrip");
+    if (strip && strip.parentNode) strip.parentNode.replaceChild(fleetStrip(), strip);
     var fresh = document.getElementById("freshness");
     var gen = parseTs(D.generated_at);
     var ageMin = gen ? (Date.now() - gen.getTime())/60000 : 999;

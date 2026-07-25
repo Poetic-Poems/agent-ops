@@ -92,6 +92,19 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   many nodes report. An id that exists on disk always renders from the owning
   node's directory (the D-before-E source ranking in the Publisher); an id
   known only from events renders from its events alone.
+
+  Its **`log.jsonl` is also what says whether that peer is working, and on
+  what** — `fleet.nodes[].live`. A peer publishes no lock (state-sync excludes
+  it: a copied lock is a lock no process holds), so the answer is derived from
+  the peer's own most recent cycle in the union stream, which requirement 33's
+  `node` stamp makes separable: running until that cycle logs `cycle-end`, the
+  live stage being the last `stage-start` with no matching `stage-end`, and the
+  work whatever its `selection` event named. That derivation cannot see a node
+  killed mid-cycle — a `cycle-start` with no end looks the same as one still in
+  flight — so the page bounds the claim rather than the Publisher overstating
+  it: a stale heartbeat renders as "state unknown", and a cycle running past
+  `lock_stale_after` (the pipeline's own bound, past which it would take such a
+  lock over) is flagged as possibly dead.
 - **`fleet-cache/{disabled,limit}.json`** — the fleet flags' cached copies
   (requirement 2.3a), maintained by `lib/toggle.sh` and refreshed by this
   Publisher's own GitHub tick. Read as plain files, so a `--no-github` tick and
@@ -138,6 +151,15 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   (`repo`/`item`/`source`/`title`). It is `null` when idle, and its fields fill
   in as the cycle progresses — `repo`/`item`/`title` appear only once selection
   has happened, since the Co-Ordinator stage runs before it has chosen anything.
+
+  This is also **our own** `fleet.nodes[].live`, rather than the log derivation
+  the peers get: a live pid is not an inference, and the derivation is wrong in
+  one real case anyway — a tick that starts, finds the lock held and ends is the
+  newest `cycle-start` on this node while the cycle actually holding the lock is
+  still running. With no live lock our row falls back to the peers' derivation
+  and is marked not running; a `cycle-start` with no `cycle-end` behind a dead
+  lock is a cycle that was killed, and the page says so rather than rounding it
+  to "idle".
 - **`cron.log`** — tail shown, for "cron fired but nothing happened".
 - **GitHub, via `gh`** (best-effort; the machine is authenticated and the
   repos are public): open PRs carrying `pr_label` with `statusCheckRollup`,
@@ -189,8 +211,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
 { generated_at, max_open_agent_prs,
   node,                                // which node's Publisher wrote this page
   config:  { models, timeouts, pr_label, branch_prefix, repos, … },
-  status:  { running, lock:{pid,started_at,alive},
-             current:{stage,repo,item,source,title}, last_cycle, limit:{active,note} },
+  status:  { running, lock:{pid,started_at,alive},          // THIS node's lock
+             current:{stage,repo,item,source,title},
+             last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest
+             limit:{active,note}, switch:{…} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd, by_day[], by_model[] },
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
@@ -207,7 +231,11 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   github:  { ok, error, fetched_at, stale, prs[], claims[],
              inputs:{<slug>:{issues,failed_runs,tech_debt}} },
   fleet:   { nodes:  [ { node, role, heartbeat_ts, heartbeat_age_s,
-                         last_cycle, self, stale } ],   // self first
+                         last_cycle, self, stale,       // self first
+                         live: { cycle, since, running, ended_at,
+                                 stage, repo, item, source, title } } ],
+                                            // what THAT node is doing; null
+                                            //   until it has run a cycle
              flags:  { disabled, limit },               // cached fleet flags (2.3a)
              claims: [ { repo, key, kind, node, cycle, item, source, ts, sha } ] },
   log_tail:  [ … ],                    // recent events, newest first, fleet-wide
@@ -254,20 +282,30 @@ amber and a banner names the fetch time. That banner is distinct from the
 `ok === false` one: this is a fetch that stopped happening, that one is a
 fetch that ran and failed.
 
-Panels: status header (running/idle, "· <node>" naming the page's own node,
-and while a cycle runs the stage, repo,
-work source and item it is working on) + disabled / fleet-switch / usage-limit
+Panels: status header ("· <node>" naming the page's own node, then the live
+state — on a single-node page that node's own running/idle plus the stage,
+repo, work source and item it is working on; on a fleet page a **summary**:
+how many of how many nodes are running, who and in which repo while that is
+still a glance (three or fewer), and badges counting any nodes that look dead
+or whose state has gone stale) + disabled / fleet-switch / usage-limit
 / fleet-limit / failing-checks / gh-down / stale-peer banners (the switch
 first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
-**the fleet strip** — one card per node (name, role, heartbeat freshness, last
-cycle; stale peers bordered red; click a card to filter the cycle list to that
-node, click again to clear — the filter survives refreshes like every other
-UI state); **live claims** — the registry rows, i.e. work no other node will
-pick up. Both, plus the cycles table's Node column, appear only once the fleet
-has more than one node (or a claim exists): a single-node page renders exactly
-as it always did.
+**the fleet strip** — one card per node carrying that node's own live state
+(name, role, running/idle, the stage, repo, work source and item in flight and
+since when — or, when idle, when its last cycle ended and how it went — and how
+fresh that answer is: read live for our own row, "as of its last push" for a
+peer); stale peers bordered red and reported as state unknown; click a card to
+filter the cycle list to that node, click again to clear — the filter survives
+refreshes like every other UI state; **live claims** — the registry rows, i.e.
+work no other node will pick up. Both, plus the cycles table's Node column,
+appear only once the fleet has more than one node (or a claim exists): a
+single-node page renders exactly as it always did.
+
+The strip is rebuilt on every refresh tick alongside the header, not only when
+the body re-renders, because its cards carry running clocks ("since 18m ago")
+and the body deliberately sits still while the data is unchanged.
 Then metric cards (spend today/total — fleet-wide, one shared account —
 failures, reached-ready, back-pressure gauge
 vs `max_open_agent_prs`); open PRs; recent cycles (outcome and work source at
@@ -366,7 +404,13 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   fetches from GitHub exactly once, a window following a fresh fetch not at
   all, and an aged stamp is refetched on the next tick; the batched cost scan
   matches the per-file semantics (day cut-off, torn-file tolerance) and the
-  whole publish stays within its process budget on a long history.
+  whole publish stays within its process budget on a long history; and every
+  node in a synthetic fleet answers for **itself** — a peer mid-cycle reports
+  its own running stage, repo, source and item from its published log, a peer
+  whose cycle ended reports idle and when, a node that has never run reports
+  `live: null`, and our own row comes from the lock rather than the newest
+  `cycle-start` (a tick that started, found the lock held and ended must not
+  masquerade as what this node is doing).
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -381,7 +425,9 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   JSON (`data.js` minus the wrapper passes `jq empty`), and `grep` finds no
   `/home/…` path or token in the output.
 - Open the page and confirm the panels populate: a failed cycle appears under
-  Failures, and its transcript + stderr open inline.
+  Failures, and its transcript + stderr open inline. On a fleet, each node's
+  card names what that node is doing and the header counts how many are working;
+  on a single node the header carries the detail itself and there is no strip.
 - The page has zero console/page errors (it renders headlessly under a browser
   with no thrown errors).
 
@@ -547,6 +593,31 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   — which doubles as a coarse progress read: a header stuck on `coordinator`
   with no item is a cycle still choosing; one naming an item under `implementor`
   is a cycle at work.
+- **With a fleet, "what is it doing" has one answer per node, so it is asked per
+  node.** The readout above was designed when a node and the pipeline were the
+  same thing, and it sat in the header because there was one of it. Once several
+  containers run at once, a single header readout has to pick one node's work to
+  stand for every node's — and whichever it picks, the reading a glance takes
+  from it ("the pipeline is on TD26071401") is false. So the live state moved
+  down to the fleet strip, one full readout per card, beside the identity and
+  freshness that say whose it is; the header keeps the shape of the question it
+  can still answer for the whole fleet — *how much of it is working* — and drops
+  the part it cannot. A single-node page is unchanged, header detail included:
+  with one node there is nothing to summarise, and the fleet strip does not
+  render at all.
+
+  Three things follow from a peer's state being *derived from its published log*
+  rather than observed. Its card is dated ("as of its last push, 2m ago") rather
+  than presented as now. A peer whose heartbeat has gone stale reports **state
+  unknown** instead of last half-hour's news dressed as current — the one
+  reading that would be actively misleading. And a cycle still "running" past
+  `lock_stale_after` is flagged as possibly dead, because a node killed
+  mid-cycle leaves precisely the trace of one still working: a `cycle-start`
+  with no end, for ever. Our own row is exempt from all three — the lock is a
+  live pid, not an inference — but it gets the mirror-image case: a dead lock
+  over an unfinished cycle is reported as **no clean end**, which is what a
+  stopped container leaves behind (TD26072301) and which "idle" would quietly
+  absorb.
 - **The page refreshes its data in place, not by reloading.** The heartbeat
   once published every 5 minutes and the page reloaded itself every 60s with
   `location.reload()`. When the heartbeat moved to ~5s
