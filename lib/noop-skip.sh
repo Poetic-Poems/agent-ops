@@ -47,6 +47,9 @@
 #   blocked / void skip-lists                            | repo|item projections
 #   which repos, which sources, which models             | selection_config
 #   the selection rules themselves                       | coordinator_prompt_sha
+#   the Enabler's eligible set (requirement 35b)         | repo|item|reason projection
+#   the Enabler's model and thresholds                   | enabler_config
+#   the Enabler's own rules                              | enabler_prompt_sha
 #
 # `review_feedback` is hashed verbatim, like `findings`, and that gets the rule
 # right for free in both directions: its entries only exist while it is the
@@ -81,6 +84,24 @@
 # and this array carries the result, so the flip to CONFLICTING *adds an entry*
 # and busts the fingerprint. Same failure shape as abandoned-drafts; same fix.
 #
+# `enabler_eligible` is hashed for the same class of reason again (requirement
+# 35b). An item becomes eligible for the Enabler when the fleet has run its
+# third Co-Ordinator since the block — which moves no commit, issue, alert or
+# PR — so without this line a quiet fleet would skip straight through the cycle
+# the escalation became due and go on skipping until the forced recheck. The
+# projection keeps the `reason` alongside `repo|item`, which is what carries the
+# transition that matters most: an escalation issue the human closes takes the
+# entry from ineligible to `issue-closed`, and closing the issue is the entire
+# protocol that issue asked of them. After an engagement the examined markers
+# empty the set again and skipping resumes — the same shape as a stalled draft
+# being finished.
+#
+# `enabler_config` and `enabler_prompt_sha` are the Enabler's half of the two
+# lines below, with one deliberate difference in what they buy: editing
+# prompts/enabler.md busts the fingerprint, so a quiet fleet notices the edit,
+# but it does not re-open items already examined — those are gated by
+# `enabler_recheck_hours`, which is the lever for "read this one again".
+#
 # The last two are easy to forget and cost the most when forgotten: without
 # them, editing prompts/coordinator.md or adding a source to config.json would
 # have no effect until something unrelated happened to change in a repo. You
@@ -110,9 +131,15 @@
 # as long as the outage lasted (see scripts/gather-source-state.sh).
 #
 # Arrays are sorted, and blocked/void are projected down to their repo+item
-# keys, so that the fingerprint tracks meaning rather than incidental order or
-# the timestamps and prose that ride along on a log event. `jq -S` then sorts
-# every object key, making the serialisation canonical.
+# keys — the Enabler's eligible set to repo+item+reason, since there the reason
+# is the change — so that the fingerprint tracks meaning rather than incidental
+# order or the timestamps and prose that ride along on a log event. `jq -S` then
+# sorts every object key, making the serialisation canonical.
+#
+# The three `enabler_*` keys all default to empty, so an input that predates
+# them canonicalises exactly as one that carries them empty: replaying an older
+# cycle's input yields its original fingerprint, and a node whose config sets no
+# Enabler keys agrees with itself.
 # shellcheck disable=SC2016  # jq's syntax, not the shell's.
 NOOP_CANON_JQ='
   if ([.repos[]?.state.ok] | all) | not then empty
@@ -132,8 +159,13 @@ NOOP_CANON_JQ='
       }] | sort_by(.slug)),
       blocked: ([.blocked[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
       void: ([.void[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
+      enabler_eligible: ([.enabler_eligible[]?
+                          | ((.repo // "") + "|" + (.item // "") + "|" + (.reason // ""))]
+                         | sort | unique),
       selection_config: (.selection_config // {}),
-      coordinator_prompt_sha: (.coordinator_prompt_sha // "")
+      coordinator_prompt_sha: (.coordinator_prompt_sha // ""),
+      enabler_config: (.enabler_config // {}),
+      enabler_prompt_sha: (.enabler_prompt_sha // "")
     }
   end
 '

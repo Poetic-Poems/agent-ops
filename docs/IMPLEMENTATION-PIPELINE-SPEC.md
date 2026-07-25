@@ -25,8 +25,11 @@ cron (hourly)
   └─ agent-cycle.sh                 ← the Script: lock, stand-down checks, repo ordering
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
        ├─ Implementor (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
-       └─ Reviewer (Sonnet)         ← corrects the branch, flips the PR to ready
-             └─ Human               ← reviews and merges (the only gate)
+       ├─ Reviewer (Sonnet)         ← corrects the branch, flips the PR to ready
+       │     └─ Human               ← reviews and merges (the only gate)
+       └─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
+                                      cycle: unblocks, voids, or raises an issue
+                                      assigned to the Human saying what to do
 ```
 
 ## Entities
@@ -43,6 +46,12 @@ cron (hourly)
 6. The **Human Reviewer** — gives final approval and performs the merge on
    every pull request, through the ordinary GitHub process. Not launched by
    any part of this system.
+7. The **Enabler** — a headless Claude Code invocation, engaged rarely and at
+   the end of a cycle, that re-examines items recorded as blocked which the
+   pipeline has not cleared by itself. It unblocks, voids, or leaves them
+   blocked with a fresher condition; where only a human can move an item, it
+   composes a GitHub issue that the Script files, assigned to that human. It
+   writes no code and raises no pull request.
 
 ## Environment (verified 2026-07-20)
 
@@ -293,6 +302,11 @@ values below are the confirmed defaults; the README must document each key.
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
 | `reviewer_model` | `claude-sonnet-5` | |
+| `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
+| `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
+| `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). This is the bound on how long evidence that arrives *after* a block — the failure mode of `TECH-DEBT.md` TD26072101 — can sit unread, and the only lever that re-opens an examined item. `0` disables re-examination. |
+| `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
+| `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `3` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
@@ -302,7 +316,7 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
-| `lock_stale_after` | 3 h | Greater than the sum of the stage timeouts plus slack. |
+| `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 90 + 30 + 30 minutes once the Enabler can run inside the lock (requirement 35). |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
@@ -714,7 +728,9 @@ runs unattended.
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
      issue or alert; the `blocked`/`void` extracts projected to `repo|item`, so
-     a human's hand-appended `unblocked` takes effect; and — the two everyone
+     a human's hand-appended `unblocked` takes effect; the Enabler's eligible
+     set projected to `repo|item|reason` together with its config and prompt
+     hash (requirement 35b); and — the two everyone
      forgets — the selection config and a hash of `prompts/coordinator.md`.
      Without those last two, editing the selection rules does nothing until an
      unrelated commit lands, and you spend the afternoon debugging an edit that
@@ -857,9 +873,10 @@ runs unattended.
     `resume_at` as an upper bound to stand down *until*, not a promise the
     block lasts that long — a cycle that succeeds before then simply clears
     the stand-down on its own.
-11. **Cleanup.** Always: delete the cycle's workspace, write a `cycle-end`
-    event, release the lock. Tee each stage's stdout/stderr to
-    `state_dir/cycles/<cycle-id>/` for debugging.
+11. **Cleanup.** Always: delete the cycle's workspace, engage the Enabler if
+    this cycle should (requirement 35), write a `cycle-end` event, release the
+    lock. Tee each stage's stdout/stderr to `state_dir/cycles/<cycle-id>/` for
+    debugging.
 12. **Flags.** `--dry-run` (run through step 5 then stop: prints the work
     order, launches no Implementor), `--once` (one verbose cycle in the
     foreground), `--repo <slug>` (restrict selection, for testing), plus the
@@ -1226,9 +1243,19 @@ runs unattended.
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
-    `item-void`, `unvoided`, `limit-hit`, `disabled`, `enabled`, `warning`,
-    `cycle-end`. A `claim-lost` names the repo, item and branch a peer node
-    won (requirement 17a); `selection` carries the claimed `branch`.
+    `item-void`, `unvoided`, `enabler-examined`, `escalated`, `limit-hit`,
+    `disabled`, `enabled`, `warning`, `cycle-end`. A `claim-lost` names the repo,
+    item and branch a peer node won (requirement 17a); `selection` carries the
+    claimed `branch`. A `stage-start`/`stage-end` pair's `stage` is
+    `coordinator`, `implementor`, `reviewer` or `enabler`; the last is the one
+    that may appear on a cycle which selected nothing, since it runs from the
+    cleanup of requirement 11. An `enabler-examined` carries `repo`, `item`, the
+    `blocked_ts` it was examined against, an `outcome`, and the Enabler's own
+    `detail`; an `escalated` carries `repo`, `item`, `issue_number`, `issue_url`
+    and `blocked_ts` (requirements 35a, 36a). An `unblocked` written by the
+    Enabler also carries `repo`, `by: "enabler"` and a `reason`, which is what
+    distinguishes it from the Co-Ordinator's cheap re-check of requirement 18 —
+    the bare-id form remains valid and remains what a human appends by hand.
     Common fields: ISO-8601 `ts`, `cycle` id, `node`, `event`, and where
     applicable `repo`, `item`, `pr_url`, `model`, `detail`. The cycle id is
     `<UTC-timestamp>-<node>-<pid>` — the node's `NODE_NAME` (hostname when
@@ -1296,6 +1323,218 @@ runs unattended.
       safe where clearing is not — a wrong void costs a human one line in a
       log, a wrong unvoid costs a cycle every hour until someone notices.
 
+### The Enabler
+
+35. **Engagement.** At the end of a cycle — from the cleanup of requirement 11,
+    after the workspace is deleted and before the `cycle-end` event, with the
+    lock still held — the Script engages the Enabler over the eligible items of
+    requirement 35a: a headless invocation (model `enabler_model`,
+    `--dangerously-skip-permissions`, timeout `timeout_enabler`) logging
+    `stage-start`/`stage-end` with `stage: "enabler"` like any other stage, and
+    parsed from its final message like any other stage.
+
+    **One call site.** Nine paths end a cycle; the cleanup is the one place all
+    of them pass through, and calls at each exit point would be nine chances to
+    forget one — including the exits that matter most here, where the cycle
+    stood down without selecting anything. Inside the lock, so requirement 33's
+    single-writer guarantee still holds while these events are written; before
+    `cycle-end`, so they belong to the cycle that produced them and travel on
+    the same end-of-cycle `state-sync push` (requirement 2.5).
+
+    It engages only when **all** of the following hold, and any one of them
+    failing is an ordinary, silent non-engagement:
+    - this cycle acquired the lock;
+    - the gatherers completed, so the eligible set was computed from inputs that
+      exist. Every earlier exit — the role guard, either switch, the usage-limit
+      cooldown, a lock held by a live cycle — therefore cannot engage it;
+    - the cycle is not `--dry-run`. `--once` **does** engage: a supervised
+      engagement is the only way to watch one, and it contends with the fleet on
+      equal terms exactly as `--once` does for claims (requirement 17a);
+    - the cycle's own exit code is 0. A cycle that ended badly is not the moment
+      to spend the most expensive model in the system;
+    - no usage limit was detected during this cycle (requirement 10), *and* a
+      live read of `fleet/limit.json` (requirement 2.1) does not stand the fleet
+      down right now — a limit a peer hit while this cycle was working is
+      precisely the news that should stop this stage starting;
+    - `enabler_model` is set and `prompts/enabler.md` exists;
+    - at least one eligible item was claimed (requirement 35c).
+
+    Every claimed item goes to **one** invocation. The reading is per item but
+    the session overhead is not, and the set is small by construction.
+35a. **Eligibility.** An item is eligible for the Enabler iff **all** of:
+    1. it is **blocked** (requirement 34) — call that latest `attempt-failed`
+       event *B*;
+    2. it is **not void** (requirement 34c). An item with no work needs no
+       unblocking, and an item recorded both ways must not be re-examined at
+       this stage's prices;
+    3. **no escalation issue for it is still open** — the `issue_number` of the
+       latest `escalated` event for that repo+item is not among the repo's open
+       issues in the source-state digest (requirement 3b). A repo missing from
+       that digest could not be sampled, so whether its escalation is open is
+       unknown, and unknown resolves to **ineligible**: a delayed engagement is
+       cheap, a duplicate issue in the human's inbox is not;
+    4. one of exactly three **reasons** applies, and that reason is recorded on
+       the entry and passed to the model, because it decides where the model
+       should look first:
+       - **`threshold`** — no examination newer than *B*, and at least
+         `enabler_after_coordinator_cycles` distinct cycles have logged a
+         `stage-end` with `stage: "coordinator"` and `exit_code: 0` since *B*.
+         That event is the definition of "a cycle that ran a Co-Ordinator", and
+         pinning it there is what makes the threshold mean "the pipeline has had
+         several honest chances to clear this itself": every stand-down —
+         switch, cooldown, no-op short-circuit, back-pressure — logs no
+         coordinator `stage-end` and so ages nothing.
+       - **`issue-closed`** — an escalation raised after *B* is no longer open,
+         and no examination has followed it. This bypasses the threshold
+         deliberately: the human acted, and requirement 36a promised them that
+         closing the issue is what restarts the work.
+       - **`recheck`** — the newest examination of the item is older than
+         `enabler_recheck_hours` (`0` disables). This is the only bound on how
+         long evidence arriving *after* a block can sit unread, which is the
+         failure `TECH-DEBT.md` TD26072101 records.
+    A re-block re-enters through `threshold`, because every clause above is
+    measured from *B*: a fresh `attempt-failed` moves *B* forward, leaving the
+    old examination behind it and restarting the count.
+
+    An `enabler-examined` whose outcome is `escalation-failed` is **not** an
+    examination for any of the above. That engagement reached a verdict it could
+    not act on, so the item is exactly where it was, and counting the marker
+    would retire the item on the strength of a failed `gh issue create`.
+
+    Like requirements 34 and 34c, this rule has exactly **one** implementation
+    (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, which
+    shares the blocked and void extracts rather than re-deriving either, always
+    succeeds, and yields `[]` for a log it cannot read or a threshold it cannot
+    parse — an unreadable setting is not a licence to spend.
+35b. **The eligible set is part of the no-op fingerprint** (requirement 3b),
+    projected to `repo|item|reason`, alongside the Enabler's config and a hash
+    of `prompts/enabler.md`. It is the third array whose candidacy turns on
+    something no repo signal carries: an item becomes eligible once enough
+    Co-Ordinator cycles have run since the block, which moves no commit,
+    issue, alert or PR — so without it the escalation path would come due during
+    a quiet week and wait for the forced recheck to be noticed. The `reason`
+    rides in the projection because the transition that matters most keeps the
+    same item in the set: a human closing the escalation issue turns the entry
+    into a verification. A threshold crossing therefore wakes a quiet fleet, and
+    that cycle runs the Co-Ordinator normally — which may clear the item far
+    more cheaply — before the Enabler runs at all; the examined markers then
+    empty the set and skipping resumes.
+
+    One consequence is deliberate, not an oversight: because the eligible set
+    turns on the *log*, editing `prompts/enabler.md` busts the fingerprint but
+    does not re-open items already examined. `enabler_recheck_hours` is the
+    lever for "look at this one again"; a prompt edit is not.
+35c. **One engagement per item, fleet-wide.** Before engaging, the Script takes
+    a per-item file claim through `lib/claim.sh` under the pseudo-slug
+    `enabler`, keyed `<repo>__<item>__<epoch of B>` (plus `__verify<issue>` for
+    an `issue-closed` verification, which needs a key the earlier examination's
+    claim does not already hold). The key is derived, never chosen by a model,
+    so every node computes the same one and GitHub arbitrates; items whose claim
+    is lost are simply left to the node that won.
+
+    These claims are **never released**. The claim is a tombstone: it is what
+    stops the same item being re-examined next cycle when the engagement
+    produced no examined marker at all — a timeout, a garbage final message, an
+    omitted item — and `lib/claim.sh gc` sweeping it at `claim_ttl_hours` is the
+    only thing that permits a retry, which bounds a failed engagement's cost at
+    one attempt per TTL. Two existing properties of `lib/claim.sh` make the
+    pseudo-slug safe and are relied on here: `count` reads only the repo slugs
+    `config.json` configures, so an Enabler claim can never inflate
+    back-pressure (requirement 2.2) with work that raises no PR; and `gc` sweeps
+    any directory it finds.
+36. **The Enabler's powers.** It may read anything through `gh` — issues, PRs,
+    reviews, checks, runs, alerts, file contents — and reads an issue or PR as
+    its **whole thread** (requirement 14a's rule, for the same reason and with
+    more at stake: the material that decides these items is routinely a comment
+    posted after the pipeline gave up). It may leave one concise decision or
+    evidence comment on the item's issue or PR.
+
+    It must **not**: write code, push, or create or delete a branch; create,
+    close, reopen, label, assign or edit any issue or pull request — it composes
+    the escalation issue and **the Script files it**, because the Script is the
+    only writer of this system's records and an issue it did not create is one
+    no later cycle can match against its own log; merge, approve, dismiss a
+    review, or mark anything ready; touch a void item; or report `unblocked`
+    because the work turned out to be already done — that is a `void`, and
+    requirement 9b is the whole reason the two are different states.
+
+    It runs under the one-shot constraint of requirement 21: no resumption, no
+    background notification, slow commands waited out in the foreground.
+
+    Its runtime input is the claimed eligible entries (each carrying `repo`,
+    `item`, `reason`, `blocked_ts`, the blocking stage's own `stage`, `detail`
+    and `unblock_condition`, and the last `escalation` if there is one), plus
+    `escalation_label`, `assignee`, and this cycle's `cycle` id and `node` — the
+    last two because requirement 36a's issue footer carries them, and a model
+    cannot know its own cycle.
+
+    Its entire final message is one JSON object:
+    ```json
+    {
+      "examined": [
+        {"repo": "…", "item": "…",
+         "verdict": "unblocked" | "still-blocked" | "escalate" | "void",
+         "reason": "…", "evidence": "…", "comments_posted": ["…"],
+         "unblock_condition": "still-blocked only",
+         "issue": {"title": "…", "body": "…"}}
+      ],
+      "notes": "…"
+    }
+    ```
+    with one entry per item it was given.
+36a. **What the Script does with a verdict.** Per examined item, and only for
+    items *this cycle claimed* — a verdict naming anything else is logged as a
+    `warning` and ignored, since the model cannot introduce work and an item a
+    peer holds is the peer's to answer:
+
+    | Verdict | The Script does |
+    |---|---|
+    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle |
+    | `void` | logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence |
+    | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
+    | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
+    | any | logs `enabler-examined` with `repo`, `item`, `blocked_ts`, `outcome` and `detail` |
+
+    The examined event is written for every verdict, including the ones that
+    changed nothing: it is what stops the item being re-examined next cycle and
+    what `enabler_recheck_hours` is measured from.
+
+    **The issue contract.** Before filing, a duplicate guard: an open issue
+    carrying `enabler_escalation_label` whose body already quotes the item's
+    reference *is* the escalation and is reused. Otherwise `gh issue create` in
+    the item's own repo with that label **and** `--assignee` the human, retried
+    once without the label so a repo where the label has not been created still
+    gets its issue. The assignment is the load-bearing half: requirement 16.4
+    excludes assigned issues from the `issues` source, so the pipeline can never
+    select its own request for help as work. The label is for the human's filter
+    and the guard above, and must not be `blocked` — that is a separate
+    exclusion criterion and would blur two different meanings into one.
+
+    **Closure is the whole protocol**, and the issue body says so: the human
+    does the thing and closes the issue. Nothing else is required of them — no
+    reply, no log edit, no re-run. The closure leaves the repo's open-issue
+    digest, which busts the fingerprint (35b) and makes the item eligible again
+    with reason `issue-closed`, and the next engagement verifies against reality
+    rather than against the closure. That loop is the reason the ask must be
+    executable without further investigation: an escalation a reader has to
+    interpret has failed even where its verdict was right.
+37. **Failure containment.** The Enabler must never change a cycle's outcome.
+    A timeout, a non-zero exit, or an unparseable final message produces the
+    stage's `stage-end`, a `warning`, and **no state events at all**: no
+    verdict was reached, so nothing is recorded about any item, the claims of
+    35c stand, and gc is what allows the retry. The cycle's exit code is the one
+    it had before the engagement, and every step of the engagement — each `gh`
+    call, each parse — tolerates its own failure, because this code runs inside
+    the exit trap where an unguarded non-zero status would cost the cycle its
+    `cycle-end` event, its lock release and its state-sync push.
+
+    A usage-limit phrase in the transcript still goes down requirement 10's
+    ordinary path (`limit-hit`, `fleet/limit.json`), because a limit belongs to
+    the whole fleet and not to this stage. A claimed item the model never
+    mentions, and a verdict the Script does not recognise, are `warning`s: the
+    item stays blocked and the log is the only place a stage that routinely
+    omits items would ever become visible.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -1303,7 +1542,10 @@ What exists, and the requirements each part answers to:
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
    pre-fetch, requirement 3a; the switches, requirements 2.3 and 2.3a; the
-   role guard, requirement 2.4; and the no-op short-circuit, requirement 3b).
+   role guard, requirement 2.4; and the no-op short-circuit, requirement 3b)
+   and the Enabler's engagement, requirements 35–37: `maybe_run_enabler` (the
+   single call site in the cleanup, every guard, and the per-verdict actions),
+   `enabler_claim_key` and `create_escalation_issue`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is
@@ -1348,7 +1590,8 @@ What exists, and the requirements each part answers to:
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh` and `lib/role.sh`) holding every rule
    that more than one component computes — at minimum requirement 34's blocked
-   semantics, requirement 33's `attempt-failed` field shape, the usage-limit
+   semantics, requirement 35a's eligibility rule (the Script engages on it, the
+   dashboard reports what came of it), requirement 33's `attempt-failed` field shape, the usage-limit
    phrase pattern of requirement 10, the switch of requirement 2.3 and the
    fleet flags of requirements 2.3a and 2.1 (`lib/toggle.sh`'s `fleet_*`
    functions; `TOGGLE_GH` substitutes a stub for tests, following
@@ -1360,9 +1603,11 @@ What exists, and the requirements each part answers to:
    what it has already tried; a second copy of one is a bug with a delay
    fuse, and both copies read correctly right up until they disagree.
 4. `prompts/coordinator.md`, `prompts/implementor.md`, `prompts/reviewer.md`
-   implementing requirements 14–20, 21–27, and 28–32 respectively. Each
-   prompt must embed the relevant shared-repo conventions from this document
-   so a stage never depends on context it wasn't given.
+   and `prompts/enabler.md` implementing requirements 14–20, 21–27, 28–32 and
+   36 respectively. Each prompt must embed the relevant shared-repo conventions
+   from this document so a stage never depends on context it wasn't given. The
+   Enabler's additionally carries the escalation issue's template, since the
+   quality of that issue is the whole of requirement 36a's ask of a human.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall. It presents the container as the
@@ -1570,17 +1815,58 @@ pull request, run the ones the change touches and any it could regress.
    log fills with confident, correct-looking events and the same item is
    worked forever. Assert the negative too: `unvoided` *does* clear it, or you
    have built a state no human can escape.
-8b. **The two states are visible apart.** A human looking at the monitor can
-   tell "waiting on something" from "there is nothing to do here" without
-   reading the log. If both render as one list, the operator cannot tell an
-   item needing their help from one needing nothing, which is how a stuck
-   pipeline and a healthy one come to look identical.
+8b. **The two states are visible apart, and so is "waiting on you".** A human
+   looking at the monitor can tell "waiting on something" from "there is nothing
+   to do here" without reading the log. If both render as one list, the operator
+   cannot tell an item needing their help from one needing nothing, which is how
+   a stuck pipeline and a healthy one come to look identical. Within the blocked
+   list, an item with an open escalation (requirement 36a) is distinguishable
+   from one the pipeline is still working on itself — the dashboard's blocked
+   table carries the issue link, or the Enabler's last verdict where there is no
+   open issue (`docs/DASHBOARD-SPEC.md`). Otherwise the one row on the page that
+   is addressed *to the reader* looks exactly like the rows that are not.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
     picks: it produces a labelled, mergeable, ready-for-review PR with the
     originating register updated and a complete log trail. Report the PR URL
     to the human rather than merging anything.
+11. **The eligibility rule round-trips through the real extract
+    (requirement 35a).** `test/enabler-eligibility.test.sh` passes: an
+    `attempt-failed` plus `enabler_after_coordinator_cycles` synthetic
+    coordinator `stage-end`s (`exit_code: 0`) makes the item eligible with reason
+    `threshold`, one fewer does not, and a `stage-end` that timed out or belongs
+    to another stage does not count at all — that last assertion is the one that
+    catches a rule keyed on an event nobody emits, which would engage nothing,
+    forever, while reading correctly. An examined item is not re-examined; an
+    `item-void` for the same item excludes it; a re-block re-enters via
+    `threshold`; and every boundary is asserted on both sides of itself, because
+    too permissive spends Opus in a loop and too strict never escalates at all,
+    and both look like a quiet pipeline.
+11a. **The fingerprint wakes a quiet fleet at the threshold, and lets it go
+    quiet again (requirement 35b).** In `test/noop-skip.test.sh`, per the same
+    discipline as the abandoned-drafts trap: an item entering the eligible set
+    changes the fingerprint, its `reason` flipping to `issue-closed` changes it,
+    the set emptying after an engagement changes it, and an input recorded before
+    the Enabler's keys existed canonicalises exactly as one carrying them empty.
+    Without the first three, the escalation path comes due on a quiet week and
+    nothing runs until the forced recheck; without the fourth, adding the feature
+    would appear to change every replayed cycle.
+11b. **An open escalation is invisible to the Co-Ordinator and to the Enabler.**
+    Assign an issue and confirm requirement 16.4 excludes it from candidacy, and
+    that the same issue's number in the repo's open-issue digest makes its item
+    Enabler-ineligible. Then the half that closes the loop: with the issue gone
+    from the digest, the item is eligible with reason `issue-closed`, and after
+    the verification's examined event it is not eligible again. This is the check
+    that the protocol the issue promises its reader — close it and the work
+    resumes — is the protocol the code implements.
+11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
+    stage that times out, exits non-zero, or returns prose instead of JSON: the
+    cycle still exits 0, logs `stage-end` and one `warning`, writes **no**
+    `unblocked`, `item-void`, `escalated` or `enabler-examined` event, and leaves
+    its claims for gc. Assert the ordering too — the engagement's events precede
+    `cycle-end` — and that a limit phrase in that transcript produces an ordinary
+    `limit-hit` rather than being swallowed with the rest of the failure.
 
 ## Host provisioning (human steps)
 
@@ -1605,6 +1891,12 @@ standing the system up on a new machine.
 3. Create the label in both repos:
    `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='autonomous-agent' -f color='ededed' -f description='PR raised by the autonomous agent system'`.
    If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
+3c. Create the Enabler's escalation label in both repos, the same way:
+   `gh api -X POST repos/Poetic-Poems/<repo>/labels -f name='enabler-escalation' -f color='b60205' -f description='The autonomous pipeline is blocked and needs a human to act'`
+   (`enabler_escalation_label`, requirement 36a). Without it an escalation is
+   still raised — the create is retried unlabelled — but it arrives with only
+   the assignment to distinguish it, so the human's filter and the duplicate
+   guard both lose their handle.
 3a. Enable the security work sources on both repos so the alerts the
    `security`/`code-quality` sources read actually exist: turn on the
    Dependabot alerts and code-scanning (CodeQL) features (Settings → Code
@@ -1636,6 +1928,21 @@ short-circuit replaces those with a handful of `gh` calls and a hash, leaving
 one forced pass a day (`none_selected_recheck_hours`) as the safety valve —
 roughly a 96% cut in the idle floor, and no change at all to a busy day, where
 every cycle has something to fingerprint that moved.
+
+The Enabler is the one stage that spends a top-tier model, so what bounds it is
+worth stating as a number rather than a hope. Nothing is engaged until an item
+has survived `enabler_after_coordinator_cycles` selection passes; a claim that is
+never released (requirement 35c) means at most one engagement per item per
+`claim_ttl_hours` even when everything fails; and an examined item is not looked
+at again for `enabler_recheck_hours`. So the ceiling for an item that is
+permanently stuck is **one Opus pass every 72 hours**, and every item eligible at
+the same moment shares a single pass. In the steady state the cost is therefore
+near zero — a fleet with nothing blocked engages nothing at all — and it rises
+only when the pipeline is genuinely stuck, which is the one situation in which
+paying for a careful answer is obviously worth it. The comparison that matters is
+not against an idle cycle but against the alternative: an item needing a human
+sat blocked indefinitely, and every cycle in between spent a Co-Ordinator pass
+re-reading and re-skipping it.
 
 ## Design decisions
 
@@ -1793,6 +2100,46 @@ requirements above, which state only what is.
   match", which costs one Co-Ordinator run. The rule can only be wrong by being
   *incomplete*, which is why requirement 3b's map of source-to-signal is
   normative and `none_selected_recheck_hours` caps the damage at a day.
+
+- **The Enabler runs from the exit trap, not from nine call sites.** A model
+  stage inside a cleanup handler is unusual enough to look like a mistake, so:
+  the cycle has nine endings, and the escalation path matters most on the ones
+  that selected nothing — a stand-down on back-pressure, a no-op skip, a lost
+  claim. Calling it at each of those is nine places to keep in step and one to
+  forget, and the one forgotten would be silent. The trap is the single place
+  every ending already passes through; it still holds the lock, which is what
+  keeps requirement 33's single-writer guarantee true for the events the
+  engagement writes; and it already runs multi-minute work (the state-sync push,
+  the dashboard publish), so the shape is not new. What the trap does demand is
+  the discipline of requirement 37: an unguarded non-zero status inside it would
+  abandon the rest of the cleanup, so every step tolerates its own failure and
+  the call itself is `|| true`. That is a smaller, more testable obligation than
+  nine call sites that must each stay correct.
+- **The Enabler's claims are tombstones, not locks it releases.** Every other
+  claim in this system is released when the work ends (requirement 17a); these
+  are deliberately never released, and `lib/claim.sh gc` is what retires them.
+  The reason is that the failure this bounds is *not* two nodes racing — that
+  much a released lock would handle — but an engagement that produces no record
+  at all: a timeout, a garbage final message, an item the model silently omitted.
+  Release the claim and the next cycle re-engages the same item immediately, and
+  goes on doing so hourly at Opus prices with nothing to show for it, since the
+  eligible set is unchanged. Keeping the claim converts every such failure into
+  "retried once per `claim_ttl_hours`", which is a bounded cost written in a
+  config file rather than an unbounded one discovered in a bill. The key carries
+  the block's timestamp, so a genuinely re-blocked item is a new key and is not
+  gagged by the tombstone of the old one.
+- **The Script files every issue; the model only writes the words.** The
+  Enabler could perfectly well run `gh issue create` itself, and it must not.
+  Two reasons, both structural. The log is appended by the Script alone
+  (requirement 33), and an escalation is a state change with a matching event —
+  an issue created by the model is one whose number no `escalated` event records,
+  so no later cycle can tell whether the ask is still open, and the closure loop
+  of requirement 36a silently never fires. And the write powers a model needs to
+  file an issue are the same ones it would need to close, label, or assign one;
+  withholding them costs nothing here, because composing the issue is the part
+  that actually needs judgement, and it keeps "no agent decides that this work is
+  accepted" true by construction rather than by instruction. The same split as
+  the rest of the pipeline: models report, the Script records.
 
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.

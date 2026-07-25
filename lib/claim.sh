@@ -47,6 +47,17 @@
 # When `state_repo` is unset in config.json this is a single-node operation:
 # file claims are vacuously won, the registry is skipped, and branch claims
 # still work — the target repository exists regardless.
+#
+# One caller passes a pseudo-slug instead of a repository, and nothing here needs
+# to know: the Enabler claims `file enabler <repo>__<item>__<blocked-epoch>`
+# (implementation spec 35c), so its claims live under `claims/enabler/` where no
+# target repo's can collide with them. Two properties of the code below are what
+# make that safe, and both are worth not breaking. `count` reads only the slugs
+# `config.json` configures, so an Enabler claim can never inflate back-pressure
+# (requirement 2.2) with work that raises no PR. And `gc` sweeps whatever
+# directories it finds, which is the *only* thing that retires those claims:
+# they are deliberately never released, so a tombstone ageing out at
+# `claim_ttl_hours` is what lets a failed engagement be tried again.
 
 set -uo pipefail
 

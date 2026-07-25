@@ -46,7 +46,9 @@ assert_eq() {
 }
 
 # A fingerprint input standing in for one quiet cycle: two repos, every source
-# sampled cleanly, nothing to do.
+# sampled cleanly, nothing to do — and one blocked item that has since aged into
+# the Enabler's eligible set (requirement 35b), so the assertions below can move
+# that set in every direction it moves in production.
 base_input() {
   cat <<'EOF'
 {
@@ -78,8 +80,11 @@ base_input() {
   ],
   "blocked": [{"ts": "2026-07-16T08:00:00Z", "repo": "o/one", "item": "TD26071601", "detail": "waiting on a decision"}],
   "void": [{"ts": "2026-07-15T08:00:00Z", "repo": "o/one", "item": "review-2026-07-11-R-01", "detail": "already done"}],
+  "enabler_eligible": [{"repo": "o/one", "item": "TD26071601", "reason": "threshold", "blocked_ts": "2026-07-16T08:00:00Z"}],
   "selection_config": {"coordinator_model": "claude-haiku-4-5-20251001", "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}},
-  "coordinator_prompt_sha": "deadbeef"
+  "coordinator_prompt_sha": "deadbeef",
+  "enabler_config": {"enabler_model": "claude-opus-5", "after_coordinator_cycles": "3", "recheck_hours": "72", "escalation_label": "enabler-escalation"},
+  "enabler_prompt_sha": "cafebabe"
 }
 EOF
 }
@@ -94,7 +99,8 @@ assert_eq "a clean cycle is fingerprintable" "64" "${#base_fp}"
 
 assert_eq "the same inputs give the same fingerprint" "$base_fp" "$(base_input | noop_fingerprint)"
 assert_eq "key order does not change the fingerprint" "$base_fp" \
-  "$(base_input | jq -c '{coordinator_prompt_sha, selection_config, void, blocked, repos}' | noop_fingerprint)"
+  "$(base_input | jq -c '{enabler_prompt_sha, coordinator_prompt_sha, enabler_config, selection_config,
+                          enabler_eligible, void, blocked, repos}' | noop_fingerprint)"
 assert_eq "repo order does not change the fingerprint" "$base_fp" \
   "$(fp_with '.repos |= reverse')"
 # A blocked item re-recorded with a fresh timestamp and reworded detail is the
@@ -104,6 +110,18 @@ assert_eq "a blocked entry's ts and detail are not part of the fingerprint" "$ba
   "$(fp_with '.blocked[0].ts = "2026-07-17T23:00:00Z" | .blocked[0].detail = "reworded"')"
 assert_eq "default_branch is not double-counted (head_sha already covers it)" "$base_fp" \
   "$(fp_with '.repos[0].default_branch = "trunk"')"
+# The same tolerance for the eligible set: what decides an engagement is which
+# items are eligible and why, not the prose of the block they were minted from.
+assert_eq "an eligible entry's blocked_ts and detail are not part of the fingerprint" "$base_fp" \
+  "$(fp_with '.enabler_eligible[0].blocked_ts = "2026-07-17T23:00:00Z"
+              | .enabler_eligible[0].detail = "reworded"')"
+# Canon stability, so the three Enabler keys can be added to a running fleet
+# without a story: an input recorded before they existed must canonicalise
+# exactly as one that carries them empty, or every replayed cycle would appear
+# to have changed.
+assert_eq "an input predating the Enabler keys matches one carrying them empty" \
+  "$(fp_with 'del(.enabler_eligible, .enabler_config, .enabler_prompt_sha)')" \
+  "$(fp_with '.enabler_eligible = [] | .enabler_config = {} | .enabler_prompt_sha = ""')"
 
 # A green workflow running again on a schedule reaches the same conclusion
 # under a new run id, and changes no candidate. `poetic` schedules
@@ -194,6 +212,29 @@ assert_ne "changing the Co-Ordinator's model changes the fingerprint" \
   "$(fp_with '.selection_config.coordinator_model = "claude-sonnet-5"')"
 assert_ne "editing prompts/coordinator.md changes the fingerprint" \
   "$(fp_with '.coordinator_prompt_sha = "feedface"')"
+
+# The Enabler's inputs (requirement 35b). Its eligible set is the third array
+# whose candidacy turns on something no repo signal carries: an item becomes
+# eligible when the fleet has run its third Co-Ordinator since the block, which
+# moves no commit, issue, alert or PR. Without these the escalation path would
+# come due during a quiet week and wait for the forced recheck to be noticed.
+assert_ne "a second item becoming Enabler-eligible changes the fingerprint" \
+  "$(fp_with '.enabler_eligible += [{"repo": "o/two", "item": "TD26071701", "reason": "threshold"}]')"
+# The reason rides in the projection, so the transition the whole escalation
+# protocol turns on busts the fingerprint even though the same item was already
+# in the set: the human closed the issue, and the entry becomes a verification.
+assert_ne "an eligible item's reason flipping to issue-closed changes the fingerprint" \
+  "$(fp_with '.enabler_eligible[0].reason = "issue-closed"')"
+# And the other end of the engagement: the examined markers empty the set, which
+# must be visible or the fleet could not go quiet again afterwards.
+assert_ne "the eligible set emptying after an engagement changes the fingerprint" \
+  "$(fp_with '.enabler_eligible = []')"
+assert_ne "changing the Enabler's model changes the fingerprint" \
+  "$(fp_with '.enabler_config.enabler_model = "claude-sonnet-5"')"
+assert_ne "changing the Enabler's threshold changes the fingerprint" \
+  "$(fp_with '.enabler_config.after_coordinator_cycles = "5"')"
+assert_ne "editing prompts/enabler.md changes the fingerprint" \
+  "$(fp_with '.enabler_prompt_sha = "0ddba11"')"
 
 # --- A cycle that could not be sampled is not fingerprintable ---
 #

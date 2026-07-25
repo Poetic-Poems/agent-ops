@@ -11,6 +11,11 @@ Once an hour:
 3. **Reviewer** (Sonnet) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
 
+And, at the end of a cycle, rarely: the **Enabler** (Opus) re-examines an item
+that has been blocked for several cycles, unblocks it if it can and raises an
+issue assigned to you if only you can — see
+[Blocked items and the Enabler](#blocked-items-and-the-enabler).
+
 If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down — cheaply, without waking the Co-Ordinator, when nothing has changed since it last found nothing to do (see [Skipping no-op cycles](#skipping-no-op-cycles)).
 
 ## Responding to your review comments
@@ -97,13 +102,18 @@ Edit `config.json` before first run. Keys:
 | `implementor_model_default` | `claude-sonnet-5` | For code changes. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
 | `reviewer_model` | `claude-sonnet-5` | Quality gate before human review. |
+| `enabler_model` | `claude-opus-5` | The Enabler: re-examines long-blocked items and escalates the ones needing you. The most expensive model here, engaged rarely — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to switch the stage off. |
+| `enabler_after_coordinator_cycles` | 3 | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
+| `enabler_recheck_hours` | 72 | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
+| `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. Create it in each target repo (`gh label create enabler-escalation -R Poetic-Poems/<repo>`); without it the issue is still raised, just unlabelled. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `3` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
 | `timeout_coordinator` | 15 | Minutes. |
 | `timeout_implementor` | 90 | Minutes. |
 | `timeout_reviewer` | 30 | Minutes. |
-| `lock_stale_after` | 3 | Hours. Stale lock is killed and warning is logged. |
+| `timeout_enabler` | 30 | Minutes. |
+| `lock_stale_after` | 4 | Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 90 + 30 + 30 minutes). |
 | `limit_cooldown_default` | 3 | Hours. Stand-down after a usage-limit error. |
 | `disable_default_ttl` | 4 | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | 24 | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
@@ -458,6 +468,53 @@ printf '%s\n' "$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 Omit `repo` to reopen the item in every repo, or add it to scope the change to
 one. The item becomes a candidate again on the next cycle; if there is still no
 work, the Implementor will simply void it again.
+
+### Blocked items and the Enabler
+
+Some blocked items the pipeline cannot ever clear by itself: the deploy check
+needs a secret only you can set, a production bug needs logs only you can see, a
+milestone waits on a decision that is yours to make. Left alone those items sit
+blocked indefinitely, and nothing tells you they are there.
+
+So once an item has been blocked for a few cycles, the **Enabler** — one Opus
+pass, engaged rarely — reads it properly: the item, the whole thread, the
+failing run. It then does one of four things:
+
+- **unblocks it**, if whatever was in the way has demonstrably gone (the
+  dependency merged, the check went green) — the item is selectable again next
+  cycle;
+- **voids it**, if it turns out there was no work to do after all (it is already
+  done on `main`);
+- **leaves it blocked**, with a fresher account of what would unstick it;
+- **raises a GitHub issue for you** — in the item's own repo, **assigned to you**
+  and labelled `enabler-escalation` — when only a human can move it.
+
+**Closing that issue is the whole protocol.** Do the thing it asks, close it, and
+say nothing: the next cycle notices the closure, the Enabler re-checks the item
+against reality, and the work resumes (or the issue's thread gets a note saying
+what is still missing). There is nothing else to update, no log to edit, and no
+reply expected. The issue itself says all of this, in case you meet one before
+you meet this page.
+
+Two details worth knowing:
+
+- The issues are assigned on purpose, and not only so you see them: an assigned
+  issue is excluded from the pipeline's own `issues` work source, so the system
+  can never pick up its own request for help as work to do.
+- Every escalation is visible on the dashboard, in the blocked table's
+  *Escalated* column — a link where the pipeline is waiting on you, and the
+  Enabler's last verdict where it is not.
+
+`--dry-run` never engages the Enabler: a cycle that promises to change nothing
+must not raise an issue. `--once` does engage it, which is how you watch one
+happen:
+
+```bash
+# What the Enabler has been doing, and what it asked for
+jq -r 'select(.event == "enabler-examined" or .event == "escalated")
+       | "\(.ts)  \(.event)  \(.item)  \(.outcome // .issue_url // "")"' \
+  ~/.local/state/poetic-agents/log.jsonl | tail -10
+```
 
 ### See stage transcripts
 ```bash

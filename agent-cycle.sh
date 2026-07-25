@@ -67,6 +67,11 @@ asking for a cycle wants the Co-Ordinator's answer, not a cached verdict. They
 do not bypass the switch — if you disabled the pipeline to edit these files,
 running them by hand is the same hazard.
 
+The Enabler (requirement 35) runs at the very end of a cycle, once the
+workspace is gone: --dry-run never engages it (a cycle that promises to change
+nothing must not claim an item or raise an issue), while --once does — a
+supervised engagement is the only way to watch one happen.
+
 Environment:
   AGENT_OPS_ROLE   `active` on the one node that runs unattended cycles;
                    anything else (including unset) makes this a standby, which
@@ -155,6 +160,21 @@ coordinator_model="$(cfg '.coordinator_model')"
 implementor_model_default="$(cfg '.implementor_model_default')"
 implementor_model_trivial="$(cfg '.implementor_model_trivial')"
 reviewer_model="$(cfg '.reviewer_model')"
+# The Enabler (requirements 35–37). Its model is the most expensive this system
+# runs, which is affordable only because the eligibility rule engages it rarely:
+# an empty `enabler_model` disables the stage outright.
+enabler_model="$(cfg '.enabler_model // ""')"
+[[ "$enabler_model" == "null" ]] && enabler_model=""
+timeout_enabler_min="$(cfg '.timeout_enabler // 30')"
+enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
+enabler_recheck_hours="$(cfg '.enabler_recheck_hours // 72')"
+enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalation"')"
+# Deliberately not a config key. The assignment is what does the work — it both
+# puts the issue in front of the one human this pipeline has and excludes it from
+# the `issues` source (requirement 16.4), so an escalation can never be selected
+# as work by the very pipeline that raised it. A second name would need both
+# properties to hold for it too.
+enabler_assignee="warwickallen"
 pr_label="$(cfg '.pr_label')"
 # Read here (rather than left to the Co-Ordinator, which puts it in the work
 # order's `branch`) because requirement 3c's gatherer needs it: a PR is only
@@ -369,6 +389,11 @@ log_voided_items() {
 detect_and_log_limit_hit() {
   local out_file="$1" text resume_at class needs_human
   limit_phrase_in "$out_file" "$out_file.stderr" || return 1
+  # Remembered for the rest of the cycle, because the Enabler runs from the exit
+  # trap — after this point on every path — and engaging the fleet's most
+  # expensive model moments after any stage hit a limit would simply re-hit it
+  # (requirement 35's guards).
+  limit_hit_this_cycle=1
   text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
   IFS=$'\t' read -r resume_at class needs_human < <(limit_decide "$text" "$limit_cooldown_default_hours")
   log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
@@ -532,6 +557,16 @@ handle_stage_failure() {
   fi
 }
 
+# --- The Enabler's state for this cycle (requirements 35, 37) ---
+# All three are read from the exit trap, so they are initialised here — before
+# anything can exit — and only ever move in the safe direction. `enabler_allowed`
+# is set once the gatherers have finished, so no early exit (a standby node, the
+# switch, a usage-limit cooldown, a lost lock) can engage a stage on inputs it
+# never computed.
+enabler_allowed=0
+enabler_eligible_json='[]'
+limit_hit_this_cycle=0
+
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
 clone_dir=""
@@ -540,6 +575,15 @@ cleanup() {
   if [[ -n "$clone_dir" && -d "$clone_dir" ]]; then
     rm -rf "$clone_dir"
   fi
+  # The Enabler (requirement 35): here, and only here. This is the one place
+  # every ending of a cycle passes through — nine of them exit 0 — so a single
+  # call site covers them all, where calls at each exit point would be nine
+  # chances to forget one. It runs after the workspace is deleted (it needs no
+  # clone) and before `cycle-end`, so its events belong to the cycle that
+  # produced them and travel on the state-sync push below. Contained by
+  # requirement 37: whatever happens inside, this cycle's exit code is the one
+  # computed above.
+  maybe_run_enabler "$exit_code" || true
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
@@ -603,6 +647,307 @@ run_claude_stage() {
   wait "$pid"
   rc=$?
   return "$rc"
+}
+
+# --- The Enabler (requirements 35–37) ---------------------------------------
+# The pipeline's escalation path: a high-tier model, engaged rarely, that
+# re-examines items recorded as blocked which the pipeline has not managed to
+# unstick by itself — and, for the ones that genuinely need a human, composes a
+# GitHub issue the Script then files, assigned, saying exactly what to do.
+#
+# Everything below is best-effort by construction, because it runs from the exit
+# trap (see `cleanup`). A non-zero status escaping any of it would abandon the
+# trap part-way and cost the cycle its `cycle-end` event, its lock release and
+# its state-sync push — the Enabler failing must never look like the cycle
+# failing (requirement 37). So every substitution is guarded, every `gh` call
+# tolerates failure, and the whole thing is invoked as `… || true`.
+
+# enabler_claim_key ENTRY
+# The fleet's dedup key for one eligible item (requirement 35c): the repo, the
+# item, and the epoch of the block it was minted from — plus `__verify<n>` when
+# this engagement is verifying a closed escalation, which needs a fresh key
+# because the earlier examination's claim is still in the registry.
+#
+# Derived here, never chosen by a model: two nodes must compute the same key for
+# the same item or the claim locks nothing. Keying on the block's timestamp is
+# what lets a re-blocked item be examined again while the tombstone of its last
+# examination stands.
+enabler_claim_key() {
+  local entry="$1" repo item ts issue epoch key
+  repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+  ts="$(jq -r '.blocked_ts // ""' <<<"$entry" 2>/dev/null || true)"
+  issue="$(jq -r 'if (.reason // "") == "issue-closed"
+                  then ((.escalation.issue_number // "") | tostring) else "" end' \
+             <<<"$entry" 2>/dev/null || true)"
+  epoch="$(date -d "$ts" +%s 2>/dev/null || echo 0)"
+  key="${repo//[^A-Za-z0-9._-]/-}__${item//[^A-Za-z0-9._-]/-}__$epoch"
+  [[ -n "$issue" && "$issue" != "null" ]] && key="${key}__verify${issue}"
+  printf '%s' "$key"
+}
+
+# create_escalation_issue REPO ITEM LABEL TITLE BODY_FILE
+# File one escalation issue, printing "<number>\t<url>"; print nothing and
+# return 1 if it could not be filed. Three behaviours, in order:
+#
+#   - A duplicate guard. An open issue carrying the escalation label whose body
+#     already quotes this item's reference *is* the escalation — return it
+#     rather than filing a second one at the same human. The item ref in the
+#     issue footer (prompts/enabler.md) is what makes this findable, and the
+#     body check is what stops a bare number matching an unrelated escalation.
+#   - The create carries the label *and* the assignee. The assignee is the
+#     load-bearing half: assignment is what excludes an issue from the `issues`
+#     work source (requirement 16.4), so the pipeline can never select its own
+#     request for help as work. The label is for the human's filter and the
+#     guard above.
+#   - One retry without the label, because a repo where the label has not been
+#     created yet must still get its issue. Losing the label costs a filter;
+#     losing the issue costs the escalation.
+create_escalation_issue() {
+  local repo="$1" item="$2" label="$3" title="$4" body_file="$5"
+  local existing raw url number
+  existing="$(gh issue list -R "$repo" --label "$label" --state open --search "$item" \
+                --json number,url,body 2>/dev/null \
+              | jq -r --arg it "$item" \
+                  'map(select(((.body // "") | contains($it)))) | first
+                   | if . == null then empty else "\(.number)\t\(.url)" end' 2>/dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    printf '%s' "$existing"
+    return 0
+  fi
+  raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
+           --assignee "$enabler_assignee" --label "$label" \
+           2>>"$cycle_dir/enabler-issue.err" || true)"
+  if [[ -z "$raw" ]]; then
+    raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
+             --assignee "$enabler_assignee" \
+             2>>"$cycle_dir/enabler-issue.err" || true)"
+  fi
+  url="$(grep -oE 'https://github\.com/[A-Za-z0-9_./-]+/issues/[0-9]+' <<<"$raw" | tail -n1 || true)"
+  [[ -n "$url" ]] || return 1
+  number="${url##*/}"
+  [[ "$number" =~ ^[0-9]+$ ]] || return 1
+  printf '%s\t%s' "$number" "$url"
+}
+
+# maybe_run_enabler CYCLE_EXIT_CODE
+# Engage the Enabler if this cycle should, and translate its verdicts into log
+# events and issues. Always returns without disturbing the cycle's outcome.
+maybe_run_enabler() {
+  local cycle_rc="${1:-1}"
+  local claimed_json='[]' n_eligible=0 n_claimed=0 n_out=0 i j
+  local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
+  local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
+  local issue_title issue_body_file created number url missing
+
+  # --- Guards (requirement 35). Every one of them declining is normal. ---
+  # The lock is the log's single-writer guarantee, and this stage writes events.
+  (( lock_acquired )) || return 0
+  # Set only once the gatherers finished, so no early exit — a standby node, the
+  # switch, a cooldown, a skipped cycle that never sampled — can engage a stage
+  # on inputs that were never computed.
+  (( enabler_allowed )) || return 0
+  # A dry run claims nothing and writes nothing, here as everywhere.
+  (( DRY_RUN )) && return 0
+  # A cycle that ended badly is not the moment to spend the expensive model: the
+  # failure itself is the thing to look at, and the item will still be blocked
+  # next cycle.
+  [[ "$cycle_rc" == "0" ]] || return 0
+  (( limit_hit_this_cycle )) && return 0
+  [[ -n "$enabler_model" ]] || return 0
+  [[ "$timeout_enabler_min" =~ ^[0-9]+$ ]] || return 0
+  [[ -f "$PROMPTS_DIR/enabler.md" ]] || return 0
+
+  n_eligible="$(jq 'length' <<<"$enabler_eligible_json" 2>/dev/null || echo 0)"
+  [[ "$n_eligible" =~ ^[0-9]+$ ]] || n_eligible=0
+  (( n_eligible > 0 )) || return 0
+
+  # The fleet limit file, read live rather than from the union snapshot taken at
+  # the start of the cycle (requirement 2.1's second carrier): a limit a peer hit
+  # while this cycle was working is exactly the news that should stop the most
+  # expensive stage in the system from starting.
+  live_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir" 2>/dev/null || true)"
+  if [[ -n "$live_resume" ]]; then
+    live_epoch="$(date -d "$live_resume" +%s 2>/dev/null || echo 0)"
+    (( live_epoch > $(date +%s) )) && return 0
+  fi
+
+  # --- Claim each item (requirement 35c) ---
+  # A per-item file claim under the pseudo-slug `enabler`, deterministic across
+  # nodes so exactly one engages, and **never released**: the claim is a
+  # tombstone. `lib/claim.sh gc` sweeping it at `claim_ttl_hours` is what lets a
+  # failed engagement be retried, and is the only thing that does.
+  for (( i = 0; i < n_eligible; i++ )); do
+    entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$enabler_eligible_json" 2>/dev/null || true)"
+    [[ -n "$entry" ]] || continue
+    repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+    item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+    [[ -n "$repo" && -n "$item" ]] || continue
+    key="$(enabler_claim_key "$entry")"
+    [[ -n "$key" ]] || continue
+    if CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$item" CLAIM_SOURCE="enabler" \
+         "$SCRIPT_DIR/lib/claim.sh" claim file enabler "$key" \
+         >>"$cycle_dir/claim.log" 2>&1; then
+      claimed_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$claimed_json" 2>/dev/null \
+        || printf '%s' "$claimed_json")"
+    fi
+  done
+  n_claimed="$(jq 'length' <<<"$claimed_json" 2>/dev/null || echo 0)"
+  [[ "$n_claimed" =~ ^[0-9]+$ ]] || n_claimed=0
+  # Every eligible item already claimed is the ordinary quiet case — this node
+  # examined them last cycle, or a peer is examining them now — and is silent on
+  # purpose: a warning here would fire every cycle until the tombstones expire.
+  (( n_claimed > 0 )) || return 0
+
+  # --- One engagement over every claimed item ---
+  # Batched deliberately: the reading is per-item but the session overhead is
+  # not, and the items in front of it are few by construction.
+  # `$lbl`, not `$label`: `label` is a jq keyword, and a jq program that fails to
+  # compile here would leave the runtime input empty — which the guard below turns
+  # into a silently skipped engagement.
+  input="$(jq -nc --argjson items "$claimed_json" --arg lbl "$enabler_escalation_label" \
+    --arg assignee "$enabler_assignee" --arg cycle "$cycle_id" --arg node "$node_name" \
+    '{items: $items, escalation_label: $lbl, assignee: $assignee, cycle: $cycle, node: $node}' \
+    2>/dev/null || true)"
+  [[ -n "$input" ]] || return 0
+
+  prompt="$(cat "$PROMPTS_DIR/enabler.md")
+
+## Runtime input for this engagement
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/enabler.out"
+  log_event "stage-start" '{"stage": "enabler"}'
+  if run_claude_stage "$(( timeout_enabler_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" '{stage: "enabler", exit_code: $rc}')"
+  (( ONCE )) && dump_stage_output "$out"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    # A timeout or unparseable output changes nothing: no verdict was reached, so
+    # no state event is written and the claims stand until gc allows a retry. The
+    # cycle's own outcome is untouched (requirement 37); a usage-limit phrase in
+    # the transcript still goes down the ordinary cooldown path, because that
+    # applies to the whole fleet and not just to this stage.
+    if (( rc == 124 )); then
+      detail="enabler timed out"
+    elif (( rc != 0 )); then
+      detail="enabler exited $rc"
+    else
+      detail="enabler returned an unparseable final message"
+    fi
+    detect_and_log_limit_hit "$out" || true
+    log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
+      '{detail: $d}')"
+    return 0
+  fi
+
+  # --- Verdicts (requirement 36a) ---
+  n_out="$(jq '(.examined // []) | length' <<<"$parsed" 2>/dev/null || echo 0)"
+  [[ "$n_out" =~ ^[0-9]+$ ]] || n_out=0
+  for (( j = 0; j < n_out; j++ )); do
+    ex="$(jq -c --argjson j "$j" '(.examined // [])[$j]' <<<"$parsed" 2>/dev/null || true)"
+    [[ -n "$ex" ]] || continue
+    e_repo="$(jq -r '.repo // ""' <<<"$ex" 2>/dev/null || true)"
+    e_item="$(jq -r '.item // ""' <<<"$ex" 2>/dev/null || true)"
+    verdict="$(jq -r '.verdict // ""' <<<"$ex" 2>/dev/null || true)"
+    e_reason="$(jq -r '.reason // "no reason given"' <<<"$ex" 2>/dev/null || true)"
+    # Only items this cycle actually claimed are actionable. The model cannot
+    # introduce work of its own, and an item a peer holds is the peer's to
+    # answer — acting on either would write state nobody arbitrated.
+    claimed_entry="$(jq -c --arg r "$e_repo" --arg i "$e_item" \
+      'map(select((.repo // "") == $r and (.item // "") == $i)) | first // empty' \
+      <<<"$claimed_json" 2>/dev/null || true)"
+    if [[ -z "$claimed_entry" ]]; then
+      log_event "warning" "$(jq -nc \
+        --arg d "enabler: a verdict for an item this cycle did not claim ($e_repo $e_item) — ignored" \
+        '{detail: $d}')"
+      continue
+    fi
+    blocked_ts="$(jq -r '.blocked_ts // ""' <<<"$claimed_entry" 2>/dev/null || true)"
+    outcome="$verdict"
+    extra='{}'
+    case "$verdict" in
+      unblocked)
+        # The item becomes selectable again next cycle. `by` names the Enabler so
+        # a reader can tell this from the Co-Ordinator's own cheap re-checks
+        # (requirement 18) without cross-referencing timestamps.
+        log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" --arg reason "$e_reason" \
+          '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+        ;;
+      void)
+        # Requirement 9b: "the work is already done" is a void, never an unblock.
+        log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
+          "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
+        ;;
+      still-blocked)
+        # Nothing extra to record: the block stands, and the refreshed condition
+        # travels on the examined event below, which is what a later engagement
+        # and the dashboard read.
+        extra="$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$ex" 2>/dev/null || echo '{}')"
+        ;;
+      escalate)
+        issue_title="$(jq -r '.issue.title // ""' <<<"$ex" 2>/dev/null || true)"
+        issue_body_file="$cycle_dir/enabler-issue-$j.md"
+        jq -r '.issue.body // ""' <<<"$ex" > "$issue_body_file" 2>/dev/null || true
+        if [[ -z "$issue_title" || ! -s "$issue_body_file" ]]; then
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler: escalate verdict for $e_repo $e_item carried no issue title or body — nothing filed" \
+            '{detail: $d}')"
+          outcome="escalation-failed"
+        elif created="$(create_escalation_issue "$e_repo" "$e_item" "$enabler_escalation_label" \
+                          "$issue_title" "$issue_body_file")" && [[ -n "$created" ]]; then
+          IFS=$'\t' read -r number url <<<"$created"
+          log_event "escalated" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+            --argjson n "$number" --arg u "$url" --arg b "$blocked_ts" \
+            '{repo: $r, item: $i, issue_number: $n, issue_url: $u, blocked_ts: $b}')"
+        else
+          # The examined event records `escalation-failed`, which requirement 35a
+          # deliberately does not count as an examination: the item stays at the
+          # threshold and is retried once its claim expires.
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler: could not file the escalation issue for $e_repo $e_item (see enabler-issue.err) — retried after the claim TTL" \
+            '{detail: $d}')"
+          outcome="escalation-failed"
+        fi
+        ;;
+      *)
+        log_event "warning" "$(jq -nc \
+          --arg d "enabler: unrecognised verdict '$verdict' for $e_repo $e_item — recorded, acted on in no way" \
+          '{detail: $d}')"
+        outcome="unknown-verdict"
+        ;;
+    esac
+    # Written for every verdict, including the ones that changed nothing: this
+    # marker is what stops the same item being re-examined next cycle, and what
+    # the recheck window is measured from (requirement 35a).
+    log_event "enabler-examined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+      --arg b "$blocked_ts" --arg o "$outcome" --arg d "$e_reason" --argjson x "$extra" \
+      '{repo: $r, item: $i, blocked_ts: $b, outcome: $o, detail: $d} + $x')"
+  done
+
+  # A claimed item the model never mentioned keeps its claim and stays blocked,
+  # so gc is what eventually retries it. Named in a warning rather than dropped
+  # silently: a stage that routinely omits items is a prompt problem, and the log
+  # is the only place that would ever become visible.
+  while IFS= read -r missing; do
+    [[ -n "$missing" ]] || continue
+    log_event "warning" "$(jq -nc \
+      --arg d "enabler: no verdict for claimed item $missing — left blocked until the claim TTL lets a later cycle retry" \
+      '{detail: $d}')"
+  done < <(jq -r --argjson p "$parsed" '
+      (($p.examined // []) | map(((.repo // "") + " " + (.item // "")))) as $seen
+      | .[] | ((.repo // "") + " " + (.item // ""))
+      | select(. as $k | $seen | index($k) | not)' <<<"$claimed_json" 2>/dev/null || true)
+  return 0
 }
 
 log_event "cycle-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo true || echo false)" \
@@ -830,6 +1175,39 @@ while IFS=$'\t' read -r _ slug default_branch; do
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
+# --- Skip-list extracts (requirement 34: blocked iff the most recent
+#     attempt-failed/unblocked event for that repo+item is attempt-failed;
+#     requirement 34c: void iff the most recent item-void/unvoided event for it
+#     is item-void). Two lists, not one, because the Co-Ordinator may clear the
+#     first and may never clear the second. ---
+#
+# Read here — above the back-pressure decision below, not after it — because the
+# Enabler's eligible set is derived from these two lists (requirement 35a) and
+# back-pressure can end the cycle. A fleet wedged at `max_open_agent_prs` is
+# exactly when getting something unblocked matters most, and the Enabler opens
+# no PRs, so it must not be what back-pressure silences.
+blocked_json="$(blocked_items "$union_log")"
+void_json="$(void_items "$union_log")"
+
+# --- The Enabler's eligible set (requirements 35a, 35b) ---
+# Which repos' open issues this cycle can see, taken from the source-state
+# digests of the repos that sampled cleanly. It is how "is that escalation issue
+# still open?" gets answered without a `gh` call per escalation — the digest was
+# fetched for the fingerprint anyway. A repo absent from it is one this cycle did
+# not read cleanly, or did not look at (`--repo`), and its escalations are
+# treated as possibly still open.
+open_issues_json="$(jq -c '[.[] | select(.ok == true)
+                            | {key: .slug, value: [(.issues // [])[] | .n]}]
+                           | from_entries' <<<"$source_states_json" 2>/dev/null || true)"
+[[ -n "$open_issues_json" ]] || open_issues_json='{}'
+
+enabler_eligible_json="$(enabler_eligible_items "$union_log" \
+  "$enabler_after_coordinator_cycles" "$enabler_recheck_hours" "$open_issues_json")"
+# Past this line the exit trap may engage the Enabler: every input it needs now
+# exists, so `maybe_run_enabler`'s own guards are all that stand between this
+# cycle and an engagement. Before it, an early exit could not have one.
+enabler_allowed=1
+
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
 # purpose is to throttle new work and stop the human gate silting up — and the
@@ -864,14 +1242,6 @@ if (( backpressure_tripped )); then
     '{detail: $d}')"
 fi
 
-# --- Skip-list extracts (requirement 34: blocked iff the most recent
-#     attempt-failed/unblocked event for that repo+item is attempt-failed;
-#     requirement 34c: void iff the most recent item-void/unvoided event for it
-#     is item-void). Two lists, not one, because the Co-Ordinator may clear the
-#     first and may never clear the second. ---
-blocked_json="$(blocked_items "$union_log")"
-void_json="$(void_items "$union_log")"
-
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
 # select work. On a quiet week that is 24 identical answers a day. If every
@@ -892,20 +1262,45 @@ selection_config_json="$(jq -nc \
   '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}')"
 coordinator_prompt_sha="$(sha256sum "$PROMPTS_DIR/coordinator.md" | cut -d' ' -f1)"
 
+# The Enabler's three inputs join the fingerprint for the same reason (requirement
+# 35b). Its eligible set is the third array whose candidacy turns on something no
+# repo signal carries — an item becomes eligible when the fleet has run its third
+# Co-Ordinator since the block, which moves no commit, issue, alert or PR — so
+# without it the escalation path would come due during a quiet week and wait for
+# the forced recheck to be noticed. The set empties again once the engagement's
+# examined markers land, which is what lets the fleet go back to skipping.
+enabler_config_json="$(jq -nc \
+  --arg m "$enabler_model" \
+  --arg n "$enabler_after_coordinator_cycles" \
+  --arg rh "$enabler_recheck_hours" \
+  --arg lbl "$enabler_escalation_label" \
+  '{enabler_model: $m, after_coordinator_cycles: $n, recheck_hours: $rh, escalation_label: $lbl}')"
+# Absent rather than fatal when the prompt is missing: a missing Enabler prompt
+# is a stage that does not run (see `maybe_run_enabler`), not a cycle that dies.
+enabler_prompt_sha=""
+[[ -f "$PROMPTS_DIR/enabler.md" ]] \
+  && enabler_prompt_sha="$(sha256sum "$PROMPTS_DIR/enabler.md" | cut -d' ' -f1)"
+
 noop_input="$(jq -nc \
   --argjson repos "$ordered_repos_json" \
   --argjson states "$source_states_json" \
   --argjson blocked "$blocked_json" \
   --argjson void "$void_json" \
+  --argjson eligible "$enabler_eligible_json" \
   --argjson sc "$selection_config_json" \
+  --argjson ec "$enabler_config_json" \
   --arg psha "$coordinator_prompt_sha" \
+  --arg esha "$enabler_prompt_sha" \
   '{
      repos: [ $repos[] as $r
               | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
      blocked: $blocked,
      void: $void,
+     enabler_eligible: $eligible,
      selection_config: $sc,
-     coordinator_prompt_sha: $psha
+     coordinator_prompt_sha: $psha,
+     enabler_config: $ec,
+     enabler_prompt_sha: $esha
    }')"
 noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 
