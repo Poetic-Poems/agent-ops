@@ -62,7 +62,7 @@ cron (weekly; a daily tick with a skip-guard is recommended — see R4)
   review events go to the review pipeline's own stream (R16), so the
   dashboard's existing `log.jsonl` parser is unaffected.
 
-## Entities
+## Actors
 
 1. The **Review Cronjob** — the crontab entry that fires the Review Script.
 2. The **Review Script** (`review-cycle.sh`) — a bash script that orchestrates

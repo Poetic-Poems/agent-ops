@@ -32,7 +32,7 @@ cron (hourly)
                                       assigned to the Human saying what to do
 ```
 
-## Entities
+## Actors
 
 1. The **Cronjob** — the crontab entry that fires the Script.
 2. The **Script** (`agent-cycle.sh`) — a bash script that orchestrates one
