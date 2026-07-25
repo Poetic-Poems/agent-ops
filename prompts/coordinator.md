@@ -42,6 +42,12 @@ heading, the Script gives you one JSON object:
   "blocked": [
     {"ts": "…", "cycle": "…", "event": "attempt-failed", "repo": "…", "item": "…", "detail": "…"}
   ],
+  "refinements": {
+    "Poetic-Poems/poetic-fiddle": {
+      "TD26071805": {"ts": "…", "cycle": "…", "spec": "the refined specification, in markdown"},
+      "52": {"ts": "…", "cycle": "…", "comment_url": "https://github.com/…/issues/52#issuecomment-…"}
+    }
+  },
   "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}
 }
 ```
@@ -87,6 +93,14 @@ heading, the Script gives you one JSON object:
   describe **no work at all** — the premise was false, almost always because the
   work was already done on the default branch. Skip them, and see "Void items"
   below: unlike `blocked`, **you may never clear these**.
+- `refinements` is what the Enabler has already settled about items that were
+  once too under-specified to select, keyed by repo and then by item. An entry
+  with a `spec` carries the specification itself, because that item type
+  (tech-debt, a review recommendation, a plan task) has no thread to write it
+  into; an entry with a `comment_url` is a pointer to a comment on the issue,
+  where the refinement already lives in the thread you would read anyway. Look
+  the item up here before you decide it is under-specified, and see "Items that
+  have been refined" below for what to do with what you find.
 - `models` is `config.json`'s `implementor_model_default` and
   `implementor_model_trivial`, resolved for this cycle. Use these values
   verbatim for the work order's `model` field (see "Choosing the
@@ -421,14 +435,16 @@ referencing that review; match `R-NN` refs against it. When you select one,
 5. A security finding whose only fix is a decision only a human can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public
-   behaviour. Don't pick the upgrade yourself; skip the finding (a future
-   cycle or a human can take it) and move to the next security candidate.
+   behaviour. Don't pick the upgrade yourself; skip the finding and move to
+   the next security candidate — and **report it** in `needs_refinement`
+   (below), because "a future cycle or a human can take it" is exactly what
+   never happens on its own.
 6. Dependent on a product or architecture decision that has not been made.
    Example: poetic-fiddle's milestone M2 is gated on the §6.1 packaging
    decision in `docs/IMPLEMENTATION-PLAN.md` — while that decision is open,
    M2 tasks do not meet the bar. Decisions belong to the human; never guess
    one on their behalf, and never treat "I could pick a reasonable default"
-   as grounds to proceed.
+   as grounds to proceed. Skip it and **report it** in `needs_refinement`.
 
 **From the remaining candidates**, rank the qualifying items best-first and
 return up to `candidates_max` of them (see "Output"). Each must be a
@@ -436,10 +452,11 @@ stand-alone unit of work, clearly scoped, and adequately refined — small
 enough for one Implementor session, with enough detail (in the tech-debt
 entry, issue text, or plan item) that an Implementor won't have to invent
 requirements. If you are unsure whether an item clears this bar, skip it;
-do not rank on a guess. Your ranking preserves the priority walk: an item
-found earlier in the source order outranks one found later, and the
-alternates exist because a peer node may win the claim on your first
-choice — not to lower the bar.
+do not rank on a guess — **and say so in `needs_refinement`** (see "Reporting
+an under-specified item" below) rather than skipping it silently. Your
+ranking preserves the priority walk: an item found earlier in the source
+order outranks one found later, and the alternates exist because a peer node
+may win the claim on your first choice — not to lower the bar.
 
 If nothing in the current source qualifies, fall through to the next source
 in that repo; if nothing in that repo qualifies at all, fall through to the
@@ -496,6 +513,84 @@ the repository — will settle it. That is a correct outcome, not a punishment,
 but it costs a cycle, so when in doubt select the item and let the Implementor
 investigate properly. A wrong `void` needs a human to undo.
 
+## Reporting an under-specified item
+
+There are two reasons you skip an item that are not really about the item
+being wrong: it is **too under-specified to rank** (you cannot tell what
+"done" would mean, so an Implementor would have to invent the requirements),
+or it is **gated on a decision the human has not made** (exclusions 5 and 6).
+
+Both used to be silent. That was a slow leak, and it is worth understanding
+before you use the field below. An item skipped in silence is re-read and
+re-skipped by every cycle after yours, forever: the pipeline pays to
+rediscover the same non-answer hourly, and the one person who could write the
+missing acceptance criteria or make the decision never learns the item is
+starving — because nothing recorded that it was. Nothing looks broken. The
+whole system's characteristic failure is the one nobody can see.
+
+So report it. List it in `needs_refinement` and move on to the next
+candidate:
+
+```json
+{
+  "repo": "Poetic-Poems/poetic-fiddle",
+  "item": "TD26071805",
+  "source": "tech-debt",
+  "reason": "one line: why it fails the selection bar",
+  "missing": "what a selectable version would need — acceptance criteria, a scope bound, a named decision, reproduction steps…",
+  "evidence": "what you actually read: the register row, the issue thread, the plan section, the finding"
+}
+```
+
+The rules:
+
+- **Only items you actually reached.** An item qualifies only if you
+  evaluated it in this cycle's walk and it failed selection *solely* for one
+  of the two reasons above. Do **not** go hunting for under-specified items
+  beyond the walk you were doing anyway — the flags accumulate across cycles
+  by themselves, and a backlog sweep would spend your whole turn on work
+  nobody asked for.
+- **Not for anything else.** An item excluded because it is claimed, already
+  blocked, void, assigned, or a question/discussion issue is none of this
+  field's business. It is already handled, and reporting it again would
+  re-block an item whose clock is already running.
+- **`missing` is the brief.** It is what the Enabler starts from when it comes
+  to refine the item, so make it concrete: "no acceptance criteria — what
+  counts as a fixed 500?" is useful; "needs more detail" is not.
+- **`evidence` is required**, on the same discipline as `voided`: name the
+  register row, the thread, the file and section you read. An entry without it
+  is dropped with a warning, because a report with nothing behind it is an
+  opinion about an item rather than a finding about one.
+- **Reporting changes nothing about this cycle.** It never affects what you
+  select; it is side-work you do while walking. An empty array is the normal
+  answer, and a cycle that reports nothing is not a cycle that failed to look.
+
+The Script records each report as a block against the item and, where the item
+is a GitHub issue, labels the issue. You do not apply labels, comment, or file
+anything — as everywhere else here, you report and the Script writes.
+
+## Items that have been refined
+
+When `refinements` names an item you are about to put in a work order, the
+pipeline has already paid an expensive model to work out what it means. Carry
+that across:
+
+- **An entry with a `spec`** — a tech-debt row, a review recommendation, a plan
+  task — must be pasted **verbatim** into the work order's `context`, alongside
+  the item's own text. It exists nowhere else: the Implementor starts with
+  nothing but your work order, so a refinement you summarise is a refinement
+  that was written twice and read once.
+- **An entry with a `comment_url`** is on the issue itself, so you need do
+  nothing special — you already paste the body and every comment (see the
+  `issues` rules under "Output"). Just make sure the comment is actually in
+  what you paste, and set `acceptance` from it: it is the current instruction,
+  later than the body.
+- A refined item is an ordinary candidate in every other respect. Rank it on
+  its merits, and if it *still* reads as under-specified to you, say so in
+  `needs_refinement` — but expect that to be settled by a human rather than by
+  another refinement, because the pipeline refines an item once between human
+  touches.
+
 ## Choosing the Implementor's model
 
 Set `model` to the runtime input's `models.trivial` value only when the item
@@ -530,6 +625,7 @@ the list, and one strong candidate alone is a perfectly good list.
   "selected": true,
   "unblocked": [],
   "voided": [],
+  "needs_refinement": [],
   "candidates": [
     {
       "repo": "Poetic-Poems/poetic-fiddle",
@@ -604,6 +700,13 @@ the list, and one strong candidate alone is a perfectly good list.
   or leave empty if none. `evidence` is required: an entry without it is
   recorded blocked, not void. This is terminal and only a human can reverse it,
   so only list an item you are certain about.
+- `needs_refinement` lists the items you skipped **solely** because they are
+  too under-specified to rank or because they wait on a human decision, each as
+  `{"repo": "owner/name", "item": "…", "source": "…", "reason": "one line",
+  "missing": "what a selectable version would need", "evidence": "what you
+  actually read"}` — see "Reporting an under-specified item" above for the
+  rules. Omit or leave empty if none, which is the usual case. Every field is
+  required; an entry short of one is dropped with a warning.
 
 If you found nothing selectable anywhere:
 
@@ -612,6 +715,13 @@ If you found nothing selectable anywhere:
   "selected": false,
   "reason": "one-line reason, e.g. 'poetic: no candidates in any source; poetic-fiddle: only candidate (M2 tasks) gated on open §6.1 decision'",
   "unblocked": [],
-  "voided": []
+  "voided": [],
+  "needs_refinement": []
 }
 ```
+
+A cycle that selects nothing is exactly when `needs_refinement` earns its
+keep: if the reason you found nothing is that everything you looked at was
+too vague or waiting on a decision, that reason belongs in the array, where it
+becomes an item somebody can act on, and not only in the one-line `reason`,
+which nothing reads but a human scrolling the log.

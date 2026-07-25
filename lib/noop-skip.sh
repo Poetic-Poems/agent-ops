@@ -45,6 +45,7 @@
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
 #   blocked / void skip-lists                            | repo|item projections
+#   refinements carried forward (requirement 3h)         | repo|item|ts projection
 #   which repos, which sources, which models             | selection_config
 #   the selection rules themselves                       | coordinator_prompt_sha
 #   the Enabler's eligible set (requirement 35b)         | repo|item|reason projection
@@ -96,6 +97,14 @@
 # empty the set again and skipping resumes — the same shape as a stalled draft
 # being finished.
 #
+# `refinements` is hashed because a refinement the Enabler wrote is an input to
+# the Co-Ordinator's next verdict (requirement 3h) — it is the whole of what a
+# non-issue item's work order will say. In practice an `item-refined` event
+# always travels with the `unblocked` that returns the item to the pool, so the
+# `blocked` projection above would bust the fingerprint anyway; it is listed
+# separately rather than left to that coincidence, because "covered by something
+# else" is how a source ends up covered by nothing.
+#
 # `enabler_config` and `enabler_prompt_sha` are the Enabler's half of the two
 # lines below, with one deliberate difference in what they buy: editing
 # prompts/enabler.md busts the fingerprint, so a quiet fleet notices the edit,
@@ -136,10 +145,10 @@
 # order or the timestamps and prose that ride along on a log event. `jq -S` then
 # sorts every object key, making the serialisation canonical.
 #
-# The three `enabler_*` keys all default to empty, so an input that predates
-# them canonicalises exactly as one that carries them empty: replaying an older
-# cycle's input yields its original fingerprint, and a node whose config sets no
-# Enabler keys agrees with itself.
+# The three `enabler_*` keys and `refinements` all default to empty, so an input
+# that predates them canonicalises exactly as one that carries them empty:
+# replaying an older cycle's input yields its original fingerprint, and a node
+# whose config sets no Enabler keys agrees with itself.
 # shellcheck disable=SC2016  # jq's syntax, not the shell's.
 NOOP_CANON_JQ='
   if ([.repos[]?.state.ok] | all) | not then empty
@@ -159,6 +168,11 @@ NOOP_CANON_JQ='
       }] | sort_by(.slug)),
       blocked: ([.blocked[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
       void: ([.void[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
+      refinements: ([(.refinements // {}) | to_entries[]
+                     | .key as $repo
+                     | (.value // {}) | to_entries[]
+                     | ($repo + "|" + .key + "|" + ((.value.ts // "") | tostring))]
+                    | sort | unique),
       enabler_eligible: ([.enabler_eligible[]?
                           | ((.repo // "") + "|" + (.item // "") + "|" + (.reason // ""))]
                          | sort | unique),
