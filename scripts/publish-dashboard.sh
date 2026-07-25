@@ -71,8 +71,17 @@ out_dir="$state_dir/dashboard"
 data_file="$out_dir/data.js"
 # Last real GitHub fetch, kept out of the served dir. A --no-github tick reuses
 # it so a local-only refresh doesn't blank the PR list / work sources or raise a
-# false "GitHub unavailable" alarm between the once-per-window GitHub refreshes.
+# false "GitHub unavailable" alarm between GitHub refreshes. Its mtime is also
+# the heartbeat's gate: publish-dashboard-launcher.sh fetches on the first tick
+# to find this file older than LAUNCHER_GITHUB_MAX_AGE, so this write is what
+# schedules the next fetch — hence writing it for a failed attempt too, a few
+# hundred lines below.
 gh_cache="$state_dir/.dashboard-github.json"
+# Claim bodies by blob SHA. A blob's SHA is a hash of its content, so a hit is
+# never stale by construction and the registry costs one API call a tick while
+# the claims it holds are unchanged. Kept out of the served dir for the same
+# reason as the fetch cache above.
+claims_cache="$state_dir/.dashboard-claims.json"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -526,22 +535,54 @@ if (( WITH_GITHUB )); then
   [[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null}'
 
   # The live claim registry (implementation spec 17a): what the fleet holds
-  # right now, per repo. A handful of contents-API reads on the once-per-window
-  # GitHub tick; carried forward through gh_cache on --no-github ticks like
-  # every other GitHub-sourced fact. Failures degrade to the empty list.
+  # right now, per repo. Carried forward through gh_cache on --no-github ticks
+  # like every other GitHub-sourced fact; failures degrade to the empty list.
+  #
+  # One recursive trees call enumerates the whole registry — path and blob SHA
+  # for every claim — where walking `contents/` cost a call for the claims
+  # directory, one per repository under it and one per claim (1 + D + F round
+  # trips, each a fresh `gh` process at ~0.5s). Only the blob reads are left
+  # per claim, and a blob's SHA names its bytes for ever, so an unchanged claim
+  # is read from the local cache instead of the API: a fleet whose claims are
+  # not moving costs one call a tick however many it holds.
   claims_rows="$work_tmp/claims.rows"
   : > "$claims_rows"
   if [[ -n "$state_repo" ]]; then
-    while IFS= read -r cdir; do
-      [[ -n "$cdir" ]] || continue
-      while IFS= read -r cfile; do
-        [[ -n "$cfile" ]] || continue
-        entry="$(gh_json api "repos/$state_repo/contents/claims/$cdir/$cfile" --jq '.content' \
-          | tr -d '\n' | base64 -d 2>/dev/null \
-          | jq -c --arg r "${cdir//__//}" --arg k "${cfile%.json}" '. + {repo: $r, key: $k}' 2>/dev/null)" || entry=""
-        [[ -n "$entry" ]] && printf '%s\n' "$entry" >> "$claims_rows"
-      done < <(gh_json api "repos/$state_repo/contents/claims/$cdir" --jq '.[] | select(.type=="file") | .name')
-    done < <(gh_json api "repos/$state_repo/contents/claims" --jq '.[] | select(.type=="dir") | .name')
+    claims_tree="$work_tmp/claims.tree"
+    # Only replace the cache if this listing actually succeeded — a failed call
+    # must degrade to "no claims shown this tick", not to "every claim
+    # re-fetched next tick".
+    if gh_json api "repos/$state_repo/git/trees/HEAD?recursive=1" \
+         --jq '.tree[] | select(.type == "blob" and (.path | startswith("claims/"))) | "\(.sha)\t\(.path)"' \
+         > "$claims_tree" 2>/dev/null; then
+      claims_cache_new="$work_tmp/claims.cache"
+      printf '{}' > "$claims_cache_new"
+      while IFS=$'\t' read -r csha cpath; do
+        [[ -n "$csha" && -n "$cpath" ]] || continue
+        rel="${cpath#claims/}"
+        cdir="${rel%%/*}"; cfile="${rel##*/}"
+        # claims/<repo>/<key>.json and nothing else; anything shallower or
+        # deeper is not a claim this reader understands.
+        [[ "$cdir/$cfile" == "$rel" && "$cfile" == *.json ]] || continue
+        entry="$(jq -c --arg s "$csha" '.[$s] // empty' "$claims_cache" 2>/dev/null)"
+        [[ -n "$entry" ]] || entry="$(gh_json api "repos/$state_repo/git/blobs/$csha" --jq '.content' \
+          | tr -d '\n' | base64 -d 2>/dev/null | jq -c '.' 2>/dev/null)" || entry=""
+        [[ -n "$entry" ]] || continue
+        # Both halves of the path were written through lib/claim.sh's san(),
+        # which replaces '/' with '__'; undo both, as claim.sh's own reader
+        # does. (The key went un-restored here until now, so a branch claim
+        # rendered as `agent__td-…` on the page and `agent/td-…` everywhere
+        # else.)
+        ckey="${cfile%.json}"
+        jq -c --arg r "${cdir//__//}" --arg k "${ckey//__//}" '. + {repo: $r, key: $k}' \
+          <<<"$entry" >> "$claims_rows" 2>/dev/null
+        jq -c --arg s "$csha" --argjson b "$entry" '.[$s] = $b' "$claims_cache_new" \
+          > "$claims_cache_new.t" 2>/dev/null && mv "$claims_cache_new.t" "$claims_cache_new"
+      done < "$claims_tree"
+      # Only the SHAs still in the registry survive, so a cache of released
+      # claims cannot accumulate.
+      mv "$claims_cache_new" "$claims_cache"
+    fi
   fi
   claims_json="$(jq -sc 'sort_by(.ts) | reverse' "$claims_rows" 2>/dev/null)"
   [[ -z "$claims_json" ]] && claims_json='[]'
