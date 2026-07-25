@@ -3,7 +3,7 @@
 # test/publish-dashboard.test.sh — regression tests for
 # scripts/publish-dashboard.sh and scripts/publish-dashboard-launcher.sh.
 #
-# Three behaviours here have already failed in production and one is a scaling
+# Four behaviours here have already failed in production and one is a scaling
 # property, so they get tests rather than a careful reading:
 #
 #   the launcher's exit   a healthy window must end 0 — its status once came
@@ -15,6 +15,10 @@
 #                         a cron-fired window could never satisfy, so the PR
 #                         panels aged for half an hour at a time while the page
 #                         around them said "data 3s ago"
+#   the holed log         a container killed mid-append leaves NULs, and one NUL
+#                         makes grep go quiet over the whole file — the damage
+#                         is to every later read, not to the lines that were
+#                         lost, so the launcher strips them and says so
 #   the cost scan         batching must preserve the per-file semantics: the
 #                         day cut-off, the model roll-up, tolerance of a torn
 #                         envelope mid-write, and unconditional redaction
@@ -281,6 +285,28 @@ env HOME="$l" LAUNCHER_WINDOW=20 LAUNCHER_PUBLISH_CMD="$crash_stub" \
     TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
 assert_eq "a publish that never stamps still only gets one GitHub tick a window" \
   "1" "$(grep -c '^github$' "$tick_log")"
+
+# --- A log holed by an unclean stop --------------------------------------------
+# A container killed mid-append leaves NULs where the last writes should be
+# (TD26072301). One NUL makes the whole file binary to grep, which then stops
+# printing matches for everything around it — so the damage is not the lost
+# lines but every later read of the 8 MB that survived.
+launcher_log="$l/.local/state/poetic-agents/dashboard.log"
+{ printf 'before the hole\n'; printf '\0\0\0\0\0\0\0\0'; printf 'after the hole\n'; } > "$launcher_log"
+env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" \
+    TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
+repaired="$(cat "$launcher_log")"
+assert_eq "the hole is gone" "0" "$(tr -cd '\0' < "$launcher_log" | wc -c)"
+assert_contains "the lines around it survive (before)" "before the hole" "$repaired"
+assert_contains "and after"                            "after the hole"  "$repaired"
+assert_contains "the loss is recorded, not closed over" "dropped 8 NUL byte(s)" "$repaired"
+
+# An intact log must be left exactly as it is — no rewrite, no marker.
+printf 'nothing wrong here\n' > "$launcher_log"
+env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" \
+    TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
+assert_lacks "an intact log gets no repair marker" "repaired: dropped" "$(cat "$launcher_log")"
+assert_contains "and keeps what it had" "nothing wrong here" "$(cat "$launcher_log")"
 
 # --- The fleet view (DASHBOARD-SPEC "one fleet view from every node") -----------
 # A synthetic peer materialised the way state-sync fetch would: its own state
