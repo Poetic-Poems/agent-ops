@@ -373,7 +373,11 @@ status_json="$(jq -n \
           title:  ([ .[] | select(.event=="selection") | .title ]  | last)
         } end
       ),
-      last_cycle: (($real[0] // $cyc[0][0]) | if . == null then null else {id, ended_at, outcome, repo, item, title} end),
+      # The newest cycle the FLEET ran, not the newest this node ran: the
+      # cycle list it is drawn from is the union. `node` says whose it was,
+      # which is the whole difference between "the pipeline last ran an hour
+      # ago" and "this machine has been quiet for an hour while another worked".
+      last_cycle: (($real[0] // $cyc[0][0]) | if . == null then null else {id, node, ended_at, outcome, repo, item, title} end),
       limit: {active: $limit_active, note: $limit_note},
       switch: $switch
     }')"
@@ -466,6 +470,76 @@ log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL
 cron_tail_json='[]'
 [[ -f "$cron_log" ]] && cron_tail_json="$(tail -n 40 "$cron_log" 2>/dev/null | jq -R -s 'split("\n") | map(select(length>0))' 2>/dev/null || echo '[]')"
 
+# --- What each node is doing (requirement 33 / 2.5) ---------------------------
+# `status.current` above answers "what is being worked on right now" for one
+# node — this node, off its own live lock. A fleet has no single answer, so the
+# same question is answered once per node here and rendered on that node's card.
+#
+# A peer publishes no lock (state-sync excludes it: a copied lock is a lock no
+# process holds), but it does publish its log, and requirement 33 stamps `node`
+# on every event. So a peer's state is derived exactly as the local one is,
+# from its own most recent cycle: running until that cycle logs `cycle-end`,
+# the live stage being the last `stage-start` with no matching `stage-end`, and
+# the work whatever its Co-Ordinator selected. What that cannot see is a node
+# killed mid-cycle, which leaves a `cycle-start` with no end and so goes on
+# looking busy for ever; the page bounds the claim with the heartbeat's
+# freshness and `lock_stale_after`, rather than the derivation asserting more
+# than the log supports.
+node_live_json="$(jq -c '
+  def live_of:
+    sort_by(.ts)
+    | . as $evs
+    | ([ $evs[] | select(.event == "cycle-start") ] | last) as $start
+    | if $start == null then null
+      else
+        ($start.cycle) as $cid
+        | [ $evs[] | select(.cycle == $cid) ] as $c
+        | ([ $c[] | select(.event == "cycle-end") ] | last) as $done
+        | { cycle: $cid,
+            since: $start.ts,
+            running: ($done == null),
+            ended_at: ($done.ts // null),
+            stage: (
+              (reduce ($c[] | select((.event == "stage-start" or .event == "stage-end") and .stage))
+                 as $x ({}; .[$x.stage] = $x.event))
+              | to_entries | map(select(.value == "stage-start")) | (.[-1].key // null)
+            ),
+            repo:   ([ $c[] | select(.event == "selection") | .repo ]   | last),
+            item:   ([ $c[] | select(.event == "selection") | .item ]   | last),
+            source: ([ $c[] | select(.event == "selection") | .source ] | last),
+            title:  ([ $c[] | select(.event == "selection") | .title ]  | last) }
+      end;
+  map(select((.node // "") != "")) | group_by(.node)
+  | map({key: .[0].node, value: live_of}) | from_entries' "$events_file")"
+# Deliberately *not* 2>/dev/null, unlike the best-effort reads above: this one
+# takes a file the Publisher has already guaranteed is valid JSON, so anything
+# jq says here is a fault in the program and not in the state. Silencing it
+# costs every card its live state and says nothing about why.
+[[ -z "$node_live_json" ]] && node_live_json='{}'
+
+# Our own row is not derived: the lock is the authoritative answer for this
+# machine (a live pid, not an inference from what was logged), and the Publisher
+# has already reduced it to `status.current` above. Deriving it a second time
+# would also get it wrong in one real case — a cycle that starts, finds the lock
+# held and ends is the *latest* cycle-start while an older one is still running.
+self_live_json="$(jq -nc \
+  --argjson derived "$(jq -c --arg n "$self_node" '.[$n] // null' <<<"$node_live_json")" \
+  --argjson alive "$lock_alive" \
+  --argjson st "$status_json" \
+  --argjson running "$running_events" '
+  if $alive then
+    { cycle: ([ $running[] | .cycle ] | last),
+      since: ($st.lock.started_at // null),
+      running: true, ended_at: null,
+      stage:  ($st.current.stage  // null),
+      repo:   ($st.current.repo   // null),
+      item:   ($st.current.item   // null),
+      source: ($st.current.source // null),
+      title:  ($st.current.title  // null) }
+  elif $derived == null then null
+  else $derived + {running: false} end')"
+[[ -z "$self_live_json" ]] && self_live_json='null'
+
 # --- The fleet (requirement 2.5 / DASHBOARD-SPEC "one fleet view") -----------
 # Who exists and how alive they are, from the peers the last state-sync fetch
 # materialised. Self is listed too — definitionally fresh — so every node's
@@ -476,18 +550,21 @@ cron_tail_json='[]'
 nodes_rows="$work_tmp/nodes.rows"
 last_local_cycle="$(ls -1 "$cycles_dir" 2>/dev/null | sort | tail -n1)"
 jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
+  --argjson live "$self_live_json" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
-    last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false}' > "$nodes_rows"
+    last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
+    live: $live}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
-  jq -c --argjson now "$now_epoch" '
+  jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
     . as $h
     | (try ($h.ts | fromdateiso8601) catch 0) as $t
     | {node: ($h.node // "unknown"), role: ($h.role // "unknown"),
        heartbeat_ts: ($h.ts // null),
        heartbeat_age_s: (if $t > 0 then ([$now - $t, 0] | max) else null end),
        last_cycle: ($h.last_cycle // null), self: false,
-       stale: (if $t > 0 then (($now - $t) > 1800) else true end)}' \
+       stale: (if $t > 0 then (($now - $t) > 1800) else true end),
+       live: ($live[($h.node // "")] // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"
