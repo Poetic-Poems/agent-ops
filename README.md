@@ -456,6 +456,14 @@ remedies:
   ever turn up ("it's already done") is the reason it is void, so an agent
   allowed to clear it would free the item to be rediscovered every cycle.
 
+Because a void is permanent, one has to be earned. Every void carries the
+evidence behind it, and a Co-Ordinator's void — the only kind made without
+opening the repository — is checked before it is recorded: an unevidenced
+verdict, or one the cycle's own candidates contradict (the pull request it calls
+finished still has a diff), is recorded **blocked** instead and handed to the
+Enabler, which can read the repository and settle it properly. You will see the
+refusal as a `warning` on the dashboard.
+
 Both are listed on the dashboard. To reopen a void item — you believe the work
 has genuinely regressed, or the verdict was wrong — append an `unvoided` event
 by hand while no cycle is running:
@@ -477,13 +485,21 @@ needs a secret only you can set, a production bug needs logs only you can see, a
 milestone waits on a decision that is yours to make. Left alone those items sit
 blocked indefinitely, and nothing tells you they are there.
 
+This is also where a pull request goes when a stage could not finish it — a
+Reviewer that could not certify it, a handoff that did not take. **A pull
+request that is not ready for review is the pipeline's problem, not yours**, and
+you will hear about it only as an escalation issue. You are never expected to
+find work by noticing a draft.
+
 So once an item has been blocked for a few cycles, the **Enabler** — one Opus
 pass, engaged rarely — reads it properly: the item, the whole thread, the
 failing run. It then does one of four things:
 
 - **unblocks it**, if whatever was in the way has demonstrably gone (the
   dependency merged, the check went green) — the item is selectable again next
-  cycle;
+  cycle. Where the block *was* a pull request that never left draft, and its
+  checks are green and its work done, the unblock also takes it out of draft, so
+  it arrives in your review queue instead of sitting where nobody would look;
 - **voids it**, if it turns out there was no work to do after all (it is already
   done on `main`);
 - **leaves it blocked**, with a fresher account of what would unstick it;

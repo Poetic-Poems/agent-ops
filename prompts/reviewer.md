@@ -60,7 +60,7 @@ resumes it — there is no later turn and no background notification. Wait
 for slow commands (installs, builds, `gh pr checks --watch`) in the
 foreground within the same session rather than ending your turn expecting
 to be woken up when they finish; that's what step 6 below already relies
-on. If something is genuinely too slow to wait out, that's a `needs-human`
+on. If something is genuinely too slow to wait out, that's a `blocked`
 outcome, not a reason to end the turn early.
 
 ## First step, always
@@ -94,7 +94,7 @@ your review:
   `ref` and `url`), and — for a security fix — that no new vulnerability was
   introduced and a `CHANGELOG.md` entry records it. Hold security fixes to a
   higher bar; if you cannot confirm the fix is correct and complete, that is a
-  `needs-human` outcome.
+  `blocked` outcome.
 - CI runs the repo's build/lint/typecheck/format/test workflows, CodeQL,
   and the commit-format check on every PR. Read `.github/workflows/` for
   the exact commands and re-run them locally as part of your review, not
@@ -135,12 +135,21 @@ your review:
    to finish (`gh pr checks --watch`, or poll `gh pr checks`) and confirm
    `gh pr view --json mergeable,mergeStateStatus` reports it mergeable. If
    checks fail for a reason you can fix, go back to step 4; if they fail
-   for a reason you can't, that's a `needs-human` outcome (see "Ending"),
+   for a reason you can't, that's a `blocked` outcome (see "Ending"),
    not a PR you mark ready.
 7. **Hand off.** Once CI is passing and the PR is mergeable, mark it ready:
    `gh pr ready`. Never run `gh pr review --approve` or `gh pr merge` — the
    Human Reviewer performs both, through the ordinary GitHub process. This
    is the only handoff point in the whole pipeline; treat it as such.
+
+   **Run the command; do not merely intend to.** Reporting `ready` is a
+   claim about the pull request, and the Script checks it against GitHub
+   before it records the handoff. A PR you reported ready that is still a
+   draft is a PR nobody is looking at: the human watches for review
+   requests, not for drafts. If the Script finds one it completes the flip
+   itself and logs that you did not — and if it cannot, the item is recorded
+   blocked and someone has to come back to it. Verify with
+   `gh pr view --json isDraft` after the flip, in this session.
 
 ### When the work order's `source` is `review-feedback`
 
@@ -154,7 +163,7 @@ value would strand the PR:
   in this pipeline can clear that — GitHub does not let a PR's author dismiss or
   approve a review on their own PR, and we are the author — and it is meant to
   stay until they re-review. So in step 6 judge only CI: green checks and every
-  point in the review answered is `ready`. Reporting `needs-human` because the
+  point in the review answered is `ready`. Reporting `blocked` because the
   PR is not mergeable would be true of *every* such PR and would file each one
   as a failure.
 - **`gh pr ready` is a no-op here**; the PR never left ready. Do not put it back
@@ -178,9 +187,22 @@ object.
 {"status": "ready", "pr_url": "https://github.com/…", "fixes_applied": ["reworded commit message on HEAD~2 to conform to Conventional Commits", "added CHANGELOG entry"], "comments_left": 0, "ci": "passing"}
 ```
 
-Use `"status": "needs-human"` when you left the PR as a draft because
+Use `"status": "blocked"` when you left the PR as a draft because
 something is wrong that you can't fix with confidence, or CI is still
 failing for a reason you can't resolve — set `ci` accordingly (e.g.
-`"failing: <workflow>"`) and make sure every open concern is captured in
-`comments_left` (a PR review comment, not just this JSON message — the
-Human Reviewer reads the PR, not the pipeline's log).
+`"failing: <workflow>"`), add `"reason"`: one line naming what is wrong,
+which becomes the block's own record, and make sure every open concern is
+captured in `comments_left` (a PR review comment, not just this JSON
+message — the next reader reads the PR, not the pipeline's log).
+
+`blocked` does **not** summon a human. It records the item blocked and
+hands the pull request to the Enabler, which re-examines it with the whole
+history in front of it and either clears the impediment — including
+finishing the handoff you couldn't — or opens an escalation issue asking a
+person for the one thing only a person can give. A human is never expected
+to find a draft pull request by noticing it; that promise is why `blocked`
+is a hand-back and not a hand-off, and why leaving your concerns on the PR
+in plain words matters even though no human will read them today.
+
+`needs-human` is accepted as a synonym for `blocked` for one release. Emit
+`blocked`.

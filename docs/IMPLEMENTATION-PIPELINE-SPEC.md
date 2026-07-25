@@ -1093,14 +1093,18 @@ runs unattended.
       "clear blockers that no longer apply" will otherwise conclude, correctly
       and disastrously, that an already-done item has no blocker.
     - It may **never** clear a void item, and is given no field with which to
-      try. It may *create* one for a candidate it can see conclusively is
-      already done, which saves an entire Implementor run.
+      try. It may *create* one, in `voided`, for a candidate it can see
+      conclusively is already done, which saves an entire Implementor run — with
+      the `reason` and the `evidence` requirement 34c has always demanded, and
+      subject to requirement 34d's guard, which records an unevidenced or
+      refuted entry as blocked instead.
 19. Chooses the Implementor's model: `implementor_model_trivial` only when
     the item can be completed without changing any file that affects runtime
     behaviour (docs, comments, register entries); otherwise
     `implementor_model_default`. Records the reasoning.
 20. Emits its entire final message as one JSON object: `selected`,
-    `unblocked`, `voided`, and a ranked `candidates` array of up to
+    `unblocked`, `voided` (entries of `{item, repo, reason, evidence}`,
+    requirement 34d), and a ranked `candidates` array of up to
     `candidates_max` work orders (the Script accepts the former
     single-selection shape — the work-order fields at the top level — for
     one release, treating it as a one-candidate list). Candidates carry no
@@ -1280,8 +1284,76 @@ runs unattended.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`). It never approves and never
     merges.
+31a. **The handoff is verified, not reported.** Requirement 31 is the pipeline's
+    only irreversible outward act, and requirement 32 has the Reviewer *describe*
+    it — two different things. Before recording `pr-ready` the Script asks GitHub
+    whether the pull request is a draft (`gh pr view --json isDraft`), and:
+    - not a draft — log `pr-ready` with `handoff: "reviewer"`. The ordinary path,
+      one field on one PR;
+    - still a draft — run `gh pr ready` itself, re-read the flag, and on success
+      log a `warning` naming the PR and then `pr-ready` with `handoff: "script"`.
+      The judgement is the expensive half and the Reviewer has made it; the flip
+      is mechanism, and mechanism the Script can perform deterministically. It
+      completes rather than fails, so a certified PR is never put in front of a
+      human as a problem;
+    - still a draft after that, or the flag unreadable — requirement 32a.
+
+    Fail towards the state something else will look at: "could not ask" must
+    never resolve to "not a draft", which is the defect itself with an API
+    outage standing in for the Reviewer. One definition, in `lib/handoff.sh`,
+    shared with requirement 32b (requirement 34a).
+
+    The defect this exists to prevent shipped. A Reviewer returned
+    `{"status": "ready", "ci": "passing"}` for a complete, green pull request,
+    never ran `gh pr ready`, and the Script logged a successful handoff from the
+    report alone. The PR stayed a draft: invisible to the human, who watches for
+    review requests, and invisible to the log, which agreed with the Reviewer.
+    Three hours later the abandoned-drafts source (requirement 3e) correctly
+    re-detected a stalled draft, at a fresh head SHA and so under a fresh ref no
+    block covers, and paid an Implementor and a Reviewer to finish finished
+    work — which it would have gone on doing hourly, each round looking
+    productive. No component could have noticed: the Reviewer believed it had
+    handed off, the Script believed the Reviewer, and only GitHub disagreed.
 32. Ends with a single JSON object:
-    `{"status": "ready" | "needs-human", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`.
+    `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
+    plus `reason` — one line naming what is wrong — on `blocked`, which becomes
+    the block's own `detail` under requirement 32a. `needs-human` is accepted as
+    a synonym for `blocked` for one release, on the precedent of requirement
+    20's shape migration; the prompt emits `blocked`.
+32a. **A Reviewer that cannot hand off hands back, not out.** Any ending other
+    than a pull request the human can see — `blocked`, an unparseable status, or
+    a `ready` whose handoff requirement 31a could not make true — is recorded as
+    an `attempt-failed` against the item, carrying the `pr_url`. That is a
+    blocked item by requirement 34 and Enabler-eligible by requirement 35a, so
+    the Enabler re-examines it with the whole history in front of it and either
+    clears it (requirement 32b) or escalates it to a human by issue
+    (requirement 36).
+
+    The promise this keeps: **a pull request that is not ready for review is the
+    pipeline's problem until an Enabler says otherwise.** A human is never
+    expected to discover work by noticing a draft. Recording the verdict as a
+    bare `stage-end` — which is what it was — named no item, so it pinned no
+    state, appeared in no blocked list, reached no Enabler, and left the PR to be
+    swept up hours later by abandoned-drafts as though the Reviewer had never
+    run.
+
+    The Script leaves no comment of its own on the PR here. The Reviewer has
+    already stated its concerns there in its own words (requirement 30) and that
+    is the record the Enabler reads; a second comment would add nothing and would
+    move `updatedAt`, which is the clock requirement 3e measures staleness by.
+    Where the Script does comment on a stage failure it says the item is recorded
+    blocked and that the Enabler will re-examine it — never that the PR has been
+    left for a human, which under this requirement is not true.
+32b. **`complete_handoff`.** An Enabler `unblocked` verdict may carry
+    `complete_handoff: true` on an item whose `pr_url` is set (requirement 35a),
+    meaning: this block *is* an unfinished handoff — an open draft this system
+    raised, checks green, work done, no unanswered concern — take it out of
+    draft. The Enabler establishes it; the **Script** performs it, through
+    requirement 31a's implementation, and logs `pr-ready` with
+    `handoff: "enabler"`. The division is requirement 36's: the Script is the
+    only writer of the pipeline's outward acts, which is why it and not the
+    Enabler also files the escalation issue. A `complete_handoff` on an item with
+    no `pr_url` is ignored — there is nothing to hand off.
 
 ### Logging and state
 
@@ -1294,7 +1366,11 @@ runs unattended.
     `item-void`, `unvoided`, `enabler-examined`, `escalated`, `limit-hit`,
     `disabled`, `enabled`, `warning`, `cycle-end`. A `claim-lost` names the repo,
     item and branch a peer node won (requirement 17a); `selection` carries the
-    claimed `branch`. A `stage-start`/`stage-end` pair's `stage` is
+    claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
+    `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
+    the event means the pull request is not a draft, not that somebody said so.
+    An `attempt-failed` carries `pr_url` when the failing stage was working on
+    one (requirement 32a). A `stage-start`/`stage-end` pair's `stage` is
     `coordinator`, `implementor`, `reviewer` or `enabler`; the last is the one
     that may appear on a cycle which selected nothing, since it runs from the
     cleanup of requirement 11. An `enabler-examined` carries `repo`, `item`, the
@@ -1371,8 +1447,48 @@ runs unattended.
     - The Co-Ordinator may *create* voids (requirement 18) for candidates it
       can see conclusively are already done, and should: that is one cheap read
       instead of a full Implementor run reaching the same answer. Creating is
-      safe where clearing is not — a wrong void costs a human one line in a
-      log, a wrong unvoid costs a cycle every hour until someone notices.
+      safe where clearing is not — a wrong unvoid costs a cycle every hour until
+      someone notices — but it is not free, and requirement 34d is what makes it
+      safe enough to keep.
+34d. **A Co-Ordinator void is corroborated before it is made permanent.** The
+    Co-Ordinator is the one void author that never opens the repository: the
+    Implementor reads the tree (requirement 27b) and the Enabler reads the issue
+    and the pull request (requirement 35), while the Co-Ordinator is given a JSON
+    digest of candidates and nothing else. An assertion about the default branch,
+    made by the only actor that never looks at the default branch, is the
+    assertion to check. Two tests, both on the Script's side of the boundary:
+    - **Evidence must be present.** Requirement 34c's `evidence` field is
+      required on every `voided` entry, and `null`, `""`, whitespace, `{}` and
+      `[]` are all absence. An entry without it is not a verdict, it is an
+      opinion.
+    - **This cycle's own candidates must not refute it.** Where the voided
+      repo+item matches a gathered candidate carrying a `pr_number`, the guard
+      reads that PR's changed files: a non-empty diff against its base means the
+      change is by definition not on the base, whatever anyone asserts. The
+      candidates tested are the ones the Co-Ordinator was given, so a void can
+      never be refused over something it could not have seen. A PR the API will
+      not answer for counts as uncorroborated, not as innocent.
+
+    A refused void is recorded `attempt-failed` — blocked, not void — plus a
+    `warning` naming the refusal. Blocked is the clearable twin: the Co-Ordinator
+    still skips the item so nothing churns, and requirement 35a makes it
+    Enabler-eligible, so an actor that *can* read the tree adjudicates. If the
+    item really is done the Enabler voids it properly, with evidence. The
+    pipeline reaches the same answer; it may not reach it by assertion.
+
+    Not a prompt instruction, and the distinction matters: "be certain" is
+    already in `prompts/coordinator.md` twice, and the Co-Ordinator that voided
+    `TD26072114` with "PR #92 work is finished … all merged; TECH-DEBT.md Ledger
+    marked resolved" was certain. On the default branch the workflow still had no
+    timeout, the Ledger row still read `open`, and PR #92 was an open, conflicted
+    draft. Because a void keys on the item it bypassed the per-head refs of
+    requirements 3e and 3g that exist precisely so a changed state gets a fresh
+    look, so the item was unreachable from both directions at once — void as a
+    tech-debt candidate and void as the abandoned draft that would have finished
+    it. Every following cycle reported `none-selected` citing the void, the no-op
+    fingerprint (requirement 3b) then matched, and three nodes stood down hourly
+    on a repository with outstanding work. That is the shape of the failure this
+    guards: not a wrong answer, but a silent one.
 
 ### The Enabler
 
@@ -1514,7 +1630,10 @@ runs unattended.
 
     Its runtime input is the claimed eligible entries (each carrying `repo`,
     `item`, `reason`, `blocked_ts`, the blocking stage's own `stage`, `detail`
-    and `unblock_condition`, and the last `escalation` if there is one), plus
+    and `unblock_condition`, the `pr_url` the blocking event named if it named
+    one — under requirement 32a a pull request nobody could hand off is a blocked
+    item like any other, and for a finishing source the item id names a register
+    entry rather than the PR — and the last `escalation` if there is one), plus
     `escalation_label`, `assignee`, and this cycle's `cycle` id and `node` — the
     last two because requirement 36a's issue footer carries them, and a model
     cannot know its own cycle.
@@ -1526,6 +1645,7 @@ runs unattended.
         {"repo": "…", "item": "…",
          "verdict": "unblocked" | "still-blocked" | "escalate" | "void",
          "reason": "…", "evidence": "…", "comments_posted": ["…"],
+         "complete_handoff": false,
          "unblock_condition": "still-blocked only",
          "issue": {"title": "…", "body": "…"}}
       ],
@@ -1540,7 +1660,7 @@ runs unattended.
 
     | Verdict | The Script does |
     |---|---|
-    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle |
+    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft |
     | `void` | logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence |
     | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
@@ -1877,6 +1997,40 @@ pull request, run the ones the change touches and any it could regress.
    log fills with confident, correct-looking events and the same item is
    worked forever. Assert the negative too: `unvoided` *does* clear it, or you
    have built a state no human can escape.
+8c. **A void must be earned (requirement 34d).** `test/void-guard.test.sh`
+   passes: an entry with no `evidence` — and `null`, `""`, whitespace, `{}` and
+   `[]` all count as none — is refused before any API call; an entry whose
+   repo+item matches a gathered candidate whose PR still changes files is
+   refused naming that PR; a PR the API will not answer for is refused as
+   uncorroborated; and an evidenced entry with an empty PR diff, or with no PR
+   to check at all, is allowed. Then drive it end to end: a Co-Ordinator
+   returning a `voided` entry the guard refuses must produce an `attempt-failed`
+   for that item and **no** `item-void`, and the next cycle must list the item as
+   blocked rather than void. The negative matters as much — assert a well-formed
+   void is still recorded, or the guard has quietly abolished a feature
+   requirement 18 depends on to avoid full Implementor runs.
+8d. **A `pr-ready` event means the pull request is not a draft (requirement
+   31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
+   without calling `gh pr ready`; a draft is flipped and reports `flipped`; a
+   flip that exits 0 and changes nothing reports `failed`; and a PR whose state
+   cannot be read reports `failed` rather than being assumed handed off. Then
+   drive a cycle whose Reviewer answers `{"status": "ready"}` on a PR it left as
+   a draft: the cycle must log a `warning`, take the PR out of draft itself, and
+   log `pr-ready` with `handoff: "script"`. Assert against GitHub, not against
+   the log — the whole defect was a log that agreed with a Reviewer nobody had
+   checked.
+8e. **A pull request nobody could hand off reaches the Enabler, not the human
+   (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
+   with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
+   item carrying the PR's `pr_url`, so that the next cycle lists it blocked and,
+   after `enabler_after_coordinator_cycles`, eligible — with the `pr_url` present
+   in the Enabler's runtime input. Assert the PR is *not* commented on with
+   anything telling a human it is theirs, and that a bare `stage-end` is no
+   longer the only record: that shape named no item, pinned no state, and is what
+   let a finished draft sit unseen. Then assert requirement 32b's other end: an
+   Enabler `unblocked` verdict carrying `complete_handoff: true` takes the PR out
+   of draft and logs `pr-ready` with `handoff: "enabler"`, while the same verdict
+   on an item with no `pr_url` is ignored without error.
 8b. **The two states are visible apart, and so is "waiting on you".** A human
    looking at the monitor can tell "waiting on something" from "there is nothing
    to do here" without reading the log. If both render as one list, the operator
