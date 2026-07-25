@@ -208,10 +208,16 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   cron_tail: [ "line", … ] }
 ```
 
-`fleet.claims` is the live claim registry (implementation spec 17a), fetched
-with a handful of contents-API reads on the GitHub tick and carried between
-ticks by the same cache as `github` (it rides in `github.claims`; `fleet.claims`
-is the surfaced view). Every node renders the same fleet, so any node's URL
+`fleet.claims` is the live claim registry (implementation spec 17a), read on
+the GitHub tick and carried between ticks by the same cache as `github` (it
+rides in `github.claims`; `fleet.claims` is the surfaced view). One recursive
+`git/trees` call enumerates the registry — path and blob SHA per claim — and
+each body is then read by SHA from `git/blobs` unless
+`<state_dir>/.dashboard-claims.json` already holds it. Since a blob's SHA is a
+hash of its bytes, a cache hit cannot be stale, so a fleet whose claims are
+not moving costs one API call a tick however many claims it holds. (It was a
+`contents/` walk: one call for the claims directory, one per repository under
+it and one per claim.) Every node renders the same fleet, so any node's URL
 answers "what is the operation doing" — `node` (header: "· <name>") is what
 tells two otherwise identical tabs apart.
 
@@ -229,6 +235,18 @@ and re-renders the body **only when the data actually changed** (a signature
 compare that ignores the always-moving `generated_at`). Expanded cycle rows,
 open transcript panels and scroll position survive the re-render; the header's
 staleness clock ticks every interval and warns if the heartbeat looks stopped.
+
+The header carries **two** clocks, because the page has two ages: `data <age>`
+from `generated_at`, which moves every few seconds, and `· GitHub <age>` from
+`github.fetched_at`, which moves once per heartbeat window. Everything sourced
+from GitHub — PRs, checks, issues, work sources, claims — is as old as the
+second clock however recent the first is, and the design that makes that so
+(a `--no-github` tick carrying the last fetch forward rather than blanking the
+panels) is exactly what would otherwise hide a stalled fetch: half-hour-old PR
+data renders identically to fresh. Past 12 minutes the GitHub clock turns
+amber and a banner names the fetch time. That banner is distinct from the
+`ok === false` one: this is a fetch that stopped happening, that one is a
+fetch that ran and failed.
 
 Panels: status header (running/idle, "· <node>" naming the page's own node,
 and while a cycle runs the stage, repo,
@@ -272,15 +290,31 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   rather than the Publisher directly: the launcher self-loops on 5-second
   boundaries for ~295s (leaving a ~5s gap so consecutive cron runs don't
   overlap), republishing local state — lock, running cycle, cost, log — on
-  every tick. A full GitHub-hitting publish runs only once per window (at the
-  top); the cheaper `--no-github` publish runs in between and carries the last
-  fetch forward, so the page stays near-live without hammering the GitHub API.
-  `flock` guards against a slow publish stacking up under the next tick. No
-  tick starts inside the window's final ten seconds, so the launcher does not
-  overrun into the next cron fire, and a healthy window ends `exit 0` — its
-  exit status is explicit, not whatever the final tick's lock bookkeeping
-  happened to return (`LAUNCHER_WINDOW` shortens the window for the test
-  suite only).
+  every tick. A full GitHub-hitting publish runs only when the last fetch has
+  aged past `LAUNCHER_GITHUB_MAX_AGE` (285s, so that the gap between fetches
+  including the fetch's own ~20s comes to about five minutes); the cheaper
+  `--no-github` publish runs in between and carries the last fetch forward, so
+  the page stays near-live without hammering the GitHub API. The gate is the
+  **age of `<state_dir>/.dashboard-github.json`**, which the Publisher stamps
+  on every fetch it attempts — succeeded or failed — and which the launcher
+  stamps itself if a publish dies before getting that far. Age, rather than a
+  position in the window, is what makes the cadence self-healing: a missed
+  cron window, a publish that overran its tick budget and a GitHub outage all
+  reduce to "the next tick is the one that fetches", and none of them can turn
+  into a retry storm. (It was a wall-clock test, `EPOCHSECONDS % 300 < 5`,
+  until it was found never to fire: ticks always land on a multiple of 5, so
+  the test meant `% 300 == 0`, and a window opened by a `*/5` entry starts on
+  a 300s boundary and runs from offset +5 to +285. The GitHub panels refreshed
+  only when cron's sub-second jitter happened to put the first tick on the
+  boundary — half-hourly or worse, and invisibly, because a carried-forward
+  fetch renders exactly like a fresh one. Hence both the age gate and the
+  freshness reporting under **The Site**.) `flock` guards against a slow
+  publish stacking up under the next tick. No tick starts inside the window's
+  final ten seconds, so the launcher does not overrun into the next cron fire,
+  and a healthy window ends `exit 0` — its exit status is explicit, not
+  whatever the final tick's lock bookkeeping happened to return
+  (`LAUNCHER_WINDOW` shortens the window, and `LAUNCHER_PUBLISH_CMD` swaps in
+  a stub Publisher, for the test suite only).
 
 ## Components (as built)
 
@@ -315,9 +349,17 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 
 - `shellcheck scripts/*.sh agent-cycle.sh` clean.
 - `test/publish-dashboard.test.sh` passes: the launcher exits 0 on a healthy
-  (shortened) window and while another publish holds the lock; the batched
-  cost scan matches the per-file semantics (day cut-off, torn-file tolerance)
-  and the whole publish stays within its process budget on a long history.
+  (shortened) window and while another publish holds the lock; a cold window
+  fetches from GitHub exactly once, a window following a fresh fetch not at
+  all, and an aged stamp is refetched on the next tick; the batched cost scan
+  matches the per-file semantics (day cut-off, torn-file tolerance) and the
+  whole publish stays within its process budget on a long history.
+- On a node that has been up for at least ten minutes,
+  `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
+  line roughly every five minutes, and `github.fetched_at` in `data.js` is
+  within about five minutes of `generated_at`. Those two facts are the whole
+  of "the PR panels are live"; nothing else on the page distinguishes a
+  refresh that is happening from one that is not.
 - `scripts/publish-dashboard.sh` against the real `state_dir` produces valid
   JSON (`data.js` minus the wrapper passes `jq empty`), and `grep` finds no
   `/home/…` path or token in the output.
@@ -365,6 +407,29 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   `ok` unchanged, and a never-yet-fetched page is `ok: null`, neither of which
   is an alarm. The staleness is not hidden: `stale`/`fetched_at` say how old the
   GitHub half is, distinct from the whole page's `generated_at`.
+- **Carrying a fetch forward silently is what let a broken cadence hide, so
+  the two ages are now both on the page.** The decision above is right, and it
+  has a cost: a fetch that is never taken is indistinguishable, on screen,
+  from one taken a moment ago. When the launcher's gate turned out never to
+  fire under cron (see **Heartbeat**), the page went on reporting "data 3s
+  ago" over PR data half an hour old, and every panel rendered perfectly. Two
+  things follow, and both are load-bearing rather than decorative. The header
+  shows `data <age> · GitHub <age>`, and past 12 minutes the second turns
+  amber and raises its own banner — a reader can now see which half of the
+  page is old. And the cadence has a test (`test/publish-dashboard.test.sh`,
+  driven through `LAUNCHER_PUBLISH_CMD` so it costs no API call) asserting
+  that a cold window fetches exactly once, a warm one not at all, and an aged
+  stamp is refetched on the next tick. A behaviour whose failure mode is
+  *looking healthy* cannot be left to a careful reading of the script.
+- **The GitHub tick's gate is a duration, not a point in the schedule.** The
+  rule "fetch when the last fetch is older than N" holds whenever the tick
+  runs; the rule "fetch on the tick that lands at second zero" holds only if
+  such a tick exists, which is a property of cron's alignment, the loop's
+  bounds and how long a publish took — three things that are decided
+  elsewhere and that no test here was watching. The first rule also degrades
+  the way this page wants: on a missed window it fetches late rather than not
+  at all, and on a GitHub outage it retries at the cadence rather than at the
+  tick rate, because the stamp records the *attempt*.
 - **The blocked and void lists are not computed here.** `blocked[]` and
   `void[]` come from the same shared implementation the Script feeds its
   Co-Ordinator (`lib/cycle-state.sh`, per requirement 34a of
