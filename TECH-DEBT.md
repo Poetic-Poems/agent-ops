@@ -168,6 +168,42 @@ Fix: assemble the detail window in one `jq` program over the 40 cycles'
 envelope and event files (they are already individual files on disk),
 which should take a `--no-github` publish to around a second.
 
+### TD26072301 A watchtower roll mid-cycle kills the running pipeline
+
+(Filed with #61, whose Ledger row landed without this body. Written up here
+from that PR's own account and the troubleshooting row it added to
+`deploy/docker/README.md`, which has carried the recovery story since.)
+
+An image update recreates the `scheduler` container, and the roll kills its
+whole process group — so a cycle in flight dies wherever it had got to. A
+manual `docker compose up -d` does the same thing even when nothing in the
+compose file changed, because watchtower recreates containers outside compose
+and the next `up -d` therefore sees a config-hash mismatch on every service.
+Observed 2026-07-22: recreating for the #48 compose refresh killed the 21:00
+cycle's Implementor mid-run.
+
+Recovery is real but partial. The lock is taken over as stale on the next
+hourly tick (`lock_stale_after`) and the claim GC releases what the dead cycle
+held, so the pipeline itself heals. What nothing cleans up is the debris: a
+branch or draft PR if the kill landed after the push, the orphaned clone under
+`workspace_root`, and — evidence that this happens — a 652-byte hole of NULs in
+`ockham-container`'s `dashboard.log`, four whole lines whose data blocks never
+reached disk before the process group died. The operating rule today is the
+README's: run `agent-cycle.sh --status` before any *manual* `up -d` and wait for
+a running cycle to finish. That rule cannot cover the automatic roll, which is
+the case that actually bites.
+
+Fix: make the roll wait rather than make the recovery better. watchtower's
+pre-update lifecycle hook (`WATCHTOWER_LIFECYCLE_HOOKS=true` plus a
+`com.centurylinklabs.watchtower.lifecycle.pre-update` label) is documented to
+cancel and re-poll when the command exits 75 (`EX_TEMPFAIL`), so a hook reading
+`lock.json` for a live pid would defer the roll to the next poll — worth
+verifying against the image before relying on it, given the project is
+unmaintained (see the pinned `DOCKER_API_VERSION` row in the deploy README).
+Failing that, a cheaper approximation: point `WATCHTOWER_SCHEDULE` at the quiet
+part of the hour rather than polling every 300s, so a roll lands where cycles
+do not.
+
 ### TD26072501 The state dir's logs grow without bound
 
 TD26072004 bounded the *records* in `state_dir` — `cycles/` and `reviews/` are
