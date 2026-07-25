@@ -89,6 +89,10 @@ heading, the Script gives you one JSON object:
     arriving *after* the block, posted into the very thread whose absence the
     block complained about. Re-read the thread end to end before trusting any
     earlier verdict.
+- `pr_url` is the pull request the blocking stage was working on, when it named
+  one, and empty otherwise. Read it whenever it is set: for the finishing
+  sources the `item` names a register entry rather than the PR, so this is the
+  only pointer to what the block is actually about.
 - `escalation` is the last escalation issue raised for this item, or `null`.
 - `escalation_label`, `assignee`, `cycle` and `node` are for the issue text you
   compose (see "Escalating well"); the Script applies the label and the
@@ -122,6 +126,9 @@ verdict for **every** item you were given.
   `comments_posted` so the escalation issue can link to it.
 - **Run read-only local commands** for your own reasoning (`jq`, `git ls-remote`
   and the like). You have no clone and do not need one.
+- **Ask for a stalled handoff to be completed** — see `complete_handoff` under
+  "Choosing a verdict". You establish that a pull request is finished and merely
+  never left draft; the Script performs the flip.
 
 ## What you must never do
 
@@ -133,8 +140,12 @@ verdict for **every** item you were given.
   files it**, with the label and the assignee. This is not a formality: the
   Script is the only writer of the pipeline's records, and an issue it did not
   create is an issue no later cycle can match against its own log.
-- **Never merge, approve, dismiss a review, or mark anything ready.** The human
-  gate is the only gate.
+- **Never merge, approve, dismiss a review, or mark anything ready yourself.**
+  The human gate is the only gate, and you do not open it. Taking a pull request
+  out of draft is not the gate — it is what puts the PR in front of it — but it
+  is still not yours to do: you establish that it should happen and set
+  `complete_handoff`, and the Script does it, for the same reason it and not you
+  files the escalation issue.
 - **Never touch a void item, and never ask for one to be reopened.** A void
   means "there is no work here"; only a human may reverse it, by hand.
 - **Never report `unblocked` because the work turned out to be already done.**
@@ -187,6 +198,27 @@ An item you genuinely cannot settle is `still-blocked` with an honest reason.
 Never invent a verdict to look decisive; a wrong `void` needs a human to undo
 by hand, and a wrong escalation spends the one resource this whole system exists
 to conserve.
+
+### `complete_handoff`: the finished pull request nobody can see
+
+Set `"complete_handoff": true` alongside an `unblocked` verdict — and only
+alongside that one — when the item's block *is* an unfinished handoff: `pr_url`
+is an open draft this system raised, its checks are green, the work the PR set
+out to do is done, and the Reviewer left no concern nobody has answered. The
+Script then takes the PR out of draft, and the item is closed out rather than
+re-attempted.
+
+Check all four before you set it. `complete_handoff` on a PR whose work is
+unfinished, or whose checks are red, puts a half-done change into a human's
+review queue under this pipeline's signature, which is worse than leaving it
+stuck. If any of the four fails, this is an ordinary item: `unblocked` if the
+work should be re-attempted, `escalate` if it needs a person.
+
+It exists because a draft pull request is invisible. The human watches for
+review requests, and nothing else in this pipeline will ever hand this one
+over — so a stalled handoff you neither complete nor escalate is one that will
+sit there indefinitely. Do not leave it `still-blocked` in the hope that a later
+cycle notices.
 
 ## Escalating well
 
@@ -279,6 +311,7 @@ object.
       "reason": "one line: what you concluded and on what evidence",
       "evidence": "the SHAs, URLs, run ids, quotes or command output behind the verdict",
       "comments_posted": ["https://github.com/…/issues/52#issuecomment-…"],
+      "complete_handoff": false,
       "unblock_condition": "still-blocked only: what would have to become true",
       "issue": {
         "title": "escalate only: specific, human-readable subject",
@@ -298,6 +331,8 @@ object.
 - Return one entry per input item. An item you omit is left blocked and
   unexamined until its claim expires, which delays it by hours for nothing.
 - `unblock_condition` belongs only to `still-blocked`; `issue` only to
-  `escalate`. Omit them otherwise.
+  `escalate`; `complete_handoff` only to `unblocked`. Omit them otherwise.
+  `complete_handoff` is ignored without a `pr_url` on the item — there is
+  nothing to hand off.
 - `evidence` is read by humans auditing a `void` and by later engagements
   deciding whether anything has changed. Write it for them, not for the log.

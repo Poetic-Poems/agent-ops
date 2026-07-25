@@ -99,6 +99,19 @@ assert_eq "the entry carries the block it was minted from" \
   "$(eligible | jq -r '.[0] | [.stage, .detail, .unblock_condition, .blocked_ts] | join("|")')"
 assert_eq "an item with no escalation carries none" "null" \
   "$(eligible | jq -c '.[0].escalation')"
+assert_eq "a block that named no pull request carries an empty one" '""' \
+  "$(eligible | jq -c '.[0].pr_url')"
+
+# Requirement 32a: a pull request the Reviewer could not hand off is a blocked
+# item like any other, and it is the Enabler that decides whether the pipeline
+# can finish it or a human must be asked. For a finishing source the item id
+# names a register entry rather than the PR, so without this the Enabler would
+# have to re-derive from the id the very artefact the block is about.
+printf '%s\n' '{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"reviewer","repo":"o/r","item":"TD1","detail":"reviewer verdict blocked: failing: build","pr_url":"https://github.com/o/r/pull/111"}' > "$log"
+coord_cycles 3 >> "$log"
+assert_eq "a reviewer hand-back is eligible like any other block" "threshold" "$(reason_for TD1)"
+assert_eq "and the entry carries the pull request it is about" \
+  "https://github.com/o/r/pull/111" "$(eligible | jq -r '.[0].pr_url')"
 
 # Only a *successful* Co-Ordinator counts, and only one per cycle: a stage that
 # timed out established nothing, another stage's end is not a selection pass,

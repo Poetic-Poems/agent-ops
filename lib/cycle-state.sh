@@ -197,6 +197,13 @@ void_items() {
 # an examination. The engagement reached a verdict it could not act on, so the
 # item is exactly where it was; treating the marker as progress would retire the
 # item on the strength of a failed `gh issue create`.
+#
+# Each entry carries `pr_url` when the blocking event named one (requirement
+# 32a). Under that requirement a pull request the Reviewer could not hand off is
+# a blocked item like any other, and for a finishing source the item id names a
+# register entry rather than the PR — so without this the Enabler would have to
+# re-derive from the id the very artefact the block is about. Empty when the
+# block had no PR, which is most of them.
 # shellcheck disable=SC2016  # jq's $ vars ($all/$b/$open/…), not the shell's.
 ENABLER_ELIGIBLE_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
@@ -247,6 +254,7 @@ ENABLER_ELIGIBLE_JQ='
       | {repo: ($b.repo // ""), item: $b.item, reason: $reason, blocked_ts: ($b.ts // ""),
          stage: ($b.stage // ""), detail: ($b.detail // ""),
          unblock_condition: ($b.unblock_condition // ""),
+         pr_url: ($b.pr_url // ""),
          escalation: (if $escalation == null then null
                       else {issue_number: ($escalation.issue_number | tostring | tonumber),
                             issue_url: ($escalation.issue_url // ""),

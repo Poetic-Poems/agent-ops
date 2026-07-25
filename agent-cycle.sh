@@ -40,6 +40,10 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
+# shellcheck source=lib/void-guard.sh
+. "$SCRIPT_DIR/lib/void-guard.sh"
 
 usage() {
   cat <<'EOF'
@@ -378,16 +382,47 @@ log_unblocked_items() {
 
 # The Co-Ordinator may void a candidate it can see conclusively is already done,
 # rather than paying an Implementor cycle to reach the same verdict. Entries are
-# objects (item/repo/reason), unlike `unblocked`'s bare ids, because a void is
-# terminal and worth recording precisely; an entry naming no item is ignored.
+# objects (item/repo/reason/evidence), unlike `unblocked`'s bare ids, because a
+# void is terminal and worth recording precisely; an entry naming no item is
+# ignored.
+#
+# Requirement 34d: it is corroborated before it is made permanent. The
+# Co-Ordinator is the one void author that never reads the tree — it sees a JSON
+# digest of candidates and nothing else — so an assertion it makes about the
+# default branch is checked against the facts the same cycle gathered, and
+# against requirement 34c's long-standing demand for evidence. An entry the
+# guard refuses is recorded `blocked` instead: the Co-Ordinator still skips the
+# item, so nothing churns, but the record is clearable and Enabler-eligible
+# (requirement 35a), so an actor that can read the tree gets to adjudicate
+# rather than the item disappearing on an unchecked claim. See lib/void-guard.sh
+# for what the guard tests and why it is not a prompt instruction.
 log_voided_items() {
-  local wo="$1" entry item
+  local wo="$1" repos="${2:-[]}" entry item repo reason refusal
   while IFS= read -r entry; do
     item="$(jq -r '.item // ""' <<<"$entry")"
     [[ -n "$item" ]] || continue
-    log_event "item-void" "$(item_event_fields "coordinator" \
-      "$(jq -r '.reason // "no reason given"' <<<"$entry")" \
-      "$(jq -r '.repo // ""' <<<"$entry")" "$item")"
+    repo="$(jq -r '.repo // ""' <<<"$entry")"
+    reason="$(jq -r '.reason // "no reason given"' <<<"$entry")"
+
+    if refusal="$(void_guard_reason "$entry" "$repos")"; then
+      log_event "item-void" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
+        "$(jq -nc --arg e "$(void_entry_evidence "$entry")" '{evidence: $e}')")"
+      continue
+    fi
+
+    # Two events, deliberately. The `warning` is what a human scanning the
+    # dashboard sees — an agent tried to make something permanent and was wrong,
+    # which is worth knowing even though the cycle recovered. The
+    # `attempt-failed` is the state: it blocks the item on repo+item exactly as
+    # any other failed attempt does (requirement 34), which is what puts it in
+    # front of the Enabler.
+    log_event "warning" "$(jq -nc \
+      --arg d "co-ordinator void refused for ${repo:-<no repo>} $item — $refusal; recorded blocked instead" \
+      '{detail: $d}')"
+    log_event "attempt-failed" "$(item_event_fields "coordinator" \
+      "void refused ($refusal). The Co-Ordinator's stated reason was: $reason" "$repo" "$item" \
+      "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+        '{unblock_condition: $c}')")"
   done < <(jq -c '.voided[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
@@ -553,9 +588,43 @@ handle_stage_failure() {
     detail="$stage exited $rc"
   fi
   detect_and_log_limit_hit "$out_file" || true
-  log_attempt_failed "$stage" "$detail"
+  # The PR travels on the event (requirement 32a) so the Enabler can open it
+  # without re-deriving it from the item id — for a finishing source the item
+  # may not name the PR at all.
+  log_attempt_failed "$stage" "$detail" \
+    "$(jq -nc --arg u "$pr_url" 'if $u == "" then {} else {pr_url: $u} end')"
   if [[ -n "$pr_url" ]]; then
-    gh pr comment "$pr_url" --body "Autonomous agent ($stage) abandoned this PR: $detail. Left for human review." >/dev/null 2>&1 || true
+    gh pr comment "$pr_url" --body "Autonomous agent ($stage) stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed." >/dev/null 2>&1 || true
+    release_claim have-pr
+  else
+    release_claim no-pr
+  fi
+}
+
+# A Reviewer verdict that did not end in a pull request the human can see
+# (requirement 32a): `needs-human`/`blocked`, an unparseable status, or a
+# `ready` the handoff could not be made true.
+#
+# It is recorded exactly as any other failed attempt — an `attempt-failed`
+# against repo+item, which is what requirement 34 reads as blocked and
+# requirement 35a reads as Enabler-eligible. That single choice is what keeps
+# the promise the pipeline makes to its human: a pull request that is not ready
+# for review is the pipeline's problem until an Enabler says otherwise, and the
+# Enabler says otherwise by opening an escalation issue, not by leaving a draft
+# where somebody might notice it.
+#
+# Deliberately silent on the PR itself. The Reviewer has already left its
+# concerns there in its own words (requirement 30), which is the record the
+# Enabler reads; a second comment from the Script would say nothing new, and
+# would move `updatedAt` — the clock the abandoned-drafts source measures
+# staleness by (requirement 3e).
+log_reviewer_handback() {
+  local detail="$1" pr_url="${2:-}" unblock_condition="${3:-}"
+  log_attempt_failed "reviewer" "$detail" \
+    "$(jq -nc --arg u "$pr_url" --arg c "$unblock_condition" \
+       '(if $u == "" then {} else {pr_url: $u} end)
+        + (if $c == "" then {} else {unblock_condition: $c} end)')"
+  if [[ -n "$pr_url" ]]; then
     release_claim have-pr
   else
     release_claim no-pr
@@ -743,6 +812,7 @@ maybe_run_enabler() {
   local claimed_json='[]' n_eligible=0 n_claimed=0 n_out=0 i j
   local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
+  local e_pr_url e_handoff
   local issue_title issue_body_file created number url missing
 
   # --- Guards (requirement 35). Every one of them declining is normal. ---
@@ -887,6 +957,29 @@ $(jq . <<<"$input")
         # (requirement 18) without cross-referencing timestamps.
         log_event "unblocked" "$(jq -nc --arg i "$e_item" --arg r "$e_repo" --arg reason "$e_reason" \
           '{item: $i, repo: $r, by: "enabler", reason: $reason}')"
+        # Requirement 32b: the one block the Enabler can clear by act rather than
+        # by verdict — a finished pull request that never left draft. It decides;
+        # the Script performs the flip, for the same reason the Script and not the
+        # Enabler files an escalation issue (requirement 36): one writer of the
+        # pipeline's outward acts. The handoff itself is lib/handoff.sh's, so this
+        # path and the Reviewer's cannot drift (requirement 34a).
+        e_pr_url="$(jq -r '.pr_url // ""' <<<"$claimed_entry" 2>/dev/null || true)"
+        if [[ "$(jq -r '.complete_handoff // false' <<<"$ex" 2>/dev/null || true)" == "true" \
+              && -n "$e_pr_url" ]]; then
+          e_handoff="$(confirm_pr_ready "$e_pr_url")" || true
+          case "$e_handoff" in
+            already|flipped)
+              log_event "pr-ready" "$(jq -nc --arg u "$e_pr_url" --arg h "$e_handoff" \
+                '{pr_url: $u, handoff: "enabler", state: $h}')"
+              ;;
+            *)
+              log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
+                --arg d "enabler asked for the handoff on $e_pr_url to be completed, but it is still a draft" \
+                '{detail: $d, pr_url: $u}')"
+              ;;
+          esac
+          extra="$(jq -nc --arg h "$e_handoff" '{complete_handoff: $h}')"
+        fi
         ;;
       void)
         # Requirement 9b: "the work is already done" is a void, never an unblock.
@@ -1373,7 +1466,10 @@ if (( DRY_RUN )); then
 fi
 
 log_unblocked_items "$work_order_json"
-log_voided_items "$work_order_json"
+# The repos the Co-Ordinator was given, verbatim: the void guard (requirement
+# 34d) tests a verdict against the same candidates that produced it, so it can
+# never refuse a void over something the Co-Ordinator could not have seen.
+log_voided_items "$work_order_json" "$ordered_repos_json"
 
 # --- 5. Nothing selected ---
 selected="$(jq -r '.selected' <<<"$work_order_json")"
@@ -1530,9 +1626,11 @@ fi
 if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
   log_attempt_failed "implementor" \
     "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
-    "$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$impl_status_json")"
+    "$(jq -c --arg u "$impl_pr_url" \
+       '{unblock_condition: (.unblock_condition // "")}
+        + (if $u == "" then {} else {pr_url: $u} end)' <<<"$impl_status_json")"
   if [[ -n "$impl_pr_url" ]]; then
-    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Left for human review." >/dev/null 2>&1 || true
+    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed." >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -1608,9 +1706,35 @@ fi
 
 rev_status="$(jq -r '.status // empty' <<<"$rev_status_json")"
 if [[ "$rev_status" == "ready" ]]; then
-  log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u}')"
+  # Requirement 31a: the verdict is the Reviewer's — it is the only actor that
+  # read the diff — but the handoff is a fact about the PR, and asking GitHub
+  # costs one field. `pr-ready` now means the PR is not a draft, not that
+  # somebody said so; `handoff` records which of them made it true.
+  handoff_result="$(confirm_pr_ready "$impl_pr_url")" || true
+  case "$handoff_result" in
+    already)
+      log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u, handoff: "reviewer"}')"
+      ;;
+    flipped)
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" \
+        --arg d "reviewer reported ready but left $impl_pr_url a draft; the Script completed the handoff" \
+        '{detail: $d, pr_url: $u}')"
+      log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u, handoff: "script"}')"
+      ;;
+    *)
+      log_reviewer_handback \
+        "the Reviewer reported ready, but $impl_pr_url is still a draft and the handoff could not be completed" \
+        "$impl_pr_url" "Confirm the pull request is out of draft with CI green."
+      exit 0
+      ;;
+  esac
 else
-  log_event "stage-end" "$(jq -nc --arg s "$rev_status" '{stage: "reviewer", detail: $s}')"
+  # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
+  # verdict names a real impediment on a real PR, which is a blocked item —
+  # the Enabler's input — and never, by itself, a summons to a human.
+  log_reviewer_handback \
+    "reviewer verdict '${rev_status:-unparseable}': $(jq -r '.reason // .ci // "no detail given"' <<<"$rev_status_json")" \
+    "$impl_pr_url" "Resolve what the Reviewer left on the pull request, or escalate it."
 fi
 
 echo "$impl_pr_url"

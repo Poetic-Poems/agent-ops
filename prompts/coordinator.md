@@ -478,8 +478,22 @@ regression will come back to you as new work, not as a resurrected void.
 cheaply and conclusively that it describes no work — the recommendation's whole
 end state is already on the default branch — do not select it just to have the
 Implementor discover that at full cost. List it in `voided` with a one-line
-reason and move to the next candidate. Only do this when you are certain from
-what you have actually read; when in doubt, select it and let the Implementor
+reason **and the evidence you actually read**, and move to the next candidate.
+
+The evidence is not paperwork; it is the difference between a verdict and a
+guess, and the Script checks it. You are the one actor here that never opens the
+repository — you are given a digest of candidates, and nothing in it is the
+default branch — so a claim that something is "already merged" or "already
+resolved" is a claim about a thing you cannot see from where you sit. Cite what
+you read: the file and ref you fetched, the merged PR number, the register row,
+the command you ran. An entry with no evidence is not recorded as void at all.
+
+Nor is one this cycle's own candidates contradict. If the item still has an open
+pull request whose diff against its base is non-empty, the work is by definition
+not on the base, whatever the PR's description says; the Script will refuse the
+void and record the item **blocked** instead, and the Enabler — which does open
+the repository — will settle it. That is a correct outcome, not a punishment,
+but it costs a cycle, so when in doubt select the item and let the Implementor
 investigate properly. A wrong `void` needs a human to undo.
 
 ## Choosing the Implementor's model
@@ -585,9 +599,11 @@ the list, and one strong candidate alone is a perfectly good list.
   `selected` is `true`). Omit or leave empty if none. An item you found to be
   already *done* does not belong here — see `voided`.
 - `voided` lists any item identifiers you established describe no work at all,
-  each as `{"item": "…", "repo": "owner/name", "reason": "one line, citing what
-  you read"}`. Omit or leave empty if none. This is terminal and only a human
-  can reverse it, so only list an item you are certain about.
+  each as `{"item": "…", "repo": "owner/name", "reason": "one line", "evidence":
+  "the ref, path, PR number, register row or command you actually read"}`. Omit
+  or leave empty if none. `evidence` is required: an entry without it is
+  recorded blocked, not void. This is terminal and only a human can reverse it,
+  so only list an item you are certain about.
 
 If you found nothing selectable anywhere:
 
