@@ -168,6 +168,48 @@ Fix: assemble the detail window in one `jq` program over the 40 cycles'
 envelope and event files (they are already individual files on disk),
 which should take a `--no-github` publish to around a second.
 
+### TD26072501 The state dir's logs grow without bound
+
+TD26072004 bounded the *records* in `state_dir` — `cycles/` and `reviews/` are
+pruned on every push — but left the logs beside them appended to for ever. The
+heartbeat is the worst of them by two orders of magnitude: one line per tick,
+~57 ticks per 5-minute window, which on 2026-07-25 had `dashboard.log` at
+8.8 MB / 53,988 lines on `ockham-container` and 4.8 MB / 29,598 on `ockham-2`,
+growing about 2.7 MB a day and never stopping. `state-sync.log` (93 KB /
+1,234 lines in four days), `cron.log` and `review-cron.log` do the same more
+slowly. Nothing is broken today; a node simply keeps a file that only ever gets
+bigger, and every `grep` a human runs over it gets slower.
+
+Rotation here has to be *intelligent* rather than a size cap, because these
+files are not interchangeable:
+
+- **`dashboard.log` and `state-sync.log`** are pure diagnostics, excluded from
+  the state branch, and safe to rotate on size. They are also the only record
+  of the heartbeat's GitHub cadence (`github: refreshing`, #68) and of
+  `skipped: publish already running`, so a generation or two must survive —
+  a cap that keeps only the last few minutes would have hidden exactly the
+  bug #68 fixed.
+- **`cron.log` and `review-cron.log`** *are* published to the node's state
+  branch, so bounding them bounds the mirror and every peer's fetch too. But
+  `scripts/publish-dashboard.sh` renders their tail in the cron panel, so
+  rotation must not empty that panel the moment it happens — either keep the
+  tail window's worth in the live file, or have the publisher read `.1` when
+  the live file is short.
+- **`log.jsonl` must not be rotated at all.** It is the fleet's memory: the
+  union readers (blocked/void extraction, the no-op fingerprint, the limit
+  cooldown) scan it whole, and dropping its head silently changes what the
+  Co-Ordinator believes has been tried. If it ever needs bounding — 279 KB /
+  1,766 lines today, so not yet — it needs age-based pruning consistent with
+  `cycles_retained`, which is a separate and riskier change.
+
+Fix: a small `scripts/rotate-logs.sh` on its own crontab line, sizes from
+`config.json` beside `cycles_retained` (e.g. `log_retained_bytes`,
+`log_generations`). Plain rename is enough — every writer here reopens by name
+per append (`>>"$log"` per command), so nothing holds a stale descriptor across
+a rotation, and `copytruncate` is not needed. Worth doing at the same time:
+`once-pr4-verify.log`, a one-off left in `state_dir` on `ockham-container`,
+should not be there at all.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -187,3 +229,4 @@ above.
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | open | | |
+| TD26072501 | The state dir's logs grow without bound | open | | |
