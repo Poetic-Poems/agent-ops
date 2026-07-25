@@ -291,3 +291,41 @@ enabler_eligible_items() {
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
 }
+
+# reviewer_complexity SUMMARY_GRADE TRIVIAL [LABEL_GRADE...]
+# Print the effective complexity the Reviewer stage runs at (requirement 8a):
+# the highest valid grade (`low` < `medium` < `high`) among the Implementor
+# summary's `complexity` and the PR's `complexity:*` label values — taking the
+# maximum is what makes the label's raise-never-lower rule (requirement 26a)
+# hold at the decision point too. When no argument carries a valid grade at
+# all, falls back to `low` if TRIVIAL is "1" (the Co-Ordinator already
+# classified the work order trivial, requirement 19 — the answer is known
+# without asking the trivial tier to self-grade) and `medium`, the default
+# tier, otherwise.
+#
+# Always succeeds, and an unknown grade contributes nothing rather than
+# failing: this feeds a model choice, and a garbled grade must degrade to the
+# default tier, never cost the cycle.
+reviewer_complexity() {
+  local summary="${1:-}" trivial="${2:-0}" g best="" best_rank=0 rank
+  shift 2 2>/dev/null || shift $#
+  for g in "$summary" "$@"; do
+    case "$g" in
+      high)   rank=3 ;;
+      medium) rank=2 ;;
+      low)    rank=1 ;;
+      *)      rank=0 ;;
+    esac
+    if (( rank > best_rank )); then
+      best_rank=$rank
+      best="$g"
+    fi
+  done
+  if [[ -n "$best" ]]; then
+    printf '%s\n' "$best"
+  elif [[ "$trivial" == "1" ]]; then
+    printf 'low\n'
+  else
+    printf 'medium\n'
+  fi
+}

@@ -159,7 +159,12 @@ workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 coordinator_model="$(cfg '.coordinator_model')"
 implementor_model_default="$(cfg '.implementor_model_default')"
 implementor_model_trivial="$(cfg '.implementor_model_trivial')"
-reviewer_model="$(cfg '.reviewer_model')"
+reviewer_model_default="$(cfg '.reviewer_model_default')"
+# The complexity escalation (requirement 8a): a PR graded `complexity:high` is
+# reviewed on this tier. Empty falls back to the default tier, which switches
+# the escalation off.
+reviewer_model_complex="$(cfg '.reviewer_model_complex // ""')"
+[[ "$reviewer_model_complex" == "null" || -z "$reviewer_model_complex" ]] && reviewer_model_complex="$reviewer_model_default"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
@@ -1548,6 +1553,25 @@ if [[ -n "$impl_pr_url" ]]; then
 fi
 
 # --- 8. Reviewer stage ---
+# Requirement 8a: the reviewer tier follows the item's complexity — the
+# highest of the Implementor's ex-post grade (its summary's `complexity`) and
+# the PR's raise-never-lower `complexity:*` label, falling back to the
+# Co-Ordinator's own classification when neither says anything: a
+# trivial-tier work order needs no self-grade to be `low`. The label read is
+# best-effort; an unreadable label contributes nothing and the choice
+# degrades to the default tier.
+impl_complexity="$(jq -r '.complexity // empty' <<<"$impl_status_json" 2>/dev/null || true)"
+label_grades=()
+if [[ -n "$impl_pr_url" ]]; then
+  mapfile -t label_grades < <(gh pr view "$impl_pr_url" --json labels \
+    --jq '.labels[].name | select(startswith("complexity:")) | sub("^complexity:"; "")' 2>/dev/null || true)
+fi
+impl_trivial=0
+[[ "$impl_model" == "$implementor_model_trivial" ]] && impl_trivial=1
+rev_complexity="$(reviewer_complexity "$impl_complexity" "$impl_trivial" ${label_grades[@]+"${label_grades[@]}"})"
+rev_model="$reviewer_model_default"
+[[ "$rev_complexity" == "high" ]] && rev_model="$reviewer_model_complex"
+
 reviewer_prompt="$(cat "$PROMPTS_DIR/reviewer.md")
 
 ## Work order
@@ -1564,8 +1588,9 @@ $(jq . <<<"$impl_status_json")
 "
 rev_out="$cycle_dir/reviewer.out"
 
-log_event "stage-start" '{"stage": "reviewer"}'
-if run_claude_stage "$(( timeout_reviewer_min * 60 ))" "$reviewer_model" "$reviewer_prompt" "$rev_out" "$clone_dir"; then
+log_event "stage-start" "$(jq -nc --arg c "$rev_complexity" --arg m "$rev_model" \
+  '{stage: "reviewer", complexity: $c, model: $m}')"
+if run_claude_stage "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir"; then
   rev_rc=0
 else
   rev_rc=$?

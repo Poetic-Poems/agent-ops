@@ -25,7 +25,7 @@ cron (hourly)
   └─ agent-cycle.sh                 ← the Script: lock, stand-down checks, repo ordering
        ├─ Co-Ordinator (Haiku)      ← selects ≤ 1 item, emits a work order; nothing else
        ├─ Implementor (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
-       ├─ Reviewer (Sonnet)         ← corrects the branch, flips the PR to ready
+       ├─ Reviewer (Sonnet/Opus)    ← corrects the branch, flips the PR to ready
        │     └─ Human               ← reviews and merges (the only gate)
        └─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
                                       cycle: unblocks, voids, or raises an issue
@@ -301,7 +301,8 @@ values below are the confirmed defaults; the README must document each key.
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
-| `reviewer_model` | `claude-sonnet-5` | |
+| `reviewer_model_default` | `claude-sonnet-5` | Reviews of `low`- and `medium`-complexity work (requirement 8a). |
+| `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). This is the bound on how long evidence that arrives *after* a block — the failure mode of `TECH-DEBT.md` TD26072101 — can sit unread, and the only lever that re-opens an examined item. `0` disables re-examination. |
@@ -797,9 +798,27 @@ runs unattended.
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
    the implementor prompt plus the work order.
 8. **Reviewer stage.** If the Implementor reports `complete`, launch the
-   Reviewer in the same workspace (model `reviewer_model`, same flags,
+   Reviewer in the same workspace (model per requirement 8a, same flags,
    stage timeout), passing the reviewer prompt, the work order, and the
-   Implementor's summary (PR URL, branch).
+   Implementor's summary (PR URL, branch, complexity).
+8a. **The Reviewer's model follows the item's complexity.** The Script
+   resolves an effective complexity for the PR and launches the Reviewer with
+   `reviewer_model_complex` when it is `high`, `reviewer_model_default`
+   otherwise. Resolution takes the **highest** of two signals, either of which
+   may be absent: the `complexity` field of the Implementor's summary
+   (requirement 27) and the PR's `complexity:*` label (requirement 26a), read
+   best-effort via `gh pr view --json labels` — an unreadable label simply
+   contributes nothing. Taking the maximum is what makes the label's
+   raise-never-lower rule hold at the decision point too: a PR once graded
+   `high` is reviewed as `high` in every later finishing round, however small
+   that round's own work was. When *neither* signal exists, the fallback is
+   `low` for a work order the Co-Ordinator classified trivial (its `model` is
+   `implementor_model_trivial`, requirement 19 — the classification already
+   answers the question, so the trivial tier is never asked to self-grade)
+   and `medium`, the default tier, otherwise. The Reviewer's `stage-start`
+   event carries the resolved `complexity` and the chosen `model`
+   (requirement 33), which is what lets the distribution of self-assessments
+   be audited for drift.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -1204,8 +1223,33 @@ runs unattended.
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
     Reviewer flips it to ready.
+26a. **Grades the complexity of the work, ex post, and labels the PR with
+    it.** After implementing, the Implementor grades the PR `low`, `medium`
+    or `high` against a rubric anchored to observable features of the work,
+    never to how difficult it felt — the PR that most needs a strong review
+    is the one whose author misunderstood something and didn't notice, and
+    that author will find it easy:
+    - `low` — docs, comments, or register/ledger entries only; no behaviour
+      change. A work order the Co-Ordinator classified trivial (requirement
+      19) is `low` by definition, no deliberation required.
+    - `medium` — a behaviour change confined to one area and well covered by
+      existing or added tests.
+    - `high` — the diff touches concurrency/locking, security, state
+      replication, CI/workflow machinery, or shared library code; or the
+      Implementor deviated from the work order; or the acceptance criteria
+      cannot be verified mechanically.
+    It applies the grade to the PR as a `complexity:<grade>` label — creating
+    the label in the repo first when absent, best-effort — leaving the PR
+    with exactly one `complexity:*` label. On a PR that already carries one
+    (the finishing sources), it may **raise** the label but never lower it:
+    the grade describes the PR's whole content, not the final round's effort,
+    and rebasing a `high` PR is not `low` work. Labelling must not fail the
+    stage — the summary's `complexity` field (requirement 27) is the
+    authoritative carrier for this cycle's model choice (requirement 8a); the
+    label is the durable mirror that survives for later finishing rounds and
+    tells the Human Reviewer how carefully to read.
 27. Ends with a single JSON object as its entire final message:
-    `{"status": "complete", "pr_url": …, "branch": …, "notes": …}`,
+    `{"status": "complete", "pr_url": …, "branch": …, "complexity": "low" | "medium" | "high", "notes": …}`,
     `{"status": "blocked", "reason": …, "unblock_condition": …}`, or
     `{"status": "void", "reason": …, "evidence": …}`. The Implementor is the
     only component positioned to tell `blocked` from `void` (requirement 9b) —
@@ -1228,7 +1272,11 @@ runs unattended.
     branch, or force-pushing as it judges best (permitted only on
     `branch_prefix` branches, per "The Human Gate"). Where it cannot fix
     with confidence, it leaves a PR review comment describing the problem
-    for the Human Reviewer.
+    for the Human Reviewer. A `complexity:*` label (requirement 26a) plainly
+    wrong for the diff counts as such a problem: having just read the whole
+    diff, the Reviewer is better placed than the author, and corrects the
+    label in either direction — the label endures for later finishing rounds
+    (requirement 8a) and for the human.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`). It never approves and never
     merges.
@@ -1256,7 +1304,10 @@ runs unattended.
     Enabler also carries `repo`, `by: "enabler"` and a `reason`, which is what
     distinguishes it from the Co-Ordinator's cheap re-check of requirement 18 —
     the bare-id form remains valid and remains what a human appends by hand.
-    Common fields: ISO-8601 `ts`, `cycle` id, `node`, `event`, and where
+    The Reviewer's `stage-start` additionally carries the resolved
+    `complexity` and the `model` it selected (requirement 8a) — the record
+    that lets the distribution of complexity self-assessments be audited for
+    drift. Common fields: ISO-8601 `ts`, `cycle` id, `node`, `event`, and where
     applicable `repo`, `item`, `pr_url`, `model`, `detail`. The cycle id is
     `<UTC-timestamp>-<node>-<pid>` — the node's `NODE_NAME` (hostname when
     unset), sanitised for use in a directory name, with the pid always last
@@ -1772,6 +1823,17 @@ pull request, run the ones the change touches and any it could regress.
    uses a file claim, not a create-ref against the already-existing branch
    (requirement 17a), or every attempt would 422 and no conflicted PR could be
    picked up.
+6g. **The review runs at the tier the work graded itself (requirements 26a,
+   8a).** `test/cycle-state.test.sh`'s reviewer-complexity section passes: the
+   resolution takes the highest valid grade among the summary's `complexity`
+   and the PR's `complexity:*` label values (a label `high` outranks a summary
+   `medium`, and vice versa); an unknown grade contributes nothing rather than
+   failing; and with no valid grade at all it falls back to `low` for a
+   trivial-classified work order and `medium` otherwise. Driving a cycle
+   end-to-end: the Implementor's PR carries exactly one `complexity:*` label,
+   its summary carries `complexity`, and the reviewer's `stage-start` event
+   records the resolved `complexity` and a `model` equal to
+   `reviewer_model_complex` when and only when the grade is `high`.
 6b. **The no-op short-circuit skips only what it can prove, and stops skipping
    when anything moves.** Drive a cycle that ends `none-selected`, confirm the
    event carries a fingerprint, then run a second cycle: it must stand down
@@ -1914,8 +1976,12 @@ standing the system up on a new machine.
 ## Cost profile
 
 A worst-case cycle is one small Haiku selection pass, one Sonnet
-implementation (the dominant cost), and one Sonnet review. Stand-down cycles
-cost nothing but a few `gh` calls. Because back-pressure caps open agent PRs
+implementation (the dominant cost), and one review — Sonnet by default, Opus
+only when the work graded itself `complexity:high` (requirement 8a), which the
+rubric of requirement 26a confines to the minority of PRs whose contents
+warrant it; the reviewer `stage-start` events carry the grade, so a creep
+toward `high` that would erode this bound is auditable in the log. Stand-down
+cycles cost nothing but a few `gh` calls. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
 
@@ -2000,6 +2066,33 @@ requirements above, which state only what is.
   the no-op fingerprint verbatim so the conflict appearing still wakes the pipeline
   (requirement 3b), the same fix abandoned-drafts needs for its clock-based
   candidacy.
+- **The Reviewer's model follows the Implementor's ex-post complexity
+  self-assessment** (requirements 26a and 8a), not the Co-Ordinator's ex-ante
+  classification. Complexity routinely reveals itself only during
+  implementation — an item that read as a register edit turns out to touch
+  the locking logic — so the agent that has just done the work grades it, and
+  the grade picks the reviewer tier: `reviewer_model_complex` for `high`,
+  `reviewer_model_default` otherwise. The known hazard is self-blindness: the
+  PR most needing a strong review is the one whose author misunderstood
+  something and didn't notice, and that author will grade it easy. Three
+  choices contain it: the rubric is anchored to observable features of the
+  diff (which subsystems it touched, whether the work deviated from the
+  order) rather than felt difficulty; the grade rides the PR as a
+  raise-never-lower label, so a PR once graded `high` is reviewed as `high`
+  in every later finishing round however small that round's own work — with
+  the Reviewer, the one agent that has read the whole diff without having
+  written it, the only stage permitted to correct the label in either
+  direction (requirement 30); and the resolved grade is logged on the
+  reviewer's `stage-start`, so a drift toward `medium`-everything, or a creep
+  toward `high` that erodes the cost bound, is visible in the log rather
+  than discovered in the human's review queue. The label doubles as a signal
+  to the Human Reviewer of how carefully to read. A self-escalating Reviewer
+  (the default-tier Reviewer requesting an Opus re-run when out of its depth)
+  was considered and deferred: it judges from the reviewer's seat, which is
+  the most relevant one, but pays for two reviews on exactly the PRs that
+  are already expensive, and it adds a stage outcome to the state machine.
+  It remains open as a future *addition* to the labelling scheme, warranted
+  only if the log shows the Implementor's grading under-firing.
 - **Back-pressure on open agent PRs replaces a quota-balance check** as the
   primary throttle, because no supported API exposes a subscription plan's
   remaining quota; usage-limit errors are handled fail-safe via detection
