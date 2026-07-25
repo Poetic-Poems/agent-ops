@@ -343,6 +343,42 @@ matching "When `source` is …" section above.)*
    base has moved and the "When `source` is `merge-conflicts`" section above is
    how you resolve it. Afterwards `mergeable` should read true again; leave the PR
    in the **ready** state it was already in, neither drafting nor merging it.
+7. **Grade the complexity, and label the PR with it.** Now that the work is
+   done, grade it `low`, `medium` or `high` — against what the diff touches,
+   never against how difficult it felt. The misjudged change feels easy, and
+   it is exactly the one that needs the stronger review:
+   - `low` — docs, comments, or register/ledger entries only; no behaviour
+     change. If the work order's `model_reason` already classifies the item
+     as trivial (docs-/comment-/register-only), it is `low` by definition —
+     no deliberation needed.
+   - `medium` — a behaviour change confined to one area and well covered by
+     existing or added tests.
+   - `high` — the diff touches concurrency/locking, security, state
+     replication, CI/workflow machinery, or shared library code; or you
+     deviated from the work order; or `acceptance` cannot be verified
+     mechanically, by running something.
+   Apply the grade as a `complexity:<grade>` label, leaving the PR with
+   exactly one `complexity:*` label. Create the label first if the repo
+   lacks it, e.g.:
+
+   ```
+   gh label create "complexity:high" --color D93F0B \
+     --description "Agent-graded review complexity" 2>/dev/null || true
+   ```
+
+   (colours: `low` `C2E0C6`, `medium` `FBCA04`, `high` `D93F0B`). If the PR
+   already carries a `complexity:*` label — the `review-feedback`,
+   `merge-conflicts` and `abandoned-drafts` sources, where the PR predates
+   you — you may **raise** it, never lower it: the grade describes the PR's
+   whole content, not this round's effort, and rebasing a `high` PR is not
+   `low` work. Labelling is best-effort: if it fails, say so in `notes` and
+   carry on — the `complexity` field of your final message (below) is the
+   authoritative copy this cycle; the label is the durable mirror that tells
+   later cycles and the Human Reviewer how carefully to read. The Script
+   chooses the Reviewer stage's model from the higher of the two, so grade
+   honestly in both directions: an inflated `high` spends top-tier review
+   time nothing in the diff needs, and a flattering `low` sends a subtle
+   change to a review pitched beneath it.
 
 ## Ending
 
@@ -355,8 +391,13 @@ object.
 On success:
 
 ```json
-{"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "notes": "anything the Reviewer should know that isn't obvious from the diff"}
+{"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "complexity": "medium", "notes": "anything the Reviewer should know that isn't obvious from the diff"}
 ```
+
+`complexity` is the grade from Procedure step 7 — the same value as the
+`complexity:*` label you left on the PR (or the value you would have left, if
+labelling failed). One of `low`, `medium` or `high`, always present on a
+`complete`.
 
 If the item is real work but you cannot complete it safely — it is bigger or
 riskier than scoped, a dependency has not landed, a check is red for reasons

@@ -21,8 +21,19 @@ Appended after this prompt: the Co-Ordinator's work order (item, `context`,
 Implementor's summary:
 
 ```json
-{"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "notes": "…"}
+{"status": "complete", "pr_url": "https://github.com/…", "branch": "agent/…", "complexity": "medium", "notes": "…"}
 ```
+
+`complexity` is the Implementor's own ex-post grade of the work (`low`,
+`medium` or `high`), mirrored as a `complexity:*` label on the PR; the Script
+chose your model from it. Treat `high` as a cue that the diff touches subtle
+machinery — concurrency, security, state replication, shared library code —
+and scrutinise accordingly. Treat the grade itself as part of what you review:
+you have just read the whole diff without having written it, so if the label
+is plainly wrong for what the diff actually touches, correct it — in either
+direction (`gh pr edit --add-label/--remove-label`, one `complexity:*` label
+at the end). It endures: later cycles pick the review tier from it, and the
+Human Reviewer reads it as "how carefully do I need to look".
 
 ## Where you're running
 

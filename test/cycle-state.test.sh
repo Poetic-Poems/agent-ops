@@ -200,6 +200,32 @@ EOF
 assert_eq "a malformed trailing line does not strand void items" \
   "R-02" "$(void_items "$log" | jq -r '.[].item')"
 
+# --- reviewer_complexity (requirement 8a) ---
+# The reviewer tier follows the highest valid grade offered by the summary and
+# the PR's labels; garbage degrades to nothing; no grade at all falls back on
+# the Co-Ordinator's trivial classification.
+
+assert_eq "summary grade alone is used" \
+  "medium" "$(reviewer_complexity "medium" 0)"
+assert_eq "label high outranks summary medium (raise-never-lower holds at the decision point)" \
+  "high" "$(reviewer_complexity "medium" 0 "high")"
+assert_eq "summary high outranks label medium" \
+  "high" "$(reviewer_complexity "high" 0 "medium")"
+assert_eq "label low does not drag a medium summary down" \
+  "medium" "$(reviewer_complexity "medium" 0 "low")"
+assert_eq "several labels: the highest wins" \
+  "high" "$(reviewer_complexity "" 0 "low" "high" "medium")"
+assert_eq "an unknown grade contributes nothing" \
+  "low" "$(reviewer_complexity "urgent" 0 "low")"
+assert_eq "all-garbage grades fall back to the default tier" \
+  "medium" "$(reviewer_complexity "banana" 0 "urgent")"
+assert_eq "no grade at all: non-trivial work order defaults to medium" \
+  "medium" "$(reviewer_complexity "" 0)"
+assert_eq "no grade at all: trivial work order is low by classification" \
+  "low" "$(reviewer_complexity "" 1)"
+assert_eq "a real grade outranks the trivial fallback" \
+  "high" "$(reviewer_complexity "high" 1)"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

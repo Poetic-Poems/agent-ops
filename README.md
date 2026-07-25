@@ -8,7 +8,7 @@ Once an hour:
 
 1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, merge conflicts on otherwise-ready PRs of ours, abandoned draft PRs of ours, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else, answering your review feedback comes second, rebasing a ready PR of ours that has hit a merge conflict comes third, and finishing a draft PR this system started and then abandoned comes fourth.
 2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
-3. **Reviewer** (Sonnet) checks and corrects the implementation, then marks the PR ready for review.
+3. **Reviewer** (Sonnet, or Opus when the Implementor graded the work `complexity:high`) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
 
 And, at the end of a cycle, rarely: the **Enabler** (Opus) re-examines an item
@@ -101,7 +101,8 @@ Edit `config.json` before first run. Keys:
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | For code changes. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |
-| `reviewer_model` | `claude-sonnet-5` | Quality gate before human review. |
+| `reviewer_model_default` | `claude-sonnet-5` | Quality gate before human review, for work the Implementor graded `complexity:low` or `complexity:medium`. |
+| `reviewer_model_complex` | `claude-opus-5` | The same gate for work graded `complexity:high` — the Implementor grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`. |
 | `enabler_model` | `claude-opus-5` | The Enabler: re-examines long-blocked items and escalates the ones needing you. The most expensive model here, engaged rarely — see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to switch the stage off. |
 | `enabler_after_coordinator_cycles` | 3 | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
 | `enabler_recheck_hours` | 72 | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
