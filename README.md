@@ -41,13 +41,43 @@ Three things to know:
   `CHANGES_REQUESTED` from another works fine. Say which findings block a merge
   and which don't; the agent honours that split.
 
-Only PRs this system raised are eligible (labelled `autonomous-agent`, on an
-`agent/` branch). Your own branches are never touched.
+Only PRs the system is managing are eligible (labelled `autonomous-agent`, on an
+`agent/` or `td/` branch — see [Handing a pull request to the
+pipeline](#handing-a-pull-request-to-the-pipeline)). Your own branches are never
+touched.
 
 Back-pressure doesn't block this: if every agent PR is sitting on "changes
 requested", the cycle restricts itself to review feedback rather than standing
 down, so it can always dig itself out. It still can't open a new PR while the
 gate is full.
+
+## Handing a pull request to the pipeline
+
+The `autonomous-agent` label is what marks a pull request as the pipeline's to
+manage. The system adds it to every PR it raises — but you can add it to an open
+PR yourself to hand that PR over, and the next cycle will treat it as an available
+work item. For example:
+
+- a **ready PR that has hit a merge conflict** is rebased onto `main` and its
+  conflict resolved (the `merge-conflicts` source);
+- a **draft the system started and then left stalled** is finished
+  (`abandoned-drafts`);
+- a PR you have **requested changes on** is answered (`review-feedback`).
+
+This is the switch to reach for when a PR the system *didn't* raise — most often
+one you created through `/td` — has drifted into conflict, or whenever you want
+the fleet to carry an existing PR the rest of the way.
+
+Two things to know:
+
+- **It only applies to `agent/` and `td/` branches** — the ones the system is
+  allowed to push to. `/td` raises its PRs on `td/<id>` and the hourly cycle on
+  `agent/<item>`, so both qualify; labelling a PR on any other branch (e.g.
+  `feature/…`) does nothing, because the human gate reserves those and the
+  gatherers skip them even when labelled.
+- **Labelling grants write access.** A labelled PR is one the fleet may push to —
+  including a `--force-with-lease` rebase to clear a conflict — and it counts
+  toward the open-PR back-pressure cap. Remove the label to take the PR back.
 
 ## Configuration
 
