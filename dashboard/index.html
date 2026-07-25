@@ -131,6 +131,7 @@
   <span id="livestate"></span>
   <span class="grow"></span>
   <span class="freshness" id="freshness"></span>
+  <span class="freshness" id="ghfreshness" title="when the GitHub-sourced panels — PRs, checks, issues, work sources, claims — were last fetched"></span>
   <div class="controls">
     <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
     <button class="refresh" id="refreshbtn">Refresh now</button>
@@ -182,6 +183,21 @@
   }
   function usd(n) { return n == null ? "—" : "$" + Number(n).toFixed(Number(n) < 1 ? 4 : 2); }
   function esc(s) { return String(s == null ? "" : s); }
+
+  // ---------- how old the GitHub half of the page is ----------
+  // Every GitHub-sourced panel — PRs, checks, issues, work sources, claims —
+  // is exactly as old as the last real fetch, however recent `generated_at`
+  // is: a --no-github tick republishes local state every few seconds and
+  // carries the last fetch forward unchanged. That design is what stops the
+  // PR list flickering empty sixty times a minute, but it also means a
+  // heartbeat whose GitHub refresh has stalled looks identical to a healthy
+  // one. It looked identical for as long as the old launcher gate was
+  // deployed, so the two clocks are now shown separately.
+  var GH_STALE_MIN = 12;   // two missed refreshes, matching the local heartbeat's own bound
+  function githubAgeMin() {
+    var t = parseTs(D.github && D.github.fetched_at);
+    return t ? (Date.now() - t.getTime())/60000 : null;
+  }
 
   var OUTCOME = {
     "pr-ready":     ["Ready for review", "b-green"],
@@ -658,6 +674,19 @@
         el("span", {class:"sub", text: (D.github.error || "gh could not be reached") + " — showing last local state only."})
       ]));
     }
+    // A fetch that stopped happening, as distinct from one that ran and failed
+    // (the banner above). Nothing else on the page distinguishes them: both
+    // leave the PR list rendering perfectly, one from data of a plausible age
+    // and the other from data of any age at all.
+    var ghAgeBanner = githubAgeMin();
+    if (ghAgeBanner != null && ghAgeBanner > GH_STALE_MIN) {
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⚠ GitHub data is " + fmtAgo(D.github.fetched_at).replace(/ ago$/, "") + " old."}),
+        el("span", {class:"sub", text: "PRs, checks, issues, work sources and claims below were fetched at " +
+          fmtTime(D.github.fetched_at) + "; the heartbeat refreshes them every 5 minutes. Check that " +
+          "publish-dashboard-launcher.sh is running (grep 'github: refreshing' in dashboard.log)."})
+      ]));
+    }
     app.appendChild(banners);
 
     // ---------- fleet strip ----------
@@ -761,6 +790,17 @@
     fresh.style.color = "";
     fresh.textContent = "data " + fmtAgo(D.generated_at);
     if (ageMin > 12) { fresh.style.color = "var(--amber)"; fresh.textContent += " ⚠ (heartbeat may be stopped)"; }
+    var ghFresh = document.getElementById("ghfreshness");
+    var ghAge = githubAgeMin();
+    ghFresh.style.color = "";
+    if (ghAge == null) {
+      // Either the page has never had a GitHub fetch, or this publish was
+      // --no-github with nothing cached behind it. Not an alarm.
+      ghFresh.textContent = "· GitHub —";
+    } else {
+      ghFresh.textContent = "· GitHub " + fmtAgo(D.github.fetched_at);
+      if (ghAge > GH_STALE_MIN) ghFresh.style.color = "var(--amber)";
+    }
   }
 
   // ---------- SPA refresh ----------

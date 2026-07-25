@@ -104,12 +104,13 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   this script's   `state-sync.log` is where a node records its own
 #   own log          replication; replicating it would be a node describing
 #                   another node's description of itself.
-#   the dashboard   `dashboard/` is generated from the state beside it and
-#                   `dashboard.log`/`dashboard-server.log`/`.dashboard-github.json`
-#                   are one node's rendering machinery. Each node republishes
-#                   its own page from the union it fetches; copying the pixels
-#                   would be copying a derivative of what we are already
-#                   copying.
+#   the dashboard   `dashboard/` is generated from the state beside it, and the
+#                   logs and caches beside it (`dashboard.log`,
+#                   `dashboard-server.log`, `.dashboard-github.json`,
+#                   `.dashboard-claims.json`) are one node's rendering
+#                   machinery. Each node republishes its own page from the
+#                   union it fetches; copying the pixels would be copying a
+#                   derivative of what we are already copying.
 #   .git            the mirror's own repository, which lives at the same root.
 #
 # Everything else — log.jsonl, review-log.jsonl, cycles/, reviews/,
@@ -124,6 +125,7 @@ EXCLUDES=(
   --exclude=dashboard-server.log
   --exclude=state-sync.log
   --exclude=.dashboard-github.json
+  --exclude=.dashboard-claims.json
   --exclude=/dashboard/
 )
 

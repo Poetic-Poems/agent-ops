@@ -3,13 +3,18 @@
 # test/publish-dashboard.test.sh — regression tests for
 # scripts/publish-dashboard.sh and scripts/publish-dashboard-launcher.sh.
 #
-# Two behaviours here have already failed in production and one is a scaling
+# Three behaviours here have already failed in production and one is a scaling
 # property, so they get tests rather than a careful reading:
 #
 #   the launcher's exit   a healthy window must end 0 — its status once came
 #                         from the final tick's lock bookkeeping, so
 #                         supercronic reported every successful window as a
 #                         failure, every five minutes
+#   the GitHub cadence    exactly one tick per window may spend API calls, and
+#                         one must — the gate was once a wall-clock modulo that
+#                         a cron-fired window could never satisfy, so the PR
+#                         panels aged for half an hour at a time while the page
+#                         around them said "data 3s ago"
 #   the cost scan         batching must preserve the per-file semantics: the
 #                         day cut-off, the model roll-up, tolerance of a torn
 #                         envelope mid-write, and unconditional redaction
@@ -202,6 +207,80 @@ rc=$?
 kill "$holder" 2>/dev/null; wait "$holder" 2>/dev/null
 assert_eq "launcher exits 0 while another publish holds the lock" "0" "$rc"
 assert_contains "skipped ticks are logged" "skipped: publish already running" "$(cat "$log")"
+
+# --- The heartbeat's GitHub cadence -----------------------------------------------
+# The gate deciding which tick fetches from GitHub is the one thing on this page
+# that leaves no evidence when it breaks: a skipped fetch is designed to render
+# exactly like a fresh one (it carries the last fetch forward), so a gate that
+# never fires shows up only as a PR list that is quietly half an hour old. Its
+# predecessor, `EPOCHSECONDS % 300 < 5`, could not fire at all under a `*/5` cron
+# entry, and nothing noticed for as long as it was deployed. Hence a test of the
+# cadence itself, driven through a stub Publisher (LAUNCHER_PUBLISH_CMD) so that
+# asserting on a GitHub tick costs no network call.
+l="$(new_home nodeL)"
+gh_stamp="$l/.local/state/poetic-agents/.dashboard-github.json"
+tick_log="$tmp_dir/ticks"
+stub="$tmp_dir/stub-publish.sh"
+cat > "$stub" <<'STUB'
+#!/usr/bin/env bash
+# Stands in for the Publisher: records this tick's mode and, on a GitHub tick,
+# writes the fetch stamp where publish-dashboard.sh writes it.
+if [[ "${1:-}" == "--no-github" ]]; then
+  printf 'local\n' >> "$TICK_LOG"
+else
+  printf 'github\n' >> "$TICK_LOG"
+  printf '{}' > "$GH_STAMP"
+fi
+STUB
+chmod +x "$stub"
+
+run_window() {  # run_window <window-seconds> -> "<github-ticks> <total-ticks>"
+  : > "$tick_log"
+  env HOME="$l" LAUNCHER_WINDOW="$1" LAUNCHER_PUBLISH_CMD="$stub" \
+      TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
+  printf '%s %s' "$(grep -c '^github$' "$tick_log")" "$(grep -c . "$tick_log")"
+}
+
+# Cold — no stamp at all. A 20-second window runs at least two ticks whatever
+# second it starts on, which pins down both halves of the gate: it fires, and
+# having fired it stops.
+read -r gh_ticks all_ticks <<<"$(run_window 20)"
+assert_eq "a cold window fetches from GitHub exactly once" "1" "$gh_ticks"
+assert_eq "and keeps publishing locally after that fetch" "1" "$(( all_ticks >= 2 ))"
+assert_contains "the GitHub tick is logged" "github: refreshing" \
+  "$(cat "$l/.local/state/poetic-agents/dashboard.log")"
+
+# Warm — the stamp the run above left behind is seconds old, so no tick in the
+# window that follows may spend an API call.
+read -r gh_ticks all_ticks <<<"$(run_window 15)"
+assert_eq "a window following a fresh fetch makes no GitHub call" "0" "$gh_ticks"
+assert_eq "and still publishes locally" "1" "$(( all_ticks >= 1 ))"
+
+# Aged — once the stamp passes LAUNCHER_GITHUB_MAX_AGE the next tick fetches,
+# wherever in the five-minute window that tick happens to fall. This is the
+# property the modulo gate could not provide: it needed the window to contain a
+# 300-second boundary, and a window opened by cron never does.
+touch -d '10 minutes ago' "$gh_stamp"
+read -r gh_ticks all_ticks <<<"$(run_window 15)"
+assert_eq "a stale stamp is refetched on the next tick" "1" "$gh_ticks"
+
+# A publish that dies before it can stamp the file must not put every following
+# tick back into GitHub mode: the launcher stamps the attempt itself.
+touch -d '10 minutes ago' "$gh_stamp"
+crash_stub="$tmp_dir/crash-publish.sh"
+cat > "$crash_stub" <<'STUB'
+#!/usr/bin/env bash
+# A Publisher that dies before it reaches its own stamp write.
+if [[ "${1:-}" == "--no-github" ]]; then printf 'local\n' >> "$TICK_LOG"
+else printf 'github\n' >> "$TICK_LOG"; fi
+exit 1
+STUB
+chmod +x "$crash_stub"
+: > "$tick_log"
+env HOME="$l" LAUNCHER_WINDOW=20 LAUNCHER_PUBLISH_CMD="$crash_stub" \
+    TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
+assert_eq "a publish that never stamps still only gets one GitHub tick a window" \
+  "1" "$(grep -c '^github$' "$tick_log")"
 
 # --- The fleet view (DASHBOARD-SPEC "one fleet view from every node") -----------
 # A synthetic peer materialised the way state-sync fetch would: its own state
