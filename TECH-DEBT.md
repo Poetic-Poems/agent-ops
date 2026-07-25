@@ -291,6 +291,73 @@ both have already read the thing they are asserting about.
 
 Filed 2026-07-26, alongside the change that introduced requirement 34d.
 
+### TD26072602 A human-applied needs-refinement label is inert
+
+Requirement 34e's label projection is deliberately one-way: the Script applies
+`needs-refinement` to an issue when a Co-Ordinator reports the block and takes
+it off when the block clears, but nothing ever reads the label back. So a
+human who applies it by hand gets nothing — no block is recorded, the item
+stays selectable, and the label sits there looking as though it did something.
+The one person the flow exists to serve has no way to invoke it deliberately.
+
+Deferred from #84 because it is a design decision, not an omission: it adds a
+second writer of refinement state, and a reconciliation path the current
+design gets to live without (a hand-applied label the human later removes, a
+label on an item already blocked for another reason, a label applied while
+the Enabler holds the item).
+
+Fix: keep the log as the only record and make the label a report rather than a
+state. During source gathering the Script scans open issues for the configured
+label (one search per repo) and, where no refinement block is open for that
+item, records one — kind `needs-refinement`, detail naming the label and who
+applied it — after which the ordinary lifecycle owns it, including the label's
+removal when the block clears. A human removing the label while the block is
+open maps to the existing hand-appended `unblocked` path. Decide when building
+it whether a hand-flagged item waits the full
+`enabler_after_coordinator_cycles` like a reported one — a human has already
+established the thing that threshold exists to establish.
+
+Filed 2026-07-26, deferred from #84 (requirement 34e).
+
+### TD26072603 A refinement block is indistinguishable on the dashboard
+
+A refinement block renders in the dashboard's blocked panel as an ordinary
+blocked row. That is accurate — it is a block — but the two populations ask
+different things of the operator: an ordinary block waits on the world (a
+merge, a fix, an answer already asked for), while a refinement block waits on
+the pipeline's own Enabler and, past one refinement, on the human. Reading
+"blocked: 9" without knowing how many are specification gaps understates how
+much of the backlog the fleet is quietly parking. The `kind` marker is already
+on every event; nothing surfaces it.
+
+Fix: carry `kind` through the blocked extract into `data.js` and render a
+badge (and a filter) in the blocked panel; `docs/DASHBOARD-SPEC.md` travels
+with the change, and the data.js size budget gets re-checked, not assumed.
+
+Filed 2026-07-26, deferred from #84.
+
+### TD26072604 Refinement blocks inherit the ordinary Enabler threshold
+
+A refinement block becomes Enabler-eligible after
+`enabler_after_coordinator_cycles`, like any other block (requirement 35a).
+The inheritance was deliberate — the delay leaves room for a human to refine
+the item first, and the Co-Ordinator's cheap re-check can clear a refinement
+block whose condition has demonstrably been met — but the two cases age
+differently: an ordinary block can be cleared by the world at any moment,
+while a refinement block waits on the Enabler and nothing else. Whether
+refinement deserves its own threshold — sooner, because waiting establishes
+nothing a human has not already; or later, with a larger
+`refinement_max_per_engagement`, because batching spends the expensive stage
+better — is a tuning question the soak should answer, not a default to guess
+now.
+
+Fix: a `refinement_after_coordinator_cycles` config key defaulting to
+`enabler_after_coordinator_cycles`'s value, applied in the eligibility rule
+where `kind` is already to hand; pick the shipped default from observed fleet
+behaviour once the day-one backlog of previously silent items has drained.
+
+Filed 2026-07-26, deferred from #84.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -312,3 +379,6 @@ above.
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | open | | |
 | TD26072501 | The state dir's logs grow without bound | open | | |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | open | | |
+| TD26072602 | A human-applied needs-refinement label is inert | open | | |
+| TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
+| TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
