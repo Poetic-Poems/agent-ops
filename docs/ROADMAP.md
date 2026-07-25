@@ -1,4 +1,6 @@
-# Autonomous Implementation Pipeline — Product Roadmap
+# Pullwright — Product Roadmap
+
+*The productisation of the Autonomous Implementation Pipeline.*
 
 > **Nature of this document.** This is a planning document, not an as-built
 > specification: it describes intent, not the system that exists. The
@@ -11,11 +13,13 @@
 
 ## Vision
 
-The Autonomous Implementation Pipeline becomes a monetised product that any
-software team can point at their repositories: an unattended fleet that
-selects, implements, and reviews pending work and raises mergeable pull
-requests, with a human merge as the only gate. Poetic-Poems stops being the
-pipeline's home and becomes its first customer.
+The Autonomous Implementation Pipeline becomes **Pullwright**
+([github.com/Pullwright](https://github.com/Pullwright)) — a monetised
+product that any software team can point at their repositories: an
+unattended fleet that selects, implements, and reviews pending work and
+raises mergeable pull requests, with a human merge as the only gate.
+Poetic-Poems stops being the pipeline's home and becomes its first
+customer.
 
 ## Settled decisions
 
@@ -31,11 +35,12 @@ deliberately, by editing this table in a PR that says why.
 | D5 | Licensing | **Source-available** (BSL/FSL-family): code public and auditable, free to self-host for your own use, no competing hosted offering. The exact licence is an open question with a Phase 1 decide-by gate. |
 | D6 | Technology | **Strangler rewrite.** The proven bash cycle engine is retained. All *new* product surface — control plane, config APIs, packaging — is written in a proper language; engine pieces migrate across only when a change touches them anyway. |
 | D7 | Product scope | **The whole suite**: the implementation pipeline, the weekly review pipeline, and the dashboard. They compound — reviews feed the pipeline the work it does, and the dashboard is the product's face. |
-| D8 | Repository shape | **Split**: a new product repository (under the product name) holds the pipeline; agent-ops shrinks to Poetic's consumer configuration and deployment — the reference installation and customer zero. |
+| D8 | Repository shape | **Split**: a new product repository in the Pullwright organisation (D13) holds the pipeline; agent-ops shrinks to Poetic's consumer configuration and deployment — the reference installation and customer zero. |
 | D9 | Build mode | **Mixed.** Architectural moves happen in interactive sessions; everything decomposable is authored as agent-workable items that the fleet works down itself. The roadmap doubles as dogfooding evidence. |
 | D10 | Pacing | **Phase-gated, no dates.** Progress is gates passed, not calendar time. |
 | D11 | Go-to-market | **A parallel lightweight workstream from Phase 1**: the name is chosen early (it gates the repo split), design partners are recruited during untethering, and pricing is tested before anything launches. |
 | D12 | Model providers | **Not limited to the Claude family.** Customers choose the model for each actor from any supported provider. Claude is the first-supported and reference provider; how non-Claude providers are executed (the substrate question) is parked in Open questions with a decide-by gate. |
+| D13 | Product name | **Pullwright.** Decided July 2026, ahead of its Phase 1 gate; the GitHub organisation ([github.com/Pullwright](https://github.com/Pullwright)) is created and the namespace secured. |
 
 ## End state
 
@@ -85,8 +90,8 @@ configuration alone.
 **Exit gate:** a repository outside Poetic-Poems runs the whole suite —
 hourly cycle, weekly review, dashboard — from published artefacts with no
 code changes; agent-ops contains no pipeline code, only Poetic's
-configuration and deployment; the product repository exists under the
-product name and carries its licence.
+configuration and deployment; the product repository exists in the
+Pullwright organisation and carries its licence.
 
 - [ ] Audit and sweep the Poetic-specifics out of scripts, prompts, and
       config: hardcoded repo slugs, the owner's username, label names,
@@ -108,9 +113,9 @@ product name and carries its licence.
 - [ ] Provider-qualified model identifiers in the config schema, so models
       from other providers can arrive later without a breaking change
       (D12). *[fleet]*
-- [ ] Choose the product name (GTM workstream) and create the product
-      repository; move the pipeline; reduce agent-ops to consumer config +
-      deployment (D8). *[interactive]*
+- [ ] Create the product repository in the Pullwright organisation (the
+      name and org exist — D13); move the pipeline; reduce agent-ops to
+      consumer config + deployment (D8). *[interactive]*
 - [ ] Select and apply the source-available licence (D5). *[interactive]*
 
 ## Phase 2 — Zero-touch fleet
@@ -197,8 +202,10 @@ trails) — demand-driven, never speculative.
 
 Deliberately lightweight — hours a week, not a phase of its own:
 
-- **Name:** shortlist, domain and trademark checks; decided by the Phase 1
-  repo split, which it gates.
+- **Name:** ~~shortlist, domain and trademark checks~~ — decided:
+  **Pullwright** (D13), org created. Remaining: secure `pullwright.dev`
+  (and `.io` if wanted) and a proper trademark search before the licence
+  carries the name.
 - **Positioning and landing page:** drafted during Phase 2.
 - **Design partners:** recruitment starts at the end of Phase 1 — two or
   three, drawn from the three target segments (D3); committed partners gate
@@ -214,7 +221,6 @@ Parked deliberately, each with a decide-by gate:
 
 | Question | Decide by |
 |---|---|
-| Product name | Phase 1 repo split |
 | Exact source-available licence (BSL 1.1 / FSL / Elastic 2.0) | Phase 1 exit |
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
