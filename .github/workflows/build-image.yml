@@ -49,6 +49,13 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v7
 
+      # Registers binfmt handlers so buildx can run arm64's RUN instructions
+      # (apt-get, useradd, the supercronic download) under emulation on this
+      # amd64 runner. Needed for the arm64 leg of every multi-platform build
+      # below, load-and-test or publish alike.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
@@ -90,8 +97,11 @@ jobs:
         with:
           context: .
           file: deploy/docker/Dockerfile
-          # Loaded into the runner's Docker rather than pushed, so every check
-          # below runs against the very bytes that will be published.
+          # linux/amd64 explicitly, and loaded into the runner's Docker rather
+          # than pushed, so every check below runs against the very bytes that
+          # will be published for that architecture. `docker load` cannot take
+          # a multi-platform result, which is what the next step is for.
+          platforms: linux/amd64
           load: true
           tags: agent-ops:ci
           build-args: |
@@ -101,6 +111,29 @@ jobs:
             AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Proves the arm64 leg builds — under QEMU emulation, since this runner
+      # is amd64 — on every pull request, not just at publish time on main.
+      # This is the check TD26072002 exists for: without it, an arm64 build
+      # failure (the supercronic checksum picking the wrong architecture's
+      # pin, say) would surface only as a mid-build break on a node that tries
+      # to pull the image, not as a red CI check on the change that caused it.
+      # No `load`/`push`: buildx cannot load a foreign-architecture result into
+      # the runner's native Docker, and nothing here needs to run it, only to
+      # prove it builds.
+      - name: Build the arm64 image
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: deploy/docker/Dockerfile
+          platforms: linux/arm64
+          build-args: |
+            AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
+            AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
+            AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
+            AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max,scope=arm64
 
       # The acceptance checks of docs/IMPLEMENTATION-PIPELINE-SPEC.md (1b), run
       # here so a broken image cannot reach a node. `docker run` goes through
@@ -203,9 +236,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A second build rather than a `docker push`: everything is already in
-      # the build cache, so this costs seconds and produces the same image,
-      # while letting buildx write the manifest the registry wants.
+      # A second build rather than a `docker push`: both architectures are
+      # already in the build cache (the amd64 leg from "Build the image", the
+      # arm64 leg from "Build the arm64 image"), so this costs seconds and
+      # produces the same two images, while letting buildx write and push the
+      # manifest list the registry wants — one `platforms:` build with `push:
+      # true` publishes both architectures under each tag as a single manifest
+      # list, which is what lets a node on either architecture pull `:latest`
+      # and get the image built for it.
       #
       # Two tags: `latest`, which is what a node's watchtower follows, and the
       # commit SHA, which is how a node is pinned to a known-good build or
@@ -216,18 +254,21 @@ jobs:
         with:
           context: .
           file: deploy/docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
           push: true
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
-          # Identical to the build above, so the cache is reused and the
+          # Identical to the builds above, so the cache is reused and the
           # published image carries the stamp the checks just verified.
           build-args: |
             AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
             AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
             AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
             AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
-          cache-from: type=gha
+          cache-from: |
+            type=gha
+            type=gha,scope=arm64
           # `image.source` is what links the package to this repository, so the
           # package page carries the README and the commit history rather than
           # standing on its own with no explanation.
