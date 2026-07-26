@@ -55,6 +55,7 @@ usage() {
 usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
        agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>]
        agent-cycle.sh --enable
+       agent-cycle.sh --clear-limit [<reason>]
        agent-cycle.sh --status
 
 Run one cycle of the autonomous agent pipeline, or manage the switch that
@@ -69,7 +70,13 @@ stops cycles from starting (shared with review-cycle.sh).
                      says otherwise.
   --for <duration>   How long --disable lasts: 90m, 4h, 2d, or `forever`.
   --enable           Clear the switch and let cycles run again.
-  --status           Report the switch and whether either pipeline is running.
+  --clear-limit      Lift a usage-limit stand-down across the fleet (2.1). Use
+                     it once the limit is actually gone — you raised the cap,
+                     or the plan rolled over. Unlike --enable this touches no
+                     switch: it clears fleet/limit.json and logs a
+                     `limit-cleared` event that supersedes the cooldown.
+  --status           Report the switch, any usage-limit stand-down, and whether
+                     either pipeline is running.
 
 --dry-run and --once bypass the no-op short-circuit (requirement 3b): a human
 asking for a cycle wants the Co-Ordinator's answer, not a cached verdict. They
@@ -96,9 +103,10 @@ REPO_FILTER=""
 MANAGE_ACTION=""
 DISABLE_REASON=""
 DISABLE_FOR=""
+CLEAR_LIMIT_REASON=""
 set_manage_action() {
   if [[ -n "$MANAGE_ACTION" ]]; then
-    echo "agent-cycle: --disable, --enable and --status are mutually exclusive" >&2
+    echo "agent-cycle: --disable, --enable, --clear-limit and --status are mutually exclusive" >&2
     exit 64
   fi
   MANAGE_ACTION="$1"
@@ -115,6 +123,12 @@ while [[ $# -gt 0 ]]; do
       if [[ $# -gt 0 && "$1" != --* ]]; then DISABLE_REASON="$1"; shift; fi
       ;;
     --enable) set_manage_action enable; shift ;;
+    --clear-limit)
+      set_manage_action clear-limit; shift
+      # Optional here, unlike --disable's: a stand-down being lifted is
+      # self-explanatory in a way that one being imposed is not.
+      if [[ $# -gt 0 && "$1" != --* ]]; then CLEAR_LIMIT_REASON="$1"; shift; fi
+      ;;
     --status) set_manage_action status; shift ;;
     --for) DISABLE_FOR="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
@@ -124,7 +138,7 @@ done
 
 if [[ -n "$MANAGE_ACTION" ]]; then
   if (( DRY_RUN || ONCE )) || [[ -n "$REPO_FILTER" ]]; then
-    echo "agent-cycle: --disable/--enable/--status manage the switch; they do not run a cycle" >&2
+    echo "agent-cycle: --disable/--enable/--clear-limit/--status manage stand-down state; they do not run a cycle" >&2
     exit 64
   fi
   if [[ "$MANAGE_ACTION" != "disable" && -n "$DISABLE_FOR" ]]; then
@@ -270,10 +284,40 @@ refresh_dashboard() {
   fi
 }
 
+# The usage-limit stand-down in force right now (requirement 2.1), as its
+# governing record, or empty when there is none. The management commands run
+# long before the cycle's union snapshot exists, so they build their own.
+current_limit_record() {
+  local union
+  union="$(fleet_logs "$state_dir" "$(fleet_peers_dir "$workspace_root")" log.jsonl \
+    | limit_union_record)"
+  limit_later_record "$union" "$(fleet_flag_fetch "$state_repo" "$state_dir" limit)"
+}
+
+# The `--status` line for that stand-down. Reported alongside the switch
+# because they are two answers to one question — "why is nothing happening?"
+# — and a status that knew only about the switch is what let a stale limit
+# cooldown sit unexplained for a day.
+limit_status_report() {
+  local rec resume_at
+  rec="$(current_limit_record)"
+  resume_at="$(jq -r '.resume_at // empty' <<<"${rec:-{\}}" 2>/dev/null || true)"
+  if [[ -z "$resume_at" ]] || (( $(date -d "$resume_at" +%s 2>/dev/null || echo 0) <= $(date +%s) )); then
+    printf 'limit:    none in force\n'
+    return 0
+  fi
+  printf 'limit:    STANDING DOWN — %s\n' \
+    "$(limit_describe "$resume_at" \
+        "$(jq -r '.class // "other"' <<<"$rec" 2>/dev/null || echo other)" \
+        "$(limit_reset_known "$rec")")"
+  return 0
+}
+
 if [[ -n "$MANAGE_ACTION" ]]; then
   case "$MANAGE_ACTION" in
     status)
       toggle_status_report "$state_dir" "cycle=$lock_file" "review=$review_lock_file"
+      limit_status_report
       exit 0
       ;;
     disable)
@@ -326,6 +370,43 @@ if [[ -n "$MANAGE_ACTION" ]]; then
         else
           printf 'agent-cycle: WARNING — could not clear the fleet switch; every node still stands down. Re-run --enable, or delete fleet/disabled.json in %s by hand.\n' "$state_repo" >&2
         fi
+      fi
+      refresh_dashboard
+      exit 0
+      ;;
+    clear-limit)
+      # Both carriers of requirement 2.1, because the stand-down lifts only
+      # when the later of the two says so. Clearing one alone reads as
+      # success and changes nothing — the failure this command exists to end.
+      governing="$(current_limit_record)"
+      was="$(jq -r '.resume_at // empty' <<<"${governing:-{\}}" 2>/dev/null || true)"
+
+      # Carrier 1: the log union. A `limit-cleared` event dated now outranks
+      # every earlier limit-hit, on this node immediately and on its peers at
+      # their next state-sync fetch.
+      log_event "limit-cleared" "$(jq -nc --arg w "$was" --arg r "$CLEAR_LIMIT_REASON" \
+        --arg by "${USER:-unknown}@$(hostname 2>/dev/null || echo '?')" \
+        '{was: (if $w == "" then null else $w end),
+          reason: (if $r == "" then "cleared by hand" else $r end),
+          by: $by}')"
+
+      # Carrier 2: the live flag. Deleting it rather than shortening it,
+      # because fleet_limit_publish is extend-only by design (concurrent hits
+      # must converge on the latest resume) — a human lifting a stand-down is
+      # the one case that legitimately moves it earlier, and delete is the
+      # only write that expresses that.
+      if [[ -n "$state_repo" ]]; then
+        if fleet_flag_delete "$state_repo" "$state_dir" limit; then
+          printf 'agent-cycle: fleet usage-limit flag clear\n'
+        else
+          printf 'agent-cycle: WARNING — could not clear fleet/limit.json; peers reading it live still stand down. Re-run --clear-limit, or delete fleet/limit.json in %s by hand.\n' "$state_repo" >&2
+        fi
+      fi
+
+      if [[ -n "$was" ]]; then
+        printf 'agent-cycle: usage-limit stand-down lifted (resume_at was %s)\n' "$was"
+      else
+        printf 'agent-cycle: no usage-limit stand-down was in force\n'
       fi
       refresh_dashboard
       exit 0
@@ -553,7 +634,7 @@ log_voided_items() {
 }
 
 detect_and_log_limit_hit() {
-  local out_file="$1" text resume_at class needs_human
+  local out_file="$1" text resume_at class reset_known
   limit_phrase_in "$out_file" "$out_file.stderr" || return 1
   # Remembered for the rest of the cycle, because the Enabler runs from the exit
   # trap — after this point on every path — and engaging the fleet's most
@@ -561,14 +642,14 @@ detect_and_log_limit_hit() {
   # (requirement 35's guards).
   limit_hit_this_cycle=1
   text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
-  IFS=$'\t' read -r resume_at class needs_human < <(limit_decide "$text" "$limit_cooldown_default_hours")
-  log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
-    '{resume_at: $r, class: $c, needs_human: $h}')"
+  IFS=$'\t' read -r resume_at class reset_known < <(limit_decide "$text" "$limit_cooldown_default_hours")
+  log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson k "$reset_known" \
+    '{resume_at: $r, class: $c, reset_known: $k}')"
   # Tell the fleet now, not a fetch interval from now: publish the stand-down
   # as fleet/limit.json (extend-only; requirement 2.1). Best-effort — the
   # limit-hit event above is already in this node's log, and the union carries
   # it to every peer on their next fetch regardless.
-  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$needs_human" "$node_name" \
+  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$reset_known" "$node_name" \
     || log_event "warning" "$(jq -nc \
          '{detail: "could not publish fleet/limit.json — peers will pick the cooldown up from the log union instead"}')"
 }
@@ -1345,23 +1426,30 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 # signal, and the later resume wins: the log union is as fresh as the last
 # state-sync fetch, while fleet/limit.json is read live — it is what lets a
 # limit one node hit a minute ago stop this cycle now, not a fetch interval
-# from now.
-resume_at=""
+# from now. Either carrier can be retired early by `--clear-limit` (2.1):
+# the union's reduction honours a `limit-cleared` event, and the flag is
+# deleted outright.
+#
+# Both records are carried whole rather than reduced to a timestamp, so the
+# logged reason can say whether `resume_at` is a stated reset or this system's
+# own guess. Reporting a guess as a deadline is what let a stale stand-down
+# outlive the limit that caused it and go unquestioned.
+union_record=""
+if [[ -s "$union_log" ]]; then
+  union_record="$(limit_union_record < "$union_log")"
+fi
+governing="$(limit_later_record "$union_record" "$(fleet_flag_fetch "$state_repo" "$state_dir" limit)")"
+[[ -n "$governing" ]] || governing='{}'
+resume_at="$(jq -r '.resume_at // empty' <<<"$governing" 2>/dev/null || true)"
 resume_epoch=0
-union_resume=""
-[[ -s "$union_log" ]] && union_resume="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
-fleet_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir")"
-for cand in "$union_resume" "$fleet_resume"; do
-  [[ -n "$cand" ]] || continue
-  cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
-  if (( cand_epoch > resume_epoch )); then
-    resume_epoch="$cand_epoch"
-    resume_at="$cand"
-  fi
-done
+if [[ -n "$resume_at" ]]; then
+  resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
+fi
 now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
-  log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
+  log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
+    "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
+    "$(limit_reset_known "$governing")")" '{reason: $r}')"
   exit 0
 fi
 

@@ -359,6 +359,9 @@ make_cycle "$f" "$self_cid" 0.50 model-a
 } > "$f/.local/state/poetic-agents/log.jsonl"
 printf '{"pid":%s,"started_at":"2026-01-01T05:00:00Z"}' "$$" > "$f/.local/state/poetic-agents/lock.json"
 # A cached fleet limit flag (requirement 2.1): shown without any GitHub call.
+# Deliberately in the pre-`reset_known` shape, carrying the superseded
+# `needs_human`: a node upgrades before its peers do, and a flag written by
+# one still on the previous release must render rather than break.
 printf '{"resume_at":"2031-01-01T00:00:00Z","class":"monthly-spend","needs_human":true,"node":"peer1","ts":"2026-01-01T04:01:00Z"}' \
   > "$f/.local/state/poetic-agents/fleet-cache/limit.json"
 

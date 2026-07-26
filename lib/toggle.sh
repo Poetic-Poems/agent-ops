@@ -280,10 +280,12 @@ toggle_status_report() {
 #     --disable/--enable`, which writes both levels.
 #   fleet/limit.json — a usage-limit stand-down. Every node spends the same
 #     Claude account, so the first node to hit the limit publishes
-#     {resume_at, class, needs_human, node, ts} and the rest stop trying.
+#     {resume_at, class, reset_known, node, ts} and the rest stop trying.
 #     Writers may only ever *extend* resume_at, never shorten it — two nodes
 #     hitting the limit in the same minute must converge on the later resume,
-#     whatever order their writes land in.
+#     whatever order their writes land in. `agent-cycle.sh --clear-limit`
+#     deletes it instead, which is how a human ends a stand-down early
+#     without breaking that rule.
 #
 # Both live as files on the state repository's main branch, written through
 # the contents API — the same CAS the claim registry uses (requirement 17a):
@@ -408,21 +410,27 @@ fleet_limit_resume_at() {
   return 0
 }
 
-# fleet_limit_publish STATE_REPO STATE_DIR RESUME_AT CLASS NEEDS_HUMAN NODE
+# fleet_limit_publish STATE_REPO STATE_DIR RESUME_AT CLASS RESET_KNOWN NODE
 # Publish a usage-limit stand-down, extend-only: a flag already resuming at
 # or after RESUME_AT is left alone. Two attempts — re-read between them — so
 # losing the CAS to a peer publishing the same limit converges instead of
 # failing. Returns non-zero only when the flag could not be written at all;
 # the caller logs that and relies on the log union to carry the signal.
+#
+# Extend-only has exactly one exception, and it is not a write: a human
+# lifting the stand-down through `agent-cycle.sh --clear-limit`, which deletes
+# the flag outright (requirement 2.1). Shortening it here would let a node
+# that parsed a shorter reset undercut a peer's longer one, which is the race
+# extend-only exists to prevent.
 fleet_limit_publish() {
-  local repo="$1" state_dir="$2" resume_at="$3" class="$4" needs_human="$5" node="$6"
+  local repo="$1" state_dir="$2" resume_at="$3" class="$4" reset_known="$5" node="$6"
   local new_epoch body cur cur_at cur_epoch
   [[ -n "$repo" ]] || return 0
   new_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
   (( new_epoch > 0 )) || return 0
-  body="$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson h "${needs_human:-false}" \
+  body="$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson k "${reset_known:-false}" \
     --arg n "$node" --arg ts "$(_toggle_iso)" \
-    '{resume_at: $r, class: $c, needs_human: $h, node: $n, ts: $ts}')"
+    '{resume_at: $r, class: $c, reset_known: $k, node: $n, ts: $ts}')"
   for _ in 1 2; do
     cur="$(fleet_flag_fetch "$repo" "$state_dir" limit)"
     if [[ -n "$cur" ]]; then

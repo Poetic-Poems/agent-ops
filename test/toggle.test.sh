@@ -193,6 +193,16 @@ assert_contains() {
   fi
 }
 
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected NOT to contain: %s\n     actual:   %s\n' "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 # A stub `gh` backed by a directory: the contents API reduced to GET/PUT/DELETE
 # with sha compare-and-swap, exactly the subset lib/toggle.sh uses.
 # GH_STUB_MODE=down makes every call fail the way an unreachable GitHub does.
@@ -390,6 +400,40 @@ run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
 assert_eq "a cycle under a fleet limit flag exits cleanly" "0" "$?"
 assert_contains "and stands down until the flag's resume_at" \
   'usage-limit cooldown until 2030-01-01T00:00:00Z' "$(cat "$b_log" 2>/dev/null)"
+
+# --- --clear-limit (2.1a) -------------------------------------------------
+# The stand-down must have a supported exit. It arrives on two carriers and
+# lifts only when BOTH are retired, so this exercises both at once: the flag
+# published by node A above, and a limit-hit in B's own log — the carrier no
+# amount of flag-deleting can reach, and the one that made a stand-down
+# outlive the limit that caused it.
+printf '%s\n' \
+  '{"ts":"2026-01-01T00:00:00Z","cycle":"seed","node":"node-b","event":"limit-hit","resume_at":"2030-06-01T00:00:00Z","class":"monthly","reset_known":false}' \
+  >> "$b_log"
+run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
+assert_contains "a limit-hit in the node's own log also stands it down" \
+  'usage-limit cooldown' "$(cat "$b_log" 2>/dev/null)"
+
+clear_out="$(run_node "$b_home" agent-cycle.sh --clear-limit "cap raised" 2>&1)"
+assert_contains "--clear-limit reports what it lifted" "stand-down lifted" "$clear_out"
+assert_contains "--clear-limit reports the fleet flag cleared" "fleet usage-limit flag clear" "$clear_out"
+assert_eq "--clear-limit removes fleet/limit.json" "0" \
+  "$(test -f "$gh_backing/fleet/limit.json" && echo 1 || echo 0)"
+assert_contains "--clear-limit logs a limit-cleared event" \
+  '"event":"limit-cleared"' "$(cat "$b_log" 2>/dev/null)"
+assert_contains "recording the reason it was given" 'cap raised' "$(cat "$b_log" 2>/dev/null)"
+
+# And the proof it was worth doing: the next cycle no longer stands down for
+# the limit. The log is NOT truncated first — the superseded limit-hit must
+# still be sitting in it, or this asserts nothing. Only the events the new
+# cycle appends are examined.
+b_log_before="$(wc -l < "$b_log")"
+run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a cycle after --clear-limit exits cleanly" "0" "$?"
+assert_contains "the superseded limit-hit is still in the log" \
+  '2030-06-01T00:00:00Z' "$(cat "$b_log" 2>/dev/null)"
+assert_not_contains "and the cycle no longer stands down for the usage limit" \
+  'usage-limit cooldown' "$(tail -n +$(( b_log_before + 1 )) "$b_log" 2>/dev/null)"
 rm -f "$gh_backing/fleet/limit.json"
 
 printf '\n'

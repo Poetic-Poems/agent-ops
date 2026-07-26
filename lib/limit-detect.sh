@@ -92,27 +92,39 @@ limit_parse_human_reset() {
 # whose reset time couldn't be parsed at all (e.g. the spend-cap message,
 # which never states one). `limit_cooldown_default` (a few hours) is sized
 # for a transient rate limit, not a weekly or monthly one — at that cadence it
-# would waste a retry roughly every 3 hours for days. One day is still just a
-# fallback upper bound (agent-cycle.sh re-checks and clears it the moment the
-# pipeline succeeds again), not a promise the block lasts that long.
+# would waste a retry roughly every 3 hours for days.
+#
+# It is a *poll interval*, not a prediction. Every limit clears on its own at
+# the plan's rollover, and this system has no way to learn when that is when
+# the message does not say; so it waits a day, spends one request finding out,
+# and waits again if the answer is still no. What it must never do is present
+# that guess as a deadline — see `reset_known` below.
 LIMIT_LONG_COOLDOWN_HOURS=24
 
 # limit_decide TEXT COOLDOWN_DEFAULT_HOURS
 # Pure decision function (given a text blob, no file I/O): prints
-# "<resume_at>\t<class>\t<needs_human>" — the exact fields
+# "<resume_at>\t<class>\t<reset_known>" — the exact fields
 # detect_and_log_limit_hit() (agent-cycle.sh) logs on a limit-hit event.
 #   - resume_at:   parsed from an ISO-8601 timestamp if present, else from a
 #                  human-readable weekly reset clause, else a fallback
 #                  COOLDOWN_DEFAULT_HOURS (or LIMIT_LONG_COOLDOWN_HOURS for
 #                  weekly/monthly phrasing) hours from now.
 #   - class:       weekly | monthly | other (see limit_class_of).
-#   - needs_human: true only when no reset time could be parsed AND the
-#                  phrasing says weekly/monthly — i.e. the spend-cap case,
-#                  which auto-retry cannot fix. A plain "other" match with no
-#                  timestamp keeps the original (transient-rate-limit)
-#                  assumption and does not need a human.
+#   - reset_known: true only when a reset time was actually stated in the
+#                  message. False means `resume_at` is this system's own
+#                  guess and carries no information about the real reset.
+#
+# `reset_known` replaced an earlier `needs_human` flag, which claimed the
+# spend-cap case "clears only when a human raises the cap". That was wrong in
+# a way that mattered: a hit limit has *two* exits — wait for the plan's
+# rollover (no human involved) or raise the cap (a human, and only if they
+# want it back sooner). Calling the first exit nonexistent turned an unknown
+# reset time into an apparent dead end, and left the pipeline standing down on
+# a fabricated deadline with no supported way to lift it. What the detector
+# actually knows is narrower and is all this field now claims: whether the
+# message stated a reset time.
 limit_decide() {
-  local text="$1" cooldown_default_hours="$2" resume_at="" class needs_human=false
+  local text="$1" cooldown_default_hours="$2" resume_at="" class reset_known=true
 
   resume_at="$(grep -oihE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2})?Z' <<<"$text" | head -n1 || true)"
   if [[ -z "$resume_at" ]]; then
@@ -122,13 +134,89 @@ limit_decide() {
   class="$(limit_class_of "$text")"
 
   if [[ -z "$resume_at" ]]; then
+    reset_known=false
     if [[ "$class" == "weekly" || "$class" == "monthly" ]]; then
-      needs_human=true
       resume_at="$(date -u -d "+${LIMIT_LONG_COOLDOWN_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
     else
       resume_at="$(date -u -d "+${cooldown_default_hours} hours" +%Y-%m-%dT%H:%M:%SZ)"
     fi
   fi
 
-  printf '%s\t%s\t%s\n' "$resume_at" "$class" "$needs_human"
+  printf '%s\t%s\t%s\n' "$resume_at" "$class" "$reset_known"
+}
+
+# limit_union_record  < JSONL on stdin
+# The usage-limit stand-down the fleet's event stream currently implies: print
+# the governing `limit-hit` record, or nothing when none is in force.
+#
+# The reduction is most-recent-wins over *both* limit events, so a
+# `limit-cleared` written after a `limit-hit` supersedes it. Without that, an
+# operator who resolved the limit had no way to say so: the stand-down is
+# checked before any stage runs, so no cycle could ever succeed and clear it
+# from the inside. The stream is time-ordered by `fleet_logs`.
+#
+# One definition, because four readers need it — agent-cycle.sh's stand-down,
+# review-cycle.sh's two, and the dashboard — and a reader that missed
+# `limit-cleared` would keep standing its node down after the fleet resumed.
+limit_union_record() {
+  jq -cs '[.[] | select(.event == "limit-hit" or .event == "limit-cleared")] | last
+          | if . == null or .event == "limit-cleared" then empty else . end' \
+    2>/dev/null || true
+}
+
+# limit_union_resume_at  < JSONL on stdin
+# Just the governing `resume_at`, for the readers that need no more than that.
+limit_union_resume_at() {
+  limit_union_record | jq -r '.resume_at // empty' 2>/dev/null || true
+}
+
+# limit_later_record RECORD...
+# Requirement 2.1's "later resume wins", over the records of both carriers —
+# the log union and fleet/limit.json. Prints the governing record, or nothing
+# when none of them names a resume time. Empty and unparseable arguments are
+# skipped, so a caller can pass a carrier that is simply clear.
+#
+# Shared because three callers need the same answer — the stand-down check,
+# `--status`, and `--clear-limit` — and a `--status` that disagreed with the
+# check would be worse than no `--status` at all (requirement 34a).
+limit_later_record() {
+  local rec cand cand_epoch best="" best_epoch=0
+  for rec in "$@"; do
+    [[ -n "$rec" ]] || continue
+    cand="$(jq -r '.resume_at // empty' <<<"$rec" 2>/dev/null || true)"
+    [[ -n "$cand" ]] || continue
+    cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
+    if (( cand_epoch > best_epoch )); then
+      best_epoch="$cand_epoch"
+      best="$rec"
+    fi
+  done
+  if [[ -n "$best" ]]; then printf '%s' "$best"; fi
+  return 0
+}
+
+# limit_reset_known RECORD
+# Whether a limit-hit event or fleet/limit.json record stated a real reset
+# time. Reads the superseded `needs_human` when `reset_known` is absent, so a
+# node running this code reports a peer's older event correctly during a
+# rollout rather than silently calling every one of them authoritative.
+limit_reset_known() {
+  jq -r 'if has("reset_known") then .reset_known
+         elif has("needs_human") then (.needs_human | not)
+         else true end' <<<"${1:-{\}}" 2>/dev/null || printf 'true'
+}
+
+# limit_describe RESUME_AT CLASS RESET_KNOWN
+# The one-line human explanation of a stand-down, shared by the dashboard
+# banner and `--status` so they cannot describe the same state differently.
+limit_describe() {
+  local resume_at="$1" class="$2" reset_known="$3"
+  if [[ "$reset_known" == "true" ]]; then
+    printf 'until %s' "$resume_at"
+    return 0
+  fi
+  printf 'with no stated reset; retrying after %s (estimated)' "$resume_at"
+  if [[ "$class" == "weekly" || "$class" == "monthly" ]]; then
+    printf "%s" "; it clears at the plan's rollover, or sooner if you raise the cap and run 'agent-cycle.sh --clear-limit'"
+  fi
 }

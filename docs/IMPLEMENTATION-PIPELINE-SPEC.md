@@ -388,12 +388,35 @@ runs unattended.
       node hit a minute ago stop this cycle now rather than a fetch interval
       from now. If the winning `resume_at` is still in the future, stand
       down. The flag is written by whichever node hits a limit (requirement
-      10's `limit_decide` supplies `resume_at`/`class`/`needs_human`, plus
+      10's `limit_decide` supplies `resume_at`/`class`/`reset_known`, plus
       the node's name and a timestamp), **extend-only**: a writer never
       shortens an existing `resume_at`, so concurrent hits converge on the
       latest resume whatever order their contents-API writes land in. The
       write is best-effort — on failure the node logs a `warning` and relies
       on the union to carry its `limit-hit` to the fleet.
+
+      Both carriers can be retired early, and `--clear-limit` (requirement
+      12) is the only supported way to do it: it deletes `fleet/limit.json`
+      and writes a `limit-cleared` event, which the union's reduction —
+      most-recent-wins over `limit-hit` **and** `limit-cleared`, in
+      `lib/limit-detect.sh` so all four readers share it — treats as
+      superseding every earlier hit. Deleting rather than shortening the flag
+      is what keeps extend-only intact for the concurrent-hit case it exists
+      for.
+
+      A stand-down must have an exit that does not depend on a cycle running,
+      because this check runs before any stage launches: while it holds, no
+      cycle can reach a success, so nothing inside the pipeline can ever
+      clear it. Without `--clear-limit` the only exit was `resume_at` passing
+      — and when `reset_known` is false that is an invented time, so a
+      stand-down could outlive its limit by up to `LIMIT_LONG_COOLDOWN_HOURS`
+      with no way to say so. It did: a spend cap lifted on 2026-07-26 left the
+      fleet down for a further 22 hours.
+
+      The logged reason states whether `resume_at` is a stated reset or an
+      estimate, and `--status` reports the stand-down alongside the switch.
+      Both answer "why is nothing happening?", and a status that knew only
+      about the switch is how a stale cooldown went a day unexplained.
    1a. *Claim GC*: run `lib/claim.sh gc` (requirement 17a) — best-effort,
       skipped on `--dry-run` — so registry entries a dead node left behind
       are swept before back-pressure counts them. Every node runs it; no
@@ -920,7 +943,7 @@ runs unattended.
     — the generic `hit your .* limit` stem plus the legacy `usage limit` /
     `rate limit` / `usage cap` / `quota exceeded` terms; sourced by both the
     Script and `scripts/publish-dashboard.sh` so the two can't drift apart),
-    write a `limit-hit` event with `resume_at`, `class`, and `needs_human`:
+    write a `limit-hit` event with `resume_at`, `class`, and `reset_known`:
     - `resume_at` is parsed from an ISO-8601 timestamp in the message if
       present, else from a human-readable weekly reset clause (e.g. "resets
       Jul 17, 4am (Pacific/Auckland)" — the named zone is applied via `TZ`,
@@ -932,18 +955,28 @@ runs unattended.
       could be parsed at all — that fallback is too short for something that
       recurs on a multi-day cadence.
     - `class` is `weekly`, `monthly`, or `other`.
-    - `needs_human` is true only when no reset time was parseable AND the
-      phrasing says weekly/monthly (the spend-cap case: it clears only when a
-      human raises the cap, or the billing month rolls over — auto-retry
-      cannot fix it). A parsed reset time always means `needs_human: false`,
-      since the pipeline can resume unattended once `resume_at` passes.
+    - `reset_known` is true only when a reset time was actually stated in the
+      message. False means `resume_at` is the fallback above — this system's
+      own retry interval, carrying no information about the real reset — and
+      everything reported to a human must say so rather than presenting it as
+      a deadline.
+
+    `reset_known` replaced a `needs_human` flag that claimed the spend-cap
+    case "clears only when a human raises the cap". Every limit has two
+    exits: the plan's rollover, which needs no one, and a cap increase, which
+    needs a human and only if sooner is wanted. Calling the first exit
+    nonexistent turned an unknown reset time into an apparent dead end.
+    Readers accept the superseded field during a rollout, inverting its sense
+    (`lib/limit-detect.sh`'s `limit_reset_known`), so a peer on the previous
+    release is not misread as authoritative.
 
     There is no supported API for querying a subscription plan's remaining
     quota, so this fail-safe detection *is* the quota check, and
-    back-pressure (2.2) is the primary spend control. Treat a parsed
-    `resume_at` as an upper bound to stand down *until*, not a promise the
-    block lasts that long — a cycle that succeeds before then simply clears
-    the stand-down on its own.
+    back-pressure (2.2) is the primary spend control. `resume_at` is an upper
+    bound to stand down *until*, never a promise the block lasts that long —
+    but nothing inside a cycle can shorten it, because 2.1 stands the cycle
+    down before any stage runs. Lifting it early is `--clear-limit`'s job and
+    only `--clear-limit`'s.
 11. **Cleanup.** Always: delete the cycle's workspace, engage the Enabler if
     this cycle should (requirement 35), write a `cycle-end` event, release the
     lock. Tee each stage's stdout/stderr to `state_dir/cycles/<cycle-id>/` for
@@ -953,6 +986,17 @@ runs unattended.
     foreground), `--repo <slug>` (restrict selection, for testing), plus the
     switch's `--disable [<reason>] [--for <duration>]`, `--enable` and
     `--status` (requirement 2.3), which manage the switch and run no cycle.
+
+    `--clear-limit [<reason>]` lifts a usage-limit stand-down (2.1) and runs
+    no cycle either. It is deliberately not `--enable`: the switch and the
+    stand-down are separate states with separate causes, and one command for
+    both would let an operator clearing a spend cap silently re-enable a
+    pipeline another agent had disabled to edit these files. It clears both
+    carriers, reports what it lifted and what it could not, and warns loudly
+    on a failed flag delete — a flag left set keeps every node down after the
+    operator believes they have resumed. The reason is optional, unlike
+    `--disable`'s: a stand-down being lifted is self-explanatory in a way one
+    being imposed is not.
 13. The Script must pass `shellcheck` and must set its own `PATH` explicitly
     (cron's environment is minimal), covering `claude`, `gh`, `git`, `jq`.
     When provisioning a host, prove that a cron-style invocation can resolve
