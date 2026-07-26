@@ -112,25 +112,38 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Proves the arm64 leg builds — under QEMU emulation, since this runner
-      # is amd64 — on every pull request, not just at publish time on main.
-      # This is the check TD26072002 exists for: without it, an arm64 build
-      # failure (the supercronic checksum picking the wrong architecture's
-      # pin, say) would surface only as a mid-build break on a node that tries
-      # to pull the image, not as a red CI check on the change that caused it.
-      # No `load`/`push`: this leg is built, not run. It could be run — the
-      # binfmt handlers registered above execute arm64 binaries, which is how
-      # this build's own RUN instructions execute — but repeating the whole
-      # check suite under emulation would add minutes to every pull request to
-      # exercise an architecture no node runs. What this step buys is the build
-      # itself: the checksum pin resolving to the right asset, and apt,
-      # NodeSource and npm all resolving for arm64.
+      # Proves the arm64 leg builds and runs — under QEMU emulation, since
+      # this runner is amd64 — on every pull request, not just at publish
+      # time on main. This is the check TD26072002 exists for: without it, an
+      # arm64 build failure (the supercronic checksum picking the wrong
+      # architecture's pin, say) would surface only as a mid-build break on a
+      # node that tries to pull the image, not as a red CI check on the
+      # change that caused it. `load: true` puts this single-platform result
+      # into the runner's own Docker daemon (unlike the multi-platform
+      # manifest list "Publish to GHCR" produces, which `docker load` cannot
+      # take) so the requirement 1b checks below can `docker run` it — the
+      # same binfmt handlers registered above are how this build's own `RUN`
+      # instructions already execute under emulation.
+      #
+      # Running this leg rather than only building it is what TD26072607 buys,
+      # and it is not free: emulation is slow, and almost the whole bill sits
+      # in one step. "Run the test suite inside the arm64 image" takes ~15
+      # minutes against ~1.5 for the same suite on amd64, roughly tripling
+      # this job, while the other three arm64 checks together cost under ten
+      # seconds. So if that needs cutting, gate *that step* to
+      # `github.event_name == 'push' && github.ref == 'refs/heads/main'`,
+      # matching "Publish to GHCR", and leave the cheap three on every pull
+      # request — gating all four would give up most of the coverage to save
+      # almost none of the time. Note the cost grows with the suite: every new
+      # `test/*.test.sh` file is paid for at the emulated rate too.
       - name: Build the arm64 image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile
           platforms: linux/arm64
+          load: true
+          tags: agent-ops:ci-arm64
           build-args: |
             AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
             AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
@@ -226,6 +239,53 @@ jobs:
       - name: Verify a node with no role stands down
         run: |
           out="$(docker run --rm agent-ops:ci /app/agent-cycle.sh)"
+          echo "$out"
+          case "$out" in
+            *"skipped — this node is standby"*) ;;
+            *) echo "expected the role guard to stand the node down" >&2; exit 1 ;;
+          esac
+
+      # The same four requirement 1b checks as above, repeated against the
+      # arm64 leg loaded by "Build the arm64 image" — `--platform linux/arm64`
+      # is what tells the daemon to run this single-platform image under the
+      # QEMU emulation the binfmt handlers registered above provide, rather
+      # than refusing a foreign-architecture image. These are what prove the
+      # arm64 leg runs, not merely that it builds.
+      - name: Verify the arm64 toolchain
+        run: |
+          docker run --rm --platform linux/arm64 agent-ops:ci-arm64 bash -lc '
+            set -e
+            for bin in bash git jq curl python3 perl flock sha256sum rsync node claude gh supercronic; do
+              command -v "$bin" >/dev/null || { echo "missing: $bin" >&2; exit 1; }
+              printf "%-12s %s\n" "$bin" "$(command -v "$bin")"
+            done
+            node --version
+            gh --version | head -n1
+            claude --version
+          '
+
+      - name: Verify the arm64 container crontab
+        run: docker run --rm --platform linux/arm64 agent-ops:ci-arm64 supercronic -test /app/deploy/docker/crontab
+
+      - name: Run the test suite inside the arm64 image
+        run: |
+          docker run --rm --platform linux/arm64 agent-ops:ci-arm64 bash -lc '
+            failed=0
+            for t in /app/test/*.test.sh; do
+              if bash "$t" > /tmp/out 2>&1; then
+                echo "PASS $(basename "$t")"
+              else
+                echo "FAIL $(basename "$t")"
+                cat /tmp/out
+                failed=1
+              fi
+            done
+            exit "$failed"
+          '
+
+      - name: Verify an arm64 node with no role stands down
+        run: |
+          out="$(docker run --rm --platform linux/arm64 agent-ops:ci-arm64 /app/agent-cycle.sh)"
           echo "$out"
           case "$out" in
             *"skipped — this node is standby"*) ;;
