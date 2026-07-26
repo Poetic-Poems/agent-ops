@@ -391,6 +391,43 @@ notice *any* change, and must keep doing so.
 
 Filed 2026-07-26; second measurement and the revised fix added the same day.
 
+### TD26072606 Nothing tests the dashboard page's JavaScript
+
+`test/` covers the Publisher thoroughly and the page not at all. The ~940 lines
+of inline JavaScript in `dashboard/index.html` — every panel, badge, filter and
+the in-place refresh — have no automated test of any kind, so the only thing
+standing between a rendering bug and an operator is someone opening the page and
+recognising that what it says is wrong. That is a weak guard precisely where the
+page is most useful, because the reader has no independent view of the state to
+check it against: a badge that says the wrong thing confidently reads exactly
+like one that says the right thing. `docs/DASHBOARD-SPEC.md`'s verification list
+asks for a headless render with no thrown errors, which catches a page that
+breaks and nothing about a page that lies.
+
+The Outcome column's "Ended" on a running cycle (#94) is what this costs. It
+shipped, and stayed shipped, because no test could have caught it and reading
+`cycle_json`'s ladder in isolation makes it look correct — the bug only exists
+in the gap between a rule written for finished cycles and a column that renders
+unfinished ones. A test naming the case would have failed the day it was written.
+
+Fix: a `test/dashboard-render.test.sh` in the repository's own idiom — bash,
+asserting on output — that feeds fixture `DASHBOARD_DATA` files through the
+page's script and greps the rendered result for the cells under test. It needs a
+DOM, and neither a browser nor jsdom is a dependency this repository should take
+on for it; a ~50-line stub (`createElement`/`createTextNode`/`appendChild`, a
+serialiser) run under `node` is enough for panels that only ever build trees,
+which is all of them. Guard it the way `render-crontab.test.sh` guards
+supercronic — skip with a printed note when `node` is absent — so the suite
+still passes on a host without it.
+
+Two things to settle when writing it. Fixtures should be checked-in JSON rather
+than generated, except for timestamps, which have to be relative to now or every
+"3m ago" assertion rots. And the stub is a maintenance liability if it grows to
+chase the page: keep it to the tree-building subset and let a test that needs
+more be the argument for a real headless browser in CI instead.
+
+Filed 2026-07-26, out of #94.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -416,3 +453,4 @@ above.
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
+| TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
