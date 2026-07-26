@@ -20,6 +20,13 @@
 #
 # Exit status is 0 iff every assertion passed.
 
+# lib/toggle.sh declares `local state_dir="$1"` in each of its functions, and
+# this file happens to call them with a global of the same name. Reading them
+# together, shellcheck takes the locals for writes to our global and warns that
+# the writes are lost in the command substitutions they happen in — but there
+# is no write: every one is a `local`, and this file only ever reads its own.
+# shellcheck disable=SC2031
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

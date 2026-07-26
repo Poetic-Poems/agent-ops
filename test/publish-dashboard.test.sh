@@ -34,6 +34,11 @@
 #
 # Exit status is 0 iff every assertion passed.
 
+# As in test/model-id.test.sh: version 0.10 of the linter reads two helpers here
+# as unreachable, because the only calls to them are inside command
+# substitutions.
+# shellcheck disable=SC2317
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

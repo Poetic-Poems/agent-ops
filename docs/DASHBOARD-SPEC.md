@@ -515,7 +515,11 @@ same number's twins elsewhere on the page.
 
 ## Verifying a change
 
-- `shellcheck scripts/*.sh lib/*.sh agent-cycle.sh` clean.
+- `./scripts/lint-shell.sh` clean — shellcheck over every shell script in the
+  repository, not just this component's. `.github/workflows/shellcheck.yml`
+  runs the same script on every pull request, so this is a gate rather than a
+  good intention: it used to be neither, and four findings accumulated here
+  unnoticed (pipeline spec, acceptance check 1g).
 - `test/dashboard-exposure.test.sh` passes: the page is reachable on the host's
   loopback and on no network, in each of the ways the two compose profiles
   arrange that. `dashboard-local` publishes every port scoped to `127.0.0.1`

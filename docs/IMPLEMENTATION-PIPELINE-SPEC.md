@@ -2324,6 +2324,15 @@ What exists, and the requirements each part answers to:
    to GHCR on `main` only. It carries `packages: write` and authenticates as
    the workflow's own `GITHUB_TOKEN`, so nothing about publishing depends on a
    human's credentials.
+10. `scripts/lint-shell.sh` and `.github/workflows/shellcheck.yml` — the
+    shell linter and the job that enforces it (acceptance check 1g). The file
+    set and the invocation live in the script, so a developer's run and CI's
+    are the same run; the workflow's job is to install a **pinned** shellcheck
+    (version and tarball checksum, both in the workflow) and call it. The pin
+    is the point: the runner image's own version moves without notice, and a
+    linter that gains a check overnight fails pull requests that changed
+    nothing. Component 9 runs the test suite, which only ever reads the scripts
+    it calls; this reads all of them.
 
 ## Acceptance checks
 
@@ -2422,6 +2431,18 @@ pull request, run the ones the change touches and any it could regress.
    `set -euo pipefail` — the exact context every `cfg` read in `agent-cycle.sh`
    and `review-cycle.sh` uses — aborts the script rather than silently
    continuing with the qualified string.
+1g. **Every shell script in the repository is shellcheck-clean.**
+   `./scripts/lint-shell.sh` exits 0. It discovers the file set — every tracked
+   `*.sh`, plus every tracked file whose first line is a sh or bash shebang, so
+   the init scripts and git hooks are included and a script added tomorrow is
+   covered without anyone adding it to a list — and checks them in one
+   invocation with `-x`, which is what lets `source` resolve between the
+   pipelines and `lib/` instead of raising SC1091 on each of them. Clean means
+   nothing reported at all, info findings included; a false positive is
+   silenced by a `# shellcheck disable=` in the file that carries it, with a
+   comment saying why, never by an exclusion in the runner.
+   `.github/workflows/shellcheck.yml` runs the same script on every pull
+   request against a pinned shellcheck (component 10).
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
