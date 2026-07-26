@@ -499,9 +499,9 @@ same number's twins elsewhere on the page.
   loopback — the container's own addresses being on Docker's private bridge,
   which no one is on. Both land in the same place; neither widens what can
   reach the page. `deploy/agent-ops-dashboard.init` (the legacy WSL SysV path)
-  sends that output to `<state_dir>/dashboard-server.log`, so every artefact
-  the dashboard produces lands under `state_dir` and nothing is written beside
-  the checkout. All of its settings (`RUNAS`, `RUNHOME`, `APPDIR`, `PORT`,
+  sends the server's output to `<state_dir>/dashboard-server.log`, so every
+  artefact the dashboard produces lands under `state_dir` and nothing is
+  written beside the checkout. All of its settings (`RUNAS`, `RUNHOME`, `APPDIR`, `PORT`,
   `PIDFILE`, `LOGFILE`) are defaults overridable from
   `/etc/default/agent-ops-dashboard`, so the script carries no host-specific
   path that must be edited in place.

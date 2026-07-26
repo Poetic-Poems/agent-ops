@@ -91,30 +91,6 @@ CI minutes under emulation, which is why it was not done when the leg was added
 in #100; if that proves too slow for every pull request, run it on `main` only,
 before the publish step.
 
-### TD26072003 The local dashboard profile needs Linux host networking
-
-The `local` profile in `deploy/docker/compose.yaml` gives `dashboard-local`
-`network_mode: host`, because `scripts/serve-dashboard.sh` binds `127.0.0.1`
-and a published port would therefore reach nothing. Host networking is a Linux
-container-runtime feature: on Docker Desktop for macOS or Windows the container
-would share the Desktop VM's loopback, not the user's, and the page would be
-unreachable. Nothing is blocked today — every node is Linux (cloud VMs and WSL2)
-and the normal deployment is the `tailnet` profile — but the fallback profile is
-less portable than it looks, and the failure mode is a page that simply does not
-answer.
-
-It also means the port is the host's: on a machine already serving something on
-8787 (the laptop, via the legacy SysV dashboard) the container dies with
-`Address already in use` until `DASHBOARD_PORT` is set.
-
-Fix: make the bind address a setting of the server (default `127.0.0.1`,
-unchanged), have the `local` profile set it to `0.0.0.0` inside the container
-and publish `127.0.0.1:${DASHBOARD_PORT}:8787`. The exposure is then identical —
-the host's loopback and nothing else — while working on any runtime, and the
-port becomes the container's again. `DASHBOARD-SPEC.md`'s loopback requirement
-would need rewording to say what it protects (the host's loopback) rather than
-naming the literal bind.
-
 ### TD26072101 New evidence on a blocked item is not read until the Enabler's recheck
 
 The Co-Ordinator reconstructs blocked and void state from cycle-history
@@ -458,7 +434,7 @@ above.
 | TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | resolved | 2026-07-14 | #11 |
 | TD26072001 | shellcheck not clean at info level on two scripts | resolved | 2026-07-20 | #38 |
 | TD26072002 | The node image is amd64-only | resolved | 2026-07-26 | #100 |
-| TD26072003 | The local dashboard profile needs Linux host networking | in-progress | | |
+| TD26072003 | The local dashboard profile needs Linux host networking | resolved | 2026-07-26 | #101 |
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | open | | |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
