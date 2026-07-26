@@ -411,6 +411,12 @@ values below are the confirmed defaults; the README must document each key.
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch commands.
 
+Every `*_model` key above (and `review.model` in `docs/REVIEW-PIPELINE-SPEC.md`)
+accepts a bare id (`claude-sonnet-5`) or a provider-qualified one
+(`anthropic/claude-sonnet-5`), resolved per requirement 1a. Anthropic is the
+only executable provider (D12, `docs/ROADMAP.md`), so the two forms are the
+same value; no other qualifier is accepted.
+
 ## The Human Gate
 
 The only branch this system protects is each repository's default branch.
@@ -439,6 +445,21 @@ runs unattended.
    or older than `lock_stale_after`, kill its whole process group if still
    alive, log a `warning` (a stale cycle indicates a fault — it should not
    occur in normal operation), take the lock, and continue.
+1a. **Model id resolution (D12 groundwork).** Every model key read from
+   config — `coordinator_model`, `implementor_model_default`,
+   `implementor_model_trivial`, `reviewer_model_default`,
+   `reviewer_model_complex`, `enabler_model` — is resolved immediately after
+   being read, before the lock and before any stage may launch: a bare id
+   (`claude-sonnet-5`) means `anthropic/claude-sonnet-5`; an
+   `anthropic/`-qualified id has the qualifier stripped to the same bare id;
+   a qualifier naming any other provider is a fail-fast config error naming
+   the offending key, not a value ever passed to `claude --model`. An empty
+   value (the "disable this stage" convention `reviewer_model_complex` and
+   `enabler_model` both use) passes through unresolved. `review-cycle.sh`
+   applies the same resolution to `review.model`
+   (`docs/REVIEW-PIPELINE-SPEC.md`). Both scripts share one implementation,
+   `lib/model-id.sh`'s `resolve_model_id`, so the two pipelines can never
+   drift on what counts as a supported provider.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -2240,8 +2261,8 @@ What exists, and the requirements each part answers to:
    second opinion about what counts as a filled-in field (requirement 34a).
    Unit-tested (`test/needs-refinement.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
-   `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh` and
-   `lib/refinement.sh`) holding every rule
+   `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
+   `lib/refinement.sh` and `lib/model-id.sh`) holding every rule
    that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
    dashboard reports what came of it), requirement 3h's refinement
@@ -2250,9 +2271,11 @@ What exists, and the requirements each part answers to:
    fleet flags of requirements 2.3a and 2.1 (`lib/toggle.sh`'s `fleet_*`
    functions; `TOGGLE_GH` substitutes a stub for tests, following
    `CLAIM_GH`), the role guard of requirement 2.4 (read
-   by both pipelines) and the fingerprint rule of requirement 3b —
-   sourced by `agent-cycle.sh`, `review-cycle.sh` and the dashboard's publisher
-   rather than copied into any of them. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
+   by both pipelines), the fingerprint rule of requirement 3b and the
+   provider-qualified model id resolution of requirement 1a
+   (`lib/model-id.sh`'s `resolve_model_id`) — sourced by `agent-cycle.sh`,
+   `review-cycle.sh` and the dashboard's publisher rather than copied into
+   any of them. Unit-tested directly (`test/*.test.sh`, plain bash assertions, no
    framework) and `shellcheck`-clean. These rules are the system's memory of
    what it has already tried; a second copy of one is a bug with a delay
    fuse, and both copies read correctly right up until they disagree.
@@ -2357,6 +2380,15 @@ pull request, run the ones the change touches and any it could regress.
    `fleet/disabled.json` and both real pipelines on node B stand down
    naming the fleet switch, `--enable` on A genuinely removes the flag, and
    a `fleet/limit.json` published by A stands B down until its `resume_at`.
+1f. **A provider-qualified model id resolves; an unsupported one fails fast
+   (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
+   `anthropic/`-qualified form resolve to the same value; an empty value (the
+   "disable this stage" convention) passes through unresolved; a qualifier
+   naming any other provider fails, printing nothing and naming the offending
+   key and provider on stderr; and an assignment of the rejected form under
+   `set -euo pipefail` — the exact context every `cfg` read in `agent-cycle.sh`
+   and `review-cycle.sh` uses — aborts the script rather than silently
+   continuing with the qualified string.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
