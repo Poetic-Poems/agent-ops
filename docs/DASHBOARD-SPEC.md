@@ -81,6 +81,16 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   (implementation spec 35, 36a), which is what gives the row its escalation link
   and the Enabler's last verdict; a mark older than the block belongs to an
   earlier one and is ignored.
+
+  **Not every record in it came from a cycle.** A human may append one by hand
+  — an `unvoided` to reopen an item, an `unblocked`, a `limit-hit` — and those
+  carry the `cycle: "manual"` sentinel of implementation spec 33. The Publisher
+  therefore admits to the cycle list only ids of the pipelines' own shape
+  (`^[0-9]{8}T[0-9]{6}Z-`); every other id is a record about the pipeline
+  rather than a run of it, and belongs in the log tail alone. The readers that
+  act on those records — the limit stand-down, the blocked and void sets — key
+  on the event and the item, never on the cycle, so none of them notices the
+  distinction.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
   entry ({node, role, heartbeat, last cycle, version}; older than 30 minutes →
@@ -274,6 +284,8 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                           terminal_reason, model, status, result, stderr,
                           limit_hit, limit_text } },
                events[] } ],           // most recent 40 FLEET-WIDE, newest first
+                                       //   ids of the cycle shape only — a
+                                       //   hand-appended record is not a cycle
   blocked: [ { repo, item, ts, detail, stage,           // from the log union
                escalation_issue, escalation_url,        // an open ask of the human
                enabler_outcome, enabler_ts } ],         //   … or the last verdict
@@ -563,7 +575,10 @@ same number's twins elsewhere on the page.
   version a node runs (which no open-PR query names), reads each pull request
   at most once, re-reads none of them on the following tick, carries forward
   across a `--no-github` tick, and bounds a cold fill to a few references
-  rather than one burst.
+  rather than one burst. Two hand-appended `cycle: "manual"` records a
+  fortnight apart raise no row in Recent cycles, take none of the `MAX_CYCLES`
+  budget, and leave the real cycle at the top — while both events stay in the
+  log tail.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -705,6 +720,33 @@ same number's twins elsewhere on the page.
   readers assume a finished cycle must select for one**, because every cycle
   list on this page is newest-first and the newest is exactly the one most
   likely to still be running.
+- **A record in the log is not the same thing as a cycle, and the cycle list
+  now says so.** The Publisher built one row per distinct `cycle` value in the
+  log union, which quietly assumed every record came from a run. Some do not:
+  the pipelines' own documented escape hatch for a stuck item is a hand-written
+  `unvoided` (README, "Unsticking an item"), and it carries the
+  `cycle: "manual"` sentinel. Every such record, from every node, for all time,
+  therefore collapsed into a single phantom row — and each of the row's cells
+  then failed in the direction that looks most like a real problem. With no
+  `cycle-start` the Started column falls back to the first event's timestamp,
+  so the row was dated to the earliest hand-edit anyone had ever made and
+  froze there; with no `cycle-end` and no node claiming it, the Outcome column
+  reached for the accusation above and read **no clean end**, permanently, of
+  something that was never running; with no `cycles/manual` directory the
+  Stages cell showed three empty stages, as though the work had been abandoned
+  before it began. And because the fleet ordering is a reverse *lexical* sort
+  of the id — the one sort that interleaves every node's history correctly,
+  since a real id begins with its UTC timestamp — `manual` outranked every
+  digit and pinned itself above every genuine cycle, holding one of the
+  `MAX_CYCLES` slots for good.
+  The fix is to filter on the id's shape where the list is built, rather than
+  to special-case the string `manual` or to re-sort by `started_at`: the sort
+  is not what is wrong, and a filter on the shape covers the next sentinel
+  anyone invents as well as this one. Doing it in the Publisher rather than the
+  page keeps the events themselves in the log tail, which is where a record
+  about the pipeline belongs, and leaves untouched every reader that acts on
+  them — the limit stand-down, the blocked and void sets — because each keys on
+  the event and the item, never on the cycle.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape

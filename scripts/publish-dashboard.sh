@@ -262,6 +262,18 @@ printf '%s\n' "$ALL_EVENTS" | jq -sc '.' > "$events_file" 2>/dev/null \
 # exists on disk always renders from the right node's directory — without
 # the ranking, the union's E row for a peer's cycle could win and silently
 # strip its stages.
+# Only ids of the pipelines' own shape become rows. The log also carries
+# records no cycle produced — a hand-appended `unvoided` or `limit-hit` uses
+# the `cycle: "manual"` sentinel (implementation spec 33) — and every such
+# record, from every node, for all time, collapses into one id here. That id
+# has no cycle-start, no cycle-end and no transcript directory, so it renders
+# as a cycle that began at the first hand-edit anyone ever made and can never
+# end; worse, the sort above is lexical, and "manual" beats every digit, so it
+# pins itself to the top of Recent cycles and holds a MAX_CYCLES slot forever.
+# Dropping it here rather than in the page keeps it in the log tail, where a
+# record that is not a cycle belongs, and keeps the limit and void readers —
+# which filter on the event, never on the cycle — untouched.
+cycle_id_re='^[0-9]{8}T[0-9]{6}Z-'
 cycle_rows="$work_tmp/cycle-rows"
 tab="$(printf '\t')"
 
@@ -285,7 +297,8 @@ dir_rows() {  # dir_rows CYCLES_DIR
     [[ -d "$pd" ]] || continue
     dir_rows "$pd"
   done
-} | sort -t "$tab" -k1,1r -k2,2 | awk -F'\t' '!seen[$1]++' | cut -f1,3 \
+} | sort -t "$tab" -k1,1r -k2,2 | awk -F'\t' -v re="$cycle_id_re" \
+      '$1 ~ re && !seen[$1]++' | cut -f1,3 \
   | head -n "$MAX_CYCLES" > "$cycle_rows"
 
 # Each cycle's JSON goes to its own file and the set is slurped once at the

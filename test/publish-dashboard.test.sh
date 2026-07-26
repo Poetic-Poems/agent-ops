@@ -178,6 +178,37 @@ assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
 assert_lacks "no raw token survives"        "ghp_0123456789abcdefXYZ0123" "$raw"
 assert_lacks "no /home path survives"       "/home/fixtureuser" "$raw"
 
+# --- Only cycles are cycles ------------------------------------------------------
+# A record no cycle produced — the hand-appended kind, which uses the
+# `cycle: "manual"` sentinel of implementation spec 33 — must not become a row
+# in Recent cycles. It has no `cycle-start`, no `cycle-end` and no transcript
+# directory, so it renders as a cycle that started whenever the first hand-edit
+# was made and can never end; and because the id sort is lexical, "manual"
+# outranks every digit, so the phantom pins itself to the top of the table and
+# holds a MAX_CYCLES slot for good. Two hand-appended records a fortnight
+# apart, so a regression that groups them shows up as one row rather than two.
+# The events themselves must survive in the log tail — dropping the row is a
+# statement about what a cycle is, not about which records are worth keeping.
+c="$(new_home nodeC)"
+make_cycle "$c" "${today_day}T080000Z-31" 0.25 model-a
+{
+  printf '{"ts":"2026-07-12T02:40:00Z","cycle":"manual","node":"nodeC-self","event":"unvoided","item":"review-2026-07-11-R-02"}\n'
+  printf '{"ts":"2026-07-26T02:29:36Z","cycle":"manual","node":"nodeC-peer","event":"limit-hit","resume_at":"1970-01-01T00:00:00Z","class":"monthly","reset_known":true}\n'
+  printf '{"ts":"2026-07-26T08:00:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"cycle-start"}\n' "$today_day"
+  printf '{"ts":"2026-07-26T08:10:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"cycle-end","exit_code":0}\n' "$today_day"
+} > "$c/.local/state/poetic-agents/log.jsonl"
+
+run_publish "$c" NODE_NAME=nodeC-self
+cdata="$(data_of "$c")"
+assert_eq "a hand-appended record raises no cycle row" "0" \
+  "$(jq '[.cycles[] | select(.id == "manual")] | length' <<<"$cdata")"
+assert_eq "the real cycle is the only one, and is at the top" \
+  "${today_day}T080000Z-31" "$(jq -r '.cycles[0].id' <<<"$cdata")"
+assert_eq "and the phantom takes none of the MAX_CYCLES budget" "1" \
+  "$(jq -r '.counts.cycles_shown' <<<"$cdata")"
+assert_eq "while both hand-appended events stay in the log tail" "2" \
+  "$(jq '[.log_tail[] | select(.cycle == "manual")] | length' <<<"$cdata")"
+
 # --- The process budget on a long history ---------------------------------------
 # 300 single-stage cycles ≈ months of history. The per-file scan forked two jq
 # per envelope plus one re-parse per row (~900 forks before the detail loop
