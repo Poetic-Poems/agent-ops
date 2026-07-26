@@ -592,6 +592,15 @@ Omit `repo` to reopen the item in every repo, or add it to scope the change to
 one. Either way the item becomes a candidate again; if there is still no work,
 the Implementor will simply void it again — with evidence this time.
 
+**Keep `cycle: "manual"` exactly as it is** here and in any other event you
+append by hand — an `unblocked`, a `limit-hit`. It is not a placeholder for a
+missing id; it is the marker that says no cycle produced this record, and the
+dashboard reads it as one. Give the event a timestamped id of the real shape
+instead and it becomes indistinguishable from a run: the Recent cycles table
+grows a row for a cycle that never started, wearing whatever badge an empty
+event stream earns. `manual` keeps the record in the log tail, where it
+belongs, and out of the cycle list.
+
 ### Blocked items and the Enabler
 
 Some blocked items the pipeline cannot ever clear by itself: the deploy check
@@ -1139,7 +1148,7 @@ stay `standby` throughout. To mock a usage-limit event for testing the
 cooldown, from a shell on that node (`docker compose exec scheduler bash`):
 
 ```bash
-jq -n '{ts: now | todate, cycle: "test", event: "limit-hit", resume_at: (now + 7200 | todate), detail: "test injection"}' >> ~/.local/state/poetic-agents/log.jsonl
+jq -n '{ts: now | todate, cycle: "manual", event: "limit-hit", resume_at: (now + 7200 | todate), detail: "test injection"}' >> ~/.local/state/poetic-agents/log.jsonl
 ```
 
 ### Taking one node out while the rest keep working

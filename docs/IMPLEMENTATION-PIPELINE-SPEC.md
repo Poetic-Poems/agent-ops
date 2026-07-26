@@ -1695,6 +1695,14 @@ runs unattended.
     `<UTC-timestamp>-<node>-<pid>` — the node's `NODE_NAME` (hostname when
     unset), sanitised for use in a directory name, with the pid always last
     because the dashboard matches the running cycle by its `-<pid>` suffix.
+    A record appended **by hand** was produced by no cycle, and says so: its
+    `cycle` is the sentinel `"manual"`, which is deliberately not of that shape.
+    Readers that enumerate cycles must therefore admit only ids matching
+    `^[0-9]{8}T[0-9]{6}Z-` and ignore the rest, or a sentinel becomes a
+    phantom run (dashboard spec, "A record in the log is not the same thing as
+    a cycle"). Readers that act on the record — the blocked and void sets, the
+    limit stand-down — key on the event and the item and never look at `cycle`,
+    so a hand-appended record carries exactly the weight its event does.
     `node` says which machine wrote the record, which is what lets several
     nodes' records be combined; records written before the field existed
     simply lack it, and every reader treats it as optional. A `none-selected` also carries
