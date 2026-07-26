@@ -1130,5 +1130,13 @@ What carries across every roll:
   image update, a `stop`/`start`, or a role change. The only thing that
   costs a fresh login is destroying the volume itself
   (`docker compose down -v`).
+
+  It also holds Claude Code's global config file. That file defaults to
+  `~/.claude.json` — beside the config directory, not inside it — which put it
+  in the container's writable layer, where every image roll took it: each new
+  container printed "Claude configuration file not found" on stderr and built
+  a fresh one. The image sets `CLAUDE_CONFIG_DIR` to this volume's mount point
+  so the file lands inside it instead. Nothing else moved, and no node needs
+  to do anything: the change arrives with the next watchtower roll.
 - **The `state` and `workspaces` volumes** — the pipelines' memory and any
   in-progress clone.

@@ -84,7 +84,7 @@ a node updates by pulling a new image rather than by pulling a branch.
   `supercronic`, a pinned release binary verified by SHA-1, which runs the
   container's crontab as an ordinary process with no cron daemon and no root.
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
-  idempotent: it seeds `~/.claude/settings.json` from
+  idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
   persistent volume holding refreshing OAuth credentials, and the seed carries
   model/effort defaults only — no plugins and no local marketplaces), sets the
@@ -93,6 +93,30 @@ a node updates by pulling a new image rather than by pulling a branch.
   and `workspace_root`, and then execs the service it was given. It refuses to
   start if `state_dir` is not writable, rather than letting a mis-owned volume
   become a silent failure to record anything.
+- The image sets `CLAUDE_CONFIG_DIR=/home/agent/.claude` — the `claude-config`
+  volume's mount point. Claude Code's global config file defaults to
+  `~/.claude.json`, a *sibling* of its config directory rather than a member of
+  it, so it sat in the container's writable layer and every image roll destroyed
+  it: each new container announced "Claude configuration file not found" on
+  stderr and rebuilt the file from nothing. Pointing the variable at the default
+  directory moves that one file inside the volume and changes no other path —
+  credentials, `settings.json`, `projects/` and `sessions/` resolve exactly
+  where they already did. It is set in the image rather than in each node's
+  compose `environment:` so watchtower delivers it without a `docker compose up
+  -d`, which would kill a cycle in flight — and in the image rather than only
+  defaulted in `entrypoint.sh`, because the two reach different processes:
+  `docker compose exec scheduler claude`, the once-per-node interactive login,
+  starts from the image's environment and never runs the entrypoint. With the
+  default alone, that login would write its config where the next roll destroys
+  it while the cycles read the volume, and an operator who authenticated
+  successfully would watch the node fail to authenticate. The entrypoint
+  defaults it regardless, for any context that replaces the environment
+  wholesale. The variable is honoured by the CLI but is not in its published
+  settings documentation, so the image build asserts it (requirement 1b's
+  checks) — against the image's own config rather than a running container's
+  environment, since the entrypoint's default would otherwise mask a missing
+  `ENV`. If a future CLI drops the variable, that check fails before the image
+  reaches a node.
 - `deploy/docker/crontab` carries the same three pipeline schedules as the
   laptop crontab — the 5-minute dashboard heartbeat, the hourly cycle, the
   daily review tick — plus two fleet lines (requirement 2.5): a
@@ -193,8 +217,12 @@ file and carries placeholders only; `.env` itself is never committed.
 - Three named volumes carry everything that must survive a container being
   replaced: `state` (the node's cycle records, logs and locks), `claude-config`
   (the OAuth credentials, which refresh themselves and cannot be rebuilt from
-  the image), and `workspaces`. A node updates by replacing its containers;
-  these are what it keeps.
+  the image, and — via `CLAUDE_CONFIG_DIR` — the global config file that would
+  otherwise sit outside it), and `workspaces`. A node updates by replacing its
+  containers; these are what it keeps. Anything Claude Code writes that is not
+  under one of these mount points is lost on the next roll, which is why the
+  config directory is relocated rather than the volume list extended: a named
+  volume cannot mount a single file.
 - The dashboard service of either profile `depends_on` the scheduler. Both mount
   the `state` volume, and on a node's first start that volume is empty and is
   seeded from the image's mount point; two containers seeding it at once race,

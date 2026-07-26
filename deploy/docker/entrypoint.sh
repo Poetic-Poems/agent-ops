@@ -46,14 +46,23 @@ require_writable() {
 # by hand while logging in. The seed is deliberately minimal — no plugins and
 # no marketplaces, least of all the laptop's local-directory marketplace,
 # which does not exist here and would break every headless `claude -p`.
-mkdir -p "$HOME/.claude"
-require_writable "$HOME/.claude" "the Claude configuration volume"
-if [[ ! -e "$HOME/.claude/settings.json" ]]; then
-  cp "$APP_DIR/deploy/docker/claude-settings.json" "$HOME/.claude/settings.json"
-  say "seeded ~/.claude/settings.json"
+#
+# The image points CLAUDE_CONFIG_DIR at this same directory (see the
+# Dockerfile), so the global config file lands inside the volume rather than
+# beside it as `~/.claude.json`, where a watchtower roll would take it.
+# Defaulted rather than assumed: this script also runs in contexts that set
+# their own environment, and the paths below must not silently disagree with
+# whatever the CLI is actually reading.
+: "${CLAUDE_CONFIG_DIR:=$HOME/.claude}"
+export CLAUDE_CONFIG_DIR
+mkdir -p "$CLAUDE_CONFIG_DIR"
+require_writable "$CLAUDE_CONFIG_DIR" "the Claude configuration volume"
+if [[ ! -e "$CLAUDE_CONFIG_DIR/settings.json" ]]; then
+  cp "$APP_DIR/deploy/docker/claude-settings.json" "$CLAUDE_CONFIG_DIR/settings.json"
+  say "seeded $CLAUDE_CONFIG_DIR/settings.json"
 fi
-if [[ ! -e "$HOME/.claude/.credentials.json" ]]; then
-  say "WARNING: ~/.claude/.credentials.json is absent — no cycle can run until this node is"
+if [[ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]]; then
+  say "WARNING: $CLAUDE_CONFIG_DIR/.credentials.json is absent — no cycle can run until this node is"
   say "         authenticated once: docker compose exec scheduler claude"
 fi
 

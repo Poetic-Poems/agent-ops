@@ -106,6 +106,42 @@ RUN userdel -r ubuntu 2>/dev/null || true \
 
 ENV HOME=/home/agent
 
+# Claude Code keeps two things: a config *directory* (`~/.claude` by default —
+# credentials, settings, projects, sessions) and a global config *file*, which
+# by default is `~/.claude.json`, a sibling of that directory rather than a
+# member of it. Only the directory is a volume, so the file lived in the
+# container's writable layer and every watchtower roll destroyed it. Each new
+# container then greeted every `claude` invocation with "Claude configuration
+# file not found at: /home/agent/.claude.json" on stderr and rebuilt the file
+# from nothing, over and over.
+#
+# `CLAUDE_CONFIG_DIR` moves the file inside the directory, which is already the
+# `claude-config` volume, so it now survives a roll like everything else there.
+# Pointing it at the default directory makes this a no-op for every other path:
+# credentials, settings.json, projects/ and sessions/ resolve exactly where
+# they already do. `.claude.json` is the only thing that moves, and it had no
+# state worth migrating — it was being discarded on every roll anyway.
+#
+# Set in the image, not in each node's compose `environment:`, so watchtower
+# delivers it with no `docker compose up -d` anywhere — a manual `up -d` kills
+# a cycle in flight, which is a silly price for a stderr line.
+#
+# And set *here* rather than only defaulted in entrypoint.sh, because the two
+# reach different processes. `docker compose exec scheduler claude` — the
+# once-per-node interactive login — starts a process from the image's
+# environment and never runs the entrypoint. With the default alone, that login
+# would write its config to the ephemeral `~/.claude.json` while the cron
+# cycles read the volume: an operator who authenticated successfully would
+# watch the node fail to authenticate. The entrypoint keeps its default anyway,
+# for any context that overrides the environment wholesale.
+#
+# One caveat, recorded because it is the kind of thing that rots quietly:
+# `CLAUDE_CONFIG_DIR` is honoured by the CLI (verified against 2.1.215, and it
+# appears in the binary's environment-variable tables) but is not in the public
+# settings documentation. If a future CLI drops it, the symptom is the return
+# of that same warning — harmless, and the CI check below fails first.
+ENV CLAUDE_CONFIG_DIR=/home/agent/.claude
+
 # The mount points for the persistent volumes, created here and owned by
 # `agent`. This is not tidiness: Docker seeds a new named volume from whatever
 # is at its mount point in the image, ownership included, and creates the
