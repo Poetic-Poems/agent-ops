@@ -324,8 +324,13 @@ and the body deliberately sits still while the data is unchanged.
 Then metric cards (spend today/total — fleet-wide, one shared account —
 failures, reached-ready, back-pressure gauge
 vs `max_open_agent_prs`); open PRs; recent cycles (outcome and work source at
-a glance; click a row for per-stage detail with the parsed status, full
-transcript, and stderr); failures,
+a glance — a cycle that has not logged `cycle-end` shows the state it is in
+rather than an outcome it has not reached: **in progress** while a node claims
+it as its live cycle (greyed when that node's own report has gone stale,
+amber and questioned once it is running past `lock_stale_after`), **no clean
+end** when no node is running it, and **not ended** when the data carries no
+node state to ask; click a row for per-stage detail with
+the parsed status, full transcript, and stderr); failures,
 blocked and void items; work sources per repo (including the security and
 code-quality findings, shown first, that the Co-Ordinator prioritises);
 spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
@@ -443,6 +448,12 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   Failures, and its transcript + stderr open inline. On a fleet, each node's
   card names what that node is doing and the header counts how many are working;
   on a single node the header carries the detail itself and there is no strip.
+- While a cycle is in flight, its row in Recent cycles reads **in progress**
+  from the moment it starts — including during the Co-Ordinator stage, before
+  any `selection` is logged, which is the whole window in which the log-derived
+  ladder has nothing to say — and no finished row's badge changes. Check the
+  first minute of a cycle specifically: that is where reading the ladder alone
+  produces "Ended".
 - The page has zero console/page errors (it renders headlessly under a browser
   with no thrown errors).
 
@@ -526,6 +537,28 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   days. That reading only exists if every row shows it at once, which a
   per-row expand forecloses. The detail row still repeats it verbatim
   alongside the rest of the record; the duplication is deliberate.
+- **An outcome is something a cycle has to finish to have.** The Publisher
+  classifies a cycle by reading its events against a ladder — `pr-ready`, then
+  `pr-raised`, `attempt-failed`, `none-selected`, `stand-down`,
+  `cycle-skipped`, `selection` — and that ladder answers the question "how did
+  this go?" for a cycle that is over. Asked of one still working it answers
+  anyway, in the past tense, and its floor is the worst available reading: a
+  cycle whose Co-Ordinator is still choosing has logged nothing on the ladder
+  at all, so a job three minutes old rendered as **Ended** for the whole
+  length of its first stage. So the column now consults `ended_at` first — the
+  `cycle-end` timestamp, which is the only thing in the record that says the
+  cycle is over — and reports a state until there is an outcome to report.
+  Which state needs one fact the log cannot supply: a `cycle-start` with no
+  end looks identical whether the cycle is running or the node died holding
+  it, so the row asks the fleet whether any node claims that cycle as its live
+  one, exactly as the node cards do, and says **no clean end** when none does.
+  That last one is an accusation, so it is withheld where the data cannot
+  support it: `data.js` written before the fleet strip existed carries no node
+  list at all — which is what a page reloaded from an updated checkout reads
+  until the Publisher next runs — and there the row says only **not ended**.
+  Nothing is lost by dropping the mid-flight rungs: how far a running cycle
+  has got is what the Item, Stages and PR cells beside it already show, and
+  they show it without asserting that it stopped there.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape
@@ -534,7 +567,12 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   the class itself — which is also the only reason eight source colours are
   legible at all: eight hues is past what hue alone reliably separates,
   especially for a colour-blind reader. Any future class of badge on this page
-  should take a third shape rather than a ninth hue.
+  should take a third shape rather than a ninth hue. The in-flight badge takes
+  the rule the same way: it stays a filled pill, because it sits in the outcome
+  column and belongs to that class, and carries the page's existing live/idle
+  dot inside it — the same mark the header and the node cards use for the same
+  meaning — so "still working" is legible without colour and without inventing
+  a shape for a thing that is not a new class of data.
 - **The source label/colour map is display-only, and fails open.** The
   vocabulary itself belongs to the Co-Ordinator (`prompts/coordinator.md`'s
   `sources` list) — the page cannot share that definition the way it shares

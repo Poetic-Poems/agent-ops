@@ -100,6 +100,9 @@
   .s-green { color: var(--green); } .s-grey { color: var(--grey); } .s-purple { color: var(--purple); }
   .s-teal { color: var(--teal); } .s-pink { color: var(--pink); }
   .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; vertical-align: middle; }
+  /* Inside a pill the dot is set to the pill's scale, so an in-flight badge in
+     a table cell reads as one label rather than a dot with a word after it. */
+  .badge .dot { width: 6px; height: 6px; margin-right: 4px; }
   .dot.live { background: var(--green); box-shadow: 0 0 0 0 rgba(63,185,80,.6); animation: pulse 1.8s infinite; }
   .dot.idle { background: var(--grey); }
   @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(63,185,80,.5)} 70%{box-shadow:0 0 0 6px rgba(63,185,80,0)} 100%{box-shadow:0 0 0 0 rgba(63,185,80,0)} }
@@ -317,6 +320,53 @@
     return "no cycle-end after " + hours + "h — the node may have died mid-cycle";
   }
 
+  // The node currently running this cycle, if any. A cycle with no `cycle-end`
+  // is either in flight or the trace of a node killed mid-cycle, and the log
+  // alone cannot tell those apart — only a node claiming the cycle as its live
+  // one can. `live.running` rather than `nodeRunning()` deliberately: a stale
+  // peer's claim is old news, not no news, and the caller says so in its own
+  // words rather than losing the row to "unknown".
+  function liveCycleNode(cy) {
+    if (!cy || cy.ended_at || !cy.id) return null;
+    var ns = fleetNodes();
+    for (var i = 0; i < ns.length; i++) {
+      if (ns[i].live && ns[i].live.running === true && ns[i].live.cycle === cy.id) return ns[i];
+    }
+    return null;
+  }
+
+  // The Outcome column for one cycle. A cycle *has* an outcome only once it has
+  // logged `cycle-end`; before that the column can report a state, and the
+  // vocabulary is the fleet cards' — running, or a start with no end and
+  // nothing running it. Reading the event ladder alone gets this wrong in the
+  // most misleading direction available: a cycle still choosing its work has
+  // logged nothing classifiable, so it falls to the ladder's floor and renders
+  // as "Ended" — a verdict, on a cycle that has not begun to earn one. The two
+  // rungs above it lie the same way in the past tense ("Selected", "PR raised"
+  // of a cycle still at work), and nothing is lost by replacing them here: how
+  // far it has got is what the Item, Stages and PR cells beside it already say.
+  function outcomeCell(cy) {
+    if (cy.ended_at) return outcomeBadge(cy.outcome);
+    var n = liveCycleNode(cy);
+    // "No clean end" is an accusation, so it is only made where the data can
+    // support it. `data.js` from before the fleet strip existed carries no node
+    // list at all — which a page refreshed from a checkout the Publisher has
+    // not re-run on yet is reading right now — and there the honest report is
+    // just that the cycle has not ended.
+    if (!n && !fleetNodes().length) return el("span", {class:"badge b-grey",
+      title:"no cycle-end logged; this data carries no node state, so whether it is still running cannot be told from here"},
+      [ el("span", {class:"dot idle"}), document.createTextNode("Not ended") ]);
+    if (!n) return el("span", {class:"badge b-amber", text:"No clean end",
+      title:"a cycle-start with no cycle-end, and no node running it now — the node was stopped mid-cycle, or its log lost the tail"});
+    var doubt = livenessDoubt(n), stale = nodeUnknown(n), stage = (n.live || {}).stage;
+    return el("span", {class:"badge " + (doubt ? "b-amber" : stale ? "b-grey" : "b-blue"),
+      title: doubt ? n.node + ": " + doubt
+           : stale ? "running as of " + n.node + "'s last push more than 30 minutes ago — that answer can no longer be called current"
+           : "running on " + n.node + (stage ? " — " + stage : "")},
+      [ el("span", {class:"dot " + (doubt || stale ? "idle" : "live")}),
+        document.createTextNode(doubt ? "In progress?" : "In progress") ]);
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -476,7 +526,7 @@
       var isOpen = !!expanded[rowKey];
       var cells = [
         el("td", {class:"muted mono", text: fmtTime(cy.started_at)}),
-        el("td", {}, outcomeBadge(cy.outcome)),
+        el("td", {}, outcomeCell(cy)),
         el("td", {}, sourceTag(cy.source)),
         el("td", {class:"wrap roomy"}, [
           cy.repo ? el("span", {class:"mono muted", text: cy.repo.split("/")[1] + " "}) : null,
