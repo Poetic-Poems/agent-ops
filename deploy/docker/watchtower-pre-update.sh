@@ -50,8 +50,11 @@ set -uo pipefail
 # an operator wondering why a node has not taken the new image should look.
 say() { printf 'watchtower-pre-update: %s\n' "$*"; }
 
-# sysexits.h. watchtower singles this one code out; every other non-zero status
-# is an error it reports and then updates anyway.
+# sysexits.h. watchtower singles this code out as a *deliberate* deferral, and
+# logs it as such. Read the source before assuming the rest: every other
+# non-zero status cancels the update too, just noisily, as a hook that failed.
+# Which is why nothing below ever exits non-zero except on purpose — see the
+# fail-open branches.
 EX_TEMPFAIL=75
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
