@@ -40,6 +40,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# shellcheck source=lib/model-id.sh
+. "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/role.sh
@@ -96,7 +98,7 @@ fi
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
-review_model="$(cfg '.review.model')"
+review_model="$(resolve_model_id review.model "$(cfg '.review.model')")"
 pr_label="$(cfg '.review.pr_label')"
 branch_prefix="$(cfg '.review.branch_prefix')"
 timeout_review_min="$(cfg '.review.timeout_review')"
