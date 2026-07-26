@@ -61,10 +61,13 @@ gh_max_age="${LAUNCHER_GITHUB_MAX_AGE:-285}"
 # publish-dashboard.sh gets a chance to create it — make sure it exists.
 mkdir -p "$logdir"
 
-# A container killed mid-append (a watchtower roll, TD26072301) can leave the
-# log's size recorded while the data blocks behind the last few writes never
-# reach disk: they read back as NUL bytes. `ockham-container` carries one such
-# hole — 652 bytes, four whole lines, between two intact ones.
+# A container killed mid-append can leave the log's size recorded while the
+# data blocks behind the last few writes never reach disk: they read back as
+# NUL bytes. `ockham-container` carries one such hole — 652 bytes, four whole
+# lines, between two intact ones, left by a watchtower roll back when a roll
+# could still land mid-cycle. Rolls now defer to a running cycle
+# (deploy/docker/watchtower-pre-update.sh), but every other unclean stop still
+# does this: a manual `up -d` or `down`, a host reboot, an OOM kill.
 #
 # The lost lines are lost. What matters is what the hole does to every *later*
 # read: one NUL anywhere makes the whole file binary, and grep then stops
@@ -88,7 +91,7 @@ repair_log() {
   (( clean < size )) || return 0
   tmp="$log.repair.$$"
   if tr -d '\0' < "$log" > "$tmp" 2>/dev/null; then
-    printf '%(%Y-%m-%dT%H:%M:%S%z)T repaired: dropped %s NUL byte(s) — an unclean stop lost the log lines in flight (TD26072301)\n' \
+    printf '%(%Y-%m-%dT%H:%M:%S%z)T repaired: dropped %s NUL byte(s) — an unclean stop lost the log lines in flight\n' \
       -1 "$(( size - clean ))" >> "$tmp"
     mv "$tmp" "$log"
   else

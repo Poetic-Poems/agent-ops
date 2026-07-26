@@ -56,6 +56,29 @@ x-agent-ops: &agent-ops
     # Only containers carrying this label are watchtower's business — the
     # laptop runs unrelated containers that are none of it.
     com.centurylinklabs.watchtower.enable: "true"
+    # And a roll waits for the cycle it would otherwise kill. watchtower runs
+    # this script inside the container it is about to update and treats exit 75
+    # (EX_TEMPFAIL) as "cancel this one, try again next poll"; the script exits
+    # 75 while either pipeline's lock is held by a live process. See
+    # watchtower-pre-update.sh for why that is the right question to ask, and
+    # WATCHTOWER_LIFECYCLE_HOOKS below, without which the label is inert.
+    #
+    # It is on the shared block, so it covers the dashboard services as well as
+    # the scheduler, and that is not merely tidiness: all three run the same
+    # image, and watchtower records what it stopped in a map keyed by *image*
+    # id, then restarts every container marked for update whose image is in
+    # that map. A scheduler that deferred while a dashboard on the same image
+    # did not would be recreated anyway, by the dashboard's entry — the
+    # deferral would be silently undone. Labelling every container that shares
+    # the image means the three of them always agree.
+    com.centurylinklabs.watchtower.lifecycle.pre-update: /app/deploy/docker/watchtower-pre-update.sh
+    # Minutes (watchtower's unit here), and also its default — stated because
+    # the value is load-bearing and a reader should not have to know the
+    # default. The check is a handful of jq invocations, so a minute is
+    # enormous; it exists for the case where the container is too wedged to
+    # answer, and watchtower cancels the update when the hook times out, which
+    # is the safe way for that to fail.
+    com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
 
 services:
   # The pipelines themselves: supercronic running deploy/docker/crontab. On a
@@ -145,7 +168,24 @@ services:
       # not own.
       WATCHTOWER_LABEL_ENABLE: "true"
       WATCHTOWER_CLEANUP: "true"
-      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL:-300}
+      # Without this the lifecycle labels on the agent-ops containers are read
+      # by nobody and every roll lands mid-cycle again. It is a watchtower
+      # process flag, so it belongs here and nowhere else.
+      WATCHTOWER_LIFECYCLE_HOOKS: "true"
+      WATCHTOWER_POLL_INTERVAL: ${WATCHTOWER_POLL_INTERVAL-300}
+      # Belt and braces to the hook above: a node may roll on a cron expression
+      # instead of a poll, putting the roll somewhere its cycles are not. Empty
+      # by default and left empty on most nodes — the hook is the fix, and
+      # polling every five minutes is what makes a deferred roll cheap, because
+      # the retry is five minutes away rather than a day.
+      #
+      # The two are mutually exclusive: watchtower exits fatally with "Only
+      # schedule or interval can be defined, not both" if it sees both, and a
+      # watchtower that will not start is a node that silently stops updating.
+      # An *empty* value does not count as set, which is why the interval above
+      # uses `-` and not `:-` — writing `WATCHTOWER_POLL_INTERVAL=` in .env
+      # clears it, leaving the schedule alone in the field.
+      WATCHTOWER_SCHEDULE: ${WATCHTOWER_SCHEDULE:-}
       # The containrrr/watchtower image is effectively unmaintained and its
       # baked-in Docker client still defaults to API version 1.25. A modern
       # daemon — Docker 25+, as installed by get.docker.com on a fresh Ubuntu
