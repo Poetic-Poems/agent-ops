@@ -342,6 +342,49 @@ Three things worth knowing:
   happened is entitled to one. It shows up in `--status`, in the log, and on
   the dashboard banner.
 
+### Lifting a usage-limit stand-down
+
+The switch is not the only thing that stops cycles. Hitting the account's
+usage limit stands the whole fleet down until `resume_at` (requirement 2.1),
+and `--enable` does not touch that — they are separate states with separate
+causes. `--status` reports both:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --status
+# switch:   ENABLED — cycles will run
+# record:   /home/agent/.local/state/poetic-agents/disabled.json
+# cycle:    idle
+# review:   idle
+# limit:    STANDING DOWN — with no stated reset; retrying after 2026-07-27T01:00:11Z (estimated); …
+```
+
+When the message states a reset time, `resume_at` is that time and waiting is
+the whole answer. When it does not — the monthly spend-cap message is the
+common case — `resume_at` is this system's own retry interval (a day), not a
+prediction. Such a limit has two exits, and you choose:
+
+- **wait for the plan's rollover**, which needs no one; or
+- **raise the cap** at `claude.ai/settings/usage`, then tell the fleet:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --clear-limit "cap raised"
+```
+
+That clears both carriers of the stand-down — `fleet/limit.json` in the state
+repository, and the log union, via a `limit-cleared` event that supersedes the
+earlier `limit-hit`. Peers pick it up at their next state-sync fetch. Run it
+only once the limit is actually gone: if it is not, the next cycle simply
+re-hits it and publishes a fresh stand-down.
+
+Without this the only exit was `resume_at` passing, on a clock the system had
+invented — so a cap raised in the morning still left the fleet down until the
+next day. If you want to know whether a limit is genuinely still in force, ask
+the account directly rather than reading the timestamp:
+
+```bash
+docker compose exec scheduler claude -p 'say ok'
+```
+
 ## Which node runs the cycles
 
 The pipelines run on any number of machines — a laptop, a cloud VM, several —
@@ -377,8 +420,9 @@ What the role does *not* stop:
 
 - `--dry-run` and `--once` — a human asking for a cycle is not an unattended
   one, and both run on any machine.
-- `--disable`, `--enable` and `--status` — the switch is shared state and must
-  be readable and settable from wherever you happen to be.
+- `--disable`, `--enable`, `--clear-limit` and `--status` — the switch and the
+  usage-limit stand-down are shared state, and must be readable and settable
+  from wherever you happen to be.
 - The dashboard, which is worth serving on every node.
 
 ## Keeping every node warm

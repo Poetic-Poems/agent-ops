@@ -300,16 +300,23 @@ fi
 
 # Usage-limit state: prefer a logged limit-hit with a future resume_at; else
 # fall back to limit phrasing detected in the most recent cycles' transcripts.
-last_limit_hit="$(printf '%s\n' "$ALL_EVENTS" | jq -rsc '[.[]|select(.event=="limit-hit")]|last // {}' 2>/dev/null)"
+# The reduction is lib/limit-detect.sh's, so a `limit-cleared` event retires
+# the banner exactly when it retires the stand-down itself (requirement 34a —
+# the dashboard must not still be reporting a limit the pipelines have lifted).
+last_limit_hit="$(printf '%s\n' "$ALL_EVENTS" | limit_union_record)"
+[[ -n "$last_limit_hit" ]] || last_limit_hit='{}'
 limit_resume="$(jq -r '.resume_at // empty' <<<"$last_limit_hit" 2>/dev/null)"
-limit_needs_human="$(jq -r '.needs_human // false' <<<"$last_limit_hit" 2>/dev/null)"
+limit_class="$(jq -r '.class // "other"' <<<"$last_limit_hit" 2>/dev/null)"
+limit_reset_is_known="$(limit_reset_known "$last_limit_hit")"
 limit_active=false; limit_note=""
 if [[ -n "$limit_resume" ]] && (( $(epoch_of "$limit_resume") > now_epoch )); then
-  limit_active=true; limit_note="until $limit_resume (logged)"
-  # Spend-cap-style limits carry no reset time and clear only when a human
-  # raises the cap — auto-retry cannot fix them, so flag that distinctly
-  # rather than letting the banner read like an ordinary timed cooldown.
-  [[ "$limit_needs_human" == "true" ]] && limit_note="$limit_note — needs human action (raise the cap)"
+  # When no reset time was stated, `resume_at` is this system's own retry
+  # interval. Saying "until <t>" of a guess is what let a stand-down outlive
+  # its limit unquestioned, so limit_describe says which kind of time it is
+  # and names the two ways out (wait for the rollover, or raise the cap and
+  # clear it).
+  limit_active=true
+  limit_note="$(limit_describe "$limit_resume" "$limit_class" "$limit_reset_is_known") (logged)"
 fi
 
 if [[ "$limit_active" != "true" ]]; then

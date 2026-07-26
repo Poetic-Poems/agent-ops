@@ -139,13 +139,13 @@ log_event() {
 # hit in either pipeline stands both down. A single-line O_APPEND write is
 # atomic even if the implementation pipeline appends concurrently.
 log_shared_limit_hit() {
-  local resume_at="$1" class="$2" needs_human="$3" ts
+  local resume_at="$1" class="$2" reset_known="$3" ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-  jq -nc --arg ts "$ts" --arg cycle "$review_id" --arg node "$node_name" --arg r "$resume_at" --arg c "$class" --argjson h "$needs_human" \
-    '{ts: $ts, cycle: $cycle, node: $node, event: "limit-hit", resume_at: $r, class: $c, needs_human: $h}' >> "$log_file"
+  jq -nc --arg ts "$ts" --arg cycle "$review_id" --arg node "$node_name" --arg r "$resume_at" --arg c "$class" --argjson k "$reset_known" \
+    '{ts: $ts, cycle: $cycle, node: $node, event: "limit-hit", resume_at: $r, class: $c, reset_known: $k}' >> "$log_file"
   # And to the fleet flag (extend-only, best-effort), so peers stand down now
   # rather than at their next state-sync fetch — REVIEW-PIPELINE-SPEC R3.
-  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$needs_human" "$node_name" \
+  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$reset_known" "$node_name" \
     || log_event "warning" "$(jq -nc \
          '{detail: "could not publish fleet/limit.json — peers will pick the cooldown up from the log union instead"}')"
 }
@@ -153,11 +153,11 @@ log_shared_limit_hit() {
 # Returns 0 (and logs limit-hit to the shared log) if the stage transcript shows
 # a usage-limit / spend-cap phrase; 1 otherwise.
 detect_and_log_limit_hit() {
-  local out_file="$1" text resume_at class needs_human
+  local out_file="$1" text resume_at class reset_known
   limit_phrase_in "$out_file" "$out_file.stderr" || return 1
   text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
-  IFS=$'\t' read -r resume_at class needs_human < <(limit_decide "$text" "$limit_cooldown_default_hours")
-  log_shared_limit_hit "$resume_at" "$class" "$needs_human"
+  IFS=$'\t' read -r resume_at class reset_known < <(limit_decide "$text" "$limit_cooldown_default_hours")
+  log_shared_limit_hit "$resume_at" "$class" "$reset_known"
   return 0
 }
 
@@ -354,22 +354,22 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 # --- Stand-down checks (R3) ---
 # 3.1 Usage-limit cooldown, exactly as agent-cycle.sh 2.1: the log union (as
 # fresh as the last fetch) and fleet/limit.json (read live), later resume wins.
-resume_at=""
+union_record=""
+if [[ -s "$union_log" ]]; then
+  union_record="$(limit_union_record < "$union_log")"
+fi
+governing="$(limit_later_record "$union_record" "$(fleet_flag_fetch "$state_repo" "$state_dir" limit)")"
+[[ -n "$governing" ]] || governing='{}'
+resume_at="$(jq -r '.resume_at // empty' <<<"$governing" 2>/dev/null || true)"
 resume_epoch=0
-union_resume=""
-[[ -s "$union_log" ]] && union_resume="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
-fleet_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir")"
-for cand in "$union_resume" "$fleet_resume"; do
-  [[ -n "$cand" ]] || continue
-  cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
-  if (( cand_epoch > resume_epoch )); then
-    resume_epoch="$cand_epoch"
-    resume_at="$cand"
-  fi
-done
+if [[ -n "$resume_at" ]]; then
+  resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
+fi
 now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
-  log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
+  log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
+    "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
+    "$(limit_reset_known "$governing")")" '{reason: $r}')"
   exit 0
 fi
 
@@ -583,21 +583,21 @@ while IFS= read -r entry; do
   # immediately — and fleet/limit.json is re-read live, which is how a hit a
   # *peer* took during our first review reaches us before their branch does.
   fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
-  resume_at=""
+  union_record=""
+  if [[ -s "$union_log" ]]; then
+    union_record="$(limit_union_record < "$union_log")"
+  fi
+  governing="$(limit_later_record "$union_record" "$(fleet_flag_fetch "$state_repo" "$state_dir" limit)")"
+  [[ -n "$governing" ]] || governing='{}'
+  resume_at="$(jq -r '.resume_at // empty' <<<"$governing" 2>/dev/null || true)"
   resume_epoch=0
-  union_resume=""
-  [[ -s "$union_log" ]] && union_resume="$(jq -rs '[.[] | select(.event == "limit-hit")] | last | .resume_at // empty' "$union_log" 2>/dev/null || true)"
-  fleet_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir")"
-  for cand in "$union_resume" "$fleet_resume"; do
-    [[ -n "$cand" ]] || continue
-    cand_epoch="$(date -d "$cand" +%s 2>/dev/null || echo 0)"
-    if (( cand_epoch > resume_epoch )); then
-      resume_epoch="$cand_epoch"
-      resume_at="$cand"
-    fi
-  done
+  if [[ -n "$resume_at" ]]; then
+    resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
+  fi
   if (( resume_epoch > $(date +%s) )); then
-    log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown until $resume_at" '{reason: $r}')"
+    log_event "review-stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
+      "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
+      "$(limit_reset_known "$governing")")" '{reason: $r}')"
     break
   fi
 

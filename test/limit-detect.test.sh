@@ -122,20 +122,22 @@ if [[ -n "$weekly_resume" ]]; then
     "Jul 17 04:00" "$auckland_wall_clock"
 fi
 
-# --- limit_decide: the full resume_at/class/needs_human decision ----------
+# --- limit_decide: the full resume_at/class/reset_known decision ----------
 # Weekly: reset time is parseable, so resume_at must match the direct parse,
-# class is weekly, and it does NOT need a human (auto stand-down is enough).
-IFS=$'\t' read -r d_resume d_class d_needs_human < <(limit_decide "$weekly_text" 3)
+# class is weekly, and reset_known records that the time came from the message.
+IFS=$'\t' read -r d_resume d_class d_reset_known < <(limit_decide "$weekly_text" 3)
 assert_eq "limit_decide resume_at for weekly matches limit_parse_human_reset" "$weekly_resume" "$d_resume"
 assert_eq "limit_decide class for weekly fixture" "weekly" "$d_class"
-assert_eq "limit_decide needs_human is false for weekly fixture" "false" "$d_needs_human"
+assert_eq "limit_decide reset_known is true for weekly fixture" "true" "$d_reset_known"
 
 # Monthly: no reset time at all, so it must still log a limit-hit (non-empty
-# resume_at) with a long fallback cooldown and a needs-human flag, since
-# auto-retry cannot clear a spend cap.
-IFS=$'\t' read -r d_resume d_class d_needs_human < <(limit_decide "$monthly_text" 3)
+# resume_at) with a long fallback cooldown, and must mark the reset UNKNOWN —
+# resume_at there is this system's own retry interval, not a stated reset. The
+# earlier `needs_human` flag claimed more than the detector knows: a spend cap
+# also clears by itself at the plan's rollover.
+IFS=$'\t' read -r d_resume d_class d_reset_known < <(limit_decide "$monthly_text" 3)
 assert_eq "limit_decide class for monthly fixture" "monthly" "$d_class"
-assert_eq "limit_decide needs_human is true for monthly fixture" "true" "$d_needs_human"
+assert_eq "limit_decide reset_known is false for monthly fixture" "false" "$d_reset_known"
 if [[ -n "$d_resume" ]]; then
   d_resume_epoch="$(date -d "$d_resume" +%s 2>/dev/null || echo 0)"
   now_epoch="$(date +%s)"
@@ -148,10 +150,11 @@ else
 fi
 
 # Generic/other phrasing with no timestamp: preserve the original behaviour
-# of falling back to the short default cooldown, and no needs-human flag.
-IFS=$'\t' read -r d_resume d_class d_needs_human < <(limit_decide "rate limit hit, please retry" 3)
+# of falling back to the short default cooldown. The reset is unknown here
+# too — the cooldown is a guess, it is just a shorter one.
+IFS=$'\t' read -r d_resume d_class d_reset_known < <(limit_decide "rate limit hit, please retry" 3)
 assert_eq "limit_decide class for a generic rate-limit message" "other" "$d_class"
-assert_eq "limit_decide needs_human is false for a generic rate-limit message" "false" "$d_needs_human"
+assert_eq "limit_decide reset_known is false for a generic rate-limit message" "false" "$d_reset_known"
 if [[ -n "$d_resume" ]]; then
   d_resume_epoch="$(date -d "$d_resume" +%s 2>/dev/null || echo 0)"
   now_epoch="$(date +%s)"
@@ -163,6 +166,79 @@ else
   printf 'FAIL - limit_decide produced no resume_at for the generic fixture\n'
   failures=$(( failures + 1 ))
 fi
+
+# --- limit_union_record: the reduction the stand-down and dashboard share --
+# Time-ordered, most-recent-wins, over both limit events.
+union_hits="$(printf '%s\n' \
+  '{"ts":"2026-01-01T00:00:00Z","event":"limit-hit","resume_at":"2030-01-01T00:00:00Z","class":"weekly","reset_known":true}' \
+  '{"ts":"2026-01-01T01:00:00Z","event":"cycle-end","exit_code":0}' \
+  '{"ts":"2026-01-01T02:00:00Z","event":"limit-hit","resume_at":"2031-01-01T00:00:00Z","class":"monthly","reset_known":false}')"
+assert_eq "limit_union_record returns the most recent limit-hit" \
+  "2031-01-01T00:00:00Z" "$(limit_union_record <<<"$union_hits" | jq -r '.resume_at')"
+
+# The whole point of the new event: a limit-cleared written afterwards retires
+# the stand-down. Without it nothing could ever lift one, because the check
+# runs before any stage and no cycle could reach a success to clear it.
+union_cleared="$union_hits
+{\"ts\":\"2026-01-01T03:00:00Z\",\"event\":\"limit-cleared\",\"was\":\"2031-01-01T00:00:00Z\"}"
+assert_eq "a later limit-cleared supersedes the limit-hit" \
+  "" "$(limit_union_record <<<"$union_cleared")"
+
+# ...and a limit hit *after* a clear stands the fleet down again.
+union_recleared="$union_cleared
+{\"ts\":\"2026-01-01T04:00:00Z\",\"event\":\"limit-hit\",\"resume_at\":\"2032-01-01T00:00:00Z\",\"class\":\"weekly\",\"reset_known\":true}"
+assert_eq "a limit-hit after a limit-cleared stands down again" \
+  "2032-01-01T00:00:00Z" "$(limit_union_record <<<"$union_recleared" | jq -r '.resume_at')"
+
+assert_eq "limit_union_record is empty for a stream with no limit events" \
+  "" "$(limit_union_record <<<'{"ts":"2026-01-01T00:00:00Z","event":"cycle-end"}')"
+
+# --- limit_later_record: requirement 2.1's "later resume wins" -------------
+rec_early='{"resume_at":"2030-01-01T00:00:00Z","class":"weekly","reset_known":true}'
+rec_late='{"resume_at":"2031-01-01T00:00:00Z","class":"monthly","reset_known":false}'
+assert_eq "limit_later_record picks the later resume, whatever the argument order" \
+  "2031-01-01T00:00:00Z" "$(limit_later_record "$rec_late" "$rec_early" | jq -r '.resume_at')"
+assert_eq "limit_later_record picks the later resume (reversed)" \
+  "2031-01-01T00:00:00Z" "$(limit_later_record "$rec_early" "$rec_late" | jq -r '.resume_at')"
+assert_eq "limit_later_record skips a carrier that is clear" \
+  "2030-01-01T00:00:00Z" "$(limit_later_record "" "$rec_early" | jq -r '.resume_at')"
+assert_eq "limit_later_record is empty when every carrier is clear" \
+  "" "$(limit_later_record "" "")"
+
+# --- limit_reset_known: the field, and the superseded one ------------------
+assert_eq "limit_reset_known reads reset_known when present" \
+  "false" "$(limit_reset_known '{"reset_known":false}')"
+# A peer still running the previous release publishes needs_human, whose sense
+# is inverted; reading it wrong would call an invented time authoritative.
+assert_eq "limit_reset_known inverts a legacy needs_human:true" \
+  "false" "$(limit_reset_known '{"needs_human":true}')"
+assert_eq "limit_reset_known inverts a legacy needs_human:false" \
+  "true" "$(limit_reset_known '{"needs_human":false}')"
+
+# --- limit_describe: what the operator is actually told --------------------
+known_note="$(limit_describe "2030-01-01T00:00:00Z" weekly true)"
+assert_eq "a stated reset is described as a deadline" \
+  "until 2030-01-01T00:00:00Z" "$known_note"
+
+# The correction this change exists for: an unstated reset must not be
+# presented as a deadline, and must name BOTH ways out — waiting for the
+# rollover (no human) and raising the cap (a human, only if sooner is wanted).
+#
+# Checked in-process rather than through `bash -c`: the note contains an
+# apostrophe ("the plan's rollover"), which no amount of quoting survives
+# being interpolated into a child shell's `[[ ]]`.
+contains() { if [[ "$1" == *"$2"* ]]; then echo yes; else echo no; fi; }
+guess_note="$(limit_describe "2030-01-01T00:00:00Z" monthly false)"
+assert_eq "an unstated reset is marked as an estimate" \
+  "yes" "$(contains "$guess_note" "estimated")"
+assert_eq "an unstated reset is not presented as a deadline" \
+  "no" "$(contains "$guess_note" "until ")"
+assert_eq "an unstated reset says it clears at the rollover on its own" \
+  "yes" "$(contains "$guess_note" "rollover")"
+assert_eq "an unstated reset offers --clear-limit as the way to resume sooner" \
+  "yes" "$(contains "$guess_note" "--clear-limit")"
+assert_eq "no limit is ever described as needing a human before it can clear" \
+  "no" "$(contains "$guess_note" "needs human")"
 
 # --- Regression guard: must not abort under `set -e -o pipefail` ----------
 # agent-cycle.sh runs with `set -euo pipefail`. Several helpers above build a

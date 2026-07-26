@@ -780,10 +780,26 @@
       // The fleet limit flag (2.1) matters here exactly when the local log
       // union hasn't caught up — a standby with no state yet, or a hit
       // seconds old on another node.
+      //
+      // `reset_known` distinguishes a reset time the provider stated from the
+      // retry interval this system invented when it wasn't given one; older
+      // flags carry the superseded `needs_human`, whose sense is inverted.
+      // Saying "until <t>" of an invented time is the misreport this banner
+      // exists to avoid — a stand-down that reads like a deadline gets waited
+      // out instead of questioned.
+      var resetKnown = ff.limit.reset_known !== undefined ? !!ff.limit.reset_known
+                     : ff.limit.needs_human !== undefined ? !ff.limit.needs_human
+                     : true;
+      var by = " — published by " + (ff.limit.node || "?") + ".";
+      var lsub = resetKnown
+        ? "Until " + ff.limit.resume_at + by
+        : "Retrying after " + ff.limit.resume_at + " (estimated — no reset time was given)" + by +
+          (ff.limit.class === "weekly" || ff.limit.class === "monthly"
+            ? " It clears at the plan's rollover, or sooner if you raise the cap and run `agent-cycle.sh --clear-limit`."
+            : "");
       banners.appendChild(el("div", {class:"banner amber"}, [
         el("span", {text: "⏸ Fleet-wide usage-limit stand-down."}),
-        el("span", {class:"sub", text: "Until " + ff.limit.resume_at + " — published by " + (ff.limit.node || "?") +
-          (ff.limit.needs_human ? "; needs human action (raise the cap)." : ".")})
+        el("span", {class:"sub", text: lsub})
       ]));
     }
     var staleNodes = fleetNodes().filter(function (n) { return n.stale; });

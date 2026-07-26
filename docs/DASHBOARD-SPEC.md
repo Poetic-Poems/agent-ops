@@ -180,6 +180,21 @@ it into the log for some other reason (a crash before `log_event` ran, or a
 cycle from before this detector existed) — so the dashboard can still show a
 stand-down the log itself missed.
 
+The banner is built from the same reduction the pipelines gate on
+(`limit_union_record`), so a `limit-cleared` event retires the banner at the
+moment it retires the stand-down; a dashboard still reporting a limit the
+pipelines have lifted would be exactly the disagreement requirement 34a
+exists to prevent. Its wording comes from `limit_describe`, which states
+whether `resume_at` is a reset the provider gave or an interval this system
+chose. An estimate presented as a deadline gets waited out instead of
+questioned — which is how a lifted spend cap kept the fleet down for a
+further 22 hours on 2026-07-26 — so an unstated reset is labelled as such and
+names both ways out: the plan's rollover, which needs nobody, and raising the
+cap then running `agent-cycle.sh --clear-limit`, which needs a human and only
+if sooner is wanted. Flags written by a node on the previous release carry
+`needs_human` instead of `reset_known`; the banner inverts it rather than
+treating its absence as "reset known".
+
 ## The Publisher (`scripts/publish-dashboard.sh`)
 
 Reads the state above, assembles one JSON object, redacts it, and writes it
