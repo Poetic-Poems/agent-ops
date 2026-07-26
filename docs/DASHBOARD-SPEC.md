@@ -516,6 +516,16 @@ same number's twins elsewhere on the page.
 ## Verifying a change
 
 - `shellcheck scripts/*.sh lib/*.sh agent-cycle.sh` clean.
+- `test/dashboard-exposure.test.sh` passes: the page is reachable on the host's
+  loopback and on no network, in each of the ways the two compose profiles
+  arrange that. `dashboard-local` publishes every port scoped to `127.0.0.1`
+  (`DASHBOARD_PORT` moving the host side alone) and carries no `network_mode`,
+  while its server binds `0.0.0.0` on the container port the mapping names —
+  the two halves fail in opposite directions, one to a page on every interface
+  and one to a page that answers nothing. The `tailnet` `dashboard` publishes
+  no port, keeps the sidecar's namespace and takes the default bind, so Serve
+  reaches it and nothing else does. No other service publishes a port, and a
+  bare `serve-dashboard.sh` still resolves to `127.0.0.1`.
 - `test/version.test.sh` passes: a stamped image reports its build, an empty
   stamp (what a local `docker build` produces) falls through to git, a checkout
   reports `HEAD` and flags uncommitted work, neither source reports `null`
