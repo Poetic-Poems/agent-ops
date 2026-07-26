@@ -17,9 +17,11 @@ README](../../README.md) and `docs/*-SPEC.md`.
 - A machine with Docker (any Linux with a kernel from this decade; a 2-core VM
   with 20 GB of disk is comfortable — the workspaces volume holds full clones).
 - A **GitHub token** for this node: read and write on `Poetic-Poems/poetic`,
-  `Poetic-Poems/poetic-fiddle` and `Poetic-Poems/agent-ops-state` (contents,
-  pull requests, issues) plus read on security alerts. One token per node, so a
-  single node can be revoked without disturbing the others.
+  `Poetic-Poems/poetic-fiddle`, `Poetic-Poems/agent-ops` (a target repo of its
+  own pipeline since the roadmap's dogfood rule) and
+  `Poetic-Poems/agent-ops-state` (contents, pull requests, issues) plus read on
+  security alerts. One token per node, so a single node can be revoked without
+  disturbing the others.
 - A **Tailscale pre-auth key** from the tailnet's admin console, unless this
   node will run the `local` profile.
 - Somewhere to log in to Claude interactively, once, after step 3.

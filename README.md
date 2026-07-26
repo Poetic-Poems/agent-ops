@@ -1,6 +1,6 @@
 # Poetic Autonomous Implementation Agent System
 
-A self-hosted, unattended pipeline that automatically selects, implements, and reviews pending work from the [poetic](https://github.com/Poetic-Poems/poetic) and [poetic-fiddle](https://github.com/Poetic-Poems/poetic-fiddle) repositories, raising mergeable pull requests for human review and approval.
+A self-hosted, unattended pipeline that automatically selects, implements, and reviews pending work from the [poetic](https://github.com/Poetic-Poems/poetic) and [poetic-fiddle](https://github.com/Poetic-Poems/poetic-fiddle) repositories — and from [agent-ops](https://github.com/Poetic-Poems/agent-ops) itself, the pipeline's own home, so it works down its own backlog and roadmap — raising mergeable pull requests for human review and approval.
 
 ## What it does
 

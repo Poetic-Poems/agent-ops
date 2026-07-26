@@ -7,6 +7,10 @@
     {
       "slug": "Poetic-Poems/poetic-fiddle",
       "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"]
+    },
+    {
+      "slug": "Poetic-Poems/agent-ops",
+      "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "code-quality"]
     }
   ],
   "state_dir": "~/.local/state/poetic-agents",
