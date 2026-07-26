@@ -7,3 +7,8 @@ node_modules/
 # Dashboard: the live site is generated into state_dir (outside the repo);
 # this guards against a stray local copy being committed.
 dashboard/data.js
+
+# The version stamp is written into the image at build time (see
+# deploy/docker/Dockerfile). A committed one would be a lie the moment the next
+# commit landed.
+build-info.json

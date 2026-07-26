@@ -29,6 +29,8 @@ CONFIG_FILE="$SCRIPT_DIR/config.json"
 
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/version.sh
+. "$SCRIPT_DIR/lib/version.sh"
 
 usage() {
   cat <<'EOF'
@@ -227,6 +229,13 @@ do_push() {
   # The heartbeat is why every push moves the branch: it is what lets the
   # fleet dashboard tell a quiet node from a dead one — on a standby (which
   # has no cycles to publish) it is the entire point of the push.
+  #
+  # It also carries the node's version (lib/version.sh), for the same reason it
+  # carries the role: a peer publishes no container and no checkout, so what
+  # code it is running is knowable to the rest of the fleet only if it says so
+  # itself. Since a roll defers while a cycle is in flight, nodes are routinely
+  # on different images, and a dashboard that could not tell them apart could
+  # not answer whether a fix had reached the node that needed it.
   local last_cycle
   last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
     | sort -r | head -n 1)"
@@ -235,7 +244,8 @@ do_push() {
     --arg role "${AGENT_OPS_ROLE:-standby}" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg lc "${last_cycle:-}" \
-    '{node: $node, role: $role, ts: $ts, last_cycle: $lc}' > "$mirror/heartbeat.json"
+    --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
+    '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

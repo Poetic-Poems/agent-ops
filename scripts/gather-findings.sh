@@ -41,8 +41,11 @@ fi
 # Stream every element of a paginated GitHub list endpoint as newline-separated
 # JSON objects. On any failure (feature off, 403/404, no gh) print nothing, so
 # the caller's `jq -s` slurps it to an empty array.
+# DASHBOARD_GH_CMD is the Publisher's test seam (see scripts/publish-dashboard.sh);
+# honouring it here is what keeps a stubbed publish from reaching the network
+# through this script's back door. Unset everywhere else, where it is `gh`.
 fetch() {
-  gh api --paginate "$1" --jq '.[]' 2>/dev/null || true
+  "${DASHBOARD_GH_CMD:-gh}" api --paginate "$1" --jq '.[]' 2>/dev/null || true
 }
 
 # Dependabot alerts are security by definition.
