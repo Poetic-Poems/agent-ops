@@ -1463,7 +1463,10 @@ runs unattended.
     and `blocked_ts` (requirements 35a, 36a). An `unblocked` written by the
     Enabler also carries `repo`, `by: "enabler"` and a `reason`, which is what
     distinguishes it from the Co-Ordinator's cheap re-check of requirement 18 —
-    the bare-id form remains valid and remains what a human appends by hand.
+    the bare-id form remains valid and remains what a human appends by hand. An
+    `unvoided` written from a label (requirement 34f) carries `repo`,
+    `by: "label"`, the `request_url` that authorised it, `labelled_at`, and the
+    `cleared_void_ts` it reopened; the bare hand-appended form remains valid.
     The Reviewer's `stage-start` additionally carries the resolved
     `complexity` and the `model` it selected (requirement 8a) — the record
     that lets the distribution of complexity self-assessments be audited for
@@ -1626,6 +1629,59 @@ runs unattended.
     change to a repository, which requirement 12's run promises not to make.
     Since the event records only what was actually applied, nothing later tries
     to remove a label that was never there.
+34f. **The human's escape hatch reaches the human.** Requirement 34c reserves
+    clearing a void to a human and gives them one interface: a line appended by
+    hand to `state_dir/log.jsonl`. That interface is unreachable in the
+    deployment this system actually has — the nodes are containers and
+    `state_dir` is a volume inside one, while the maintainer is in a browser
+    looking at the pull request the void is about. An escape hatch nobody can
+    reach does not constrain anything; it just makes the terminal state
+    permanent in practice as well as in principle.
+
+    So a void is also cleared by applying the `unvoid_label` (default
+    `unvoided`) to any issue or pull request naming the item, in the item's
+    repo. Per repo per cycle the Script reads the issues carrying that label —
+    one call, since the issues endpoint returns pull requests too — resolves
+    each to the item ids its branch, title and body name (an issue also being
+    its own id), and clears the matching voids. This is not a relaxation of
+    requirement 34c: **no stage ever applies this label**, so only a human can,
+    exactly as before. What changes is where they have to be standing.
+
+    Three properties, all load-bearing:
+    - **Applied above the extract.** The `unvoided` events are written before
+      `blocked_items`/`void_items` are read for the cycle, and appended to the
+      union snapshot of requirement 2.5 — the exact lines just written, not a
+      rebuilt snapshot, which would pull in whatever peers wrote meanwhile. A
+      clearance landing after `void_json` was computed is a cycle late, and a
+      cycle late here means the human watches nothing happen and concludes, for
+      the second time, that the label does not work. It also needs no new
+      fingerprint input (requirement 3b): `void_json` is already fingerprinted,
+      and it shrinks the same cycle the label is read.
+    - **The label is never removed.** Removing it would move the item's
+      `updatedAt`, which is the clock `abandoned_draft_after_hours` is measured
+      against (requirement 3e) — so tidying up after the human would push the
+      very pull request they are unsticking another staleness window into the
+      future.
+    - **Which makes the rule, not the label, what stops it repeating.** A
+      clearance is emitted only where the item is void *now* and the void was
+      recorded *strictly before* the label was applied. The first test makes it
+      idempotent with no label churn. The second stops a label left in place
+      becoming a standing exemption that auto-clears every future void on that
+      item from an instruction given months earlier about a different verdict —
+      a failure with no symptom at all beyond an item that never stays void.
+
+    The recorded `unvoided` carries `by: "label"`, the `request_url`,
+    `labelled_at`, and the `cleared_void_ts` it reopened, so a later reader can
+    see which verdict was reopened and on whose authority without going back to
+    GitHub. The hand-appended line of requirement 34c remains valid and
+    unchanged; this is a second door to the same room.
+
+    The instinct it serves is the one the system already teaches: labelling a
+    pull request `autonomous-agent` hands it to the pipeline, so a label is
+    already how a human tells this system something from GitHub. Faced with a
+    void, a maintainer applied a label called `unvoided` to the pull request and
+    nothing read it — the item stayed void, the fleet stood down hourly, and the
+    label sat there looking like the action had been taken.
 
 ### The Enabler
 
@@ -2265,6 +2321,20 @@ pull request, run the ones the change touches and any it could regress.
    Enabler `unblocked` verdict carrying `complete_handoff: true` takes the PR out
    of draft and logs `pr-ready` with `handoff: "enabler"`, while the same verdict
    on an item with no `pr_url` is ignored without error.
+8f. **A human can reopen a void from where they actually are (requirement
+   34f).** `test/unvoid-label.test.sh` passes: a request clears a void recorded
+   before the label; a void recorded after it, or at the same instant, stands; a
+   second cycle over the same label clears nothing; and a request cannot reach
+   another repo's identically-named item, while a void carrying no repo is
+   clearable from any. Then drive it end to end: apply the label to a pull
+   request naming a voided item and run a cycle — the item must be absent from
+   the Co-Ordinator's `void` list *in that same cycle*, not the next, and the
+   label must still be on the pull request afterwards. Assert the negatives,
+   which are the whole risk: run two further cycles and confirm no second
+   `unvoided` event is written, then record a fresh void on the same item and
+   confirm the still-present label does not clear it. A label that keeps
+   clearing is a permanent exemption, and its only symptom is an item that never
+   stays void.
 8b. **The two states are visible apart, and so is "waiting on you".** A human
    looking at the monitor can tell "waiting on something" from "there is nothing
    to do here" without reading the log. If both render as one list, the operator

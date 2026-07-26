@@ -470,8 +470,28 @@ Enabler, which can read the repository and settle it properly. You will see the
 refusal as a `warning` on the dashboard.
 
 Both are listed on the dashboard. To reopen a void item — you believe the work
-has genuinely regressed, or the verdict was wrong — append an `unvoided` event
-by hand while no cycle is running:
+has genuinely regressed, or the verdict was wrong — **label any issue or pull
+request that names the item with `unvoided`**, in that item's repo:
+
+```bash
+gh pr edit 92 -R Poetic-Poems/poetic --add-label unvoided
+```
+
+The next cycle reads the label, works out which items that issue or PR names
+(from its branch, title and body — and for an issue, its own number), and
+reopens any of them that are void. The item is back in the Co-Ordinator's pool
+in that same cycle. Only you can do this: no stage in the pipeline ever applies
+this label, which is what keeps "only a human may clear a void" true.
+
+**Leave the label where it is** once it has worked. Nothing removes it — taking
+it off would move the pull request's `updatedAt`, and that is the clock the
+pipeline uses to decide a draft has been abandoned, so tidying up would delay
+the very PR you are unsticking. It cannot fire twice: a label only reopens voids
+recorded *before* you applied it, so an old label can never quietly clear a
+fresh verdict.
+
+If you are on a node, appending the event by hand still works, while no cycle is
+running:
 
 ```bash
 printf '%s\n' "$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
@@ -480,8 +500,8 @@ printf '%s\n' "$(jq -nc --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
 ```
 
 Omit `repo` to reopen the item in every repo, or add it to scope the change to
-one. The item becomes a candidate again on the next cycle; if there is still no
-work, the Implementor will simply void it again.
+one. Either way the item becomes a candidate again; if there is still no work,
+the Implementor will simply void it again — with evidence this time.
 
 ### Blocked items and the Enabler
 
