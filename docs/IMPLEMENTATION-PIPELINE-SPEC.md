@@ -81,8 +81,9 @@ a node updates by pulling a new image rather than by pulling a branch.
   `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use); Node.js from NodeSource at the same major as
   the laptop; the `claude` CLI from `@anthropic-ai/claude-code`; and
-  `supercronic`, a pinned release binary verified by SHA-1, which runs the
-  container's crontab as an ordinary process with no cron daemon and no root.
+  `supercronic`, a pinned release binary verified by SHA-1 (one pin per
+  architecture), which runs the container's crontab as an ordinary process
+  with no cron daemon and no root.
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
@@ -152,15 +153,21 @@ a node updates by pulling a new image rather than by pulling a branch.
   every merge, runs the acceptance checks below *inside* it, and — on `main`
   only — publishes it to `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
   (what a node's watchtower follows) and the commit SHA (how a node is pinned
-  or rolled back, through `AGENT_OPS_IMAGE`). A pull request builds and tests
-  but publishes nothing. This is the whole update path: merge produces an
-  image, and nodes replace containers.
+  or rolled back, through `AGENT_OPS_IMAGE`), each tag a multi-platform manifest
+  list covering `linux/amd64` and `linux/arm64`. A pull request builds and
+  tests the `linux/amd64` leg (loaded, so the checks below can run it) and
+  builds the `linux/arm64` leg under QEMU emulation to prove it too, but
+  publishes nothing. This is the whole update path: merge produces an image,
+  and nodes replace containers.
 - The image creates the volume mount points (`~/.claude`, `state_dir`,
   `workspace_root`) owned by `agent`, because a container runtime seeds a new
   named volume from the image's mount point — ownership included — and creates
   it as root when the image has nothing there.
-- The image is x86-64 only, because the pinned `supercronic` asset is
-  (`TECH-DEBT.md`, TD26072002).
+- The image builds for both `linux/amd64` and `linux/arm64`: `supercronic` is
+  the one binary not coming from a signed, multi-architecture apt repository,
+  so the Dockerfile selects its release asset and pinned checksum from
+  `TARGETARCH`, buildx's predefined build arg for the platform currently
+  building.
 
 ### The node stack (`deploy/docker/compose.yaml`)
 
@@ -2332,9 +2339,13 @@ pull request, run the ones the change touches and any it could regress.
    `supercronic` all resolve; `supercronic -test /app/deploy/docker/crontab`
    reports the crontab valid; the `test/` suite passes inside the container;
    and `/app/agent-cycle.sh` with no role set exits 0 through the requirement
-   2.4 guard. `.github/workflows/build-image.yml` runs every one of these on
-   every pull request, so a change that breaks the image cannot be merged —
-   and it is the only place the `test/` suite runs in CI.
+   2.4 guard. `.github/workflows/build-image.yml` runs every one of these,
+   against a `linux/amd64` build, on every pull request, so a change that
+   breaks the image cannot be merged — and it is the only place the `test/`
+   suite runs in CI. The same workflow also builds the image for `linux/arm64`
+   under QEMU emulation on every pull request — proving that leg builds, though
+   the checks above are not repeated against it — and on `main` publishes both
+   as one manifest list per tag.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;

@@ -16,12 +16,22 @@
 
 FROM ubuntu:24.04
 
+# TARGETARCH is one of buildx's predefined build args (amd64, arm64, ...) for
+# whichever platform in --platform is currently building; it must be declared
+# with ARG in the stage that reads it, predefined or not. The supercronic
+# download below is the only place this image cares which architecture that
+# is — everything else here (apt packages, NodeSource, the GitHub CLI repo)
+# already resolves per-architecture on its own.
+ARG TARGETARCH
+
 # The node major deliberately matches the laptop's, so a cycle that works
 # there works here. Supercronic is pinned to a release and verified against
-# its SHA-1: it is the one binary not coming from a signed apt repository.
+# its SHA-1, one pin per architecture: it is the one binary not coming from a
+# signed apt repository.
 ARG NODE_MAJOR=26
 ARG SUPERCRONIC_VERSION=v0.2.47
-ARG SUPERCRONIC_SHA1SUM=712d2ece75da6f6e530192a151488578153e4e96
+ARG SUPERCRONIC_SHA1SUM_AMD64=712d2ece75da6f6e530192a151488578153e4e96
+ARG SUPERCRONIC_SHA1SUM_ARM64=93323899ddca3f1198f1796a4bf4418ed1e7982e
 # `latest` at build time rather than a pin: CI rebuilds on every merge, the
 # CLI moves fast, and a stale claude is a broken pipeline sooner than a
 # surprising one. Pin it here if a release ever breaks a cycle.
@@ -83,10 +93,17 @@ RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
 
 # supercronic: a cron implementation that runs as pid 1 in a container without
 # a system cron daemon, logs to stdout, and needs no root. The crontab it runs
-# is deploy/docker/crontab.
-RUN curl -fsSL -o /usr/local/bin/supercronic \
-        "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-amd64" \
-    && echo "${SUPERCRONIC_SHA1SUM}  /usr/local/bin/supercronic" | sha1sum -c - \
+# is deploy/docker/crontab. The release asset name and its pinned checksum
+# both key off TARGETARCH, so an arm64 build verifies the arm64 binary against
+# the arm64 pin rather than failing a checksum mismatch against the amd64 one.
+RUN case "$TARGETARCH" in \
+        amd64) supercronic_sha1sum="$SUPERCRONIC_SHA1SUM_AMD64" ;; \
+        arm64) supercronic_sha1sum="$SUPERCRONIC_SHA1SUM_ARM64" ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /usr/local/bin/supercronic \
+        "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
+    && echo "${supercronic_sha1sum}  /usr/local/bin/supercronic" | sha1sum -c - \
     && chmod +x /usr/local/bin/supercronic
 
 # A non-root user with a real home, because config.json's paths are ~-relative
