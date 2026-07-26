@@ -2361,7 +2361,8 @@ pull request, run the ones the change touches and any it could regress.
    profile's exposure is the host's loopback and nothing more:
    `docker compose --profile local config` shows `dashboard-local` publishing
    with host IP `127.0.0.1` and no `network_mode`, so the same curl from
-   another machine on the host's network is refused.
+   another machine on the host's network is refused. Check 1c-ii is the same
+   property guarded on every commit, where this one needs a node.
 1c-i. **A roll waits for a cycle.** `test/watchtower-pre-update.test.sh`
    passes: `deploy/docker/watchtower-pre-update.sh` exits 75 while either
    `lock.json` or `review-lock.json` names a live process inside that
@@ -2374,6 +2375,20 @@ pull request, run the ones the change touches and any it could regress.
    On a live node: `docker compose exec scheduler
    /app/deploy/docker/watchtower-pre-update.sh` echoes its finding and exits
    0 when idle, 75 during a cycle.
+1c-ii. **The dashboard is published to the host's loopback and to no network.**
+   `test/dashboard-exposure.test.sh` passes: in `deploy/docker/compose.yaml`
+   every port `dashboard-local` publishes is scoped to `127.0.0.1`, the mapping
+   is `127.0.0.1:${DASHBOARD_PORT:-8787}:8787` so `DASHBOARD_PORT` moves only
+   the host side, and it carries no `network_mode`; its server is told to bind
+   `0.0.0.0` on that same container port, without which the published mapping
+   would reach nothing; the `tailnet` `dashboard` is in the sidecar's namespace
+   (`network_mode: service:tailscale`), publishes no port and is given no bind
+   address, so it keeps loopback where Serve proxies to it; and no other
+   service publishes a port at all. `scripts/serve-dashboard.sh` invoked with
+   no bind address resolves to `127.0.0.1`, and to `0.0.0.0` when given it.
+   The socket-level half of the property — that a request from another machine
+   is refused — is check 1c, which needs the stack up; this check runs in the
+   image, where there is no Docker.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the
