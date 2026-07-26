@@ -21,14 +21,14 @@ transcript inline.
 Three properties are deliberate and non-negotiable:
 
 - **Local and private.** Nothing is published anywhere. The site is generated
-  onto local disk and opened in a browser. There is no server and no open
-  port (an optional loopback-only server exists purely as a `file://`
-  fallback), and no GitHub Pages. The pipeline's operational telemetry —
-  costs, cadence, failure detail, agent reasoning — never leaves the machine
-  except, when the optional tailnet access documented in the README is
-  installed, to the owner's own signed-in devices: `tailscale serve` proxies
-  the unchanged loopback server over the owner's private tailnet, and
-  nothing ever gets a public URL.
+  onto local disk and opened in a browser. There is no server and nothing
+  listening on a network address (an optional loopback-only server exists
+  purely as a `file://` fallback), and no GitHub Pages. The pipeline's
+  operational telemetry — costs, cadence, failure detail, agent reasoning —
+  never leaves the machine except, when the optional tailnet access documented
+  in the README is installed, to the owner's own signed-in devices:
+  `tailscale serve` proxies the unchanged loopback server over the owner's
+  private tailnet, and nothing ever gets a public URL.
 - **Free to run.** The generator is `bash` + `jq` + `gh` on the existing cron
   cadence; the page is a static file; there are **no model calls anywhere**.
 - **A reader, never a participant.** It only reads the pipeline's state and
@@ -483,18 +483,25 @@ same number's twins elsewhere on the page.
 - `scripts/serve-dashboard.sh` — optional loopback-only server (`file://`
   fallback). It writes no log of its own: whatever supervises it captures its
   output — a container runtime keeps it in the service's logs, and on the
-  legacy WSL path the init script redirects it (below). Its `127.0.0.1` bind is
-  a requirement, not an accident, and it constrains how a container may expose
-  it: publishing a port to a container whose server binds loopback reaches
-  nothing, so both container profiles in `deploy/docker/compose.yaml` arrange
-  access around the bind rather than widening it — the `tailnet` profile puts
-  the server in the Tailscale sidecar's network namespace so Serve can proxy to
-  its loopback (`ts-serve.json`, no Funnel), and the `local` profile puts it in
-  the host's namespace so the page answers on that host's loopback and nowhere
-  else. `deploy/agent-ops-dashboard.init` (the legacy WSL SysV path) sends
-  that output to `<state_dir>/dashboard-server.log`, so every artefact the
-  dashboard produces lands under `state_dir` and nothing is written beside the
-  checkout. All of its settings (`RUNAS`, `RUNHOME`, `APPDIR`, `PORT`,
+  legacy WSL path the init script redirects it (below). **The page must answer
+  on the host's loopback and on no network** — that is the requirement, and it
+  is a requirement rather than an accident. Where the server runs on the host,
+  loopback is where it binds, which is the default and what a bare invocation
+  gets. The bind address is nonetheless a setting (`serve-dashboard.sh [port]
+  [bind-address]`), because inside a container the literal bind and the
+  guarantee come apart: a server on the container's own loopback is reachable
+  from nothing at all, so each profile in `deploy/docker/compose.yaml` has to
+  arrange the host's loopback its own way. The `tailnet` profile puts the server
+  in the Tailscale sidecar's network namespace, unchanged on `127.0.0.1`, so
+  Serve can proxy to its loopback (`ts-serve.json`, no Funnel). The `local`
+  profile binds `0.0.0.0` inside the container and publishes
+  `127.0.0.1:${DASHBOARD_PORT:-8787}:8787`, so the only route in is the host's
+  loopback — the container's own addresses being on Docker's private bridge,
+  which no one is on. Both land in the same place; neither widens what can
+  reach the page. `deploy/agent-ops-dashboard.init` (the legacy WSL SysV path)
+  sends the server's output to `<state_dir>/dashboard-server.log`, so every
+  artefact the dashboard produces lands under `state_dir` and nothing is
+  written beside the checkout. All of its settings (`RUNAS`, `RUNHOME`, `APPDIR`, `PORT`,
   `PIDFILE`, `LOGFILE`) are defaults overridable from
   `/etc/default/agent-ops-dashboard`, so the script carries no host-specific
   path that must be edited in place.

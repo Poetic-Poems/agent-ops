@@ -137,18 +137,31 @@ services:
       - scheduler
 
   # --- local profile -----------------------------------------------------
-  # The same dashboard for a node with no tailnet. It uses the host's network
-  # namespace rather than publishing a port, because publishing one would reach
-  # nothing: the server binds 127.0.0.1 inside its own namespace, and a
-  # published port arrives on the container's external address. Sharing the
-  # host's namespace puts the bind on the host's loopback, so the page is
-  # readable at http://127.0.0.1:8787 from that machine and from nowhere else —
-  # the same guarantee the tailnet profile gets from the sidecar.
+  # The same dashboard for a node with no tailnet, published on the host's
+  # loopback and nowhere else — the same guarantee the tailnet profile gets from
+  # the sidecar.
+  #
+  # Two halves make that up, and both are load-bearing. The server is told to
+  # bind 0.0.0.0 *inside the container*, because a server on the container's own
+  # loopback is reachable from nothing, not even a published port. The port is
+  # then published to 127.0.0.1 on the host, which is what keeps the page off
+  # every network the host is on. Binding the container wide is not an exposure:
+  # the container's addresses are on Docker's private bridge, and the only route
+  # in from outside it is the loopback-scoped mapping below.
+  #
+  # This used to be `network_mode: host` instead, which reached the same place by
+  # putting the server's 127.0.0.1 bind directly on the host's loopback. That is
+  # a Linux-only container-runtime feature — under Docker Desktop the namespace
+  # shared is the Desktop VM's, not the user's, so the page simply never answered
+  # — and it made the listener the host's, so a machine already using 8787 got
+  # `Address already in use`. Publishing works on any runtime, and DASHBOARD_PORT
+  # now moves only the host side of the mapping.
   dashboard-local:
     <<: *agent-ops
     profiles: [local]
-    command: ["/app/scripts/serve-dashboard.sh", "${DASHBOARD_PORT:-8787}"]
-    network_mode: host
+    command: ["/app/scripts/serve-dashboard.sh", "8787", "0.0.0.0"]
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8787}:8787"
     # Depend on the scheduler so the shared `state` volume is seeded by one
     # container on a node's first start, not two at once. See the `dashboard`
     # service above for why.

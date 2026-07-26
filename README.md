@@ -229,11 +229,12 @@ Four things are worth knowing:
 - **Authenticate once per node**: `docker compose exec scheduler claude` and
   complete the login. Until then every cycle fails at its first stage; the
   entrypoint warns about it on each start.
-- **The dashboard is never published by a port.** Its server binds `127.0.0.1`
-  by design, so `ports:` would reach nothing. The `tailnet` profile shares the
-  Tailscale sidecar's network namespace instead; the `local` profile shares the
-  host's. If the host already has something on 8787, set `DASHBOARD_PORT` in
-  `.env`.
+- **The dashboard is never reachable from a network.** The `tailnet` profile
+  puts the server in the Tailscale sidecar's network namespace, so Serve can
+  proxy to its loopback and nothing else can; the `local` profile publishes it
+  to the host's loopback alone (`127.0.0.1:${DASHBOARD_PORT:-8787}:8787`). If
+  the host already has something on 8787, set `DASHBOARD_PORT` in `.env` — it
+  moves the host side of that mapping.
 
 Set `ROLE=active` in the `.env` of every node meant to spend — any number may
 be, since per-item claims keep them off each other's work (see
