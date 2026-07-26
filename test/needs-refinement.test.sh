@@ -30,6 +30,13 @@
 #
 # Exit status is 0 iff every assertion passed.
 
+# The `eligible` helper below takes its threshold and window as optional
+# arguments (`${1:-3}`, `${2:-0}`), so most calls pass none and read as the
+# default case — which is the point. shellcheck reads a function that names $1
+# and is called bare as a mistake in one direction or the other; here it is
+# neither.
+# shellcheck disable=SC2119,SC2120
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

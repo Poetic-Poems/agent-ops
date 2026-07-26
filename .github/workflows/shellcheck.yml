@@ -1,0 +1,64 @@
+name: Shell lint
+
+# CI backstop for the clean-shellcheck requirement the specs already state
+# (DASHBOARD-SPEC's "Verifying a change", and the pipeline spec's acceptance
+# check 1g). Nothing ran it, so it drifted: four findings accumulated in
+# scripts/publish-dashboard.sh and went unnoticed until #104. build-image.yml
+# runs the test suite, and a test suite does not read the scripts it does not
+# call.
+#
+# The file set and the invocation live in scripts/lint-shell.sh, not here, so
+# that CI and a developer running it by hand are checking the same thing — the
+# same reason the Conventional Commits pattern lives in
+# .githooks/check-commit-format.sh rather than in commit-format.yml.
+#
+# Deliberately not gated by `paths:`, as with commit-format: the linter reads
+# the whole tree in one invocation (that is what resolves `source` between the
+# pipelines and lib/), so "did this PR touch a .sh file" is the wrong question.
+# It is a ~20-second job.
+#
+# Deliberately `pull_request`, never `pull_request_target`, so a fork PR never
+# runs with write-scoped secrets.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  shellcheck:
+    runs-on: ubuntu-latest
+    env:
+      # Pinned, and pinned on purpose. The runner image's own shellcheck moves
+      # without notice, and a linter that gains a check overnight starts failing
+      # pull requests that changed nothing — the CI equivalent of the drift this
+      # job exists to stop. Upgrading is an edit to these two values, and belongs
+      # in its own pull request with whatever findings the new version brings
+      # fixed alongside it.
+      #
+      # The checksum is of the release tarball, not of anything this repo
+      # controls: it is what makes the download the binary koalaman published,
+      # rather than whatever answers that URL today.
+      SHELLCHECK_VERSION: v0.10.0
+      SHELLCHECK_SHA256: 6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Install shellcheck
+        run: |
+          set -euo pipefail
+          url="https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.x86_64.tar.xz"
+          curl -fsSL --retry 3 --retry-delay 5 -o /tmp/shellcheck.tar.xz "$url"
+          echo "${SHELLCHECK_SHA256}  /tmp/shellcheck.tar.xz" | sha256sum -c -
+          tar -xJf /tmp/shellcheck.tar.xz -C /tmp
+          sudo install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck
+          shellcheck --version
+
+      - name: Lint every shell script in the repository
+        run: ./scripts/lint-shell.sh

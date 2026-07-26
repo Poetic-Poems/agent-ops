@@ -10,6 +10,13 @@
 #
 # Exit status is 0 iff every assertion passed.
 
+# Version 0.10 of the linter traces this file's control flow to the end of a
+# helper that never returns to it, and concludes the assertion helpers below are
+# unreachable. They are reached — from inside the command substitutions the
+# assertions are written as, which is the "invoked indirectly" case SC2317
+# itself names.
+# shellcheck disable=SC2317
+
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
