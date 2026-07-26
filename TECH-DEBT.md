@@ -450,7 +450,7 @@ above.
 |----|-------|--------|----------|-----|
 | TD26071401 | Usage-limit detector misses weekly & spend-limit phrasing; no graceful stand-down | resolved | 2026-07-14 | #11 |
 | TD26072001 | shellcheck not clean at info level on two scripts | resolved | 2026-07-20 | #38 |
-| TD26072002 | The node image is amd64-only | open | | |
+| TD26072002 | The node image is amd64-only | in-progress | | |
 | TD26072003 | The local dashboard profile needs Linux host networking | open | | |
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | open | | |
