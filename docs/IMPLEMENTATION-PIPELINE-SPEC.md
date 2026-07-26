@@ -2320,9 +2320,9 @@ pull request, run the ones the change touches and any it could regress.
    against a `linux/amd64` build, on every pull request, so a change that
    breaks the image cannot be merged — and it is the only place the `test/`
    suite runs in CI. The same workflow also builds the image for `linux/arm64`
-   under QEMU emulation on every pull request — proving that leg too, though
-   with no runner able to execute its binaries and so no toolchain checks
-   against it — and on `main` publishes both as one manifest list per tag.
+   under QEMU emulation on every pull request — proving that leg builds, though
+   the checks above are not repeated against it — and on `main` publishes both
+   as one manifest list per tag.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;

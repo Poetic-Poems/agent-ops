@@ -192,6 +192,10 @@ The node holds those three files and no clone. On a fresh cloud VM,
 [`deploy/docker/cloud-init.yaml`](deploy/docker/cloud-init.yaml) does all of
 that unattended except the Claude login.
 
+Each image tag is a manifest list covering `linux/amd64` and `linux/arm64`, so
+`docker compose up -d` pulls the right one on an x86-64 or an arm64 host —
+including the cheaper arm instance classes — with nothing to choose.
+
 `COMPOSE_PROFILES` in that `.env` decides what the node runs:
 
 | Profile | What it adds |

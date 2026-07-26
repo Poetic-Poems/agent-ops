@@ -118,9 +118,13 @@ jobs:
       # failure (the supercronic checksum picking the wrong architecture's
       # pin, say) would surface only as a mid-build break on a node that tries
       # to pull the image, not as a red CI check on the change that caused it.
-      # No `load`/`push`: buildx cannot load a foreign-architecture result into
-      # the runner's native Docker, and nothing here needs to run it, only to
-      # prove it builds.
+      # No `load`/`push`: this leg is built, not run. It could be run — the
+      # binfmt handlers registered above execute arm64 binaries, which is how
+      # this build's own RUN instructions execute — but repeating the whole
+      # check suite under emulation would add minutes to every pull request to
+      # exercise an architecture no node runs. What this step buys is the build
+      # itself: the checksum pin resolving to the right asset, and apt,
+      # NodeSource and npm all resolving for arm64.
       - name: Build the arm64 image
         uses: docker/build-push-action@v7
         with:
