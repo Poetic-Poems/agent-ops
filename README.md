@@ -156,6 +156,13 @@ Edit `config.json` before first run. Keys:
 | `none_selected_recheck_hours` | 24 | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 | `dashboard_refresh_seconds` | 5 | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
 
+Every `*_model` key above, plus `review.model` below, also accepts a
+provider-qualified id — `anthropic/claude-sonnet-5` alongside the bare
+`claude-sonnet-5` — with identical behaviour; the qualifier is optional
+because Anthropic is the only executable provider today. A qualifier naming
+any other provider is rejected at cycle start with an error naming the key,
+not passed to the `claude` CLI. No existing config needs to change.
+
 The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
 
 ## Installation
@@ -733,7 +740,7 @@ time (never committed to the repo under review).
 | Key | Default | Notes |
 |---|---|---|
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Repositories to review. A plain list of slugs. |
-| `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). |
+| `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
 | `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. |
 | `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
 | `review.timeout_review` | `120` | Minutes. Per-repo wall-clock timeout. |

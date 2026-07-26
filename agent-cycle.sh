@@ -30,6 +30,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# shellcheck source=lib/model-id.sh
+. "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
@@ -179,20 +181,22 @@ cfg_json() { jq -c "$1" "$CONFIG_FILE"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
-coordinator_model="$(cfg '.coordinator_model')"
-implementor_model_default="$(cfg '.implementor_model_default')"
-implementor_model_trivial="$(cfg '.implementor_model_trivial')"
-reviewer_model_default="$(cfg '.reviewer_model_default')"
+coordinator_model="$(resolve_model_id coordinator_model "$(cfg '.coordinator_model')")"
+implementor_model_default="$(resolve_model_id implementor_model_default "$(cfg '.implementor_model_default')")"
+implementor_model_trivial="$(resolve_model_id implementor_model_trivial "$(cfg '.implementor_model_trivial')")"
+reviewer_model_default="$(resolve_model_id reviewer_model_default "$(cfg '.reviewer_model_default')")"
 # The complexity escalation (requirement 8a): a PR graded `complexity:high` is
 # reviewed on this tier. Empty falls back to the default tier, which switches
 # the escalation off.
 reviewer_model_complex="$(cfg '.reviewer_model_complex // ""')"
 [[ "$reviewer_model_complex" == "null" || -z "$reviewer_model_complex" ]] && reviewer_model_complex="$reviewer_model_default"
+reviewer_model_complex="$(resolve_model_id reviewer_model_complex "$reviewer_model_complex")"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
 enabler_model="$(cfg '.enabler_model // ""')"
 [[ "$enabler_model" == "null" ]] && enabler_model=""
+enabler_model="$(resolve_model_id enabler_model "$enabler_model")"
 timeout_enabler_min="$(cfg '.timeout_enabler // 30')"
 enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours // 72')"
