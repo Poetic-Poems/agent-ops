@@ -736,7 +736,7 @@ time (never committed to the repo under review).
 | Key | Default | Notes |
 |---|---|---|
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Repositories to review. A plain list of slugs. |
-| `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). |
+| `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
 | `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. |
 | `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
 | `review.timeout_review` | `120` | Minutes. Per-repo wall-clock timeout. |

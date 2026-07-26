@@ -110,7 +110,7 @@ Pullwright organisation and carries its licence.
 - [ ] Formalise the metering schema: per-cycle, per-stage token and cost
       accounting as a stable, documented format (largely exists in the logs
       today; make it a contract). *[fleet]*
-- [ ] Provider-qualified model identifiers in the config schema, so models
+- [x] Provider-qualified model identifiers in the config schema, so models
       from other providers can arrive later without a breaking change
       (D12). *[fleet]*
 - [ ] Create the product repository in the Pullwright organisation (the
