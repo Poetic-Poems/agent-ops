@@ -63,7 +63,9 @@ cfg()      { jq -r "$1" "$CONFIG_FILE" 2>/dev/null; }
 cfg_json() { jq -c "$1" "$CONFIG_FILE" 2>/dev/null; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
-log_file="$state_dir/log.jsonl"
+# No `log_file` here: the log is read as the fleet's, through
+# `fleet_logs "$state_dir" "$peers_dir" log.jsonl` (see read_events), which
+# builds its own paths. A local one would only ever be the wrong half of it.
 lock_file="$state_dir/lock.json"
 cron_log="$state_dir/cron.log"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
@@ -262,12 +264,26 @@ printf '%s\n' "$ALL_EVENTS" | jq -sc '.' > "$events_file" 2>/dev/null \
 # strip its stages.
 cycle_rows="$work_tmp/cycle-rows"
 tab="$(printf '\t')"
+
+# The D rows of one cycles directory: every id it holds, tagged with where it
+# came from. A glob rather than `ls`, so an id that is not a plain word cannot
+# be split or re-interpreted on its way through a pipe; the directory may not
+# exist at all (a node that has run nothing, a peer fetched before its first
+# cycle), which leaves the pattern unmatched and the loop empty.
+dir_rows() {  # dir_rows CYCLES_DIR
+  local entry
+  for entry in "$1"/*; do
+    [[ -e "$entry" ]] || continue
+    printf '%s\tD\t%s\n' "${entry##*/}" "$1"
+  done
+}
+
 {
-  ls -1 "$cycles_dir" 2>/dev/null | sed "s|\$|\tD\t$cycles_dir|"
+  dir_rows "$cycles_dir"
   printf '%s\n' "$ALL_EVENTS" | jq -r '.cycle // empty' 2>/dev/null | sed "s|\$|\tE\t$cycles_dir|"
   for pd in "$peers_dir"/*/cycles; do
     [[ -d "$pd" ]] || continue
-    ls -1 "$pd" 2>/dev/null | sed "s|\$|\tD\t$pd|"
+    dir_rows "$pd"
   done
 } | sort -t "$tab" -k1,1r -k2,2 | awk -F'\t' '!seen[$1]++' | cut -f1,3 \
   | head -n "$MAX_CYCLES" > "$cycle_rows"
@@ -614,7 +630,15 @@ self_live_json="$(jq -nc \
 # cycle is in flight, so "have all the nodes got the fix?" is a real operational
 # question with no other answer on this page.
 nodes_rows="$work_tmp/nodes.rows"
-last_local_cycle="$(ls -1 "$cycles_dir" 2>/dev/null | sort | tail -n1)"
+# The newest local cycle id. Bash sorts a glob's matches, so the last one to
+# come round is the greatest — the same answer `ls | sort | tail -1` gave, and
+# ids are fixed-width and date-ordered, so greatest is newest. Empty when the
+# directory holds nothing or does not exist yet.
+last_local_cycle=""
+for entry in "$cycles_dir"/*; do
+  [[ -e "$entry" ]] || continue
+  last_local_cycle="${entry##*/}"
+done
 jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
   --argjson live "$self_live_json" \
   --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
