@@ -187,11 +187,14 @@ file and carries placeholders only; `.env` itself is never committed.
   dashboard's privacy model nothing. The sidecar's `ts-serve.json` proxies
   `https://<node>.<tailnet>` to `http://127.0.0.1:8787` and allows no Funnel.
 - **`dashboard-local`** (profile `local`) — the same server on a node with no
-  tailnet, using the host's network namespace rather than a published port,
-  because a published port would reach nothing (`DASHBOARD-SPEC`). The page is
-  then readable on that host's loopback and nowhere else. `DASHBOARD_PORT`
-  exists because the host may already have something on 8787 — the laptop's
-  legacy SysV dashboard does.
+  tailnet, readable on that host's loopback and nowhere else (`DASHBOARD-SPEC`).
+  It gets there in two moves: the server is told to bind `0.0.0.0` *inside the
+  container*, since a bind to the container's own loopback is reachable from
+  nothing, and the port is published as
+  `127.0.0.1:${DASHBOARD_PORT:-8787}:8787`, which keeps the page off every
+  network the host is on. `DASHBOARD_PORT` moves the host side of that mapping
+  only, and exists because the host may already have something on 8787 — the
+  laptop's legacy SysV dashboard does.
 - **`watchtower`** (profile `auto-update`) — how a node picks up new code: it
   polls for a new image tag and restarts the services into it. Enabled by
   label, so it touches this stack's containers and no others on the host. It
@@ -2354,7 +2357,11 @@ pull request, run the ones the change touches and any it could regress.
    heartbeat firing; `agent-cycle.sh` and `review-cycle.sh` stand the node down
    through the requirement 2.4 guard with `ROLE=standby`; and a second
    `up -d` reports every container `Running` without recreating one.
-   `docker compose --profile tailnet config` is valid.
+   `docker compose --profile tailnet config` is valid. And the `local`
+   profile's exposure is the host's loopback and nothing more:
+   `docker compose --profile local config` shows `dashboard-local` publishing
+   with host IP `127.0.0.1` and no `network_mode`, so the same curl from
+   another machine on the host's network is refused.
 1c-i. **A roll waits for a cycle.** `test/watchtower-pre-update.test.sh`
    passes: `deploy/docker/watchtower-pre-update.sh` exits 75 while either
    `lock.json` or `review-lock.json` names a live process inside that
