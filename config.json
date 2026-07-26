@@ -2,15 +2,15 @@
   "repos": [
     {
       "slug": "Poetic-Poems/poetic",
-      "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"]
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "project-review", "issues:low", "code-quality"]
     },
     {
       "slug": "Poetic-Poems/poetic-fiddle",
-      "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"]
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "implementation-plan", "project-review", "issues:low", "code-quality"]
     },
     {
       "slug": "Poetic-Poems/agent-ops",
-      "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "tech-debt", "issues", "code-quality"]
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality"]
     }
   ],
   "state_dir": "~/.local/state/poetic-agents",

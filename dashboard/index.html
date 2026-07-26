@@ -711,8 +711,26 @@
         g.failed_runs.forEach(function (r){ box.appendChild(el("div", {}, el("a",{href:r.url,target:"_blank",text:"✗ " + r.workflowName}))); });
       }
       if (g.issues && g.issues.length) {
-        box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Open issues:"}));
-        g.issues.slice(0,8).forEach(function (is){ box.appendChild(el("div", {}, [ el("a",{href:is.url,target:"_blank",text:"#"+is.number}), document.createTextNode(" " + esc(is.title)) ])); });
+        // Ordered by Priority band, because that — not the issue number — is the
+        // order the Co-Ordinator will reach them in (pipeline spec, 15e).
+        var PRI = { Urgent: 0, High: 1, Medium: 2, Low: 3 };
+        var PRI_CLASS = { Urgent: "b-red", High: "b-amber", Medium: "b-blue", Low: "b-grey" };
+        var byPriority = g.issues.slice().sort(function (a, b) {
+          var ra = PRI[a.priority], rb = PRI[b.priority];
+          if (ra === undefined) ra = PRI.Medium;
+          if (rb === undefined) rb = PRI.Medium;
+          return ra - rb || a.number - b.number;
+        });
+        box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Open issues (in priority order):"}));
+        byPriority.slice(0,8).forEach(function (is){
+          var band = PRI[is.priority] === undefined ? "Medium" : is.priority;
+          box.appendChild(el("div", {}, [
+            el("span", {class:"badge " + PRI_CLASS[band], title:"Priority: " + band, text: band}),
+            document.createTextNode(" "),
+            el("a",{href:is.url,target:"_blank",text:"#"+is.number}),
+            document.createTextNode(" " + esc(is.title))
+          ]));
+        });
       }
       if (g.tech_debt && g.tech_debt.length) {
         box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Tech-debt ledger:"}));

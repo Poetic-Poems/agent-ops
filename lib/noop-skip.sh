@@ -41,7 +41,7 @@
 #   review-feedback                                      | review_feedback (verbatim)
 #   merge-conflicts                                      | merge_conflicts (verbatim)
 #   abandoned-drafts                                     | abandoned_drafts (verbatim)
-#   issues                                               | issues digest
+#   issues (incl. their Priority band, req. 15e)         | issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
 #   blocked / void skip-lists                            | repo|item projections

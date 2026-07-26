@@ -607,7 +607,23 @@ if (( WITH_GITHUB )); then
       }))' <<<"$prs_json")"
 
     db="$(gh_json api "repos/$slug" --jq '.default_branch')"; db="${db:-main}"
-    issues="$(gh_json issue list -R "$slug" --state open --limit 30 --json number,title,url,labels,assignees)"; issues="${issues:-[]}"
+    # The REST listing rather than `gh issue list`, because the Co-Ordinator's
+    # ranking turns on each issue's `Priority` issue field (pipeline spec,
+    # requirement 15e) and `gh issue list --json` cannot see issue fields. Same
+    # shape as before plus `priority`; unset or unrecognised reads as `Medium`,
+    # matching what the Co-Ordinator itself will do — a panel that showed a
+    # different band from the one the pipeline acted on would be worse than no
+    # band at all. The endpoint returns pull requests too, so they are dropped.
+    issues="$(gh_json api "repos/$slug/issues?state=open&per_page=30" --jq \
+      '[.[] | select(has("pull_request") | not)
+            | {number, title, url: .html_url,
+               labels: [.labels[] | {name}], assignees: [.assignees[] | {login}],
+               priority: (([.issue_field_values[]?
+                            | select(.issue_field_name == "Priority")
+                            | .single_select_option.name
+                            | select(. == "Urgent" or . == "High"
+                                     or . == "Medium" or . == "Low")] | first) // "Medium")}]')"
+    issues="${issues:-[]}"
     runs="$(gh_json run list -R "$slug" --branch "$db" --limit 40 --json workflowName,conclusion,status,event,createdAt,url)"; runs="${runs:-[]}"
     failed_runs="$(jq -c '
       [ .[] | select(.event == "push" or .event == "schedule" or .event == "dynamic") ]

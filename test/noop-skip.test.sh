@@ -61,7 +61,7 @@ base_input() {
       "review_feedback": [],
       "state": {
         "slug": "o/one", "ok": true, "head_sha": "aaa111",
-        "issues": [{"n": 7, "u": "2026-07-16T09:00:00Z", "l": ["bug"], "a": ""}],
+        "issues": [{"n": 7, "u": "2026-07-16T09:00:00Z", "l": ["bug"], "a": "", "p": "Medium"}],
         "workflows": [{"w": 1, "c": "success"}],
         "open_prs": [{"n": 3, "u": "2026-07-16T09:00:00Z", "h": "agent/x", "d": true}]
       }
@@ -160,13 +160,20 @@ assert_ne "a new security finding changes the fingerprint" \
 assert_ne "a re-rated finding changes the fingerprint" \
   "$(fp_with '.repos[0].findings[0].severity = "critical"')"
 assert_ne "a new issue changes the fingerprint" \
-  "$(fp_with '.repos[1].state.issues += [{"n": 9, "u": "2026-07-17T10:00:00Z", "l": [], "a": ""}]')"
+  "$(fp_with '.repos[1].state.issues += [{"n": 9, "u": "2026-07-17T10:00:00Z", "l": [], "a": "", "p": "Medium"}]')"
 # Requirement 16.4: a label or an assignment is what decides whether an issue
 # is a candidate at all, so triage that changes nothing else must still count.
 assert_ne "relabelling an issue changes the fingerprint" \
   "$(fp_with '.repos[0].state.issues[0].l = ["bug", "blocked"]')"
 assert_ne "assigning an issue changes the fingerprint" \
   "$(fp_with '.repos[0].state.issues[0].a = "someone"')"
+# Requirement 15e: the Priority band decides where in the walk an issue is
+# reached, so re-triage is a different verdict from the same set of issues —
+# and it is the one triage action that need move nothing else at all.
+# `test/issue-priority.test.sh` covers the same ground end to end, through the
+# real gatherer; this is the per-source case belonging to the list above.
+assert_ne "re-prioritising an issue changes the fingerprint" \
+  "$(fp_with '.repos[0].state.issues[0].p = "Urgent"')"
 # The one source that can change with no commit at all: a scheduled run or a
 # re-run turns main red while every SHA stays put. Dropping the run id from the
 # digest must not cost us this — the conclusion is what requirement 15 reads.

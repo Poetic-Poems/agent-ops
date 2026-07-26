@@ -18,7 +18,7 @@
 #     "slug": "Poetic-Poems/poetic",
 #     "ok": true,
 #     "head_sha": "…",                                       // tech-debt, plan, review, code
-#     "issues":    [{"n":7,"u":"…","l":["bug"],"a":""}],     // issues source
+#     "issues":    [{"n":7,"u":"…","l":["bug"],"a":"","p":"High"}],  // issues source
 #     "workflows": [{"w":123,"c":"failure"}],                // failed-runs source
 #     "open_prs":  [{"n":9,"u":"…","h":"agent/x","d":true}]  // claim signals
 #   }
@@ -100,11 +100,30 @@ head_sha="$(api_json '""' '.sha | @json' "repos/$slug/commits/$branch")" || ok=f
 # (requirement 16.4) — so a triage action that makes an issue selectable, or
 # stops it being, always moves this digest.
 #
+# `p` is the issue's `Priority` band, which requirement 15e *ranks* on: an issue
+# re-prioritised from Low to Urgent is a different verdict from the same set of
+# issues, so the band has to be in the digest in its own right. Leaving it to
+# `updated_at` would be the "covered by something else" trap requirement 3b
+# warns about — whether an issue-field edit touches `updated_at` is GitHub's
+# choice, not ours, and a ranking signal covered only by someone else's
+# timestamp is a signal that can go uncovered without anything looking wrong.
+#
+# Unset, unreadable, or not one of the four names reads as `Medium`, matching
+# the Co-Ordinator's own default exactly. That matters more than it looks: if
+# the two disagreed, the digest would be stable while the model's verdict
+# changed (or the reverse), which is the one failure this whole file exists to
+# prevent. The `Priority` field is `organization_members_only`, so a token that
+# cannot see it must land on the same band the Co-Ordinator will.
+#
 # `repos/<slug>/issues` returns pull requests too; they are dropped here and
 # sampled properly below.
 issues="$(api_json '[]' \
   '[.[] | select(has("pull_request") | not)
-        | {n: .number, u: .updated_at, l: ([.labels[].name] | sort), a: (.assignee.login // "")}]
+        | {n: .number, u: .updated_at, l: ([.labels[].name] | sort), a: (.assignee.login // ""),
+           p: (([.issue_field_values[]? | select(.issue_field_name == "Priority")
+                                        | .single_select_option.name
+                                        | select(. == "Urgent" or . == "High"
+                                                 or . == "Medium" or . == "Low")] | first) // "Medium")}]
    | sort_by(.n)' \
   "repos/$slug/issues?state=open&per_page=100")" || ok=false
 
