@@ -52,6 +52,39 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v4
 
+      # What the image cannot work out about itself. `.dockerignore` keeps
+      # `.git` out (the image is a deployment, not a working tree), so the
+      # revision has to be handed in at build time — see the version stamp in
+      # deploy/docker/Dockerfile, and lib/version.sh which reads it back.
+      #
+      # The pull request number is the half an operator can use: every change
+      # here is squash-merged as `<subject> (#N)`, so the trailing marker on the
+      # commit being built names the last pull request the image contains. On a
+      # pull request build the checked-out commit is a merge commit with no such
+      # marker, so the event supplies the number instead — that build is never
+      # published, but a stamp that works there is one that can be tested there.
+      - name: Work out the version stamp
+        id: stamp
+        shell: bash
+        run: |
+          pr="${{ github.event.pull_request.number }}"
+          # An `if`, not `[[ … ]] && pr=…`: this step runs under `set -e`, where
+          # a non-matching test is the last command of the list and would fail
+          # the whole build for the ordinary case of a commit with no marker.
+          if [[ -z "$pr" ]]; then
+            subject="$(git log -1 --pretty=%s)"
+            if [[ "$subject" =~ \(#([0-9]+)\)[[:space:]]*$ ]]; then
+              pr="${BASH_REMATCH[1]}"
+            fi
+          fi
+          {
+            printf 'commit=%s\n'   "$GITHUB_SHA"
+            printf 'pr=%s\n'       "$pr"
+            printf 'built_at=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            printf 'repo=%s\n'     "$GITHUB_REPOSITORY"
+          } >> "$GITHUB_OUTPUT"
+          printf 'building %s as PR #%s\n' "$GITHUB_SHA" "${pr:-<none>}"
+
       - name: Build the image
         uses: docker/build-push-action@v7
         with:
@@ -61,6 +94,11 @@ jobs:
           # below runs against the very bytes that will be published.
           load: true
           tags: agent-ops:ci
+          build-args: |
+            AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
+            AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
+            AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
+            AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -109,6 +147,26 @@ jobs:
             exit 1
           }
           echo "$env_line"
+
+      # The stamp is only useful if the image can read it back, and its failure
+      # mode is silent: a node whose version says "unknown" looks exactly like
+      # one the dashboard has not heard from yet.
+      - name: Verify the image knows its own version
+        run: |
+          # `tail -n 1`, because every `docker run` here goes through the
+          # entrypoint and the entrypoint reports what it prepared on stdout.
+          # The version is a single line of compact JSON, and it is the last
+          # thing written.
+          out="$(docker run --rm agent-ops:ci bash -lc '
+            . /app/lib/version.sh
+            agent_ops_version
+          ' | tail -n 1)"
+          echo "$out"
+          [ "$(jq -r '.source' <<<"$out")" = "image" ] || { echo "no CI stamp in the image" >&2; exit 1; }
+          [ "$(jq -r '.commit' <<<"$out")" = "${{ steps.stamp.outputs.commit }}" ] \
+            || { echo "the stamped commit is not the commit being built" >&2; exit 1; }
+          [ "$(jq -r '.pr' <<<"$out")" = "${{ steps.stamp.outputs.pr }}" ] \
+            || { echo "the stamped pull request is not the one being built" >&2; exit 1; }
 
       - name: Run the test suite inside the image
         run: |
@@ -162,6 +220,13 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
+          # Identical to the build above, so the cache is reused and the
+          # published image carries the stamp the checks just verified.
+          build-args: |
+            AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
+            AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
+            AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
+            AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
           cache-from: type=gha
           # `image.source` is what links the package to this repository, so the
           # package page carries the README and the commit history rather than

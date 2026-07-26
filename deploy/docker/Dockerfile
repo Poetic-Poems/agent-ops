@@ -159,6 +159,28 @@ COPY --chown=agent:agent . /app
 USER agent
 WORKDIR /app
 
+# The version stamp. `.dockerignore` keeps `.git` out of the image — rightly,
+# since the image is a deployment of this repository and not a copy of a
+# working tree — which leaves the running code with no way to say which
+# revision it is. That matters once several nodes update independently: a roll
+# waits for the cycle it would otherwise kill (watchtower-pre-update.sh), so a
+# fleet is routinely mid-update, and "which of these containers has the fix?"
+# is a question the dashboard has to be able to answer.
+#
+# So CI passes what the image cannot work out for itself. The pull request
+# number is the useful half: a SHA names the bytes, `#89` names the change, and
+# the dashboard renders it as a link to the record. Empty by default, which is
+# what a local `docker build` produces and what lib/version.sh treats as "no
+# stamp" — it then falls back to git, so a developer's checkout still reports a
+# version.
+ARG AGENT_OPS_COMMIT=""
+ARG AGENT_OPS_PR=""
+ARG AGENT_OPS_BUILT_AT=""
+ARG AGENT_OPS_REPO=""
+RUN printf '{"commit":"%s","pr":"%s","built_at":"%s","repo":"%s"}\n' \
+      "$AGENT_OPS_COMMIT" "$AGENT_OPS_PR" "$AGENT_OPS_BUILT_AT" "$AGENT_OPS_REPO" \
+      > /app/build-info.json
+
 # No CMD: each service in compose.yaml says what it is (supercronic, the
 # dashboard server, a one-off cycle). A default here would only ever be the
 # wrong one of those.

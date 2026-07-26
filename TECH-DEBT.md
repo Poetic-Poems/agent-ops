@@ -393,9 +393,10 @@ Filed 2026-07-26; second measurement and the revised fix added the same day.
 
 ### TD26072606 Nothing tests the dashboard page's JavaScript
 
-`test/` covers the Publisher thoroughly and the page not at all. The ~940 lines
-of inline JavaScript in `dashboard/index.html` — every panel, badge, filter and
-the in-place refresh — have no automated test of any kind, so the only thing
+`test/` covers the Publisher thoroughly and the page not at all. The ~1,265
+lines of inline JavaScript in `dashboard/index.html` — every panel, badge,
+filter and the in-place refresh — have no automated test of any kind, so the
+only thing
 standing between a rendering bug and an operator is someone opening the page and
 recognising that what it says is wrong. That is a weak guard precisely where the
 page is most useful, because the reader has no independent view of the state to
@@ -426,7 +427,16 @@ than generated, except for timestamps, which have to be relative to now or every
 chase the page: keep it to the tree-building subset and let a test that needs
 more be the argument for a real headless browser in CI instead.
 
-Filed 2026-07-26, out of #94.
+That argument now has one live example. #96's pull-request hover card is the
+page's first behaviour that is not tree-building: it turns on pointer and focus
+events, measures an element's box, and positions itself against the viewport.
+None of that is reachable from the stub above, so it is worth deciding
+deliberately whether this entry's fix covers it or stops short of it, rather
+than discovering the gap when the card lands in the wrong place. Until then the
+card is guarded only by the headless render of the verification list — which,
+as above, catches a page that breaks and nothing about a page that lies.
+
+Filed 2026-07-26, out of #94; scope noted from #96.
 
 ## Ledger
 

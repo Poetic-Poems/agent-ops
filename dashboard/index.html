@@ -17,7 +17,8 @@
     --green: #1a7f37; --green-bg: #dafbe1; --red: #b42318; --red-bg: #ffe3e0;
     --amber: #9a6700; --amber-bg: #fff4d6; --blue: #0a5cc2; --blue-bg: #ddf0ff;
     --grey: #57606a; --grey-bg: #eef1f4;
-    --purple: #6b40c4; --teal: #0f766e; --pink: #b8266e;
+    --purple: #6b40c4; --purple-bg: #f1ebfd; --teal: #0f766e; --pink: #b8266e;
+    --shadow: 0 8px 24px rgba(16, 22, 30, .16);
     --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
     --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
   }
@@ -28,7 +29,8 @@
       --green: #3fb950; --green-bg: #12261a; --red: #f85149; --red-bg: #2a1213;
       --amber: #d29922; --amber-bg: #2b2211; --blue: #58a6ff; --blue-bg: #0d2436;
       --grey: #8b949e; --grey-bg: #1b2027;
-      --purple: #a78bfa; --teal: #2dd4bf; --pink: #f472b6;
+      --purple: #a78bfa; --purple-bg: #1e1633; --teal: #2dd4bf; --pink: #f472b6;
+      --shadow: 0 8px 24px rgba(0, 0, 0, .55);
     }
   }
   * { box-sizing: border-box; }
@@ -70,6 +72,13 @@
   .card .hb { font-size: 11.5px; color: var(--muted); margin-top: 6px;
     border-top: 1px solid var(--line); padding-top: 5px; }
   .card .hb.stale { color: var(--red); }
+  /* The code a node is running. It sits above the heartbeat line and below the
+     border, with identity rather than with activity: what a node *is* running
+     is a property of the node, not of the cycle in flight. */
+  .card .ver { font-size: 11.5px; color: var(--muted); margin-top: 6px;
+    border-top: 1px solid var(--line); padding-top: 5px;
+    display: flex; align-items: center; flex-wrap: wrap; gap: 4px; }
+  .card .ver + .hb { border-top: 0; margin-top: 1px; padding-top: 0; }
   section { margin-bottom: 26px; }
   section > h2 { font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted);
     margin: 0 0 10px; font-weight: 600; }
@@ -90,6 +99,7 @@
   .b-blue { background: var(--blue-bg); color: var(--blue); }
   .b-amber { background: var(--amber-bg); color: var(--amber); }
   .b-grey { background: var(--grey-bg); color: var(--grey); }
+  .b-purple { background: var(--purple-bg); color: var(--purple); }
   /* Source tags are deliberately a different shape and weight from outcome
      badges above: outlined and square-cornered rather than filled pills, so
      the two classes of data never read as the same kind of label. */
@@ -125,15 +135,54 @@
   details.tx > summary { cursor: pointer; padding: 6px 12px; font-size: 12px; color: var(--muted); user-select: none; }
   .bars { display: flex; flex-direction: column; gap: 6px; }
   .bar { display: grid; grid-template-columns: 88px 1fr 92px; align-items: center; gap: 10px; font-size: 12px; }
+  /* Actor names run longer than model names ("project-reviewer" against
+     "sonnet-5"), so that chart's rows get a wider name track rather than an
+     abbreviation nobody would recognise. */
+  .bars.wide .bar { grid-template-columns: 112px 1fr 92px; }
   .bar .track { background: var(--grey-bg); border-radius: 5px; height: 16px; overflow: hidden; }
-  .bar .fill { background: var(--accent); height: 100%; }
+  .bar .fill { background: var(--accent); height: 100%; border-radius: 0 4px 4px 0; }
   .gauge { height: 10px; border-radius: 5px; background: var(--grey-bg); overflow: hidden; margin-top: 6px; }
   .gauge > span { display: block; height: 100%; }
   .empty { padding: 18px; color: var(--muted); font-style: italic; }
-  p.costnote { margin: 10px 0 0; font-size: 12px; color: var(--muted); max-width: 78ch; }
+  /* The bottom margin is not decoration: this paragraph sits between two
+     sections and would otherwise butt straight into the next one's heading. */
+  p.costnote { margin: 10px 0 26px; font-size: 12px; color: var(--muted); max-width: 78ch; }
   .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
   @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
+  /* Two short charts sharing a column beside one tall one: by-day runs to
+     sixty rows and needs the width for its bars, while by-model and by-actor
+     are five rows each and would each waste half a page on their own row. */
+  .stack { display: flex; flex-direction: column; gap: 20px; align-content: start; }
   code.inline { font-family: var(--mono); background: var(--grey-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
+
+  /* ---------- pull-request references ---------- */
+  /* A dotted underline is the affordance, not a colour: the page already
+     spends colour on outcome and source, and a reader who cannot separate
+     hues still needs to know which numbers carry a record. It goes solid on
+     hover and focus, so the cue and the link state stay distinguishable. */
+  a.prref { border-bottom: 1px dotted currentColor; text-decoration: none; white-space: nowrap;
+    font-variant-numeric: tabular-nums; }
+  a.prref:hover, a.prref:focus { text-decoration: none; border-bottom-style: solid; }
+  a.prref:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
+  #prcard { position: absolute; z-index: 50; width: 340px; max-width: calc(100vw - 24px);
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    box-shadow: var(--shadow); padding: 11px 13px; font-size: 12.5px; line-height: 1.45;
+    display: none; }
+  #prcard.open { display: block; }
+  #prcard .prhead { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 4px; }
+  #prcard .prtitle { font-weight: 600; margin-bottom: 8px; word-break: break-word; }
+  #prcard dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+  #prcard dt { color: var(--muted); }
+  #prcard dd { margin: 0; word-break: break-word; }
+  /* Filled, rounded and uncoloured: a third shape, so a GitHub label cannot be
+     misread as an outcome badge (filled pill, coloured) or a work-source tag
+     (outlined square). Colour on this page carries identity within a class of
+     data; shape carries the class. */
+  #prcard .prlabels { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 8px; }
+  #prcard .prlabels span { font-family: var(--mono); font-size: 10.5px; line-height: 17px;
+    padding: 0 7px; border-radius: 999px; background: var(--grey-bg); color: var(--muted); }
+  #prcard .prfoot { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); }
+  #prcard .prnone { color: var(--muted); font-style: italic; }
 </style>
 </head>
 <body>
@@ -244,6 +293,231 @@
     if (!s) return el("span", {class:"muted", text:"—"});
     var m = SOURCE[s] || [s, "s-grey"];
     return el("span", {class: "srctag " + m[1], title: "source: " + s, text: m[0]});
+  }
+
+  // ---------- pull-request references ----------
+  // Every pull-request number on this page is rendered by prRef(), which makes
+  // it a link with the record behind it on hover and on focus.
+  //
+  // A bare `#89` is close to meaningless. It is a link, so the record is one
+  // click and one context switch away — which is enough friction that nobody
+  // takes it while scanning, and scanning is what this page is for. The
+  // question the number is actually standing in for ("what is that change?
+  // did it land? when?") is answerable from data the Publisher already holds,
+  // so it is answered in place. The widget is deliberately generic: the
+  // newest use is a version number on a container card, where `#89` is the
+  // *only* thing said about the code that node is running, but nothing about
+  // the card knows or cares which use it is serving.
+  var PR_URL_RE = /github\.com\/([^/]+\/[^/]+)\/pull\/(\d+)/;
+  function prIndex() { return (D.github && D.github.pr_index) || {}; }
+  function prFromUrl(url) {
+    var m = PR_URL_RE.exec(url || "");
+    return m ? { repo: m[1], number: +m[2], url: url } : null;
+  }
+  function prEntry(repo, number) { return prIndex()[repo + "#" + number] || null; }
+
+  var PR_STATE = { MERGED: ["merged","b-purple"], CLOSED: ["closed","b-red"], OPEN: ["open","b-green"] };
+  var PR_REVIEW = { APPROVED:"approved", CHANGES_REQUESTED:"changes requested", REVIEW_REQUIRED:"review required" };
+  function prStateBadge(e) {
+    if (!e || !e.state) return null;
+    if (e.state === "OPEN" && e.is_draft) return el("span", {class:"badge b-grey", text:"draft"});
+    var m = PR_STATE[e.state] || [String(e.state).toLowerCase(), "b-grey"];
+    return el("span", {class:"badge " + m[1], text: m[0]});
+  }
+
+  // The link. `repo` and `number` are all it needs — the URL is derivable, and
+  // a caller that has one passes it rather than rebuilding it.
+  //
+  // `where` names this particular occurrence, because the same pull request is
+  // routinely shown in three places at once (the table, the cycle that raised
+  // it, the node running it) and the body is rebuilt from scratch whenever the
+  // data changes. Without an identity that survives the rebuild, an open card
+  // either vanishes mid-read or reopens against whichever twin came first —
+  // and jumping to a different part of the page is the worse of the two.
+  function prRef(repo, number, url, where, label) {
+    if (repo == null || number == null) return el("span", {class:"muted", text:"—"});
+    return el("a", {class:"prref", target:"_blank", rel:"noopener",
+      href: url || ("https://github.com/" + repo + "/pull/" + number),
+      "data-pr-repo": repo, "data-pr-number": String(number),
+      "data-pr-where": (where || "") + "/" + repo + "#" + number,
+      text: label || ("#" + number)});
+  }
+  // Same, from a pipeline-recorded PR URL. Anything unparseable renders as the
+  // plain link it was, rather than disappearing.
+  function prRefFromUrl(url, where, label) {
+    var r = prFromUrl(url);
+    if (!r) return el("a", {href: url, target:"_blank", rel:"noopener", text: label || "PR"});
+    return prRef(r.repo, r.number, url, where, label);
+  }
+
+  // Which cycle raised this pull request, if any. Read out of the cycle list
+  // rather than recorded anywhere: the pipeline already logs the PR URL per
+  // cycle, so the join costs nothing and cannot fall out of step with the
+  // table three panels down.
+  function cycleForPr(repo, number) {
+    var cs = D.cycles || [];
+    for (var i = 0; i < cs.length; i++) {
+      var r = prFromUrl(cs[i].pr_url);
+      if (r && r.repo === repo && r.number === number) return cs[i];
+    }
+    return null;
+  }
+
+  var prCardEl = null, prShowTimer = null, prHideTimer = null, prAnchor = null;
+
+  function prCard() {
+    if (prCardEl) return prCardEl;
+    prCardEl = el("div", {id: "prcard", role: "note"});
+    // Moving the pointer off the link and onto the card must not close it:
+    // the card holds links of its own (the commit, the PR).
+    prCardEl.addEventListener("mouseenter", function () { clearTimeout(prHideTimer); });
+    prCardEl.addEventListener("mouseleave", prCardHideSoon);
+    document.body.appendChild(prCardEl);
+    return prCardEl;
+  }
+  function prCardHide() {
+    clearTimeout(prShowTimer); clearTimeout(prHideTimer);
+    if (prAnchor) prAnchor.removeAttribute("aria-describedby");
+    prAnchor = null;
+    if (prCardEl) prCardEl.className = "";
+  }
+  function prCardHideSoon() {
+    clearTimeout(prHideTimer);
+    prHideTimer = setTimeout(prCardHide, 160);
+  }
+  function prCardShow(a) {
+    var c = prCard();
+    c.innerHTML = "";
+    c.appendChild(prCardBody(a.getAttribute("data-pr-repo"), +a.getAttribute("data-pr-number"), a.href));
+    c.className = "open";          // laid out before it is measured, below
+    if (prAnchor && prAnchor !== a) prAnchor.removeAttribute("aria-describedby");
+    prAnchor = a;
+    a.setAttribute("aria-describedby", "prcard");
+    prCardPlace(a, c);
+  }
+  // Below the link and left-aligned to it, flipping above when there is no room
+  // and clamped so the card is never partly off-screen. Positioned in document
+  // coordinates, so it stays anchored while the page scrolls.
+  function prCardPlace(a, c) {
+    var r = a.getBoundingClientRect();
+    var top = r.bottom + window.pageYOffset + 6;
+    if (r.bottom + c.offsetHeight + 12 > window.innerHeight && r.top > c.offsetHeight + 12) {
+      top = r.top + window.pageYOffset - c.offsetHeight - 6;
+    }
+    var left = r.left + window.pageXOffset;
+    var maxLeft = window.pageXOffset + document.documentElement.clientWidth - c.offsetWidth - 10;
+    if (left > maxLeft) left = maxLeft;
+    if (left < window.pageXOffset + 8) left = window.pageXOffset + 8;
+    c.style.top = top + "px";
+    c.style.left = left + "px";
+  }
+
+  function prCardBody(repo, number, href) {
+    var e = prEntry(repo, number), w = el("div");
+    w.appendChild(el("div", {class:"prhead"}, [
+      el("span", {class:"mono", text: repo + "#" + number}),
+      prStateBadge(e)
+    ]));
+
+    // An index miss is a normal, temporary state — a PR raised since the last
+    // GitHub refresh, or one still queued behind the index's per-tick budget.
+    // Say which, rather than rendering an empty card that reads like an error.
+    if (!e) {
+      w.appendChild(el("div", {class:"prnone", text:
+        (D.github && D.github.ok === false)
+          ? "GitHub is unreachable, so there is no record to show."
+          : "Not indexed yet — the next GitHub refresh fills this in."}));
+      w.appendChild(prCardFoot(href));
+      return w;
+    }
+
+    if (e.title) w.appendChild(el("div", {class:"prtitle", text: e.title}));
+
+    var dl = el("dl");
+    function row(k, v) {
+      if (v == null || v === "") return;
+      dl.appendChild(el("dt", {text: k}));
+      dl.appendChild(el("dd", {}, typeof v === "string" ? document.createTextNode(v) : v));
+    }
+    if (e.author) row("author", "@" + e.author);
+    if (e.created_at) row("opened", fmtTime(e.created_at) + " · " + fmtAgo(e.created_at));
+    if (e.merged_at) row("merged", fmtTime(e.merged_at) + " · " + fmtAgo(e.merged_at));
+    else if (e.closed_at) row("closed", fmtTime(e.closed_at) + " · " + fmtAgo(e.closed_at));
+    if (e.merge_commit) row("commit", el("a", {class:"mono", target:"_blank", rel:"noopener",
+      href: "https://github.com/" + repo + "/commit/" + e.merge_commit, text: e.merge_commit}));
+
+    // Only while it is still open: on a merged pull request these say nothing
+    // that "merged" did not already say.
+    if (e.state === "OPEN") {
+      var ck = e.checks;
+      if (ck && ck.total) row("checks", ck.failed ? (ck.failed + " of " + ck.total + " failing")
+        : ck.pending ? (ck.pending + " of " + ck.total + " pending")
+        : ("all " + ck.total + " passing"));
+      if (e.review_decision) row("review", PR_REVIEW[e.review_decision]
+        || String(e.review_decision).toLowerCase().replace(/_/g, " "));
+      if (e.mergeable === "CONFLICTING") row("merge", "conflicts");
+      else if (e.mergeable === "MERGEABLE") row("merge", "mergeable");
+    }
+
+    var cy = cycleForPr(repo, number);
+    if (cy) {
+      var by = el("span", {}, [ el("span", {class:"mono", text: cy.node || "a cycle"}) ]);
+      if (cy.started_at) by.appendChild(document.createTextNode(" · " + fmtTime(cy.started_at)));
+      if (cy.source) { by.appendChild(document.createTextNode(" ")); by.appendChild(sourceTag(cy.source)); }
+      row("raised by", by);
+    }
+    if (dl.childNodes.length) w.appendChild(dl);
+
+    if (e.labels && e.labels.length) {
+      w.appendChild(el("div", {class:"prlabels"}, e.labels.map(function (l) {
+        return el("span", {text: l});
+      })));
+    }
+    w.appendChild(prCardFoot(href));
+    return w;
+  }
+  function prCardFoot(href) {
+    return el("div", {class:"prfoot"},
+      el("a", {href: href, target:"_blank", rel:"noopener", text:"View on GitHub ↗"}));
+  }
+
+  // One delegated set of listeners for the whole page, bound once: the body is
+  // rebuilt from scratch on every data change, so per-link handlers would be
+  // re-attached a few times a minute for the life of the tab.
+  function prAnchorOf(ev) {
+    var t = ev.target;
+    return (t && t.closest) ? t.closest("a.prref") : null;
+  }
+  document.addEventListener("mouseover", function (ev) {
+    var a = prAnchorOf(ev);
+    if (!a) return;
+    clearTimeout(prHideTimer);
+    if (prAnchor === a) return;
+    clearTimeout(prShowTimer);
+    prShowTimer = setTimeout(function () { prCardShow(a); }, 140);
+  });
+  document.addEventListener("mouseout", function (ev) {
+    if (!prAnchorOf(ev)) return;
+    clearTimeout(prShowTimer);
+    prCardHideSoon();
+  });
+  document.addEventListener("focusin", function (ev) {
+    var a = prAnchorOf(ev);
+    if (a) { clearTimeout(prHideTimer); prCardShow(a); }
+  });
+  document.addEventListener("focusout", function (ev) { if (prAnchorOf(ev)) prCardHideSoon(); });
+  document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") prCardHide(); });
+
+  // Carry an open card across a body rebuild, the way the expanded rows and
+  // open transcripts are carried (see the state maps up top). A refresh every
+  // few seconds that closed the thing being read would make the card useless on
+  // an active pipeline — which is exactly when someone is reading it. The
+  // occurrence is matched exactly, so the card cannot reappear against a twin
+  // elsewhere on the page; if this one is gone, so is the card.
+  function prCardReanchor(where) {
+    if (!where) return;
+    var a = document.querySelector('a.prref[data-pr-where="' + where.replace(/"/g, '\\"') + '"]');
+    if (a) prCardShow(a);
   }
 
   var EVENT_CLASS = { "attempt-failed":"b-red","warning":"b-amber","limit-hit":"b-amber",
@@ -367,6 +641,70 @@
         document.createTextNode(doubt ? "In progress?" : "In progress") ]);
   }
 
+  // ---------- what a node is running ----------
+  // The newest build anywhere in the fleet, which is what "up to date" means at
+  // this moment — there is no absolute answer, since the registry's `latest` is
+  // not visible from here and a node's own image is the only version it can
+  // report. `built_at` orders builds better than the pull-request number does:
+  // it is monotonic by construction, whereas PR numbers only happen to be, and
+  // would stop being so the moment a node ran an image built from another repo.
+  function fleetNewestVersion() {
+    var best = null;
+    fleetNodes().forEach(function (n) {
+      var v = n.version;
+      if (!v || !v.commit) return;
+      if (!best) { best = v; return; }
+      var a = parseTs(v.built_at), b = parseTs(best.built_at);
+      if (a && b) { if (a > b) best = v; }
+      else if (v.pr != null && best.pr != null && v.pr > best.pr) best = v;
+    });
+    return best;
+  }
+
+  // The version line of a node's card: which pull request its image contains,
+  // the commit that was built, and whether the fleet has moved past it.
+  //
+  // A fleet is *routinely* mid-update — a roll waits for the cycle it would
+  // otherwise kill — so "behind" is an ordinary state and not an alarm; it is
+  // said in grey with the reason in the tooltip. What it is there to catch is
+  // the case where it stops resolving: a node that has been behind for a day
+  // is a node whose watchtower is not rolling, and nothing else on this page
+  // would show that.
+  function versionLine(n) {
+    var v = n.version;
+    if (!v || !v.commit) {
+      return el("div", {class:"ver", title: n.self
+        ? "no CI stamp and no git checkout at /app — this publisher cannot tell what it is running"
+        : "this peer's heartbeat carries no version; it is running an image built before versions were reported"},
+        el("span", {class:"muted", text:"version unknown"}));
+    }
+    var line = el("div", {class:"ver"});
+    line.appendChild(el("span", {class:"muted",
+      title: v.source === "image" ? "from the image's CI build stamp" : "from the git checkout this node runs",
+      text: v.source === "image" ? "image" : "checkout"}));
+    if (v.pr != null && v.repo) line.appendChild(prRef(v.repo, v.pr, null, "node/" + n.node));
+    else line.appendChild(el("span", {class:"muted", title:"the build contains no merged pull request", text:"—"}));
+    line.appendChild(v.repo
+      ? el("a", {class:"mono muted", target:"_blank", rel:"noopener", title:"the commit this build was made from",
+                 href: "https://github.com/" + v.repo + "/commit/" + v.commit, text: v.short})
+      : el("span", {class:"mono muted", text: v.short}));
+    // "built" is not decoration: the heartbeat line directly below carries an
+    // age of its own, and two bare "9h ago"s stacked would invite the reader to
+    // take them for the same clock.
+    if (v.built_at) line.appendChild(el("span", {class:"muted",
+      title: "built " + fmtTime(v.built_at), text: "· built " + fmtAgo(v.built_at)}));
+    if (v.dirty) line.appendChild(el("span", {class:"badge b-amber", text:"modified",
+      title:"the checkout has uncommitted changes — it is not the commit it names"}));
+    var newest = fleetNewestVersion();
+    if (newest && newest.commit && newest.commit !== v.commit) {
+      line.appendChild(el("span", {class:"badge b-grey", text:"behind",
+        title: "the fleet's newest build is " + (newest.pr != null ? "#" + newest.pr + " " : "") +
+               newest.short + (newest.built_at ? " (" + fmtAgo(newest.built_at) + ")" : "") +
+               " — a roll waits for the cycle it would interrupt, so this is normal for a while"}));
+    }
+    return line;
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -386,7 +724,7 @@
         : p.mergeable === "CONFLICTING" ? el("span",{class:"badge b-red",text:"conflicts"})
         : el("span",{class:"muted",text: (p.mergeStateStatus||"?").toLowerCase()});
       return el("tr", {}, [
-        el("td", {}, el("a", {href:p.url, target:"_blank", text:"#"+p.number})),
+        el("td", {}, prRef(p.repo, p.number, p.url, "openprs")),
         el("td", {class:"wrap"}, [ el("span",{class:"mono muted", text: p.repo.split("/")[1] + " "}), esc(p.title) ]),
         el("td", {}, p.isDraft ? el("span",{class:"badge b-grey",text:"draft"}) : el("span",{class:"badge b-blue",text:"ready"})),
         el("td", {}, ckBadge),
@@ -471,6 +809,8 @@
         text: n.last_cycle ? "last cycle " + esc(n.last_cycle).slice(0, 16) : "no cycles yet"}));
     }
 
+    card.appendChild(versionLine(n));
+
     card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"
                     : "derived from the state this peer last pushed — no fresher than its heartbeat",
@@ -479,7 +819,10 @@
            : n.heartbeat_age_s == null ? "no heartbeat"
            : "as of its last push, " + fmtAgo(n.heartbeat_ts)}));
 
-    card.addEventListener("click", function () {
+    card.addEventListener("click", function (ev) {
+      // The version line put links inside a card that is itself a filter
+      // toggle; following one must not also change the filter behind it.
+      if (ev.target.closest && ev.target.closest("a")) return;
       nodeFilter = (nodeFilter === n.node) ? null : n.node;
       renderBody();
     });
@@ -533,7 +876,9 @@
           esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")) ]),
         el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
-        el("td", {}, cy.pr_url ? el("a", {href:cy.pr_url, target:"_blank", text:"PR"}) : document.createTextNode(""))
+        // The number, not the word "PR": it is the same identifier the rest of
+        // the page now uses, and it carries the same record on hover.
+        el("td", {}, cy.pr_url ? prRefFromUrl(cy.pr_url, "cycle/" + cy.id) : document.createTextNode(""))
       ];
       if (showNode) cells.splice(1, 0, el("td", {}, nodeTag(cy.node)));
       var tr = el("tr", {class:"clickable"}, cells);
@@ -769,6 +1114,37 @@
     }));
   }
 
+  // The actors, named as the specs name them. Display-only and failing open,
+  // exactly like the source tags: the vocabulary belongs to the pipelines (an
+  // actor is a transcript filename), so an actor added upstream shows up here
+  // under its raw token rather than vanishing into the totals.
+  var ACTOR = {
+    "coordinator":      ["coordinator", "the Co-Ordinator — chooses the work"],
+    "implementor":      ["implementor", "the Implementor — makes the change and raises the PR"],
+    "reviewer":         ["reviewer",    "the Reviewer — reviews the PR and marks it ready"],
+    "enabler":          ["enabler",     "the Enabler — examines blocked items and escalates"],
+    "project-reviewer": ["proj-review", "the Project Reviewer — the weekly project-review cycle"]
+  };
+  // Same bars as by-model, and deliberately so: this is the same measure cut a
+  // different way, and a second visual language would imply otherwise. The
+  // fills stay one accent colour for the same reason — the bar's length is the
+  // whole message, and a hue per actor would be identity encoding on a chart
+  // where identity is already the axis label.
+  function spendByActor() {
+    var as = (D.counts && D.counts.by_actor) || [];
+    if (!as.length) return el("div", {class:"empty", text:"No token cost recorded."});
+    var max = Math.max.apply(null, as.map(function (a){ return a.usd; })) || 1;
+    return el("div", {class:"bars wide"}, as.map(function (a) {
+      var m = ACTOR[a.actor] || [a.actor, "actor: " + a.actor];
+      return el("div", {class:"bar"}, [
+        el("span", {class:"mono muted", title: m[1], text: m[0]}),
+        el("div", {class:"track"}, el("div", {class:"fill", style:"width:" + (a.usd/max*100) + "%"})),
+        el("span", {class:"mono", style:"text-align:right", title: a.n + " stage run(s)",
+                    text: usd(a.usd) + " · " + a.n})
+      ]);
+    }));
+  }
+
   // ---------- log & cron ----------
   function logPanel() {
     var evs = (D.log_tail || []).slice(0, 80);
@@ -804,6 +1180,12 @@
   // the browser would otherwise clamp the scroll to the top on every refresh.
   function renderBody() {
     var y = window.scrollY;
+    // The hover card is anchored to an element that is about to be destroyed,
+    // so it is closed here and reopened against the rebuilt one at the foot of
+    // this function — left as it was, it would hang over the page attached to
+    // nothing.
+    var reopenPr = prAnchor ? prAnchor.getAttribute("data-pr-where") : null;
+    prCardHide();
     app.innerHTML = "";
 
     // ---------- banners ----------
@@ -953,21 +1335,30 @@
     app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
 
     // ---------- cost & cadence + log ----------
+    // By day on the left, and the two short cuts stacked on the right: the
+    // day chart runs to sixty rows and wants the width for its bars, while
+    // by-model and by-actor are a handful of rows each.
     var two = el("div", {class:"two"});
     two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
-    two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
+    two.appendChild(el("div", {class:"stack"}, [
+      el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]),
+      el("div", {}, [ el("h2", {text:"Est. token cost by actor"}), el("div", {class:"panel", style:"padding:14px"}, spendByActor()) ])
+    ]));
     app.appendChild(el("section", {}, two));
     app.appendChild(el("p", {class:"costnote", text:
       "Cost figures are Claude Code's own local estimate, priced as if these tokens " +
       "had been billed per-token through the API. On a Claude subscription they are " +
       "not money charged and not a draw against the session or weekly limit — read " +
       "them as a measure of how much work the pipeline did, not what it cost. Plan " +
-      "limits are not readable from here; check /usage in an interactive session."}));
+      "limits are not readable from here; check /usage in an interactive session. " +
+      "All three charts cover the same transcripts — every actor of both pipelines, " +
+      "across every node, since one Claude account pays for the fleet."}));
 
     app.appendChild(sectionOf("Recent log events", logPanel()));
     app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
 
     window.scrollTo(0, y);
+    prCardReanchor(reopenPr);
   }
 
   // The header of a single-node page: this node's live state in full, off its

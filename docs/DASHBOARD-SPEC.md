@@ -14,8 +14,9 @@ specifications"). Where it says "requirement N", it means requirement N of
 A single-page dashboard for watching and debugging the autonomous agent
 pipeline: current status, usage-limit stand-downs, open agent PRs and their
 CI, recent cycles with per-stage cost/duration/model, failures, blocked and
-void items, the work sources the Co-Ordinator sees, spend by day and by
-model, the raw log, and each stage's transcript inline.
+void items, the work sources the Co-Ordinator sees, spend by day, by model and
+by actor, which version each node is running, the raw log, and each stage's
+transcript inline.
 
 Three properties are deliberate and non-negotiable:
 
@@ -82,8 +83,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   earlier one and is ignored.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
-  entry ({node, role, heartbeat, last cycle}; older than 30 minutes → `stale:
-  true` — three missed pushes, not clock jitter); its `cycles/<id>/` transcripts
+  entry ({node, role, heartbeat, last cycle, version}; older than 30 minutes →
+  `stale: true` — three missed pushes, not clock jitter); its `cycles/<id>/`
+  and `reviews/<id>/` transcripts
   render peer cycles with exactly the fidelity of local ones, and its `.out`
   envelopes join the fleet-wide cost roll-ups (every node spends one Claude
   account, so per-node spend would be the misleading number). The merged cycle
@@ -133,6 +135,19 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   `duration_ms`, `num_turns`, `is_error`, `terminal_reason`/`stop_reason`,
   `modelUsage` (→ model id). `<stage>.out.stderr` is shown for debugging.
 
+  The **actor** that spent it is the transcript's own filename, and needs no
+  new field: `cycles/<id>/{coordinator,implementor,reviewer,enabler}.out` name
+  themselves, and `reviews/<id>/reviewer-<repo>.out` is normalised to
+  `project-reviewer` from the directory two levels up — it belongs to the
+  weekly pipeline, not to the cycle Reviewer. Any other stem passes through
+  verbatim, on the same fail-open rule as the source labels below.
+- **`reviews/<review-id>/reviewer-<repo>.out`** — the weekly project-review
+  pipeline's envelopes, read by the cost scan on exactly the same terms as a
+  cycle's. It is one Claude account paying for both pipelines, so a roll-up
+  that skipped this directory was not a per-pipeline figure but a wrong total —
+  and it skipped the single most expensive actor per run, which is also the one
+  an operator is most likely to be weighing up.
+
   `total_cost_usd` is a **local estimate computed from token counts**, priced
   as though the tokens had been billed per-token through the API. Under the
   subscription auth this pipeline runs on, it is not an amount charged and not
@@ -161,15 +176,30 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   lock is a cycle that was killed, and the page says so rather than rounding it
   to "idle".
 - **`cron.log`** — tail shown, for "cron fired but nothing happened".
+- **`build-info.json` (in the image) or git `HEAD`** — what code this node is
+  running, read through `lib/version.sh` and reported as `fleet.nodes[].version`
+  ({pr, commit, short, built_at, repo, source, dirty}). `.dockerignore` keeps
+  `.git` out of the image — the image is a deployment of this repository, not a
+  copy of a working tree — so CI stamps the answer in at build time
+  (`.github/workflows/build-image.yml`, `deploy/docker/Dockerfile`), and this
+  reader falls back to git for a checkout, and to `null` for neither. The
+  **pull request** is the useful half: a SHA names the bytes, `#89` names the
+  change, and the page renders it through the same hover card as every other
+  number. Our own is read directly; a peer's arrives in its heartbeat, because
+  a peer publishes no container. See the design decision on version skew below.
 - **GitHub, via `gh`** (best-effort; the machine is authenticated and the
   repos are public): open PRs carrying `pr_label` with `statusCheckRollup`,
-  `mergeable`, `mergeStateStatus`, draft/ready; most-recent-per-workflow
+  `mergeable`, `mergeStateStatus`, `reviewDecision`, author, labels,
+  draft/ready; most-recent-per-workflow
   failing runs on the default branch; open issues, each with the `Priority`
   band the Co-Ordinator ranks it by (read from the REST issues listing's
   `issue_field_values`, since `gh issue list --json` cannot see issue fields,
   and defaulted to `Medium` exactly as the pipeline defaults it — see the
   implementation-pipeline spec, requirement 15e); the `TECH-DEBT.md` ledger
-  rows. If `gh` fails, the GitHub panels mark themselves stale and the rest
+  rows; and one record per pull request the page refers to (`github.pr_index`,
+  keyed `<owner>/<repo>#<number>`) — the open ones from the query above, the
+  rest by `gh pr view`, cached permanently once terminal (see the Publisher).
+  If `gh` fails, the GitHub panels mark themselves stale and the rest
   still renders. On a `--no-github` refresh the fetch is skipped entirely and
   the last successful result is carried forward (see the Publisher below), so
   only a fetch that was *attempted and failed* ever shows as unavailable.
@@ -235,7 +265,8 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest FINISHED
              limit:{active,note}, switch:{…} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
-             spend_today_usd, spend_total_usd, by_day[], by_model[] },
+             spend_today_usd, spend_total_usd,
+             by_day[], by_model[], by_actor[] },   // both pipelines' actors
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
                stages:{ coordinator|implementor|reviewer:
@@ -248,9 +279,17 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                enabler_outcome, enabler_ts } ],         //   … or the last verdict
   void:    [ { repo, item, ts, detail, stage, evidence } ],
   github:  { ok, error, fetched_at, stale, prs[], claims[],
-             inputs:{<slug>:{issues,failed_runs,tech_debt}} },
+             inputs:{<slug>:{issues,failed_runs,tech_debt}},
+             pr_index: { "<owner>/<repo>#<n>":                  // one per
+                         { repo, number, title, url, state,     //   number the
+                           is_draft, author, labels[], base,    //   page shows
+                           created_at, merged_at, closed_at,
+                           merge_commit, review_decision,
+                           mergeable, checks, cached_at } } },
   fleet:   { nodes:  [ { node, role, heartbeat_ts, heartbeat_age_s,
                          last_cycle, self, stale,       // self first
+                         version: { pr, commit, short, built_at,
+                                    repo, source, dirty },  // null if unknown
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -260,6 +299,19 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   log_tail:  [ … ],                    // recent events, newest first, fleet-wide
   cron_tail: [ "line", … ] }
 ```
+
+`github.pr_index` is the record behind every `#number` the page renders — the
+open-PR table, the cycle that raised one, the version a node is running. Its
+references are gathered from the page itself (each shown cycle's `pr_url`, each
+node's reported version), so it holds exactly what is on screen and cannot grow
+past it. Entries for open pull requests come free with the label query above;
+the rest cost one `gh pr view` each, and a **merged or closed pull request is
+never re-read** — its record cannot change, so `<state_dir>/.dashboard-prs.json`
+caches it permanently and a warm index costs nothing per tick. Only entries
+still open are refreshed, and only hourly. A cold index is filled at most eight
+references per tick: forty `gh pr view` calls at up to `GH_TIMEOUT` each would
+not fit in the heartbeat's window, and nothing waits on it — an unindexed
+number renders as the plain link it has always been.
 
 `fleet.claims` is the live claim registry (implementation spec 17a), read on
 the GitHub tick and carried between ticks by the same cache as `github` (it
@@ -313,7 +365,11 @@ is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
 **the fleet strip** — one card per node carrying that node's own live state
 (name, role, running/idle, the stage, repo, work source and item in flight and
-since when — or, when idle, when its last cycle ended and how it went — and how
+since when — or, when idle, when its last cycle ended and how it went — the
+**version it is running** as `image #<pr> <short-sha> · built <age>` with the
+pull request carrying its hover card, a grey `behind` marker when the fleet
+holds a newer build and an amber `modified` one on a checkout with uncommitted
+work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
 peer); stale peers bordered red and reported as state unknown; click a card to
 filter the cycle list to that node, click again to clear — the filter survives
@@ -339,7 +395,22 @@ blocked and void items; work sources per repo (including the security and
 code-quality findings, shown first, that the Co-Ordinator prioritises, and the
 open issues, listed in `Priority` band order with the band on each, which is
 the order the Co-Ordinator reaches them in);
-spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
+the cost charts — by-day on the left, by-model and by-actor stacked beside it,
+since the first runs to sixty rows and the other two to five; recent log;
+`cron.log` tail.
+
+Every pull-request number anywhere on the page is rendered by one widget,
+which makes it a link with a **hover card** (also on keyboard focus; `Escape`
+closes it) carrying that PR's record from `github.pr_index`: repo and number,
+state, title, author, when it was opened and merged or closed, the abbreviated
+merge commit (itself a link), its labels, and — while it is still open —
+checks, review decision and mergeability. It also names **the cycle that
+raised it**, joined client-side from the cycle list, so the two halves of the
+page connect without the pipeline logging anything new. A number with no entry
+yet says so rather than rendering an empty card. An open card is carried across
+the body's rebuild like the expanded rows and open transcripts are — matched to
+the exact occurrence it was opened on, so it cannot reappear against one of the
+same number's twins elsewhere on the page.
 
 ## Integration
 
@@ -395,7 +466,15 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 
 ## Components (as built)
 
-- `scripts/publish-dashboard.sh` — the Publisher.
+- `scripts/publish-dashboard.sh` — the Publisher. `DASHBOARD_GH_CMD` names the
+  `gh` it calls, and is exported so `scripts/gather-findings.sh` resolves the
+  same one; it exists for the test suite, which must reach no network and
+  cannot shadow a binary by PATH (the Publisher hardens PATH for cron, and its
+  `gh` runs under `timeout`, which no exported shell function is visible to).
+  Unset in production, where it is exactly `gh`.
+- `lib/version.sh` — what code this node is running: the image's CI stamp
+  (`build-info.json`) if there is one, else git `HEAD`, else nothing. Shared
+  with `scripts/state-sync.sh`, which publishes the answer in every heartbeat.
 - `scripts/publish-dashboard-launcher.sh` — the sub-minute heartbeat driver
   (cron runs it every 5 min; it self-loops on 5-second boundaries).
 - `dashboard/index.html` — the page (committed source; copied beside the
@@ -419,12 +498,26 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   `PIDFILE`, `LOGFILE`) are defaults overridable from
   `/etc/default/agent-ops-dashboard`, so the script carries no host-specific
   path that must be edited in place.
-- The cleanup hook in `agent-cycle.sh`; a `.gitignore` entry for
-  `dashboard/data.js`; the README "Monitoring dashboard" section.
+- The version stamp: `ARG`s and the `build-info.json` write at the foot of
+  `deploy/docker/Dockerfile`, and the "Work out the version stamp" step of
+  `.github/workflows/build-image.yml` that supplies them (with a check that the
+  built image reads its own stamp back — the failure mode is otherwise silent).
+- The cleanup hook in `agent-cycle.sh`; `.gitignore` and `.dockerignore`
+  entries for `dashboard/data.js` and `build-info.json`; the README
+  "Monitoring dashboard" section.
 
 ## Verifying a change
 
-- `shellcheck scripts/*.sh agent-cycle.sh` clean.
+- `shellcheck scripts/*.sh lib/*.sh agent-cycle.sh` clean.
+- `test/version.test.sh` passes: a stamped image reports its build, an empty
+  stamp (what a local `docker build` produces) falls through to git, a checkout
+  reports `HEAD` and flags uncommitted work, neither source reports `null`
+  rather than a half-filled guess, and the `(#N)` parser takes a squash-merge
+  marker without taking a mid-subject issue reference for one. And none of the
+  states that make a read fail — a repository with no commits, a clone with no
+  `origin`, a stamp truncated mid-write — aborts a `set -e` caller, because
+  `scripts/state-sync.sh` is one and a node that stops pushing is a node the
+  fleet loses sight of.
 - `test/publish-dashboard.test.sh` passes: the launcher exits 0 on a healthy
   (shortened) window and while another publish holds the lock; a cold window
   fetches from GitHub exactly once, a window following a fresh fetch not at
@@ -439,6 +532,17 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   masquerade as what this node is doing). With the fleet's newest cycle
   unfinished, `status.last_cycle` skips past it to the newest that logged
   `cycle-end`, so the field the headers date it by is never null.
+  The cost scan attributes each
+  transcript to the actor that wrote it, names a review's as the Project
+  Reviewer rather than a second cycle Reviewer, and leaves the actors summing
+  to the total. Each node's version comes from its own heartbeat, and a peer
+  publishing none reads as unknown rather than inheriting ours. And the
+  pull-request index — driven through `DASHBOARD_GH_CMD`, so a GitHub tick
+  costs no API call — resolves every reference the page holds including the
+  version a node runs (which no open-PR query names), reads each pull request
+  at most once, re-reads none of them on the following tick, carries forward
+  across a `--no-github` tick, and bounds a cold fill to a few references
+  rather than one burst.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -631,6 +735,73 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   other. The figure is worth showing — it is a good proxy for how hard the
   pipeline is working, and it is the only per-cycle cost signal there is — but
   it has to be named for what it measures.
+- **Cost is cut by actor as well as by model and by day, because the actor is
+  the only one of the three anybody chooses.** The day is a fact about when the
+  cron fired; the model is nearly a restatement of the actor, since
+  `config.json` pins one model per role. What an operator can actually decide is
+  which agent does what — whether the Reviewer needs Opus on complex work,
+  whether the Enabler is earning its cycles, what a weekly project review really
+  costs against an hour of implementation. None of that is legible from the
+  other two charts, and all of it was already on disk: the actor is the
+  transcript's own filename, so this cut needed no new field, no new log event
+  and no extra API call.
+
+  Adding it exposed that the roll-ups were **not totals**. The scan read
+  `cycles/` and not `reviews/`, so the weekly Project Reviewer — the most
+  expensive actor per run — contributed nothing to spend-today, spend-total,
+  by-day or by-model. That is a worse fault than a missing chart: the numbers
+  were not per-pipeline, they were simply short, and nothing on the page said
+  so. Both directories are now scanned. The figures step up on review weeks;
+  they were wrong before, not inflated now.
+- **A pull-request number is rendered by one widget everywhere, and it carries
+  its record.** `#89` on its own says almost nothing, and the click that would
+  explain it costs a context switch — enough friction that nobody spends it
+  while scanning, which is what this page is for. So every number on the page
+  goes through one renderer that attaches a hover card: repo, title, state,
+  author, opened/merged times, the merge commit, labels, and — while it is open
+  — checks, review decision and mergeability. It is deliberately generic rather
+  than special-cased per panel, and the newest use is the one that proves the
+  point: on a fleet card the number *is* the version statement, so the record
+  behind it is the whole of what makes the card readable.
+
+  Two things keep it honest. The card names **the cycle that raised the PR**,
+  joined client-side out of the cycle list rather than recorded anywhere — the
+  pipeline already logs `pr_url` per cycle, so the join cannot fall out of step
+  with the table three panels down, and it costs nothing. And a number with no
+  entry yet says exactly that, rather than rendering an empty card: an index
+  miss is the ordinary state of a PR raised since the last fetch, not an error.
+
+  The index is affordable because a **merged or closed pull request is
+  immutable** — cached permanently by ref, so a warm tick spends nothing however
+  many numbers are on screen — and because the cold fill is bounded to a few
+  references a tick, since forty `gh pr view` calls at `GH_TIMEOUT` each would
+  not fit in the heartbeat's window. Its reference set is gathered from the page
+  itself, which is also what stops the cache growing: it holds what is on
+  screen, and needs no expiry rule of its own.
+- **A node's version is a pull-request number, and the image has to be told
+  it.** "Which version is this container running?" had no answer anywhere. A
+  fleet is *routinely* mid-update — `watchtower-pre-update.sh` defers a roll
+  while a cycle is in flight — so nodes differing is normal, and the question
+  that matters ("has the fix reached the node that needed it?") could only be
+  answered by exec'ing into containers. The answer is now on the card.
+
+  It is a pull-request number rather than a SHA because a SHA names the bytes
+  and a pull request names the change: `#89` has a title, a diff, a review and a
+  merge time behind it, and the widget above puts all of that one hover away.
+  The commit is shown too, abbreviated and linked, for anyone reconciling
+  against `docker image inspect`. And the image cannot work either out for
+  itself — `.dockerignore` keeps `.git` out, correctly, because the image is a
+  deployment and not a working tree — so CI stamps `build-info.json` at build
+  time and `lib/version.sh` falls back to git for a checkout. A peer's version
+  travels in its heartbeat, since a peer publishes no container; a peer that
+  publishes none reads as *unknown* rather than inheriting ours, on the same
+  rule as every other derived peer fact.
+
+  The `behind` marker is grey, not amber. Being behind is the expected state
+  during a roll, and colouring an ordinary condition as a warning teaches an
+  operator to ignore the colour. What it is there to catch is a node that stays
+  behind — a watchtower that has stopped rolling — which shows up as the marker
+  failing to clear, and which nothing else on this page would reveal.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing

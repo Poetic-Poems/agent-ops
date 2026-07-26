@@ -9,3 +9,7 @@ node_modules
 .env
 .env.local
 dashboard/data.js
+# Written *inside* the image by the Dockerfile's version stamp. Copying a host
+# copy in would overwrite CI's answer with whatever some earlier local build
+# left lying about, so a node could report a version it is not running.
+build-info.json

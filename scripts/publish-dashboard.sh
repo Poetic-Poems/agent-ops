@@ -19,7 +19,15 @@ path_dirs=(/usr/local/bin /usr/bin /bin "$HOME/.local/bin")
 PATH="$(IFS=:; echo "${path_dirs[*]}"):$PATH"
 export PATH
 
-for bin in jq gh; do
+# Which `gh` to call. A seam for the test suite, which must reach no network
+# and cannot shadow a binary by PATH — the line above deliberately puts the
+# system directories first, and `gh_json` runs gh under `timeout`, which an
+# exported shell function would never be seen by. Unset in production, where
+# this is exactly `gh`. Exported so scripts/gather-findings.sh, the one other
+# GitHub reader a publish invokes, resolves the same way.
+export DASHBOARD_GH_CMD="${DASHBOARD_GH_CMD:-gh}"
+
+for bin in jq "$DASHBOARD_GH_CMD"; do
   command -v "$bin" >/dev/null 2>&1 || { echo "publish-dashboard: missing binary: $bin" >&2; exit 1; }
 done
 
@@ -37,6 +45,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
+# shellcheck source=lib/version.sh
+. "$SCRIPT_DIR/lib/version.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -82,6 +92,11 @@ gh_cache="$state_dir/.dashboard-github.json"
 # the claims it holds are unchanged. Kept out of the served dir for the same
 # reason as the fetch cache above.
 claims_cache="$state_dir/.dashboard-claims.json"
+# Pull-request records by "<owner>/<repo>#<number>", for the hover cards. A
+# merged or closed pull request is immutable, so its entry is never re-read;
+# see the index build below for what keeps the file from growing. Kept out of
+# the served dir like the two caches above.
+pr_cache="$state_dir/.dashboard-prs.json"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -103,7 +118,7 @@ now_epoch="$(date +%s)"
 # to the old local read.
 read_events() { fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromjson? // empty' 2>/dev/null; }
 
-gh_json() { timeout "$GH_TIMEOUT" gh "$@" 2>/dev/null; }
+gh_json() { timeout "$GH_TIMEOUT" "$DASHBOARD_GH_CMD" "$@" 2>/dev/null; }
 
 epoch_of() { date -d "$1" +%s 2>/dev/null || echo 0; }
 
@@ -416,16 +431,38 @@ costs_file="$work_tmp/costs.json"
 # Fleet-wide: every node spends the same Claude account, so the roll-ups scan
 # the peers' replicated transcripts too (bounded — a peer's branch carries at
 # most cycles_retained cycles). Missing dirs are fine; find just skips them.
+#
+# `reviews/` is scanned alongside `cycles/`: the weekly project-review pipeline
+# is the same account spending the same tokens, and while its transcripts went
+# unread every figure on this page was quietly a partial total — the Project
+# Reviewer is the single most expensive actor per run and was the only one
+# invisible. Its records are shaped like a cycle's (`<id>/<actor>.out` under a
+# timestamped id), so the same scan reads both; the directory two levels up is
+# what says which pipeline a row came from.
 cost_dirs=("$cycles_dir")
-for pd in "$peers_dir"/*/cycles; do
+[[ -d "$state_dir/reviews" ]] && cost_dirs+=("$state_dir/reviews")
+for pd in "$peers_dir"/*/cycles "$peers_dir"/*/reviews; do
   [[ -d "$pd" ]] && cost_dirs+=("$pd")
 done
+# `actor` is which agent spent it. The Publisher already knew — it is the
+# transcript's own filename — but only ever asked per cycle, so "what is the
+# money going on?" could be answered by model and by day and not by the thing
+# an operator can actually change. A review's file is `reviewer-<repo>.out`,
+# one per repository reviewed, so it is named for the pipeline it belongs to
+# rather than left to read as a second Reviewer. Any other stem passes through
+# verbatim: an actor added upstream should show up unlabelled rather than
+# vanish into the totals.
+# shellcheck disable=SC2016  # `$p` below is a jq binding, not a shell variable
 find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
-  | xargs -0 -r -n 25 jq -c '{
-      day: (input_filename | split("/") | .[-2] | .[0:8]),
-      cost: (.total_cost_usd // 0),
-      model: ((.modelUsage // {}) | keys | (.[0] // "unknown"))
-    }' 2>/dev/null \
+  | xargs -0 -r -n 25 jq -c '
+      (input_filename | split("/")) as $p
+      | {
+          day: ($p[-2] | .[0:8]),
+          cost: (.total_cost_usd // 0),
+          model: ((.modelUsage // {}) | keys | (.[0] // "unknown")),
+          actor: (if ($p[-3] // "") == "reviews" then "project-reviewer"
+                  else ($p[-1] | rtrimstr(".out")) end)
+        }' 2>/dev/null \
   | jq -sc --arg cut "$day_cut" '[ .[] | select(.day >= $cut) ]' \
   > "$costs_file" 2>/dev/null
 jq -e 'type == "array"' "$costs_file" >/dev/null 2>&1 || printf '[]' > "$costs_file"
@@ -442,7 +479,9 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$cost
     spend_today_usd: ($costs | map(select(.day==$today) | .cost) | add // 0),
     by_day:   ($costs | group_by(.day)   | map({day: .[0].day, usd: (map(.cost)|add), n: length}) | sort_by(.day)),
     by_model: ($costs | group_by(.model) | map({model: .[0].model, usd: (map(.cost)|add), n: length})
-                      | map(select(.model != "unknown" or .usd > 0)) | sort_by(-.usd))
+                      | map(select(.model != "unknown" or .usd > 0)) | sort_by(-.usd)),
+    by_actor: ($costs | group_by(.actor) | map({actor: .[0].actor, usd: (map(.cost)|add), n: length})
+                      | sort_by(-.usd))
   }')"
 
 # --- Blocked and void items (requirements 34, 34c) ---------------------------
@@ -568,13 +607,20 @@ self_live_json="$(jq -nc \
 # every 5 minutes, fetched every 7, so anything older than 30 minutes means
 # missed pushes or missed fetches, and the entry is flagged stale rather than
 # silently trusted.
+#
+# Each row also carries the node's `version` (lib/version.sh) — the code that
+# node is running, ours read directly and a peer's from the heartbeat it
+# published. A fleet is routinely mid-update, because a roll defers while a
+# cycle is in flight, so "have all the nodes got the fix?" is a real operational
+# question with no other answer on this page.
 nodes_rows="$work_tmp/nodes.rows"
 last_local_cycle="$(ls -1 "$cycles_dir" 2>/dev/null | sort | tail -n1)"
 jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
   --argjson live "$self_live_json" \
+  --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
-    live: $live}' > "$nodes_rows"
+    live: $live, version: $version}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -585,7 +631,11 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        heartbeat_age_s: (if $t > 0 then ([$now - $t, 0] | max) else null end),
        last_cycle: ($h.last_cycle // null), self: false,
        stale: (if $t > 0 then (($now - $t) > 1800) else true end),
-       live: ($live[($h.node // "")] // null)}' \
+       live: ($live[($h.node // "")] // null),
+       # Absent on a peer still running an image built before the heartbeat
+       # carried one, which is exactly the case the card must render as
+       # "version unknown" rather than as our own.
+       version: ($h.version // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"
@@ -601,24 +651,70 @@ fleet_flags_json="$(jq -nc \
 [[ -z "$fleet_flags_json" ]] && fleet_flags_json='{"disabled":null,"limit":null}'
 
 # --- Live GitHub (best-effort) -----------------------------------------------
+# The check roll-up and the index entry, written once and used by both the
+# open-PR rows and the pull-request index below. The table and the hover card
+# describe the same pull requests, and two copies of the rule is how they would
+# come to describe them differently.
+# shellcheck disable=SC2016  # the `$slug`/`$at` here are jq parameters
+PR_JQ='
+  def checks_of: ((. // []) | {
+    total: length,
+    passed:  (map(select((.conclusion // .state) == "SUCCESS")) | length),
+    failed:  (map(select((.conclusion // .state) == "FAILURE" or (.conclusion // .state) == "ERROR" or (.conclusion // .state) == "CANCELLED")) | length),
+    pending: (map(select((.status // "") == "IN_PROGRESS" or (.status // "") == "QUEUED" or (.status // "") == "PENDING")) | length)
+  });
+  def entry_of($slug; $at):
+    { ref: ($slug + "#" + (.number | tostring)),
+      repo: $slug,
+      number: .number,
+      title: (.title // ""),
+      url: (.url // ""),
+      state: (.state // ""),
+      is_draft: (.isDraft // false),
+      author: (.author.login // ""),
+      labels: [ (.labels // [])[] | .name ],
+      base: (.baseRefName // ""),
+      created_at: (.createdAt // null),
+      merged_at: (.mergedAt // null),
+      closed_at: (.closedAt // null),
+      # Seven characters, because that is what the record is *for*: a reader
+      # comparing it against `docker image inspect` or a `git log` line, not
+      # re-deriving anything from it.
+      merge_commit: ((.mergeCommit.oid // "") | .[0:7]),
+      review_decision: (.reviewDecision // ""),
+      mergeable: (.mergeable // ""),
+      checks: (if has("statusCheckRollup") then (.statusCheckRollup | checks_of) else null end),
+      cached_at: $at };
+'
+PR_INDEX_FIELDS=number,title,url,state,isDraft,createdAt,mergedAt,closedAt,mergeCommit,author,labels,reviewDecision,baseRefName
+# How many pull requests an index miss may cost in one tick. A cold index holds
+# forty-odd refs and each miss is a `gh pr view` of up to GH_TIMEOUT seconds,
+# which would not fit in the heartbeat's window — so it fills a few a tick and
+# is warm within the hour. Nothing waits on it: an unindexed number renders as
+# the plain link it always was.
+PR_INDEX_MISS_BUDGET=8
+# An open pull request's record moves; a merged or closed one never does. So
+# the cache is permanent for terminal states and this old for the rest.
+PR_INDEX_OPEN_TTL=3600
+
 prs_json='[]'; inputs_json='{}'; gh_ok=false; gh_err=""
+pr_rows="$work_tmp/pr.rows"; : > "$pr_rows"
 if (( WITH_GITHUB )); then
   gh_ok=true
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
     prs="$(gh_json pr list -R "$slug" --state open --label "$pr_label" \
-             --json number,title,url,isDraft,state,mergeable,mergeStateStatus,headRefName,createdAt,statusCheckRollup)"
+             --json "$PR_INDEX_FIELDS",mergeable,mergeStateStatus,headRefName,statusCheckRollup)"
     if [[ -z "$prs" ]]; then gh_ok=false; gh_err="pr list failed for $slug"; prs='[]'; fi
-    prs_json="$(jq -c --arg slug "$slug" --argjson add "$prs" '
+    prs_json="$(jq -c --arg slug "$slug" --argjson add "$prs" "$PR_JQ"'
       . + ($add | map({
         repo: $slug, number, title, url, isDraft, state, mergeable, mergeStateStatus, headRefName, createdAt,
-        checks: ((.statusCheckRollup // []) | {
-          total: length,
-          passed:  (map(select((.conclusion // .state) == "SUCCESS")) | length),
-          failed:  (map(select((.conclusion // .state) == "FAILURE" or (.conclusion // .state) == "ERROR" or (.conclusion // .state) == "CANCELLED")) | length),
-          pending: (map(select((.status // "") == "IN_PROGRESS" or (.status // "") == "QUEUED" or (.status // "") == "PENDING")) | length)
-        })
+        checks: (.statusCheckRollup | checks_of)
       }))' <<<"$prs_json")"
+    # The same fetch, indexed. These entries are this tick's freshest answer for
+    # every open agent PR, so they always win over anything cached.
+    jq -c --arg slug "$slug" --arg at "$now_iso" "$PR_JQ"'
+      .[] | entry_of($slug; $at)' <<<"$prs" >> "$pr_rows" 2>/dev/null || true
 
     db="$(gh_json api "repos/$slug" --jq '.default_branch')"; db="${db:-main}"
     # The REST listing rather than `gh issue list`, because the Co-Ordinator's
@@ -725,9 +821,96 @@ if (( WITH_GITHUB )); then
   claims_json="$(jq -sc 'sort_by(.ts) | reverse' "$claims_rows" 2>/dev/null)"
   [[ -z "$claims_json" ]] && claims_json='[]'
 
+  # --- The pull-request index (what a `#number` on the page means) ------------
+  # Every pull-request number the page shows resolves to one record here, so a
+  # reader can learn what a number *is* without leaving the page: which repo,
+  # what it did, whether it landed and when, and which commit it left behind.
+  # That question is asked in three places and the number alone answers none of
+  # them — least of all the newest, where `#89` is the version a container is
+  # running and the only thing that makes it meaningful is the record behind it.
+  #
+  # Two properties keep it cheap. A merged or closed pull request never changes
+  # again, so its entry is cached for ever (`.dashboard-prs.json`, beside the
+  # state like the other caches) and a warm tick costs no call at all; the open
+  # ones that matter are refetched wholesale by the label query above. And a
+  # cold index fills a few refs a tick rather than in one burst, because forty
+  # `gh pr view` calls at up to GH_TIMEOUT each would not fit in the heartbeat's
+  # window. Nothing waits on it: an unindexed number renders as the plain link
+  # it has always been, and gains its card a tick or two later.
+  pr_refs_json="$work_tmp/pr-refs.json"
+  {
+    # Every pull request a cycle in the detail list raised.
+    jq -r '
+      def ref_of: capture("github\\.com/(?<slug>[^/]+/[^/]+)/pull/(?<n>[0-9]+)")
+                  | "\(.slug)#\(.n)";
+      .[] | (.pr_url // "") | select(. != "") | ref_of' "$cycles_file" 2>/dev/null
+    # The version each node reports running — the one reference that is a
+    # merged pull request by construction, and the reason the index cannot be
+    # built from the open-PR query alone.
+    jq -r '.[] | select((.version.pr // null) != null and (.version.repo // "") != "")
+             | "\(.version.repo)#\(.version.pr)"' <<<"$fleet_nodes_json" 2>/dev/null
+  } | sort -u | jq -Rsc 'split("\n") | map(select(length > 0))' > "$pr_refs_json" 2>/dev/null
+  jq -e 'type == "array"' "$pr_refs_json" >/dev/null 2>&1 || printf '[]' > "$pr_refs_json"
+
+  pr_cache_json="$work_tmp/pr-cache.json"
+  if [[ -s "$pr_cache" ]] && jq -e 'type == "object"' "$pr_cache" >/dev/null 2>&1; then
+    cp "$pr_cache" "$pr_cache_json"
+  else
+    printf '{}' > "$pr_cache_json"
+  fi
+
+  # The cache, with this tick's fresh rows folded over it — so an open PR the
+  # label query just re-read wins over the copy cached an hour ago.
+  pr_index_file="$work_tmp/pr-index.json"
+  jq -sc --slurpfile cache "$pr_cache_json" '
+    ($cache[0] // {}) as $c | reduce .[] as $e ($c; .[$e.ref] = $e)' \
+    "$pr_rows" > "$pr_index_file" 2>/dev/null
+  jq -e 'type == "object"' "$pr_index_file" >/dev/null 2>&1 || printf '{}' > "$pr_index_file"
+
+  # What is still missing, or cached open and gone stale. A terminal entry is
+  # never re-read: that is the whole reason this stays free.
+  pr_misses=()
+  mapfile -t pr_misses < <(jq -r --slurpfile idx "$pr_index_file" \
+    --argjson now "$now_epoch" --argjson ttl "$PR_INDEX_OPEN_TTL" '
+    ($idx[0] // {}) as $i
+    | .[]
+    | . as $ref
+    | ($i[$ref] // null) as $e
+    | if   $e == null                                       then $ref
+      elif ($e.state == "MERGED" or $e.state == "CLOSED")    then empty
+      elif ((try ($e.cached_at | fromdateiso8601) catch 0) + $ttl) < $now then $ref
+      else empty end' "$pr_refs_json" 2>/dev/null)
+
+  pr_fetched=0
+  for pr_ref in ${pr_misses[@]+"${pr_misses[@]}"}; do
+    (( pr_fetched < PR_INDEX_MISS_BUDGET )) || break
+    pr_slug="${pr_ref%#*}"; pr_num="${pr_ref#*#}"
+    [[ "$pr_slug" == */* && "$pr_num" =~ ^[0-9]+$ ]] || continue
+    pr_view="$(gh_json pr view "$pr_num" -R "$pr_slug" --json "$PR_INDEX_FIELDS")"
+    [[ -n "$pr_view" ]] || continue
+    pr_fetched=$(( pr_fetched + 1 ))
+    jq -c --arg slug "$pr_slug" --arg at "$now_iso" "$PR_JQ"'entry_of($slug; $at)' \
+      <<<"$pr_view" >> "$pr_rows" 2>/dev/null || true
+  done
+
+  # Fold again (this time including anything just fetched) and keep only what
+  # the page actually refers to, plus everything read this tick. A cache whose
+  # keys are the refs still on the page cannot grow without bound, and nothing
+  # else needs pruning rules.
+  jq -sc --slurpfile cache "$pr_cache_json" --slurpfile refs "$pr_refs_json" '
+    ($cache[0] // {}) as $c
+    | (reduce .[] as $e ($c; .[$e.ref] = $e)) as $all
+    | ([ .[].ref ] + ($refs[0] // []) | unique) as $keep
+    | reduce $keep[] as $r ({}; if $all[$r] then .[$r] = $all[$r] else . end)' \
+    "$pr_rows" > "$pr_index_file" 2>/dev/null
+  jq -e 'type == "object"' "$pr_index_file" >/dev/null 2>&1 || printf '{}' > "$pr_index_file"
+  cp "$pr_index_file" "$pr_cache" 2>/dev/null || true
+
   github_json="$(jq -n --argjson ok "$gh_ok" --arg err "$gh_err" --arg at "$now_iso" \
     --argjson prs "$prs_json" --argjson inputs "$inputs_json" --argjson claims "$claims_json" \
-    '{ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs, claims: $claims}')"
+    --slurpfile pri "$pr_index_file" \
+    '{ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs,
+      claims: $claims, pr_index: ($pri[0] // {})}')"
   # Remember this fetch (ok or failed — it is the latest real attempt) so the
   # next --no-github tick can carry it forward rather than start from nothing.
   printf '%s' "$github_json" > "$gh_cache"
@@ -743,7 +926,7 @@ else
   else
     # Never fetched yet (e.g. the very first run was --no-github): a neutral
     # not-yet state, not a failure. ok is null so no banner fires.
-    github_json='{"ok":null,"error":"","fetched_at":null,"stale":true,"prs":[],"inputs":{}}'
+    github_json='{"ok":null,"error":"","fetched_at":null,"stale":true,"prs":[],"inputs":{},"pr_index":{}}'
   fi
 fi
 

@@ -467,7 +467,7 @@ memory, and every node follows everyone else's.
 
 | Mode | When | What |
 |---|---|---|
-| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle}`) |
+| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version}`) |
 | `fetch` | every seven minutes | materialises every peer's branch under the peers directory, whole, and prunes a peer whose branch is gone |
 
 What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,
@@ -778,8 +778,19 @@ A local, single-page dashboard shows everything at a glance: whether a cycle
 is running, whether the pipelines are disabled and why, usage-limit
 stand-downs, open agent PRs and their CI status,
 recent cycles with per-stage cost/duration/model, failures, blocked and void
-items, the work sources the Co-Ordinator sees, spend by day and by model, and
-the raw log — with each stage's transcript viewable inline.
+items, the work sources the Co-Ordinator sees, estimated token cost by day, by
+model and by actor, and the raw log — with each stage's transcript viewable
+inline.
+
+Two things are worth knowing about before you first open it. Each node's card
+names **the version that node is running** — the last pull request contained in
+its image, plus the commit it was built from, and a `behind` marker while the
+fleet holds a newer build. (A roll waits for the cycle it would otherwise
+interrupt, so nodes sitting on different images for a while is normal; a node
+that stays behind is a watchtower that has stopped.) And **every pull-request
+number on the page** — there, in the open-PR table, and against each cycle —
+shows that PR's record on hover: title, author, state, when it merged, the
+merge commit, its labels, and the cycle that raised it.
 
 It is **local and private**: nothing is published to the internet, there is no
 server and no open port, and it costs nothing to run (it makes no model

@@ -95,6 +95,26 @@ make_cycle() {  # make_cycle <home> <cid> <cost> <model> [result-text]
     "$cost" "$model" "$result" > "$d/coordinator.out"
 }
 
+# One stage of one cycle, for the cost roll-ups. `make_cycle` above is the
+# single-stage shorthand the older assertions are written against; this is the
+# same envelope with the actor named, since which agent spent it is now a
+# dimension of its own.
+make_stage() {  # make_stage <home> <cid> <stage> <cost> <model>
+  local d="$1/.local/state/poetic-agents/cycles/$2"
+  mkdir -p "$d"
+  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{}},"result":"ok"}' \
+    "$4" "$5" > "$d/$3.out"
+}
+
+# The weekly project-review pipeline's record: same envelope, a sibling
+# directory, and one transcript per repository reviewed.
+make_review() {  # make_review <home> <review-id> <repo-slug> <cost> <model>
+  local d="$1/.local/state/poetic-agents/reviews/$2"
+  mkdir -p "$d"
+  printf '{"type":"result","subtype":"success","total_cost_usd":%s,"duration_ms":5,"num_turns":1,"is_error":false,"modelUsage":{"%s":{}},"result":"ok"}' \
+    "$4" "$5" > "$d/reviewer-${3//\//_}.out"
+}
+
 run_publish() {  # run_publish <home> [env assignments…]
   local home="$1"; shift
   env HOME="$home" "$@" "$PUBLISH" --no-github >/dev/null 2>&1
@@ -456,6 +476,181 @@ g="$(new_home nodeG)"
 run_publish "$g" NODE_NAME=nodeG-self
 assert_eq "a node with no history reports no live state" "null" \
   "$(jq -r '.fleet.nodes[0].live' <<<"$(data_of "$g")")"
+
+# --- Cost by actor, and the review pipeline's share of it ------------------------
+# Which agent the money went on is the cut an operator can act on — the model
+# and the day are not things anyone chooses. It is derived from the transcript's
+# own filename, which is also why the weekly project review had to join the scan
+# to make it: its records live in `reviews/`, so while that directory went
+# unread the Project Reviewer was both the most expensive actor per run and the
+# only one invisible, and every total on the page was quietly partial.
+k="$(new_home nodeK)"
+make_stage "$k" "${today_day}T060000Z-21" coordinator 0.25 model-a
+make_stage "$k" "${today_day}T060000Z-21" implementor 2.00 model-b
+make_stage "$k" "${today_day}T060000Z-21" reviewer    0.75 model-b
+make_stage "$k" "${today_day}T070000Z-22" enabler     0.50 model-a
+make_review "$k" "${today_day}T080000Z-nodeK-31" Poetic-Poems/poetic 4.00 model-b
+run_publish "$k"
+kdata="$(data_of "$k")"
+# `+ 0` is not decoration: jq 1.7 round-trips a number it never operates on as
+# the literal it read, so a single-transcript group prints "2.00" where 1.6
+# prints "2" — and the suite runs under both (the laptop's jq and the image's).
+# Forcing the arithmetic canonicalises it, so the assertion compares values
+# rather than the two jqs' formatting.
+actor_usd() { jq -r --arg a "$1" '.counts.by_actor[] | select(.actor==$a) | .usd + 0' <<<"$kdata"; }
+
+assert_eq "each stage's cost is attributed to its own actor" "2" "$(actor_usd implementor)"
+assert_eq "including the Enabler, which no cycle total counts" "0.5" "$(actor_usd enabler)"
+# The one attribution that is not the filename verbatim: a review's transcript
+# is `reviewer-<repo>.out`, and reading it as a second Reviewer would merge two
+# different agents on two different schedules into one bar.
+assert_eq "a review is the Project Reviewer, not a second Reviewer" "4" "$(actor_usd project-reviewer)"
+assert_eq "and the cycle Reviewer keeps its own figure" "0.75" "$(actor_usd reviewer)"
+assert_eq "the actors sum to the total, so the chart accounts for every dollar" \
+  "7.5" "$(jq -r '.counts.spend_total_usd + 0' <<<"$kdata")"
+assert_eq "and the review's spend reaches the by-model roll-up too" "6.75" \
+  "$(jq -r '.counts.by_model[] | select(.model=="model-b") | .usd + 0' <<<"$kdata")"
+assert_eq "the chart is ordered by spend, largest first" "true" \
+  "$(jq -r '[.counts.by_actor[].usd] | . == (sort | reverse)' <<<"$kdata")"
+
+# --- What each node is running ---------------------------------------------------
+# A peer publishes no container, so its version is knowable only because its
+# heartbeat carries one. A peer that predates that (or a node whose image has no
+# stamp and no checkout) must read as *unknown* rather than inherit ours — the
+# fleet's "behind" marker compares these, and a wrong answer here would either
+# invent a skew or hide one.
+vh="$(new_home nodeV)"
+vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
+vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
+mkdir -p "$vpeer" "$vold"
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false}}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
+printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
+run_publish "$vh" NODE_NAME=nodeV-self
+vdata="$(data_of "$vh")"
+node_version() { jq -r --arg n "$1" --arg k "$2" '.fleet.nodes[] | select(.node==$n) | .version[$k]' <<<"$vdata"; }
+
+assert_eq "a peer's version comes from its heartbeat" "88" "$(node_version peerV pr)"
+assert_eq "with the commit that was built" "aa53d62" "$(node_version peerV short)"
+assert_eq "a peer that publishes none reports none, not ours" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .version' <<<"$vdata")"
+assert_eq "and this node answers for itself" "1" \
+  "$(jq '[.fleet.nodes[] | select(.self) | has("version")] | length' <<<"$vdata")"
+
+# --- The pull-request index ------------------------------------------------------
+# Every `#number` on the page resolves to a record here. Two properties are what
+# make that affordable at the heartbeat's cadence, and neither leaves a trace
+# when it breaks — a re-fetched entry renders exactly like a cached one, so the
+# only symptom of losing either is an API bill and a publish that overruns its
+# window. Driven through DASHBOARD_GH_CMD, so asserting on a GitHub tick costs
+# no network call.
+x="$(new_home nodeX)"
+gh_calls="$tmp_dir/gh-calls"
+gh_stub="$tmp_dir/stub-gh.sh"
+cat > "$gh_stub" <<'STUB'
+#!/usr/bin/env bash
+# Stands in for `gh`: records the call, then answers the Publisher's queries.
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "$1 $2" in
+  "pr list")   printf '[]' ;;
+  "issue list") printf '[]' ;;
+  "run list")  printf '[]' ;;
+  "pr view")
+    # `pr view <n> -R <slug> --json …`; every fixture PR is merged, so the
+    # Publisher must never ask for one of them twice.
+    printf '{"number":%s,"title":"a merged change","url":"https://github.com/%s/pull/%s","state":"MERGED","isDraft":false,"createdAt":"2026-07-20T00:00:00Z","mergedAt":"2026-07-21T00:00:00Z","closedAt":"2026-07-21T00:00:00Z","mergeCommit":{"oid":"1234567890abcdef"},"author":{"login":"someone"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"APPROVED","baseRefName":"main"}' \
+      "$3" "$5" "$3" ;;
+  "api "*)
+    case "$3" in
+      *default_branch*) printf 'main' ;;
+      *) exit 1 ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$gh_stub"
+
+# Three cycles whose PRs are recorded the way the pipeline records them (a log
+# event carrying pr_url), and a peer running a fourth. The peer's is the case
+# the open-PR query can never cover: the version a container runs is a merged
+# pull request by construction.
+xlog="$x/.local/state/poetic-agents/log.jsonl"
+: > "$xlog"
+for n in 201 202 203; do
+  cid="${today_day}T0${n:2:1}0000Z-nodeX-$n"
+  make_stage "$x" "$cid" coordinator 0.1 model-a
+  printf '{"ts":"2026-07-26T0%s:00:00Z","cycle":"%s","node":"nodeX-self","event":"pr-raised","repo":"Poetic-Poems/poetic","pr_url":"https://github.com/Poetic-Poems/poetic/pull/%s"}\n' \
+    "${n:2:1}" "$cid" "$n" >> "$xlog"
+done
+xpeer="$x/.cache/poetic-agents/workspaces/.agent-ops-peers/peerX"
+mkdir -p "$xpeer"
+printf '{"node":"peerX","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false}}\n' \
+  "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$xpeer/heartbeat.json"
+
+run_gh_publish() {  # a full (stubbed) GitHub tick
+  env HOME="$x" NODE_NAME=nodeX-self GH_CALL_LOG="$gh_calls" \
+      DASHBOARD_GH_CMD="$gh_stub" "$PUBLISH" >/dev/null 2>&1
+}
+
+: > "$gh_calls"
+run_gh_publish
+assert_eq "a GitHub publish exits 0 against the stub" "0" "$?"
+xdata="$(data_of "$x")"
+assert_eq "a cycle's pull request is indexed" "a merged change" \
+  "$(jq -r '.github.pr_index["Poetic-Poems/poetic#201"].title' <<<"$xdata")"
+assert_eq "with the merge commit, abbreviated for reading" "1234567" \
+  "$(jq -r '.github.pr_index["Poetic-Poems/poetic#201"].merge_commit' <<<"$xdata")"
+assert_eq "and its labels, for the card" "autonomous-agent" \
+  "$(jq -r '.github.pr_index["Poetic-Poems/poetic#201"].labels[0]' <<<"$xdata")"
+assert_eq "the version a node runs is indexed too, though no open-PR query names it" \
+  "MERGED" "$(jq -r '.github.pr_index["Poetic-Poems/agent-ops#88"].state' <<<"$xdata")"
+# Asserted by membership, not by count: this node's own version contributes a
+# reference too (whatever pull request the checkout under test last merged), and
+# a count would then be a test of this repository's git history.
+assert_eq "every reference on the page resolves" "true" \
+  "$(jq -r '.github.pr_index
+            | has("Poetic-Poems/poetic#201") and has("Poetic-Poems/poetic#202")
+              and has("Poetic-Poems/poetic#203") and has("Poetic-Poems/agent-ops#88")' <<<"$xdata")"
+idx_n="$(jq '.github.pr_index | length' <<<"$xdata")"
+
+# The property that keeps this free: a merged pull request never changes, so a
+# warm index spends nothing. Without it, every tick re-reads every number on the
+# page — invisibly, because the result is identical.
+assert_eq "a cold index reads each referenced pull request once, never twice" \
+  "$(grep -c '^pr view' "$gh_calls")" "$(grep '^pr view' "$gh_calls" | sort -u | wc -l)"
+: > "$gh_calls"
+run_gh_publish
+assert_eq "and a warm one re-reads none of them" "0" "$(grep -c '^pr view' "$gh_calls")"
+assert_eq "while still serving them all" "$idx_n" \
+  "$(jq '.github.pr_index | length' <<<"$(data_of "$x")")"
+
+# A --no-github tick carries the index forward like every other GitHub-sourced
+# panel; blanking it would empty every hover card on the page between fetches.
+run_publish "$x" NODE_NAME=nodeX-self
+assert_eq "a local-only tick carries the index forward" "$idx_n" \
+  "$(jq '.github.pr_index | length' <<<"$(data_of "$x")")"
+
+# And the cold-start bound: forty references at up to GH_TIMEOUT each would not
+# fit in the heartbeat's window, so a tick fills a few and the rest wait.
+y="$(new_home nodeY)"
+ylog="$y/.local/state/poetic-agents/log.jsonl"
+: > "$ylog"
+i=0
+while (( i < 12 )); do
+  cid="${today_day}T09$(printf '%04d' "$i")Z-nodeY-$i"
+  make_stage "$y" "$cid" coordinator 0.1 model-a
+  printf '{"ts":"2026-07-26T09:00:00Z","cycle":"%s","node":"nodeY-self","event":"pr-raised","repo":"Poetic-Poems/poetic","pr_url":"https://github.com/Poetic-Poems/poetic/pull/3%02d"}\n' \
+    "$cid" "$i" >> "$ylog"
+  i=$(( i + 1 ))
+done
+: > "$gh_calls"
+env HOME="$y" NODE_NAME=nodeY-self GH_CALL_LOG="$gh_calls" \
+    DASHBOARD_GH_CMD="$gh_stub" "$PUBLISH" >/dev/null 2>&1
+y_views="$(grep -c '^pr view' "$gh_calls")"
+assert_eq "a cold index is filled a few references a tick, not all at once" \
+  "1" "$(( y_views <= 8 ))"
+assert_eq "and it does make progress" "1" "$(( y_views > 0 ))"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
