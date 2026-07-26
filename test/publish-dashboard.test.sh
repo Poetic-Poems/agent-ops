@@ -430,6 +430,26 @@ assert_eq "and the node's own row agrees" "false" "$(node_live nodeF-self runnin
 assert_eq "falling back to its newest cycle" "${today_day}T051000Z-nodeF-self-skipped" \
   "$(node_live nodeF-self cycle)"
 
+# `status.last_cycle` is the newest cycle that FINISHED, not the newest that
+# started. Both readers want a completed one — the headers date it by
+# `ended_at` and the node cards badge it by `outcome` — so a cycle-start with
+# no end must not take the slot: it would date the fleet's last activity with a
+# null (rendered "—") and label it with the outcome ladder's floor. Here the
+# newest cycle in the union is peer1's, which is mid-flight, so the field must
+# skip past it to the newest one that logged `cycle-end`.
+printf '{"ts":"2026-01-01T06:00:00Z","cycle":"%sT060000Z-peer1-99","node":"peer1","event":"cycle-start"}\n' \
+  "$today_day" >> "$peer/log.jsonl"
+run_publish "$f" NODE_NAME=nodeF-self
+fdata="$(data_of "$f")"
+assert_eq "the newest cycle overall is the unfinished one" "${today_day}T060000Z-peer1-99" \
+  "$(jq -r '.cycles[0].id' <<<"$fdata")"
+assert_eq "but last_cycle skips it for the newest that ended" "${today_day}T051000Z-nodeF-self-skipped" \
+  "$(jq -r '.status.last_cycle.id' <<<"$fdata")"
+assert_eq "so the field it is dated by is never null" "2026-01-01T05:10:02Z" \
+  "$(jq -r '.status.last_cycle.ended_at' <<<"$fdata")"
+assert_eq "and the outcome is a real verdict, not the ladder's floor" "skipped" \
+  "$(jq -r '.status.last_cycle.outcome' <<<"$fdata")"
+
 # A node that has never run a cycle has no live state at all — null, not a
 # fabricated idle record. (`live` is absent from the page's reading of it.)
 g="$(new_home nodeG)"

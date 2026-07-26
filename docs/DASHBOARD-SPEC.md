@@ -232,7 +232,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   config:  { models, timeouts, pr_label, branch_prefix, repos, … },
   status:  { running, lock:{pid,started_at,alive},          // THIS node's lock
              current:{stage,repo,item,source,title},
-             last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest
+             last_cycle:{id,node,ended_at,outcome,repo,item,title},  // the FLEET's newest FINISHED
              limit:{active,note}, switch:{…} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd, by_day[], by_model[] },
@@ -436,7 +436,9 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   whose cycle ended reports idle and when, a node that has never run reports
   `live: null`, and our own row comes from the lock rather than the newest
   `cycle-start` (a tick that started, found the lock held and ended must not
-  masquerade as what this node is doing).
+  masquerade as what this node is doing). With the fleet's newest cycle
+  unfinished, `status.last_cycle` skips past it to the newest that logged
+  `cycle-end`, so the field the headers date it by is never null.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -565,6 +567,19 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   Nothing is lost by dropping the mid-flight rungs: how far a running cycle
   has got is what the Item, Stages and PR cells beside it already show, and
   they show it without asserting that it stopped there.
+
+  `status.last_cycle` is the same mistake one field over, and is fixed the same
+  way: it means "the last cycle the fleet ran, and how it went", both readers
+  take a finished cycle for granted — the headers date it by `ended_at`, the
+  node cards badge it by `outcome` — and it was nonetheless filled with the
+  newest cycle-start, finished or not. So an unfinished newest cycle dated the
+  fleet's last activity with a null, which `fmtAgo` renders as an em-dash:
+  "last cycle — ago". It now selects the newest cycle carrying an `ended_at`,
+  and is null when none has, which the headers already render as no last-cycle
+  clause at all. The general rule both cases are instances of: **a field whose
+  readers assume a finished cycle must select for one**, because every cycle
+  list on this page is newest-first and the newest is exactly the one most
+  likely to still be running.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape
