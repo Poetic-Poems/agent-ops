@@ -329,8 +329,10 @@ Three things worth knowing:
 
 - **Disabling stops the *next* cycle, not one already running.** `--status`
   tells you whether a cycle is in flight, and `--disable` warns you if there
-  is. Wait for it to finish before rolling a new image onto the node — a
-  watchtower roll or a manual `up -d` kills a cycle mid-flight (`TD26072301`).
+  is. Wait for it to finish before recreating a container by hand — a manual
+  `up -d` (or `restart`, or `down`) kills a cycle mid-flight. A watchtower
+  roll no longer does: its pre-update hook reads the same locks `--status`
+  reads and defers the roll until they are free.
 - **A disable expires by default.** The point is not tidiness: an agent that
   disables the pipeline and then dies would otherwise stop every future cycle
   silently — "no PRs" looks exactly like a quiet week. The TTL turns a
@@ -987,13 +989,14 @@ editing.
 
 Because rollout is where the care has moved to: every merge to `main` builds
 and publishes a new image, and every node on the `auto-update` profile
-restarts into it within watchtower's poll interval (about five minutes) —
-killing any cycle that happens to be mid-flight (`TD26072301` in
-`TECH-DEBT.md`; the stale-lock takeover and the claim GC tidy up behind it,
-but an Implementor's half-finished work dies with the roll). For routine
-changes that risk is accepted. For a change that touches cycle state, claims,
-or the state-sync format, stand the fleet down first, merge, watch the roll,
-then resume — the switch works from any node:
+restarts into it within watchtower's poll interval (about five minutes). The
+roll waits for a cycle rather than killing one — watchtower's pre-update hook
+(`deploy/docker/watchtower-pre-update.sh`) exits 75 while either pipeline's
+lock is held, so the update slides to the next poll and keeps sliding until
+the node is idle. What that does *not* buy you is any say over *which* image a
+node lands on, or over the order several nodes land in. So for a change that
+touches cycle state, claims, or the state-sync format, stand the fleet down
+first, merge, watch the roll, then resume — the switch works from any node:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --disable "rolling out PR #NN"
@@ -1059,8 +1062,9 @@ obeys), so it is the wrong tool for taking a single node aside. Per node:
 One caution before any *manual* `docker compose up -d` on a live node: after
 a watchtower roll, compose's recorded config-hash no longer matches, so
 `up -d` recreates the scheduler even when nothing in the compose file
-changed — killing a running cycle exactly as a roll does. Run `--status`
-first and let a cycle in flight finish.
+changed — killing a running cycle. The pre-update hook cannot save you here:
+it is watchtower that consults it, and a hand-typed `up -d` asks nobody. Run
+`--status` first and let a cycle in flight finish.
 
 ### How a change propagates — and what survives it
 

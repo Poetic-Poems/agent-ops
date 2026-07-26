@@ -132,8 +132,11 @@ Kubernetes cluster from published manifests/chart; scale-to-zero is
 demonstrated (no idle compute cost between ticks).
 
 - [ ] Graceful drain: a shutting-down node finishes or hands off its
-      in-flight cycle before exiting, retiring the mid-flight-kill hazard
-      (`TD26072301`). *[interactive]*
+      in-flight cycle before exiting. The auto-update case is already
+      retired — watchtower's pre-update hook defers a roll while a cycle
+      holds either lock — but that only covers the roll. A drain covers
+      every other way a container goes away: a manual `up -d`, `restart`,
+      `down`, a host reboot, an evicted pod. *[interactive]*
 - [ ] Secrets-based provisioning: tokens and API keys arrive as
       secrets/environment, never via `exec` logins into a running
       container. *[fleet]*

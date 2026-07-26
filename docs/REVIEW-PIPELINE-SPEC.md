@@ -184,7 +184,12 @@ R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID and
    same held/stale/dead logic as requirement 1, using
    `review.lock_stale_after`: skip cleanly if a live review is younger than the
    threshold; take over a stale or dead lock, killing its process group and
-   logging a `warning`.
+   logging a `warning`. The lock has a second reader on a containerised node:
+   `deploy/docker/watchtower-pre-update.sh` consults it, on the same
+   held-and-fresh test and the same `review.lock_stale_after`, to defer an
+   image roll that would otherwise kill a review mid-flight (see the node
+   stack section of `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). A review is
+   protected exactly as long as it would keep the lock against another review.
 
 R3. **Stand-down checks.** Each logs its reason and exits 0:
    1. *Usage-limit cooldown* — identical to requirement 2.1: the log

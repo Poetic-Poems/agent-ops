@@ -287,8 +287,8 @@ assert_eq "a publish that never stamps still only gets one GitHub tick a window"
   "1" "$(grep -c '^github$' "$tick_log")"
 
 # --- A log holed by an unclean stop --------------------------------------------
-# A container killed mid-append leaves NULs where the last writes should be
-# (TD26072301). One NUL makes the whole file binary to grep, which then stops
+# A container killed mid-append leaves NULs where the last writes should be.
+# One NUL makes the whole file binary to grep, which then stops
 # printing matches for everything around it — so the damage is not the lost
 # lines but every later read of the 8 MB that survived.
 launcher_log="$l/.local/state/poetic-agents/dashboard.log"

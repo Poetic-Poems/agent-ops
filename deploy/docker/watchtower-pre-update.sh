@@ -1,0 +1,131 @@
+#!/usr/bin/env bash
+#
+# deploy/docker/watchtower-pre-update.sh — make an image roll wait for the
+# cycle it would otherwise kill.
+#
+# Updating a container means destroying it and creating a new one, and
+# destroying the scheduler kills the process group its cycle runs in: an
+# Implementor dies mid-edit, its clone is orphaned under `workspace_root`, and
+# any branch or draft pull request it had already pushed is left behind. The
+# pipeline itself heals — the lock is taken over as stale on a later tick and
+# the claim GC releases what the dead cycle held — but nothing cleans up that
+# debris, and the half-finished work is simply lost.
+#
+# So the roll waits instead. watchtower runs this script *inside* the container
+# it is about to update (`docker exec`, via `sh -c`) and reads its exit status:
+#
+#   exit 75  (EX_TEMPFAIL) — cancel this container's update; try again on the
+#            next poll. Nothing is lost: the newer image is still in the
+#            registry and the next poll finds it.
+#   exit 0   — nothing is running here; roll away.
+#
+# "Running" is deliberately the *same* judgement `acquire_lock` makes in
+# agent-cycle.sh and review-cycle.sh: a lock file naming a live pid, younger
+# than that pipeline's `lock_stale_after`. Taking only "live pid" would let one
+# wedged process veto every update for as long as it survived; bounding it by
+# the same staleness the next cycle uses means the hook can never defer past
+# the point where a cycle would have taken the lock over anyway. The worst case
+# is therefore `lock_stale_after` hours of deferral, not "until somebody
+# notices this node stopped updating".
+#
+# Both pipelines count. agent-cycle.sh holds `lock.json` and review-cycle.sh
+# holds `review-lock.json`, and either dying to a roll costs the same.
+#
+# The judgement is reimplemented here rather than sourced from lib/toggle.sh on
+# purpose: this is the one script in the tree that runs from outside the
+# pipeline, on a container that is about to be destroyed, and its answer must
+# not depend on anything more than bash, jq and config.json.
+#
+# Requires `WATCHTOWER_LIFECYCLE_HOOKS=true` on the watchtower service and the
+# `com.centurylinklabs.watchtower.lifecycle.pre-update` label on each container
+# to be protected — both in deploy/docker/compose.yaml.
+#
+# Usage: watchtower-pre-update.sh [CONFIG_FILE]   (the argument is for tests;
+# watchtower invokes it bare and it defaults to /app/config.json).
+
+set -uo pipefail
+
+# Everything goes to stdout: it is the exec stream watchtower logs, and it is
+# the only trace a deferral leaves. `docker compose logs watchtower` is where
+# an operator wondering why a node has not taken the new image should look.
+say() { printf 'watchtower-pre-update: %s\n' "$*"; }
+
+# sysexits.h. watchtower singles this code out as a *deliberate* deferral, and
+# logs it as such. Read the source before assuming the rest: every other
+# non-zero status cancels the update too, just noisily, as a hook that failed.
+# Which is why nothing below ever exits non-zero except on purpose — see the
+# fail-open branches.
+EX_TEMPFAIL=75
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+CONFIG_FILE="${1:-$SCRIPT_DIR/config.json}"
+
+# Fail open, loudly. Both of these are baked into the image, so neither can
+# realistically be missing — but if one somehow is, a node that stops updating
+# for ever is a worse and far quieter failure than a roll that lands badly
+# once, and watchtower's own behaviour on a hook it cannot run is the same.
+if ! command -v jq >/dev/null 2>&1; then
+  say "WARNING: jq is not on PATH — cannot read the locks, so allowing the update"
+  exit 0
+fi
+if [[ ! -r "$CONFIG_FILE" ]]; then
+  say "WARNING: cannot read $CONFIG_FILE — cannot locate the locks, so allowing the update"
+  exit 0
+fi
+
+expand_home() {
+  local p="$1"
+  [[ "$p" == "~"* ]] && p="$HOME${p:1}"
+  printf '%s\n' "$p"
+}
+
+state_dir="$(expand_home "$(jq -r '.state_dir // "~/.local/state/poetic-agents"' "$CONFIG_FILE")")"
+
+cycle_stale_after="$(jq -r '.lock_stale_after // 4' "$CONFIG_FILE")"
+review_stale_after="$(jq -r '.review.lock_stale_after // 6' "$CONFIG_FILE")"
+[[ "$cycle_stale_after"  =~ ^[0-9]+$ ]] || cycle_stale_after=4
+[[ "$review_stale_after" =~ ^[0-9]+$ ]] || review_stale_after=6
+
+# held_by LOCK_FILE STALE_AFTER_HOURS
+# Print a one-line description if LOCK_FILE is held by a live process that a
+# cycle would still respect; print nothing otherwise. Always succeeds.
+#
+# An unparseable `started_at` reads as epoch 0 and so as impossibly old, which
+# is exactly what acquire_lock does with it: a lock whose age cannot be
+# established is one the next cycle would take over, and this hook must not
+# protect what the pipeline itself would not.
+held_by() {
+  local f="$1" stale_after_hours="$2" pid started_at started_epoch now_epoch age_sec
+  [[ -f "$f" ]] || return 0
+  pid="$(jq -r '.pid // empty' "$f" 2>/dev/null || true)"
+  started_at="$(jq -r '.started_at // empty' "$f" 2>/dev/null || true)"
+  [[ "$pid" =~ ^[0-9]+$ ]] || return 0
+  kill -0 "$pid" 2>/dev/null || return 0
+  started_epoch="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"
+  now_epoch="$(date +%s)"
+  age_sec=$(( now_epoch - started_epoch ))
+  (( age_sec < stale_after_hours * 3600 )) || return 0
+  printf 'pid %s since %s, %ss old' "$pid" "${started_at:-unknown}" "$age_sec"
+}
+
+defer=0
+
+held="$(held_by "$state_dir/lock.json" "$cycle_stale_after")"
+if [[ -n "$held" ]]; then
+  say "an implementation cycle is in flight ($held) — deferring this update"
+  defer=1
+fi
+
+held="$(held_by "$state_dir/review-lock.json" "$review_stale_after")"
+if [[ -n "$held" ]]; then
+  say "a project review is in flight ($held) — deferring this update"
+  defer=1
+fi
+
+if (( defer )); then
+  say "exit $EX_TEMPFAIL: watchtower will re-check on its next poll"
+  exit "$EX_TEMPFAIL"
+fi
+
+say "no cycle in flight — the update may proceed"
+exit 0

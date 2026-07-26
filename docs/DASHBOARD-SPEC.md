@@ -359,7 +359,7 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   whatever the final tick's lock bookkeeping happened to return
   (`LAUNCHER_WINDOW` shortens the window, and `LAUNCHER_PUBLISH_CMD` swaps in
   a stub Publisher, for the test suite only). Each window also opens by
-  repairing its own log: a container killed mid-append (TD26072301) leaves the
+  repairing its own log: a container killed mid-append leaves the
   file's size recorded with the last writes' data blocks missing, and they read
   back as NULs. The lost lines are lost, but one NUL makes the whole file
   binary, and grep then stops printing matches for every intact line around it
@@ -616,7 +616,7 @@ spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
   with no end, for ever. Our own row is exempt from all three — the lock is a
   live pid, not an inference — but it gets the mirror-image case: a dead lock
   over an unfinished cycle is reported as **no clean end**, which is what a
-  stopped container leaves behind (TD26072301) and which "idle" would quietly
+  stopped container leaves behind and which "idle" would quietly
   absorb.
 - **The page refreshes its data in place, not by reloading.** The heartbeat
   once published every 5 minutes and the page reloaded itself every 60s with

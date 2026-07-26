@@ -163,7 +163,31 @@ file and carries placeholders only; `.env` itself is never committed.
   legacy SysV dashboard does.
 - **`watchtower`** (profile `auto-update`) — how a node picks up new code: it
   polls for a new image tag and restarts the services into it. Enabled by
-  label, so it touches this stack's containers and no others on the host.
+  label, so it touches this stack's containers and no others on the host. It
+  runs with `WATCHTOWER_LIFECYCLE_HOOKS` on, and `WATCHTOWER_SCHEDULE` exists
+  as an alternative to `WATCHTOWER_POLL_INTERVAL` for a node that would rather
+  roll at a fixed time than poll — the two are mutually exclusive and
+  watchtower exits fatally if given both, so setting the schedule means
+  clearing the interval.
+- **A roll defers to a running cycle.** Recreating a container kills the
+  process group its cycle runs in, so before watchtower touches any agent-ops
+  container it runs `deploy/docker/watchtower-pre-update.sh` inside it (the
+  `com.centurylinklabs.watchtower.lifecycle.pre-update` label, on the shared
+  block so every service carrying the image has it). The script exits **75**
+  (`EX_TEMPFAIL`), which watchtower reads as "cancel this container's update
+  and re-check on the next poll", whenever `lock.json` or `review-lock.json`
+  names a live process **younger than that pipeline's `lock_stale_after`** —
+  the same judgement requirement 1's `acquire_lock` makes, so the hook
+  protects exactly what a cycle would have respected and a deferral can never
+  outlast `lock_stale_after`. It exits 0 when both are free, and also on any
+  internal failure: watchtower cancels the update on *every* non-zero status,
+  not only 75, so a hook that could not answer must answer 0 or it would
+  freeze the node's image indefinitely. The label carries a
+  `pre-update-timeout` of 1 minute (watchtower's unit is minutes).
+  `test/watchtower-pre-update.test.sh` pins all of this.
+  The hook covers the automatic roll and nothing else: a manual `up -d`,
+  `restart`, `down` or host reboot recreates containers without consulting
+  watchtower, so the operating rule for those remains `--status` first.
 - Which profiles a node runs is set by `COMPOSE_PROFILES` in its `.env`, so the
   operator's command is `docker compose up -d` on every node regardless.
 - Three named volumes carry everything that must survive a container being
@@ -2081,8 +2105,9 @@ What exists, and the requirements each part answers to:
    that is to run the cycles (requirement 2.4).
 7. `deploy/docker/` — the node image and the node stack (see "The node image"
    and "The node stack" above): `Dockerfile`, `entrypoint.sh`, `crontab` and the
-   minimal `claude-settings.json` seed; `compose.yaml`, `ts-serve.json` and
-   `.env.example`; and the node runbook `deploy/docker/README.md` with the
+   minimal `claude-settings.json` seed; `compose.yaml`, `ts-serve.json`,
+   `watchtower-pre-update.sh` (the hook that makes a roll wait for a running
+   cycle) and `.env.example`; and the node runbook `deploy/docker/README.md` with the
    unattended `cloud-init.yaml` that performs its first three steps. The
    runbook is the operator-facing counterpart to those two sections: bring-up,
    everyday commands, updating, changing a node's role, the failover drill and
@@ -2127,6 +2152,18 @@ pull request, run the ones the change touches and any it could regress.
    through the requirement 2.4 guard with `ROLE=standby`; and a second
    `up -d` reports every container `Running` without recreating one.
    `docker compose --profile tailnet config` is valid.
+1c-i. **A roll waits for a cycle.** `test/watchtower-pre-update.test.sh`
+   passes: `deploy/docker/watchtower-pre-update.sh` exits 75 while either
+   `lock.json` or `review-lock.json` names a live process inside that
+   pipeline's `lock_stale_after`, exits 0 when they are free, dead, stale or
+   unreadable, and exits 0 rather than blocking when it cannot read
+   `config.json` at all. `docker compose config` shows every service on the
+   agent-ops image carrying
+   `com.centurylinklabs.watchtower.lifecycle.pre-update` pointing at that
+   script, and `watchtower` carrying `WATCHTOWER_LIFECYCLE_HOOKS=true`.
+   On a live node: `docker compose exec scheduler
+   /app/deploy/docker/watchtower-pre-update.sh` echoes its finding and exits
+   0 when idle, 75 during a cycle.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the
