@@ -6,7 +6,7 @@ A self-hosted, unattended pipeline that automatically selects, implements, and r
 
 Once an hour:
 
-1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, merge conflicts on otherwise-ready PRs of ours, abandoned draft PRs of ours, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else, answering your review feedback comes second, rebasing a ready PR of ours that has hit a merge conflict comes third, and finishing a draft PR this system started and then abandoned comes fourth.
+1. **Co-Ordinator** (Haiku) selects at most one well-scoped item of work (security findings, review feedback, merge conflicts on otherwise-ready PRs of ours, abandoned draft PRs of ours, failed CI runs, tech-debt, issues, fiddle's implementation plan, project-review recommendations, or code-quality findings). Security work — open Dependabot alerts and security code-scanning alerts — is always prioritised ahead of everything else; an issue you have marked `Urgent` comes second; answering your review feedback comes third, rebasing a ready PR of ours that has hit a merge conflict comes fourth, and finishing a draft PR this system started and then abandoned comes fifth. Issues rank by their **`Priority`** field — `Urgent`, `High`, `Medium` (also the default when the field is unset) and `Low` each sit at a different point in the order — so triaging an issue is how you move it up or down the queue.
 2. **Implementor** (Sonnet/Haiku) clones the repo, implements the item on a feature branch, and opens a draft pull request — or, for review feedback, pushes to the existing branch of the PR you commented on.
 3. **Reviewer** (Sonnet, or Opus when the Implementor graded the work `complexity:high`) checks and corrects the implementation, then marks the PR ready for review.
 4. **Human** reviews and merges via the normal GitHub process (the only gate).
@@ -59,6 +59,37 @@ requested", the cycle restricts itself to review feedback rather than standing
 down, so it can always dig itself out. It still can't open a new PR while the
 gate is full.
 
+## Issue priority
+
+An open issue's place in the queue is its **`Priority`** field — GitHub's own
+issue field (`Urgent` / `High` / `Medium` / `Low`), set from the issue page's
+sidebar, not a label. Setting it is how you move an issue up or down against
+every *other* kind of work the pipeline could pick instead:
+
+| Priority | Where the issue is picked up |
+|---|---|
+| `Urgent` | **Second overall, across both repos** — ahead of everything except security work, including ahead of your review feedback and of finishing a stalled PR. |
+| `High` | After a red default branch, but ahead of `TECH-DEBT.md`. |
+| `Medium` | After `TECH-DEBT.md`, ahead of the implementation plan and the weekly review's recommendations. |
+| `Low` | After the review recommendations, ahead of only the automated code-quality findings. |
+
+**An issue with no `Priority` set counts as `Medium`**, which is exactly where
+all issues ranked before this existed — so an untriaged backlog behaves as it
+always has, and nothing is quietly demoted for want of triage.
+
+Three things the field does *not* do. It doesn't change how the work is done:
+an issue's band decides when it is picked up, and a `Low` issue is implemented
+and reviewed to the same standard as any other. It doesn't override the
+exclusions — an issue that is assigned, labelled `blocked`, or is really a
+question stays out of the pipeline at every priority, `Urgent` included. And it
+doesn't outrank security: an issue labelled `security` or `vulnerability` is
+security work first, whatever its `Priority`.
+
+Re-prioritising an issue is picked up on the next cycle: the band is part of
+what the no-op check watches (see [Skipping no-op cycles](#skipping-no-op-cycles)),
+so a re-triage always wakes the Co-Ordinator rather than being absorbed by a
+"nothing changed" skip.
+
 ## Handing a pull request to the pipeline
 
 The `autonomous-agent` label is what marks a pull request as the pipeline's to
@@ -93,7 +124,7 @@ Edit `config.json` before first run. Keys:
 
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes second and likewise outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes third for the same reason — a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly; `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes fourth for the same reason — finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `code-quality` (non-security code-scanning findings), which is last. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason — a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly; `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes fifth for the same reason — finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings), which is last. The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field — see "Issue priority" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change. At runtime, repos are ordered by least-recently-updated default branch first, ahead of this list order. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
@@ -466,7 +497,7 @@ work — about 2½ minutes of Haiku, reading both repos. On a quiet week that wa
 
 So before launching it, the Script fingerprints everything the Co-Ordinator's
 verdict depends on: each repo's head commit, its pre-fetched findings, its open
-issues (with labels and assignees), the conclusion of each workflow's latest
+issues (with labels, assignees and `Priority`), the conclusion of each workflow's latest
 run, its open PRs (a PR is a claim), the blocked and void lists, the selection
 config, and a hash of `prompts/coordinator.md`. If that fingerprint matches the
 one recorded against the last `none-selected`, nothing the Co-Ordinator reads

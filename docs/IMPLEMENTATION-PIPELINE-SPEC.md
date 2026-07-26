@@ -234,8 +234,8 @@ file and carries placeholders only; `.env` itself is never committed.
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. project-review recommendations · 9. code-quality findings |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 9. project-review recommendations · 10. code-quality findings |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review recommendations · 11. `issues:low` · 12. code-quality findings |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 11. project-review recommendations · 12. `issues:low` · 13. code-quality findings |
 
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
@@ -257,6 +257,35 @@ analysis, not just files in the tree:
   and higher-volume than curated tech-debt or filed issues, so they are
   picked up only when nothing more deliberate is waiting.
 
+The `issues` source is **banded by the issue's own `Priority` field**, so it
+occupies four separate ranks rather than one:
+
+- **`issues:urgent`**, **`issues:high`**, **`issues:medium`**, **`issues:low`**
+  — open GitHub issues whose organisation-level `Priority` issue field reads
+  `Urgent`, `High`, `Medium` or `Low` respectively. An issue with **no**
+  `Priority` set is **`Medium`** (requirement 15e), which is the rank the
+  single, unbanded `issues` source used to hold — so an untriaged backlog ranks
+  exactly where it always did, and setting the field is what moves an issue up
+  or down.
+
+  The four bands are one source, not four: they share the whole of the `issues`
+  source's behaviour — the exclusions of requirement 16 (assigned, `blocked`,
+  a question or discussion), the whole-thread read of requirement 14a, the bare
+  issue number as the item ref, and the work order's `"source": "issues"`
+  (requirement 21). Only the rank differs. Nothing downstream of selection can
+  tell the bands apart, which is deliberate: the band is a statement about
+  *when* the work is picked up, not about what the work is or how it is done.
+
+  The `Priority` field is GitHub's native issue field, not a label and not a
+  Projects v2 field, so it arrives on the ordinary REST issues endpoint in
+  `issue_field_values` (the entry whose `issue_field_name` is `Priority`, read
+  from its `single_select_option.name`). It is absent from `gh issue view
+  --json`, which is why requirement 15e names the REST read. An issue whose
+  `issue_field_values` is empty, or that carries no `Priority` entry, or whose
+  entry cannot be read at all, is `Medium` — the field's visibility is
+  `organization_members_only`, and a token that cannot see it must degrade to
+  today's behaviour rather than to an unranked pile.
+
 The `project-review` source draws on the weekly project-review pipeline's own
 output (see `docs/REVIEW-PIPELINE-SPEC.md`), which lands in each repo via a
 merged PR:
@@ -273,16 +302,18 @@ merged PR:
   the branch and PR so a claim (open PR) and a completion (merged PR) are both
   detectable later. The improvement prompt is the Implementor's brief and the
   recommendation's *Intended end state* is its acceptance. This source sits
-  **below tech-debt and issues** deliberately: the review already mirrors its
-  debt-shaped recommendations into `TECH-DEBT.md` (cross-referencing the
-  `R-NN`), and those curated, status-tracked entries are the primary channel —
-  the `project-review` source exists to pick up the review's remaining
-  recommendations (typically smaller improvements) that were *not* also filed
-  as tech-debt or an issue, so nothing the review surfaced is silently dropped.
-  It ranks above `code-quality` because a human-approved review recommendation
-  is more deliberate than an automated quality suggestion. A recommendation
-  whose text flags a **security concern** is security-related and so is caught
-  by "security is always prioritised" like any other security candidate.
+  **below tech-debt and `issues:medium`** deliberately: the review already
+  mirrors its debt-shaped recommendations into `TECH-DEBT.md`
+  (cross-referencing the `R-NN`), and those curated, status-tracked entries are
+  the primary channel — the `project-review` source exists to pick up the
+  review's remaining recommendations (typically smaller improvements) that were
+  *not* also filed as tech-debt or an issue, so nothing the review surfaced is
+  silently dropped. It ranks above `issues:low` and `code-quality` because a
+  human-approved review recommendation is more deliberate than either an
+  automated quality suggestion or an issue its own author has marked as the
+  least pressing thing they filed. A recommendation whose text flags a
+  **security concern** is security-related and so is caught by "security is
+  always prioritised" like any other security candidate.
 
 The `review-feedback`, `merge-conflicts` and `abandoned-drafts` sources are all
 *finishing* sources — they carry an already-open pull request the rest of the way
@@ -345,7 +376,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`, `code-quality`); structure the config so a repo or source can be added without code changes. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -825,7 +856,13 @@ runs unattended.
      transitions, since the open-PR digest below moves for a new or updated PR but
      not for time passing or a base advancing elsewhere; an issues digest
      (number, `updated_at`, labels,
-     assignee — the last two because requirement 16.4 excludes on them); a
+     assignee, `Priority` — labels and assignee because requirement 16.4
+     excludes on them, `Priority` because requirement 15e *ranks* on it and a
+     re-prioritised issue is a different verdict from the same set of issues.
+     `updated_at` is not a substitute for digesting the field itself: it is
+     GitHub's to move or not on an issue-field edit, and a ranking signal whose
+     only coverage is a timestamp somebody else owns is the "covered by
+     something else" trap this list exists to close); a
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
      issue or alert; the `blocked`/`void` extracts projected to `repo|item`, so
@@ -1063,17 +1100,21 @@ runs unattended.
     `gh api .../contents/...` (no pre-fetch — these are ordinary tracked files,
     like `TECH-DEBT.md`). A recommendation's stable ref is
     `review-<review-date>-R-NN`; the paired improvement prompt is the brief.
-15b. **Review feedback comes second, across all repos.** Like security, this
-    outranks the plain repo-then-source walk: any selectable `review_feedback`
-    candidate in any repo is taken before any non-security work elsewhere. The
+    The `issues` source appears at four ranks rather than one, banded by each
+    issue's `Priority` field — see requirement 15e.
+15b. **Review feedback comes third, across all repos.** Like security and
+    urgent issues, this outranks the plain repo-then-source walk: any selectable
+    `review_feedback` candidate in any repo is taken before any work below it
+    elsewhere. The
     human is this system's only consumer and its scarcest resource; when they
     have spent their time and asked for something specific, answering beats
     starting something new — and the work is already 90% done. The Co-Ordinator
     must **not** apply requirement 16's claim exclusion to this source: the open
     PR *is* the item, and excluding it makes every candidate permanently
     unselectable while looking entirely correct.
-15d. **Merge conflicts come third, across all repos.** After security and
-    review-feedback, and likewise outranking the plain repo-then-source walk: any
+15d. **Merge conflicts come fourth, across all repos.** After security, urgent
+    issues and review-feedback, and likewise outranking the plain
+    repo-then-source walk: any
     selectable `merge_conflicts` candidate in any repo is taken before any fresh
     work in a more-overdue repo. The PR is otherwise ready — a human is waiting to
     land it — and until the conflict is resolved nothing else on it can proceed, so
@@ -1084,8 +1125,8 @@ runs unattended.
     narrow: rebase onto the base and resolve the conflict, without completing or
     re-doing the underlying item (that is what merges the PR, and remains the
     human's call).
-15c. **Abandoned drafts come fourth, across all repos.** After security,
-    review-feedback and merge-conflicts, and likewise outranking the plain
+15c. **Abandoned drafts come fifth, across all repos.** After security, urgent
+    issues, review-feedback and merge-conflicts, and likewise outranking the plain
     repo-then-source walk: any selectable `abandoned_drafts` candidate in any repo
     is taken before any fresh work in a more-overdue repo. A previous cycle already
     implemented most of the work behind that draft, so finishing beats starting;
@@ -1105,6 +1146,56 @@ runs unattended.
     before any non-security item, with the most severe first
     (`critical` > `high` > `medium` > `low`). Repo ordering (requirement 3)
     breaks ties among security candidates of equal severity.
+15e. **Issues rank by their `Priority` field.** An open issue's band is its
+    organisation-level `Priority` issue field — `Urgent`, `High`, `Medium` or
+    `Low` — and the band is the issue's rank in the walk, as
+    `issues:urgent` / `issues:high` / `issues:medium` / `issues:low` in the
+    repo's configured `sources`:
+
+    - **`Urgent` is a global tier, second only to security.** Like
+      review-feedback, merge-conflicts and abandoned-drafts, it outranks the
+      plain repo-then-source walk: if any selectable urgent issue exists in any
+      repo, it is taken before any non-security item anywhere — including ahead
+      of the three finishing sources. Those tiers exist because finishing beats
+      starting; `Urgent` is the one signal that outranks even that, because it
+      is the human stating outright that this cannot wait, and a top band that
+      still queued behind three other tiers would not mean what it says. It
+      cannot starve the finishing sources either: back-pressure (requirement
+      2.2a) narrows the cycle to exactly those three once
+      `max_open_agent_prs` is reached, and that gate is applied to the runtime
+      input before the Co-Ordinator sees it.
+    - **`High` sits between failed-runs and tech-debt** in the per-repo walk.
+      Below a red default branch, which is repo-wide breakage that blocks every
+      other item's checks; above tech-debt, which is by construction work that
+      was already judged deferrable.
+    - **`Medium` sits between tech-debt and the implementation plan** — exactly
+      where the unbanded `issues` source ranked before this requirement existed.
+    - **`Low` sits between project-review and code-quality**: still a human's
+      filed, deliberate request, so above the automated quality suggestions, but
+      below the review recommendations a human approved without marking them
+      least-pressing.
+
+    **An issue with no `Priority` set is `Medium`.** The default is not
+    "unranked" and never "lowest": an untriaged backlog must behave exactly as
+    it did before banding existed, so that setting the field is what moves an
+    issue and leaving it alone changes nothing.
+
+    The Co-Ordinator reads the band from the REST issues endpoint
+    (`gh api repos/<slug>/issues?state=open`), whose payload carries
+    `issue_field_values`; the band is the `single_select_option.name` of the
+    entry whose `issue_field_name` is `Priority`. `gh issue view --json` does
+    not expose issue fields, so it is not an alternative here. Anything that is
+    not one of the four names — absent, empty, unreadable by this token, or a
+    value the organisation added later — is `Medium`, which keeps an
+    unrecognised or invisible field a no-op rather than a re-ranking.
+
+    Banding changes rank and nothing else. Within a band, candidates are
+    evaluated oldest issue first, and every other rule that applies to an issue
+    applies unchanged: requirement 14a's whole-thread read, requirement 16's
+    exclusions, requirement 15a (a `security`-labelled issue is security work
+    whatever its band, including a `Low` one), the bare issue number as the item
+    ref, and `"source": "issues"` in the work order (requirement 21) —
+    downstream consumers never see the band.
 16. Excludes from candidacy any item that is:
     - recorded as blocked in the shared log (an `attempt-failed` event not
       followed by an `unblocked` event for that item);
@@ -1289,7 +1380,9 @@ runs unattended.
     deterministic, so every node derives the same claim key. `source` is one of
     `security`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`,
     `failed-runs`, `tech-debt`, `issues`, `implementation-plan`, `project-review`,
-    or `code-quality`. For a
+    or `code-quality` — an issue is `issues` whichever band it was selected from
+    (requirement 15e); the `issues:<band>` tokens exist only in `sources`, to
+    place the source in the walk, and never in a work order. For a
     `review-feedback` entry, `item` is its `ref`, `branch` is the PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
     `context` must paste the entry's `body` **verbatim** — it is a human's
@@ -2115,7 +2208,11 @@ What exists, and the requirements each part answers to:
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
-   false` if any of it could not be fetched cleanly. Never exits non-zero — a
+   false` if any of it could not be fetched cleanly. The issues digest carries
+   each issue's `Priority` band (requirement 15e), resolved the same way the
+   Co-Ordinator resolves it — unset or unrecognised reads as `Medium` — so a
+   re-prioritised issue busts the fingerprint and a missing field does not.
+   Never exits non-zero — a
    cost-control feature must not become a reliability risk — but must not
    pretend a failed call is an empty result either (see requirement 3b). Must
    pass `shellcheck`.
@@ -2275,6 +2372,17 @@ pull request, run the ones the change touches and any it could regress.
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule is regression-tested in
    `test/merge-conflicts.test.sh`.
+2d. **Issue priority is read, defaulted and fingerprinted.**
+   `test/issue-priority.test.sh` passes: against a stubbed issues endpoint,
+   `scripts/gather-source-state.sh` bands each issue by its `Priority` issue
+   field; an issue with no `issue_field_values`, with values but no `Priority`
+   entry, or with a `Priority` the organisation added later reads as `Medium`;
+   pull requests are still dropped from the digest; and the no-op fingerprint
+   (`lib/noop-skip.sh`) differs between two samples that are identical except
+   for one issue's band, so re-prioritising an issue always buys a Co-Ordinator
+   run. Against the real API,
+   `scripts/gather-source-state.sh Poetic-Poems/poetic-fiddle main` prints
+   `ok: true` with a `p` on every issue.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning.
@@ -2627,7 +2735,8 @@ requirements above, which state only what is.
   human notices. Rather than rely on that, the `abandoned-drafts` source
   (requirement 3e) treats a draft this system raised, still open and untouched for
   `abandoned_draft_after_hours`, as selectable work — the pipeline finishes its own
-  stalled drafts. It ranks third, after security and review-feedback and ahead of
+  stalled drafts. It ranks fifth, after security, urgent issues, review-feedback
+  and merge-conflicts, and ahead of
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
   silted with a dead draft into a PR a human can merge; under back-pressure it is
   one of the three
@@ -2645,7 +2754,8 @@ requirements above, which state only what is.
   a back-pressure slot nothing will clear. The `merge-conflicts` source
   (requirement 3g) treats such a PR — open, non-draft, ours, `mergeable`
   definitively `CONFLICTING` — as selectable work: the pipeline rebases and
-  resolves its own conflicts. It ranks third, after security and review-feedback
+  resolves its own conflicts. It ranks fourth, after security, urgent issues and
+  review-feedback,
   and ahead of all fresh work (requirement 15d): a human is waiting to land it and
   nothing else on it can proceed first; under back-pressure it is one of the three
   finishing sources the cycle narrows to (requirement 2.2a). It deliberately does
@@ -2657,6 +2767,30 @@ requirements above, which state only what is.
   the no-op fingerprint verbatim so the conflict appearing still wakes the pipeline
   (requirement 3b), the same fix abandoned-drafts needs for its clock-based
   candidacy.
+- **An issue's `Priority` is a rank, not a label — so the source is banded, not
+  sorted.** Issues were a single rank in the walk, which meant the only way a
+  human could say "this one first" was to file it as something else. GitHub's
+  native `Priority` issue field already says it; requirement 15e simply makes
+  the walk obey. The banding is expressed as four `issues:<band>` tokens in the
+  repo's `sources` rather than as a sort *within* the issues source, because the
+  ranking question is not "which issue first" but "an issue against a tech-debt
+  row, a red `main`, a review recommendation" — a question a within-source sort
+  cannot answer, and one the ordered `sources` list already answers for every
+  other source. Keeping the ordering in config also keeps re-ranking a
+  config-only change, which is what that list is for.
+
+  Three placement choices carry the design. `Urgent` outranks even the finishing
+  sources because a top band that still queued behind three tiers would not mean
+  what it says, and back-pressure (requirement 2.2a) already guarantees it cannot
+  starve them — once the open-PR ceiling is hit the cycle sees *only* the
+  finishing sources. `Medium` is the unset default *and* sits exactly where the
+  unbanded source used to, so an untriaged backlog is unmoved by this change and
+  triage is the only thing that reorders anything: a default of "lowest" would
+  have silently demoted every existing issue the day this landed, which is a
+  re-prioritisation nobody asked for dressed as a default. And the band is
+  dropped at the work order (requirement 21) because it is a statement about
+  when work is picked up, not about what the work is — carrying it downstream
+  would invite an Implementor or Reviewer to treat `Low` as licence to do less.
 - **The Reviewer's model follows the Implementor's ex-post complexity
   self-assessment** (requirements 26a and 8a), not the Co-Ordinator's ex-ante
   classification. Complexity routinely reveals itself only during

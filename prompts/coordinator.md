@@ -58,7 +58,9 @@ heading, the Script gives you one JSON object:
   sources, already in priority order (see "Target repositories" below for
   the fixed default this is drawn from — trust what's actually in this
   input over the table if the two ever disagree, since `config.json` is the
-  live source of truth).
+  live source of truth). One source appears more than once: `issues` is listed
+  as `issues:urgent`, `issues:high`, `issues:medium` and `issues:low`, the same
+  source at four ranks — see "Issue priority" below.
 - Each entry's `review_feedback` is the repo's PRs awaiting our reply to a
   human's review, **already fetched, filtered and assembled for you** by the
   Script (see "Review feedback" below). An empty array means no human is
@@ -165,13 +167,20 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. project-review · 9. code-quality |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **review-feedback** · 3. **merge-conflicts** · 4. **abandoned-drafts** · 5. failed Actions runs on `main` · 6. `TECH-DEBT.md` · 7. open GitHub issues · 8. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 9. project-review · 10. code-quality |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review · 11. `issues:low` · 12. code-quality |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 11. project-review · 12. `issues:low` · 13. code-quality |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
   `source: "security"`). Always first, and prioritised even beyond that — see
   "Security is always prioritised" below.
+- **`issues:urgent` / `issues:high` / `issues:medium` / `issues:low`** — open
+  GitHub issues, split across four ranks by each issue's **`Priority`** field.
+  They are one source at four positions, not four sources: everything else about
+  an issue — how you read it, what excludes it, what you put in the work order —
+  is identical in every band. See "Issue priority" below for how to read the
+  field and what the bands mean. `issues:urgent` also outranks the plain walk
+  across all repos, second only to security.
 - **project-review** — the prioritised recommendations from the **most recent**
   weekly project review, which lives on the default branch under
   `reviews/project-review-YYYY-MM-DD/`. Read that folder's
@@ -215,6 +224,10 @@ sensible order (e.g. most severe security finding first; oldest/most-blocking
 failed run first; lowest tech-debt ID first; oldest issue first; earliest
 unblocked milestone task first).
 
+An `issues:<band>` entry in `sources` is the issues source at that rank: when
+you reach it, its candidates are the open issues in that `Priority` band and no
+others (see "Issue priority" below).
+
 **Security is always prioritised.** This is the one rule that overrides the
 plain repo-then-source walk. If *any* selectable security-related candidate
 exists anywhere across all repos, you select one of those before any
@@ -231,34 +244,43 @@ Among security candidates, take the most severe first
 (`critical` > `high` > `medium` > `low`; the pre-fetched `findings` are
 already sorted this way), and use repo order (given) to break ties. Only once
 no selectable security candidate remains do you fall back to the ordinary
-repo-then-source walk for the rest (review-feedback → merge-conflicts →
-abandoned-drafts → failed-runs → tech-debt → issues → implementation-plan →
-project-review → code-quality).
+repo-then-source walk for the rest (urgent issues → review-feedback →
+merge-conflicts → abandoned-drafts → failed-runs → high issues → tech-debt →
+medium issues → implementation-plan → project-review → low issues →
+code-quality).
 
-**Review feedback comes second, across all repos.** Like security, this
-outranks the plain repo-then-source walk: if any selectable `review_feedback`
-candidate exists in *any* repo, take it before any non-security work in a
-more-overdue repo. A human has already spent their time on that PR and asked
+**Urgent issues come second, across all repos.** An open issue whose `Priority`
+is `Urgent` outranks the plain repo-then-source walk exactly as security does:
+if any selectable urgent issue exists in *any* repo, take it before any
+non-security item anywhere — ahead of review feedback, merge conflicts and
+abandoned drafts too. A human set that field deliberately, and it is the
+strongest thing they can say short of a security alert. Take the oldest first,
+and use repo order to break ties.
+
+**Review feedback comes third, across all repos.** Like security and urgent
+issues, this outranks the plain repo-then-source walk: if any selectable
+`review_feedback` candidate exists in *any* repo, take it before any lower work
+in a more-overdue repo. A human has already spent their time on that PR and asked
 for something specific — they are the only consumer this system has, and the
 work is nearly finished. Finishing beats starting.
 
-**Merge conflicts come third, across all repos.** After security and
-review-feedback, and likewise ahead of the plain repo-then-source walk: if any
+**Merge conflicts come fourth, across all repos.** After security, urgent issues
+and review-feedback, and likewise ahead of the plain repo-then-source walk: if any
 selectable `merge_conflicts` candidate exists in *any* repo, take it before any
 fresh work in a more-overdue repo. That PR is otherwise ready — a human is waiting
 to land it — and until the conflict is resolved nothing else on it (a re-review, a
 merge) can proceed. A rebase-and-resolve is finishing, not starting, so it beats
 fresh work here too.
 
-**Abandoned drafts come fourth, across all repos.** After security,
+**Abandoned drafts come fifth, across all repos.** After security, urgent issues,
 review-feedback, and merge-conflicts, and likewise ahead of the plain
 repo-then-source walk: if any selectable `abandoned_drafts` candidate exists in
 *any* repo, take it before any fresh work in a more-overdue repo. A previous cycle
 already implemented most of the work behind that draft, so finishing beats
 starting here too — and every hour it sits stalled it occupies a back-pressure
-slot that throttles new work fleet-wide. Only once no security, review-feedback,
-merge-conflict, or abandoned-draft candidate remains do you fall to the ordinary
-repo-then-source walk.
+slot that throttles new work fleet-wide. Only once no security, urgent-issue,
+review-feedback, merge-conflict, or abandoned-draft candidate remains do you fall
+to the ordinary repo-then-source walk.
 
 **Security & code-quality findings.** Their candidates are the pre-fetched
 `findings` entries (you do not query the alert APIs yourself). Each already
@@ -381,6 +403,51 @@ finished.
 **Failed Actions runs.** A candidate exists only where the **most recent**
 run of a workflow on the default branch is a failure — a later green run
 supersedes older failures, so don't resurrect a since-fixed workflow.
+
+**Issue priority.** Every open issue belongs to exactly one band — `Urgent`,
+`High`, `Medium` or `Low` — taken from its **`Priority`** field, and the band
+decides where in the walk that issue is considered:
+
+| Band | Ranks | Reached |
+|---|---|---|
+| `Urgent` | second overall, across all repos | ahead of everything but security |
+| `High` | after failed-runs, before `TECH-DEBT.md` | in the repo walk |
+| `Medium` | after `TECH-DEBT.md`, before the implementation plan | in the repo walk |
+| `Low` | after project-review, before code-quality | in the repo walk |
+
+`Priority` is a GitHub **issue field**, not a label. Read it from the REST
+issues listing, one call per repo, which carries it in `issue_field_values`:
+
+```bash
+gh api "repos/<slug>/issues?state=open&per_page=100" --jq \
+  '[.[] | select(has("pull_request") | not)
+        | {n: .number, title: .title, labels: [.labels[].name],
+           assignee: (.assignee.login // ""),
+           priority: (([.issue_field_values[]?
+                        | select(.issue_field_name == "Priority")
+                        | .single_select_option.name
+                        | select(. == "Urgent" or . == "High"
+                                 or . == "Medium" or . == "Low")] | first) // "Medium")}]'
+```
+
+`gh issue view --json` does **not** expose issue fields, so this listing is how
+you get the band; use it once per repo and band every issue from it before you
+start walking that repo's sources.
+
+**An issue with no `Priority` set is `Medium`.** So is one whose field you
+cannot read, or whose value is not one of the four names. Never treat a missing
+`Priority` as lowest, and never invent a band from the issue's labels, title or
+tone — an untriaged issue ranks in the middle, and only the field moves it.
+
+Banding changes rank and nothing else. A `security`-labelled issue is still
+security work first (see "Security is always prioritised") whatever its band,
+including `Low`; the exclusions below apply identically in every band; you still
+read the whole thread; and everywhere you emit a `source` — a work order, a
+`needs_refinement` entry, anything else — an issue is `"issues"`, never
+`"issues:urgent"` or any other band, with `item` the bare issue number. Do not
+mention the band in the work order, and never let a `Low` band lower the
+standard of the work itself — it decides *when* an issue is picked up, not how
+well it is done.
 
 **Project-review recommendations.** Read only the **most recent**
 `reviews/project-review-YYYY-MM-DD/` folder (list `reviews/` via `gh api
@@ -645,7 +712,9 @@ the list, and one strong candidate alone is a perfectly good list.
 - `source` is one of `"security"`, `"review-feedback"`, `"merge-conflicts"`,
   `"abandoned-drafts"`, `"failed-runs"`, `"tech-debt"`, `"issues"`,
   `"implementation-plan"`, `"project-review"`, or `"code-quality"` — the same
-  tokens as the `sources` lists in the runtime input above.
+  tokens as the `sources` lists in the runtime input above, except that an
+  issue is always `"issues"`, never `"issues:urgent"` or any other band. The
+  banded tokens exist only to place the source in the walk.
 - For a `review-feedback` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"`
   from the entry — the Implementor pushes to that PR instead of opening one.

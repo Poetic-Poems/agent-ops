@@ -164,7 +164,11 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
 - **GitHub, via `gh`** (best-effort; the machine is authenticated and the
   repos are public): open PRs carrying `pr_label` with `statusCheckRollup`,
   `mergeable`, `mergeStateStatus`, draft/ready; most-recent-per-workflow
-  failing runs on the default branch; open issues; the `TECH-DEBT.md` ledger
+  failing runs on the default branch; open issues, each with the `Priority`
+  band the Co-Ordinator ranks it by (read from the REST issues listing's
+  `issue_field_values`, since `gh issue list --json` cannot see issue fields,
+  and defaulted to `Medium` exactly as the pipeline defaults it — see the
+  implementation-pipeline spec, requirement 15e); the `TECH-DEBT.md` ledger
   rows. If `gh` fails, the GitHub panels mark themselves stale and the rest
   still renders. On a `--no-github` refresh the fetch is skipped entirely and
   the last successful result is carried forward (see the Publisher below), so
@@ -332,7 +336,9 @@ end** when no node is running it, and **not ended** when the data carries no
 node state to ask; click a row for per-stage detail with
 the parsed status, full transcript, and stderr); failures,
 blocked and void items; work sources per repo (including the security and
-code-quality findings, shown first, that the Co-Ordinator prioritises);
+code-quality findings, shown first, that the Co-Ordinator prioritises, and the
+open issues, listed in `Priority` band order with the band on each, which is
+the order the Co-Ordinator reaches them in);
 spend-by-day and spend-by-model bars; recent log; `cron.log` tail.
 
 ## Integration
