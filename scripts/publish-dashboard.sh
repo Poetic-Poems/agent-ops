@@ -358,6 +358,16 @@ status_json="$(jq -n \
   --argjson switch "$switch_json" \
   --slurpfile cyc "$cycles_file" '
   ($cyc[0] | map(select(.dry_run|not))) as $real
+  # (Comments in this program carry no apostrophes: it is a single-quoted shell
+  # string, so one would end it and hand the rest of the jq to the shell.)
+  #
+  # Both newest-FINISHED, not newest: the field is read as "last cycle <ago>,
+  # and how it went", and only a cycle that logged `cycle-end` has either to
+  # give. The list is newest-first, so `first` after the filter is the newest
+  # that qualifies. Null when nothing has finished yet, which the page already
+  # renders as no last-cycle clause at all.
+  | ([ $real[]   | select(.ended_at) ] | first) as $last_real
+  | ([ $cyc[0][] | select(.ended_at) ] | first) as $last_any
   | {
       running: $alive,
       lock: (if $pid == "" then null else {pid: ($pid|tonumber), started_at: $started, alive: $alive} end),
@@ -380,11 +390,15 @@ status_json="$(jq -n \
           title:  ([ .[] | select(.event=="selection") | .title ]  | last)
         } end
       ),
-      # The newest cycle the FLEET ran, not the newest this node ran: the
-      # cycle list it is drawn from is the union. `node` says whose it was,
+      # The newest FINISHED cycle the FLEET ran, not the newest this node ran:
+      # the cycle list it is drawn from is the union. `node` says whose it was,
       # which is the whole difference between "the pipeline last ran an hour
       # ago" and "this machine has been quiet for an hour while another worked".
-      last_cycle: (($real[0] // $cyc[0][0]) | if . == null then null else {id, node, ended_at, outcome, repo, item, title} end),
+      # An unfinished cycle is excluded because every reader of this field wants
+      # a completed one: the headers date it by `ended_at` and the node cards
+      # badge it by `outcome`, and a cycle-start with no end has a null for the
+      # first and the floor of the outcome ladder for the second.
+      last_cycle: (($last_real // $last_any) | if . == null then null else {id, node, ended_at, outcome, repo, item, title} end),
       limit: {active: $limit_active, note: $limit_note},
       switch: $switch
     }')"
