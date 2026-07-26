@@ -84,6 +84,32 @@ jobs:
       - name: Verify the container crontab
         run: docker run --rm agent-ops:ci supercronic -test /app/deploy/docker/crontab
 
+      # The Claude config file must resolve *inside* the claude-config volume's
+      # mount point. Its default home is `~/.claude.json`, a sibling of that
+      # directory and so part of the container's writable layer, where every
+      # watchtower roll destroys it. That is not visible in any test — the
+      # symptom is a warning on stderr and a config silently rebuilt from
+      # nothing — so it is asserted against the built image instead.
+      #
+      # Against the image's own config, not a running container's environment:
+      # entrypoint.sh defaults the variable when it is unset, so a runtime
+      # check would pass with the ENV line deleted and prove nothing. The ENV
+      # is also the only copy `docker compose exec scheduler claude` sees — an
+      # interactive login does not go through the entrypoint — and without it
+      # that login writes to the ephemeral ~/.claude.json while the cron cycles
+      # use the volume.
+      - name: Verify the Claude config directory is on a persistent volume
+        run: |
+          env_line="$(docker image inspect agent-ops:ci \
+            --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep '^CLAUDE_CONFIG_DIR=' || true)"
+          [ -n "$env_line" ] || { echo "the image sets no CLAUDE_CONFIG_DIR" >&2; exit 1; }
+          [ "$env_line" = "CLAUDE_CONFIG_DIR=/home/agent/.claude" ] || {
+            echo "$env_line does not name the claude-config mount point /home/agent/.claude" >&2
+            exit 1
+          }
+          echo "$env_line"
+
       - name: Run the test suite inside the image
         run: |
           docker run --rm agent-ops:ci bash -lc '
