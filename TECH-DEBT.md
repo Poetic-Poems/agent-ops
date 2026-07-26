@@ -358,6 +358,53 @@ behaviour once the day-one backlog of previously silent items has drained.
 
 Filed 2026-07-26, deferred from #84.
 
+### TD26072605 A label edit resets the abandoned-draft staleness clock
+
+`scripts/gather-abandoned-drafts.sh` decides a draft is abandoned when its
+`updatedAt` is older than `abandoned_draft_after_hours`, and the header explains
+why that is right: a push, a comment, a peer node still working it, or a human
+poking it all reset the clock, and each genuinely means "somebody is on this".
+Adding or removing a label also resets it, and that does not.
+
+Measured on poetic#92: the `unvoided` label went on at 21:40:28Z and
+`updatedAt` moved to 21:40:44Z with nothing else touching the pull request. The
+perverse part is what the label *was*: the maintainer's attempt to unstick the
+PR. It failed twice over — it did not clear the void, which is what
+requirement 34f now fixes, and it pushed the one source that could have surfaced the PR
+out by a further `abandoned_draft_after_hours`. The fleet went from gathering
+`pr-92-abandoned-…` at 20:25Z to standing down at back-pressure reporting "no
+abandoned draft is waiting to be finished", which was true of the array and
+false of the world.
+
+This is not only a human's footgun. The pipeline labels its own pull requests:
+`complexity:*` when the Implementor raises one and again if the Reviewer
+corrects it (requirement 8a), and requirement 34e projects and retracts
+`needs-refinement`. Each of those moves `updatedAt` on a PR the pipeline may
+later need to recognise as stalled, so the system can defer its own recovery
+path by writing a label to it.
+
+**Ruled out, so nobody re-derives it:** a `cross-referenced` event does *not*
+move `updatedAt`. agent-ops#83 and #88 both link to poetic#92, firing
+cross-references at 21:20:55Z and 00:15:06Z, and `updatedAt` did not move for
+either — confirmed against the GraphQL field and both REST endpoints. Mentioning
+a stalled pull request from another repository is safe.
+
+Fix: measure staleness from something that only moves when the pull request
+does. The head commit's `committedDate` is the obvious candidate and is already
+fetched (`commits[-1]`), but alone it would re-select a draft somebody is
+actively commenting on, which the current rule correctly avoids. So take the
+latest of the head commit's date, the newest issue or review comment, and the
+newest review — rebuild the measure from the events that mean *someone is
+working on this PR*, and drop the ones that only mean its metadata changed.
+`gh pr view --json commits,comments,reviews` covers all three in the call the
+gatherer already makes.
+
+Check the same measure where else it is used before changing it:
+`gather-source-state.sh`'s open-PR digest keys on `updated_at` deliberately, to
+notice *any* change, and must keep doing so.
+
+Filed 2026-07-26.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -382,3 +429,4 @@ above.
 | TD26072602 | A human-applied needs-refinement label is inert | open | | |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
+| TD26072605 | A label edit resets the abandoned-draft staleness clock | open | | |

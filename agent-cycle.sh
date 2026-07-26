@@ -44,6 +44,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/handoff.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
+# shellcheck source=lib/unvoid-label.sh
+. "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
@@ -181,6 +183,11 @@ timeout_enabler_min="$(cfg '.timeout_enabler // 30')"
 enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours // 72')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalation"')"
+# The label a human applies on GitHub to ask for a void to be reopened
+# (requirement 34f). Only a human can apply it — no stage here ever does — so
+# requirement 34c's "only a human may clear a void" is unchanged; what this
+# gives them is a way to say it from where they actually are.
+unvoid_label="$(cfg '.unvoid_label // "unvoided"')"
 # The refinement class (requirements 34e, 35d). The label is a projection onto
 # issue-type items and nothing reads it back, so an empty value switches the
 # projection off without touching the log mechanism that actually carries the
@@ -645,6 +652,25 @@ gather_merge_conflicts() {
         2>"$cycle_dir/merge-conflicts-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
+# Pre-fetch the voids a human has asked, on GitHub, to be reopened
+# (requirement 34f). Unlike every other gatherer this is not a work source: it
+# produces no candidates, it edits the skip-list the Co-Ordinator is about to be
+# handed. It runs for every repo regardless of that repo's `sources`, because a
+# void can be pinned on any item in any repo and a human's instruction to reopen
+# one is not a kind of work anybody opted into.
+gather_unvoid_requests() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-unvoid-requests.sh" "$slug" "$unvoid_label" \
+        2>"$cycle_dir/unvoid-requests-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/unvoid-requests-$safe.json"
     printf '%s' "$out"
   else
     printf '[]'
@@ -1394,6 +1420,7 @@ fi
 
 ordered_repos_json="[]"
 source_states_json="[]"
+unvoid_requests_json="[]"
 while IFS= read -r slug; do
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
   commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>/dev/null || echo "1970-01-01T00:00:00Z")"
@@ -1431,6 +1458,11 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # prompt it is meant to avoid buying has not saved anything.
   state="$(gather_source_state "$slug" "$default_branch")"
   source_states_json="$(jq -c --argjson s "$state" '. + [$s]' <<<"$source_states_json")"
+  # Requirement 34f, gathered here for the repo loop's one `gh` budget but read
+  # below, before the skip-lists: a human's instruction to reopen a void has to
+  # land *before* the extract the Co-Ordinator is handed, not after it.
+  unvoid_requests_json="$(jq -c --argjson r "$(gather_unvoid_requests "$slug")" '. + $r' \
+    <<<"$unvoid_requests_json")"
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
@@ -1445,6 +1477,35 @@ rm -f "$cycle_dir/.repo_ts"
 # back-pressure can end the cycle. A fleet wedged at `max_open_agent_prs` is
 # exactly when getting something unblocked matters most, and the Enabler opens
 # no PRs, so it must not be what back-pressure silences.
+# Requirement 34f, applied first: a human labelled an issue or pull request on
+# GitHub asking for a void to be reopened. The `unvoided` events go in here —
+# above the extract that reads them — because a clearance landing after
+# `void_json` was computed would be a cycle late, and a cycle late for this
+# source means the human watches nothing happen and concludes, a second time,
+# that the label does not work.
+#
+# The new lines are appended to the union snapshot as well as to the log. That
+# snapshot was taken once at the top of the cycle (requirement 2.5) so every
+# reader below sees one consistent stream; rebuilding it here would pull in
+# whatever peers had written since, which is the inconsistency it exists to
+# prevent, so the exact lines this cycle just wrote are what gets added and
+# nothing else.
+unvoid_clearances_json="$(unvoid_clearances "$unvoid_requests_json" "$(void_items "$union_log")")"
+if [[ "$(jq 'length' <<<"$unvoid_clearances_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  while IFS= read -r clearance; do
+    [[ -n "$clearance" ]] || continue
+    # `by: "label"` distinguishes this from the Enabler's unblocks and from a
+    # line a human appended by hand; the request's URL and the void's own
+    # timestamp are what let a later reader see which verdict was reopened and
+    # on whose authority, without going back to GitHub.
+    log_event "unvoided" "$(jq -c '{item: .item, repo: .repo, by: "label",
+                                    request_url: .url, labelled_at: .labelled_at,
+                                    cleared_void_ts: .void_ts}' <<<"$clearance")"
+  done < <(jq -c '.[]' <<<"$unvoid_clearances_json" 2>/dev/null || true)
+  tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+fi
+
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
 # The third extract (requirement 3h): what a previous Enabler engagement
