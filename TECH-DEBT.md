@@ -447,4 +447,4 @@ above.
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
-| TD26072607 | The published arm64 image has never been run | open | | |
+| TD26072607 | The published arm64 image has never been run | in-progress | | |
