@@ -148,6 +148,14 @@ confirmed defaults; the README documents each key.
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch command.
 
+`review.model` accepts a bare id (`claude-sonnet-5`) or a provider-qualified
+one (`anthropic/claude-sonnet-5`), resolved by the same `resolve_model_id`
+(`lib/model-id.sh`) the implementation pipeline uses — see
+`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1a. Anthropic is the only
+executable provider (D12, `docs/ROADMAP.md`); a qualifier naming any other
+provider is a fail-fast config error at cycle start, not a value passed to
+`claude --model`.
+
 ## The Human Gate and the loop it closes
 
 The review pipeline raises **one pull request per repository, ready for
@@ -178,6 +186,15 @@ R1. **Bootstrap.** Reuse the `PATH` bootstrap and binary checks of
    `agent-cycle.sh` verbatim (claude, gh, git, jq must resolve under cron's
    minimal environment). Source `lib/limit-detect.sh`. The script must pass
    `shellcheck`.
+
+R1a. **Model id resolution (D12 groundwork).** `review.model` is resolved
+   through `lib/model-id.sh`'s `resolve_model_id` immediately after being read
+   from config, before the lock — the same helper and the same rule
+   `agent-cycle.sh` applies to its own model keys
+   (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1a): a bare id means
+   `anthropic/`, an `anthropic/`-qualified id has the qualifier stripped, and
+   any other qualifier is a fail-fast config error naming `review.model`, not
+   a value passed to `claude --model`.
 
 R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID and
    start time (its own lock, *not* the implementation `lock.json`). Apply the
