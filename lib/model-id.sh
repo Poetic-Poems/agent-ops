@@ -27,7 +27,10 @@ resolve_model_id() {
       if [[ "$provider" == "anthropic" ]]; then
         printf '%s\n' "${value#*/}"
       else
-        echo "agent-cycle: $key: provider '$provider' not yet supported (only 'anthropic' is executable today) — got '$value'" >&2
+        # Prefixed with the library's own name, not a script's: review-cycle.sh
+        # sources this too, and an error blaming agent-cycle for `review.model`
+        # sends the operator to the wrong script. Matches lib/toggle.sh.
+        echo "model-id: $key: provider '$provider' not yet supported (only 'anthropic' is executable today) — got '$value'" >&2
         return 1
       fi
       ;;
