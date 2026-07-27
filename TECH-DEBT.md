@@ -397,7 +397,7 @@ above.
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | resolved | 2026-07-27 | #109 |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | resolved | 2026-07-27 | #107 |
-| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
+| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | in-progress | | |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | open | | |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | open | | |
