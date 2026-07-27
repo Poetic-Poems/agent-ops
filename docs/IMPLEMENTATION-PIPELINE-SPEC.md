@@ -2341,6 +2341,15 @@ What exists, and the requirements each part answers to:
     linter that gains a check overnight fails pull requests that changed
     nothing. Component 9 runs the test suite, which only ever reads the scripts
     it calls; this reads all of them.
+11. `scripts/watch-node.sh` — a read-only wrapper around
+    `docker compose exec -T scheduler tail` for watching a node's `cron.log`
+    or cycle log (`log.jsonl`, requirement 33) from outside, in place of the
+    docker-exec incantation. Resolves the stack directory from `STACK_DIR` or
+    the working directory, and refuses to run against one with no
+    `compose.yaml`. Fetched alongside `compose.yaml` during bring-up
+    (component 7, including `cloud-init.yaml`) so every node carries it from
+    the start. Unit-tested against a stubbed `docker` on `PATH`
+    (`test/watch-node.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 

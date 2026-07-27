@@ -16,9 +16,10 @@
 # single-use Tailscale pre-auth key. Never commit a filled-in copy of this
 # file.
 #
-# The node deliberately holds no clone of agent-ops: compose.yaml and
-# ts-serve.json are fetched from the repository, and everything else arrives in
-# the image. Updating is watchtower's job, not git's.
+# The node deliberately holds no clone of agent-ops: compose.yaml,
+# ts-serve.json and watch-node.sh are fetched from the repository, and
+# everything else arrives in the image. Updating is watchtower's job, not
+# git's.
 
 package_update: true
 package_upgrade: true
@@ -68,6 +69,7 @@ runcmd:
   # image from, so the compose file and the image it runs stay in step.
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/compose.yaml https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml"]
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/ts-serve.json https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/ts-serve.json"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/watch-node.sh https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh && chmod +x /opt/poetic-node/watch-node.sh"]
 
   - [sh, -c, "cd /opt/poetic-node && docker compose up -d"]
 

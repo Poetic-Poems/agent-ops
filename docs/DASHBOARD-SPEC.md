@@ -523,7 +523,7 @@ same number's twins elsewhere on the page.
   built image reads its own stamp back — the failure mode is otherwise silent).
 - The cleanup hook in `agent-cycle.sh`; `.gitignore` and `.dockerignore`
   entries for `dashboard/data.js` and `build-info.json`; the README
-  "Monitoring dashboard" section.
+  "Monitoring" section's "Dashboard" subsection.
 
 ## Verifying a change
 
