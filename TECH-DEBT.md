@@ -69,28 +69,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072607 The published arm64 image has never been run
-
-`.github/workflows/build-image.yml` builds `linux/arm64` on every pull request
-and publishes it in each tag's manifest list, but every acceptance check of
-requirement 1b — the toolchain probe, `supercronic -test`, the `test/` suite,
-the role guard — runs only against the `linux/amd64` leg. So the arm64 image is
-proved to *build*; nothing has ever proved it *runs*. A node pulling it would
-be the first thing to find out, and the failure would land on a machine with no
-working pipeline to report it.
-
-Nothing is blocked today: every node is x86-64, so the untested leg is one
-nobody pulls. The risk arrives with the first arm64 node, which is the moment
-the leg exists for.
-
-Fix: give the arm64 leg `load: true` (buildx can load a single foreign-platform
-result, and the binfmt handlers `docker/setup-qemu-action` registers already
-execute arm64 binaries — that is how the build's own `RUN` instructions run)
-and repeat the requirement 1b checks against it with `docker run`. The cost is
-CI minutes under emulation, which is why it was not done when the leg was added
-in #100; if that proves too slow for every pull request, run it on `main` only,
-before the publish step.
-
 ### TD26072101 New evidence on a blocked item is not read until the Enabler's recheck
 
 The Co-Ordinator reconstructs blocked and void state from cycle-history
@@ -447,4 +425,4 @@ above.
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
-| TD26072607 | The published arm64 image has never been run | open | | |
+| TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
