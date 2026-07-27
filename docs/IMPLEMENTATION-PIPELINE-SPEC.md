@@ -155,10 +155,10 @@ a node updates by pulling a new image rather than by pulling a branch.
   (what a node's watchtower follows) and the commit SHA (how a node is pinned
   or rolled back, through `AGENT_OPS_IMAGE`), each tag a multi-platform manifest
   list covering `linux/amd64` and `linux/arm64`. A pull request builds and
-  tests the `linux/amd64` leg (loaded, so the checks below can run it) and
-  builds the `linux/arm64` leg under QEMU emulation to prove it too, but
-  publishes nothing. This is the whole update path: merge produces an image,
-  and nodes replace containers.
+  tests both legs — each in its own job on a runner of the image's own
+  architecture, loaded (`load: true`) and run natively through requirement
+  1b's acceptance checks — but publishes nothing. This is the whole update
+  path: merge produces an image, and nodes replace containers.
 - The image creates the volume mount points (`~/.claude`, `state_dir`,
   `workspace_root`) owned by `agent`, because a container runtime seeds a new
   named volume from the image's mount point — ownership included — and creates
@@ -399,14 +399,14 @@ values below are the confirmed defaults; the README must document each key.
 | `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
-| `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). This is the bound on how long evidence that arrives *after* a block — the failure mode of `TECH-DEBT.md` TD26072101 — can sit unread, and the only lever that re-opens an examined item. `0` disables re-examination. |
+| `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Empty disables the projection only: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `max_open_agent_prs` | `5` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
+| `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 30 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit untouched (`updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
@@ -521,6 +521,18 @@ runs unattended.
       throttle on both spend and on the human gate silting up. The count is
       approximate by design: N nodes can pass it simultaneously, so the
       stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
+
+      The logged reason — of the stand-down here and of the restriction
+      warning in 2.2a — states the count's composition:
+      `(N ready + N draft + N unraised claim(s))`. A ready PR is the human's
+      queue; a draft is work in flight (the Implementor's own claim marker,
+      requirement 23); an unraised claim is a registry entry whose PR does
+      not yet exist. Whether the cap stood the fleet down because the queue
+      was genuinely full, or fired early on in-flight work, is exactly what
+      a cap-tuning decision needs — and it must be readable from the log
+      line alone, because the PRs behind a historical count are merged or
+      closed by the time anyone asks, leaving cycle-record archaeology as
+      the only other answer.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
@@ -1229,7 +1241,9 @@ runs unattended.
     downstream consumers never see the band.
 16. Excludes from candidacy any item that is:
     - recorded as blocked in the shared log (an `attempt-failed` event not
-      followed by an `unblocked` event for that item);
+      followed by an `unblocked` event for that item) — for a GitHub issue,
+      only once requirement 18a's mandatory re-check, where it applies, has
+      found the recorded blocker still holds;
     - a tech-debt item whose Ledger row is `in-progress`;
     - already referenced by any open PR or draft (a claim, per the repos'
       claiming workflow), or already held by a live **claim branch** on the
@@ -1294,8 +1308,11 @@ runs unattended.
     under-specified items beyond the walk it was doing anyway (flags accumulate
     across cycles by themselves, and a sweep would spend a selection pass on
     something nobody asked for); it must not re-report an item already recorded
-    as blocked (requirement 16's first exclusion means it never re-evaluates one
-    anyway, and requirement 34e refuses the re-report if it does); and reporting
+    as blocked — ordinarily requirement 16's first exclusion means it is never
+    re-evaluated at all, and where requirement 18a's mandatory re-check does
+    look at one again, that re-check is scoped to whether the recorded blocker
+    still holds and is never grounds to re-report `needs_refinement`; requirement
+    34e refuses the re-report regardless, if it happens anyway; and reporting
     never changes what the cycle selects. An empty array is the normal case.
 
     What this replaces is a silent skip, and the silence was the defect. An item
@@ -1391,6 +1408,47 @@ runs unattended.
       the `reason` and the `evidence` requirement 34c has always demanded, and
       subject to requirement 34d's guard, which records an unevidenced or
       refuted entry as blocked instead.
+18a. **Fresh evidence on a blocked issue makes requirement 18's re-check
+    mandatory, not discretionary.** For a blocked item that is a GitHub
+    issue, before excluding it under requirement 16 the Co-Ordinator compares
+    the issue's own `updated_at` against the `ts` of the `attempt-failed`
+    event that blocked it. If `updated_at` is newer, something was posted to
+    the thread after the block was recorded, so the Co-Ordinator must read
+    the issue and every comment (requirement 14a's whole-thread rule) before
+    honouring the marker, and judge against that fresh reading whether the
+    recorded blocker still holds — reporting the item in `unblocked`, as the
+    bare item id requirement 20 specifies, when it does not. This is the same
+    outcome and the same two limits as requirement 18 (impediments only;
+    never clears a void); only the trigger changes, from "may check when
+    convenient" to "must check when the thread has moved". When
+    `updated_at` is no newer than `ts`, nothing has changed since the marker
+    was written and the ordinary skip applies without a re-read.
+
+    This exists because the general case left a gap a periodic sweep alone
+    cannot close at cycle speed: requirement 3b's fingerprint already digests
+    each issue's `updated_at`, so a comment landing on an already-blocked
+    issue busts the fingerprint and wakes a Co-Ordinator within the hour —
+    but that Co-Ordinator would otherwise skip straight past the item on the
+    stale marker without ever looking at what changed, exactly the failure
+    the Enabler's own periodic re-check (requirement 35a) exists to bound to
+    days rather than never. Reading the fresh comment the same cycle that
+    woke for it is cheaper than either the silent stall or the Enabler's
+    eventual sweep, and does not replace the Enabler: an item this check
+    finds still blocked is exactly the item the Enabler goes on to re-examine
+    on its own schedule.
+
+    No other blocked source needs the same treatment, so this requirement
+    binds to GitHub issues only and requirement 18's general, discretionary
+    check still covers the rest. Tech-debt entries, security and code-quality
+    findings, plan tasks and project-review recommendations have no per-item
+    "new evidence arrived" signal at all: their content lives in a file or an
+    alert record, not a thread a human can add to after the block. The
+    PR-derived sources do have one, but they do not need this rule, because
+    their refs are scoped to the round or the head SHA that produced them
+    (`pr-<n>-review-<review-id>`, `pr-<n>-conflict-<head-sha>`,
+    `pr-<n>-abandoned-<head-sha>` — requirement 20): a human reviewing again,
+    or a commit landing on the branch, mints a fresh item id that no block
+    covers, so evidence arriving there is never held behind a stale marker.
 19. Chooses the Implementor's model: `implementor_model_trivial` only when
     the item can be completed without changing any file that affects runtime
     behaviour (docs, comments, register entries); otherwise
@@ -1977,9 +2035,13 @@ runs unattended.
          deliberately: the human acted, and requirement 36a promised them that
          closing the issue is what restarts the work.
        - **`recheck`** — the newest examination of the item is older than
-         `enabler_recheck_hours` (`0` disables). This is the only bound on how
-         long evidence arriving *after* a block can sit unread, which is the
-         failure `TECH-DEBT.md` TD26072101 records.
+         `enabler_recheck_hours` (`0` disables). For a GitHub issue,
+         requirement 18a already catches new evidence posted into its own
+         thread same-cycle, off the issue's `updated_at` — the failure
+         `TECH-DEBT.md` TD26072101 records. This bound is what closes the
+         gap for everything 18a does not reach: every non-issue blocked
+         source, and a blocker on an issue that clears without a comment ever
+         landing (nothing then moves `updated_at`).
     A re-block re-enters through `threshold`, because every clause above is
     measured from *B*: a fresh `attempt-failed` moves *B* forward, leaving the
     old examination behind it and restarting the count.
@@ -2361,20 +2423,21 @@ pull request, run the ones the change touches and any it could regress.
    every value that is not `active` stands the node down with a cron-log line,
    exit 0 and nothing written under `state_dir`; `--dry-run`, `--once` and the
    switch commands run regardless of the role.
-1b. **The image builds and carries the whole toolchain.**
-   `docker build -f deploy/docker/Dockerfile -t agent-ops .` succeeds, and
-   inside it, as user `agent`: `bash`, `git`, `jq`, `curl`, `python3`, `perl`,
-   `flock`, `sha256sum`, `rsync`, `node`, `claude`, `gh` (≥ 2.60) and
-   `supercronic` all resolve; `supercronic -test /app/deploy/docker/crontab`
-   reports the crontab valid; the `test/` suite passes inside the container;
-   and `/app/agent-cycle.sh` with no role set exits 0 through the requirement
-   2.4 guard. `.github/workflows/build-image.yml` runs every one of these,
-   against a `linux/amd64` build, on every pull request, so a change that
-   breaks the image cannot be merged — and it is the only place the `test/`
-   suite runs in CI. The same workflow also builds the image for `linux/arm64`
-   under QEMU emulation on every pull request — proving that leg builds, though
-   the checks above are not repeated against it — and on `main` publishes both
-   as one manifest list per tag.
+1b. **The image builds and carries the whole toolchain, on both
+   architectures.** `docker build -f deploy/docker/Dockerfile -t agent-ops .`
+   succeeds, and inside it, as user `agent`: `bash`, `git`, `jq`, `curl`,
+   `python3`, `perl`, `flock`, `sha256sum`, `rsync`, `node`, `claude`, `gh`
+   (≥ 2.60) and `supercronic` all resolve; `supercronic -test
+   /app/deploy/docker/crontab` reports the crontab valid; the `test/` suite
+   passes inside the container; and `/app/agent-cycle.sh` with no role set
+   exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`
+   runs every one of these against both the `linux/amd64` and the `linux/arm64`
+   build on every pull request — each architecture in its own job, natively
+   on a runner of that same architecture (`ubuntu-latest` and
+   `ubuntu-24.04-arm`), with no emulation anywhere in the tested path — so a
+   change that breaks either architecture's image cannot be merged, and it is
+   the only place the `test/` suite runs in CI. On `main` the workflow
+   publishes both architectures as one manifest list per tag.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
@@ -2492,7 +2555,8 @@ pull request, run the ones the change touches and any it could regress.
 5. An injected `limit-hit` event with a future `resume_at` causes a
    stand-down; an expired one does not.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
-   back-pressure.
+   back-pressure, and the logged reason states the count's composition
+   (`N ready + N draft + N unraised claim(s)`).
 6a. **The switch stops both pipelines and lets go by itself.**
    `--disable 'testing'` then a plain invocation of *both* `agent-cycle.sh` and
    `review-cycle.sh`: each logs a stand-down carrying the reason, exits 0, and

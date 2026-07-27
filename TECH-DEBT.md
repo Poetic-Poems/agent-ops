@@ -127,6 +127,27 @@ before honouring the marker (and emits `unblocked` when the recorded blocker
 no longer holds). That is the cheap, same-hour path — the Enabler is the
 expensive, eventual one, and doing this in the Co-Ordinator would spare most
 engagements as well as most of the delay.
+### TD26072102 No sanctioned way to watch a node's cycle events from outside
+
+Observing a running node — cycle starts, selections, PRs raised, stand-downs
+— currently means knowing to run
+`docker compose exec -T scheduler tail -f /home/agent/.local/state/poetic-agents/log.jsonl`
+(or `cron.log`) from the node's stack directory, an incantation that appears
+only in worked examples in the cutover checklist. Interactive AI agents hit
+permission friction on it: each user must allow-list the docker-exec command
+per machine (done on Ockham 2026-07-21, in that workspace's Claude settings
+— which travels to no other machine, node, or teammate), and a permission
+classifier may still deny ad-hoc variants, as one did mid-rehearsal. Humans
+on a fresh host have nothing discoverable at all. The dashboard renders
+cycle state but is not a substitute for following events as they happen.
+
+Fix: a small read-only wrapper, e.g. `scripts/watch-node.sh [cron|events]
+[-f]`, that resolves the stack directory and runs the exec/tail itself;
+document it in the README and cutover checklist. Agents and humans then
+share one discoverable entry point, and an allow-list rule covers the one
+script rather than a docker incantation. Alternatively (or additionally),
+extend the dashboard to stream recent events, which would remove the need
+for a CLI path for humans.
 
 ### TD26072201 The publisher's per-cycle detail loop still forks ~300 jq serially
 
@@ -399,6 +420,46 @@ as above, catches a page that breaks and nothing about a page that lies.
 
 Filed 2026-07-26, out of #94; scope noted from #96.
 
+### TD26072801 A still-valid block is re-read every cycle once its issue's thread has moved
+
+Requirement 18a (#109) makes the Co-Ordinator re-read a blocked GitHub issue
+whenever the issue's `updated_at` is newer than the `ts` of the
+`attempt-failed` event that blocked it. The block's `ts` moves only on a
+re-block, and the Co-Ordinator has no cross-cycle memory in which to record
+"re-checked at T; still holds" — so once a comment lands that does *not* clear
+the block, every later cycle that runs a Co-Ordinator re-reads the whole
+thread and re-judges the same evidence, until the block finally clears. The
+review on #109 flagged this as a deliberate trade-off rather than a defect:
+the check fails safe (it reads too often; it never misses evidence), and the
+cost is one `gh issue view --comments` plus the tokens to re-judge, per such
+issue, per cycle that runs a Co-Ordinator at all.
+
+Two bounds keep the loop's population small, both worth re-reading before
+pricing this higher. Cross-references do not move `updated_at`, so an Enabler
+escalation that links to the blocked issue does not enrol it — TD26072605
+ruled this out for pull requests against poetic#92, and the same holds for
+issues (poetic#96 and poetic#97 each carry a latest `cross-referenced`
+timeline event *later* than their `updated_at`, measured 2026-07-28). And the
+needs-refinement projection cannot self-trip the check, because the Script
+applies the label *before* writing the `attempt-failed` event, which leaves
+the label's `updated_at` bump behind the block's `ts`. What remains is
+exactly: a genuine comment that fails to clear its block.
+
+Fix: give the next cycle a marker to compare against, the way requirement
+35a's `enabler-examined` bounds the Enabler. The Co-Ordinator's work order
+grows a field for "re-checked, still holds" (bare item ids, like `unblocked`);
+the Script logs each as a `recheck-clean` event; the blocked extract carries
+the newest such `ts` alongside the block's own; and requirement 18a compares
+`updated_at` against the later of the two. Two traps when building it: do not
+re-emit `attempt-failed` as the marker — a fresh block moves *B* forward and
+resets requirement 35a's Enabler clock, so a mere confirmation would delay
+escalation — and do not move the blocked entry's existing `ts` for the same
+reason; the marker must be a separate timestamp that only the 18a comparison
+reads. The spec (requirements 18a and 20, and the work-order and
+blocked-extract descriptions) travels in the same PR.
+
+Filed 2026-07-28, from the review discussion on #109.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -414,7 +475,7 @@ above.
 | TD26072002 | The node image is amd64-only | resolved | 2026-07-26 | #100 |
 | TD26072003 | The local dashboard profile needs Linux host networking | resolved | 2026-07-26 | #101 |
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
-| TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | open | | |
+| TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | resolved | 2026-07-27 | #109 |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | resolved | 2026-07-27 | #107 |
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
@@ -425,4 +486,5 @@ above.
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
-| TD26072607 | The published arm64 image has never been run | open | | |
+| TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
+| TD26072801 | A still-valid block is re-read every cycle once its issue's thread has moved | open | | |

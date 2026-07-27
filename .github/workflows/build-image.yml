@@ -12,6 +12,18 @@ name: Build the node image
 # copied into the image, so there is no such thing as a change that cannot
 # affect it — and the tests below are the only place the `test/` suite runs in
 # CI, which a docs-only pull request has no business skipping.
+#
+# Each architecture is built and tested in its own job, on a runner of that
+# same architecture (this is the check TD26072607 exists for: an arm64 image
+# had only ever been proved to build, never to run). Native runners rather
+# than QEMU emulation, for two reasons. First, cost: the emulated `test/`
+# suite ran ~11x slower (~15 minutes against ~1.5), tripling this workflow,
+# whereas GitHub's arm64 runners are free for public repositories just as the
+# amd64 ones are, and the two legs run concurrently — so full coverage of
+# both architectures on every pull request costs nothing and adds no
+# wall-clock. Second, evidence: a pass under emulation proves the image runs
+# on QEMU's approximation of arm64; a pass on an arm64 runner proves it runs
+# on arm64.
 
 on:
   push:
@@ -35,41 +47,32 @@ env:
   IMAGE: ghcr.io/poetic-poems/agent-ops
 
 jobs:
-  build:
-    name: Build, test and publish
+  # What the image cannot work out about itself, computed once so that every
+  # job builds with byte-identical build args — the same `built_at` in
+  # particular, which is what lets the publish job reassemble the very layers
+  # the build jobs tested from the shared cache instead of rebuilding them.
+  # `.dockerignore` keeps `.git` out (the image is a deployment, not a working
+  # tree), so the revision has to be handed in at build time — see the version
+  # stamp in deploy/docker/Dockerfile, and lib/version.sh which reads it back.
+  #
+  # The pull request number is the half an operator can use: every change
+  # here is squash-merged as `<subject> (#N)`, so the trailing marker on the
+  # commit being built names the last pull request the image contains. On a
+  # pull request build the checked-out commit is a merge commit with no such
+  # marker, so the event supplies the number instead — that build is never
+  # published, but a stamp that works there is one that can be tested there.
+  stamp:
+    name: Work out the version stamp
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      # Only needed for the publish step, which runs on main alone. The job
-      # asks for it unconditionally because a job's permissions cannot be
-      # granted per-step; nothing else here uses it.
-      packages: write
-
+    outputs:
+      commit: ${{ steps.stamp.outputs.commit }}
+      pr: ${{ steps.stamp.outputs.pr }}
+      built_at: ${{ steps.stamp.outputs.built_at }}
+      repo: ${{ steps.stamp.outputs.repo }}
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
 
-      # Registers binfmt handlers so buildx can run arm64's RUN instructions
-      # (apt-get, useradd, the supercronic download) under emulation on this
-      # amd64 runner. Needed for the arm64 leg of every multi-platform build
-      # below, load-and-test or publish alike.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
-      - name: Set up Buildx
-        uses: docker/setup-buildx-action@v4
-
-      # What the image cannot work out about itself. `.dockerignore` keeps
-      # `.git` out (the image is a deployment, not a working tree), so the
-      # revision has to be handed in at build time — see the version stamp in
-      # deploy/docker/Dockerfile, and lib/version.sh which reads it back.
-      #
-      # The pull request number is the half an operator can use: every change
-      # here is squash-merged as `<subject> (#N)`, so the trailing marker on the
-      # commit being built names the last pull request the image contains. On a
-      # pull request build the checked-out commit is a merge commit with no such
-      # marker, so the event supplies the number instead — that build is never
-      # published, but a stamp that works there is one that can be tested there.
       - name: Work out the version stamp
         id: stamp
         shell: bash
@@ -92,52 +95,54 @@ jobs:
           } >> "$GITHUB_OUTPUT"
           printf 'building %s as PR #%s\n' "$GITHUB_SHA" "${pr:-<none>}"
 
+  build:
+    name: Build and test (${{ matrix.platform }})
+    needs: stamp
+    strategy:
+      # One architecture's failure says nothing about the other's, and telling
+      # "broken everywhere" apart from "broken on arm64 alone" is this matrix's
+      # whole point.
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            cache-scope: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            cache-scope: arm64
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # No QEMU setup: the runner's own architecture matches `platform`, so
+      # both the Dockerfile's RUN instructions and every `docker run` below
+      # execute natively.
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Build the image
         uses: docker/build-push-action@v7
         with:
           context: .
           file: deploy/docker/Dockerfile
-          # linux/amd64 explicitly, and loaded into the runner's Docker rather
-          # than pushed, so every check below runs against the very bytes that
-          # will be published for that architecture. `docker load` cannot take
-          # a multi-platform result, which is what the next step is for.
-          platforms: linux/amd64
+          # One platform explicitly, and loaded into the runner's Docker
+          # rather than pushed, so every check below runs against the very
+          # bytes that will be published for this architecture. `docker load`
+          # cannot take a multi-platform result, which is what the publish
+          # job's separate build is for.
+          platforms: ${{ matrix.platform }}
           load: true
           tags: agent-ops:ci
           build-args: |
-            AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
-            AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
-            AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
-            AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # Proves the arm64 leg builds — under QEMU emulation, since this runner
-      # is amd64 — on every pull request, not just at publish time on main.
-      # This is the check TD26072002 exists for: without it, an arm64 build
-      # failure (the supercronic checksum picking the wrong architecture's
-      # pin, say) would surface only as a mid-build break on a node that tries
-      # to pull the image, not as a red CI check on the change that caused it.
-      # No `load`/`push`: this leg is built, not run. It could be run — the
-      # binfmt handlers registered above execute arm64 binaries, which is how
-      # this build's own RUN instructions execute — but repeating the whole
-      # check suite under emulation would add minutes to every pull request to
-      # exercise an architecture no node runs. What this step buys is the build
-      # itself: the checksum pin resolving to the right asset, and apt,
-      # NodeSource and npm all resolving for arm64.
-      - name: Build the arm64 image
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          file: deploy/docker/Dockerfile
-          platforms: linux/arm64
-          build-args: |
-            AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
-            AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
-            AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
-            AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max,scope=arm64
+            AGENT_OPS_COMMIT=${{ needs.stamp.outputs.commit }}
+            AGENT_OPS_PR=${{ needs.stamp.outputs.pr }}
+            AGENT_OPS_BUILT_AT=${{ needs.stamp.outputs.built_at }}
+            AGENT_OPS_REPO=${{ needs.stamp.outputs.repo }}
+          cache-from: type=gha,scope=${{ matrix.cache-scope }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.cache-scope }}
 
       # The acceptance checks of docs/IMPLEMENTATION-PIPELINE-SPEC.md (1b), run
       # here so a broken image cannot reach a node. `docker run` goes through
@@ -200,9 +205,9 @@ jobs:
           ' | tail -n 1)"
           echo "$out"
           [ "$(jq -r '.source' <<<"$out")" = "image" ] || { echo "no CI stamp in the image" >&2; exit 1; }
-          [ "$(jq -r '.commit' <<<"$out")" = "${{ steps.stamp.outputs.commit }}" ] \
+          [ "$(jq -r '.commit' <<<"$out")" = "${{ needs.stamp.outputs.commit }}" ] \
             || { echo "the stamped commit is not the commit being built" >&2; exit 1; }
-          [ "$(jq -r '.pr' <<<"$out")" = "${{ steps.stamp.outputs.pr }}" ] \
+          [ "$(jq -r '.pr' <<<"$out")" = "${{ needs.stamp.outputs.pr }}" ] \
             || { echo "the stamped pull request is not the one being built" >&2; exit 1; }
 
       - name: Run the test suite inside the image
@@ -232,28 +237,48 @@ jobs:
             *) echo "expected the role guard to stand the node down" >&2; exit 1 ;;
           esac
 
+  publish:
+    name: Publish to GHCR
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [stamp, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      # Insurance, not the build path: with both architectures' layers in the
+      # shared cache this job executes no RUN instructions, but if the cache
+      # has been evicted the arm64 leg rebuilds here under emulation rather
+      # than failing — slow is better than no image on `main`.
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v4
+
       - name: Log in to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # A second build rather than a `docker push`: both architectures are
-      # already in the build cache (the amd64 leg from "Build the image", the
-      # arm64 leg from "Build the arm64 image"), so this costs seconds and
-      # produces the same two images, while letting buildx write and push the
-      # manifest list the registry wants — one `platforms:` build with `push:
-      # true` publishes both architectures under each tag as a single manifest
-      # list, which is what lets a node on either architecture pull `:latest`
-      # and get the image built for it.
+      # A build rather than a `docker push`: both architectures are already in
+      # the build cache, each written by its own build job, so this costs
+      # seconds and produces the same two images, while letting buildx write
+      # and push the manifest list the registry wants — one `platforms:` build
+      # with `push: true` publishes both architectures under each tag as a
+      # single manifest list, which is what lets a node on either architecture
+      # pull `:latest` and get the image built for it.
       #
       # Two tags: `latest`, which is what a node's watchtower follows, and the
       # commit SHA, which is how a node is pinned to a known-good build or
       # rolled back to one (AGENT_OPS_IMAGE in deploy/docker/.env).
       - name: Publish to GHCR
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -263,15 +288,15 @@ jobs:
           tags: |
             ${{ env.IMAGE }}:latest
             ${{ env.IMAGE }}:${{ github.sha }}
-          # Identical to the builds above, so the cache is reused and the
+          # Identical to the build jobs' args, so the cache is reused and the
           # published image carries the stamp the checks just verified.
           build-args: |
-            AGENT_OPS_COMMIT=${{ steps.stamp.outputs.commit }}
-            AGENT_OPS_PR=${{ steps.stamp.outputs.pr }}
-            AGENT_OPS_BUILT_AT=${{ steps.stamp.outputs.built_at }}
-            AGENT_OPS_REPO=${{ steps.stamp.outputs.repo }}
+            AGENT_OPS_COMMIT=${{ needs.stamp.outputs.commit }}
+            AGENT_OPS_PR=${{ needs.stamp.outputs.pr }}
+            AGENT_OPS_BUILT_AT=${{ needs.stamp.outputs.built_at }}
+            AGENT_OPS_REPO=${{ needs.stamp.outputs.repo }}
           cache-from: |
-            type=gha
+            type=gha,scope=amd64
             type=gha,scope=arm64
           # `image.source` is what links the package to this repository, so the
           # package page carries the README and the commit history rather than
@@ -283,7 +308,6 @@ jobs:
             org.opencontainers.image.licenses=NOASSERTION
 
       - name: Say what was published
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         run: |
           {
             echo "### Published"

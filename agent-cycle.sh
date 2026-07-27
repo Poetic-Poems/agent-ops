@@ -1476,10 +1476,22 @@ fi
 # deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
 # all waiting on the agent, and the one source that could clear them never
 # reached. The cost of deferring is the handful of `gh` calls in step 3.
-open_count=0
+# The count is taken in three parts — ready PRs, draft PRs, live claims —
+# because the trip decision needs only the sum, but the logged reason states
+# the split: a ready PR is the human's queue, a draft is work in flight (the
+# Implementor's own claim marker, requirement 23), and which of them filled
+# the gate is what a cap-tuning decision needs to know. Recording it here
+# costs nothing; reconstructing it later means cycle-record archaeology.
+ready_count=0
+draft_count=0
 while IFS= read -r slug; do
-  n="$(gh pr list -R "$slug" --state open --label "$pr_label" --json number --jq 'length' 2>/dev/null || echo 0)"
-  open_count=$(( open_count + n ))
+  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft \
+    --jq '[([.[] | select(.isDraft | not)] | length), ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
+  IFS=$'\t' read -r n_ready n_draft <<<"$counts"
+  [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
+  [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
+  ready_count=$(( ready_count + n_ready ))
+  draft_count=$(( draft_count + n_draft ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
 # Live claims count toward the cap too: a claim is work in flight that has
@@ -1488,11 +1500,15 @@ done < <(jq -r '.[].slug' <<<"$all_repos_json")
 # work each other had claimed but not yet raised. Still approximate — two
 # nodes can pass this check simultaneously — with a stated bound of
 # max_open_agent_prs + (nodes - 1), transient.
+claim_count=0
 while IFS= read -r slug; do
   n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" 2>/dev/null || echo 0)"
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
-  open_count=$(( open_count + n ))
+  claim_count=$(( claim_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
+
+open_count=$(( ready_count + draft_count + claim_count ))
+open_composition="$ready_count ready + $draft_count draft + $claim_count unraised claim(s)"
 
 backpressure_tripped=0
 if (( open_count >= max_open_agent_prs )); then
@@ -1650,14 +1666,14 @@ if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs, and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
   ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
+    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 
