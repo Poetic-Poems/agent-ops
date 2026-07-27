@@ -37,7 +37,7 @@ Already present on the laptop.
 
 ### 2. Fetch the stack and write the node's `.env`
 
-The node holds three files and no clone: the image is the deployment.
+The node holds four files and no clone: the image is the deployment.
 
 ```bash
 mkdir -p ~/poetic-node && cd ~/poetic-node
@@ -45,8 +45,14 @@ base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
 curl -fsSLO "$base/compose.yaml"
 curl -fsSLO "$base/ts-serve.json"
 curl -fsSL  "$base/.env.example" -o .env
+curl -fsSLO "https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh"
+chmod +x watch-node.sh
 $EDITOR .env
 ```
+
+`watch-node.sh` is the one command for following this node's pipeline output
+once it is up (see [Follow a node's events](#follow-a-nodes-events) below),
+fetched now so it sits beside `compose.yaml` from the start.
 
 At minimum set `NODE_NAME`, `GH_TOKEN` and — for the `tailnet` profile —
 `TS_AUTHKEY`. Leave `ROLE=standby` unless this node is meant to be the one that
@@ -129,7 +135,27 @@ docker compose exec scheduler ls /home/agent/.local/state/poetic-agents/cycles |
 | Resume | `docker compose exec scheduler /app/agent-cycle.sh --enable` |
 | A supervised cycle | `docker compose exec scheduler /app/agent-cycle.sh --once` |
 | A shell on the node | `docker compose exec scheduler bash` |
-| The cron logs | `docker compose exec scheduler tail -n 50 /home/agent/.local/state/poetic-agents/cron.log` |
+| Cycle events (starts, selections, PRs, stand-downs) | `./watch-node.sh events -f` |
+| The cron log | `./watch-node.sh cron -f` |
+
+### Follow a node's events
+
+`watch-node.sh` (fetched alongside `compose.yaml` in [Bring up a
+node](#2-fetch-the-stack-and-write-the-nodes-env) above) is the one command
+for watching a node from outside, in place of remembering the
+`docker compose exec -T scheduler tail ...` incantation:
+
+```bash
+./watch-node.sh events -f   # cycle log (log.jsonl): starts, selections, PRs, stand-downs
+./watch-node.sh cron -f     # cron log (cron.log): one line per tick, including standby ones
+```
+
+Drop `-f` for the last 50 lines instead of following. Run it from the node's
+stack directory — where it resolves `compose.yaml` from by default — or set
+`STACK_DIR` to point at a stack directory elsewhere. It is read-only (`tail`
+over `docker compose exec`), so it is the one path worth allow-listing for an
+interactive agent, instead of ad-hoc docker-exec commands that a permission
+classifier may deny.
 
 The switch (`--disable`) stops **every** node: as well as the local record it
 publishes `fleet/disabled.json` to the state repository's main, which each

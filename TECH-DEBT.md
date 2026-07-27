@@ -69,6 +69,64 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
+### TD26072607 The published arm64 image has never been run
+
+`.github/workflows/build-image.yml` builds `linux/arm64` on every pull request
+and publishes it in each tag's manifest list, but every acceptance check of
+requirement 1b — the toolchain probe, `supercronic -test`, the `test/` suite,
+the role guard — runs only against the `linux/amd64` leg. So the arm64 image is
+proved to *build*; nothing has ever proved it *runs*. A node pulling it would
+be the first thing to find out, and the failure would land on a machine with no
+working pipeline to report it.
+
+Nothing is blocked today: every node is x86-64, so the untested leg is one
+nobody pulls. The risk arrives with the first arm64 node, which is the moment
+the leg exists for.
+
+Fix: give the arm64 leg `load: true` (buildx can load a single foreign-platform
+result, and the binfmt handlers `docker/setup-qemu-action` registers already
+execute arm64 binaries — that is how the build's own `RUN` instructions run)
+and repeat the requirement 1b checks against it with `docker run`. The cost is
+CI minutes under emulation, which is why it was not done when the leg was added
+in #100; if that proves too slow for every pull request, run it on `main` only,
+before the publish step.
+
+### TD26072101 New evidence on a blocked item is not read until the Enabler's recheck
+
+The Co-Ordinator reconstructs blocked and void state from cycle-history
+events keyed by item id, honouring a blocked marker until a later
+`unblocked` event. But nothing makes it re-read the underlying item when
+that item changes: source-state carries each open issue's `updated_at`
+(so the change busts the no-op fingerprint and a cycle *runs*), yet the
+Co-Ordinator repeats the historical verdict without revisiting the thread
+the marker was minted from.
+
+Observed 2026-07-21: poetic-fiddle issue #52 (a live production 500) was
+reopened with a complete in-thread diagnosis — the very evidence its
+"blocked awaiting Sentry/Vercel logs" marker said was missing. The 11:00Z
+Co-Ordinator reported "one open issue (#52) but it's blocked" and selected
+other work; `unblocked` stayed empty. The workaround (which is also the
+spec's regression path) was to close #52 and re-file the work under a
+fresh id (poetic-fiddle #86), which no marker covers.
+
+The unbounded half of this is now bounded, and only the fast path remains
+outstanding. The Enabler (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`,
+requirements 35 and 35a) re-examines a blocked item after
+`enabler_after_coordinator_cycles` cycles and again every
+`enabler_recheck_hours` (72 h), reading the whole thread each time — so
+evidence posted into it is now read within days rather than never, and a
+block that genuinely needs a human becomes an assigned GitHub issue instead
+of a silent marker. Superseding with a fresh id is no longer the only escape.
+
+What is left is latency: the pipeline still learns nothing from an
+`updated_at` that moved an hour ago, even though the moved timestamp is
+already in the fingerprint and already woke the cycle. Fix: in
+`prompts/coordinator.md`, require that when a blocked item's `updated_at` is
+newer than the event that blocked it, the Co-Ordinator re-reads the item
+before honouring the marker (and emits `unblocked` when the recorded blocker
+no longer holds). That is the cheap, same-hour path — the Enabler is the
+expensive, eventual one, and doing this in the Co-Ordinator would spare most
+engagements as well as most of the delay.
 ### TD26072102 No sanctioned way to watch a node's cycle events from outside
 
 Observing a running node — cycle starts, selections, PRs raised, stand-downs
@@ -418,7 +476,7 @@ above.
 | TD26072003 | The local dashboard profile needs Linux host networking | resolved | 2026-07-26 | #101 |
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | resolved | 2026-07-27 | #109 |
-| TD26072102 | No sanctioned way to watch a node's cycle events from outside | open | | |
+| TD26072102 | No sanctioned way to watch a node's cycle events from outside | resolved | 2026-07-27 | #107 |
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | open | | |

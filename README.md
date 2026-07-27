@@ -190,14 +190,18 @@ base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
 curl -fsSLO "$base/compose.yaml"
 curl -fsSLO "$base/ts-serve.json"
 curl -fsSL  "$base/.env.example" -o .env
+curl -fsSLO "https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh"
+chmod +x watch-node.sh
 $EDITOR .env          # name the node, set its role, paste its tokens
 docker compose up -d
 docker compose exec scheduler claude   # authenticate this node, once
 ```
 
-The node holds those three files and no clone. On a fresh cloud VM,
+The node holds those four files and no clone. On a fresh cloud VM,
 [`deploy/docker/cloud-init.yaml`](deploy/docker/cloud-init.yaml) does all of
-that unattended except the Claude login.
+that unattended except the Claude login. `watch-node.sh` is how you follow its
+pipeline output afterwards — see [Watching a node's
+events](#watching-a-nodes-events).
 
 Each image tag is a manifest list covering `linux/amd64` and `linux/arm64`, so
 `docker compose up -d` pulls the right one on an x86-64 or an arm64 host —
@@ -793,7 +797,9 @@ so a usage limit hit during a review also stands the hourly pipeline down.
 
 See `docs/REVIEW-PIPELINE-SPEC.md` for the full specification.
 
-## Monitoring dashboard
+## Monitoring
+
+### Dashboard
 
 A local, single-page dashboard shows everything at a glance: whether a cycle
 is running, whether the pipelines are disabled and why, usage-limit
@@ -981,6 +987,29 @@ The machine (and WSL) must be awake for this — but that is already true of
 the pipeline itself, so anything the dashboard would show you is only ever
 produced while it is reachable. To stop sharing: `sudo tailscale serve
 reset`; to leave the tailnet entirely: `sudo tailscale logout`.
+
+### Watching a node's events
+
+The dashboard renders cycle *state*; watching events as they happen — a cycle
+starting, what the Co-Ordinator selected, a PR going up, a stand-down — means
+following the node's log directly. `scripts/watch-node.sh` is the one command
+for that, in place of remembering the `docker compose exec -T scheduler
+tail ...` incantation:
+
+```bash
+./watch-node.sh events -f   # cycle log (log.jsonl): starts, selections, PRs, stand-downs
+./watch-node.sh cron -f     # cron log (cron.log): one line per tick, including standby ones
+```
+
+Drop `-f` for the last 50 lines instead of following. Run it from the node's
+stack directory — where its `compose.yaml` and `.env` live, and where it is
+fetched to during [Bring up a node](#as-a-container) — or set `STACK_DIR` to
+point at a stack directory elsewhere. It wraps `docker compose exec -T
+scheduler tail` and nothing more, so it is the one path worth allow-listing
+for an interactive agent: one script instead of ad-hoc docker-exec commands
+that a permission classifier may deny. See
+[deploy/docker/README.md](deploy/docker/README.md#follow-a-nodes-events) for
+more.
 
 ## Troubleshooting
 
