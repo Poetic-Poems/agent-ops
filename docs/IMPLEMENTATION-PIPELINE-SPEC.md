@@ -155,9 +155,9 @@ a node updates by pulling a new image rather than by pulling a branch.
   (what a node's watchtower follows) and the commit SHA (how a node is pinned
   or rolled back, through `AGENT_OPS_IMAGE`), each tag a multi-platform manifest
   list covering `linux/amd64` and `linux/arm64`. A pull request builds and
-  tests both legs — each loaded (`load: true`) and run through requirement
-  1b's acceptance checks, the `linux/arm64` leg under QEMU emulation since the
-  runner is `linux/amd64` — but publishes nothing. This is the whole update
+  tests both legs — each in its own job on a runner of the image's own
+  architecture, loaded (`load: true`) and run natively through requirement
+  1b's acceptance checks — but publishes nothing. This is the whole update
   path: merge produces an image, and nodes replace containers.
 - The image creates the volume mount points (`~/.claude`, `state_dir`,
   `workspace_root`) owned by `agent`, because a container runtime seeds a new
@@ -2360,12 +2360,13 @@ pull request, run the ones the change touches and any it could regress.
    /app/deploy/docker/crontab` reports the crontab valid; the `test/` suite
    passes inside the container; and `/app/agent-cycle.sh` with no role set
    exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`
-   runs every one of these against both the `linux/amd64` and (via `docker run
-   --platform linux/arm64` under the QEMU emulation `docker/setup-qemu-action`
-   registers) the `linux/arm64` build, on every pull request, so a change that
-   breaks either architecture's image cannot be merged — and it is the only
-   place the `test/` suite runs in CI. On `main` the workflow publishes both
-   architectures as one manifest list per tag.
+   runs every one of these against both the `linux/amd64` and the `linux/arm64`
+   build on every pull request — each architecture in its own job, natively
+   on a runner of that same architecture (`ubuntu-latest` and
+   `ubuntu-24.04-arm`), with no emulation anywhere in the tested path — so a
+   change that breaks either architecture's image cannot be merged, and it is
+   the only place the `test/` suite runs in CI. On `main` the workflow
+   publishes both architectures as one manifest list per tag.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
