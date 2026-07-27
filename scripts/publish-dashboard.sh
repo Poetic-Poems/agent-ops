@@ -150,6 +150,27 @@ detail_defs="$work_tmp/detail-defs.jq"
 cat > "$detail_defs" <<'JQDEFS'
 def try_json($s): ($s | try fromjson catch null);
 
+# TRANSCRIPT_CAP is a byte budget (see its definition above), but jq's own
+# `.[0:$cap]` slices by Unicode codepoint, not byte — a transcript with
+# multi-byte UTF-8 content (this pipeline handles poems, so non-ASCII text is
+# routine, not an edge case) would slice to $cap *characters*, up to 4x
+# $cap bytes for an all-multi-byte transcript, defeating the cap the 5-second
+# heartbeat budget (this same TD) relies on to bound data.js size. This walks
+# codepoints, summing each one's UTF-8 encoded length, and stops at the last
+# whole codepoint that still fits in $cap bytes — matching head -c's byte
+# budget while (unlike head -c) never splitting a multi-byte codepoint.
+def byte_trunc($s; $cap):
+  ($s | explode) as $cps
+  | (reduce $cps[] as $cp ({bytes:0, out:[], done:false};
+       if .done then .
+       else
+         ($cp | if . < 128 then 1 elif . < 2048 then 2 elif . < 65536 then 3 else 4 end) as $blen
+         | if (.bytes + $blen) > $cap then (.done = true)
+           else {bytes: (.bytes + $blen), out: (.out + [$cp]), done: false}
+           end
+       end)) as $r
+  | ($r.out | implode);
+
 # Same phrase/reset-clause patterns as limit_phrase_in/limit_reset_text
 # (this file, above) — restated here rather than shared, since this is a
 # jq-side port specific to the batched window; the bash originals still
@@ -220,8 +241,8 @@ def build_stage($entry; $cap):
     # stage whose result/stderr ends in a newline would render with one jq's
     # string slicing would otherwise keep.
     | ($env.result // "" | sub("\n+$"; "")) as $result_stripped
-    | ($result_stripped[0:$cap]) as $result_disp
-    | ($err_full[0:$cap] | sub("\n+$"; "")) as $err_disp
+    | byte_trunc($result_stripped; $cap) as $result_disp
+    | (byte_trunc($err_full; $cap) | sub("\n+$"; "")) as $err_disp
     | extract_status($result_stripped) as $status
     | limit_info($out_full; $err_full) as $lim
     | {
