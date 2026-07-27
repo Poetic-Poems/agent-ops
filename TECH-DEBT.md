@@ -399,7 +399,7 @@ above.
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | resolved | 2026-07-27 | #107 |
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
-| TD26072501 | The state dir's logs grow without bound | open | | |
+| TD26072501 | The state dir's logs grow without bound | in-progress | | |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | open | | |
 | TD26072602 | A human-applied needs-refinement label is inert | open | | |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
