@@ -89,8 +89,11 @@ heading, the Script gives you one JSON object:
   (or the feature is off) — treat those sources as having no candidates.
 - `blocked` is the extract of the shared log: one entry per item whose most
   recent `attempt-failed` event has no later `unblocked` event, carrying
-  whatever `detail` that event recorded about what would unblock it. These are
-  items where something is **in the way** of real work.
+  whatever `detail` that event recorded about what would unblock it, and `ts`,
+  that event's own timestamp — the moment the block was recorded, which
+  "Re-checking blocked items" below uses to tell a stale block from one an
+  issue has since moved past. These are items where something is **in the
+  way** of real work.
 - `void` is the same extract over `item-void`/`unvoided` events: items that
   describe **no work at all** — the premise was false, almost always because the
   work was already done on the default branch. Skip them, and see "Void items"
@@ -422,7 +425,7 @@ issues listing, one call per repo, which carries it in `issue_field_values`:
 gh api "repos/<slug>/issues?state=open&per_page=100" --jq \
   '[.[] | select(has("pull_request") | not)
         | {n: .number, title: .title, labels: [.labels[].name],
-           assignee: (.assignee.login // ""),
+           assignee: (.assignee.login // ""), updated_at: .updated_at,
            priority: (([.issue_field_values[]?
                         | select(.issue_field_name == "Priority")
                         | .single_select_option.name
@@ -432,7 +435,9 @@ gh api "repos/<slug>/issues?state=open&per_page=100" --jq \
 
 `gh issue view --json` does **not** expose issue fields, so this listing is how
 you get the band; use it once per repo and band every issue from it before you
-start walking that repo's sources.
+start walking that repo's sources. The same listing carries each issue's
+`updated_at`, which "Re-checking blocked items" below also needs — fetch it
+once here rather than revisiting issues individually.
 
 **An issue with no `Priority` set is `Medium`.** So is one whose field you
 cannot read, or whose value is not one of the four names. Never treat a missing
@@ -474,8 +479,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
 **Exclude any item that is:**
 
 1. Recorded as blocked in the shared log — an `attempt-failed` event for
-   that item with no later `unblocked` event. Or recorded as void — an
-   `item-void` event with no later `unvoided` event (see "Void items").
+   that item with no later `unblocked` event — **unless** it is a GitHub
+   issue whose `updated_at` is newer than that event's `ts`, in which case
+   re-read it first (see "Re-checking blocked items" below) before applying
+   this exclusion. Or recorded as void — an `item-void` event with no later
+   `unvoided` event (see "Void items").
 2. A tech-debt item whose Ledger row is `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
@@ -543,6 +551,37 @@ grounds to unblock it — that means it was misfiled and belongs in `void`;
 report it in `voided` instead (below). Unblocking an item because its work is
 complete hands it straight back to the selection pool, where the next cycle
 will select it, rediscover that it is done, and file it again — forever.
+
+**A blocked issue with fresh evidence must be re-read — this one is not
+discretionary.** Before you apply exclusion 1 to a `blocked` item that is a
+GitHub issue — its `item` is a bare issue number, so it is one of the `n`
+values in that repo's priority listing — compare its `updated_at` (from that
+same listing, which you already fetched — see "Issue priority" above) against
+the `ts` of the `blocked` entry's `attempt-failed` event for that item. If
+`updated_at` is newer, something was posted to the thread after the block was
+recorded: read the issue and every comment (`gh issue view <n> --comments`),
+exactly as you would for any candidate you're evaluating, and judge against
+that fresh reading whether the recorded blocker still holds.
+
+- If it does not, put the issue's id in `unblocked` — a bare item identifier,
+  exactly as the general re-check above; `reason` and `evidence` are fields of
+  `voided`, not of `unblocked` — and treat the issue as a live candidate for
+  this same cycle.
+- If it still holds, the item stays blocked; move on. Do not report
+  `unblocked` and do not re-report `needs_refinement` for it.
+- When `updated_at` is no newer than `ts`, nothing has changed since the
+  marker was written — skip it on the marker alone, no re-read needed.
+
+This applies to GitHub issues only: they're the one source whose items both
+carry an `updated_at` you already have (from the priority listing) and keep
+the same item id however much the thread moves. The PR-derived sources
+(`review-feedback`, `merge-conflicts`, `abandoned-drafts`) need no such rule —
+their refs are scoped to the review round or the head SHA, so a new review or
+a new commit arrives as a *new* item that no block covers. It does not
+replace the Enabler's own periodic re-check of long-blocked items — an issue
+this check finds still blocked is exactly the item the Enabler goes on to
+re-examine later; this is only the cheap, same-cycle path for evidence that
+just landed.
 
 **Void items.** The `void` list is not a to-do list with an obstacle in front
 of it; it is a record that the item describes no work. **Never** put a void
