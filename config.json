@@ -26,7 +26,7 @@
   "enabler_model": "claude-opus-5",
   "pr_label": "autonomous-agent",
   "branch_prefix": "agent/",
-  "max_open_agent_prs": 5,
+  "max_open_agent_prs": 8,
   "candidates_max": 3,
   "claim_ttl_hours": 6,
   "abandoned_draft_after_hours": 3,
