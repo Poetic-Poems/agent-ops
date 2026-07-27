@@ -76,7 +76,7 @@ heading, the Script gives you one JSON object:
     }
   ],
   "escalation_label": "enabler-escalation",
-  "assignee": "warwickallen",
+  "assignee": "octocat",
   "cycle": "20260725T110412Z-node-1-4711",
   "node": "node-1"
 }

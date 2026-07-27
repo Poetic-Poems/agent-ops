@@ -398,6 +398,7 @@ values below are the confirmed defaults; the README must document each key.
 | `reviewer_model_default` | `claude-sonnet-5` | Reviews of `low`- and `medium`-complexity work (requirement 8a). |
 | `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
+| `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). This is the bound on how long evidence that arrives *after* a block — the failure mode of `TECH-DEBT.md` TD26072101 — can sit unread, and the only lever that re-opens an examined item. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
@@ -1961,6 +1962,14 @@ runs unattended.
 
     Every claimed item goes to **one** invocation. The reading is per item but
     the session overhead is not, and the set is small by construction.
+
+    `enabler_assignee` is not one of these guards: unlike an empty
+    `enabler_model`, an `enabler_model` set with no `enabler_assignee`
+    configured is not a silent non-engagement. The Script validates it at
+    config-read time, before the cycle does anything else, and exits with an
+    error if the combination occurs — an unassigned escalation would not be
+    excluded by requirement 16.4 and the pipeline could go on to select it as
+    its own work, so the failure must be loud rather than a quiet skip.
 35a. **Eligibility.** An item is eligible for the Enabler iff **all** of:
     1. it is **blocked** (requirement 34) — call that latest `attempt-failed`
        event *B*;
@@ -2133,9 +2142,10 @@ runs unattended.
     **The issue contract.** Before filing, a duplicate guard: an open issue
     carrying `enabler_escalation_label` whose body already quotes the item's
     reference *is* the escalation and is reused. Otherwise `gh issue create` in
-    the item's own repo with that label **and** `--assignee` the human, retried
-    once without the label so a repo where the label has not been created still
-    gets its issue. The assignment is the load-bearing half: requirement 16.4
+    the item's own repo with that label **and** `--assignee` set to
+    `enabler_assignee`, retried once without the label so a repo where the
+    label has not been created still gets its issue. The assignment is the
+    load-bearing half: requirement 16.4
     excludes assigned issues from the `issues` source, so the pipeline can never
     select its own request for help as work. The label is for the human's filter
     and the guard above, and must not be `blocked` — that is a separate
