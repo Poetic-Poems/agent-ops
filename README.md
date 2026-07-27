@@ -145,7 +145,7 @@ Edit `config.json` before first run. Keys:
 | `refinement_max_per_engagement` | 3 | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
-| `max_open_agent_prs` | `5` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
+| `max_open_agent_prs` | `8` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
 | `timeout_coordinator` | 15 | Minutes. |
 | `timeout_implementor` | 90 | Minutes. |
 | `timeout_reviewer` | 30 | Minutes. |

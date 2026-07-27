@@ -406,7 +406,7 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `max_open_agent_prs` | `5` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
+| `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 30 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit untouched (`updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
@@ -521,6 +521,18 @@ runs unattended.
       throttle on both spend and on the human gate silting up. The count is
       approximate by design: N nodes can pass it simultaneously, so the
       stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
+
+      The logged reason — of the stand-down here and of the restriction
+      warning in 2.2a — states the count's composition:
+      `(N ready + N draft + N unraised claim(s))`. A ready PR is the human's
+      queue; a draft is work in flight (the Implementor's own claim marker,
+      requirement 23); an unraised claim is a registry entry whose PR does
+      not yet exist. Whether the cap stood the fleet down because the queue
+      was genuinely full, or fired early on in-flight work, is exactly what
+      a cap-tuning decision needs — and it must be readable from the log
+      line alone, because the PRs behind a historical count are merged or
+      closed by the time anyone asks, leaving cycle-record archaeology as
+      the only other answer.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
@@ -2484,7 +2496,8 @@ pull request, run the ones the change touches and any it could regress.
 5. An injected `limit-hit` event with a future `resume_at` causes a
    stand-down; an expired one does not.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
-   back-pressure.
+   back-pressure, and the logged reason states the count's composition
+   (`N ready + N draft + N unraised claim(s)`).
 6a. **The switch stops both pipelines and lets go by itself.**
    `--disable 'testing'` then a plain invocation of *both* `agent-cycle.sh` and
    `review-cycle.sh`: each logs a stand-down carrying the reason, exits 0, and
