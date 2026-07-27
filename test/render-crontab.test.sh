@@ -66,6 +66,7 @@ assert_contains "the cycle line carries the node's hash minute" "$m * * * *  /ap
 assert_contains "the review line is cycle+29 mod 60, hour 3" "$r 3 * * *  /app/review-cycle.sh" "$(review_line "$out")"
 assert_eq "no placeholder survives a render" "0" "$(grep -c '@' "$out")"
 assert_contains "the shared-memory lines come through untouched" "state-sync.sh push" "$(cat "$out")"
+assert_contains "so does the log-rotation line" "rotate-logs.sh" "$(cat "$out")"
 assert_contains "so does LOGDIR" "LOGDIR=/home/agent" "$(cat "$out")"
 
 out2="$tmp_dir/crontab2"

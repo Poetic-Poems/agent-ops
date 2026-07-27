@@ -123,11 +123,12 @@ a node updates by pulling a new image rather than by pulling a branch.
   daily review tick — plus two fleet lines (requirement 2.5): a
   `state-sync.sh push` every five minutes, which publishes this node's state
   and heartbeat to its own branch, and a `state-sync.sh fetch` every seven,
-  which materialises every peer's for the union readers. The same
-  redirections into `state_dir` apply, so the dashboard's
-  log-derived views work identically. It deliberately omits the laptop's
-  personal `update-main-branches.sh` entry: that refreshes interactive
-  checkouts, and a node has none.
+  which materialises every peer's for the union readers; and one log-rotation
+  line (requirement 2.6), `rotate-logs.sh` hourly, which bounds the four logs
+  those schedules append to. The same redirections into `state_dir` apply, so
+  the dashboard's log-derived views work identically. It deliberately omits
+  the laptop's personal `update-main-branches.sh` entry: that refreshes
+  interactive checkouts, and a node has none.
 - **The cycle and review minutes are per-node** (design decision D5). At
   every container start, `entrypoint.sh` runs
   `deploy/docker/render-crontab.sh`, which renders `crontab.tmpl` over the
@@ -392,6 +393,8 @@ values below are the confirmed defaults; the README must document each key.
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
 | `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | 1000 | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
+| `log_retained_bytes` | 2000000 | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
+| `log_generations` | 3 | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
@@ -723,6 +726,26 @@ runs unattended.
    arbitration has no other mechanism: there is no lease and no leader, and
    `claims/` on the state repository's `main` branch — which per-node
    branches never touch — is owned exclusively by `lib/claim.sh`.
+2.6. **Log rotation.** Requirement 2.5 bounds the *records* in `state_dir` —
+   `cycles/` and `reviews/` are pruned on every push — but its logs are
+   appended to forever otherwise. `scripts/rotate-logs.sh`, on its own
+   crontab line independent of the pipelines, bounds four of them:
+   `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. Each
+   is renamed to `<name>.1` (an existing `.1` first shifts to `.2`, and so
+   on) once it reaches `log_retained_bytes`, keeping the newest
+   `log_generations` generations; a fresh, empty file replaces it
+   immediately, so nothing is ever left missing. A plain rename is enough —
+   every writer here reopens the file by name on each append (`>>"$log"` per
+   cron invocation), so no process holds a descriptor across the rotation
+   and `copytruncate` is not needed. `log.jsonl` and `review-log.jsonl` are
+   never rotated: the union readers (blocked/void extraction, the no-op
+   fingerprint, the usage-limit cooldown) scan them whole, and dropping
+   their head would silently change what the Co-Ordinator believes has been
+   tried. Because `cron.log` is published to the node's state branch
+   (requirement 2.5) and its tail is rendered on the dashboard (the
+   `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
+   `cron.log.1` too whenever the live file alone is shorter than the tail
+   window, so a rotation never empties the panel.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`; sort least recent
    first. The most-overdue repo gets first look, and this ordering takes
@@ -2335,6 +2358,12 @@ What exists, and the requirements each part answers to:
    is missing, because a node that cannot replicate is still a node that can
    run. Unit-tested against a local bare repository
    (`test/state-sync.test.sh`); must pass `shellcheck`.
+3i. `scripts/rotate-logs.sh` implementing requirement 2.6: rotates
+   `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` by
+   size, leaving `log.jsonl` and `review-log.jsonl` untouched. Called by its
+   own container crontab line, independent of both pipelines. Unit-tested
+   against a synthesised `state_dir` (`test/rotate-logs.test.sh`); must pass
+   `shellcheck`.
 3e. `lib/claim.sh` implementing requirement 17a: `claim` (kinds `branch` and
    `file`), `release`, `count` and `gc`, exit codes 0 won/done, 3 lost, 1
    error. Called by `agent-cycle.sh` (the claim loop after selection, the
@@ -2533,6 +2562,15 @@ pull request, run the ones the change touches and any it could regress.
    comment saying why, never by an exclusion in the runner.
    `.github/workflows/shellcheck.yml` runs the same script on every pull
    request against a pinned shellcheck (component 10).
+1h. **A log past `log_retained_bytes` rotates, keeps `log_generations`, and
+   never touches `log.jsonl`.** `test/rotate-logs.test.sh` passes: a log under
+   the threshold is left alone; one over it is renamed to `.1` and a fresh
+   empty file takes its place; a second rotation shifts `.1` to `.2` rather
+   than overwriting it, and a generation beyond `log_generations` is dropped;
+   `log.jsonl` and `review-log.jsonl` grow past the threshold untouched; and
+   `once-pr4-verify.log` is removed if present. `test/publish-dashboard.test.sh`
+   passes its cron-panel case: with `cron.log` short and `cron.log.1` present,
+   the panel's tail draws from both, newest last.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing

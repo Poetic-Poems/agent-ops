@@ -364,6 +364,37 @@ env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" \
 assert_lacks "an intact log gets no repair marker" "repaired: dropped" "$(cat "$launcher_log")"
 assert_contains "and keeps what it had" "nothing wrong here" "$(cat "$launcher_log")"
 
+# --- The cron panel survives a rotation (TD26072501, spec requirement 2.6) ------
+# scripts/rotate-logs.sh renames cron.log to cron.log.1 once it grows past
+# log_retained_bytes, leaving a fresh, short cron.log behind. The panel must
+# not go blank for the tick that lands between rotation and the log
+# regaining 40 lines of its own — it reads cron.log.1 too, oldest first.
+p="$(new_home nodeP)"
+cron_log="$p/.local/state/poetic-agents/cron.log"
+printf 'old-line-%d\n' 1 2 3 > "$cron_log.1"
+printf 'new-line-%d\n' 1 2 > "$cron_log"
+run_publish "$p"
+pdata="$(data_of "$p")"
+assert_eq "the panel carries every line, old and new" "5" \
+  "$(jq '.cron_tail | length' <<<"$pdata")"
+assert_eq "the oldest rotated line comes first" "old-line-1" \
+  "$(jq -r '.cron_tail[0]' <<<"$pdata")"
+assert_eq "the newest live line comes last" "new-line-2" \
+  "$(jq -r '.cron_tail[-1]' <<<"$pdata")"
+
+# A live file that already fills the 40-line window on its own needs nothing
+# from .1 — the rotated generation must not leak into a panel that doesn't
+# need it.
+q="$(new_home nodeQ)"
+cron_log_q="$q/.local/state/poetic-agents/cron.log"
+printf 'stale-rotated-line\n' > "$cron_log_q.1"
+for i in $(seq 1 45); do printf 'live-line-%d\n' "$i"; done > "$cron_log_q"
+run_publish "$q"
+qdata="$(data_of "$q")"
+assert_eq "the panel stays capped at 40" "40" "$(jq '.cron_tail | length' <<<"$qdata")"
+assert_lacks "and a rotated line the live file doesn't need is left out" \
+  "stale-rotated-line" "$(jq -c '.cron_tail' <<<"$qdata")"
+
 # --- The fleet view (DASHBOARD-SPEC "one fleet view from every node") -----------
 # A synthetic peer materialised the way state-sync fetch would: its own state
 # tree under the peers directory, with a heartbeat, a log and one cycle whose

@@ -186,6 +186,11 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   lock is a cycle that was killed, and the page says so rather than rounding it
   to "idle".
 - **`cron.log`** — tail shown, for "cron fired but nothing happened".
+  `scripts/rotate-logs.sh` (agent-ops `IMPLEMENTATION-PIPELINE-SPEC.md`
+  requirement 2.6) renames it to `cron.log.1` once it grows past
+  `log_retained_bytes`, so the tail is read from `cron.log.1` followed by
+  `cron.log` — never the live file alone — and a rotation never empties the
+  panel.
 - **`build-info.json` (in the image) or git `HEAD`** — what code this node is
   running, read through `lib/version.sh` and reported as `fleet.nodes[].version`
   ({pr, commit, short, built_at, repo, source, dirty}). `.dockerignore` keeps
@@ -578,7 +583,10 @@ same number's twins elsewhere on the page.
   rather than one burst. Two hand-appended `cycle: "manual"` records a
   fortnight apart raise no row in Recent cycles, take none of the `MAX_CYCLES`
   budget, and leave the real cycle at the top — while both events stay in the
-  log tail.
+  log tail. And with `cron.log` short and a `cron.log.1` beside it —
+  `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
+  from both, oldest first, rather than going blank for the tick after a
+  rotation.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
