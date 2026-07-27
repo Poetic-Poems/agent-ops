@@ -201,6 +201,19 @@ timeout_enabler_min="$(cfg '.timeout_enabler // 30')"
 enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours // 72')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalation"')"
+# The assignment is what does the work — it both puts the issue in front of the
+# human configured to receive them and excludes it from the `issues` source
+# (requirement 16.4), so an escalation can never be selected as work by the
+# very pipeline that raised it. That second property depends on the assignee
+# actually being set, so an enabled Enabler with no assignee configured is a
+# fatal misconfiguration, not a silent skip: an unassigned escalation is one
+# the pipeline could go on to pick up as its own work.
+enabler_assignee="$(cfg '.enabler_assignee // ""')"
+[[ "$enabler_assignee" == "null" ]] && enabler_assignee=""
+if [[ -n "$enabler_model" && -z "$enabler_assignee" ]]; then
+  echo "agent-cycle: enabler_model is set but enabler_assignee is not configured — refusing to run with an unassigned escalation target; set enabler_assignee in config.json or clear enabler_model to disable the Enabler" >&2
+  exit 1
+fi
 # The label a human applies on GitHub to ask for a void to be reopened
 # (requirement 34f). Only a human can apply it — no stage here ever does — so
 # requirement 34c's "only a human may clear a void" is unchanged; what this
@@ -216,12 +229,6 @@ needs_refinement_label="$(cfg '.needs_refinement_label // "needs-refinement"')"
 [[ "$needs_refinement_label" == "null" ]] && needs_refinement_label=""
 refinement_max_per_engagement="$(cfg '.refinement_max_per_engagement // 3')"
 [[ "$refinement_max_per_engagement" =~ ^[0-9]+$ ]] || refinement_max_per_engagement=3
-# Deliberately not a config key. The assignment is what does the work — it both
-# puts the issue in front of the one human this pipeline has and excludes it from
-# the `issues` source (requirement 16.4), so an escalation can never be selected
-# as work by the very pipeline that raised it. A second name would need both
-# properties to hold for it too.
-enabler_assignee="warwickallen"
 pr_label="$(cfg '.pr_label')"
 # Read here (rather than left to the Co-Ordinator, which puts it in the work
 # order's `branch`) because requirement 3c's gatherer needs it: a PR is only

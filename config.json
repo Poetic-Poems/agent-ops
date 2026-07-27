@@ -24,6 +24,7 @@
   "reviewer_model_default": "claude-sonnet-5",
   "reviewer_model_complex": "claude-opus-5",
   "enabler_model": "claude-opus-5",
+  "enabler_assignee": "warwickallen",
   "pr_label": "autonomous-agent",
   "branch_prefix": "agent/",
   "max_open_agent_prs": 8,
