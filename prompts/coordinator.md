@@ -554,25 +554,30 @@ will select it, rediscover that it is done, and file it again — forever.
 
 **A blocked issue with fresh evidence must be re-read — this one is not
 discretionary.** Before you apply exclusion 1 to a `blocked` item that is a
-GitHub issue, compare its `updated_at` (from the priority listing you already
-fetched — see "Issue priority" above) against the `ts` of the `blocked`
-entry's `attempt-failed` event for that item. If `updated_at` is newer,
-something was posted to the thread after the block was recorded: read the
-issue and every comment (`gh issue view <n> --comments`), exactly as you
-would for any candidate you're evaluating, and judge against that fresh
-reading whether the recorded blocker still holds.
+GitHub issue — its `item` is a bare issue number, so it is one of the `n`
+values in that repo's priority listing — compare its `updated_at` (from that
+same listing, which you already fetched — see "Issue priority" above) against
+the `ts` of the `blocked` entry's `attempt-failed` event for that item. If
+`updated_at` is newer, something was posted to the thread after the block was
+recorded: read the issue and every comment (`gh issue view <n> --comments`),
+exactly as you would for any candidate you're evaluating, and judge against
+that fresh reading whether the recorded blocker still holds.
 
-- If it does not, report `unblocked` with `reason` and `evidence` drawn from
-  what you just read, and treat the issue as a live candidate for this same
-  cycle — same as the general re-check above.
+- If it does not, put the issue's id in `unblocked` — a bare item identifier,
+  exactly as the general re-check above; `reason` and `evidence` are fields of
+  `voided`, not of `unblocked` — and treat the issue as a live candidate for
+  this same cycle.
 - If it still holds, the item stays blocked; move on. Do not report
   `unblocked` and do not re-report `needs_refinement` for it.
 - When `updated_at` is no newer than `ts`, nothing has changed since the
   marker was written — skip it on the marker alone, no re-read needed.
 
-This applies to GitHub issues only: they're the one source with a maintained
-`updated_at` you're already fetching for priority banding, and the one source
-where a human routinely adds evidence to a thread after the fact. It does not
+This applies to GitHub issues only: they're the one source whose items both
+carry an `updated_at` you already have (from the priority listing) and keep
+the same item id however much the thread moves. The PR-derived sources
+(`review-feedback`, `merge-conflicts`, `abandoned-drafts`) need no such rule —
+their refs are scoped to the review round or the head SHA, so a new review or
+a new commit arrives as a *new* item that no block covers. It does not
 replace the Enabler's own periodic re-check of long-blocked items — an issue
 this check finds still blocked is exactly the item the Enabler goes on to
 re-examine later; this is only the cheap, same-cycle path for evidence that
