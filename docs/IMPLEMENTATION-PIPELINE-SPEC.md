@@ -399,7 +399,7 @@ values below are the confirmed defaults; the README must document each key.
 | `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
-| `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). This is the bound on how long evidence that arrives *after* a block — the failure mode of `TECH-DEBT.md` TD26072101 — can sit unread, and the only lever that re-opens an examined item. `0` disables re-examination. |
+| `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a now catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound remains the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Empty disables the projection only: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
@@ -1308,8 +1308,11 @@ runs unattended.
     under-specified items beyond the walk it was doing anyway (flags accumulate
     across cycles by themselves, and a sweep would spend a selection pass on
     something nobody asked for); it must not re-report an item already recorded
-    as blocked (requirement 16's first exclusion means it never re-evaluates one
-    anyway, and requirement 34e refuses the re-report if it does); and reporting
+    as blocked — ordinarily requirement 16's first exclusion means it is never
+    re-evaluated at all, and where requirement 18a's mandatory re-check does
+    look at one again, that re-check is scoped to whether the recorded blocker
+    still holds and is never grounds to re-report `needs_refinement`; requirement
+    34e refuses the re-report regardless, if it happens anyway; and reporting
     never changes what the cycle selects. An empty array is the normal case.
 
     What this replaces is a silent skip, and the silence was the defect. An item
@@ -2025,9 +2028,13 @@ runs unattended.
          deliberately: the human acted, and requirement 36a promised them that
          closing the issue is what restarts the work.
        - **`recheck`** — the newest examination of the item is older than
-         `enabler_recheck_hours` (`0` disables). This is the only bound on how
-         long evidence arriving *after* a block can sit unread, which is the
-         failure `TECH-DEBT.md` TD26072101 records.
+         `enabler_recheck_hours` (`0` disables). For a GitHub issue,
+         requirement 18a already catches new evidence posted into its own
+         thread same-cycle, off the issue's `updated_at` — the failure
+         `TECH-DEBT.md` TD26072101 records. This bound remains what closes
+         the gap for everything 18a does not reach: every non-issue blocked
+         source, and a blocker on an issue that clears without a comment ever
+         landing (nothing then moves `updated_at`).
     A re-block re-enters through `threshold`, because every clause above is
     measured from *B*: a fresh `attempt-failed` moves *B* forward, leaving the
     old examination behind it and restarting the count.
