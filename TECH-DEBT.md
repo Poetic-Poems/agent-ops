@@ -69,19 +69,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072201 The publisher's per-cycle detail loop still forks ~300 jq serially
-
-The transcript cost scan and the array accumulations are batched now, but
-`cycle_json`/`stage_json` in `scripts/publish-dashboard.sh` still fork
-roughly a dozen `jq` per shown cycle — about 5 s for the 40-cycle detail
-window against real transcripts under WSL2, which is the whole 5-second
-heartbeat budget on its own. The cost is bounded (`MAX_CYCLES`, not history
-length), and the launcher's lock plus its end-of-window margin absorb the
-occasional overshoot, so this is a budget squeeze rather than a failure.
-Fix: assemble the detail window in one `jq` program over the 40 cycles'
-envelope and event files (they are already individual files on disk),
-which should take a `--no-github` publish to around a second.
-
 ### TD26072501 The state dir's logs grow without bound
 
 TD26072004 bounded the *records* in `state_dir` — `cycles/` and `reviews/` are
@@ -440,7 +427,7 @@ above.
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | resolved | 2026-07-27 | #109 |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | resolved | 2026-07-27 | #107 |
-| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | in-progress | | |
+| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | resolved | 2026-07-28 | #113 |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | open | | |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | open | | |
