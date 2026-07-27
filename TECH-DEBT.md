@@ -380,6 +380,49 @@ blocked-extract descriptions) travels in the same PR.
 
 Filed 2026-07-28, from the review discussion on #109.
 
+### TD26072802 A stage with an empty result silently drops its whole cycle from the dashboard
+
+`scripts/publish-dashboard.sh`'s detail-window assembly (`stage_json`,
+pre-TD26072201; now the `extract_status`/`build_stage` jq port that replaced
+it) treats a stage's extracted `.result` text as "unparseable" whenever it is
+empty or whitespace-only — and an unparseable stage does not just render with
+a blank status, it drops the **whole cycle** from `.cycles` on the dashboard,
+silently.
+
+This was not a deliberate design choice; it fell out of a shell quirk. The
+pre-TD26072201 code built each stage's JSON via
+`jq -n --argjson status "$status_json" …`, where `$status_json` came from
+`extract_status_json`. That function's first move is `jq empty <<<"$text"`,
+and `jq empty` on whitespace-only input (which is what an empty `$text`
+becomes once `<<<` appends its trailing newline) succeeds trivially with no
+output — so `jq -c '.' <<<"$text"` right after it also prints nothing, and
+`status_json` ends up the empty string rather than the literal `"null"` every
+other unparseable case falls through to. `--argjson status ""` is invalid
+JSON, so the enclosing `jq -n` call for that stage — and, since cycle_json
+passes each stage straight through as its own `--argjson`, the whole cycle's
+`jq -n` call — fails outright, leaving that cycle's JSON unparseable and
+excluded by the `jq -e . "$cf"` check in the assembly loop. Confirmed by
+direct reproduction: a well-formed envelope with `"result":""` disappears
+from `.cycles` exactly like a torn envelope does, even though nothing about
+it failed to run.
+
+TD26072201's jq port (`extract_status` in `scripts/publish-dashboard.sh`)
+preserves this behaviour on purpose — marked `ok:false` and commented in
+place — rather than fixing it as a drive-by change bundled with an unrelated
+performance rewrite; retiring it is its own review-sized change with its own
+test.
+
+Fix: decide what a genuinely empty stage result should mean (most likely:
+render the stage with `status: null` like any other unparseable text, and
+never let one stage's content silently take its cycle's row off the page),
+change `extract_status` (and, for symmetry, agent-cycle.sh's
+`extract_json_result`, which shares the same straight-parse-else-fenced-block
+algorithm per DASHBOARD-SPEC.md) accordingly, and add a
+`test/publish-dashboard.test.sh` case with a well-formed envelope whose
+`result` is `""` asserting the cycle still renders.
+
+Filed 2026-07-28, from TD26072201.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -408,3 +451,4 @@ above.
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
 | TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
 | TD26072801 | A still-valid block is re-read every cycle once its issue's thread has moved | open | | |
+| TD26072802 | A stage with an empty result silently drops its whole cycle from the dashboard | open | | |
