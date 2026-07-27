@@ -1241,7 +1241,9 @@ runs unattended.
     downstream consumers never see the band.
 16. Excludes from candidacy any item that is:
     - recorded as blocked in the shared log (an `attempt-failed` event not
-      followed by an `unblocked` event for that item);
+      followed by an `unblocked` event for that item) — for a GitHub issue,
+      only once requirement 18a's mandatory re-check, where it applies, has
+      found the recorded blocker still holds;
     - a tech-debt item whose Ledger row is `in-progress`;
     - already referenced by any open PR or draft (a claim, per the repos'
       claiming workflow), or already held by a live **claim branch** on the
@@ -1403,6 +1405,40 @@ runs unattended.
       the `reason` and the `evidence` requirement 34c has always demanded, and
       subject to requirement 34d's guard, which records an unevidenced or
       refuted entry as blocked instead.
+18a. **Fresh evidence on a blocked issue makes requirement 18's re-check
+    mandatory, not discretionary.** For a blocked item that is a GitHub
+    issue, before excluding it under requirement 16 the Co-Ordinator compares
+    the issue's own `updated_at` against the `ts` of the `attempt-failed`
+    event that blocked it. If `updated_at` is newer, something was posted to
+    the thread after the block was recorded, so the Co-Ordinator must read
+    the issue and every comment (requirement 14a's whole-thread rule) before
+    honouring the marker, and judge against that fresh reading whether the
+    recorded blocker still holds — reporting `unblocked`, with the `reason`
+    and `evidence` requirement 20 already requires, when it does not. This is
+    the same outcome and the same two limits as requirement 18 (impediments
+    only; never clears a void); only the trigger changes, from "may check
+    when convenient" to "must check when the thread has moved". When
+    `updated_at` is no newer than `ts`, nothing has changed since the marker
+    was written and the ordinary skip applies without a re-read.
+
+    This exists because the general case left a gap a periodic sweep alone
+    cannot close at cycle speed: requirement 3b's fingerprint already digests
+    each issue's `updated_at`, so a comment landing on an already-blocked
+    issue busts the fingerprint and wakes a Co-Ordinator within the hour —
+    but that Co-Ordinator would otherwise skip straight past the item on the
+    stale marker without ever looking at what changed, exactly the failure
+    the Enabler's own periodic re-check (requirement 35a) exists to bound to
+    days rather than never. Reading the fresh comment the same cycle that
+    woke for it is cheaper than either the silent stall or the Enabler's
+    eventual sweep, and does not replace the Enabler: an item this check
+    finds still blocked is exactly the item the Enabler goes on to re-examine
+    on its own schedule.
+
+    Other blocked sources (tech-debt entries, security/code-quality findings,
+    plan tasks) have no comparable per-item "new evidence arrived" signal —
+    their content lives in a file or an alert record, not a thread a human
+    can add to after the block — so this requirement binds to GitHub issues
+    only; requirement 18's general, discretionary check still covers them.
 19. Chooses the Implementor's model: `implementor_model_trivial` only when
     the item can be completed without changing any file that affects runtime
     behaviour (docs, comments, register entries); otherwise
