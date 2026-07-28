@@ -2096,6 +2096,22 @@ runs unattended.
     requirements 34 and 34c key on them, so an event that omits them cannot
     pin any state on the item it names, and the omission is invisible until you
     notice the same work being redone.
+33a. **Metering.** Every `stage-end` event additionally carries the per-stage
+    metering record: `model` (the model id passed to the invocation),
+    `cost_usd`, `duration_ms`, `num_turns`, `is_error` (pulled from the
+    `claude --output-format json` envelope named in requirement 11 /
+    `docs/DASHBOARD-SPEC.md`), and `tokens` — an object with `input`,
+    `output`, `cache_creation` and `cache_read`, summed across every model the
+    invocation's own tree used (top-level plus any subagents), matching how
+    `cost_usd` already counts subagent spend. `lib/metering.sh`'s
+    `metering_fields` derives this from the stage's own out-file, and is the
+    one implementation both this Script and `review-cycle.sh` call for their
+    `stage-end`/`review-stage-end` events — a stage whose out-file was never
+    written, or whose envelope doesn't parse, degrades every field to `null`
+    rather than dropping the event or failing the cycle.
+    `docs/METERING-SCHEMA.md` is the field-by-field contract: types, units,
+    the per-cycle aggregation rule, and what future change is additive versus
+    breaking.
 34. Blocked semantics: an item is blocked iff the most recent
     `attempt-failed` / `unblocked` event *for that item* is `attempt-failed`.
     An `attempt-failed` event must carry enough detail for a future
@@ -2728,11 +2744,15 @@ What exists, and the requirements each part answers to:
    Unit-tested (`test/needs-refinement.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh` and `lib/model-id.sh`) holding every rule
-   that more than one component computes — at minimum requirement 34's blocked
+   `lib/refinement.sh`, `lib/model-id.sh` and `lib/metering.sh`) holding every
+   rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
    dashboard reports what came of it), requirement 3h's refinement
-   carry-forward, requirement 33's `attempt-failed` field shape, the usage-limit
+   carry-forward, requirement 33's `attempt-failed` field shape, requirement
+   33a's per-stage metering record (`lib/metering.sh`'s `metering_fields`,
+   sourced by `agent-cycle.sh` and `review-cycle.sh` so a stage in either
+   pipeline emits the same shape; `docs/METERING-SCHEMA.md` is the contract;
+   unit-tested in `test/metering.test.sh`), the usage-limit
    phrase pattern of requirement 10, the switch of requirement 2.3 and the
    fleet flags of requirements 2.3a and 2.1 (`lib/toggle.sh`'s `fleet_*`
    functions; `TOGGLE_GH` substitutes a stub for tests, following
@@ -3295,6 +3315,18 @@ pull request, run the ones the change touches and any it could regress.
     its claims for gc. Assert the ordering too — the engagement's events precede
     `cycle-end` — and that a limit phrase in that transcript produces an ordinary
     `limit-hit` rather than being swallowed with the rest of the failure.
+33a. **The per-stage metering record matches `docs/METERING-SCHEMA.md`
+    (requirement 33a).** `test/metering.test.sh` passes: `lib/metering.sh`'s
+    `metering_fields` derives `model`, `cost_usd`, `duration_ms`, `num_turns`,
+    `is_error` and `tokens{input,output,cache_creation,cache_read}` from a
+    single-model envelope and from a multi-model (subagent) envelope, summing
+    `tokens` across every `modelUsage` entry in the latter; a genuinely zero or
+    `false` value survives rather than collapsing to `null`; and a missing,
+    empty or unparseable out-file degrades every field to `null` without
+    erroring. Both `agent-cycle.sh` and `review-cycle.sh` source
+    `lib/metering.sh` and merge its output into every `stage-end` /
+    `review-stage-end` event they log, so this one function's correctness is
+    what "both pipelines emit conforming records" reduces to.
 
 ## Host provisioning (human steps)
 
