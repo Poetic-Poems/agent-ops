@@ -41,6 +41,7 @@
 #   review-feedback                                      | review_feedback (verbatim)
 #   merge-conflicts                                      | merge_conflicts (verbatim)
 #   abandoned-drafts                                     | abandoned_drafts (verbatim)
+#   register-hygiene                                     | register_hygiene (verbatim)
 #   issues (incl. their Priority band, req. 15e)         | issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
@@ -84,6 +85,17 @@
 # cycle the work becomes visible. gather-merge-conflicts.sh samples mergeability
 # and this array carries the result, so the flip to CONFLICTING *adds an entry*
 # and busts the fingerprint. Same failure shape as abandoned-drafts; same fix.
+#
+# `register_hygiene` is hashed verbatim too, but for a weaker reason, and saying
+# so is the point: unlike the two above, this source needs no rescuing. A
+# register drifts only when somebody commits to `TECH-DEBT.md`, and that moves
+# the repo's `head_sha` — which is already here. There is no transition the
+# existing signals would sleep through. It is hashed anyway because a
+# per-source exception is a thing to remember, and "covered by something else"
+# is precisely how a source ends up covered by nothing; and because candidacy
+# depends on the checker as well as the file, so an edit to
+# `scripts/td-check.pl` can add or retire the item with no commit to the target
+# repo at all, and only this array carries that.
 #
 # `enabler_eligible` is hashed for the same class of reason again (requirement
 # 35b). An item becomes eligible for the Enabler when the fleet has run its
@@ -161,6 +173,7 @@ NOOP_CANON_JQ='
         review_feedback: (.review_feedback // []),
         merge_conflicts: (.merge_conflicts // []),
         abandoned_drafts: (.abandoned_drafts // []),
+        register_hygiene: (.register_hygiene // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),
         workflows: (.state.workflows // []),

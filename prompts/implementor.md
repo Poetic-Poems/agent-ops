@@ -288,6 +288,12 @@ matching "When `source` is …" section above.)*
      claim (and, once the PR merges, the completion) is visible to any other
      cycle scanning PRs. There is no ledger to flip and no issue to comment on;
      do **not** modify the review folder — it is a point-in-time record.
+   - **Register hygiene** (`source` of `register-hygiene`): the work order's
+     branch is the ordinary `agent/register-hygiene-…`, already pushed on your
+     behalf. Name the ref (`item`) in the PR body, along with the problem lines
+     from `context`, so the claim is visible to any other cycle scanning open
+     PRs. There is no Ledger row to flip — the item *is* the register's
+     inconsistency, not an entry in it — and no issue to comment on.
    - Immediately after the PR exists, record its URL where the Script can
      always find it even if this session ends before your final message
      does: `echo "<pr-url>" > .git/agent-ops-pr-url`. `.git/` is never part
@@ -324,6 +330,40 @@ matching "When `source` is …" section above.)*
      fixed. Deliver exactly what the improvement prompt and `acceptance`
      describe; if the prompt turns out to depend on a decision only a human
      can make, report `"status": "blocked"` rather than guessing.
+   - Register hygiene: there is no originating record to close — the register
+     itself is the item — but the repair has a discipline, and skipping it turns
+     a tidy-up into a loss of information:
+     - **STALE BODY** (a `resolved`/`not-debt` row whose body is still there):
+       verify the resolution really landed before deleting anything. Follow the
+       Ledger row's `Ref` to the pull request or commit and confirm the work is
+       actually on the default branch. A row flipped in error is a live item
+       whose body is the *only* surviving description of it; deleting that body
+       destroys the item rather than tidying the file. Where the resolution
+       checks out, do the deletions with `scripts/drop-sections.pl TECH-DEBT.md
+       <id>…`, which removes each `### <id>` section and refuses to touch
+       anything outside `## Current Items`. Where it does not, the row is what
+       is wrong — see below.
+     - **MISSING BODY** (an `open`/`in-progress` row with no body), **NO LEDGER
+       ROW** (a body with no row) and **BAD ROW** (an unrecognised status) need
+       judgement, not a mechanical edit. Reconstruct what was lost from git
+       history (`git log -p -- TECH-DEBT.md`, and the PR the row's `Ref` names)
+       and restore it in the register's own format. If history does not settle
+       it, report `"status": "blocked"` saying which id and what you could not
+       establish — a guessed register entry is worse than a flagged one.
+     - **DUPLICATE BODY** / **DUPLICATE ROW**: keep the fuller of the two and
+       remove the other, preserving anything the loser said that the winner
+       does not.
+     - **Touch nothing else in the Ledger.** Its rows are permanent history,
+       and the only row you may edit is one the check itself flags as broken.
+       Do not renumber, re-sort, re-word titles, or fill in blank `Resolved`
+       cells you happen to notice.
+     - Re-run `perl scripts/td-check.pl TECH-DEBT.md` until it exits 0. That is
+       the acceptance, and it is also what the repo's own CI will run on your
+       PR.
+     - **The pull request must be pure register housekeeping** — `TECH-DEBT.md`
+       and nothing else. If a stale body turns out to describe work that was
+       never done, do not do that work here; leave the item open (which is the
+       repair) and let it be selected on its own merits.
    - Add a `CHANGELOG.md` entry if the change is notable by the repo's own
      definition of that (a security fix usually is).
 6. **Verify the PR itself**, against GitHub's view, not your local guess:

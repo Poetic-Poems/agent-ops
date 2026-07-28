@@ -30,6 +30,9 @@ heading, the Script gives you one JSON object:
       ],
       "review_feedback": [
         {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "last_commit_at": "2026-07-17T01:07:22Z", "body": "…every review body and inline comment in this round, verbatim…"}
+      ],
+      "register_hygiene": [
+        {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/blob/main/TECH-DEBT.md", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE BODY     TD26071203  body:96 ledger:412 (resolved)  …"], "body": "…the whole of the consistency check's output, verbatim…"}
       ]
     },
     {
@@ -76,6 +79,12 @@ heading, the Script gives you one JSON object:
   branch we own, and untouched for at least the staleness threshold — **already
   fetched and filtered for you** by the Script (see "Abandoned drafts" below). An
   empty array means no draft of ours has stalled — do not go looking.
+- Each entry's `register_hygiene` is the repo's own `TECH-DEBT.md`, when it has
+  fallen out of internal consistency — a resolved item whose body was never
+  removed, an open item with no body, a duplicate or malformed Ledger row —
+  **already fetched and checked for you** by the Script (see "Register hygiene"
+  below). At most one entry, because a repo has only one register. An empty
+  array means the register is consistent — do not go looking.
 - Each entry's `findings` is the repo's open Dependabot alerts and
   code-scanning alerts, **already fetched and normalised for you** by the
   Script — do not re-query the `dependabot/alerts` or `code-scanning/alerts`
@@ -170,8 +179,8 @@ selectable item:
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review · 11. `issues:low` · 12. code-quality |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 11. project-review · 12. `issues:low` · 13. code-quality |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review · 11. `issues:low` · 12. code-quality · 13. register-hygiene |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 11. project-review · 12. `issues:low` · 13. code-quality · 14. register-hygiene |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
@@ -212,9 +221,16 @@ selectable item:
 
 - **code-quality** — the remaining open code-scanning alerts (no security
   severity: maintainability, correctness, style), also in `findings` (entries
-  with `source: "code-quality"`). Lowest priority: automated, speculative, and
-  higher-volume than curated work, so pick one only when nothing more
-  deliberate qualifies.
+  with `source: "code-quality"`). Automated, speculative, and higher-volume than
+  curated work, so pick one only when nothing more deliberate qualifies.
+- **register-hygiene** — the repo's `TECH-DEBT.md` failing its own consistency
+  check: a resolved item whose `### ` body was never removed, an open item with
+  no body, a duplicate or malformed Ledger row. Handed to you **pre-fetched** in
+  each repo's `register_hygiene` array. **Last in every repo's list**: the repair
+  is deterministic and entirely cosmetic, so it must never outrank substantive
+  work — but a register that lies about what is outstanding misleads every later
+  reader, human and agent alike, so it should not sit unfixed either. See
+  "Register hygiene" below.
 
 This table is the fixed default. Use whatever the Script actually passed
 you (see "What you receive") if it's more specific or has changed.
@@ -250,7 +266,7 @@ no selectable security candidate remains do you fall back to the ordinary
 repo-then-source walk for the rest (urgent issues → review-feedback →
 merge-conflicts → abandoned-drafts → failed-runs → high issues → tech-debt →
 medium issues → implementation-plan → project-review → low issues →
-code-quality).
+code-quality → register-hygiene).
 
 **Urgent issues come second, across all repos.** An open issue whose `Priority`
 is `Urgent` outranks the plain repo-then-source walk exactly as security does:
@@ -402,6 +418,44 @@ draft PR *is* the item — the Script has already established it is stale and ou
 Applying the claim exclusion would make every candidate permanently unselectable
 while reading as correct behaviour, and quietly mean no abandoned draft is ever
 finished.
+
+**Register hygiene.** The candidates are the pre-fetched `register_hygiene`
+entries — at most one per repo, because a repo has only one `TECH-DEBT.md`. Do
+not go looking for these yourself and do not read the register to check: the
+Script has already run the repo's own consistency check (`td-check.pl`, the same
+script that gates the repo's CI and that the Implementor will re-run until it
+passes) and dropped every register that passed. **An entry's presence in this
+array is the candidate test.** If the array is empty, this source has no
+candidates and the register is consistent; there is nothing to verify.
+
+- `item` is the entry's `ref` (e.g. `register-hygiene-413128de0d60`). Use it
+  exactly; it is scoped to the register's current blob SHA on purpose, so a
+  repair — or any other edit to the file — makes a later problem a fresh item
+  that no old block covers, while unrelated commits elsewhere in the repo leave
+  the ref, and so the item, unchanged.
+- `context` must paste the entry's `body` — the consistency check's whole output
+  — **verbatim**. That text is the brief: every line names an id, a problem
+  class and a line number, and that is exactly what makes the repair mechanical.
+  Do not summarise it, count the problems for the Implementor, or decide which
+  of them matter. Add the entry's `url` and `blob_sha`.
+- `acceptance` is: `perl scripts/td-check.pl TECH-DEBT.md` exits 0 in the target
+  repo, with the repair discipline of `prompts/implementor.md` followed — no
+  code changes, and nothing touched in the Ledger beyond a row the check itself
+  flags as broken.
+- `model` is always `models.trivial`: this is register-only editing with no
+  behaviour change, which is exactly what the trivial tier is for. Say so in
+  `model_reason` — that classification is also what makes the Implementor grade
+  the finished diff `low` by definition, without deliberating over it.
+- `branch` is the ordinary derived claim branch, `agent/<ref>` — the Script
+  creates it. Unlike the three finishing sources, nothing exists yet here: this
+  is a *starting* source, so it is subject to back-pressure like any other, and
+  a full human gate correctly narrows it away until the gate clears.
+
+The ordinary claim rule applies here unchanged. An open PR referencing the ref
+is a claim under exclusion 3, exactly as for any other source — there is no
+carve-out to make, because unlike review-feedback, merge-conflicts and
+abandoned-drafts the open PR here is a *repair of* the item, not the item
+itself.
 
 **Failed Actions runs.** A candidate exists only where the **most recent**
 run of a workflow on the default branch is a failure — a later green run
@@ -701,7 +755,9 @@ that across:
 
 Set `model` to the runtime input's `models.trivial` value only when the item
 can be completed without changing any file that affects runtime behaviour —
-documentation, comments, or register/ledger entries only. Otherwise use
+documentation, comments, or register/ledger entries only. A `register-hygiene`
+item is always one of those by construction, so it always takes
+`models.trivial`. Otherwise use
 `models.default`. Security and code-quality findings always take
 `models.default`: a dependency bump or a code fix changes what runs, even
 when the diff looks small. Record your reasoning in `model_reason`; a future
@@ -750,7 +806,8 @@ the list, and one strong candidate alone is a perfectly good list.
 
 - `source` is one of `"security"`, `"review-feedback"`, `"merge-conflicts"`,
   `"abandoned-drafts"`, `"failed-runs"`, `"tech-debt"`, `"issues"`,
-  `"implementation-plan"`, `"project-review"`, or `"code-quality"` — the same
+  `"implementation-plan"`, `"project-review"`, `"code-quality"`, or
+  `"register-hygiene"` — the same
   tokens as the `sources` lists in the runtime input above, except that an
   issue is always `"issues"`, never `"issues:urgent"` or any other band. The
   banded tokens exist only to place the source in the walk.
@@ -782,6 +839,11 @@ the list, and one strong candidate alone is a perfectly good list.
   improvement prompt (from `04-improvement-prompts.md`) verbatim, plus the
   review folder path and the `R-NN` detail; set `acceptance` to the
   recommendation's *Intended end state*.
+- For a `register-hygiene` entry, `item` is its `ref` (e.g.
+  `register-hygiene-413128de0d60`) and `context` must paste the entry's `body`
+  — the whole of the consistency check's output — verbatim, plus its `url` and
+  `blob_sha`. There is no pull request to carry across: the Script derives the
+  ordinary `agent/<ref>` claim branch as for any other starting source.
 - Do **not** choose a branch name. The Script derives and creates the claim
   branch itself, deterministically — `td/<ID>` for tech-debt (the very lock
   the human claiming workflow in TECH-DEBT.md takes, so agents and humans

@@ -750,6 +750,26 @@ gather_merge_conflicts() {
   fi
 }
 
+# Pre-fetch the repo's TECH-DEBT.md when it disagrees with itself (requirement
+# 3i). Unlike the three above this one's candidacy is a pure function of one
+# file's content, so the repo's head SHA would already wake the cycle that
+# introduced the drift; the array is fed to the fingerprint verbatim anyway, for
+# uniformity with its siblings and because editing scripts/td-check.pl changes
+# candidacy with no commit to the target repo at all (see
+# scripts/gather-register-hygiene.sh and lib/noop-skip.sh).
+gather_register_hygiene() {
+  local slug="$1" branch="$2" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-register-hygiene.sh" "$slug" "$branch" \
+        2>"$cycle_dir/register-hygiene-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/register-hygiene-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 # Pre-fetch the voids a human has asked, on GitHub, to be reopened
 # (requirement 34f). Unlike every other gatherer this is not a work source: it
 # produces no candidates, it edits the skip-list the Co-Ordinator is about to be
@@ -1562,10 +1582,14 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
     merge_conflicts="$(gather_merge_conflicts "$slug")"
   fi
+  register_hygiene="[]"
+  if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
+    register_hygiene="$(gather_register_hygiene "$slug" "$default_branch")"
+  fi
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
-    --argjson mc "$merge_conflicts" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc}')"
+    --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a

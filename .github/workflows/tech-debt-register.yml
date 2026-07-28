@@ -1,0 +1,36 @@
+name: Tech-debt register check
+
+# The deterministic half of keeping TECH-DEBT.md honest (the other half is the
+# pipeline's `register-hygiene` work source, which repairs drift that lands
+# anyway). Resolving an item removes its `### <id>` body from Current Items and
+# leaves its Ledger row behind forever; in July 2026 twelve items across the
+# three repos were flipped to `resolved` with their bodies still in place, and
+# nothing noticed until somebody read the file. prompts/implementor.md has
+# prescribed the removal since it was written — but resolutions also arrive from
+# humans and from interactive sessions, which no prompt governs.
+#
+# So the rule is checked here instead, on the pull request that would introduce
+# the drift, where the author is still holding the file. This job is uniform
+# across poetic, poetic-fiddle and agent-ops, as is scripts/td-check.pl (whose
+# canonical copy lives in Poetic-Poems/poetic — see td-tooling-drift.yml).
+#
+# Deliberately not gated by `paths:`: the check reads one small file and costs
+# seconds, and "did this PR touch TECH-DEBT.md" is the wrong question when a
+# merge can bring drift in from the base. Deliberately `pull_request`, never
+# `pull_request_target`, so a fork PR never runs with write-scoped secrets.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  register:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check TECH-DEBT.md consistency
+        run: perl scripts/td-check.pl TECH-DEBT.md
