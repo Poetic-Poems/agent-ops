@@ -42,7 +42,7 @@
 #   merge-conflicts                                      | merge_conflicts (verbatim)
 #   abandoned-drafts                                     | abandoned_drafts (verbatim)
 #   register-hygiene                                     | register_hygiene (verbatim)
-#   issues (incl. their Priority band, req. 15e)         | issues digest
+#   issues (incl. their Priority band, req. 15e)         | issues (verbatim) + issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
 #   blocked / void skip-lists                            | repo|item projections
@@ -96,6 +96,19 @@
 # depends on the checker as well as the file, so an edit to
 # `scripts/td-check.pl` can add or retire the item with no commit to the target
 # repo at all, and only this array carries that.
+#
+# `issues` (the pre-fetched array of requirement 3j) is hashed verbatim, and
+# it is the only cover for one real transition: an *edit* to an existing
+# comment. GitHub moves the issue's `updated_at` for a new comment, a label, a
+# title edit or an assignment — the digest sees all of those — but editing a
+# comment in place moves only the comment's own timestamp, which the digest
+# does not sample. The Co-Ordinator reads the thread verbatim from this array,
+# so a re-scoped instruction edited into an old comment changes its verdict
+# while every digest field sits still; only the array's bytes carry it. The
+# `state.issues` digest stays alongside rather than being retired: it is
+# sampled independently of the array (see gather-source-state.sh on why its
+# failure mode must differ), so a cycle whose issues fetch degraded to `[]`
+# still gets its fingerprint busted by the digest when a real issue moves.
 #
 # `enabler_eligible` is hashed for the same class of reason again (requirement
 # 35b). An item becomes eligible for the Enabler when the fleet has run its
@@ -174,6 +187,7 @@ NOOP_CANON_JQ='
         merge_conflicts: (.merge_conflicts // []),
         abandoned_drafts: (.abandoned_drafts // []),
         register_hygiene: (.register_hygiene // []),
+        issues_prefetched: (.issues // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),
         workflows: (.state.workflows // []),

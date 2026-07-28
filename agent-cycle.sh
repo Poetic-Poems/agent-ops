@@ -772,6 +772,26 @@ gather_register_hygiene() {
   fi
 }
 
+# Pre-fetch the repo's open issues, whole threads included (requirement 3j) —
+# the deterministic exclusions (assigned, labelled `blocked`, pull requests)
+# already applied, the judgement ones left to the Co-Ordinator. This source
+# used to be the Co-Ordinator's own `gh` read, and a cycle was observed
+# skipping the entire walk on a "the input carries no issues" misreading; the
+# array makes the candidate set an input rather than an errand (see
+# scripts/gather-issues.sh for the incident and the contract).
+gather_issues() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
+        2>"$cycle_dir/issues-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 # Pre-fetch the voids a human has asked, on GitHub, to be reopened
 # (requirement 34f). Unlike every other gatherer this is not a work source: it
 # produces no candidates, it edits the skip-list the Co-Ordinator is about to be
@@ -1459,9 +1479,11 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 # signal, and the later resume wins: the log union is as fresh as the last
 # state-sync fetch, while fleet/limit.json is read live — it is what lets a
 # limit one node hit a minute ago stop this cycle now, not a fetch interval
-# from now. Either carrier can be retired early by `--clear-limit` (2.1):
-# the union's reduction honours a `limit-cleared` event, and the flag is
-# deleted outright.
+# from now. Either carrier can be retired early — automatically by the probe
+# of 2.1b below when the resume time is this system's own guess, or by hand
+# with `--clear-limit` (2.1) — and both retirements work the same way: the
+# union's reduction honours a `limit-cleared` event, and the flag is deleted
+# outright.
 #
 # Both records are carried whole rather than reduced to a timestamp, so the
 # logged reason can say whether `resume_at` is a stated reset or this system's
@@ -1480,10 +1502,70 @@ if [[ -n "$resume_at" ]]; then
 fi
 now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
-  log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
-    "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
-    "$(limit_reset_known "$governing")")" '{reason: $r}')"
-  exit 0
+  governing_class="$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)"
+  governing_known="$(limit_reset_known "$governing")"
+  standing=1
+  probe_note=""
+  # 2.1b The estimated stand-down probes its own exit. When `reset_known` is
+  # false, `resume_at` is this system's invented time and carries no
+  # information about the limit — and the observed spend-cap message is
+  # emitted equally when a 5-hour session window meets an exhausted cap,
+  # which clears at the session rollover, most of a day before the invented
+  # time (it did, on 2026-07-28: both hits cleared within the hour; the fleet
+  # would have slept 24). So instead of sleeping on a guess, spend one
+  # minimal invocation of the cheapest model asking the only authority there
+  # is. The economics run the right way round on both sides: a limited
+  # account answers the probe with the limit message at no token cost, and an
+  # unlimited one answers for a fraction of a cent, once — the first clear
+  # verdict retires the stand-down for the whole fleet, and the gate stops
+  # firing. A *stated* reset is never probed: the message named the time, and
+  # asking earlier is the one spend that buys nothing. Nor does --dry-run
+  # probe: a cycle that promises to change nothing must not write
+  # `limit-cleared`, and a probe whose verdict it would have to ignore is
+  # pure cost.
+  if [[ "$governing_known" != "true" ]] && ! (( DRY_RUN )); then
+    probe_out="$cycle_dir/limit-probe.out"
+    run_claude_stage 180 "$implementor_model_trivial" \
+      "Reply with the single word: ok" "$probe_out" "$cycle_dir" || true
+    probe_verdict="$(limit_probe_verdict "$(cat "$probe_out" 2>/dev/null || true)" \
+      "$(cat "$probe_out.stderr" 2>/dev/null || true)")"
+    case "$probe_verdict" in
+      clear)
+        # The same two carriers --clear-limit retires, for the same reason it
+        # retires both: the stand-down lifts only when the later of the two
+        # says so. The `limit-cleared` event outranks every earlier hit in
+        # the union's reduction; the flag is deleted because
+        # fleet_limit_publish is extend-only and delete is the one write that
+        # legitimately moves a resume earlier.
+        log_event "limit-cleared" "$(jq -nc --arg w "$resume_at" \
+          --arg by "auto-probe@$node_name" \
+          '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by}')"
+        if [[ -n "$state_repo" ]]; then
+          fleet_flag_delete "$state_repo" "$state_dir" limit || log_event "warning" \
+            '{"detail": "could not clear fleet/limit.json after a clear probe — peers reading it live stand down until their own probes answer"}'
+        fi
+        standing=0
+        ;;
+      limited)
+        # The probe just observed the limit live, which is worth recording
+        # for two reasons: the Enabler must not be engaged from the exit trap
+        # moments after a limit was re-confirmed (requirement 35's guards),
+        # and the probe's transcript may state what the original message did
+        # not — a parseable reset upgrades `reset_known` to true and stops
+        # the probing until a time that is finally real.
+        detect_and_log_limit_hit "$probe_out" || true
+        probe_note=" (probe: still limited)"
+        ;;
+      *)
+        probe_note=" (probe: inconclusive)"
+        ;;
+    esac
+  fi
+  if (( standing )); then
+    log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
+      "$governing_class" "$governing_known")$probe_note" '{reason: $r}')"
+    exit 0
+  fi
 fi
 
 # 2.1a Claim GC — sweep registry entries older than claim_ttl_hours (17a).
@@ -1588,10 +1670,17 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
     register_hygiene="$(gather_register_hygiene "$slug" "$default_branch")"
   fi
+  # The issues source is one source at four ranks (`issues:urgent` …
+  # `issues:low`, requirement 15e), so any band in `sources` warrants the one
+  # fetch — the band is per issue, not per fetch.
+  issues="[]"
+  if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
+    issues="$(gather_issues "$slug")"
+  fi
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
-    --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh}')"
+    --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" --argjson issues "$issues" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, issues: $issues}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
@@ -1703,7 +1792,13 @@ if (( backpressure_tripped )); then
       '{reason: $r}')"
     exit 0
   fi
-  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' \
+  # `issues` is emptied along with the narrowing, not merely left unwalked:
+  # it is the one array that carries whole threads, and a restricted cycle
+  # paying the Co-Ordinator to read candidates it is forbidden to pick is the
+  # exact spend back-pressure exists to stop. The other non-finishing arrays
+  # are compact enough that stripping them buys nothing.
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))
+                                    | .issues = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
     --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \

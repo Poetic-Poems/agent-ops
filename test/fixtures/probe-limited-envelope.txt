@@ -1,0 +1,1 @@
+{"is_error":true,"duration_api_ms":116243,"num_turns":13,"stop_reason":"stop_sequence","terminal_reason":"api_error","api_error_status":429,"result":"You've hit your monthly spend limit · raise it at claude.ai/settings/usage?from=cc_cli_limit_message","subtype":"success","type":"result"}

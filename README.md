@@ -224,10 +224,13 @@ Four things are worth knowing:
 
 - **`/app` is the deployment.** The image is built from this repository, so a
   node updates by pulling a new image — never by pulling a branch inside a
-  running container. Every merge to `main` builds one and publishes it to
+  running container. Every merge to `main` that touches anything the container
+  reads builds one and publishes it to
   `ghcr.io/poetic-poems/agent-ops` as `latest` (what watchtower follows) and as
   the commit SHA. To pin a node to a known-good build, or to roll one back, set
-  `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env`.
+  `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env` — a
+  documentation-only merge publishes nothing, so pin to a commit that built an
+  image (the package's tag list is the record).
 - **`~/.claude` and `state_dir` must be volumes.** Claude's OAuth credentials
   refresh and write back, and `state_dir` is the pipelines' memory. The
   entrypoint seeds `settings.json` only when it is absent, and refuses to start
@@ -405,16 +408,21 @@ docker compose exec scheduler /app/agent-cycle.sh --status
 # record:   /home/agent/.local/state/poetic-agents/disabled.json
 # cycle:    idle
 # review:   idle
-# limit:    STANDING DOWN — with no stated reset; retrying after 2026-07-27T01:00:11Z (estimated); …
+# limit:    STANDING DOWN — with no stated reset; each hourly cycle probes whether it has lifted — …
 ```
 
 When the message states a reset time, `resume_at` is that time and waiting is
 the whole answer. When it does not — the monthly spend-cap message is the
-common case — `resume_at` is this system's own retry interval (a day), not a
-prediction. Such a limit has two exits, and you choose:
+common case — `resume_at` is this system's own guess, only an upper bound:
+each hourly cycle probes the API with one minimal request (requirement 2.1b)
+and retires the stand-down by itself the moment the account answers, so a
+limit that was really an exhausted 5-hour session window clears within the
+hour of its rollover, not a day later. Such a limit still has two exits, and
+you choose:
 
-- **wait for the plan's rollover**, which needs no one; or
-- **raise the cap** at `claude.ai/settings/usage`, then tell the fleet:
+- **wait**, and let the probe notice the rollover on its own; or
+- **raise the cap** at `claude.ai/settings/usage`, then tell the fleet
+  without waiting for the next cycle's probe:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --clear-limit "cap raised"
@@ -426,10 +434,14 @@ earlier `limit-hit`. Peers pick it up at their next state-sync fetch. Run it
 only once the limit is actually gone: if it is not, the next cycle simply
 re-hits it and publishes a fresh stand-down.
 
-Without this the only exit was `resume_at` passing, on a clock the system had
-invented — so a cap raised in the morning still left the fleet down until the
-next day. If you want to know whether a limit is genuinely still in force, ask
-the account directly rather than reading the timestamp:
+Before the probe existed, `resume_at` passing was the only automatic exit, on
+a clock the system had invented — so a cap raised in the morning still left
+the fleet down until the next day. The probe asks the account itself, hourly;
+`--clear-limit` remains for when you have just raised the cap and want the
+fleet back now rather than at the next cycle. The probe's verdict is in the
+stand-down reason (`probe: still limited` / `probe: inconclusive`), and its
+transcript is kept as `limit-probe.out` in the cycle record. To ask the
+account yourself, the probe is just:
 
 ```bash
 docker compose exec scheduler claude -p 'say ok'
@@ -1126,9 +1138,10 @@ host install, where cron ran the very files being edited; on a fleet of
 containers, editing is always safe and the switch is about *rollout*, not
 editing.
 
-Because rollout is where the care has moved to: every merge to `main` builds
-and publishes a new image, and every node on the `auto-update` profile
-restarts into it within watchtower's poll interval (about five minutes). The
+Because rollout is where the care has moved to: every merge to `main` that
+touches anything the container reads builds and publishes a new image, and
+every node on the `auto-update` profile restarts into it within watchtower's
+poll interval (about five minutes). The
 roll waits for a cycle rather than killing one — watchtower's pre-update hook
 (`deploy/docker/watchtower-pre-update.sh`) exits 75 while either pipeline's
 lock is held, so the update slides to the next poll and keeps sliding until
@@ -1153,10 +1166,19 @@ checkout — no node, no Docker, no installation:
 for t in test/*.test.sh; do "$t" || break; done
 ```
 
-CI runs the same suite *inside* the freshly built image on every push —
-along with toolchain, crontab and role-guard checks (see
+CI runs the same suite *inside* the freshly built image on every push that
+could change it — along with toolchain, crontab and role-guard checks (see
 `.github/workflows/build-image.yml`) — so an image that reaches `ghcr.io`
-has already passed everything above.
+has already passed everything above. A change confined to documentation
+(`docs/`, `README.md`, `CLAUDE.md`, `TECH-DEBT.md`, `LICENCE`,
+`deploy/docker/README.md`) builds no image and so runs none of this; anything
+else does, `prompts/*.md` emphatically included, since those are what the
+pipeline feeds to `claude`. `scripts/is-docs-only.sh` holds the line, and
+running it by hand answers "will my branch build an image?":
+
+```bash
+git diff --no-renames --name-only main...HEAD | ./scripts/is-docs-only.sh
+```
 
 ### Trying a change on a real node before it merges
 

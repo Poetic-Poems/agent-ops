@@ -151,15 +151,19 @@ a node updates by pulling a new image rather than by pulling a branch.
   cron-log lines.
 - The image is built by CI, not by hand:
   `.github/workflows/build-image.yml` builds it on every pull request and
-  every merge, runs the acceptance checks below *inside* it, and — on `main`
-  only — publishes it to `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
+  every merge that could change it, runs the acceptance checks below *inside*
+  it, and — on `main` only — publishes it to
+  `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
   (what a node's watchtower follows) and the commit SHA (how a node is pinned
   or rolled back, through `AGENT_OPS_IMAGE`), each tag a multi-platform manifest
   list covering `linux/amd64` and `linux/arm64`. A pull request builds and
   tests both legs — each in its own job on a runner of the image's own
   architecture, loaded (`load: true`) and run natively through requirement
   1b's acceptance checks — but publishes nothing. This is the whole update
-  path: merge produces an image, and nodes replace containers.
+  path: merge produces an image, and nodes replace containers. "Could change
+  it" is requirement 1b-i's question: a change confined to prose builds
+  nothing and publishes nothing, so a documentation merge leaves the fleet
+  where it is and no tag carries its SHA.
 - The image creates the volume mount points (`~/.claude`, `state_dir`,
   `workspace_root`) owned by `agent`, because a container runtime seeds a new
   named volume from the image's mount point — ownership included — and creates
@@ -511,14 +515,15 @@ runs unattended.
       write is best-effort — on failure the node logs a `warning` and relies
       on the union to carry its `limit-hit` to the fleet.
 
-      Both carriers can be retired early, and `--clear-limit` (requirement
-      12) is the only supported way to do it: it deletes `fleet/limit.json`
-      and writes a `limit-cleared` event, which the union's reduction —
-      most-recent-wins over `limit-hit` **and** `limit-cleared`, in
-      `lib/limit-detect.sh` so all four readers share it — treats as
-      superseding every earlier hit. Deleting rather than shortening the flag
-      is what keeps extend-only intact for the concurrent-hit case it exists
-      for.
+      Both carriers can be retired early, two ways — automatically by the
+      probe of 1b when `reset_known` is false, or by hand with
+      `--clear-limit` (requirement 12) — and both retirements are the same
+      write: delete `fleet/limit.json` and log a `limit-cleared` event, which
+      the union's reduction — most-recent-wins over `limit-hit` **and**
+      `limit-cleared`, in `lib/limit-detect.sh` so all four readers share it
+      — treats as superseding every earlier hit. Deleting rather than
+      shortening the flag is what keeps extend-only intact for the
+      concurrent-hit case it exists for.
 
       A stand-down must have an exit that does not depend on a cycle running,
       because this check runs before any stage launches: while it holds, no
@@ -527,12 +532,45 @@ runs unattended.
       — and when `reset_known` is false that is an invented time, so a
       stand-down could outlive its limit by up to `LIMIT_LONG_COOLDOWN_HOURS`
       with no way to say so. It did: a spend cap lifted on 2026-07-26 left the
-      fleet down for a further 22 hours.
+      fleet down for a further 22 hours — and again on 2026-07-28, when a
+      spend-cap message that actually recorded a 5-hour session window
+      meeting the exhausted cap stood the fleet down for 24 hours over a
+      limit that cleared within one. Requirement 1b is the automatic exit
+      those two incidents argue for; `--clear-limit` remains the manual
+      override.
 
       The logged reason states whether `resume_at` is a stated reset or an
       estimate, and `--status` reports the stand-down alongside the switch.
       Both answer "why is nothing happening?", and a status that knew only
       about the switch is how a stale cooldown went a day unexplained.
+   1b. *An estimated stand-down probes its own exit.* When the governing
+      record's `reset_known` is false, `resume_at` is this system's invented
+      time and carries no information about the limit — so before standing
+      down, the Script spends one minimal headless invocation of
+      `implementor_model_trivial` (a fixed one-line prompt, 180 s timeout,
+      transcript kept as `limit-probe.out` in the cycle record) and classifies
+      it with `limit_probe_verdict` (`lib/limit-detect.sh`, regression-tested
+      against canned transcripts): the limit phrase anywhere in the transcript
+      is `limited`; otherwise a well-formed envelope with `is_error: false`
+      and a non-empty `result` is `clear`; anything else — a timeout, a
+      network failure, an empty file — is `inconclusive`. On `clear` it
+      retires both carriers exactly as `--clear-limit` would (the
+      `limit-cleared` event names `auto-probe@<node>` as `by`) and the cycle
+      proceeds; on `limited` it records the re-observed hit through
+      requirement 10 — whose parse also upgrades `reset_known` to true if the
+      probe's message finally states a reset, stopping further probes until a
+      time that is real — and stands down; on `inconclusive` it changes
+      nothing and stands down, with the verdict appended to the logged
+      reason either way.
+
+      The economics run the right way round on both sides: a limited account
+      answers the probe with the limit message at no token cost, and an
+      unlimited one answers once for a fraction of a cent — the first `clear`
+      verdict retires the stand-down fleet-wide, so the gate stops firing.
+      A *stated* reset is never probed (the message named the time; asking
+      earlier is the one spend that buys nothing), and `--dry-run` never
+      probes (a cycle that promises to change nothing must not write
+      `limit-cleared`, and a verdict it would have to ignore is pure cost).
    1a. *Claim GC*: run `lib/claim.sh gc` (requirement 17a) — best-effort,
       skipped on `--dry-run` — so registry entries a dead node left behind
       are swept before back-pressure counts them. Every node runs it; no
@@ -586,7 +624,11 @@ runs unattended.
    flag: the Co-Ordinator is already told the runtime input's `sources` are
    authoritative over its own table (requirement 15), so a source it cannot see
    is a source it cannot select — no new prompt concept, and nothing for it to
-   reason around.
+   reason around. The pre-fetched `issues` array (requirement 3j) is emptied
+   along with the narrowing — it is the one array that carries whole threads,
+   and paying the Co-Ordinator to read candidates it cannot pick is the exact
+   spend this gate exists to stop; the other non-finishing arrays are compact
+   enough that stripping them would buy nothing.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
@@ -937,6 +979,46 @@ runs unattended.
      from a failure by the API's own 404, not by parsing `gh`'s wording, and
      only the failure prints to stderr. Otherwise fails safe to `[]` (exit 0)
      with the same stderr discipline as requirement 3c. `shellcheck`-clean.
+3j. **Issues pre-fetch.** For each configured repo whose `sources` include any
+   `issues:<band>` entry (one source at four ranks — any band warrants the one
+   fetch), run `scripts/gather-issues.sh <slug>` and attach the array to that
+   repo's entry as `issues`. Each entry is one candidate issue, whole thread
+   included: `source: "issues"`, the bare issue number as `ref` (and as
+   `number`), `url`, `title`, the `Priority` band as `priority` (read exactly
+   as the source-state digest reads it — same field, same four names, same
+   `Medium` default — because a band the digest and the candidate set derived
+   differently is the fingerprint failure requirement 3b exists to prevent),
+   `labels`, `author`, `created_at`, `updated_at`, the `body` verbatim, and
+   `comments` (author, timestamp, body — verbatim, oldest first).
+
+   - **Why this source is pre-fetched at all.** It used to be the
+     Co-Ordinator's own read, and that contract failed closed: cycle
+     `20260727T145500Z-poetic-1-1431114` recorded the Co-Ordinator reasoning
+     "no issue data provided in input; per the prompt, I do not re-query" — a
+     rule that never existed — and skipping the entire issues walk while six
+     selectable issues sat open. A source the model can silently decline to
+     read is the model-side twin of the fingerprint gap requirement 3b warns
+     about: no error, just tidy `none-selected` events over live work. The
+     array makes the candidate set an input rather than an errand, the same
+     move every drifted source before it got (3a, 3c, 3e, 3g, 3i).
+   - **The deterministic half of requirement 16.4 is applied here**: assigned
+     issues, issues labelled `blocked` (case-insensitive), and the pull
+     requests the issues endpoint interleaves are dropped in the gatherer, so
+     the Co-Ordinator never spends judgement on entries no rule would let it
+     pick — the assignment drop also covers the Enabler's escalation issues,
+     which are always assigned. The judgement half ("a question or discussion
+     rather than actionable work", over the whole thread) stays the
+     Co-Ordinator's. Items blocked in the shared log are **not** dropped:
+     requirement 18a's mandatory re-check needs the thread and `updated_at`
+     in front of the Co-Ordinator to decide whether fresh evidence unblocks.
+   - **Degrades to `[]` (exit 0) on any API failure**, like requirement 3a
+     and unlike the source-state digest: the array is *given to* the
+     Co-Ordinator, so an empty array is a faithful record of the input it
+     got, and the independently sampled issues digest still busts the
+     fingerprint when a real issue moves during the degradation. Failures are
+     loud on stderr (teed to `issues-<repo>.err` in the cycle record).
+   - Both reads take one 100-item page, like every gatherer. The bound is
+     stated in the script header rather than silently applied.
 3h. **Refinement carry-forward.** The Co-Ordinator's runtime input carries a
    `refinements` map — repo → item → the latest `item-refined` payload
    (requirement 33), for items that are not void — built from the fleet's log
@@ -993,7 +1075,8 @@ runs unattended.
      ready PR's `mergeable` resolves to `CONFLICTING` after its base moved. Hashing
      those arrays is the *only* thing that busts the fingerprint at those
      transitions, since the open-PR digest below moves for a new or updated PR but
-     not for time passing or a base advancing elsewhere; an issues digest
+     not for time passing or a base advancing elsewhere; the pre-fetched
+     `issues` array of requirement 3j verbatim, *and* an issues digest
      (number, `updated_at`, labels,
      assignee, `Priority` — labels and assignee because requirement 16.4
      excludes on them, `Priority` because requirement 15e *ranks* on it and a
@@ -1001,7 +1084,12 @@ runs unattended.
      `updated_at` is not a substitute for digesting the field itself: it is
      GitHub's to move or not on an issue-field edit, and a ranking signal whose
      only coverage is a timestamp somebody else owns is the "covered by
-     something else" trap this list exists to close); a
+     something else" trap this list exists to close. The verbatim array is the
+     only cover for an *edit* to an existing comment — which moves no digest
+     field, while the Co-Ordinator reads the thread from the array — and the
+     digest stays alongside because it is sampled independently, so a cycle
+     whose issues fetch degraded to `[]` still gets its fingerprint busted by
+     the digest when a real issue moves); a
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
      issue or alert; the `blocked`/`void` extracts projected to `repo|item`, so
@@ -1209,16 +1297,24 @@ runs unattended.
 
 ### The Co-Ordinator (selection only)
 
-14. Works read-only: `gh` reads (runs, issues, PRs, file contents via
+14. Works read-only: `gh` reads (runs, PRs, file contents via
     `gh api`) — it does not clone, and writes nothing but its final message.
     For the `security` and `code-quality` sources it does **not** re-query the
     Dependabot/code-scanning APIs itself; it reads the pre-fetched `findings`
-    array the Script attached to each repo (requirement 3a), spending its
-    `gh` budget only on the cheap claim/blocked checks below.
+    array the Script attached to each repo (requirement 3a). The `issues`
+    source likewise: its candidates are the pre-fetched `issues` array
+    (requirement 3j), threads included, and an empty array is a repo with no
+    issue candidates, never issue data withheld. The `failed-runs` source has
+    no array and never did — it is queried live, and "not pre-fetched" means
+    "go and look", not "skip". The remaining `gh` budget goes on the cheap
+    claim/blocked checks below and on reading what an item references.
 14a. **An issue is its whole thread, not just the opening post.** Whenever it
     evaluates or selects a GitHub issue, the Co-Ordinator reads the body *and
-    every comment* — `gh issue view <n> --comments` (or `gh api
-    repos/<slug>/issues/<n>/comments`). A bare `gh issue view <n>` or `gh api
+    every comment*. For `issues`-source candidates both arrive in the array
+    entry (`body`, `comments` — verbatim); for an issue outside the array (one
+    another item references, or a blocked issue the array's filter dropped),
+    it fetches the thread — `gh issue view <n> --comments` (or `gh api
+    repos/<slug>/issues/<n>/comments`); a bare `gh issue view <n>` or `gh api
     .../issues/<n>` returns only the body and silently drops the comments,
     where the parts that decide the work routinely live: added acceptance
     criteria, clarifications or corrections to the original ask, scope cuts, a
@@ -1239,8 +1335,9 @@ runs unattended.
     `gh api .../contents/...` (no pre-fetch — these are ordinary tracked files,
     like `TECH-DEBT.md`). A recommendation's stable ref is
     `review-<review-date>-R-NN`; the paired improvement prompt is the brief.
-    The `issues` source appears at four ranks rather than one, banded by each
-    issue's `Priority` field — see requirement 15e.
+    The `issues` source's candidates are the pre-fetched `issues` array
+    (requirement 3j), and it appears at four ranks rather than one, banded by
+    each entry's `priority` — see requirement 15e.
 15b. **Review feedback comes third, across all repos.** Like security and
     urgent issues, this outranks the plain repo-then-source walk: any selectable
     `review_feedback` candidate in any repo is taken before any work below it
@@ -1319,11 +1416,12 @@ runs unattended.
     it did before banding existed, so that setting the field is what moves an
     issue and leaving it alone changes nothing.
 
-    The Co-Ordinator reads the band from the REST issues endpoint
-    (`gh api repos/<slug>/issues?state=open`), whose payload carries
-    `issue_field_values`; the band is the `single_select_option.name` of the
-    entry whose `issue_field_name` is `Priority`. `gh issue view --json` does
-    not expose issue fields, so it is not an alternative here. Anything that is
+    The band arrives on each pre-fetched entry as `priority`, derived by the
+    Script (requirement 3j) from the REST issues endpoint, whose payload
+    carries `issue_field_values`; the band is the `single_select_option.name`
+    of the entry whose `issue_field_name` is `Priority`. `gh issue view
+    --json` does not expose issue fields, which is why the REST listing is
+    the one surface it can come from. Anything that is
     not one of the four names — absent, empty, unreadable by this token, or a
     value the organisation added later — is `Medium`, which keeps an
     unrecognised or invisible field a no-op rather than a re-ranking.
@@ -1368,9 +1466,12 @@ runs unattended.
       the backstop for when it is missing anyway — the item is then
       investigated once, and the finding remembered.
     - an issue that is assigned, labelled `blocked`, or is a question or
-      discussion rather than actionable work — judged over the whole thread
-      (requirement 14a), since a comment can block, close, re-scope, or answer
-      an issue that its body alone would make look selectable;
+      discussion rather than actionable work — the first two are deterministic
+      and already applied by the Script (requirement 3j drops them from the
+      `issues` array before the Co-Ordinator sees it); the judgement half is
+      the Co-Ordinator's, over the whole thread (requirement 14a), since a
+      comment can block, close, re-scope, or answer an issue that its body
+      alone would make look selectable;
     - a security finding whose only available fix is one a human must choose
       (e.g. a Dependabot alert with no non-breaking upgrade, needing a major
       version bump that changes the repo's public behaviour) — flag it, don't
@@ -2474,6 +2575,14 @@ What exists, and the requirements each part answers to:
    `.github/workflows/tech-debt-register.yml` runs the check on this
    repository's own register on every pull request, the deterministic layer that
    keeps this source's volume near zero.
+3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
+   prints the JSON array of the repo's candidate issues — open, unassigned,
+   not labelled `blocked`, pull requests dropped — each carrying the bare
+   issue number as its ref, the `Priority` band (default `Medium`, read as
+   the source-state digest reads it), and the whole thread verbatim (`body`
+   plus `comments`). Fails safe to `[]` (exit 0) with failures loud on
+   stderr. Its filter and shape are regression-tested in
+   `test/issues-prefetch.test.sh`; must pass `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -2567,7 +2676,12 @@ What exists, and the requirements each part answers to:
    the `test/` suite inside the image, and check the role guard; then publish
    to GHCR on `main` only. It carries `packages: write` and authenticates as
    the workflow's own `GITHUB_TOKEN`, so nothing about publishing depends on a
-   human's credentials.
+   human's credentials. Its `changes` job decides whether there is an image
+   worth building at all, through `scripts/is-docs-only.sh` — the allowlist of
+   paths the image is not the delivery path for (requirement 1b-i). The rule lives in
+   the script rather than in the workflow for the reason component 10 gives
+   about its own file set, and because a rule that decides what reaches a node
+   is worth unit-testing.
 10. `scripts/lint-shell.sh` and `.github/workflows/shellcheck.yml` — the
     shell linter and the job that enforces it (acceptance check 1g). The file
     set and the invocation live in the script, so a developer's run and CI's
@@ -2606,12 +2720,44 @@ pull request, run the ones the change touches and any it could regress.
    passes inside the container; and `/app/agent-cycle.sh` with no role set
    exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`
    runs every one of these against both the `linux/amd64` and the `linux/arm64`
-   build on every pull request — each architecture in its own job, natively
-   on a runner of that same architecture (`ubuntu-latest` and
-   `ubuntu-24.04-arm`), with no emulation anywhere in the tested path — so a
-   change that breaks either architecture's image cannot be merged, and it is
-   the only place the `test/` suite runs in CI. On `main` the workflow
-   publishes both architectures as one manifest list per tag.
+   build on every pull request that touches the image — each architecture in
+   its own job, natively on a runner of that same architecture
+   (`ubuntu-latest` and `ubuntu-24.04-arm`), with no emulation anywhere in the
+   tested path — so a change that breaks either architecture's image cannot be
+   merged, and it is the only place the `test/` suite runs in CI. On `main` the
+   workflow publishes both architectures as one manifest list per tag.
+1b-i. **A documentation-only change builds nothing, and everything else
+   builds.** `test/is-docs-only.test.sh` passes: `scripts/is-docs-only.sh`
+   calls a change documentation-only when every path in it is under `docs/` or
+   is `README.md`, `CLAUDE.md`, `TECH-DEBT.md`, `LICENCE` or
+   `deploy/docker/README.md`, and calls it code otherwise — `prompts/*.md`
+   included, since those are Markdown documents *and* the operating
+   instructions of requirement 1a's stages, so classifying by file extension
+   would let a change to a node's behaviour skip the build that deploys it. An
+   empty path list, or none, is code. The test the allowlist encodes is "the
+   image is not the delivery path for this file", which is weaker than "nothing
+   reads it" and has to be: a cycle working on this repository reads its own
+   `CLAUDE.md` and `TECH-DEBT.md`, but from the `gh repo clone` in
+   `workspace_root` and from the contents API (requirement 3i) — both current
+   the moment a pull request merges, with no image involved. The copy at /app
+   is what nothing reads, because every stage's working directory is under
+   `workspace_root` or `state_dir` (requirement 6's assertion pins the first),
+   so /app is never a working directory nor an ancestor of one and its
+   `CLAUDE.md` is never loaded as project memory. `.github/workflows/build-image.yml`'s
+   `changes` job runs it over the change's own diff (three-dot, so a pull
+   request is judged on what its branch did and not on what `main` did
+   meanwhile) and skips the `build` jobs — and so `publish` — when the answer
+   is yes; a checked-out state it cannot diff builds. The skip is a job-level
+   `if:` rather than a `paths-ignore:` filter, because a skipped job reports
+   success to the branch ruleset's required checks while a filtered-out
+   workflow never reports at all — so every job here reports on every pull
+   request, and `Work out what changed` joins the other three as a required
+   check. Only an explicit "yes" skips: a `changes` job that fails rather than
+   answers leaves the `build` jobs' condition unsatisfied-by-emptiness and they
+   run, since that same skipped-reads-as-success would otherwise carry a dead
+   runner through to `publish` and leave a merge to `main` with no image at
+   all. A documentation-only merge to `main` publishes no image, and no tag
+   carries that commit's SHA.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
@@ -2743,11 +2889,31 @@ pull request, run the ones the change touches and any it could regress.
    run. Against the real API,
    `scripts/gather-source-state.sh Poetic-Poems/poetic-fiddle main` prints
    `ok: true` with a `p` on every issue.
+2e. **Issues arrive pre-fetched, filtered, whole-thread and fingerprinted.**
+   `test/issues-prefetch.test.sh` passes: against a stubbed issues endpoint,
+   `scripts/gather-issues.sh` drops an assigned issue, a `Blocked`-labelled
+   issue (whatever the case), and a pull request, while a clean issue arrives
+   with `source: "issues"`, its number as `ref`, its `Priority` band (default
+   `Medium`), its body, and its comments verbatim; a failing API degrades to
+   `[]` (exit 0) with the failure on stderr; and the no-op fingerprint
+   (`lib/noop-skip.sh`) differs between two inputs identical except for the
+   text of one issue comment — the one transition only the verbatim array
+   carries. Against the real API, `scripts/gather-issues.sh
+   Poetic-Poems/poetic-fiddle` prints an array whose entries all carry
+   `comments` and a four-name `priority`.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning.
-5. An injected `limit-hit` event with a future `resume_at` causes a
-   stand-down; an expired one does not.
+5. An injected `limit-hit` event with a future `resume_at` and
+   `reset_known: true` causes a stand-down with no probe launched; an expired
+   one does not stand down. With `reset_known: false`, the cycle launches
+   exactly one probe: a stubbed `claude` answering a clean envelope yields a
+   `limit-cleared` event (`by: auto-probe@<node>`) and the cycle proceeds; a
+   stub answering the limit phrase logs a fresh `limit-hit` and a stand-down
+   whose reason ends `(probe: still limited)`; a stub that exits non-zero
+   with no output changes no limit state and the reason ends
+   `(probe: inconclusive)`. `--dry-run` with the same injected event launches
+   no probe.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
@@ -3045,7 +3211,13 @@ only when the work graded itself `complexity:high` (requirement 8a), which the
 rubric of requirement 26a confines to the minority of PRs whose contents
 warrant it; the reviewer `stage-start` events carry the grade, so a creep
 toward `high` that would erode this bound is auditable in the log. Stand-down
-cycles cost nothing but a few `gh` calls. Because back-pressure caps open agent PRs
+cycles cost nothing but a few `gh` calls — except under an *estimated*
+usage-limit stand-down, where each hourly cycle also spends the 2.1b probe.
+That spend is self-limiting from both ends: while the limit is real the
+probe's answer is the limit message, which serves no tokens and costs
+nothing, and the first answered probe (a fraction of a cent of
+`implementor_model_trivial`) retires the stand-down fleet-wide, so at most
+one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
 

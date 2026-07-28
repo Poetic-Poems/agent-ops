@@ -88,8 +88,8 @@ configuration alone.
 **Entry:** now.
 
 **Exit gate:** a repository outside Poetic-Poems runs the whole suite —
-hourly cycle, weekly review, dashboard — from published artefacts with no
-code changes; agent-ops contains no pipeline code, only Poetic's
+implementation cycle, review cycle, dashboard — from published artefacts
+with no code changes; agent-ops contains no pipeline code, only Poetic's
 configuration and deployment; the product repository exists in the
 Pullwright organisation and carries its licence.
 
@@ -103,7 +103,12 @@ Pullwright organisation and carries its licence.
       checks an installation end to end. *[interactive skeleton, fleet
       completion]*
 - [ ] Make schedules configuration-driven (per-pipeline cadence in config,
-      not a baked crontab). *[fleet]*
+      not a baked crontab) — and retire the cadence from each pipeline's
+      identity: "hourly" (and "weekly") must disappear from spec titles,
+      documentation, prompts, and code, and every timing derived from the
+      period today (lock staleness, retention counts, stand-down probing)
+      must follow the configured value instead of assuming an hour.
+      *[fleet]*
 - [ ] First-class non-interactive auth: Anthropic API key, Bedrock, and
       Vertex as the primary path; subscription OAuth documented as the
       supported self-hosted alternative (D4). *[interactive]*
