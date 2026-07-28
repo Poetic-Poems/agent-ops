@@ -138,7 +138,8 @@ your review:
 
    End the comment body with a blank line followed by `<!-- agent-ops:pipeline-comment
    cycle=<cycle> -->`, using the `## Cycle` id verbatim (invisible on GitHub —
-   an HTML comment). The PR is still a draft at this point in the procedure;
+   an HTML comment), whichever of the two commands above you post it with.
+   The PR is still a draft at this point in the procedure;
    without the marker, this comment would read as fresh human activity to
    `gather-abandoned-drafts.sh` (TD26072605) and could hide a stall — this
    session dying between here and step 7 — for another

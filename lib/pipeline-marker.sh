@@ -16,12 +16,15 @@
 # unconditionally there; a human's comment carries no marker and always
 # counts.
 #
-# One definition (requirement 34a): agent-cycle.sh's own PR comments and the
-# comment instructions in prompts/enabler.md and prompts/reviewer.md all stamp
-# what they post with pipeline_comment_marker, and
-# scripts/gather-abandoned-drafts.sh sources this same file and matches on
-# PIPELINE_COMMENT_MARKER_PREFIX, so the write side and the read side cannot
-# drift apart.
+# One definition (requirement 34a): agent-cycle.sh stamps its own PR comments
+# by calling pipeline_comment_marker, and scripts/gather-abandoned-drafts.sh
+# sources this same file and matches on PIPELINE_COMMENT_MARKER_PREFIX, so that
+# write side and the read side cannot drift apart. The Enabler's and Reviewer's
+# comment instructions (prompts/enabler.md, prompts/reviewer.md) are the one
+# place the string has to be spelled out rather than sourced — a prompt is read
+# by a model, not a shell — so test/abandoned-drafts.test.sh asserts both
+# prompts still carry the prefix defined here, which is what stops a change to
+# it silently un-marking every comment those two stages write.
 #
 # An HTML comment renders invisibly on GitHub.
 

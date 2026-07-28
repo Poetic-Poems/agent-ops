@@ -72,19 +72,24 @@ prs='[
    "comments": [{"createdAt": "2026-07-28T21:00:00Z", "body": "any update on this?"}]},
   {"number": 88, "isDraft": true,  "headRefName": "agent/human-review-recent",
    "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a9"}],
-   "reviews": [{"submittedAt": "2026-07-28T21:00:00Z"}], "comments": []}
+   "reviews": [{"submittedAt": "2026-07-28T21:00:00Z"}], "comments": []},
+  {"number": 89, "isDraft": true,  "headRefName": "agent/marker-review-only",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b1"}],
+   "reviews": [{"submittedAt": "2026-07-28T21:00:00Z",
+                "body": "Flagging a design choice for the human reviewer. <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}],
+   "comments": []}
 ]'
 
 # Mirrors the two-stage computation in scripts/gather-abandoned-drafts.sh: the
-# draft/branch filter first, then last-real-activity (latest commit, review, or
-# non-marker comment) against the cutoff.
+# draft/branch filter first, then last-real-activity (latest commit, or review
+# or comment not carrying the marker) against the cutoff.
 candidate_filter() {
   jq -c --arg cutoff "$cutoff" --arg marker "$marker" \
     '[.[] | select(.isDraft)
           | select((.headRefName | startswith("agent/"))
                    or (.headRefName | startswith("td/")))
           | (([ (.commits[-1].committedDate // empty) ]
-              + [ (.reviews // [])[] | .submittedAt ]
+              + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
               + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
              | max) as $activity
           | select($activity != null and $activity < $cutoff)
@@ -92,7 +97,7 @@ candidate_filter() {
 }
 
 assert_eq "only open, draft, ours-by-branch, actually-stale PRs are candidates" \
-  "[80,84,85,86]" "$(candidate_filter)"
+  "[80,84,85,86,89]" "$(candidate_filter)"
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
 # - #81 ready: a ready PR is finished work waiting on the human. Finishing it is
@@ -142,6 +147,37 @@ assert_eq "a comment carrying the pipeline's own marker does not reset the clock
 # `contains($marker)` filter, and one of these two flips.
 assert_eq "an unmarked comment at the same timestamp as #86's marked one still resets the clock" \
   "true false" "$(is_candidate 86) $(is_candidate 87)"
+
+# #89 is #86 posted the other way. `gh pr comment` files a note under
+# `comments`; `gh pr review --comment` files the same words under `reviews`,
+# and prompts/reviewer.md step 5 lets the Reviewer use either — so the marker
+# has to be honoured in both collections or the pipeline goes on resetting its
+# own clock through whichever one is unfiltered. #88 is the contrast: a human's
+# review, no marker, and it still counts.
+assert_eq "a review carrying the pipeline's own marker does not reset the clock either" \
+  "true" "$(is_candidate 89)"
+assert_eq "a marked review and an unmarked one at the same timestamp differ" \
+  "true false" "$(is_candidate 89) $(is_candidate 88)"
+
+# --- One definition: the marker as every writer of it spells it ---
+#
+# `lib/pipeline-marker.sh` is the single definition (requirement 34a), and the
+# reader — and agent-cycle.sh's own comments — source it. Three places cannot:
+# the fixtures above, and the comment instructions in prompts/enabler.md and
+# prompts/reviewer.md, which a model reads and types out. Change the prefix
+# without changing those and the Enabler and Reviewer go on stamping a marker
+# the gatherer no longer recognises — the clock resets TD26072605 removed,
+# back again, with every test still green. These assertions are what makes the
+# one-definition claim hold for the three copies that must be spelled out.
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
+assert_eq "the fixtures above carry the marker prefix the library defines" \
+  "$PIPELINE_COMMENT_MARKER_PREFIX" "$marker"
+for prompt in enabler reviewer; do
+  assert_eq "prompts/$prompt.md tells its stage to write that same prefix" "yes" \
+    "$(grep -qF -- "$PIPELINE_COMMENT_MARKER_PREFIX" "$SCRIPT_DIR/prompts/$prompt.md" \
+       && echo yes || echo no)"
+done
 
 # --- The ref: scoped to the head SHA ---
 #

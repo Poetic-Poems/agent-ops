@@ -70,6 +70,12 @@
 #         counts. Filtering by author cannot make this distinction — every
 #         pipeline write happens under the same GitHub account a human also
 #         comments as — so the marker, not the author, is the test.
+#         The body is what is tested, not the collection it landed in:
+#         `gh pr comment` files a write under `comments`, `gh pr review
+#         --comment` files the same words under `reviews`, and the Reviewer is
+#         told it may use either (`prompts/reviewer.md` step 5), so both are
+#         matched against the marker. A human's review — an approval, a
+#         change request, an inline note — carries no marker either way.
 #     The default threshold is `abandoned_draft_after_hours` (3 h), comfortably
 #     beyond a whole cycle (90 min Implementor + 30 min Reviewer) so a draft that
 #     is merely being worked never qualifies.
@@ -83,10 +89,10 @@
 # Enabler's own comment correctly diagnosing the stall reset the clock in the
 # same breath it cleared the block, deferring the very recovery it had just
 # enabled. So this script computes its own measure instead of reading
-# `updatedAt`: the latest of the head commit's `committedDate`, every review's
-# `submittedAt`, and every **non-marker** comment's `createdAt`. That handles
+# `updatedAt`: the latest of the head commit's `committedDate` and of every
+# **non-marker** review's `submittedAt` and comment's `createdAt`. That handles
 # both cases at once — a label edit touches none of the three, and a marker
-# comment is excluded from the third — without needing to know who authored
+# write is excluded from the other two — without needing to know who authored
 # anything.
 #
 # A marker-carrying comment resets the clock **not at all**, not partially: the
@@ -189,16 +195,20 @@ if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
 fi
 
 # Last-real-activity, then the cutoff: the latest of the head commit's
-# `committedDate`, every review's `submittedAt`, and every comment's
-# `createdAt` *except* one carrying our own marker. A PR with no computable
-# activity (no commit) is dropped rather than treated as infinitely stale —
-# `real_activity` compares as greater than any cutoff string when null, via the
-# explicit `!= null` guard below, so a malformed response excludes the PR
-# instead of wrongly claiming it.
+# `committedDate`, every review's `submittedAt` and every comment's
+# `createdAt`, *excepting* any review or comment whose body carries our own
+# marker. Both collections are filtered, not just `comments`: `gh pr comment`
+# and `gh pr review --comment` are two ways of writing the same note and the
+# Reviewer may use either, so a marker that only worked in one of them would
+# leave the pipeline resetting its own clock through the other. A PR with no
+# computable activity (no commit) is dropped rather than treated as infinitely
+# stale — `real_activity` compares as greater than any cutoff string when null,
+# via the explicit `!= null` guard below, so a malformed response excludes the
+# PR instead of wrongly claiming it.
 prs="$(jq -c --arg cutoff "$cutoff" --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" '
   [.[]
    | (([ (.commits[-1].committedDate // empty) ]
-       + [ (.reviews // [])[] | .submittedAt ]
+       + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
        + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
       | max) as $activity
    | select($activity != null and $activity < $cutoff)
