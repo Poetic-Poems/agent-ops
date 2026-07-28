@@ -387,7 +387,7 @@ above.
 | TD26072602 | A human-applied needs-refinement label is inert | open | | |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
-| TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
+| TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | in-progress | | |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
 | TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
 | TD26072801 | A still-valid block is re-read every cycle once its issue's thread has moved | open | | |
