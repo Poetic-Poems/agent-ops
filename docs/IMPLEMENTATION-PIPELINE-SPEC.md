@@ -333,6 +333,13 @@ file and carries placeholders only; `.env` itself is never committed.
 | poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review recommendations · 11. `issues:low` · 12. code-quality findings · 13. register-hygiene |
 | poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `implementation-plan` (its configured plan document, `docs/IMPLEMENTATION-PLAN.md`; next milestone task) · 11. project-review recommendations · 12. `issues:low` · 13. code-quality findings · 14. register-hygiene |
 
+This is this installation's current `config.json`: its `repos` array names
+these two repos and each one's `sources`, in this order. Unlike this document,
+`prompts/coordinator.md` names neither repo — the Co-Ordinator's own copy of
+this table is rendered from `config.json` at cycle time, not hand-written
+here twice (requirement 4b), so this table is the one place a config change
+needs an editorial update to stay accurate.
+
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
 
@@ -1329,6 +1336,28 @@ runs unattended.
    short-circuit. The digest is a pure function of the override
    configuration and the contributing files' bytes, never of the node's
    filesystem layout.
+4b. **The repo/work-sources table is generated from `config.json`, not
+   hand-maintained in the prompt (issue #78).** `prompts/coordinator.md`
+   carries a `@@WORK_SOURCES_TABLE@@` marker where a table naming consumer
+   repos and their `sources` used to be hand-written — the prompt file names
+   no real repo anywhere, including its worked examples, which use generic
+   placeholder slugs instead. `lib/coordinator-brief.sh`'s
+   `coordinator_work_sources_table` renders one Markdown row per entry of
+   `config.json`'s `repos` array, numbering that repo's configured `sources`
+   in the order given — the plain configured list, never a cycle's
+   back-pressure-restricted view (requirement 2.2a), so the table always
+   states each repo's full configured priority, matching what "Target
+   repositories" above documents for this installation. The Script (after
+   requirement 4a's `stage_prompt_text` has assembled the base prompt and any
+   configured overrides) replaces every occurrence of the marker with this
+   table before appending the runtime input. Adding a repo or reordering a
+   repo's `sources` in `config.json` therefore changes the Co-Ordinator's
+   brief with no edit to `prompts/coordinator.md` — the config-only change
+   the README already claimed for this, now actually true. No new fingerprint
+   input is needed (requirement 3b): the table renders the same
+   `repos`/`sources` data the runtime input's `repos[].sources` already
+   carries into the Co-Ordinator and so already busts the no-op fingerprint
+   through that existing path.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -2880,6 +2909,15 @@ What exists, and the requirements each part answers to:
    ordering and its disclaimer wrapper, for `replace` (including falling back
    to the shipped prompt when the configured file is unreadable), and for
    every one of those changing `stage_prompt_sha`; must pass `shellcheck`.
+4b. `lib/coordinator-brief.sh` implementing requirement 4b:
+   `coordinator_work_sources_table`, given `config.json`'s `repos` array,
+   renders the Markdown table naming each repo and its numbered `sources`
+   that `agent-cycle.sh` substitutes into the Co-Ordinator's assembled
+   prompt in place of its `@@WORK_SOURCES_TABLE@@` marker. Sourced by
+   `agent-cycle.sh` only. Unit-tested (`test/coordinator-brief.test.sh`) for
+   the row-per-repo shape, in-order numbering, an input reordered from
+   `config.json`'s own order, and the empty-array edge case; must pass
+   `shellcheck`.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall. It presents the container as the
@@ -3152,6 +3190,15 @@ pull request, run the ones the change touches and any it could regress.
    key within a stage, a non-array `extend`, a non-string `extend` entry or
    `replace` — and any such fault makes `agent-cycle.sh` exit non-zero at
    startup, before any stage runs.
+1j. **The Co-Ordinator's repo/work-sources table is config-driven, and names
+   no consumer repo in `prompts/coordinator.md` (requirement 4b).**
+   `test/coordinator-brief.test.sh` passes: `coordinator_work_sources_table`
+   renders one Markdown row per repo, each `sources` entry numbered in the
+   order given, in the order the repos array itself gives; reordering a
+   repo's `sources` reorders its row's numbering; an empty `repos` array
+   renders only the header and separator. `prompts/coordinator.md` itself
+   contains no real consumer repo slug, including in its worked JSON
+   examples, which use generic placeholder slugs instead.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
