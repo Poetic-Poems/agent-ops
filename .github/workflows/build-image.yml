@@ -28,13 +28,27 @@ name: Build the node image
 # scripts/is-docs-only.sh, for the reason scripts/lint-shell.sh gives about its
 # own file set, and is unit-tested there (test/is-docs-only.test.sh).
 #
-# The skip is a job-level `if:` and not a workflow-level `paths-ignore:`,
-# because the two report differently to the branch ruleset. A skipped *job*
-# reports success and satisfies a required status check; a workflow filtered
-# out by `paths` never reports at all, and the four checks this workflow owes
-# the ruleset would sit pending forever — a docs-only pull request could never
-# be merged. Every job here therefore reports on every pull request: `changes`
-# and `stamp` unconditionally, the two `build` legs as a success or a skip.
+# The skip is not a workflow-level `paths-ignore:` filter, because a workflow
+# filtered out by `paths` never reports at all, and the four checks this
+# workflow owes the branch ruleset would sit pending forever — a docs-only
+# pull request could never be merged.
+#
+# Nor is it a job-level `if:` on `build`, for a subtler version of the same
+# reason. A skipped job does report success and does satisfy a required status
+# check — but a skipped *matrix* job never expands its matrix, so it reports
+# one check run under the literal, uninterpolated name
+# "Build and test (${{ matrix.platform }})" and the two names the ruleset
+# actually requires — "Build and test (linux/amd64)" and
+# "Build and test (linux/arm64)" — are never reported at all. That is the same
+# permanently-pending merge, arrived at from the other side, and it is what
+# #132 sat on.
+#
+# So the docs-only skip lives on `build`'s steps instead. Both legs always
+# start, always expand the matrix, and report success having done nothing —
+# two runners for a few seconds each, free on a public repository, in exchange
+# for a required check that always reports. Every job here reports on every
+# pull request: `changes` and `stamp` unconditionally, the two `build` legs as
+# a success either way.
 #
 # What the skip costs is that the `test/` suite runs only here, so a docs-only
 # pull request does not run it. On a diff that touches no code that is a
@@ -181,27 +195,27 @@ jobs:
   build:
     name: Build and test (${{ matrix.platform }})
     needs: [stamp, changes]
-    # A documentation-only change builds nothing. Both legs are required status
-    # checks, and a skipped job reports success to the ruleset, so the pull
-    # request stays mergeable with no image built for it.
+    # A documentation-only change builds nothing — but this job still runs, so
+    # that the matrix expands and both legs report the names the ruleset
+    # requires. The condition that decides it is on every step below, not here;
+    # see the note at the top of the file for why that distinction is
+    # load-bearing rather than stylistic.
     #
-    # Which is exactly why `changes` failing must not skip this job. The
-    # default `needs` gate would do that, and a skipped required check reads as
-    # success — so a runner that died at checkout would skip both legs and
-    # `publish` with them, and on `main` that is a merge with no image, found
-    # only when somebody wonders why the fleet never rolled. (On a pull request
-    # the ruleset now catches it too: "Work out what changed" is a required
-    # check. This guard is what makes the build still *happen* rather than
-    # merely blocking the merge.)
+    # `changes` failing must not skip this job either. The default `needs` gate
+    # would do that, and a skipped required check reads as success — so a
+    # runner that died at checkout would skip both legs and `publish` with
+    # them, and on `main` that is a merge with no image, found only when
+    # somebody wonders why the fleet never rolled. (On a pull request the
+    # ruleset now catches it too: "Work out what changed" is a required check.
+    # This guard is what makes the build still *happen* rather than merely
+    # blocking the merge.)
     #
-    # `!cancelled()` replaces the default gate with this expression, under
-    # which a `changes` job that produced no answer leaves `docs_only` empty
-    # and builds. Only an explicit `true` skips. `stamp` keeps its gate stated
-    # by hand, since its outputs are the build arguments below.
+    # `!cancelled()` replaces the default gate with this expression. `stamp`
+    # keeps its gate stated by hand, since its outputs are the build arguments
+    # below.
     if: >-
       !cancelled()
       && needs.stamp.result == 'success'
-      && needs.changes.outputs.docs_only != 'true'
     strategy:
       # One architecture's failure says nothing about the other's, and telling
       # "broken everywhere" apart from "broken on arm64 alone" is this matrix's
@@ -217,17 +231,28 @@ jobs:
             cache-scope: arm64
     runs-on: ${{ matrix.runner }}
 
+    # Resolved once here and read by every step's `if:` below, so the rule is
+    # stated in one place rather than nine. Only an explicit "yes" skips: a
+    # `changes` job that failed rather than answered leaves this empty, which
+    # is not 'true', and the whole build runs — the same fail-safe the job
+    # condition above keeps for a `changes` job that did not finish at all.
+    env:
+      DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+
     steps:
       - name: Checkout code
+        if: env.DOCS_ONLY != 'true'
         uses: actions/checkout@v7
 
       # No QEMU setup: the runner's own architecture matches `platform`, so
       # both the Dockerfile's RUN instructions and every `docker run` below
       # execute natively.
       - name: Set up Buildx
+        if: env.DOCS_ONLY != 'true'
         uses: docker/setup-buildx-action@v4
 
       - name: Build the image
+        if: env.DOCS_ONLY != 'true'
         uses: docker/build-push-action@v7
         with:
           context: .
@@ -253,6 +278,7 @@ jobs:
       # the entrypoint, which is itself part of what is being tested: it must
       # prepare a fresh container's state and exec what it was given.
       - name: Verify the toolchain
+        if: env.DOCS_ONLY != 'true'
         run: |
           docker run --rm agent-ops:ci bash -lc '
             set -e
@@ -266,6 +292,7 @@ jobs:
           '
 
       - name: Verify the container crontab
+        if: env.DOCS_ONLY != 'true'
         run: docker run --rm agent-ops:ci supercronic -test /app/deploy/docker/crontab
 
       # The Claude config file must resolve *inside* the claude-config volume's
@@ -283,6 +310,7 @@ jobs:
       # that login writes to the ephemeral ~/.claude.json while the cron cycles
       # use the volume.
       - name: Verify the Claude config directory is on a persistent volume
+        if: env.DOCS_ONLY != 'true'
         run: |
           env_line="$(docker image inspect agent-ops:ci \
             --format '{{range .Config.Env}}{{println .}}{{end}}' \
@@ -298,6 +326,7 @@ jobs:
       # mode is silent: a node whose version says "unknown" looks exactly like
       # one the dashboard has not heard from yet.
       - name: Verify the image knows its own version
+        if: env.DOCS_ONLY != 'true'
         run: |
           # `tail -n 1`, because every `docker run` here goes through the
           # entrypoint and the entrypoint reports what it prepared on stdout.
@@ -315,6 +344,7 @@ jobs:
             || { echo "the stamped pull request is not the one being built" >&2; exit 1; }
 
       - name: Run the test suite inside the image
+        if: env.DOCS_ONLY != 'true'
         run: |
           docker run --rm agent-ops:ci bash -lc '
             failed=0
@@ -333,6 +363,7 @@ jobs:
       # The role guard (requirement 2.4) with no role set: the image's own
       # default must be to spend nothing.
       - name: Verify a node with no role stands down
+        if: env.DOCS_ONLY != 'true'
         run: |
           out="$(docker run --rm agent-ops:ci /app/agent-cycle.sh)"
           echo "$out"
@@ -343,12 +374,23 @@ jobs:
 
   publish:
     name: Publish to GHCR
-    # No condition about documentation here, and none wanted: `build` is
-    # skipped on such a change, and a job whose `needs` did not succeed is
-    # skipped in turn. Publishing what the build jobs never tested is not a
-    # state this workflow should be able to express.
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: [stamp, build]
+    # The documentation condition has to be stated here, and cannot be
+    # inherited. `build` used to be skipped outright on a docs-only change,
+    # which skipped this job with it through the default `needs` gate; now it
+    # succeeds having done nothing, and an unguarded `publish` would take that
+    # success as licence to build and push an image for a commit whose build
+    # jobs tested nothing. Publishing what the build jobs never tested is not a
+    # state this workflow should be able to express, so the same condition its
+    # steps carry gates this job.
+    #
+    # The default `needs` gate still does the rest of the work: a `build` that
+    # actually ran and failed skips this job, as before. And this is not a
+    # required check, so skipping it costs no pull request its merge.
+    if: >-
+      github.event_name == 'push'
+      && github.ref == 'refs/heads/main'
+      && needs.changes.outputs.docs_only != 'true'
+    needs: [stamp, changes, build]
     runs-on: ubuntu-latest
     permissions:
       contents: read
