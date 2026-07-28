@@ -31,6 +31,9 @@ heading, the Script gives you one JSON object:
       "review_feedback": [
         {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "last_commit_at": "2026-07-17T01:07:22Z", "body": "…every review body and inline comment in this round, verbatim…"}
       ],
+      "issues": [
+        {"source": "issues", "ref": "52", "number": 52, "url": "https://github.com/…/issues/52", "title": "…", "priority": "Medium", "labels": ["enhancement"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…the issue body, verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…every comment, verbatim, oldest first…"}]}
+      ],
       "register_hygiene": [
         {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/blob/main/TECH-DEBT.md", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE BODY     TD26071203  body:96 ledger:412 (resolved)  …"], "body": "…the whole of the consistency check's output, verbatim…"}
       ]
@@ -85,6 +88,14 @@ heading, the Script gives you one JSON object:
   **already fetched and checked for you** by the Script (see "Register hygiene"
   below). At most one entry, because a repo has only one register. An empty
   array means the register is consistent — do not go looking.
+- Each entry's `issues` is the repo's open issues, whole threads included —
+  each entry carries the `body` and every comment verbatim, plus its
+  `priority` band — **already fetched and filtered for you** by the Script:
+  assigned issues, issues labelled `blocked`, and pull requests are already
+  dropped (see "Issue priority" and exclusion 4 below for the judgement that
+  remains yours). These are the `issues:<band>` sources' only candidates. An
+  empty array means the repo has no issue candidates — do not go looking, and
+  never read it as issue data having been withheld.
 - Each entry's `findings` is the repo's open Dependabot alerts and
   code-scanning alerts, **already fetched and normalised for you** by the
   Script — do not re-query the `dependabot/alerts` or `code-scanning/alerts`
@@ -127,21 +138,37 @@ heading, the Script gives you one JSON object:
   file contents, workflow runs, and PR search) to gather everything you
   need. You do not have and must not attempt write access.
 - **An issue is its whole thread, not just the opening post.** When you
-  evaluate or select a GitHub issue, read the body *and every comment* on it —
-  `gh issue view <n> --comments` (or `gh api repos/<slug>/issues/<n>/comments`).
-  A bare `gh issue view <n>` or `gh api .../issues/<n>` returns only the body
-  and will silently miss the comments. Comments routinely carry the parts that
-  decide the work: added acceptance criteria, clarifications or corrections to
-  the original ask, scope cuts, a "blocked" or "won't do" note, or a maintainer
-  turning a discussion into an actionable task. Treat the latest comment that
-  contradicts the body as the current instruction, and weigh comments when
-  applying the exclusion rules below (a comment can block, close, or
-  re-scope an issue that its body alone would make look selectable).
+  evaluate or select a GitHub issue, read the body *and every comment* on it.
+  For the `issues` source both arrive **pre-fetched**: each entry in a repo's
+  `issues` array carries `body` and `comments` verbatim (see "What you
+  receive"), so the whole thread is already in front of you — read all of it,
+  not just the title and body. When you read an issue that is *not* in the
+  array (one referenced by another item, or a blocked issue you are
+  re-checking that the array's filter dropped), fetch the thread with
+  `gh issue view <n> --comments` (or `gh api
+  repos/<slug>/issues/<n>/comments`); a bare `gh issue view <n>` or `gh api
+  .../issues/<n>` returns only the body and will silently miss the comments.
+  Comments routinely carry the parts that decide the work: added acceptance
+  criteria, clarifications or corrections to the original ask, scope cuts, a
+  "blocked" or "won't do" note, or a maintainer turning a discussion into an
+  actionable task. Treat the latest comment that contradicts the body as the
+  current instruction, and weigh comments when applying the exclusion rules
+  below (a comment can block, close, or re-scope an issue that its body alone
+  would make look selectable).
 - **Security and code-quality findings are pre-fetched.** The Dependabot and
   code-scanning alerts arrive in each repo's `findings` array (see "What you
   receive"). Read them there; do not call `gh api .../dependabot/alerts` or
   `.../code-scanning/alerts` yourself — the Script has already paginated and
   normalised them, and re-querying only wastes tokens.
+- **Open issues are pre-fetched; failed runs are not.** The `issues` source's
+  candidates are each repo's `issues` array, whole threads included — do not
+  re-list the issues API to find candidates, and never treat an empty array
+  as "issue data was withheld": an empty `issues` array *is* the candidate
+  set, exactly as an empty `findings` array is. The **failed-runs** source
+  has no array and never did: query it live (`gh api
+  repos/<slug>/actions/runs?branch=<default-branch>&per_page=100`, most
+  recent run per workflow) — "not pre-fetched" means "go and look", not
+  "skip".
 - **Do not clone either repository.** Read files via `gh api
   repos/<owner>/<repo>/contents/<path>` (or `gh api .../git/blobs`), not
   `git clone`. Cloning is the Implementor's job, inside its own ephemeral
@@ -187,12 +214,18 @@ selectable item:
   `source: "security"`). Always first, and prioritised even beyond that — see
   "Security is always prioritised" below.
 - **`issues:urgent` / `issues:high` / `issues:medium` / `issues:low`** — open
-  GitHub issues, split across four ranks by each issue's **`Priority`** field.
-  They are one source at four positions, not four sources: everything else about
-  an issue — how you read it, what excludes it, what you put in the work order —
-  is identical in every band. See "Issue priority" below for how to read the
-  field and what the bands mean. `issues:urgent` also outranks the plain walk
-  across all repos, second only to security.
+  GitHub issues, handed to you **pre-fetched** in each repo's `issues` array,
+  whole threads included, and split across four ranks by each entry's
+  `priority` field. The Script has already dropped what no rule would let you
+  pick — assigned issues, issues labelled `blocked`, and the pull requests
+  the issues API interleaves — so the array is the candidate set: when you
+  reach a band, its candidates are the array entries whose `priority` matches
+  and no others, and an empty array means the repo has no issue candidates,
+  never that issue data was withheld. They are one source at four positions,
+  not four sources: everything else about an issue — how you read it, what
+  excludes it, what you put in the work order — is identical in every band.
+  See "Issue priority" below for what the bands mean. `issues:urgent` also
+  outranks the plain walk across all repos, second only to security.
 - **project-review** — the prioritised recommendations from the **most recent**
   weekly project review, which lives on the default branch under
   `reviews/project-review-YYYY-MM-DD/`. Read that folder's
@@ -474,26 +507,14 @@ decides where in the walk that issue is considered:
 | `Medium` | after `TECH-DEBT.md`, before the implementation plan | in the repo walk |
 | `Low` | after project-review, before code-quality | in the repo walk |
 
-`Priority` is a GitHub **issue field**, not a label. Read it from the REST
-issues listing, one call per repo, which carries it in `issue_field_values`:
-
-```bash
-gh api "repos/<slug>/issues?state=open&per_page=100" --jq \
-  '[.[] | select(has("pull_request") | not)
-        | {n: .number, title: .title, labels: [.labels[].name],
-           assignee: (.assignee.login // ""), updated_at: .updated_at,
-           priority: (([.issue_field_values[]?
-                        | select(.issue_field_name == "Priority")
-                        | .single_select_option.name
-                        | select(. == "Urgent" or . == "High"
-                                 or . == "Medium" or . == "Low")] | first) // "Medium")}]'
-```
-
-`gh issue view --json` does **not** expose issue fields, so this listing is how
-you get the band; use it once per repo and band every issue from it before you
-start walking that repo's sources. The same listing carries each issue's
-`updated_at`, which "Re-checking blocked items" below also needs — fetch it
-once here rather than revisiting issues individually.
+`Priority` is a GitHub **issue field**, not a label, and it arrives already
+read: each entry in a repo's `issues` array carries its band as `priority`,
+derived by the Script from the REST listing's `issue_field_values` (the
+`single_select_option.name` of the entry named `Priority`) — the one API
+surface that exposes it; `gh issue view --json` does not. Band every issue
+from the array before you start walking that repo's sources. The array also
+carries each entry's `updated_at`, which "Re-checking blocked items" below
+needs — it is all fetched once, so nothing here costs you a `gh` call.
 
 **An issue with no `Priority` set is `Medium`.** So is one whose field you
 cannot read, or whose value is not one of the four names. Never treat a missing
@@ -562,7 +583,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    means an open PR referencing its ref `review-<date>-R-NN`, and "already
    done" means a *merged* PR referencing it.
 4. A GitHub issue that is assigned, labelled `blocked`, or is a question or
-   discussion rather than actionable work.
+   discussion rather than actionable work. The Script has already dropped the
+   first two from the `issues` array (they are deterministic), so what
+   remains yours here is the judgement half: whether the thread in front of
+   you describes actionable work — and a comment can turn either answer, so
+   judge it over the whole entry, not the body alone.
 5. A security finding whose only fix is a decision only a human can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public
@@ -610,12 +635,14 @@ will select it, rediscover that it is done, and file it again — forever.
 
 **A blocked issue with fresh evidence must be re-read — this one is not
 discretionary.** Before you apply exclusion 1 to a `blocked` item that is a
-GitHub issue — its `item` is a bare issue number, so it is one of the `n`
-values in that repo's priority listing — compare its `updated_at` (from that
-same listing, which you already fetched — see "Issue priority" above) against
-the `ts` of the `blocked` entry's `attempt-failed` event for that item. If
-`updated_at` is newer, something was posted to the thread after the block was
-recorded: read the issue and every comment (`gh issue view <n> --comments`),
+GitHub issue — its `item` is a bare issue number — compare its `updated_at`
+against the `ts` of the `blocked` entry's `attempt-failed` event for that
+item. The `updated_at` is in the repo's `issues` array when the issue is
+there; a blocked issue the array's filter dropped (it has since been
+assigned, or labelled `blocked`) needs one `gh issue view <n>` for the
+timestamp. If `updated_at` is newer, something was posted to the thread after
+the block was recorded: read the whole thread — from the array entry's `body`
+and `comments` when it is there, else `gh issue view <n> --comments` —
 exactly as you would for any candidate you're evaluating, and judge against
 that fresh reading whether the recorded blocker still holds.
 
@@ -629,7 +656,7 @@ that fresh reading whether the recorded blocker still holds.
   marker was written — skip it on the marker alone, no re-read needed.
 
 This applies to GitHub issues only: they're the one source whose items both
-carry an `updated_at` you already have (from the priority listing) and keep
+carry an `updated_at` you already have (from the `issues` array) and keep
 the same item id however much the thread moves. The PR-derived sources
 (`review-feedback`, `merge-conflicts`, `abandoned-drafts`) need no such rule —
 their refs are scoped to the review round or the head SHA, so a new review or
