@@ -770,6 +770,26 @@ gather_register_hygiene() {
   fi
 }
 
+# Pre-fetch the repo's open issues, whole threads included (requirement 3j) —
+# the deterministic exclusions (assigned, labelled `blocked`, pull requests)
+# already applied, the judgement ones left to the Co-Ordinator. This source
+# used to be the Co-Ordinator's own `gh` read, and a cycle was observed
+# skipping the entire walk on a "the input carries no issues" misreading; the
+# array makes the candidate set an input rather than an errand (see
+# scripts/gather-issues.sh for the incident and the contract).
+gather_issues() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
+        2>"$cycle_dir/issues-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 # Pre-fetch the voids a human has asked, on GitHub, to be reopened
 # (requirement 34f). Unlike every other gatherer this is not a work source: it
 # produces no candidates, it edits the skip-list the Co-Ordinator is about to be
@@ -1586,10 +1606,17 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
     register_hygiene="$(gather_register_hygiene "$slug" "$default_branch")"
   fi
+  # The issues source is one source at four ranks (`issues:urgent` …
+  # `issues:low`, requirement 15e), so any band in `sources` warrants the one
+  # fetch — the band is per issue, not per fetch.
+  issues="[]"
+  if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
+    issues="$(gather_issues "$slug")"
+  fi
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
-    --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh}')"
+    --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" --argjson issues "$issues" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, issues: $issues}')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
@@ -1701,7 +1728,13 @@ if (( backpressure_tripped )); then
       '{reason: $r}')"
     exit 0
   fi
-  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' \
+  # `issues` is emptied along with the narrowing, not merely left unwalked:
+  # it is the one array that carries whole threads, and a restricted cycle
+  # paying the Co-Ordinator to read candidates it is forbidden to pick is the
+  # exact spend back-pressure exists to stop. The other non-finishing arrays
+  # are compact enough that stripping them buys nothing.
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))
+                                    | .issues = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
     --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
