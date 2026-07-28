@@ -158,6 +158,15 @@ Edit `config.json` before first run. Keys:
 | `disable_default_ttl` | 4 | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | 24 | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 | `dashboard_refresh_seconds` | 5 | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
+| `schedule.cycle_hours` | `*` | The hour field of the containerised node's implementation-cycle crontab line (`deploy/docker/render-crontab.sh`); `*` means every hour. |
+| `schedule.excluded_minutes` | `[0]` | Minutes the per-node `CYCLE_MINUTE` (env or hash) may never land on. This repo's own config excludes `0` because poetic's hourly sync workflow owns the top of the hour; a fresh install with no such conflict should ship `[]`. |
+| `schedule.excluded_minutes_reason` | see `config.json` | Free-text note on *why* `excluded_minutes` excludes what it does — documentation only, read by nobody. |
+| `schedule.review_hour` | `3` | The hour the containerised node's review tick fires. |
+| `schedule.review_offset_minutes` | `29` | Minutes past `CYCLE_MINUTE` (mod 60) the review tick's minute is set to, so the node's two heavy pipelines land apart within the hour. |
+| `schedule.heartbeat_minutes` | `5` | Interval, in minutes, of the containerised node's dashboard-heartbeat cron line. |
+| `schedule.state_sync_push_minutes` | `5` | Interval, in minutes, of the containerised node's `state-sync.sh push` line. |
+| `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of the containerised node's `state-sync.sh fetch` line. |
+| `schedule.log_rotation_minute` | `19` | The minute past every hour the containerised node's `rotate-logs.sh` line runs. |
 
 Every `*_model` key above, plus `review.model` below, also accepts a
 provider-qualified id — `anthropic/claude-sonnet-5` alongside the bare

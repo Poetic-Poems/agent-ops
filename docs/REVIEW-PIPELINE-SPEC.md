@@ -580,12 +580,13 @@ standing the pipeline up on a new machine.
    On a containerised node this entry is not installed by hand at all: it is
    the review line of `deploy/docker/crontab`, which the scheduler service runs
    under supercronic (see the node image section of
-   `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). Its minute is rendered per node at
-   container start (design decision D5): `(CYCLE_MINUTE + 29) mod 60` past
-   03:00, so the node's two heavy pipelines sit maximally apart within its
-   hour and no two nodes review at the same moment either. The role comes
-   from `ROLE` in the
-   node's `deploy/docker/.env` rather than from a crontab line, and defaults to
+   `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). Its hour and minute are rendered
+   per node at container start (design decision D5): `config.json`'s
+   `schedule.review_offset_minutes` (`29`) past `CYCLE_MINUTE` (mod 60), at
+   `schedule.review_hour` (`3`), so the node's two heavy pipelines sit
+   maximally apart within its hour and no two nodes review at the same
+   moment either. The role comes from `ROLE` in the node's
+   `deploy/docker/.env` rather than from a crontab line, and defaults to
    standby when it is missing.
 3. The shared prerequisites of `docs/IMPLEMENTATION-PIPELINE-SPEC.md` (the standalone `claude`
    CLI, cron enabled under WSL, `gh` authenticated with push access) are
