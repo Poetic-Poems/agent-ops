@@ -85,7 +85,14 @@ stage_prompt_text() {
   local prompts_dir="$1" state_dir="$2" stage="$3" overrides_json="$4"
   local base_file ext
   base_file="$(stage_base_prompt_file "$prompts_dir" "$state_dir" "$stage" "$overrides_json")"
-  cat "$base_file"
+  # The base is product content, not an override, so the tolerance above does
+  # not extend to it: an unreadable `prompts/<stage>.md` is a broken install,
+  # and a stage launched on an empty prompt would spend a model with no
+  # instructions at all. Fail here so `errexit` at the call site kills the
+  # cycle, exactly as the bare `cat` this function replaced did. (A configured
+  # `replace` that is unreadable never reaches this line — it has already
+  # fallen back to the shipped prompt.)
+  cat "$base_file" || return 1
   while IFS= read -r ext; do
     _prompt_override_fragment "$ext"
   done < <(stage_extend_files "$state_dir" "$stage" "$overrides_json")

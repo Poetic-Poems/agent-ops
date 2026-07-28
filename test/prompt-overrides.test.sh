@@ -161,6 +161,17 @@ assert_eq "an override configured for a different stage has no effect here" \
   "$(cat "$prompts_dir/coordinator.md")" \
   "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_other_stage")"
 
+# --- An unreadable *base* prompt is not tolerated the way an unreadable
+#     override is: it is a broken installation, and the caller runs under
+#     `set -e`, so the cycle must die rather than launch a stage on an empty
+#     prompt. This is the behaviour the bare `cat prompts/<stage>.md` had. ---
+if stage_prompt_text "$prompts_dir" "$state_dir" nosuchstage '{}' >/dev/null 2>&1; then
+  printf 'FAIL - an unreadable base prompt must make stage_prompt_text fail, not return empty\n'
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - %s\n' "an unreadable base prompt fails rather than yielding an empty prompt"
+fi
+
 abs_frag="$tmp_dir/absolute-fragment.md"
 printf 'absolute fragment\n' > "$abs_frag"
 overrides_abs="$(jq -nc --arg p "$abs_frag" '{coordinator:{extend:[$p]}}')"

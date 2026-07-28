@@ -1207,7 +1207,12 @@ runs unattended.
    (missing file, bad permissions) is tolerated the same way — dropped from
    the assembled prompt, not a cycle failure — but still moves
    `stage_prompt_sha` (below), so a broken path cannot silently reproduce the
-   fingerprint of a working one. `config.json`'s `prompt_overrides` must
+   fingerprint of a working one. That tolerance covers configured overrides
+   only: the base prompt is this product's own content, so an unreadable
+   `prompts/<s>.md` that no readable `replace` has substituted fails the cycle
+   rather than launching the stage on an empty prompt — a stage given a work
+   order and no instructions would spend a model to no purpose.
+   `config.json`'s `prompt_overrides` must
    itself be an object (possibly `{}`); anything else is a fatal
    misconfiguration at startup, the same as a missing
    `implementation_plan_path` (requirement 3k).
@@ -2962,7 +2967,9 @@ pull request, run the ones the change touches and any it could regress.
    `replace` substitutes the base prompt entirely, with any `extend` still
    appended after it, and falls back to the shipped prompt when the
    configured file is unreadable; an override for a different stage has no
-   effect; and `stage_prompt_sha` changes for every one of those cases,
+   effect; an unreadable base prompt that no `replace` covers makes
+   `stage_prompt_text` fail rather than return empty; and `stage_prompt_sha`
+   changes for every one of those cases,
    including a configured `extend` file that does not exist. `config.json`'s
    `prompt_overrides` set to anything other than an object makes
    `agent-cycle.sh` exit non-zero at startup, before any stage runs.
