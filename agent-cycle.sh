@@ -1457,9 +1457,11 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 # signal, and the later resume wins: the log union is as fresh as the last
 # state-sync fetch, while fleet/limit.json is read live — it is what lets a
 # limit one node hit a minute ago stop this cycle now, not a fetch interval
-# from now. Either carrier can be retired early by `--clear-limit` (2.1):
-# the union's reduction honours a `limit-cleared` event, and the flag is
-# deleted outright.
+# from now. Either carrier can be retired early — automatically by the probe
+# of 2.1b below when the resume time is this system's own guess, or by hand
+# with `--clear-limit` (2.1) — and both retirements work the same way: the
+# union's reduction honours a `limit-cleared` event, and the flag is deleted
+# outright.
 #
 # Both records are carried whole rather than reduced to a timestamp, so the
 # logged reason can say whether `resume_at` is a stated reset or this system's
@@ -1478,10 +1480,70 @@ if [[ -n "$resume_at" ]]; then
 fi
 now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
-  log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
-    "$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)" \
-    "$(limit_reset_known "$governing")")" '{reason: $r}')"
-  exit 0
+  governing_class="$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)"
+  governing_known="$(limit_reset_known "$governing")"
+  standing=1
+  probe_note=""
+  # 2.1b The estimated stand-down probes its own exit. When `reset_known` is
+  # false, `resume_at` is this system's invented time and carries no
+  # information about the limit — and the observed spend-cap message is
+  # emitted equally when a 5-hour session window meets an exhausted cap,
+  # which clears at the session rollover, most of a day before the invented
+  # time (it did, on 2026-07-28: both hits cleared within the hour; the fleet
+  # would have slept 24). So instead of sleeping on a guess, spend one
+  # minimal invocation of the cheapest model asking the only authority there
+  # is. The economics run the right way round on both sides: a limited
+  # account answers the probe with the limit message at no token cost, and an
+  # unlimited one answers for a fraction of a cent, once — the first clear
+  # verdict retires the stand-down for the whole fleet, and the gate stops
+  # firing. A *stated* reset is never probed: the message named the time, and
+  # asking earlier is the one spend that buys nothing. Nor does --dry-run
+  # probe: a cycle that promises to change nothing must not write
+  # `limit-cleared`, and a probe whose verdict it would have to ignore is
+  # pure cost.
+  if [[ "$governing_known" != "true" ]] && ! (( DRY_RUN )); then
+    probe_out="$cycle_dir/limit-probe.out"
+    run_claude_stage 180 "$implementor_model_trivial" \
+      "Reply with the single word: ok" "$probe_out" "$cycle_dir" || true
+    probe_verdict="$(limit_probe_verdict "$(cat "$probe_out" 2>/dev/null || true)" \
+      "$(cat "$probe_out.stderr" 2>/dev/null || true)")"
+    case "$probe_verdict" in
+      clear)
+        # The same two carriers --clear-limit retires, for the same reason it
+        # retires both: the stand-down lifts only when the later of the two
+        # says so. The `limit-cleared` event outranks every earlier hit in
+        # the union's reduction; the flag is deleted because
+        # fleet_limit_publish is extend-only and delete is the one write that
+        # legitimately moves a resume earlier.
+        log_event "limit-cleared" "$(jq -nc --arg w "$resume_at" \
+          --arg by "auto-probe@$node_name" \
+          '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by}')"
+        if [[ -n "$state_repo" ]]; then
+          fleet_flag_delete "$state_repo" "$state_dir" limit || log_event "warning" \
+            '{"detail": "could not clear fleet/limit.json after a clear probe — peers reading it live stand down until their own probes answer"}'
+        fi
+        standing=0
+        ;;
+      limited)
+        # The probe just observed the limit live, which is worth recording
+        # for two reasons: the Enabler must not be engaged from the exit trap
+        # moments after a limit was re-confirmed (requirement 35's guards),
+        # and the probe's transcript may state what the original message did
+        # not — a parseable reset upgrades `reset_known` to true and stops
+        # the probing until a time that is finally real.
+        detect_and_log_limit_hit "$probe_out" || true
+        probe_note=" (probe: still limited)"
+        ;;
+      *)
+        probe_note=" (probe: inconclusive)"
+        ;;
+    esac
+  fi
+  if (( standing )); then
+    log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
+      "$governing_class" "$governing_known")$probe_note" '{reason: $r}')"
+    exit 0
+  fi
 fi
 
 # 2.1a Claim GC — sweep registry entries older than claim_ttl_hours (17a).

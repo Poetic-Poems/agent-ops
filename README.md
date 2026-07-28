@@ -405,16 +405,21 @@ docker compose exec scheduler /app/agent-cycle.sh --status
 # record:   /home/agent/.local/state/poetic-agents/disabled.json
 # cycle:    idle
 # review:   idle
-# limit:    STANDING DOWN — with no stated reset; retrying after 2026-07-27T01:00:11Z (estimated); …
+# limit:    STANDING DOWN — with no stated reset; each hourly cycle probes whether it has lifted — …
 ```
 
 When the message states a reset time, `resume_at` is that time and waiting is
 the whole answer. When it does not — the monthly spend-cap message is the
-common case — `resume_at` is this system's own retry interval (a day), not a
-prediction. Such a limit has two exits, and you choose:
+common case — `resume_at` is this system's own guess, only an upper bound:
+each hourly cycle probes the API with one minimal request (requirement 2.1b)
+and retires the stand-down by itself the moment the account answers, so a
+limit that was really an exhausted 5-hour session window clears within the
+hour of its rollover, not a day later. Such a limit still has two exits, and
+you choose:
 
-- **wait for the plan's rollover**, which needs no one; or
-- **raise the cap** at `claude.ai/settings/usage`, then tell the fleet:
+- **wait**, and let the probe notice the rollover on its own; or
+- **raise the cap** at `claude.ai/settings/usage`, then tell the fleet
+  without waiting for the next cycle's probe:
 
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --clear-limit "cap raised"
@@ -426,10 +431,14 @@ earlier `limit-hit`. Peers pick it up at their next state-sync fetch. Run it
 only once the limit is actually gone: if it is not, the next cycle simply
 re-hits it and publishes a fresh stand-down.
 
-Without this the only exit was `resume_at` passing, on a clock the system had
-invented — so a cap raised in the morning still left the fleet down until the
-next day. If you want to know whether a limit is genuinely still in force, ask
-the account directly rather than reading the timestamp:
+Before the probe existed, `resume_at` passing was the only automatic exit, on
+a clock the system had invented — so a cap raised in the morning still left
+the fleet down until the next day. The probe asks the account itself, hourly;
+`--clear-limit` remains for when you have just raised the cap and want the
+fleet back now rather than at the next cycle. The probe's verdict is in the
+stand-down reason (`probe: still limited` / `probe: inconclusive`), and its
+transcript is kept as `limit-probe.out` in the cycle record. To ask the
+account yourself, the probe is just:
 
 ```bash
 docker compose exec scheduler claude -p 'say ok'

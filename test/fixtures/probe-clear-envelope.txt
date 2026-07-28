@@ -1,0 +1,1 @@
+{"is_error":false,"duration_api_ms":2537,"num_turns":1,"result":"ok","session_id":"49ee9da0-2d4b-49cd-9f15-bea5e67ebf60","stop_reason":"end_turn","subtype":"success","type":"result"}
