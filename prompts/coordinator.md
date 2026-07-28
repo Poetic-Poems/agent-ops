@@ -667,6 +667,17 @@ resolved" is a claim about a thing you cannot see from where you sit. Cite what
 you read: the file and ref you fetched, the merged PR number, the register row,
 the command you ran. An entry with no evidence is not recorded as void at all.
 
+When the claim is "this file at this ref does (or does not) look like X" —
+which "already on `main`" and "the Ledger row says resolved" both are — give
+`evidence` as `{"ref": "…", "path": "…", "expect": "present"|"absent",
+"pattern": "…"}` instead of prose, naming exactly the `gh api
+repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
+above). The Script re-runs that same fetch and tests it — a citation shaped
+this way is *checked*, not just read. `pattern` is optional and, when given, is
+matched against the file's content (e.g. the Ledger row itself). A citation
+that doesn't fit this shape is still accepted, exactly as before, but only on
+the presence test — nothing then confirms it against the repository.
+
 Nor is one this cycle's own candidates contradict. If the item still has an open
 pull request whose diff against its base is non-empty, the work is by definition
 not on the base, whatever the PR's description says; the Script will refuse the
@@ -868,10 +879,13 @@ the list, and one strong candidate alone is a perfectly good list.
   already *done* does not belong here — see `voided`.
 - `voided` lists any item identifiers you established describe no work at all,
   each as `{"item": "…", "repo": "owner/name", "reason": "one line", "evidence":
-  "the ref, path, PR number, register row or command you actually read"}`. Omit
-  or leave empty if none. `evidence` is required: an entry without it is
-  recorded blocked, not void. This is terminal and only a human can reverse it,
-  so only list an item you are certain about.
+  …}`. Omit or leave empty if none. `evidence` is required: an entry without it
+  is recorded blocked, not void. Give it as `{"ref": "…", "path": "…", "expect":
+  "present"|"absent", "pattern": "…"}` when the claim is about one file's
+  content at one ref — the Script re-fetches and checks it — or as free text
+  (the PR number, register row, or command you actually read) otherwise; see
+  "Voiding an item yourself" above. This is terminal and only a human can
+  reverse it, so only list an item you are certain about.
 - `needs_refinement` lists the items you skipped **solely** because they are
   too under-specified to rank or because they wait on a human decision, each as
   `{"repo": "owner/name", "item": "…", "source": "…", "reason": "one line",

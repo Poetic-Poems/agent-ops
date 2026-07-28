@@ -1956,11 +1956,28 @@ runs unattended.
     and the pull request (requirement 35), while the Co-Ordinator is given a JSON
     digest of candidates and nothing else. An assertion about the default branch,
     made by the only actor that never looks at the default branch, is the
-    assertion to check. Two tests, both on the Script's side of the boundary:
+    assertion to check. Three tests, all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
       required on every `voided` entry, and `null`, `""`, whitespace, `{}` and
       `[]` are all absence. An entry without it is not a verdict, it is an
       opinion.
+    - **A resolvable citation must resolve.** The PR-diff test below only fires
+      when the item has an open pull request among this cycle's candidates —
+      the finishing sources. Most voids have no such candidate: a tech-debt item
+      with no PR open, a review recommendation, a `failed-runs` entry. For
+      those, `evidence` shaped `{ref, path, expect: "present"|"absent",
+      pattern}` names a specific claim about a specific file at a specific ref —
+      "the fix is on `main`", "the Ledger row says resolved" — and the guard
+      fetches `repos/<slug>/contents/<path>?ref=<ref>` and tests it: `expect:
+      "absent"` holds iff the API has nothing there, `expect: "present"` holds
+      iff the fetch succeeds and, when `pattern` is given, the decoded content
+      matches it. A citation that does not fit that shape is free text, and is
+      accepted on the presence test alone, as it always was — the guard tests
+      what it can test, not a shape every claim must take. A citation that does
+      fit the shape but does not resolve — the fetch fails, or the
+      presence/absence/pattern does not hold, or the entry names no repo to
+      resolve it against — is refused the same way an unrefuted PR diff is
+      below.
     - **This cycle's own candidates must not refute it.** Where the voided
       repo+item matches a gathered candidate carrying a `pr_number`, the guard
       reads that PR's changed files: a non-empty diff against its base means the
@@ -2851,7 +2868,11 @@ pull request, run the ones the change touches and any it could regress.
 8c. **A void must be earned (requirement 34d).** `test/void-guard.test.sh`
    passes: an entry with no `evidence` — and `null`, `""`, whitespace, `{}` and
    `[]` all count as none — is refused before any API call; an entry whose
-   repo+item matches a gathered candidate whose PR still changes files is
+   `evidence` is shaped `{ref, path, expect, pattern}` is fetched and tested —
+   refused when the fetch fails, or the presence/absence or pattern does not
+   hold, or the entry names no repo to resolve against — while a citation that
+   does not fit that shape is accepted on the presence test alone; an entry
+   whose repo+item matches a gathered candidate whose PR still changes files is
    refused naming that PR; a PR the API will not answer for is refused as
    uncorroborated; and an evidenced entry with an empty PR diff, or with no PR
    to check at all, is allowed. Then drive it end to end: a Co-Ordinator

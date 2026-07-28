@@ -604,13 +604,15 @@ log_needs_refinement_items() {
 # Requirement 34d: it is corroborated before it is made permanent. The
 # Co-Ordinator is the one void author that never reads the tree — it sees a JSON
 # digest of candidates and nothing else — so an assertion it makes about the
-# default branch is checked against the facts the same cycle gathered, and
-# against requirement 34c's long-standing demand for evidence. An entry the
-# guard refuses is recorded `blocked` instead: the Co-Ordinator still skips the
-# item, so nothing churns, but the record is clearable and Enabler-eligible
-# (requirement 35a), so an actor that can read the tree gets to adjudicate
-# rather than the item disappearing on an unchecked claim. See lib/void-guard.sh
-# for what the guard tests and why it is not a prompt instruction.
+# default branch is checked against the facts the same cycle gathered, against
+# a resolvable `evidence` citation fetched from the repository itself, and
+# against requirement 34c's long-standing demand for evidence being present at
+# all. An entry the guard refuses is recorded `blocked` instead: the
+# Co-Ordinator still skips the item, so nothing churns, but the record is
+# clearable and Enabler-eligible (requirement 35a), so an actor that can read
+# the tree gets to adjudicate rather than the item disappearing on an unchecked
+# claim. See lib/void-guard.sh for what the guard tests and why it is not a
+# prompt instruction.
 log_voided_items() {
   local wo="$1" repos="${2:-[]}" entry item repo reason refusal
   while IFS= read -r entry; do

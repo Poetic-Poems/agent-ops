@@ -69,39 +69,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072601 A void with no pull request behind it is checked for evidence, not for truth
-
-Requirement 34d makes a Co-Ordinator void corroborated rather than merely
-confident, and the mechanical half of that — reading the PR's changed files to
-see whether the "already done" claim survives contact with the diff — only fires
-when the voided repo+item matches a gathered candidate carrying a `pr_number`.
-That covers the finishing sources, which is where the shipped defect lived (a
-void on `TD26072114` whose own draft PR #92 still had a full diff against
-`main`). It does not cover the rest: a tech-debt item with no PR open, a review
-recommendation, a `failed-runs` entry. For those the guard tests only that an
-`evidence` field is present and non-empty, and a model that will assert a false
-reason will also write a plausible-looking citation for it.
-
-Why this is worth doing rather than tolerating: `void` is the only terminal
-state in the system, and requirement 34c is emphatic that no agent may clear
-one. So the *entire* protection against a permanently silenced item is the
-quality of the check at creation, and for the majority of items that check is
-currently "did you fill in the box".
-
-Fix: make the citation itself resolvable, and resolve it. Constrain `evidence`
-for a Co-Ordinator void to a shape the Script can dereference —
-`{ref, path, expect: "absent"|"present", pattern}` is enough for the two claims
-that actually get made ("the fix is on `main`", "the Ledger row says resolved")
-— and have `lib/void-guard.sh` fetch `repos/<slug>/contents/<path>?ref=<ref>`
-and test it. Keep the free-text form accepted for anything that does not fit,
-but treat only the resolvable form as corroboration: unresolvable evidence
-follows the same path a refuted void does today, to `blocked` and the Enabler,
-which reads the repository properly and can void it with evidence of its own.
-Note when doing this that the Implementor and Enabler voids need no such guard —
-both have already read the thing they are asserting about.
-
-Filed 2026-07-26, alongside the change that introduced requirement 34d.
-
 ### TD26072602 A human-applied needs-refinement label is inert
 
 Requirement 34e's label projection is deliberately one-way: the Script applies
@@ -388,7 +355,7 @@ above.
 | TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | resolved | 2026-07-28 | #113 |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | resolved | 2026-07-28 | #114 |
-| TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | in-progress | | |
+| TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | resolved | 2026-07-28 | #116 |
 | TD26072602 | A human-applied needs-refinement label is inert | open | | |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
