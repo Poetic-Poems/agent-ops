@@ -2860,18 +2860,26 @@ pull request, run the ones the change touches and any it could regress.
    `CLAUDE.md` is never loaded as project memory. `.github/workflows/build-image.yml`'s
    `changes` job runs it over the change's own diff (three-dot, so a pull
    request is judged on what its branch did and not on what `main` did
-   meanwhile) and skips the `build` jobs — and so `publish` — when the answer
-   is yes; a checked-out state it cannot diff builds. The skip is a job-level
-   `if:` rather than a `paths-ignore:` filter, because a skipped job reports
-   success to the branch ruleset's required checks while a filtered-out
-   workflow never reports at all — so every job here reports on every pull
+   meanwhile) and, when the answer is yes, skips every *step* of the `build`
+   jobs and the whole of `publish`; a checked-out state it cannot diff builds.
+   The skip is neither a `paths-ignore:` filter nor a job-level `if:` on
+   `build`, because each of those leaves a required check that never reports
+   and a pull request that can never merge: a filtered-out workflow reports
+   nothing at all, and a skipped *matrix* job never expands its matrix, so it
+   reports one check run named for the uninterpolated
+   `Build and test (${{ matrix.platform }})` while the two names the ruleset
+   requires go unreported. Skipping the steps instead leaves both legs running
+   and reporting success on every pull request, at the cost of a runner that
+   starts and does nothing. Every job here therefore reports on every pull
    request, and `Work out what changed` joins the other three as a required
    check. Only an explicit "yes" skips: a `changes` job that fails rather than
-   answers leaves the `build` jobs' condition unsatisfied-by-emptiness and they
-   run, since that same skipped-reads-as-success would otherwise carry a dead
-   runner through to `publish` and leave a merge to `main` with no image at
-   all. A documentation-only merge to `main` publishes no image, and no tag
-   carries that commit's SHA.
+   answers leaves the steps' condition unsatisfied-by-emptiness and they run,
+   since a skipped job reading as success would otherwise carry a dead runner
+   through to `publish` and leave a merge to `main` with no image at all.
+   `publish` states that condition itself rather than inheriting it through
+   `needs`, its `build` jobs now being successful on a documentation-only
+   change rather than skipped. A documentation-only merge to `main` publishes
+   no image, and no tag carries that commit's SHA.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
