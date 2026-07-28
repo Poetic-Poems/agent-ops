@@ -511,6 +511,13 @@ assert_eq "from its own cycle, not the fleet's newest" "${today_day}T040000Z-pee
   "$(node_live peer1 cycle)"
 assert_eq "its live stage is the stage-start with no stage-end" "implementor" \
   "$(node_live peer1 stage)"
+# The clock the page holds that stage against its own timeout: the *live*
+# stage's start, not the cycle's and not the finished coordinator's. Getting
+# this wrong in either direction defeats the rule — the cycle's start would
+# flag a healthy stage that followed a long one, and a finished stage's would
+# never flag anything.
+assert_eq "and it is dated by that stage-start, not by the cycle's" "2026-01-01T04:00:04Z" \
+  "$(node_live peer1 stage_since)"
 assert_eq "its work carries the item the Co-Ordinator selected" "TD26071401" \
   "$(node_live peer1 item)"
 assert_eq "and the source, so the card can tag it like the cycles column" "tech-debt" \
@@ -526,6 +533,17 @@ assert_eq "our own row is the lock's cycle, not the newest cycle-start" "$self_c
   "$(node_live nodeF-self cycle)"
 assert_eq "so a skipped tick cannot masquerade as what we are doing" "implementor" \
   "$(node_live nodeF-self stage)"
+assert_eq "our own row is dated by its live stage too" "2026-01-01T05:00:04Z" \
+  "$(node_live nodeF-self stage_since)"
+assert_eq "and the lock's own reading of it agrees" "2026-01-01T05:00:04Z" \
+  "$(jq -r '.status.current.stage_since' <<<"$fdata")"
+# The stage timeouts the page measures against have to reach it, or the rule
+# is inert however good the timestamps are. `timeout_enabler` is the one that
+# was missing while the other three were already exposed.
+for k in timeout_coordinator timeout_implementor timeout_reviewer timeout_enabler; do
+  assert_eq "config carries $k for the stage-timeout rule" "true" \
+    "$(jq --arg k "$k" -r '(.config[$k] // 0) > 0' <<<"$fdata")"
+done
 assert_eq "and the work is the one the lock's cycle selected" "TD26072004" \
   "$(node_live nodeF-self item)"
 assert_eq "the fleet's newest cycle names the node that ran it" "nodeF-self" \

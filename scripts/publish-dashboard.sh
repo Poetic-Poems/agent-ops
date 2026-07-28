@@ -535,12 +535,17 @@ status_json="$(jq -n \
       # once the coordinator has selected — the coordinator stage runs first).
       current: (
         ($running // []) | if length == 0 then null else
-        {
-          stage: (
-            (reduce (.[] | select(.event=="stage-start" or .event=="stage-end")) as $x
-              ({}; .[$x.stage] = $x.event))
-            | to_entries | map(select(.value=="stage-start")) | (.[-1].key // null)
-          ),
+        ((reduce (.[] | select((.event=="stage-start" or .event=="stage-end") and .stage)) as $x
+            ({}; .[$x.stage] = {event: $x.event, ts: $x.ts}))
+         | to_entries | map(select(.value.event=="stage-start")) | last) as $live_stage
+        | {
+          stage: ($live_stage.key // null),
+          # When that stage started. Every stage the pipeline runs is bounded —
+          # agent-cycle.sh hands run_claude_stage a timeout and kills the process
+          # group when it expires — so the page can hold a live stage against its
+          # own timeout and say, in minutes rather than in hours, that a stage
+          # still shown as running has in fact been killed.
+          stage_since: ($live_stage.value.ts // null),
           repo:   ([ .[] | select(.event=="selection") | .repo ]   | last),
           item:   ([ .[] | select(.event=="selection") | .item ]   | last),
           source: ([ .[] | select(.event=="selection") | .source ] | last),
@@ -704,15 +709,19 @@ node_live_json="$(jq -c '
         ($start.cycle) as $cid
         | [ $evs[] | select(.cycle == $cid) ] as $c
         | ([ $c[] | select(.event == "cycle-end") ] | last) as $done
+        | ((reduce ($c[] | select((.event == "stage-start" or .event == "stage-end") and .stage))
+              as $x ({}; .[$x.stage] = {event: $x.event, ts: $x.ts}))
+           | to_entries | map(select(.value.event == "stage-start")) | last) as $live_stage
         | { cycle: $cid,
             since: $start.ts,
             running: ($done == null),
             ended_at: ($done.ts // null),
-            stage: (
-              (reduce ($c[] | select((.event == "stage-start" or .event == "stage-end") and .stage))
-                 as $x ({}; .[$x.stage] = $x.event))
-              | to_entries | map(select(.value == "stage-start")) | (.[-1].key // null)
-            ),
+            stage: ($live_stage.key // null),
+            # As in `status.current` above, and load-bearing for a peer in a way
+            # it is not for us: no lock reaches us from another node, so this is
+            # the only clock its card has for the stage it is showing.
+            # (No apostrophes in here — see the note in that program.)
+            stage_since: ($live_stage.value.ts // null),
             repo:   ([ $c[] | select(.event == "selection") | .repo ]   | last),
             item:   ([ $c[] | select(.event == "selection") | .item ]   | last),
             source: ([ $c[] | select(.event == "selection") | .source ] | last),
@@ -741,6 +750,7 @@ self_live_json="$(jq -nc \
       since: ($st.lock.started_at // null),
       running: true, ended_at: null,
       stage:  ($st.current.stage  // null),
+      stage_since: ($st.current.stage_since // null),
       repo:   ($st.current.repo   // null),
       item:   ($st.current.item   // null),
       source: ($st.current.source // null),
@@ -1096,7 +1106,7 @@ printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
   --arg self_node "$self_node" \
-  --argjson config "$(jq -c '{repos, coordinator_model, implementor_model_default, implementor_model_trivial, reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix, max_open_agent_prs, timeout_coordinator, timeout_implementor, timeout_reviewer, lock_stale_after, limit_cooldown_default, dashboard_refresh_seconds}' "$CONFIG_FILE")" \
+  --argjson config "$(jq -c '{repos, coordinator_model, implementor_model_default, implementor_model_trivial, reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix, max_open_agent_prs, timeout_coordinator, timeout_implementor, timeout_reviewer, timeout_enabler, lock_stale_after, limit_cooldown_default, dashboard_refresh_seconds}' "$CONFIG_FILE")" \
   --argjson status "$status_json" \
   --argjson counts "$counts_json" \
   --slurpfile cyc "$cycles_file" \
