@@ -335,6 +335,34 @@ algorithm per DASHBOARD-SPEC.md) accordingly, and add a
 
 Filed 2026-07-28, from TD26072201.
 
+### TD26072901 acquire_lock trusts a pid across container incarnations
+
+Both pipelines' `acquire_lock` (agent-cycle.sh requirement 1, review-cycle.sh
+R2) judge a leftover lock with `kill -0` in their own PID namespace. On a
+containerised node that namespace is the container's, and a lock can outlive
+its container: a roll that lands on the pre-update hook's one-minute timeout,
+an OOM kill, or a manual `down` mid-cycle leaves `lock.json` on the `state`
+volume while the container that minted its pid is replaced. The next
+incarnation's `kill -0` then answers about the wrong process — the exact
+namespace confusion #130 fixed in the watchtower hook, still present in the
+writers. Two wrong outcomes: an unrelated process holding the same number
+makes a fresh leftover lock read as a live cycle, logging `cycle-skipped`
+until the lock goes stale (up to 4h/6h of a node running no cycles); and the
+stale-takeover path group-kills whatever innocent pgid that number resolves
+to. Low probability — a container's pid space is small and the number must
+collide — but the second outcome kills something at random when it hits.
+
+Fix: locks now record the writer's `host` (#130). Only the writer container
+ever writes a given state volume's locks, so a lock whose `host` differs from
+`$HOSTNAME` was written by a dead incarnation by construction: `acquire_lock`
+can take it over immediately — no `kill -0`, no group kill, keep the
+`warning` log. Same edit in both cycle scripts; requirement 1 and R2 travel
+in the same PR. The hook needs no change: it already honours a foreign lock
+only until the next cycle rewrites it, and this fix shortens exactly that
+window.
+
+Filed 2026-07-29, from the #130 fix.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -364,3 +392,4 @@ above.
 | TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
 | TD26072801 | A still-valid block is re-read every cycle once its issue's thread has moved | open | | |
 | TD26072802 | A stage with an empty result silently drops its whole cycle from the dashboard | open | | |
+| TD26072901 | acquire_lock trusts a pid across container incarnations | open | | |

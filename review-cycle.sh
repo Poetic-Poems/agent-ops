@@ -386,8 +386,11 @@ acquire_lock() {
       log_event "warning" "$(jq -nc --arg d "stale review lock from pid $pid (age ${age_sec}s) taken over" '{detail: $d}')"
     fi
   fi
+  # `host` names the container (PID namespace) the pid is meaningful in — see
+  # agent-cycle.sh's acquire_lock and issue #130.
   jq -n --argjson pid "$$" --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-    '{pid: $pid, started_at: $started_at}' > "$lock_file"
+    --arg host "${HOSTNAME:-}" \
+    '{pid: $pid, started_at: $started_at, host: $host}' > "$lock_file"
   lock_acquired=1
 }
 acquire_lock
