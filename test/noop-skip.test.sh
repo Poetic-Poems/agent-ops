@@ -84,7 +84,8 @@ base_input() {
   "selection_config": {"coordinator_model": "claude-haiku-4-5-20251001", "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}},
   "coordinator_prompt_sha": "deadbeef",
   "enabler_config": {"enabler_model": "claude-opus-5", "after_coordinator_cycles": "3", "recheck_hours": "72", "escalation_label": "enabler-escalation"},
-  "enabler_prompt_sha": "cafebabe"
+  "enabler_prompt_sha": "cafebabe",
+  "coordinator_work_sources_table": "| Repo | Work sources, in priority order |\n|---|---|\n| `o/one` | 1. `security` |\n"
 }
 EOF
 }
@@ -100,7 +101,7 @@ assert_eq "a clean cycle is fingerprintable" "64" "${#base_fp}"
 assert_eq "the same inputs give the same fingerprint" "$base_fp" "$(base_input | noop_fingerprint)"
 assert_eq "key order does not change the fingerprint" "$base_fp" \
   "$(base_input | jq -c '{enabler_prompt_sha, coordinator_prompt_sha, enabler_config, selection_config,
-                          enabler_eligible, void, blocked, repos}' | noop_fingerprint)"
+                          enabler_eligible, void, blocked, repos, coordinator_work_sources_table}' | noop_fingerprint)"
 assert_eq "repo order does not change the fingerprint" "$base_fp" \
   "$(fp_with '.repos |= reverse')"
 # A blocked item re-recorded with a fresh timestamp and reworded detail is the
@@ -122,6 +123,9 @@ assert_eq "an eligible entry's blocked_ts and detail are not part of the fingerp
 assert_eq "an input predating the Enabler keys matches one carrying them empty" \
   "$(fp_with 'del(.enabler_eligible, .enabler_config, .enabler_prompt_sha)')" \
   "$(fp_with '.enabler_eligible = [] | .enabler_config = {} | .enabler_prompt_sha = ""')"
+assert_eq "an input predating the work-sources table matches one carrying it empty" \
+  "$(fp_with 'del(.coordinator_work_sources_table)')" \
+  "$(fp_with '.coordinator_work_sources_table = ""')"
 
 # A green workflow running again on a schedule reaches the same conclusion
 # under a new run id, and changes no candidate. `poetic` schedules
@@ -219,6 +223,16 @@ assert_ne "changing the Co-Ordinator's model changes the fingerprint" \
   "$(fp_with '.selection_config.coordinator_model = "claude-sonnet-5"')"
 assert_ne "editing prompts/coordinator.md changes the fingerprint" \
   "$(fp_with '.coordinator_prompt_sha = "feedface"')"
+# The table itself (issue #78) is rendered from config.json, not hand-written
+# in prompts/coordinator.md, so coordinator_prompt_sha above does not cover it
+# — only this field does. Back-pressure (requirement 2.2a) can also narrow
+# .repos[].sources to just the finishing sources for a repo with work
+# waiting, while the table still shows that repo's full configured priority
+# regardless — so this field is the only cover for a config edit landing
+# during exactly such a cycle.
+# shellcheck disable=SC2016  # backticks are Markdown code spans, not the shell's.
+assert_ne "a change to the rendered work-sources table changes the fingerprint" \
+  "$(fp_with '.coordinator_work_sources_table += "\n| `o/three` | 1. `security` |\n"')"
 
 # The Enabler's inputs (requirement 35b). Its eligible set is the third array
 # whose candidacy turns on something no repo signal carries: an item becomes

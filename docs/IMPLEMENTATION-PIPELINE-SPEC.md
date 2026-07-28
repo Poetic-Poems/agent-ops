@@ -1218,14 +1218,20 @@ runs unattended.
      than left to the `unblocked` that always accompanies it, because "covered
      by something else" is how a source ends up covered by nothing; the Enabler's eligible
      set projected to `repo|item|reason` together with its config and prompt
-     hash (requirement 35b); and — the two everyone
-     forgets — the selection config and a hash of `prompts/coordinator.md`
+     hash (requirement 35b); and — the three everyone
+     forgets — the selection config, a hash of `prompts/coordinator.md`
      **and any `prompt_overrides.coordinator` files configured for it**
-     (requirement 4a).
-     Without those last two, editing the selection rules — in the shipped
-     prompt or in an installation's own extension — does nothing until an
-     unrelated commit lands, and you spend the afternoon debugging an edit that
-     was correct.
+     (requirement 4a), and the rendered repo/work-sources table itself
+     (requirement 4b), hashed verbatim because it is not the same claim as
+     `repos[].sources`: back-pressure (requirement 2.2a) can narrow that array
+     to a repo's finishing sources for one cycle while the table keeps
+     showing that repo's full configured priority regardless, so only the
+     table's own bytes cover a config edit to a non-finishing source landing
+     during such a cycle.
+     Without those, editing the selection rules — in the shipped
+     prompt, in an installation's own extension, or in `config.json`'s
+     `repos` array — does nothing until an unrelated commit lands, and you
+     spend the afternoon debugging an edit that was correct.
    - **Digest what the verdict reads, not what merely changed.** Requirement 15
      makes a failed run a candidate when a workflow's *most recent run is a
      failure* — a fact about the conclusion. Digesting run ids instead makes
@@ -1353,11 +1359,17 @@ runs unattended.
    table before appending the runtime input. Adding a repo or reordering a
    repo's `sources` in `config.json` therefore changes the Co-Ordinator's
    brief with no edit to `prompts/coordinator.md` — the config-only change
-   the README already claimed for this, now actually true. No new fingerprint
-   input is needed (requirement 3b): the table renders the same
-   `repos`/`sources` data the runtime input's `repos[].sources` already
-   carries into the Co-Ordinator and so already busts the no-op fingerprint
-   through that existing path.
+   the README already claimed for this, now actually true. The rendered
+   table joins the no-op fingerprint (requirement 3b) as its own input,
+   `coordinator_work_sources_table`, computed from the plain configured
+   `repos` array before the fingerprint is taken: the runtime input's
+   `repos[].sources` is *not* sufficient cover on its own, because
+   back-pressure (requirement 2.2a) narrows that array to a repo's finishing
+   sources for one cycle while the table — and the prompt the Co-Ordinator
+   actually reads — keeps showing that repo's full configured priority
+   regardless, so a config edit to a non-finishing source landing during
+   such a cycle would otherwise change the assembled prompt without busting
+   the fingerprint.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -3199,6 +3211,9 @@ pull request, run the ones the change touches and any it could regress.
    renders only the header and separator. `prompts/coordinator.md` itself
    contains no real consumer repo slug, including in its worked JSON
    examples, which use generic placeholder slugs instead.
+   `test/noop-skip.test.sh` passes: a change to the rendered table busts the
+   no-op fingerprint, and an input predating the `coordinator_work_sources_
+   table` key canonicalises the same as one carrying it empty.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing

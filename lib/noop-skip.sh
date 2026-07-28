@@ -49,6 +49,7 @@
 #   refinements carried forward (requirement 3h)         | repo|item|ts projection
 #   which repos, which sources, which models             | selection_config
 #   the selection rules themselves                       | coordinator_prompt_sha
+#   the repo/work-sources table the Co-Ordinator reads    | coordinator_work_sources_table
 #   the Enabler's eligible set (requirement 35b)         | repo|item|reason projection
 #   the Enabler's model and thresholds                   | enabler_config
 #   the Enabler's own rules                              | enabler_prompt_sha
@@ -136,10 +137,24 @@
 # but it does not re-open items already examined — those are gated by
 # `enabler_recheck_hours`, which is the lever for "read this one again".
 #
-# The last two are easy to forget and cost the most when forgotten: without
-# them, editing prompts/coordinator.md or adding a source to config.json would
-# have no effect until something unrelated happened to change in a repo. You
-# would be debugging your edit, and your edit would be fine.
+# `coordinator_work_sources_table` is hashed verbatim, and it is not the same
+# claim as `repos[].sources` above (issue #78). That array is `ordered_repos_
+# json`'s view, which back-pressure (requirement 2.2a) narrows to just the
+# three finishing sources for a repo with work waiting; the table the
+# Co-Ordinator actually reads is always rendered from the plain, unrestricted
+# `config.json` (`lib/coordinator-brief.sh`), because the table's own job is
+# to show each repo's full configured priority regardless of this cycle's
+# restrictions. During a back-pressure cycle those two views diverge by
+# construction, so a config edit to a non-finishing source would bust neither
+# `repos[].sources` nor (being config, not a commit) `coordinator_prompt_sha`
+# — only this line carries it, and without it such an edit would sit
+# unnoticed until back-pressure lifted.
+#
+# The last three are easy to forget and cost the most when forgotten: without
+# them, editing prompts/coordinator.md, adding a source to config.json, or
+# reordering one during a back-pressure cycle would have no effect until
+# something unrelated happened to change in a repo. You would be debugging
+# your edit, and your edit would be fine.
 #
 # ## Where a fingerprint match is judged
 #
@@ -170,10 +185,11 @@
 # order or the timestamps and prose that ride along on a log event. `jq -S` then
 # sorts every object key, making the serialisation canonical.
 #
-# The three `enabler_*` keys and `refinements` all default to empty, so an input
-# that predates them canonicalises exactly as one that carries them empty:
-# replaying an older cycle's input yields its original fingerprint, and a node
-# whose config sets no Enabler keys agrees with itself.
+# The three `enabler_*` keys, `refinements`, and `coordinator_work_sources_table`
+# all default to empty, so an input that predates them canonicalises exactly as
+# one that carries them empty: replaying an older cycle's input yields its
+# original fingerprint, and a node whose config sets no Enabler keys agrees
+# with itself.
 # shellcheck disable=SC2016  # jq's syntax, not the shell's.
 NOOP_CANON_JQ='
   if ([.repos[]?.state.ok] | all) | not then empty
@@ -206,7 +222,8 @@ NOOP_CANON_JQ='
       selection_config: (.selection_config // {}),
       coordinator_prompt_sha: (.coordinator_prompt_sha // ""),
       enabler_config: (.enabler_config // {}),
-      enabler_prompt_sha: (.enabler_prompt_sha // "")
+      enabler_prompt_sha: (.enabler_prompt_sha // ""),
+      coordinator_work_sources_table: (.coordinator_work_sources_table // "")
     }
   end
 '
