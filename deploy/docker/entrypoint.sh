@@ -67,11 +67,17 @@ if [[ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]]; then
 fi
 
 # --- git and gh ---
-# The identity the Implementor's commits carry. Defaulted rather than required:
-# an unattended node that cannot commit because nobody set a name is a silly
-# way to lose a cycle.
-git config --global user.name "${GIT_USER_NAME:-Warwick Allen}"
-git config --global user.email "${GIT_USER_EMAIL:-warwick@datumprocess.co.nz}"
+# The identity the Implementor's commits carry. Required, not defaulted: a
+# silent fallback would commit every pull request this node ever opens under
+# somebody else's name, and the wrong name is worse than no name at all.
+if [[ -z "${GIT_USER_NAME:-}" || -z "${GIT_USER_EMAIL:-}" ]]; then
+  say "ERROR: GIT_USER_NAME and/or GIT_USER_EMAIL is unset — this node has no git"
+  say "       identity to commit under. Set both in .env (see .env.example) and"
+  say "       recreate the container: docker compose up -d"
+  exit 1
+fi
+git config --global user.name "$GIT_USER_NAME"
+git config --global user.email "$GIT_USER_EMAIL"
 
 if [[ -n "${GH_TOKEN:-}" ]]; then
   # Teaches git to use GH_TOKEN for github.com https remotes, which is how the

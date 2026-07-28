@@ -22,6 +22,9 @@ README](../../README.md) and `docs/*-SPEC.md`.
   `Poetic-Poems/agent-ops-state` (contents, pull requests, issues) plus read on
   security alerts. One token per node, so a single node can be revoked without
   disturbing the others.
+- A **git identity** — a name and an email — for the commits this node's
+  cycles make. There is no default; the container refuses to start without
+  both.
 - A **Tailscale pre-auth key** from the tailnet's admin console, unless this
   node will run the `local` profile.
 - Somewhere to log in to Claude interactively, once, after step 3.
@@ -54,9 +57,9 @@ $EDITOR .env
 once it is up (see [Follow a node's events](#follow-a-nodes-events) below),
 fetched now so it sits beside `compose.yaml` from the start.
 
-At minimum set `NODE_NAME`, `GH_TOKEN` and — for the `tailnet` profile —
-`TS_AUTHKEY`. Leave `ROLE=standby` unless this node is meant to be the one that
-spends; see [Which node runs the
+At minimum set `NODE_NAME`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` and —
+for the `tailnet` profile — `TS_AUTHKEY`. Leave `ROLE=standby` unless this node
+is meant to be the one that spends; see [Which node runs the
 cycles](../../README.md#which-node-runs-the-cycles).
 
 `.env` holds this node's secrets. It is git-ignored, and if a token ever lands
@@ -310,6 +313,7 @@ minutes.
 | A fresh node's first `up` aborts with `mkdir … /cycles: file exists` | Two services seeding the same new `state` volume at once — the current `compose.yaml` prevents this by starting the dashboard after the scheduler, so you only see it on a compose file fetched before that fix | `docker compose down -v`, then `docker compose up -d scheduler` before `docker compose up -d` |
 | Every cycle fails at its first stage | Claude was never authenticated on this node | Step 4 above |
 | `WARNING: GH_TOKEN is unset` | No token in `.env` | Add it; this node can otherwise neither read nor push anything |
+| `ERROR: GIT_USER_NAME and/or GIT_USER_EMAIL is unset` | No git identity in `.env` | Add both; the container exits immediately and stays down until they're set |
 | `cannot clone …agent-ops-state` | The token cannot read the private state repo | Widen the token's repository access |
 | `gh auth status` says the token is invalid, but the same token works on the host; `git clone` resets; `claude` hangs | The bridge MTU exceeds the host's egress MTU — full-sized packets vanish, so every TLS handshake fails while DNS and plain HTTP still work | Set `DOCKER_MTU` in `.env` to the host's egress MTU and `docker compose up -d` |
 | The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on any node that should spend — several may be |

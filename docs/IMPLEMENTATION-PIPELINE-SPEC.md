@@ -89,11 +89,14 @@ a node updates by pulling a new image rather than by pulling a branch.
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
   persistent volume holding refreshing OAuth credentials, and the seed carries
   model/effort defaults only — no plugins and no local marketplaces), sets the
-  git identity from `GIT_USER_NAME`/`GIT_USER_EMAIL`, runs `gh auth setup-git`
-  when `GH_TOKEN` is present so https pushes authenticate, creates `state_dir`
-  and `workspace_root`, and then execs the service it was given. It refuses to
-  start if `state_dir` is not writable, rather than letting a mis-owned volume
-  become a silent failure to record anything.
+  git identity from `GIT_USER_NAME`/`GIT_USER_EMAIL` — both required, with no
+  default, so a node can never commit under the wrong name — runs
+  `gh auth setup-git` when `GH_TOKEN` is present so https pushes authenticate,
+  creates `state_dir` and `workspace_root`, and then execs the service it was
+  given. It refuses to start if `state_dir` is not writable, rather than
+  letting a mis-owned volume become a silent failure to record anything, or if
+  either git identity variable is unset, rather than falling back to a wrong
+  default.
 - The image sets `CLAUDE_CONFIG_DIR=/home/agent/.claude` — the `claude-config`
   volume's mount point. Claude Code's global config file defaults to
   `~/.claude.json`, a *sibling* of its config directory rather than a member of
