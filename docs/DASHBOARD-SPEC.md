@@ -253,11 +253,13 @@ ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
 It stays inside the heartbeat's 5-second budget as history accumulates: the
 transcript cost scan reads envelopes in batches (one `jq` per 25 files, the
 cycle's day derived from `input_filename`; a torn mid-write envelope costs at
-most the rest of its batch for one tick), the per-cycle records and event
-filters work through files slurped once rather than arrays re-parsed per
-append, and every potentially large intermediate reaches `jq` as a file,
-never argv (a single argument caps at 128 KB, which transcript-bearing JSON
-exceeds).
+most the rest of its batch for one tick), the detail window (the `MAX_CYCLES`
+cycles shown with transcripts) is assembled in a single `jq` program over
+every stage file the window touches — handed in via `--rawfile`, so jq opens
+each one itself rather than a fork per cycle re-reading and re-parsing it —
+plus the fleet-wide event union slurped once, and every potentially large
+intermediate reaches `jq` as a file, never argv (a single argument caps at
+128 KB, which transcript-bearing JSON exceeds).
 `--no-github` skips the live GitHub fetch for a faster, offline run. Rather
 than blanking the GitHub panels, it reuses the last real fetch — cached at
 `<state_dir>/.dashboard-github.json` and re-marked `stale` — so the PR list,

@@ -124,119 +124,186 @@ gh_json() { timeout "$GH_TIMEOUT" "$DASHBOARD_GH_CMD" "$@" 2>/dev/null; }
 
 epoch_of() { date -d "$1" +%s 2>/dev/null || echo 0; }
 
-# Extract the JSON a stage emitted as its final message: try the whole result
-# as JSON, else the last fenced ```json block (mirrors agent-cycle.sh).
-extract_status_json() {
-  local text="$1" block
-  if jq empty <<<"$text" >/dev/null 2>&1; then jq -c '.' <<<"$text"; return; fi
-  block="$(awk '
-    /^```json[[:space:]]*$/ { capture=""; in_block=1; next }
-    /^```[[:space:]]*$/      { if (in_block) { last=capture; in_block=0 }; next }
-    in_block                 { capture = capture $0 "\n" }
-    END { printf "%s", last }' <<<"$text")"
-  if [[ -n "$block" ]] && jq empty <<<"$block" >/dev/null 2>&1; then jq -c '.' <<<"$block"; return; fi
-  printf 'null'
-}
+# --- Build the whole detail window's JSON in one jq program -------------------
+# TD26072201: this used to be two functions, stage_json and cycle_json, each
+# forked per cycle (straight-parse-else-fenced-block extraction — mirroring
+# agent-cycle.sh's extract_json_result — envelope field pulls, a usage-limit
+# phrase/reset-clause scan of the stage's own out+err files, then the
+# per-stage and per-cycle assembly) — roughly a dozen jq per shown cycle,
+# cheap per fork on native Linux but dominant in the 5-second heartbeat
+# budget under WSL2, where each fork costs far more. The stage transcripts
+# are already individual files on disk, so every existing one in the window
+# is now handed straight to a single jq invocation via --rawfile (jq opens
+# the file itself: no extra fork, and — like events_file above — no 128 KB
+# argv cap either), and that one process does every parse, fenced-```json```
+# extraction, envelope-field pull and limit-phrase scan the two functions
+# used to fork out for, for the whole window at once. The limit-phrase scan
+# this replaces was its own backstop for a cycle whose limit-hit never made
+# it into the log (e.g. the Script crashed before log_event ran, or the
+# cycle predates the detector) — `limit_phrase_re`/`reset_re` below restate
+# `limit_phrase_in`/`limit_reset_text`'s patterns for that same purpose;
+# `lib/limit-detect.sh`'s own copies (shared with agent-cycle.sh, see
+# TD26071401) remain in use elsewhere in this script for the stand-down
+# banner (`limit_union_record` et al.), which is a different reader of the
+# same phrase and is untouched by this change.
+detail_defs="$work_tmp/detail-defs.jq"
+cat > "$detail_defs" <<'JQDEFS'
+def try_json($s): ($s | try fromjson catch null);
 
-# Does this text look like a usage-limit message the pipeline may not have
-# logged as a limit-hit event? `limit_phrase_in` is shared with agent-cycle.sh
-# via lib/limit-detect.sh (see TD26071401) so the two can't drift apart again;
-# scanning transcripts directly here remains a useful backstop for cycles
-# where a limit-hit never got logged for some other reason (e.g. the Script
-# crashed before log_event ran, or a cycle predates this detector).
-limit_reset_text() {
-  grep -hoiE "reset[s]?( at)? [^\"\\]{1,60}" "$@" 2>/dev/null | head -n1
-}
+# TRANSCRIPT_CAP is a byte budget (see its definition above), but jq's own
+# `.[0:$cap]` slices by Unicode codepoint, not byte — a transcript with
+# multi-byte UTF-8 content (this pipeline handles poems, so non-ASCII text is
+# routine, not an edge case) would slice to $cap *characters*, up to 4x
+# $cap bytes for an all-multi-byte transcript, defeating the cap the 5-second
+# heartbeat budget (this same TD) relies on to bound data.js size. This walks
+# codepoints, summing each one's UTF-8 encoded length, and stops at the last
+# whole codepoint that still fits in $cap bytes — matching head -c's byte
+# budget while (unlike head -c) never splitting a multi-byte codepoint.
+def byte_trunc($s; $cap):
+  ($s | explode) as $cps
+  | (reduce $cps[] as $cp ({bytes:0, out:[], done:false};
+       if .done then .
+       else
+         ($cp | if . < 128 then 1 elif . < 2048 then 2 elif . < 65536 then 3 else 4 end) as $blen
+         | if (.bytes + $blen) > $cap then (.done = true)
+           else {bytes: (.bytes + $blen), out: (.out + [$cp]), done: false}
+           end
+       end)) as $r
+  | ($r.out | implode);
 
-# --- Build one stage's JSON for a cycle --------------------------------------
-stage_json() {  # <cycle-id> <stage> <cycles-dir>
-  local cid="$1" stage="$2" cdir="$3"
-  local out="$cdir/$cid/$stage.out"
-  local err="$cdir/$cid/$stage.out.stderr"
-  [[ -f "$out" ]] || { printf 'null'; return; }
+# Same phrase/reset-clause patterns as limit_phrase_in/limit_reset_text
+# (this file, above) — restated here rather than shared, since this is a
+# jq-side port specific to the batched window; the bash originals still
+# serve the per-file transcript-cost scan elsewhere in this script.
+def limit_phrase_re: "hit your .* limit|usage limit|rate limit|usage cap|quota exceeded";
+def reset_re: "reset[s]?( at)? [^\"\\\\]{1,60}";
 
-  local envelope result status_json err_text limit=false limit_txt=""
-  envelope="$(cat "$out" 2>/dev/null)"
-  result="$(jq -r '.result // ""' <<<"$envelope" 2>/dev/null)"
-  status_json="$(extract_status_json "$result")"
-  [[ -f "$err" ]] && err_text="$(head -c "$TRANSCRIPT_CAP" "$err" 2>/dev/null)" || err_text=""
+def find_reset($text):
+  ($text | split("\n")) as $lines
+  | ([$lines[] | select(test(reset_re; "i"))] | first) as $line
+  | if $line == null then null else ($line | match(reset_re; "i").string) end;
 
-  if limit_phrase_in "$out" "$err"; then limit=true; limit_txt="$(limit_reset_text "$out" "$err")"; fi
+# Scans the full out+err text handed in, not the capped/displayed copies
+# build_stage derives below: a limit phrase past TRANSCRIPT_CAP must still be
+# found, exactly as limit_phrase_in/limit_reset_text scan whole files rather
+# than a truncated variable.
+def limit_info($out_full; $err_full):
+  (($out_full // "") + "\n" + ($err_full // "")) as $combined
+  | { hit: ($combined | test(limit_phrase_re; "i")),
+      text: ( (find_reset($out_full // "")) as $o
+              | if $o != null then $o else find_reset($err_full // "") end )
+    };
 
-  jq -n \
-    --argjson env "$(jq -c '{total_cost_usd, duration_ms, num_turns, is_error, stop_reason, terminal_reason, session_id, modelUsage}' <<<"$envelope" 2>/dev/null || echo '{}')" \
-    --arg result "$(printf '%s' "$result" | head -c "$TRANSCRIPT_CAP")" \
-    --argjson status "$status_json" \
-    --arg stderr "$err_text" \
-    --argjson limit "$limit" \
-    --arg limit_txt "$limit_txt" \
-    '{
-      ran: true,
-      cost_usd: ($env.total_cost_usd // null),
-      duration_ms: ($env.duration_ms // null),
-      num_turns: ($env.num_turns // null),
-      is_error: ($env.is_error // null),
-      terminal_reason: ($env.terminal_reason // $env.stop_reason // null),
-      model: ($env.modelUsage // {} | keys | (.[0] // null)),
-      status: $status,
-      result: $result,
-      stderr: $stderr,
-      limit_hit: $limit,
-      limit_text: $limit_txt
-    }'
-}
+# Port of extract_status_json(): try the stage's result text as JSON
+# outright, else the last fenced ```json block within it (the same
+# straight-parse-else-last-fenced-block algorithm as agent-cycle.sh's
+# extract_json_result, per DASHBOARD-SPEC.md). `ok:false` marks a shell-era
+# quirk this port deliberately preserves rather than fixes: an
+# empty-or-whitespace result used to make `jq empty`/`jq -c '.'` produce
+# nothing, which collapsed a `--argjson` into an invalid empty string,
+# failed the enclosing `jq -n` call, and silently dropped the WHOLE cycle
+# row rather than just this one stage. TD26072802 tracks retiring that
+# behaviour; until then this keeps the output unchanged.
+def extract_status($text):
+  if ($text | test("^\\s*$")) then {ok:false, value:null}
+  else
+    (try_json($text)) as $direct
+    | if $direct != null then {ok:true, value:$direct}
+      else
+        ($text | split("\n")) as $lines
+        | (reduce $lines[] as $line
+             ({in_block:false, capture:"", last:null};
+              if ($line | test("^```json[[:space:]]*$")) then
+                .in_block = true | .capture = ""
+              elif ($line | test("^```[[:space:]]*$")) then
+                if .in_block then (.last = .capture | .in_block = false) else . end
+              elif .in_block then
+                .capture += ($line + "\n")
+              else . end)).last as $block
+        | if $block != null and ($block | length) > 0 and (try_json($block) != null) then
+            {ok:true, value: try_json($block)}
+          else {ok:true, value:null}
+          end
+      end
+  end;
 
-# --- Build one cycle's JSON (stages + log-derived outcome) --------------------
-cycle_json() {  # <cycle-id> <cycles-dir> — the dir is the owning node's, so a
-                # peer's transcripts render with the same fidelity as our own
-  local cid="$1" cdir="${2:-$cycles_dir}"
-  local ev coord impl rev
-  # events_file is the whole fleet's log slurped once (see below): one jq here
-  # rather than piping the full event stream through two more, forty times a
-  # publish. Cycle ids are node-unique (they embed the node name), so the
-  # union needs no per-node partitioning.
-  ev="$(jq -c --arg c "$cid" '[ .[] | select(.cycle == $c) ]' "$events_file" 2>/dev/null)"
-  [[ -z "$ev" || "$ev" == "null" ]] && ev='[]'
-  coord="$(stage_json "$cid" coordinator "$cdir")"
-  impl="$(stage_json "$cid" implementor "$cdir")"
-  rev="$(stage_json "$cid" reviewer "$cdir")"
-
-  jq -n \
-    --arg cid "$cid" \
-    --argjson ev "$ev" \
-    --argjson coord "$coord" --argjson impl "$impl" --argjson rev "$rev" '
-    ($ev | sort_by(.ts)) as $e
-    | ($e | map(.event)) as $types
+# One stage's JSON, from its manifest entry ({out,err} raw text) — or null
+# when the stage never ran, mirroring stage_json's own out-file check.
+def build_stage($entry; $cap):
+  if $entry == null then null
+  else
+    ($entry.out // "") as $out_full
+    | ($entry.err // "") as $err_full
+    | (try_json($out_full)) as $envtry
+    | (if ($envtry | type) == "object" then $envtry else {} end) as $env
+    # `sub("\n+$";"")` mirrors the trailing-newline strip every bash
+    # `$(...)` capture in the old stage_json got for free; without it, a
+    # stage whose result/stderr ends in a newline would render with one jq's
+    # string slicing would otherwise keep.
+    | ($env.result // "" | sub("\n+$"; "")) as $result_stripped
+    | byte_trunc($result_stripped; $cap) as $result_disp
+    | (byte_trunc($err_full; $cap) | sub("\n+$"; "")) as $err_disp
+    | extract_status($result_stripped) as $status
+    | limit_info($out_full; $err_full) as $lim
     | {
-        id: $cid,
-        node: ([ $e[] | select(.node) | .node ] | last),
-        started_at: (([ $e[] | select(.event=="cycle-start") | .ts ] | first) // ($e[0].ts // null)),
-        ended_at:   ([ $e[] | select(.event=="cycle-end") | .ts ] | last),
-        dry_run:    (($e[] | select(.event=="cycle-start") | .dry_run) // false),
-        repo:   ([ $e[] | select(.repo)  | .repo ] | last),
-        item:   ([ $e[] | select(.item)  | .item ] | last),
-        source: ([ $e[] | select(.event=="selection") | .source ] | last),
-        title:  ([ $e[] | select(.event=="selection") | .title ]  | last),
-        pr_url: ([ $e[] | select(.pr_url) | .pr_url ] | last),
-        reason: ([ $e[] | select(.event=="none-selected" or .event=="stand-down" or .event=="cycle-skipped") | (.reason // .detail) ] | last),
-        fail_detail: ([ $e[] | select(.event=="attempt-failed") | ((.stage // "?") + ": " + (.detail // "")) ] | last),
-        warning: ([ $e[] | select(.event=="warning") | .detail ] | last),
-        outcome: (
-          if   ($types | any(. == "pr-ready"))       then "pr-ready"
-          elif ($types | any(. == "pr-raised"))      then "pr-raised"
-          elif ($types | any(. == "attempt-failed")) then "failed"
-          elif ($types | any(. == "none-selected"))  then "none-selected"
-          elif ($types | any(. == "stand-down"))     then "stand-down"
-          elif ($types | any(. == "cycle-skipped"))  then "skipped"
-          elif ($types | any(. == "selection"))      then "selected"
-          else "ended" end
-        ),
-        stages: { coordinator: $coord, implementor: $impl, reviewer: $rev },
-        total_cost_usd: ([ $coord, $impl, $rev | .cost_usd // 0 ] | add),
-        limit_hit: ([ $coord, $impl, $rev | .limit_hit // false ] | any),
-        events: $e
-      }'
-}
+        ok: $status.ok,
+        obj: {
+          ran: true,
+          cost_usd: ($env.total_cost_usd // null),
+          duration_ms: ($env.duration_ms // null),
+          num_turns: ($env.num_turns // null),
+          is_error: ($env.is_error // null),
+          terminal_reason: ($env.terminal_reason // $env.stop_reason // null),
+          model: ($env.modelUsage // {} | keys | (.[0] // null)),
+          status: $status.value,
+          result: $result_disp,
+          stderr: $err_disp,
+          limit_hit: $lim.hit,
+          limit_text: ($lim.text // "")
+        }
+      }
+  end;
+
+# One cycle's JSON: its three stages plus the log-derived outcome — the same
+# shape the old cycle_json built per cycle.
+def cycle_obj($cid; $ev; $manifest_idx; $cap):
+  ($ev | sort_by(.ts)) as $e
+  | ($e | map(.event)) as $types
+  | (["coordinator","implementor","reviewer"] | map(build_stage($manifest_idx[$cid + "|" + .]; $cap))) as $built
+  | if any($built[]; . != null and (.ok | not)) then empty
+    else
+      ($built | map(.obj)) as $stageobjs
+      | {
+          id: $cid,
+          node: ([ $e[] | select(.node) | .node ] | last),
+          started_at: (([ $e[] | select(.event=="cycle-start") | .ts ] | first) // ($e[0].ts // null)),
+          ended_at:   ([ $e[] | select(.event=="cycle-end") | .ts ] | last),
+          dry_run:    (($e[] | select(.event=="cycle-start") | .dry_run) // false),
+          repo:   ([ $e[] | select(.repo)  | .repo ] | last),
+          item:   ([ $e[] | select(.item)  | .item ] | last),
+          source: ([ $e[] | select(.event=="selection") | .source ] | last),
+          title:  ([ $e[] | select(.event=="selection") | .title ]  | last),
+          pr_url: ([ $e[] | select(.pr_url) | .pr_url ] | last),
+          reason: ([ $e[] | select(.event=="none-selected" or .event=="stand-down" or .event=="cycle-skipped") | (.reason // .detail) ] | last),
+          fail_detail: ([ $e[] | select(.event=="attempt-failed") | ((.stage // "?") + ": " + (.detail // "")) ] | last),
+          warning: ([ $e[] | select(.event=="warning") | .detail ] | last),
+          outcome: (
+            if   ($types | any(. == "pr-ready"))       then "pr-ready"
+            elif ($types | any(. == "pr-raised"))      then "pr-raised"
+            elif ($types | any(. == "attempt-failed")) then "failed"
+            elif ($types | any(. == "none-selected"))  then "none-selected"
+            elif ($types | any(. == "stand-down"))     then "stand-down"
+            elif ($types | any(. == "cycle-skipped"))  then "skipped"
+            elif ($types | any(. == "selection"))      then "selected"
+            else "ended" end
+          ),
+          stages: { coordinator: $stageobjs[0], implementor: $stageobjs[1], reviewer: $stageobjs[2] },
+          total_cost_usd: ([ $stageobjs[] | .cost_usd // 0 ] | add),
+          limit_hit: ([ $stageobjs[] | .limit_hit // false ] | any),
+          events: $e
+        }
+    end;
+JQDEFS
 
 # --- Slurp all events once (shared by cycle_json and summaries) ---------------
 ALL_EVENTS="$(read_events)"
@@ -301,26 +368,72 @@ dir_rows() {  # dir_rows CYCLES_DIR
       '$1 ~ re && !seen[$1]++' | cut -f1,3 \
   | head -n "$MAX_CYCLES" > "$cycle_rows"
 
-# Each cycle's JSON goes to its own file and the set is slurped once at the
-# end. The obvious `arr="$(jq '. + [$c]' <<<"$arr")"` re-parses a growing
-# multi-megabyte array once per cycle (quadratic in history shown), and
-# passing a cycle via --argjson puts transcript-bearing JSON on argv, which
-# caps at 128 KB — the cap the header comment above warns about.
-cycles_file="$work_tmp/cycles.json"
-cycle_files=()
+# Manifest of every existing stage file in the window, plus the window's own
+# order (newest first, matching cycle_rows) — the two inputs cycle_obj above
+# needs. Each file is read once with bash's own `$(<file)` (no fork, unlike
+# `cat`) into a work_tmp copy that jq then opens via --rawfile: a cycle
+# pruned out from under this read (cycles/ is bounded elsewhere, TD26072004)
+# yields empty content, exactly as the old stage_json's `cat` did, rather
+# than a hard "no such file" error from jq that would fail the single
+# invocation below and blank the whole window over one vanished cycle.
+manifest_items=()
+rawfile_args=(--rawfile events_raw "$events_file")
+order_items=()
 cycle_n=0
 while IFS=$'\t' read -r cid cdir; do
   [[ -n "$cid" ]] || continue
-  cf="$work_tmp/cycle.$(( cycle_n++ )).json"
-  cycle_json "$cid" "${cdir:-$cycles_dir}" > "$cf" 2>/dev/null
-  # A cycle mid-flight has partial transcripts; skip anything that didn't parse.
-  jq -e . "$cf" >/dev/null 2>&1 && cycle_files+=("$cf")
+  order_items+=("\"$cid\"")
+  for stage in coordinator implementor reviewer; do
+    outfile="${cdir:-$cycles_dir}/$cid/$stage.out"
+    [[ -f "$outfile" ]] || continue
+    ovar="o${cycle_n}_$stage"
+    otmp="$work_tmp/$ovar"
+    { out_content="$(<"$outfile")"; } 2>/dev/null
+    printf '%s' "${out_content:-}" > "$otmp"
+    rawfile_args+=(--rawfile "$ovar" "$otmp")
+    errfile="$outfile.stderr"
+    if [[ -f "$errfile" ]]; then
+      evar="e${cycle_n}_$stage"
+      etmp="$work_tmp/$evar"
+      { err_content="$(<"$errfile")"; } 2>/dev/null
+      printf '%s' "${err_content:-}" > "$etmp"
+      rawfile_args+=(--rawfile "$evar" "$etmp")
+      manifest_items+=("{\"cid\":\"$cid\",\"stage\":\"$stage\",\"out\":\$$ovar,\"err\":\$$evar}")
+    else
+      manifest_items+=("{\"cid\":\"$cid\",\"stage\":\"$stage\",\"out\":\$$ovar,\"err\":null}")
+    fi
+  done
+  cycle_n=$(( cycle_n + 1 ))
 done < "$cycle_rows"
-if (( ${#cycle_files[@]} > 0 )); then
-  jq -sc '.' "${cycle_files[@]}" > "$cycles_file"
-else
-  printf '[]' > "$cycles_file"
-fi
+manifest_json="[$(IFS=,; echo "${manifest_items[*]}")]"
+order_json="[$(IFS=,; echo "${order_items[*]}")]"
+
+# The dynamic trailer that drives the static defs above: bound via plain
+# printf (never string-interpolated into the program text), so nothing in a
+# cycle id or transcript can be mistaken for jq syntax. The `$name`s below are
+# jq variables, not shell ones — single-quoted on purpose so the shell leaves
+# them alone.
+detail_main="$work_tmp/detail-main.jq"
+# shellcheck disable=SC2016
+{
+  printf '(%s) as $manifest\n' "$manifest_json"
+  printf '| (%s) as $order\n' "$order_json"
+  printf '| ($events_raw | fromjson) as $all_events\n'
+  printf '| ($all_events | group_by(.cycle) | map({(.[0].cycle): .}) | add // {}) as $events_by_cycle\n'
+  printf '| ($manifest | INDEX(.cid + "|" + .stage)) as $manifest_idx\n'
+  printf '| [ $order[] as $cid | cycle_obj($cid; ($events_by_cycle[$cid] // []); $manifest_idx; $cap) ]\n'
+} > "$detail_main"
+
+cycles_file="$work_tmp/cycles.json"
+detail_prog="$work_tmp/detail.jq"
+cat "$detail_defs" "$detail_main" > "$detail_prog"
+jq -n -f "$detail_prog" "${rawfile_args[@]}" --argjson cap "$TRANSCRIPT_CAP" \
+  > "$cycles_file" 2>/dev/null
+# A hard failure (a bad program, a file that vanished between the stat above
+# and jq's own open) must not take down the whole publish — fall back to an
+# empty window exactly as the per-cycle loop this replaced did when nothing
+# parsed.
+jq -e . "$cycles_file" >/dev/null 2>&1 || printf '[]' > "$cycles_file"
 
 # --- Status ------------------------------------------------------------------
 lock_pid=""; lock_started=""; lock_alive=false
