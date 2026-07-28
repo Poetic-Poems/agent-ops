@@ -8,10 +8,41 @@ name: Build the node image
 # On a pull request it stops at "prove it works": no login, no push, nothing
 # published from code nobody has reviewed.
 #
-# There is deliberately no `paths:` filter. Every file in this repository is
-# copied into the image, so there is no such thing as a change that cannot
-# affect it — and the tests below are the only place the `test/` suite runs in
-# CI, which a docs-only pull request has no business skipping.
+# Almost every file in this repository is copied into the image and can change
+# what a node runs, so there is deliberately no `paths:` filter and no clever
+# early exit. The exception is prose — `docs/`, `README.md`, `CLAUDE.md`,
+# `TECH-DEBT.md`, `LICENCE`, the node runbook — which the image is not the
+# delivery path for. That is a weaker claim than "nothing reads them", and
+# deliberately so: a cycle working on this repository reads its `CLAUDE.md` and
+# its `TECH-DEBT.md`, but out of a fresh GitHub clone that a merge updates with
+# no image in the path. scripts/is-docs-only.sh carries the detail.
+# A change confined to those has no image worth testing on a pull
+# request and none worth rolling a fleet for on `main`, so the `changes` job
+# below stops the workflow at that point. It fails safe: anything it cannot
+# classify with certainty is built.
+#
+# Note that this is a question about *paths*, not about file extensions.
+# `prompts/*.md` are Markdown documents and are also the operating instructions
+# fed to `claude -p` at each stage — the code of the coordinator, the
+# implementor and the reviewer. The allowlist that draws the line lives in
+# scripts/is-docs-only.sh, for the reason scripts/lint-shell.sh gives about its
+# own file set, and is unit-tested there (test/is-docs-only.test.sh).
+#
+# The skip is a job-level `if:` and not a workflow-level `paths-ignore:`,
+# because the two report differently to the branch ruleset. A skipped *job*
+# reports success and satisfies a required status check; a workflow filtered
+# out by `paths` never reports at all, and the three checks this workflow owes
+# the ruleset would sit pending forever — a docs-only pull request could never
+# be merged.
+#
+# What the skip costs is that the `test/` suite runs only here, so a docs-only
+# pull request does not run it. On a diff that touches no code that is a
+# re-proof of what `main`'s own build already proved; and commit-format,
+# shellcheck, CodeQL and the tech-debt register are unconditional and still
+# run. The consequence worth remembering is on `main`: a docs-only merge
+# publishes nothing, so no image carries that commit's SHA as a tag. That is
+# the intended trade — the previous image is exactly the code that commit
+# describes — but `AGENT_OPS_IMAGE=…:<sha>` must name a commit that built one.
 #
 # Each architecture is built and tested in its own job, on a runner of that
 # same architecture (this is the check TD26072607 exists for: an arm64 image
@@ -47,6 +78,57 @@ env:
   IMAGE: ghcr.io/poetic-poems/agent-ops
 
 jobs:
+  # Does this change need an image at all? See the note at the top of the file
+  # for why the answer is allowed to be "no" and why it is asked here rather
+  # than in a `paths:` filter.
+  #
+  # Every branch of the classification below that is not a complete, confident
+  # "documentation only" answers `false` and builds: no base commit to compare
+  # against (`workflow_dispatch`, or the push that created a branch), a diff
+  # git cannot produce, an empty diff, or a single path outside the allowlist.
+  changes:
+    name: Work out what changed
+    runs-on: ubuntu-latest
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+        with:
+          # The diff below reaches back to a merge base, which the default
+          # single-commit checkout does not have.
+          fetch-depth: 0
+
+      - name: Classify the change
+        id: classify
+        shell: bash
+        env:
+          # A pull request is its base branch against its head; a push to
+          # `main` is what that push added. `workflow_dispatch` has neither,
+          # and falls through to the build below.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+        run: |
+          # Three-dot on both events. On a pull request it asks what the branch
+          # did and not what `main` did meanwhile, which is the difference
+          # between classifying this change and classifying someone else's. On
+          # a push to `main` — which the ruleset keeps linear — the merge base
+          # is the previous tip, so it degenerates to the plain range.
+          docs_only=false
+          if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
+            echo "no base commit to compare against — building"
+          elif ! files="$(git diff --no-renames --name-only "$BASE_SHA...$HEAD_SHA")"; then
+            echo "cannot diff $BASE_SHA...$HEAD_SHA — building"
+          elif [[ -z "$files" ]]; then
+            echo "nothing changed between $BASE_SHA and $HEAD_SHA — building"
+          elif ! code="$(printf '%s\n' "$files" | ./scripts/is-docs-only.sh)"; then
+            printf 'building — this change touches code:\n%s\n' "$code"
+          else
+            docs_only=true
+            printf 'documentation only — no image will be built or published:\n%s\n' "$files"
+          fi
+          printf 'docs_only=%s\n' "$docs_only" >> "$GITHUB_OUTPUT"
+
   # What the image cannot work out about itself, computed once so that every
   # job builds with byte-identical build args — the same `built_at` in
   # particular, which is what lets the publish job reassemble the very layers
@@ -97,7 +179,23 @@ jobs:
 
   build:
     name: Build and test (${{ matrix.platform }})
-    needs: stamp
+    needs: [stamp, changes]
+    # A documentation-only change builds nothing. Both legs are required status
+    # checks, and a skipped job reports success to the ruleset, so the pull
+    # request stays mergeable with no image built for it.
+    #
+    # Which is exactly why `changes` failing must not skip this job. The
+    # default `needs` gate would do that — and a skipped required check reads
+    # as success, so a runner that died at checkout would quietly produce a
+    # mergeable pull request with no image ever built. `!cancelled()` replaces
+    # that gate with this expression, under which a `changes` job that
+    # produced no answer leaves `docs_only` empty and builds. Only an explicit
+    # `true` skips. `stamp` keeps its gate stated by hand, since its outputs
+    # are the build arguments below.
+    if: >-
+      !cancelled()
+      && needs.stamp.result == 'success'
+      && needs.changes.outputs.docs_only != 'true'
     strategy:
       # One architecture's failure says nothing about the other's, and telling
       # "broken everywhere" apart from "broken on arm64 alone" is this matrix's
@@ -239,6 +337,10 @@ jobs:
 
   publish:
     name: Publish to GHCR
+    # No condition about documentation here, and none wanted: `build` is
+    # skipped on such a change, and a job whose `needs` did not succeed is
+    # skipped in turn. Publishing what the build jobs never tested is not a
+    # state this workflow should be able to express.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [stamp, build]
     runs-on: ubuntu-latest

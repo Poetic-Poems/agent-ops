@@ -169,10 +169,12 @@ limit stands the whole fleet down within a cycle tick.
 
 ### Updating
 
-Nothing to do. CI builds an image from every merge to `main` and publishes it as
+Nothing to do. CI builds an image from every merge to `main` that touches
+anything the container reads, and publishes it as
 `ghcr.io/poetic-poems/agent-ops:latest`; watchtower (profile `auto-update`)
 notices and restarts the services into it. There is no `git pull` anywhere in
-this design.
+this design. A merge that only changes documentation publishes nothing and
+rolls nothing — the running image is already the code that merge describes.
 
 A roll waits for a cycle rather than killing one. Recreating a container kills
 the process group its cycle runs in, so watchtower asks first: with

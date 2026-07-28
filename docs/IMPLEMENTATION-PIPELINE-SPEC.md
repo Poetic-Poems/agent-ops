@@ -151,15 +151,19 @@ a node updates by pulling a new image rather than by pulling a branch.
   cron-log lines.
 - The image is built by CI, not by hand:
   `.github/workflows/build-image.yml` builds it on every pull request and
-  every merge, runs the acceptance checks below *inside* it, and — on `main`
-  only — publishes it to `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
+  every merge that could change it, runs the acceptance checks below *inside*
+  it, and — on `main` only — publishes it to
+  `ghcr.io/poetic-poems/agent-ops` tagged both `latest`
   (what a node's watchtower follows) and the commit SHA (how a node is pinned
   or rolled back, through `AGENT_OPS_IMAGE`), each tag a multi-platform manifest
   list covering `linux/amd64` and `linux/arm64`. A pull request builds and
   tests both legs — each in its own job on a runner of the image's own
   architecture, loaded (`load: true`) and run natively through requirement
   1b's acceptance checks — but publishes nothing. This is the whole update
-  path: merge produces an image, and nodes replace containers.
+  path: merge produces an image, and nodes replace containers. "Could change
+  it" is requirement 1b-i's question: a change confined to prose builds
+  nothing and publishes nothing, so a documentation merge leaves the fleet
+  where it is and no tag carries its SHA.
 - The image creates the volume mount points (`~/.claude`, `state_dir`,
   `workspace_root`) owned by `agent`, because a container runtime seeds a new
   named volume from the image's mount point — ownership included — and creates
@@ -2655,7 +2659,12 @@ What exists, and the requirements each part answers to:
    the `test/` suite inside the image, and check the role guard; then publish
    to GHCR on `main` only. It carries `packages: write` and authenticates as
    the workflow's own `GITHUB_TOKEN`, so nothing about publishing depends on a
-   human's credentials.
+   human's credentials. Its `changes` job decides whether there is an image
+   worth building at all, through `scripts/is-docs-only.sh` — the allowlist of
+   paths the image is not the delivery path for (requirement 1b-i). The rule lives in
+   the script rather than in the workflow for the reason component 10 gives
+   about its own file set, and because a rule that decides what reaches a node
+   is worth unit-testing.
 10. `scripts/lint-shell.sh` and `.github/workflows/shellcheck.yml` — the
     shell linter and the job that enforces it (acceptance check 1g). The file
     set and the invocation live in the script, so a developer's run and CI's
@@ -2694,12 +2703,42 @@ pull request, run the ones the change touches and any it could regress.
    passes inside the container; and `/app/agent-cycle.sh` with no role set
    exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`
    runs every one of these against both the `linux/amd64` and the `linux/arm64`
-   build on every pull request — each architecture in its own job, natively
-   on a runner of that same architecture (`ubuntu-latest` and
-   `ubuntu-24.04-arm`), with no emulation anywhere in the tested path — so a
-   change that breaks either architecture's image cannot be merged, and it is
-   the only place the `test/` suite runs in CI. On `main` the workflow
-   publishes both architectures as one manifest list per tag.
+   build on every pull request that touches the image — each architecture in
+   its own job, natively on a runner of that same architecture
+   (`ubuntu-latest` and `ubuntu-24.04-arm`), with no emulation anywhere in the
+   tested path — so a change that breaks either architecture's image cannot be
+   merged, and it is the only place the `test/` suite runs in CI. On `main` the
+   workflow publishes both architectures as one manifest list per tag.
+1b-i. **A documentation-only change builds nothing, and everything else
+   builds.** `test/is-docs-only.test.sh` passes: `scripts/is-docs-only.sh`
+   calls a change documentation-only when every path in it is under `docs/` or
+   is `README.md`, `CLAUDE.md`, `TECH-DEBT.md`, `LICENCE` or
+   `deploy/docker/README.md`, and calls it code otherwise — `prompts/*.md`
+   included, since those are Markdown documents *and* the operating
+   instructions of requirement 1a's stages, so classifying by file extension
+   would let a change to a node's behaviour skip the build that deploys it. An
+   empty path list, or none, is code. The test the allowlist encodes is "the
+   image is not the delivery path for this file", which is weaker than "nothing
+   reads it" and has to be: a cycle working on this repository reads its own
+   `CLAUDE.md` and `TECH-DEBT.md`, but from the `gh repo clone` in
+   `workspace_root` and from the contents API (requirement 3i) — both current
+   the moment a pull request merges, with no image involved. The copy at /app
+   is what nothing reads, because every stage's working directory is under
+   `workspace_root` or `state_dir` (requirement 6's assertion pins the first),
+   so /app is never a working directory nor an ancestor of one and its
+   `CLAUDE.md` is never loaded as project memory. `.github/workflows/build-image.yml`'s
+   `changes` job runs it over the change's own diff (three-dot, so a pull
+   request is judged on what its branch did and not on what `main` did
+   meanwhile) and skips the `build` jobs — and so `publish` — when the answer
+   is yes; a checked-out state it cannot diff builds. The skip is a job-level
+   `if:` rather than a `paths-ignore:` filter, because a skipped job reports
+   success to the branch ruleset's required checks while a filtered-out
+   workflow never reports at all. Only an explicit "yes" skips: a `changes`
+   job that fails rather than answers leaves the `build` jobs' condition
+   unsatisfied-by-emptiness and they run, since that same
+   skipped-reads-as-success is what would otherwise turn a dead runner into a
+   mergeable pull request with no image. A documentation-only merge to `main`
+   publishes no image, and no tag carries that commit's SHA.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
