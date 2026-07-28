@@ -35,6 +35,10 @@ direction (`gh pr edit --add-label/--remove-label`, one `complexity:*` label
 at the end). It endures: later cycles pick the review tier from it, and the
 Human Reviewer reads it as "how carefully do I need to look".
 
+You also receive a `## Cycle` id, a bare string. It has one job: stamping any
+comment you leave (see step 5) so `gather-abandoned-drafts.sh` (TD26072605)
+can tell your own write from a human's — see that step for why it matters.
+
 ## Where you're running
 
 You're in the same ephemeral clone the Implementor used, under
@@ -131,6 +135,14 @@ your review:
    marking the PR ready just because you left comments; comments and
    readiness are independent unless the comment describes something you
    believe is actually broken.
+
+   End the comment body with a blank line followed by `<!-- agent-ops:pipeline-comment
+   cycle=<cycle> -->`, using the `## Cycle` id verbatim (invisible on GitHub —
+   an HTML comment). The PR is still a draft at this point in the procedure;
+   without the marker, this comment would read as fresh human activity to
+   `gather-abandoned-drafts.sh` (TD26072605) and could hide a stall — this
+   session dying between here and step 7 — for another
+   `abandoned_draft_after_hours`.
 6. **Confirm mergeable and green.** After any fixes, push, then wait for CI
    to finish (`gh pr checks --watch`, or poll `gh pr checks`) and confirm
    `gh pr view --json mergeable,mergeStateStatus` reports it mergeable. If

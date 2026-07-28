@@ -10,8 +10,10 @@
 #     force-pushing over live work;
 #   - too shy, and a genuinely stalled draft sits forever occupying a
 #     back-pressure slot while every cycle looks healthy.
-# The freshness gate (`updatedAt` older than the threshold) is what holds the
-# line, and it is the half most easily broken by a careless edit — so it is
+# The freshness gate is "last **real** activity older than the threshold"
+# (TD26072605) — not GitHub's raw `updatedAt`, which also moves for a label edit
+# or a comment the pipeline posted about itself, neither of which means anybody
+# is on it. This is the half most easily broken by a careless edit — so it is
 # asserted here, as jq over the same shapes the GitHub API returns, since the
 # gatherer's `gh` calls aren't reachable from a unit test. Keep this in step with
 # the filters in the script.
@@ -40,47 +42,106 @@ assert_eq() {
 
 # --- The candidate filter: which draft PRs are ours to finish? ---
 
-# The shape `gh pr list --json number,title,headRefName,commits,isDraft,updatedAt,url,body`
+# The shape `gh pr list --json
+# number,title,headRefName,commits,isDraft,updatedAt,url,body,comments,reviews`
 # returns (the `--label` filter is applied by gh, so every row here already
-# carries pr_label). One of each kind we must accept or reject. `cutoff` is
-# `now − stale-hours`; a PR is abandoned when its `updatedAt` is *older* than it.
+# carries pr_label). `cutoff` is `now − stale-hours`; a PR is abandoned when its
+# **last real activity** — not its raw `updatedAt` — is older than it.
 cutoff='2026-07-24T09:00:00Z'
+marker='<!-- agent-ops:pipeline-comment'
 prs='[
-  {"number": 80, "isDraft": true,  "updatedAt": "2026-07-24T03:00:00Z", "headRefName": "agent/td1-fix"},
-  {"number": 81, "isDraft": false, "updatedAt": "2026-07-24T03:00:00Z", "headRefName": "agent/td2-fix"},
-  {"number": 82, "isDraft": true,  "updatedAt": "2026-07-24T11:00:00Z", "headRefName": "agent/td3-fix"},
-  {"number": 83, "isDraft": true,  "updatedAt": "2026-07-24T03:00:00Z", "headRefName": "feature/a-humans-branch"},
-  {"number": 84, "isDraft": true,  "updatedAt": "2026-07-24T01:00:00Z", "headRefName": "td/TD26072001"}
+  {"number": 80, "isDraft": true,  "headRefName": "agent/td1-fix",
+   "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a1"}], "reviews": [], "comments": []},
+  {"number": 81, "isDraft": false, "headRefName": "agent/td2-fix",
+   "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a2"}], "reviews": [], "comments": []},
+  {"number": 82, "isDraft": true,  "headRefName": "agent/td3-fix",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a3"}], "reviews": [],
+   "comments": [{"createdAt": "2026-07-24T11:00:00Z", "body": "still working on this"}]},
+  {"number": 83, "isDraft": true,  "headRefName": "feature/a-humans-branch",
+   "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a4"}], "reviews": [], "comments": []},
+  {"number": 84, "isDraft": true,  "headRefName": "td/TD26072001",
+   "commits": [{"committedDate": "2026-07-24T01:00:00Z", "oid": "a5"}], "reviews": [], "comments": []},
+  {"number": 85, "isDraft": true,  "headRefName": "agent/label-edit-only",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a6"}], "reviews": [], "comments": []},
+  {"number": 86, "isDraft": true,  "headRefName": "agent/marker-comment-only",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a7"}], "reviews": [],
+   "comments": [{"createdAt": "2026-07-28T21:00:00Z",
+                 "body": "Autonomous agent (implementor) stopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}]},
+  {"number": 87, "isDraft": true,  "headRefName": "agent/human-comment-recent",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a8"}], "reviews": [],
+   "comments": [{"createdAt": "2026-07-28T21:00:00Z", "body": "any update on this?"}]},
+  {"number": 88, "isDraft": true,  "headRefName": "agent/human-review-recent",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a9"}],
+   "reviews": [{"submittedAt": "2026-07-28T21:00:00Z"}], "comments": []}
 ]'
 
+# Mirrors the two-stage computation in scripts/gather-abandoned-drafts.sh: the
+# draft/branch filter first, then last-real-activity (latest commit, review, or
+# non-marker comment) against the cutoff.
 candidate_filter() {
-  jq -c --arg cutoff "$cutoff" \
+  jq -c --arg cutoff "$cutoff" --arg marker "$marker" \
     '[.[] | select(.isDraft)
-          | select(.updatedAt < $cutoff)
           | select((.headRefName | startswith("agent/"))
                    or (.headRefName | startswith("td/")))
+          | (([ (.commits[-1].committedDate // empty) ]
+              + [ (.reviews // [])[] | .submittedAt ]
+              + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
+             | max) as $activity
+          | select($activity != null and $activity < $cutoff)
           | .number]' <<<"$prs"
 }
 
-assert_eq "only open, draft, ours-by-branch, stale PRs are candidates" \
-  "[80,84]" "$(candidate_filter)"
+assert_eq "only open, draft, ours-by-branch, actually-stale PRs are candidates" \
+  "[80,84,85,86]" "$(candidate_filter)"
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
 # - #81 ready: a ready PR is finished work waiting on the human. Finishing it is
 #   review-feedback's job; force-pushing it would breach the Human Gate.
-# - #82 fresh: updated within the window — a draft still being worked, or one a
-#   peer node just touched. Stealing it would force-push over live work. This is
-#   the assertion that keeps the feature from cannibalising in-flight cycles.
+# - #82 a human's comment, after the cutoff: a draft still being worked, or one
+#   a peer node just touched. Stealing it would force-push over live work. This
+#   is the assertion that keeps the feature from cannibalising in-flight cycles.
 # - #83 human branch: only branches under agent/ (or the tech-debt td/ claim
 #   branch) are ours; the Human Gate reserves the rest.
+# - #87 a human's comment resets the clock even though the last commit is old —
+#   the direct contrast with #86, whose only recent write is marker-stamped.
+# - #88 a review resets the clock too, same as any other real activity.
+is_candidate() { candidate_filter | jq --argjson n "$1" 'index($n) != null'; }
+
 assert_eq "a ready PR is never an abandoned-draft candidate" \
-  "0" "$(jq '[.[] | select(.number == 81) | select(.isDraft)] | length' <<<"$prs")"
-assert_eq "a freshly-updated draft is not abandoned — never steal live work" \
-  "0" "$(jq --arg c "$cutoff" '[.[] | select(.number == 82) | select(.updatedAt < $c)] | length' <<<"$prs")"
+  "false" "$(is_candidate 81)"
+assert_eq "a human's recent comment keeps a draft off the list — never steal live work" \
+  "false" "$(is_candidate 82)"
 assert_eq "a human's own branch is never ours to finish" \
   "0" "$(jq '[.[] | select(.number == 83) | select((.headRefName | startswith("agent/")) or (.headRefName | startswith("td/")))] | length' <<<"$prs")"
 assert_eq "a tech-debt td/ claim branch counts as ours" \
   "1" "$(jq '[.[] | select(.number == 84) | select(.headRefName | startswith("td/"))] | length' <<<"$prs")"
+assert_eq "a human's recent comment resets the clock even over an old commit" \
+  "false" "$(is_candidate 87)"
+assert_eq "a human review resets the clock" \
+  "false" "$(is_candidate 88)"
+
+# --- TD26072605: the pipeline's own writes must not reset the clock ---
+
+# #85 has no comments or reviews at all — its raw `updatedAt` is irrelevant
+# because this script never reads that field; a label edit (which moves
+# `updatedAt` but appears in none of commits/reviews/comments) is discounted
+# simply by not being a signal this computation looks at.
+assert_eq "a PR touched only by a label edit is still judged solely on real activity" \
+  "true" "$(is_candidate 85)"
+
+# #86 carries a comment stamped with the pipeline's own marker, timestamped
+# well after the cutoff — and it is still a candidate, because the marker
+# excludes it from the activity computation entirely (not-at-all, per
+# TD26072605's decision, not a partial reset).
+assert_eq "a comment carrying the pipeline's own marker does not reset the clock" \
+  "true" "$(is_candidate 86)"
+
+# #87 is the same shape as #86 — an old commit, one comment after the cutoff —
+# but its comment carries no marker, so it is a human's write and does reset
+# the clock. The pair is the regression guard: change the marker string, or the
+# `contains($marker)` filter, and one of these two flips.
+assert_eq "an unmarked comment at the same timestamp as #86's marked one still resets the clock" \
+  "true false" "$(is_candidate 86) $(is_candidate 87)"
 
 # --- The ref: scoped to the head SHA ---
 #
