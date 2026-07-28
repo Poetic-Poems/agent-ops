@@ -165,7 +165,7 @@ fi
 # it, so td-check.pl's output names `TECH-DEBT.md` — the path a human or an
 # Implementor would type — rather than a mktemp path that means nothing by the
 # time the work order is read. The contents API base64 arrives wrapped across
-# lines; `base64 -d` is content with that.
+# lines; `base64 -d` copes with that.
 if ! jq -r '.content // ""' <<<"$raw" 2>/dev/null | base64 -d > "$work/TECH-DEBT.md" 2>/dev/null \
    || [[ ! -s "$work/TECH-DEBT.md" ]]; then
   # `encoding: "none"` (a file over the contents API's size limit) lands here
