@@ -192,7 +192,7 @@ Edit `config.json` before first run. Keys:
 | `enabler_after_coordinator_cycles` | 3 | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
 | `enabler_recheck_hours` | 72 | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. Create it in each target repo (`gh label create enabler-escalation -R Poetic-Poems/<repo>`); without it the issue is still raised, just unlabelled. |
-| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). Create it in each target repo (`gh label create needs-refinement -R Poetic-Poems/<repo>`); without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list. Leave it empty to switch the labelling off. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
+| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. Create it in each target repo (`gh label create needs-refinement -R Poetic-Poems/<repo>`); without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list — and a label you apply yourself does nothing. Leave it empty to switch the labelling off in both directions. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
 | `refinement_max_per_engagement` | 3 | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
@@ -851,6 +851,24 @@ jq -r 'select(.event == "item-refined")
        | "\(.ts)  \(.repo)  \(.item)  \(.comment_url // "spec recorded in the log")"' \
   ~/.local/state/poetic-agents/log.jsonl | tail -10
 ```
+
+**You can flag an item yourself**, rather than waiting for the Co-Ordinator to
+notice it. Apply `needs-refinement` to the issue directly:
+
+```bash
+gh issue edit 52 -R Poetic-Poems/poetic --add-label needs-refinement
+```
+
+The next cycle scans every repo's issues for the label, and — provided the
+issue is still open and nothing already blocks it — records the same kind of
+block a Co-Ordinator's own report would, naming you as the one who applied it.
+From there it follows the ordinary path above: a few cycles' grace, then the
+Enabler. **Take the label off while the block is still open** and that clears
+it the same way closing an Enabler escalation does — the item is selectable
+again next cycle, no need to touch the log yourself. This only works for a
+block you created this way: taking the label off an item the pipeline blocked
+on its own report does nothing, by design — that block's label is a one-way
+projection of state the log already holds, not a second way to change it.
 
 ### See stage transcripts
 ```bash

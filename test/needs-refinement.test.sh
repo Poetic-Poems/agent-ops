@@ -2,7 +2,7 @@
 #
 # test/needs-refinement.test.sh — regression test for the refinement class:
 # lib/refinement.sh plus the two log extracts it depends on in
-# lib/cycle-state.sh (requirements 16a, 34e, 35d, 36b and 3h).
+# lib/cycle-state.sh (requirements 16a, 34e, 34g, 35d, 36b and 3h).
 #
 # The defect this closes was a silence. An item the Co-Ordinator could not rank
 # — no acceptance criteria, no scope bound, or waiting on a decision only the
@@ -426,6 +426,65 @@ assert_eq "an engagement of only ordinary items is unaffected by the cap" \
   "$(items_in "$(refinement_engagement_set "$(jq -c '[.[] | select(.kind == "")]' <<<"$engagement")" 0)")"
 assert_eq "an empty eligible set stays empty" "[]" "$(refinement_engagement_set '[]' 3)"
 
+# --- Requirement 34g: a human's own hand-applied label is read back --------------
+# Requirement 34e's projection is one-way for the block the Script itself
+# creates from a Co-Ordinator's report — nothing reads that label back. This is
+# the narrower, second report: a human applying the label directly, which the
+# Script scans for during source gathering and turns into the same kind of
+# block, marked so its later removal is distinguishable from anything else that
+# might touch the label.
+
+hand_flagged='[{"repo": "o/r", "number": 52, "url": "https://github.com/o/r/issues/52",
+                "label": "needs-refinement", "state": "open",
+                "labelled_at": "2026-07-28T09:00:00Z", "by": "warwick"}]'
+hand_flagged_compact="$(jq -c . <<<"$hand_flagged")"
+
+assert_eq "a labelled, open, unblocked issue earns a fresh entry" \
+  "$hand_flagged_compact" "$(refinement_hand_flag_new "$hand_flagged" '[]')"
+assert_eq "an already-blocked item earns no duplicate, refinement or not" "[]" \
+  "$(refinement_hand_flag_new "$hand_flagged" \
+       '[{"repo": "o/r", "item": "52", "kind": ""}]')"
+assert_eq "  ... including one already blocked as a refinement itself" "[]" \
+  "$(refinement_hand_flag_new "$hand_flagged" \
+       '[{"repo": "o/r", "item": "52", "kind": "needs-refinement"}]')"
+assert_eq "a closed issue earns nothing, even freshly labelled" "[]" \
+  "$(refinement_hand_flag_new "$(jq -c '.[0].state = "closed"' <<<"$hand_flagged")" '[]')"
+assert_eq "another repo's identically-numbered issue is untouched by this one's block" \
+  "$hand_flagged_compact" "$(refinement_hand_flag_new "$hand_flagged" \
+       '[{"repo": "o/other", "item": "52", "kind": ""}]')"
+
+fields="$(refinement_hand_flag_fields "o/r" 52 needs-refinement warwick \
+  "2026-07-28T09:00:00Z" "https://github.com/o/r/issues/52")"
+assert_eq "a hand-flagged block is marked as a refinement" "needs-refinement" \
+  "$(jq -r '.kind' <<<"$fields")"
+assert_eq "and carries no unblock condition — a label says nothing was missing" \
+  "" "$(jq -r '.unblock_condition' <<<"$fields")"
+assert_eq "and is traceable to a human, not the Script's own projection" "true" \
+  "$(jq -r '.hand_flagged' <<<"$fields")"
+assert_eq "and records which label, so the ordinary lifecycle can remove it" \
+  "needs-refinement" "$(jq -r '.needs_refinement_label' <<<"$fields")"
+assert_eq "and who applied it" "warwick" "$(jq -r '.hand_flagged_by' <<<"$fields")"
+assert_eq "an anonymous flag records no author rather than a placeholder" "null" \
+  "$(jq -r '.hand_flagged_by // "null"' <<<"$(refinement_hand_flag_fields "o/r" 52 needs-refinement)")"
+
+hand_flagged_block='[{"repo": "o/r", "item": "52", "kind": "needs-refinement",
+                       "needs_refinement_label": "needs-refinement", "hand_flagged": true}]'
+script_block='[{"repo": "o/r", "item": "52", "kind": "needs-refinement",
+                "needs_refinement_label": "needs-refinement"}]'
+
+assert_eq "a hand-flagged block whose label is gone is cleared" \
+  '[{"repo":"o/r","item":"52"}]' "$(refinement_hand_flag_cleared '[]' "$hand_flagged_block")"
+assert_eq "  ... including when the issue is simply gone from the fetch" \
+  '[{"repo":"o/r","item":"52"}]' \
+  "$(refinement_hand_flag_cleared '[{"repo": "o/other", "number": 52}]' "$hand_flagged_block")"
+assert_eq "still-labelled, even if closed, is not a removal" "[]" \
+  "$(refinement_hand_flag_cleared '[{"repo": "o/r", "number": 52, "state": "closed"}]' "$hand_flagged_block")"
+assert_eq "a block the Script itself projected the label onto is never cleared this way" \
+  "[]" "$(refinement_hand_flag_cleared '[]' "$script_block")"
+assert_eq "an ordinary block carrying no refinement kind is untouched regardless" "[]" \
+  "$(refinement_hand_flag_cleared '[]' \
+       '[{"repo": "o/r", "item": "52", "kind": "", "hand_flagged": true}]')"
+
 # --- Robustness at the call sites -------------------------------------------------
 # agent-cycle.sh calls all of this from a cycle running under `set -euo pipefail`,
 # and the verdict half of it from inside the exit trap, where an unguarded
@@ -446,6 +505,9 @@ assert_eq "an empty eligible set stays empty" "[]" "$(refinement_engagement_set 
   refinements_map "/nonexistent/log.jsonl" >/dev/null
   if refinement_second_pass_refused 'not json' 'not json'; then :; fi
   refinement_label_remove "o/r" 52 needs-refinement || true
+  refinement_hand_flag_new 'not json' 'not json' >/dev/null
+  refinement_hand_flag_fields "o/r" 52 needs-refinement >/dev/null
+  refinement_hand_flag_cleared 'not json' 'not json' >/dev/null
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shapes survive set -e and unparseable input" "0" "$?"

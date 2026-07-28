@@ -2,8 +2,9 @@
 #
 # lib/refinement.sh — under-specification as a class of block: what the
 # Co-Ordinator must produce to report one, what the Script records, which items
-# the label is projected onto, and how many refinements one Enabler engagement
-# takes on (requirements 16a, 34e, 35d, 36b).
+# the label is projected onto, how a human's own hand-applied label is read
+# back, and how many refinements one Enabler engagement takes on (requirements
+# 16a, 34e, 34g, 35d, 36b).
 #
 # ## The gap this closes
 #
@@ -36,12 +37,55 @@
 #
 # Work items here are heterogeneous — issues, `TECH-DEBT.md` rows, review
 # recommendations, findings, plan tasks, per-round PR refs — and a GitHub label
-# can only ever reach one of those sources. A pipeline that read the label would
-# therefore see a sixth of its own state and would be wrong about the rest in a
-# way that reads as correct. So the shared log is the record; the label is
-# applied by the Script when the item happens to be an issue, removed when the
-# block clears, and never read back. Its whole job is to tell a human browsing
-# the issue list what the pipeline already knows.
+# can only ever reach one of those sources. A pipeline that read the label as
+# its record of *every* item's state would therefore see a sixth of its own
+# state and would be wrong about the rest in a way that reads as correct. So
+# the shared log stays the record for a block the Co-Ordinator reported: the
+# label the Script projects onto it is applied when the item happens to be an
+# issue, removed when the block clears, and never read back.
+#
+# ## Reading the label back for the one writer who cannot use the log
+# (requirement 34g)
+#
+# That rule is deliberately narrower than "never read back" sounds, because it
+# was written to describe the Script's *own* projection, and it leaves the one
+# person the whole mechanism serves with no way to invoke it: a human reading
+# an issue has no `needs_refinement` entry to hand the Co-Ordinator, and no
+# `state_dir/log.jsonl` to append to from a browser (the same gap requirement
+# 34f closes for a void). Applying the label by hand does nothing, and looks
+# exactly like it worked.
+#
+# So a hand-applied label is a second, narrower kind of report, read back only
+# for the blocks it creates. `refinement_hand_flag_new` turns a labelled,
+# open issue with no block yet into an `attempt-failed` exactly like a
+# Co-Ordinator's `needs_refinement` entry would — `refinement_hand_flag_fields`
+# builds it, marked `hand_flagged: true` so the block is traceable to a human
+# rather than a model. `refinement_hand_flag_cleared` is the reverse: an issue
+# whose block carries that marker but has lost the label maps to the existing
+# hand-appended `unblocked` path (requirement 18), because a human taking the
+# label off while the block is open is asking for exactly that.
+#
+# The marker is what keeps this from becoming the wider read-back the design
+# note above rejects. A block the Script itself projected the label onto (a
+# Co-Ordinator's report) carries no `hand_flagged` field, so removing that
+# label — by hand, by mistake, or by whatever the repo's own automation does —
+# clears nothing here: that block's lifecycle is still the one-way projection
+# it always was, cleared only by the Co-Ordinator's re-check or the Enabler.
+# Reading the label back for *every* refinement block, not just the ones a
+# human created with it, would silently reopen a block a model is still
+# working on the moment anything touches its label — the "reconciliation path
+# the current design gets to live without" that made this a deferred decision
+# rather than an omission (`TECH-DEBT.md` TD26072602).
+#
+# Eligibility asks nothing new of a hand-flagged block. Requirement 35a
+# already treats the `kind` marker as informational — "the kind marker changes
+# nothing about the rule, and deliberately so" — so a hand-flagged block
+# crosses the same `enabler_after_coordinator_cycles` threshold as any other.
+# Carving out a faster (or slower) path for this one origin would be the exact
+# exception 35a's own design note declines to make, and there is no fleet
+# evidence yet that a human's label needs different pacing than a model's
+# report; whether refinement blocks in general deserve their own threshold is
+# the tuning question `TECH-DEBT.md` TD26072604 leaves open, not this one.
 #
 # Requires `lib/void-guard.sh` (for `entry_field_text`) to be sourced first, as
 # agent-cycle.sh does. Sourced, never executed: it sets no shell options,
@@ -261,4 +305,108 @@ refinement_second_pass_refused() {
   printf 'refined once already at %s and no human has touched it since, so a second refinement is a disagreement only a human can settle' \
     "$refined"
   return 1
+}
+
+# refinement_hand_flag_new LABELLED_JSON BLOCKED_JSON
+# Print, as a JSON array, the entries of LABELLED_JSON (the shape
+# `scripts/gather-hand-flagged-refinements.sh` produces:
+# `{repo, number, url, label, state, labelled_at, by}`) that need a fresh
+# block: the issue is **open** and no block — of any kind, from any origin —
+# is currently open for it (requirement 34g).
+#
+# Any existing block disqualifies the issue, not only a refinement one. That is
+# the same rule `log_needs_refinement_items` applies to a Co-Ordinator's own
+# report, and it is what "a label on an item already blocked for another
+# reason" (`TECH-DEBT.md` TD26072602) resolves to: an item the Enabler is
+# already holding is, by construction, already in BLOCKED_JSON, so it is never
+# reported here either.
+#
+# A closed issue is excluded even though it may still carry the label —
+# blocking a closed issue would earn it an Enabler engagement for a candidate
+# the `issues` source, and the escalation-still-open eligibility test of
+# requirement 35a, both already treat as unreachable. `state` empty (an older
+# caller, or a test fixture) reads as open, matching the field's absence
+# meaning "nothing said otherwise" everywhere else in this file.
+#
+# Always prints a valid array; malformed input yields `[]` rather than a
+# non-zero status; the caller holds the fleet's lock and writes to the log
+# unconditionally afterwards.
+refinement_hand_flag_new() {
+  local labelled="${1:-[]}" blocked="${2:-[]}" out
+  out="$(jq -nc --argjson l "$labelled" --argjson b "$blocked" '
+    [ $l[]?
+      | select(((.state // "open") == "open"))
+      | select(((.repo // "") != "") and ((.number // "") != ""))
+      | . as $e
+      | select(
+          ($b | any(.[]?;
+                     (.repo // "") == ($e.repo // "") and
+                     ((.item // "") | tostring) == (($e.number // "") | tostring))) | not
+        )
+    ]' 2>/dev/null || true)"
+  [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
+  printf '%s' "$out"
+}
+
+# refinement_hand_flag_fields REPO NUMBER LABEL [BY] [LABELLED_AT] [URL]
+# Print the extra fields a hand-flagged block's `attempt-failed` event carries
+# (requirement 34g): the same `kind` marker as a Co-Ordinator's report, the
+# label it was found under (so `refinement_label_targets` can take it off
+# again through the existing lifecycle), and `hand_flagged: true` — the one
+# field that distinguishes this origin from the Script's own projection, and
+# the only thing `refinement_hand_flag_cleared` is allowed to act on.
+#
+# There is no `unblock_condition`: a Co-Ordinator's report promotes its
+# `missing` field into one because that is what it was asked to write, but a
+# human applying a label has said only "this needs specifying", not what is
+# missing. An empty condition here is accurate, not a dropped field.
+refinement_hand_flag_fields() {
+  local repo="$1" number="$2" label="$3" by="${4:-}" at="${5:-}" url="${6:-}"
+  jq -nc --arg kind "$REFINEMENT_BLOCK_KIND" --arg lbl "$label" --arg by "$by" \
+    --arg at "$at" --arg url "$url" \
+    '{kind: $kind, unblock_condition: "", source: "issues", hand_flagged: true}
+     + (if $lbl == "" then {} else {needs_refinement_label: $lbl} end)
+     + (if $by == "" then {} else {hand_flagged_by: $by} end)
+     + (if $at == "" then {} else {hand_flagged_at: $at} end)
+     + (if $url == "" then {} else {evidence: $url} end)' \
+    2>/dev/null || printf '{}'
+}
+
+# refinement_hand_flag_cleared LABELLED_JSON BLOCKED_JSON
+# Print, as a JSON array of `{repo, item}`, every open block that
+# `refinement_hand_flag_new` created (`hand_flagged: true`) whose issue no
+# longer appears — open or closed — in LABELLED_JSON: the human took the label
+# off (requirement 34g).
+#
+# Scoped to `hand_flagged` blocks only, and that scoping is the whole point.
+# A block the Script itself projected the label onto is not in this set, so a
+# label removed from underneath one of those — by mistake, by the repo's own
+# automation, by anything other than this mechanism — clears nothing here: its
+# lifecycle stays the one-way projection requirement 34e always described.
+# Reading the label back for every refinement block, regardless of who put it
+# there, is the wider "second writer" this design deliberately declined
+# (`TECH-DEBT.md` TD26072602) — it would let anything that touches the label
+# reopen a block a model is still working from.
+#
+# A closed-but-still-labelled issue stays "labelled" here on purpose: the human
+# has not withdrawn the flag, they have just closed the issue, and treating
+# that as a removal would clear a block requirement 34g never earned the right
+# to touch by itself.
+refinement_hand_flag_cleared() {
+  local labelled="${1:-[]}" blocked="${2:-[]}" out
+  out="$(jq -nc --argjson l "$labelled" --argjson b "$blocked" --arg kind "$REFINEMENT_BLOCK_KIND" '
+    [ $b[]?
+      | select((.kind // "") == $kind)
+      | select((.hand_flagged // false) == true)
+      | select(((.repo // "") != "") and ((.item // "") != ""))
+      | . as $e
+      | select(
+          ($l | any(.[]?;
+                     (.repo // "") == ($e.repo // "") and
+                     ((.number // "") | tostring) == (($e.item // "") | tostring))) | not
+        )
+      | {repo: $e.repo, item: $e.item}
+    ] | unique' 2>/dev/null || true)"
+  [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
+  printf '%s' "$out"
 }

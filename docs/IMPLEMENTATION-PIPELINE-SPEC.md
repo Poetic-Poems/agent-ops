@@ -512,7 +512,7 @@ values below are the confirmed defaults; the README must document each key.
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
-| `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Empty disables the projection only: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
+| `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
@@ -2427,6 +2427,73 @@ runs unattended.
     void, a maintainer applied a label called `unvoided` to the pull request and
     nothing read it — the item stayed void, the fleet stood down hourly, and the
     label sat there looking like the action had been taken.
+34g. **A human's own hand-applied label is a report, not a state.** Requirement
+    34e's projection is deliberately one-way for the block *it* creates: the
+    label mirrors what the Co-Ordinator already reported, and nothing reads it
+    back. That left the one person the mechanism serves unable to invoke it —
+    a human reading an issue has no `needs_refinement` entry to hand a
+    Co-Ordinator, and no `state_dir/log.jsonl` to append to from a browser, the
+    same gap requirement 34f closes for a void. Applying
+    `needs_refinement_label` by hand did nothing and looked exactly like it had
+    worked.
+
+    So, during source gathering, the Script scans each repo's issues — open and
+    closed, one search per repo — for `needs_refinement_label` and resolves who
+    last applied it and when from the issue's timeline. Read above the
+    skip-list extracts, for the same reason as 34f: a reconciliation landing
+    after `blocked_json` is computed is a cycle late, and a cycle late here
+    reads to the human as the label not working, a second time.
+
+    Two decisions follow, both against `blocked_items` as it stands at the
+    point each is made:
+    - **A currently-open issue carrying the label, with no block yet open for
+      it under any kind or origin**, earns a coordinator-stage `attempt-failed`
+      exactly like a Co-Ordinator's own `needs_refinement` report would:
+      `kind: "needs-refinement"`, `detail` naming the label and who applied it,
+      `source: "issues"`, the label itself as `needs_refinement_label` (so its
+      lifecycle — removed when the block clears — is the one requirement 34e
+      already describes), and `hand_flagged: true`, which marks this block as
+      one this mechanism, not the Co-Ordinator, created. There is no
+      `unblock_condition`: a human applying a label has said "this needs
+      specifying", not what is missing, and a promoted field with nothing
+      behind it would be worse than an absent one. A closed issue is excluded
+      even if it still carries the label — a closed issue is not a candidate
+      the `issues` source or requirement 35a's escalation test can reach
+      either, so blocking it would buy an engagement over something already
+      unselectable.
+    - **A block this mechanism created (`hand_flagged: true`) whose issue no
+      longer carries the label at all** — open or closed — maps to the
+      existing hand-appended `unblocked` path (requirement 18): the Script
+      logs `unblocked` with `by: "label-removed"`, and the item is selectable
+      again next cycle. Scoped to `hand_flagged` blocks only, and only that
+      scoping keeps 34e's one-way rule true for everything else: a block the
+      Script itself projected the label onto is not marked `hand_flagged`, so a
+      label missing from underneath one of those — by mistake, by the repo's
+      own automation, by anything other than this mechanism — clears nothing.
+      Reading the label back for every refinement block regardless of origin
+      is the "second writer of refinement state" this design deferred rather
+      than shipped as part of requirement 34e (`TECH-DEBT.md` TD26072602): it
+      would let anything that touches the label reopen a block a model is
+      still working from, on no authority at all. An issue that keeps the
+      label but is closed is not a removal either, by the same closed-issue
+      reasoning as above — the human closed the issue, they did not withdraw
+      the flag.
+
+    Eligibility asks nothing new of a hand-flagged block: requirement 35a
+    already treats `kind` as informational rather than a second axis — "the
+    kind marker changes nothing about the rule, and deliberately so" — so a
+    hand-flagged block crosses the same `enabler_after_coordinator_cycles`
+    threshold as any other refinement block, reported or hand-flagged alike.
+    Carving out separate pacing for this one origin would be exactly the
+    exception that design note declines to make, and the fleet has no evidence
+    yet that a human's label needs different timing from a model's report;
+    whether refinement blocks in general deserve their own threshold is the
+    tuning question `TECH-DEBT.md` TD26072604 leaves open for later, not one
+    this requirement answers on a guess.
+
+    `--dry-run` still records both directions: neither writes to GitHub (the
+    label is only ever read here, never applied or removed by this mechanism),
+    so there is no outward change for requirement 12 to forbid.
 
 ### The Enabler
 
@@ -3450,6 +3517,19 @@ pull request, run the ones the change touches and any it could regress.
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
+11e. **A human's own label is read back, and only where this mechanism put it
+    (requirement 34g).** `test/needs-refinement.test.sh` passes:
+    `refinement_hand_flag_new` turns a labelled, open issue with no existing
+    block — of any kind — into a fresh entry, and reports nothing for one
+    already blocked (no duplicate for the same label on the same item) or for
+    a labelled issue that is closed; `refinement_hand_flag_fields` marks what
+    it builds `hand_flagged: true` with no `unblock_condition`;
+    `refinement_hand_flag_cleared` maps a `hand_flagged` block whose issue has
+    lost the label — open or closed — to an `unblocked` candidate, but leaves
+    alone both a block still carrying the label and a block that is not marked
+    `hand_flagged` (the Script's own projection from a Co-Ordinator's report),
+    even when that one's label is also missing — proving the one-way rule
+    requirement 34e states for that population still holds.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or returns prose instead of JSON: the
     cycle still exits 0, logs `stage-end` and one `warning`, writes **no**
