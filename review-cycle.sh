@@ -48,6 +48,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/metering.sh
+. "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/role.sh
@@ -585,7 +587,8 @@ $(jq . <<<"$reviewer_input")
   else
     rc=$?
   fi
-  log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" '{repo: $r, exit_code: $rc}')"
+  log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" \
+    --argjson m "$(metering_fields "$review_model" "$out_file")" '{repo: $r, exit_code: $rc} + $m')"
   (( ONCE )) && dump_stage_output "$out_file"
 
   detect_and_log_limit_hit "$out_file" || true

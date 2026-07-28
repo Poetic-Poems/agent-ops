@@ -32,6 +32,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/metering.sh
+. "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
@@ -1220,7 +1222,8 @@ $(jq . <<<"$input")
   else
     rc=$?
   fi
-  log_event "stage-end" "$(jq -nc --argjson rc "$rc" '{stage: "enabler", exit_code: $rc}')"
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --argjson m "$(metering_fields "$enabler_model" "$out")" \
+    '{stage: "enabler", exit_code: $rc} + $m')"
   (( ONCE )) && dump_stage_output "$out"
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
@@ -1964,7 +1967,8 @@ if run_claude_stage "$(( timeout_coordinator_min * 60 ))" "$coordinator_model" "
 else
   coord_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" '{stage: "coordinator", exit_code: $rc}')"
+log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out")" \
+  '{stage: "coordinator", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$coordinator_out"
 
 if (( coord_rc != 0 )); then
@@ -2113,7 +2117,8 @@ if run_claude_stage "$(( timeout_implementor_min * 60 ))" "$impl_model" "$implem
 else
   impl_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" '{stage: "implementor", exit_code: $rc}')"
+log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_fields "$impl_model" "$impl_out")" \
+  '{stage: "implementor", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$impl_out"
 
 impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
@@ -2217,7 +2222,8 @@ if run_claude_stage "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_p
 else
   rev_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" '{stage: "reviewer", exit_code: $rc}')"
+log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --argjson m "$(metering_fields "$rev_model" "$rev_out")" \
+  '{stage: "reviewer", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$rev_out"
 
 rev_result="$(jq -r '.result // empty' "$rev_out" 2>/dev/null || true)"

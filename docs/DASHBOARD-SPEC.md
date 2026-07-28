@@ -158,6 +158,11 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   fenced-```json``` block that `agent-cycle.sh` uses), `total_cost_usd`,
   `duration_ms`, `num_turns`, `is_error`, `terminal_reason`/`stop_reason`,
   `modelUsage` (→ model id). `<stage>.out.stderr` is shown for debugging.
+  `docs/METERING-SCHEMA.md` is the formal contract for these fields — types,
+  units, and what change to them is additive versus breaking — reused
+  unchanged by the per-stage record `lib/metering.sh` writes to `log.jsonl`
+  (requirement 33a); this reader and that one derive the same figures
+  independently from the same envelope and are expected to agree.
 
   The **actor** that spent it is the transcript's own filename, and needs no
   new field: `cycles/<id>/{coordinator,implementor,reviewer,enabler}.out` name
