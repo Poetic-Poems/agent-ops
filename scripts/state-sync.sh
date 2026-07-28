@@ -31,6 +31,8 @@ CONFIG_FILE="$SCRIPT_DIR/config.json"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/version.sh
 . "$SCRIPT_DIR/lib/version.sh"
+# shellcheck source=lib/compose-drift.sh
+. "$SCRIPT_DIR/lib/compose-drift.sh"
 
 usage() {
   cat <<'EOF'
@@ -236,6 +238,12 @@ do_push() {
   # itself. Since a roll defers while a cycle is in flight, nodes are routinely
   # on different images, and a dashboard that could not tell them apart could
   # not answer whether a fix had reached the node that needed it.
+  #
+  # And the compose-drift verdict (lib/compose-drift.sh), on the same
+  # reasoning one layer down: the node's compose.yaml lives on its host,
+  # where no image roll can update it and nothing but that node can read it
+  # (issue #131). The node is the only party that can say whether its own
+  # deployment file has fallen behind, so it says so here.
   local last_cycle
   last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
     | sort -r | head -n 1)"
@@ -245,7 +253,9 @@ do_push() {
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg lc "${last_cycle:-}" \
     --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
-    '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version}' > "$mirror/heartbeat.json"
+    --argjson compose "$(compose_drift_status)" \
+    '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
+      compose: $compose}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

@@ -17,9 +17,11 @@
 # file.
 #
 # The node deliberately holds no clone of agent-ops: compose.yaml,
-# ts-serve.json and watch-node.sh are fetched from the repository, and
-# everything else arrives in the image. Updating is watchtower's job, not
-# git's.
+# ts-serve.json, watch-node.sh and check-node-compose.sh are fetched from the
+# repository, and everything else arrives in the image. Updating is
+# watchtower's job, not git's — except for compose.yaml itself, which no
+# image roll can touch; check-node-compose.sh is what audits that copy, and
+# the containers created from it, against the running image (#131).
 
 package_update: true
 package_upgrade: true
@@ -70,6 +72,7 @@ runcmd:
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/compose.yaml https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml"]
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/ts-serve.json https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/ts-serve.json"]
   - [sh, -c, "curl -fsSL -o /opt/poetic-node/watch-node.sh https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh && chmod +x /opt/poetic-node/watch-node.sh"]
+  - [sh, -c, "curl -fsSL -o /opt/poetic-node/check-node-compose.sh https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/check-node-compose.sh && chmod +x /opt/poetic-node/check-node-compose.sh"]
 
   - [sh, -c, "cd /opt/poetic-node && docker compose up -d"]
 

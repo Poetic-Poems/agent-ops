@@ -158,6 +158,12 @@ demonstrated (no idle compute cost between ticks).
 - [ ] Kubernetes deployment: manifests or a Helm chart, with the scheduler
       as a CronJob so scale-to-zero falls out naturally; Compose remains a
       supported option. *[interactive]*
+- [ ] Make the deployment an artefact: a node's compose (or manifest) comes
+      from a pinned, versioned release rather than a hand-fetched file, so
+      configuration drift becomes a version comparison the heartbeat already
+      carries — retiring the detection machinery of #131 (the self-mount,
+      `lib/compose-drift.sh`, the deploy-reminder workflow) along with the
+      manual `up -d` ritual it watches. *[interactive]*
 - [ ] Begin the control-plane skeleton in the chosen language (D6): a
       config service/CLI wrapping the engine — the first strangler fig.
       *[interactive]*

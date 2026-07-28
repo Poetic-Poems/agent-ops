@@ -47,6 +47,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/role.sh"
 # shellcheck source=lib/version.sh
 . "$SCRIPT_DIR/lib/version.sh"
+# shellcheck source=lib/compose-drift.sh
+. "$SCRIPT_DIR/lib/compose-drift.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -785,9 +787,10 @@ done
 jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
   --argjson live "$self_live_json" \
   --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
+  --argjson compose "$(compose_drift_status)" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
-    live: $live, version: $version}' > "$nodes_rows"
+    live: $live, version: $version, compose: $compose}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -802,7 +805,11 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # Absent on a peer still running an image built before the heartbeat
        # carried one, which is exactly the case the card must render as
        # "version unknown" rather than as our own.
-       version: ($h.version // null)}' \
+       version: ($h.version // null),
+       # Same rule for the compose-drift verdict (lib/compose-drift.sh): only
+       # the node itself can read the compose.yaml on its own host, so a
+       # heartbeat carrying no verdict yields null, never a local answer.
+       compose: ($h.compose // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"

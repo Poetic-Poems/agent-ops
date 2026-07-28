@@ -251,6 +251,15 @@ assert_eq "rather than the fail-open path" "0" "$(grep -c 'cannot read' <<<"$out
 # --- The label in compose.yaml points at this script --------------------------
 # The hook is only ever reached through that label, so a rename that missed it
 # would leave a script nothing runs.
+#
+# These assertions pin the *repository's* copy of compose.yaml and prove
+# nothing about the copy any node actually runs: a node holds its own file,
+# which only a manual `docker compose up -d` on that host can apply, and this
+# suite stayed green through two incidents in which every node's copy had
+# silently fallen behind (#131). Whether a node has drifted is answered
+# elsewhere — lib/compose-drift.sh from inside the container (published in
+# the heartbeat, rendered on the fleet strip), scripts/check-node-compose.sh
+# from the node's host, running containers included.
 
 compose="$SCRIPT_DIR/deploy/docker/compose.yaml"
 assert_contains "compose labels a pre-update hook" \

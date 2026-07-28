@@ -855,6 +855,39 @@
     return line;
   }
 
+  // The node's deployment file, as distinct from its image. A node holds its
+  // own compose.yaml, which no image roll can update, so a merged compose
+  // change reaches it only by a human running `docker compose up -d` there —
+  // and nothing reported that step missing until issue #131. The verdict is
+  // the node's own (lib/compose-drift.sh, via its heartbeat): the file lives
+  // on that node's host, and no other party can read it.
+  //
+  // Amber where the version line's "behind" is grey, deliberately: behind
+  // resolves itself on the next idle poll, while a drifted or unverifiable
+  // compose.yaml resolves only when a human acts, and an amber that never
+  // clears by itself is exactly the alarm that was missing. In-sync renders
+  // nothing; so does an absent verdict (an image from before the check, or an
+  // install that is no container) — for an image the roll that is already on
+  // its way will start answering, and the version line's own "behind" covers
+  // a node whose rolls have stopped.
+  function composeLine(n) {
+    var c = n.compose;
+    if (!c || !c.status || c.status === "in-sync") return null;
+    var badge = c.status === "drifted"
+      ? el("span", {class:"badge b-amber", text:"compose drifted",
+          title: (c.diff_lines != null ? c.diff_lines + " material line(s) differ: " : "") +
+                 "this node's compose.yaml no longer matches the copy its image shipped — " +
+                 "a merged compose change deploys nothing by itself; re-fetch the file and run " +
+                 "docker compose up -d on that host when it is idle (deploy/docker/README.md, " +
+                 "“Keeping the compose file current”)"})
+      : el("span", {class:"badge b-amber", text:"compose unverified",
+          title: "this node's compose.yaml is not mounted into its containers, so it cannot be " +
+                 "checked — which itself means the file predates the drift check and is behind. " +
+                 "Re-fetch compose.yaml and run docker compose up -d on that host when it is idle " +
+                 "(deploy/docker/README.md, “Keeping the compose file current”)"});
+    return el("div", {class:"ver"}, badge);
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -963,6 +996,8 @@
     }
 
     card.appendChild(versionLine(n));
+    var compose = composeLine(n);
+    if (compose) card.appendChild(compose);
 
     card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"

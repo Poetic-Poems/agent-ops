@@ -632,7 +632,7 @@ vh="$(new_home nodeV)"
 vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
 vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
 mkdir -p "$vpeer" "$vold"
-printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false}}\n' \
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
 printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
@@ -646,6 +646,16 @@ assert_eq "a peer that publishes none reports none, not ours" "null" \
   "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .version' <<<"$vdata")"
 assert_eq "and this node answers for itself" "1" \
   "$(jq '[.fleet.nodes[] | select(.self) | has("version")] | length' <<<"$vdata")"
+
+# The compose-drift verdict rides the same rules (#131): only the node itself
+# can read its own host's compose.yaml, so a peer's verdict comes from its
+# heartbeat or not at all, and this node computes its own.
+assert_eq "a peer's compose verdict comes from its heartbeat" "drifted" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .compose.status' <<<"$vdata")"
+assert_eq "a peer that publishes none reads null, never a locally computed one" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .compose' <<<"$vdata")"
+assert_eq "and this node answers for its own compose file too" "1" \
+  "$(jq '[.fleet.nodes[] | select(.self) | has("compose")] | length' <<<"$vdata")"
 
 # --- The pull-request index ------------------------------------------------------
 # Every `#number` on the page resolves to a record here. Two properties are what

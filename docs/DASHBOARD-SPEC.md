@@ -93,8 +93,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   distinction.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
-  entry ({node, role, heartbeat, last cycle, version}; older than 30 minutes →
-  `stale: true` — three missed pushes, not clock jitter); its `cycles/<id>/`
+  entry ({node, role, heartbeat, last cycle, version, compose}; older than 30
+  minutes → `stale: true` — three missed pushes, not clock jitter); its
+  `cycles/<id>/`
   and `reviews/<id>/` transcripts
   render peer cycles with exactly the fidelity of local ones, and its `.out`
   envelopes join the fleet-wide cost roll-ups (every node spends one Claude
@@ -328,6 +329,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                          last_cycle, self, stale,       // self first
                          version: { pr, commit, short, built_at,
                                     repo, source, dirty },  // null if unknown
+                         compose: { status, diff_lines },   // the node's own
+                                            //   compose.yaml against its
+                                            //   image's copy (#131); null if
+                                            //   unreported
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -618,7 +623,10 @@ number's twins elsewhere on the page.
   transcript to the actor that wrote it, names a review's as the Project
   Reviewer rather than a second cycle Reviewer, and leaves the actors summing
   to the total. Each node's version comes from its own heartbeat, and a peer
-  publishing none reads as unknown rather than inheriting ours. And the
+  publishing none reads as unknown rather than inheriting ours; the
+  compose-drift verdict rides the same rule — a peer's from its heartbeat, a
+  peer publishing none as null, never locally computed, and our own row
+  answering for itself. And the
   pull-request index — driven through `DASHBOARD_GH_CMD`, so a GitHub tick
   costs no API call — resolves every reference the page holds including the
   version a node runs (which no open-PR query names), reads each pull request
@@ -957,6 +965,24 @@ number's twins elsewhere on the page.
   operator to ignore the colour. What it is there to catch is a node that stays
   behind — a watchtower that has stopped rolling — which shows up as the marker
   failing to clear, and which nothing else on this page would reveal.
+
+  Beneath the version sits the node's *deployment file*, which the image
+  cannot answer for: a node holds its own `compose.yaml`, no roll can update
+  it, and a merged compose change sat inert on every node twice before
+  anything said so (#131). The card renders the heartbeat's compose-drift
+  verdict (implementation spec 2.5, `lib/compose-drift.sh`) as a badge —
+  **compose drifted** when the node's copy differs materially from the copy
+  its image shipped, **compose unverified** when the file is not mounted into
+  the containers at all, which itself means the file predates the check and
+  is behind. Both are amber where `behind` is grey, deliberately: `behind`
+  resolves itself on the next idle poll, while a drifted compose resolves
+  only when a human re-fetches the file and runs `up -d` on that host, and
+  an amber that never clears by itself is exactly the alarm that was
+  missing. `in-sync` renders nothing, and so does an absent verdict — a peer
+  on an image from before the check, or an install that is no container —
+  because for an image the roll already on its way will start answering, and
+  a node whose rolls have stopped is the version line's `behind` failing to
+  clear, already caught above.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing
