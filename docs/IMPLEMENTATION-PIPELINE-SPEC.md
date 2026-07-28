@@ -511,14 +511,15 @@ runs unattended.
       write is best-effort — on failure the node logs a `warning` and relies
       on the union to carry its `limit-hit` to the fleet.
 
-      Both carriers can be retired early, and `--clear-limit` (requirement
-      12) is the only supported way to do it: it deletes `fleet/limit.json`
-      and writes a `limit-cleared` event, which the union's reduction —
-      most-recent-wins over `limit-hit` **and** `limit-cleared`, in
-      `lib/limit-detect.sh` so all four readers share it — treats as
-      superseding every earlier hit. Deleting rather than shortening the flag
-      is what keeps extend-only intact for the concurrent-hit case it exists
-      for.
+      Both carriers can be retired early, two ways — automatically by the
+      probe of 1b when `reset_known` is false, or by hand with
+      `--clear-limit` (requirement 12) — and both retirements are the same
+      write: delete `fleet/limit.json` and log a `limit-cleared` event, which
+      the union's reduction — most-recent-wins over `limit-hit` **and**
+      `limit-cleared`, in `lib/limit-detect.sh` so all four readers share it
+      — treats as superseding every earlier hit. Deleting rather than
+      shortening the flag is what keeps extend-only intact for the
+      concurrent-hit case it exists for.
 
       A stand-down must have an exit that does not depend on a cycle running,
       because this check runs before any stage launches: while it holds, no
@@ -527,12 +528,45 @@ runs unattended.
       — and when `reset_known` is false that is an invented time, so a
       stand-down could outlive its limit by up to `LIMIT_LONG_COOLDOWN_HOURS`
       with no way to say so. It did: a spend cap lifted on 2026-07-26 left the
-      fleet down for a further 22 hours.
+      fleet down for a further 22 hours — and again on 2026-07-28, when a
+      spend-cap message that actually recorded a 5-hour session window
+      meeting the exhausted cap stood the fleet down for 24 hours over a
+      limit that cleared within one. Requirement 1b is the automatic exit
+      those two incidents argue for; `--clear-limit` remains the manual
+      override.
 
       The logged reason states whether `resume_at` is a stated reset or an
       estimate, and `--status` reports the stand-down alongside the switch.
       Both answer "why is nothing happening?", and a status that knew only
       about the switch is how a stale cooldown went a day unexplained.
+   1b. *An estimated stand-down probes its own exit.* When the governing
+      record's `reset_known` is false, `resume_at` is this system's invented
+      time and carries no information about the limit — so before standing
+      down, the Script spends one minimal headless invocation of
+      `implementor_model_trivial` (a fixed one-line prompt, 180 s timeout,
+      transcript kept as `limit-probe.out` in the cycle record) and classifies
+      it with `limit_probe_verdict` (`lib/limit-detect.sh`, regression-tested
+      against canned transcripts): the limit phrase anywhere in the transcript
+      is `limited`; otherwise a well-formed envelope with `is_error: false`
+      and a non-empty `result` is `clear`; anything else — a timeout, a
+      network failure, an empty file — is `inconclusive`. On `clear` it
+      retires both carriers exactly as `--clear-limit` would (the
+      `limit-cleared` event names `auto-probe@<node>` as `by`) and the cycle
+      proceeds; on `limited` it records the re-observed hit through
+      requirement 10 — whose parse also upgrades `reset_known` to true if the
+      probe's message finally states a reset, stopping further probes until a
+      time that is real — and stands down; on `inconclusive` it changes
+      nothing and stands down, with the verdict appended to the logged
+      reason either way.
+
+      The economics run the right way round on both sides: a limited account
+      answers the probe with the limit message at no token cost, and an
+      unlimited one answers once for a fraction of a cent — the first `clear`
+      verdict retires the stand-down fleet-wide, so the gate stops firing.
+      A *stated* reset is never probed (the message named the time; asking
+      earlier is the one spend that buys nothing), and `--dry-run` never
+      probes (a cycle that promises to change nothing must not write
+      `limit-cleared`, and a verdict it would have to ignore is pure cost).
    1a. *Claim GC*: run `lib/claim.sh gc` (requirement 17a) — best-effort,
       skipped on `--dry-run` — so registry entries a dead node left behind
       are swept before back-pressure counts them. Every node runs it; no
@@ -2729,8 +2763,16 @@ pull request, run the ones the change touches and any it could regress.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning.
-5. An injected `limit-hit` event with a future `resume_at` causes a
-   stand-down; an expired one does not.
+5. An injected `limit-hit` event with a future `resume_at` and
+   `reset_known: true` causes a stand-down with no probe launched; an expired
+   one does not stand down. With `reset_known: false`, the cycle launches
+   exactly one probe: a stubbed `claude` answering a clean envelope yields a
+   `limit-cleared` event (`by: auto-probe@<node>`) and the cycle proceeds; a
+   stub answering the limit phrase logs a fresh `limit-hit` and a stand-down
+   whose reason ends `(probe: still limited)`; a stub that exits non-zero
+   with no output changes no limit state and the reason ends
+   `(probe: inconclusive)`. `--dry-run` with the same injected event launches
+   no probe.
 6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
@@ -3024,7 +3066,13 @@ only when the work graded itself `complexity:high` (requirement 8a), which the
 rubric of requirement 26a confines to the minority of PRs whose contents
 warrant it; the reviewer `stage-start` events carry the grade, so a creep
 toward `high` that would erode this bound is auditable in the log. Stand-down
-cycles cost nothing but a few `gh` calls. Because back-pressure caps open agent PRs
+cycles cost nothing but a few `gh` calls — except under an *estimated*
+usage-limit stand-down, where each hourly cycle also spends the 2.1b probe.
+That spend is self-limiting from both ends: while the limit is real the
+probe's answer is the limit message, which serves no tokens and costs
+nothing, and the first answered probe (a fraction of a cent of
+`implementor_model_trivial`) retires the stand-down fleet-wide, so at most
+one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
 

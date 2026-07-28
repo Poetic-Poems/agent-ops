@@ -94,11 +94,17 @@ limit_parse_human_reset() {
 # for a transient rate limit, not a weekly or monthly one — at that cadence it
 # would waste a retry roughly every 3 hours for days.
 #
-# It is a *poll interval*, not a prediction. Every limit clears on its own at
-# the plan's rollover, and this system has no way to learn when that is when
-# the message does not say; so it waits a day, spends one request finding out,
-# and waits again if the answer is still no. What it must never do is present
-# that guess as a deadline — see `reset_known` below.
+# It is an *upper bound*, not a prediction — and since the probe of
+# requirement 2.1b, not the exit either. Every limit clears on its own at the
+# plan's rollover, and this system has no way to learn when that is when the
+# message does not say; so while an estimated stand-down is in force, every
+# hourly cycle asks the API directly (see `limit_probe_verdict` and the 2.1b
+# block in agent-cycle.sh) and retires the stand-down the moment the account
+# answers. What this constant bounds is how long the *record* can outlive the
+# limit when every probe comes back inconclusive — a node whose probes cannot
+# reach the API at all is a node whose cycles could not have run anyway. What
+# it must never do is present the guess as a deadline — see `reset_known`
+# below.
 LIMIT_LONG_COOLDOWN_HOURS=24
 
 # limit_decide TEXT COOLDOWN_DEFAULT_HOURS
@@ -143,6 +149,46 @@ limit_decide() {
   fi
 
   printf '%s\t%s\t%s\n' "$resume_at" "$class" "$reset_known"
+}
+
+# limit_probe_verdict OUT_TEXT [ERR_TEXT]
+# Classify the transcript of one minimal probe invocation (requirement 2.1b:
+# agent-cycle.sh spends it while an *estimated* stand-down is in force, asking
+# the only authority on whether the limit is still real). OUT_TEXT is the
+# probe's stdout — the headless JSON envelope — and ERR_TEXT its stderr; they
+# arrive as two arguments because stray stderr diagnostics concatenated into
+# the envelope would break the JSON parse (the same reason run_claude_stage
+# keeps the two files apart). Prints exactly one of:
+#   clear         the account answered — the limit behind the stand-down is
+#                 gone, and the caller may retire it (both carriers)
+#   limited       the transcript carries a limit phrase: still standing down
+#   inconclusive  anything else — a timeout, a network failure, an empty or
+#                 unparseable transcript. Says nothing about the limit, so
+#                 the caller must change nothing on it.
+#
+# The phrase check runs first, over both streams, unconditionally: a limited
+# probe's envelope is still well-formed JSON (the limit message arrives *in*
+# `result`), and the one mistake this function must never make is reading
+# "you've hit your … limit" as the account answering. Pure text-in,
+# verdict-out — the `claude` invocation itself stays in agent-cycle.sh with
+# every other one — so this can be regression-tested against canned
+# transcripts.
+limit_probe_verdict() {
+  local out_text="$1" err_text="${2:-}"
+  if grep -qiE "$LIMIT_PHRASE_REGEX" <<<"$out_text"$'\n'"$err_text"; then
+    printf 'limited'
+    return 0
+  fi
+  # The emptiness guard is not decoration: under jq 1.6, `jq -e` on empty
+  # input exits 0 (fixed to exit 4 in 1.7), so without it an empty transcript
+  # — the shape of every timeout — would read as the account answering.
+  if [[ -n "${out_text//[[:space:]]/}" ]] \
+     && jq -e 'type == "object" and (.is_error == false) and ((.result // "") != "")' \
+       <<<"$out_text" >/dev/null 2>&1; then
+    printf 'clear'
+    return 0
+  fi
+  printf 'inconclusive'
 }
 
 # limit_union_record  < JSONL on stdin
@@ -215,8 +261,8 @@ limit_describe() {
     printf 'until %s' "$resume_at"
     return 0
   fi
-  printf 'with no stated reset; retrying after %s (estimated)' "$resume_at"
+  printf 'with no stated reset; each hourly cycle probes whether it has lifted — %s is only the estimated upper bound' "$resume_at"
   if [[ "$class" == "weekly" || "$class" == "monthly" ]]; then
-    printf "%s" "; it clears at the plan's rollover, or sooner if you raise the cap and run 'agent-cycle.sh --clear-limit'"
+    printf "%s" "; it clears at the plan's rollover — the next probe notices on its own — or sooner if you raise the cap; 'agent-cycle.sh --clear-limit' remains the manual override"
   fi
 }

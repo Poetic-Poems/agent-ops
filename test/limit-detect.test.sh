@@ -239,6 +239,34 @@ assert_eq "an unstated reset offers --clear-limit as the way to resume sooner" \
   "yes" "$(contains "$guess_note" "--clear-limit")"
 assert_eq "no limit is ever described as needing a human before it can clear" \
   "no" "$(contains "$guess_note" "needs human")"
+assert_eq "an unstated reset says the hourly probe is watching for the lift" \
+  "yes" "$(contains "$guess_note" "probe")"
+
+# --- limit_probe_verdict: the three answers a probe can give ---------------
+# The envelope fixtures are canned transcripts of the two real probe shapes
+# observed on 2026-07-28: a clean answer, and a 429 whose limit message
+# arrives *inside* a well-formed envelope's `result` — the case the
+# phrase-first ordering exists for, because that envelope parses perfectly
+# and only `is_error` and the phrase say what it actually is.
+clear_envelope="$(cat "$FIXTURES_DIR/probe-clear-envelope.txt")"
+limited_envelope="$(cat "$FIXTURES_DIR/probe-limited-envelope.txt")"
+
+assert_eq "a clean envelope with a result is clear" \
+  "clear" "$(limit_probe_verdict "$clear_envelope")"
+assert_eq "a well-formed envelope carrying the limit message is limited, never clear" \
+  "limited" "$(limit_probe_verdict "$limited_envelope")"
+assert_eq "a raw limit message with no envelope at all is limited" \
+  "limited" "$(limit_probe_verdict "$monthly_text")"
+assert_eq "the limit phrase on stderr outweighs a clean envelope on stdout" \
+  "limited" "$(limit_probe_verdict "$clear_envelope" "$monthly_text")"
+assert_eq "an empty transcript is inconclusive" \
+  "inconclusive" "$(limit_probe_verdict "" "")"
+assert_eq "stderr diagnostics alone are inconclusive, never clear" \
+  "inconclusive" "$(limit_probe_verdict "" "connect: connection refused")"
+assert_eq "a failed envelope with no limit phrase is inconclusive" \
+  "inconclusive" "$(limit_probe_verdict '{"is_error":true,"result":"upstream connect error"}')"
+assert_eq "a clean envelope with an empty result is inconclusive" \
+  "inconclusive" "$(limit_probe_verdict '{"is_error":false,"result":""}')"
 
 # --- Regression guard: must not abort under `set -e -o pipefail` ----------
 # agent-cycle.sh runs with `set -euo pipefail`. Several helpers above build a
@@ -256,6 +284,7 @@ strict_probe="$(bash -euo pipefail -c '
   limit_class_of "no timestamp, no weekly or monthly word here" >/dev/null
   limit_parse_human_reset "no reset clause in this text at all" 2>/dev/null || true
   limit_decide "no timestamp, no reset clause, no weekly or monthly word" 3 >/dev/null
+  limit_probe_verdict "" "" >/dev/null
   echo STRICT_MODE_SURVIVED
 ' 2>&1)"
 assert_eq "every limit-detect helper survives set -e -o pipefail with a non-matching input" \
