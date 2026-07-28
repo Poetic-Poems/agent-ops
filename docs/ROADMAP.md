@@ -97,8 +97,12 @@ Pullwright organisation and carries its licence.
       config: hardcoded repo slugs, the owner's username, label names,
       branch conventions, and the poetic-fiddle implementation-plan source.
       *[fleet — one item per specific]*
-- [ ] Parameterise the operating prompts so an installation can extend or
-      override them per repo without forking the product. *[fleet]*
+- [x] Parameterise the operating prompts so an installation can extend or
+      override them without forking the product (`prompt_overrides` in
+      `config.json`, docs/IMPLEMENTATION-PIPELINE-SPEC.md requirement 4a).
+      Installation-wide per stage, not yet scoped per repo — the Co-Ordinator
+      runs once per cycle over every configured repo together, so a per-repo
+      selection prompt would need that split first. *[fleet]*
 - [ ] Config schema with validation, defaults, and a `doctor` command that
       checks an installation end to end. *[interactive skeleton, fleet
       completion]*

@@ -1,0 +1,182 @@
+#!/usr/bin/env bash
+#
+# test/prompt-overrides.test.sh — regression test for
+# lib/prompt-overrides.sh (docs/IMPLEMENTATION-PIPELINE-SPEC.md
+# requirement 4a).
+#
+# The mechanism's whole safety argument is "absent overrides change nothing":
+# every consumer who has not opted in must see today's exact prompt bytes and
+# today's exact fingerprint behaviour. So the assertions here are, in order:
+# no-op fidelity, then that `extend` and `replace` do what they say, then that
+# the fingerprint (`stage_prompt_sha`) moves for every change that
+# `stage_prompt_text` would reflect — including a configured file going
+# missing, which `stage_prompt_text` silently tolerates but the fingerprint
+# must not.
+#
+# No test framework is used (none exists elsewhere in this repo). Run
+# directly:
+#
+#   ./test/prompt-overrides.test.sh
+#
+# Exit status is 0 iff every assertion passed.
+
+# shellcheck disable=SC2317  # assertions run indirectly, inside command substitutions.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=lib/prompt-overrides.sh
+. "$SCRIPT_DIR/lib/prompt-overrides.sh"
+
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+prompts_dir="$tmp_dir/prompts"
+state_dir="$tmp_dir/state"
+mkdir -p "$prompts_dir" "$state_dir"
+printf 'base coordinator prompt\n' > "$prompts_dir/coordinator.md"
+printf 'base implementor prompt\n' > "$prompts_dir/implementor.md"
+
+failures=0
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+assert_ne() {
+  local desc="$1" a="$2" b="$3"
+  if [[ "$a" != "$b" ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     both were: %s\n' "$desc" "$a"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+# --- Absent overrides: byte-identical to `cat prompts/<stage>.md` ---
+assert_eq "no override: prompt text is byte-identical to the base file" \
+  "$(cat "$prompts_dir/coordinator.md")" \
+  "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator '{}')"
+
+assert_eq "a stage missing from prompt_overrides behaves the same as {}" \
+  "$(cat "$prompts_dir/coordinator.md")" \
+  "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator '{"implementor":{"extend":["x.md"]}}')"
+
+sha_none="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator '{}')"
+assert_eq "no override: the fingerprint is just the base file's own sha256sum line, hashed" \
+  "$(sha256sum "$prompts_dir/coordinator.md" | sha256sum | cut -d' ' -f1)" \
+  "$sha_none"
+
+# --- extend: appended, in order, each wrapped with the specs-outrank-prompts
+#     disclaimer, and the fingerprint moves ---
+printf 'house rule one\n' > "$state_dir/one.md"
+printf 'house rule two\n' > "$state_dir/two.md"
+overrides_extend='{"coordinator":{"extend":["one.md","two.md"]}}'
+extended="$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_extend")"
+
+case "$extended" in
+  *"base coordinator prompt"*"house rule one"*"house rule two"*)
+    printf 'ok   - %s\n' "extend: base text precedes fragment one, which precedes fragment two" ;;
+  *)
+    printf 'FAIL - extend: fragments are not appended in configured order\n     actual: %s\n' "$extended"
+    failures=$(( failures + 1 )) ;;
+esac
+case "$extended" in
+  *"specs outrank every prompt"*)
+    printf 'ok   - %s\n' "extend: each fragment carries the specs-outrank-prompts disclaimer" ;;
+  *)
+    printf 'FAIL - extend: missing the specs-outrank-prompts disclaimer\n'
+    failures=$(( failures + 1 )) ;;
+esac
+
+sha_extend="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator "$overrides_extend")"
+assert_ne "extend changes the fingerprint relative to no override" "$sha_none" "$sha_extend"
+
+# A ~-relative and a bare-relative extend path both resolve — the bare path
+# against state_dir, the ~ path against $HOME (stubbed here to state_dir so
+# the test needs no real home directory).
+HOME="$state_dir" assert_eq "a bare relative extend path resolves against state_dir" \
+  "$state_dir/one.md" \
+  "$(HOME="$state_dir" resolve_prompt_override_path "$state_dir" "one.md")"
+# shellcheck disable=SC2088  # the literal ~ here is the function's own input, not shell expansion.
+assert_eq "a ~-relative extend path resolves against \$HOME" \
+  "$state_dir/one.md" \
+  "$(HOME="$state_dir" resolve_prompt_override_path "$state_dir" "~/one.md")"
+
+# --- A configured extend file that is not readable is tolerated by the text
+#     (no crash, nothing printed for it) but still changes the fingerprint,
+#     so a broken path cannot reproduce the exact prior "no work" verdict. ---
+overrides_missing='{"coordinator":{"extend":["one.md","does-not-exist.md"]}}'
+text_missing="$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_missing")"
+case "$text_missing" in
+  *"does-not-exist"*)
+    printf 'FAIL - a missing extend file must not appear in the assembled prompt\n'
+    failures=$(( failures + 1 )) ;;
+  *)
+    printf 'ok   - %s\n' "a missing extend file is silently skipped in the assembled text" ;;
+esac
+sha_one_only="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator '{"coordinator":{"extend":["one.md"]}}')"
+sha_missing="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator "$overrides_missing")"
+assert_ne "a configured-but-missing extend file still changes the fingerprint" \
+  "$sha_one_only" "$sha_missing"
+
+# --- replace: substitutes the base file; extend (if any) still appends after
+#     it; an unreadable replace path falls back to the shipped prompt. ---
+printf 'whole replacement prompt\n' > "$state_dir/replacement.md"
+overrides_replace='{"coordinator":{"replace":"replacement.md"}}'
+replaced="$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_replace")"
+assert_eq "replace: substitutes the base file entirely (no extend configured)" \
+  "$(cat "$state_dir/replacement.md")" \
+  "$replaced"
+
+overrides_replace_and_extend='{"coordinator":{"replace":"replacement.md","extend":["one.md"]}}'
+replaced_extended="$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_replace_and_extend")"
+case "$replaced_extended" in
+  *"whole replacement prompt"*"house rule one"*)
+    printf 'ok   - %s\n' "replace + extend: the fragment still appends after the replacement base" ;;
+  *)
+    printf 'FAIL - replace + extend: fragment did not append after the replacement base\n     actual: %s\n' "$replaced_extended"
+    failures=$(( failures + 1 )) ;;
+esac
+
+overrides_bad_replace='{"coordinator":{"replace":"does-not-exist.md"}}'
+fallback="$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_bad_replace")"
+assert_eq "an unreadable replace path falls back to the shipped prompt" \
+  "$(cat "$prompts_dir/coordinator.md")" \
+  "$fallback"
+
+sha_replace="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator "$overrides_replace")"
+assert_ne "replace changes the fingerprint relative to no override" "$sha_none" "$sha_replace"
+assert_ne "replace and extend produce different fingerprints from each other" "$sha_extend" "$sha_replace"
+
+# --- A different stage's override does not leak into this one, and an
+#     absolute extend path is used as-is. ---
+overrides_other_stage='{"implementor":{"extend":["one.md"]}}'
+assert_eq "an override configured for a different stage has no effect here" \
+  "$(cat "$prompts_dir/coordinator.md")" \
+  "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_other_stage")"
+
+abs_frag="$tmp_dir/absolute-fragment.md"
+printf 'absolute fragment\n' > "$abs_frag"
+overrides_abs="$(jq -nc --arg p "$abs_frag" '{coordinator:{extend:[$p]}}')"
+case "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_abs")" in
+  *"absolute fragment"*)
+    printf 'ok   - %s\n' "an absolute extend path is used as-is, not resolved against state_dir" ;;
+  *)
+    printf 'FAIL - an absolute extend path was not honoured\n'
+    failures=$(( failures + 1 )) ;;
+esac
+
+echo
+if (( failures == 0 )); then
+  echo "All prompt-overrides assertions passed."
+  exit 0
+else
+  echo "$failures prompt-overrides assertion(s) FAILED."
+  exit 1
+fi
