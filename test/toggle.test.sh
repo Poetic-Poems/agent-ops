@@ -369,6 +369,7 @@ run_node() {  # run_node <home> <script> [args…]
   env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
     PATH="$stub_bin:$PATH" TOGGLE_GH="$gh_stub" GH_STUB_BACKING="$gh_backing" \
     CLAIM_GH=/bin/false STATE_SYNC_REMOTE="$state_remote" \
+    GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" \
     "$SCRIPT_DIR/$script" "$@"
 }
 
