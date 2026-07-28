@@ -179,7 +179,19 @@ jobs:
     # A documentation-only change builds nothing. Both legs are required status
     # checks, and a skipped job reports success to the ruleset, so the pull
     # request stays mergeable with no image built for it.
-    if: needs.changes.outputs.docs_only != 'true'
+    #
+    # Which is exactly why `changes` failing must not skip this job. The
+    # default `needs` gate would do that — and a skipped required check reads
+    # as success, so a runner that died at checkout would quietly produce a
+    # mergeable pull request with no image ever built. `!cancelled()` replaces
+    # that gate with this expression, under which a `changes` job that
+    # produced no answer leaves `docs_only` empty and builds. Only an explicit
+    # `true` skips. `stamp` keeps its gate stated by hand, since its outputs
+    # are the build arguments below.
+    if: >-
+      !cancelled()
+      && needs.stamp.result == 'success'
+      && needs.changes.outputs.docs_only != 'true'
     strategy:
       # One architecture's failure says nothing about the other's, and telling
       # "broken everywhere" apart from "broken on arm64 alone" is this matrix's
