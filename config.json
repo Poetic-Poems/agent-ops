@@ -49,6 +49,17 @@
   "disable_default_ttl": 4,
   "none_selected_recheck_hours": 24,
   "dashboard_refresh_seconds": 5,
+  "schedule": {
+    "cycle_hours": "*",
+    "excluded_minutes": [0],
+    "excluded_minutes_reason": "poetic's hourly sync workflow owns the top of the hour",
+    "review_hour": 3,
+    "review_offset_minutes": 29,
+    "heartbeat_minutes": 5,
+    "state_sync_push_minutes": 5,
+    "state_sync_fetch_minutes": 7,
+    "log_rotation_minute": 19
+  },
   "review": {
     "repos": ["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"],
     "model": "claude-sonnet-5",

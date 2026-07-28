@@ -119,32 +119,45 @@ a node updates by pulling a new image rather than by pulling a branch.
   `ENV`. If a future CLI drops the variable, that check fails before the image
   reaches a node.
 - `deploy/docker/crontab` carries the same three pipeline schedules as the
-  laptop crontab — the 5-minute dashboard heartbeat, the hourly cycle, the
-  daily review tick — plus two fleet lines (requirement 2.5): a
-  `state-sync.sh push` every five minutes, which publishes this node's state
-  and heartbeat to its own branch, and a `state-sync.sh fetch` every seven,
-  which materialises every peer's for the union readers; and one log-rotation
-  line (requirement 2.6), `rotate-logs.sh` hourly, which bounds the four logs
-  those schedules append to. The same redirections into `state_dir` apply, so
-  the dashboard's log-derived views work identically. It deliberately omits
-  the laptop's personal `update-main-branches.sh` entry: that refreshes
-  interactive checkouts, and a node has none.
+  laptop crontab — the dashboard heartbeat, the implementation cycle, the
+  review tick — plus two fleet lines (requirement 2.5): a `state-sync.sh
+  push`, which publishes this node's state and heartbeat to its own branch,
+  and a `state-sync.sh fetch`, which materialises every peer's for the union
+  readers; and one log-rotation line (requirement 2.6), `rotate-logs.sh`,
+  which bounds the four logs those schedules append to. Every cadence named
+  above — the heartbeat and both fleet lines' intervals, and the
+  log-rotation minute — comes from `config.json`'s `schedule` (`heartbeat_minutes`,
+  `state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`;
+  see Configuration), baked at 5, 5, 7 and 19 in the checked-in config. The
+  same redirections into `state_dir` apply, so the dashboard's log-derived
+  views work identically. It deliberately omits the laptop's personal
+  `update-main-branches.sh` entry: that refreshes interactive checkouts, and
+  a node has none.
 - **The cycle and review minutes are per-node** (design decision D5). At
   every container start, `entrypoint.sh` runs
   `deploy/docker/render-crontab.sh`, which renders `crontab.tmpl` over the
   baked crontab with this node's offsets: `CYCLE_MINUTE` from the
-  environment when it is a minute in 1..59, else `1 + (sha256(NODE_NAME)
-  mod 59)` — deterministic, needing no coordination, and never minute 0,
-  which poetic's hourly sync workflow owns. The review runs at
-  `(CYCLE_MINUTE + 29) mod 60` past 03:00, keeping one node's two heavy
-  pipelines maximally apart. Why: every active node spends one Claude
-  account and pushes to the same repositories; the claims (17a) make
-  simultaneous firing *correct*, the offsets make it *cheap*. An invalid
-  `CYCLE_MINUTE` warns loudly and uses the hash — a typo must not silently
-  land a node on minute 0 — and any render failure leaves the baked
-  crontab, a valid schedule, byte-untouched (`test/render-crontab.test.sh`
-  pins all of this). The offsets therefore arrive with the image alone;
-  setting `CYCLE_MINUTE` explicitly requires the compose file that maps it.
+  environment when it names a minute `schedule.excluded_minutes` does not
+  rule out, else a stable hash of `NODE_NAME` onto whichever minutes that
+  exclusion list leaves standing — deterministic, needing no coordination,
+  and never one of the excluded minutes. The cycle fires every hour named by
+  `schedule.cycle_hours` (`*` by default); the review runs at
+  `schedule.review_offset_minutes` past `CYCLE_MINUTE` (mod 60), at
+  `schedule.review_hour`, keeping one node's two heavy pipelines maximally
+  apart. Why: every active node spends one Claude account and pushes to the
+  same repositories; the claims (17a) make simultaneous firing *correct*, the
+  offsets make it *cheap*. Excluding minutes at all is a per-deployment
+  choice, not logic this renderer carries: `schedule.excluded_minutes` is
+  configuration, and poetic's own `config.json` excludes `0` because its
+  hourly sync workflow owns the top of the hour, recording that reason in
+  `schedule.excluded_minutes_reason` — a deployment with no such conflict
+  ships an empty list. An invalid or excluded `CYCLE_MINUTE` warns loudly and
+  uses the hash — a typo must not silently land a node on an excluded minute
+  — and any render failure (including a missing or malformed `config.json`)
+  leaves the baked crontab, a valid schedule, byte-untouched
+  (`test/render-crontab.test.sh` pins all of this). The offsets therefore
+  arrive with the image alone; setting `CYCLE_MINUTE` explicitly requires the
+  compose file that maps it.
 - Nothing host-specific and nothing secret is baked in. `GH_TOKEN`, the Claude
   credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
   and a node that is not `active` (requirement 2.4) costs nothing but its
@@ -447,6 +460,15 @@ values below are the confirmed defaults; the README must document each key.
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
+| `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
+| `schedule.excluded_minutes` | `[0]` | Minutes `CYCLE_MINUTE` (env or the per-node hash) may never land on, rendered from `deploy/docker/crontab.tmpl`. Poetic's own value excludes `0` because its hourly sync workflow owns the top of the hour; a deployment with no such conflict ships `[]`. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on. |
+| `schedule.excluded_minutes_reason` | `"poetic's hourly sync workflow owns the top of the hour"` | Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader. |
+| `schedule.review_hour` | `3` | The hour the review tick fires. |
+| `schedule.review_offset_minutes` | `29` | Minutes past `CYCLE_MINUTE` (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour. |
+| `schedule.heartbeat_minutes` | `5` | Interval, in minutes, of the dashboard heartbeat cron line (`publish-dashboard-launcher.sh`). |
+| `schedule.state_sync_push_minutes` | `5` | Interval, in minutes, of `state-sync.sh push` (requirement 2.5). |
+| `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of `state-sync.sh fetch` (requirement 2.5). |
+| `schedule.log_rotation_minute` | `19` | The minute past every hour `rotate-logs.sh` runs (requirement 2.6). |
 
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch commands.
