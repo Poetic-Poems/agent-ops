@@ -840,8 +840,11 @@ fleet holds a newer build. (A roll waits for the cycle it would otherwise
 interrupt, so nodes sitting on different images for a while is normal; a node
 that stays behind is a watchtower that has stopped.) And **every pull-request
 number on the page** — there, in the open-PR table, and against each cycle —
-shows that PR's record on hover: title, author, state, when it merged, the
-merge commit, its labels, and the cycle that raised it.
+shows that PR's record: title, author, state, when it merged, the merge
+commit, its labels, and the cycle that raised it. Hover to peek at it; click or
+tap to open it and leave it open (a click goes to the card rather than to
+GitHub — the card carries its own *View on GitHub* link, and ctrl/cmd-click
+still opens the PR in a new tab).
 
 It is **local and private**: nothing is published to the internet, there is no
 server and no open port, and it costs nothing to run (it makes no model

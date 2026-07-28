@@ -183,6 +183,17 @@
     padding: 0 7px; border-radius: 999px; background: var(--grey-bg); color: var(--muted); }
   #prcard .prfoot { margin-top: 9px; padding-top: 7px; border-top: 1px solid var(--line); }
   #prcard .prnone { color: var(--muted); font-style: italic; }
+  /* Only a pinned card carries a close button. A peeked card is dismissed by
+     moving the pointer away, and a control you cannot reach without moving the
+     pointer *into* the card would be decoration. A pinned one has no such exit:
+     on a phone "tap the blank page behind it" is not an affordance, and the
+     number that opened it is under the reader's own thumb. */
+  #prcard .prclose { display: none; }
+  #prcard.pinned .prclose { display: block; margin: -3px -4px 0 auto; align-self: flex-start;
+    width: 24px; height: 24px; padding: 0; border: 0; border-radius: 6px;
+    background: none; cursor: pointer; color: var(--muted); font: 15px/1 var(--sans); }
+  #prcard.pinned .prclose:hover { background: var(--grey-bg); color: var(--ink); }
+  #prcard.pinned .prclose:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 </style>
 </head>
 <body>
@@ -364,7 +375,16 @@
     return null;
   }
 
-  var prCardEl = null, prShowTimer = null, prHideTimer = null, prAnchor = null;
+  // The card opens two ways, and they do not mix. A *peek* follows the pointer:
+  // hover in, hover out, gone. A *pin* is an explicit act — a click or a tap —
+  // and only another explicit act closes it: the same number again, a click off
+  // the card, its own close button, or Escape. Hovering off a pinned card
+  // leaves it alone, which is the whole point: on a touch device the tap that
+  // opens the card is also the only gesture there is, so a card that a stray
+  // pointer event could take away would be unreadable exactly where it is
+  // needed most.
+  var prCardEl = null, prShowTimer = null, prHideTimer = null, prAnchor = null, prPinned = false;
+  var prSuppressFocus = false;   // see prCardClose
 
   function prCard() {
     if (prCardEl) return prCardEl;
@@ -380,17 +400,42 @@
     clearTimeout(prShowTimer); clearTimeout(prHideTimer);
     if (prAnchor) prAnchor.removeAttribute("aria-describedby");
     prAnchor = null;
+    prPinned = false;
     if (prCardEl) prCardEl.className = "";
   }
+  // The card's own mouseleave, the delegated mouseout and the delegated
+  // focusout all close through here, so the pin is honoured in one place
+  // rather than at each of the three.
   function prCardHideSoon() {
+    if (prPinned) return;
     clearTimeout(prHideTimer);
     prHideTimer = setTimeout(prCardHide, 160);
   }
-  function prCardShow(a) {
+  // Dismissing from the card's own button hands focus back to the number that
+  // opened it, rather than dropping it on `<body>` — with the reopen suppressed
+  // for the one synchronous `focusin` that the restore itself fires, which
+  // would otherwise bring straight back the card just closed.
+  function prCardClose() {
+    var a = prAnchor;
+    prCardHide();
+    if (a && document.body.contains(a)) {
+      prSuppressFocus = true;
+      a.focus();
+      prSuppressFocus = false;
+    }
+  }
+  function prCardShow(a, pin) {
+    // Any pending close belongs to the card being replaced, not to this one.
+    // The rebuild is what makes this load-bearing: emptying `#app` destroys the
+    // focused anchor, which fires `focusout` and arms a hide — and the reanchor
+    // at the foot of the same rebuild would then be undone 160ms later by a
+    // timer set for a card that no longer exists.
+    clearTimeout(prShowTimer); clearTimeout(prHideTimer);
     var c = prCard();
     c.innerHTML = "";
     c.appendChild(prCardBody(a.getAttribute("data-pr-repo"), +a.getAttribute("data-pr-number"), a.href));
-    c.className = "open";          // laid out before it is measured, below
+    prPinned = !!pin;
+    c.className = prPinned ? "open pinned" : "open";   // laid out before it is measured, below
     if (prAnchor && prAnchor !== a) prAnchor.removeAttribute("aria-describedby");
     prAnchor = a;
     a.setAttribute("aria-describedby", "prcard");
@@ -417,7 +462,11 @@
     var e = prEntry(repo, number), w = el("div");
     w.appendChild(el("div", {class:"prhead"}, [
       el("span", {class:"mono", text: repo + "#" + number}),
-      prStateBadge(e)
+      prStateBadge(e),
+      // Built into every card and revealed by CSS on the pinned ones only, so
+      // the card has one body rather than two that can drift apart.
+      el("button", {class:"prclose", type:"button", "aria-label":"Close", title:"Close",
+        text:"×", onclick: prCardClose})
     ]));
 
     // An index miss is a normal, temporary state — a PR raised since the last
@@ -490,21 +539,63 @@
     return (t && t.closest) ? t.closest("a.prref") : null;
   }
   document.addEventListener("mouseover", function (ev) {
+    // A pinned card does not follow the pointer — neither away from itself nor
+    // onto the next number along. Reading one is a deliberate stop, and a card
+    // that jumped to whatever the pointer crossed on the way to it would be
+    // worse than one that has to be dismissed.
+    if (prPinned) return;
     var a = prAnchorOf(ev);
     if (!a) return;
     clearTimeout(prHideTimer);
     if (prAnchor === a) return;
     clearTimeout(prShowTimer);
-    prShowTimer = setTimeout(function () { prCardShow(a); }, 140);
+    prShowTimer = setTimeout(function () { prCardShow(a, false); }, 140);
   });
   document.addEventListener("mouseout", function (ev) {
     if (!prAnchorOf(ev)) return;
     clearTimeout(prShowTimer);
     prCardHideSoon();
   });
+  // A tap is the only pointer gesture a touch device has, and it was being spent
+  // on navigation: the card opened and the page left for GitHub in the same
+  // motion, so on a phone the record was unreadable and the "View on GitHub"
+  // link inside it unreachable. A plain click pins the card instead, and the
+  // same number clicked again closes it.
+  //
+  // Every click that explicitly asks for the link still gets it. Modifier and
+  // middle clicks are left alone (open in a new tab), the `href` is untouched
+  // (copy link address, and the status bar still says where the number goes),
+  // and a keyboard activation — `detail` 0, no pointer behind it — navigates
+  // exactly as it always did, because focus alone already shows the card and
+  // the card is not in the tab order behind the link.
+  document.addEventListener("click", function (ev) {
+    var a = prAnchorOf(ev);
+    if (a) {
+      if (ev.defaultPrevented || ev.detail === 0 || ev.button !== 0
+          || ev.metaKey || ev.ctrlKey || ev.shiftKey || ev.altKey) return;
+      ev.preventDefault();
+      clearTimeout(prShowTimer); clearTimeout(prHideTimer);
+      if (prPinned && prAnchor === a) prCardHide();
+      else prCardShow(a, true);
+      return;
+    }
+    // Off the link closes whatever is open — but not a click inside the card
+    // itself, which holds links of its own and its close button. Peeks are
+    // closed here too, not just pins: a touch device fires `mouseover` without
+    // ever firing `mouseout`, so a tap-scroll that brushes a number can leave a
+    // card that nothing else would take away.
+    if (prAnchor && !(ev.target.closest && ev.target.closest("#prcard"))) prCardHide();
+  });
   document.addEventListener("focusin", function (ev) {
     var a = prAnchorOf(ev);
-    if (a) { clearTimeout(prHideTimer); prCardShow(a); }
+    if (!a || prSuppressFocus) return;
+    clearTimeout(prHideTimer);
+    // Focus arrives before the click that pinned the card, so the pin is only
+    // ever *re*asserted here: refocusing the number a pinned card belongs to
+    // must leave it pinned, or the click behind that focus would reopen what it
+    // was meant to close.
+    if (prPinned && prAnchor === a) return;
+    prCardShow(a, false);
   });
   document.addEventListener("focusout", function (ev) { if (prAnchorOf(ev)) prCardHideSoon(); });
   document.addEventListener("keydown", function (ev) { if (ev.key === "Escape") prCardHide(); });
@@ -515,10 +606,10 @@
   // an active pipeline — which is exactly when someone is reading it. The
   // occurrence is matched exactly, so the card cannot reappear against a twin
   // elsewhere on the page; if this one is gone, so is the card.
-  function prCardReanchor(where) {
+  function prCardReanchor(where, pinned) {
     if (!where) return;
     var a = document.querySelector('a.prref[data-pr-where="' + where.replace(/"/g, '\\"') + '"]');
-    if (a) prCardShow(a);
+    if (a) prCardShow(a, pinned);
   }
 
   var EVENT_CLASS = { "attempt-failed":"b-red","warning":"b-amber","limit-hit":"b-amber",
@@ -1242,11 +1333,12 @@
   // the browser would otherwise clamp the scroll to the top on every refresh.
   function renderBody() {
     var y = window.scrollY;
-    // The hover card is anchored to an element that is about to be destroyed,
-    // so it is closed here and reopened against the rebuilt one at the foot of
-    // this function — left as it was, it would hang over the page attached to
-    // nothing.
+    // The card is anchored to an element that is about to be destroyed, so it
+    // is closed here and reopened against the rebuilt one at the foot of this
+    // function — left as it was, it would hang over the page attached to
+    // nothing. Whether it was peeked or pinned is carried across with it.
     var reopenPr = prAnchor ? prAnchor.getAttribute("data-pr-where") : null;
+    var reopenPinned = prPinned;
     prCardHide();
     app.innerHTML = "";
 
@@ -1420,7 +1512,7 @@
     app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
 
     window.scrollTo(0, y);
-    prCardReanchor(reopenPr);
+    prCardReanchor(reopenPr, reopenPinned);
   }
 
   // The header of a single-node page: this node's live state in full, off its

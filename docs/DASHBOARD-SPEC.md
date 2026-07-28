@@ -213,7 +213,7 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   (`.github/workflows/build-image.yml`, `deploy/docker/Dockerfile`), and this
   reader falls back to git for a checkout, and to `null` for neither. The
   **pull request** is the useful half: a SHA names the bytes, `#89` names the
-  change, and the page renders it through the same hover card as every other
+  change, and the page renders it through the same record card as every other
   number. Our own is read directly; a peer's arrives in its heartbeat, because
   a peer publishes no container. See the design decision on version skew below.
 - **GitHub, via `gh`** (best-effort; the machine is authenticated and the
@@ -400,7 +400,7 @@ other order goes looking for a fault that isn't there);
 (name, role, running/idle, the stage, repo, work source and item in flight and
 since when — or, when idle, when its last cycle ended and how it went — the
 **version it is running** as `image #<pr> <short-sha> · built <age>` with the
-pull request carrying its hover card, a grey `behind` marker when the fleet
+pull request carrying its record card, a grey `behind` marker when the fleet
 holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
@@ -433,17 +433,40 @@ since the first runs to sixty rows and the other two to five; recent log;
 `cron.log` tail.
 
 Every pull-request number anywhere on the page is rendered by one widget,
-which makes it a link with a **hover card** (also on keyboard focus; `Escape`
-closes it) carrying that PR's record from `github.pr_index`: repo and number,
-state, title, author, when it was opened and merged or closed, the abbreviated
-merge commit (itself a link), its labels, and — while it is still open —
-checks, review decision and mergeability. It also names **the cycle that
-raised it**, joined client-side from the cycle list, so the two halves of the
-page connect without the pipeline logging anything new. A number with no entry
-yet says so rather than rendering an empty card. An open card is carried across
-the body's rebuild like the expanded rows and open transcripts are — matched to
-the exact occurrence it was opened on, so it cannot reappear against one of the
-same number's twins elsewhere on the page.
+which makes it a link with a **record card** carrying that PR's entry from
+`github.pr_index`: repo and number, state, title, author, when it was opened
+and merged or closed, the abbreviated merge commit (itself a link), its labels,
+and — while it is still open — checks, review decision and mergeability. It
+also names **the cycle that raised it**, joined client-side from the cycle
+list, so the two halves of the page connect without the pipeline logging
+anything new. A number with no entry yet says so rather than rendering an empty
+card.
+
+The card opens two ways, and they do not cross:
+
+- a **peek** follows the pointer — hover on to open, hover off to close, with
+  the pointer free to cross onto the card itself (it holds links of its own).
+  Keyboard focus opens a peek the same way, and blur closes it; `Escape`
+  closes either kind.
+- a **pin** is an explicit act — a click or a tap — and only another explicit
+  act closes it: the same number again, a click or tap anywhere off the card,
+  the card's own close button (shown on pinned cards only), or `Escape`.
+  Hovering off a pinned card leaves it open, and hovering another number does
+  not move it; clicking another number does.
+
+**A plain click opens the card rather than following the link**, because on a
+touch device the tap that opens the card was also the tap that left the page,
+which made the card unreadable exactly where the record is least visible
+otherwise. The link is preserved for every input that asks for it: modifier and
+middle clicks open the PR in a new tab, keyboard activation (`Enter`)
+navigates as it always did — focus alone already shows the card — the `href` is
+untouched so "copy link address" and the status bar still work, and the card
+carries a *View on GitHub ↗* link of its own.
+
+An open card is carried across the body's rebuild like the expanded rows and
+open transcripts are, peeked or pinned as it was — matched to the exact
+occurrence it was opened on, so it cannot reappear against one of the same
+number's twins elsewhere on the page.
 
 ## Integration
 
@@ -626,6 +649,19 @@ same number's twins elsewhere on the page.
   ladder has nothing to say — and no finished row's badge changes. Check the
   first minute of a cycle specifically: that is where reading the ladder alone
   produces "Ended".
+- A pull-request number behaves the same way under a pointer, a finger and a
+  keyboard. Hover one and the card opens; move off and it closes. Click it and
+  the card opens **and stays**, the page does not go to GitHub, moving the
+  pointer away does not close it, and hovering another number does not move it;
+  click the same number again, click off the card, use its close button or
+  press `Escape` and it closes — while a click *inside* the card does not.
+  Ctrl/cmd-click still opens the PR in a new tab, and `Enter` on a focused
+  number still navigates. On a phone (or a touch-emulating browser) a tap opens
+  the card rather than GitHub, the card fits the viewport, and its close button
+  and *View on GitHub ↗* link are both reachable. Leave a card open across a
+  refresh or two: it is still there, and still pinned if it was pinned — a
+  rebuild destroys the focused anchor, so this is where a stray `focusout` can
+  close the card the reanchor just reopened.
 - The page has zero console/page errors (it renders headlessly under a browser
   with no thrown errors).
 
@@ -844,7 +880,7 @@ same number's twins elsewhere on the page.
   its record.** `#89` on its own says almost nothing, and the click that would
   explain it costs a context switch — enough friction that nobody spends it
   while scanning, which is what this page is for. So every number on the page
-  goes through one renderer that attaches a hover card: repo, title, state,
+  goes through one renderer that attaches a record card: repo, title, state,
   author, opened/merged times, the merge commit, labels, and — while it is open
   — checks, review decision and mergeability. It is deliberately generic rather
   than special-cased per panel, and the newest use is the one that proves the
@@ -857,6 +893,32 @@ same number's twins elsewhere on the page.
   with the table three panels down, and it costs nothing. And a number with no
   entry yet says exactly that, rather than rendering an empty card: an index
   miss is the ordinary state of a PR raised since the last fetch, not an error.
+
+  **The card is a peek on hover and a pin on click, and a click does not follow
+  the link.** Hover was the whole interaction to begin with, and on a phone
+  there is no hover: the tap that opened the card was the same tap that left
+  for GitHub, so the card flashed and the page was gone. That is the reader who
+  needs it most — a phone is where the dashboard gets checked away from a desk,
+  and where opening GitHub to answer "did that land?" costs the most. So a
+  plain click now opens the card and pins it, and the *View on GitHub ↗* link
+  the card already carried is the way through.
+
+  The two modes are kept strictly apart, because mixing them is what makes this
+  pattern annoying elsewhere: a card opened by hovering closes by unhovering,
+  and a card opened by clicking closes only by clicking — off it, on the number
+  again, on its close button, or `Escape`. A pinned card therefore neither
+  evaporates when the pointer drifts nor chases the pointer onto the next
+  number along, which matters because reading one is a deliberate stop. The
+  close button exists for the pinned case alone: dismissing by "tap the blank
+  page behind it" is not an affordance anyone can see, and the number that
+  opened the card is under the reader's own thumb.
+
+  Navigation is not lost, only unbound from the plain click. Modifier and
+  middle clicks still open the PR, the `href` stays on the anchor so the status
+  bar and "copy link address" tell the truth, and `Enter` still navigates —
+  keyboard focus already opens a peek without spending the activation, and the
+  card is not in the tab order behind the link, so pinning it from the keyboard
+  would strand a reader in front of links they could not reach.
 
   The index is affordable because a **merged or closed pull request is
   immutable** — cached permanently by ref, so a warm tick spends nothing however
@@ -874,7 +936,8 @@ same number's twins elsewhere on the page.
 
   It is a pull-request number rather than a SHA because a SHA names the bytes
   and a pull request names the change: `#89` has a title, a diff, a review and a
-  merge time behind it, and the widget above puts all of that one hover away.
+  merge time behind it, and the widget above puts all of that one hover or one
+  click away.
   The commit is shown too, abbreviated and linked, for anyone reconciling
   against `docker image inspect`. And the image cannot work either out for
   itself — `.dockerignore` keeps `.git` out, correctly, because the image is a
