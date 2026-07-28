@@ -384,7 +384,7 @@ above.
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | resolved | 2026-07-28 | #114 |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | resolved | 2026-07-28 | #116 |
-| TD26072602 | A human-applied needs-refinement label is inert | open | | |
+| TD26072602 | A human-applied needs-refinement label is inert | in-progress | | |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
