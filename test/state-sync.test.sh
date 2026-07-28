@@ -136,6 +136,24 @@ assert_eq "the heartbeat names the node" "active-node" "$(jq -r '.node' <<<"$hb"
 assert_eq "the heartbeat records the role" "active" "$(jq -r '.role' <<<"$hb")"
 assert_eq "the heartbeat records the newest cycle" "20260720T010000Z-1" "$(jq -r '.last_cycle' <<<"$hb")"
 
+# --- The heartbeat carries the compose-drift verdict (#131) -------------------
+# End to end: a node whose compose.yaml has drifted publishes that fact with
+# its next push. The check's paths are forced to fixtures, because this suite
+# runs both on developer hosts and inside the CI image, and the defaults
+# would answer for whichever environment it happens to be in.
+drift_image="$tmp_dir/drift-image.yaml"
+drift_host="$tmp_dir/drift-host.yaml"
+printf 'services:\n  scheduler:\n    image: ghcr.io/example/agent-ops:latest\n' > "$drift_image"
+printf 'services:\n  scheduler:\n    image: ghcr.io/example/agent-ops:pinned\n' > "$drift_host"
+sync_as "$active_home" active push \
+  COMPOSE_DRIFT_HOST="$drift_host" COMPOSE_DRIFT_IMAGE="$drift_image" >/dev/null
+drift_pushed="$tmp_dir/pushed-drift"
+git clone --quiet --branch nodes/active-node "$remote" "$drift_pushed"
+assert_eq "a drifted compose.yaml is published in the heartbeat" "drifted" \
+  "$(jq -r '.compose.status' "$drift_pushed/heartbeat.json" 2>/dev/null)"
+assert_eq "with the count of differing lines" "2" \
+  "$(jq -r '.compose.diff_lines' "$drift_pushed/heartbeat.json" 2>/dev/null)"
+
 # --- A second push amends rather than accumulating history ---
 printf '{"ts":"2026-07-20T01:00:00Z","event":"cycle-end"}\n' >> "$state/log.jsonl"
 sync_as "$active_home" active push >/dev/null

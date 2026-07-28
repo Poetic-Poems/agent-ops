@@ -48,14 +48,19 @@ base=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker
 curl -fsSLO "$base/compose.yaml"
 curl -fsSLO "$base/ts-serve.json"
 curl -fsSL  "$base/.env.example" -o .env
-curl -fsSLO "https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts/watch-node.sh"
-chmod +x watch-node.sh
+scripts=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts
+curl -fsSLO "$scripts/watch-node.sh"
+curl -fsSLO "$scripts/check-node-compose.sh"
+chmod +x watch-node.sh check-node-compose.sh
 $EDITOR .env
 ```
 
 `watch-node.sh` is the one command for following this node's pipeline output
-once it is up (see [Follow a node's events](#follow-a-nodes-events) below),
-fetched now so it sits beside `compose.yaml` from the start.
+once it is up (see [Follow a node's events](#follow-a-nodes-events) below);
+`check-node-compose.sh` audits this node's `compose.yaml` — and the
+containers created from it — against the running image (see [Keeping the
+compose file current](#keeping-the-compose-file-current)). Both are fetched
+now so they sit beside `compose.yaml` from the start.
 
 At minimum set `NODE_NAME`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` and —
 for the `tailnet` profile — `TS_AUTHKEY`. Leave `ROLE=standby` unless this node
@@ -245,6 +250,52 @@ commit SHA tag in `.env` and re-run `up -d`:
 AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>
 ```
 
+### Keeping the compose file current
+
+Watchtower delivers new *images*; nothing delivers a new `compose.yaml`.
+Labels, service environment and mounts are read off the file at `up -d` time
+and never afterwards, so **merging a change to `deploy/docker/compose.yaml`
+deploys nothing** — a merged compose fix sits inert on every node until a
+human performs, on each node, at a moment when it is idle:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
+curl -fsSLO https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/deploy/docker/compose.yaml
+docker compose up -d
+```
+
+(The `--status` line is not optional: a manual `up -d` bypasses the
+pre-update hook and kills a running cycle.) On a host running two stacks,
+repeat from each stack directory — the two files are kept byte-identical, so
+`cp` the fetched file over the second stack's copy and `up -d` from there.
+
+You do not have to remember any of this unprompted. A pull request that
+touches `compose.yaml` gets a CI comment saying the merge is not the
+deployment; and each node checks its own copy from inside — `compose.yaml`
+mounts itself read-only at `/host/compose.yaml`, `lib/compose-drift.sh`
+diffs that against the copy baked into the running image (comments aside),
+and the verdict travels in the node's heartbeat, so every dashboard's fleet
+strip flags the node until the ritual above is done:
+
+- **compose drifted** — the node's file differs materially from the copy its
+  image shipped;
+- **compose unverified** — the file is not mounted into the containers at
+  all, which means it predates the drift check and is behind regardless.
+
+To audit a node from its host — the running containers included, which the
+in-container check cannot see — run `check-node-compose.sh` (fetched at
+bring-up) from the stack directory:
+
+```bash
+./check-node-compose.sh
+```
+
+It diffs the file against the running image's copy, confirms the pre-update
+hook label on every agent-ops container and lifecycle hooks in watchtower's
+actual environment, and exits non-zero if anything has drifted — the checks
+cover exactly the properties whose silent loss cost the cycles behind
+issue #131.
+
 ### Changing a node's role
 
 Edit `ROLE` in `.env`, then:
@@ -335,6 +386,7 @@ minutes.
 | The dashboard URL times out | The page is only ever reachable on the host's loopback: over the tailnet on the `tailnet` profile, at `http://127.0.0.1:$DASHBOARD_PORT` on the `local` one. From another machine, neither answers by design | Browse it from the host itself, or use the `tailnet` profile and browse the node's tailnet name |
 | `Bind for 127.0.0.1:8787 failed: port is already allocated` on the `local` profile | Something already holds that port on the host — a second node's stack, or on the laptop the legacy SysV dashboard | Set `DASHBOARD_PORT` in `.env` |
 | Nothing happens on any node | The shared switch is set | `--status` to see the reason, `--enable` to clear it |
+| A node's card shows `compose drifted` or `compose unverified` | Its `compose.yaml` has fallen behind the repository — a merged compose change was never applied there (`drifted`), or the file is too old even to carry the mount the check reads (`unverified`) | The ritual in [Keeping the compose file current](#keeping-the-compose-file-current): wait for idle, re-fetch `compose.yaml`, `docker compose up -d`; `./check-node-compose.sh` to verify, containers included |
 | `watchtower` crash-loops (`Restarting`) with `client version 1.25 is too old. Minimum supported API version is 1.40` | The unmaintained `containrrr/watchtower` image defaults to an ancient Docker API version that a modern daemon (Docker 25+, e.g. a fresh Ubuntu 26.04 host) rejects — so the node stops auto-updating and drifts off the fleet digest | `compose.yaml` now pins `DOCKER_API_VERSION` (default `1.40`) for watchtower; a node provisioned before that needs its `compose.yaml` re-fetched, then `docker compose up -d watchtower`. Override the version in `.env` only if a daemon needs a different one |
 
 ---

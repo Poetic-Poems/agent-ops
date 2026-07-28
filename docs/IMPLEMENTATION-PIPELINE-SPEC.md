@@ -281,6 +281,33 @@ file and carries placeholders only; `.env` itself is never committed.
   The hook covers the automatic roll and nothing else: a manual `up -d`,
   `restart`, `down` or host reboot recreates containers without consulting
   watchtower, so the operating rule for those remains `--status` first.
+- **A node's copy of this file is watched for drift.** A node holds its own
+  `compose.yaml`, which no image roll can update — labels, service
+  environment and mounts arrive only via a human running `docker compose up
+  -d` on that host — so a merged compose change can otherwise sit inert on
+  every node while the repository's own checks stay green (issue #131, which
+  is what it cost to learn this). The file therefore mounts *itself*
+  read-only into the agent-ops services (`./compose.yaml:/host/compose.yaml:ro`,
+  on the shared block), and `lib/compose-drift.sh` diffs the mount against
+  the image's own copy at `/app/deploy/docker/compose.yaml` — comments and
+  blank lines aside, since what drifts in comments cannot change what a
+  container runs. The reference tracks `main` by exactly the channel that
+  already works, the image roll. The verdict — `{status: "in-sync"}`,
+  `{status: "drifted", diff_lines: N}`, `{status: "unmounted"}`, or `null`
+  outside a container — travels in the node's heartbeat (requirement 2.5)
+  and is rendered on every dashboard's fleet strip (`DASHBOARD-SPEC.md`).
+  `unmounted` is the bootstrap problem answering itself: a compose file too
+  old to carry the mount is behind by construction, and the *check* reaches
+  every node by image roll with no `up -d` required, so a node that cannot
+  be verified says so from its first rolled image until its stack is
+  re-created. What the mount cannot see — whether the running containers
+  were created from the file, and watchtower's own environment, the one
+  container nothing ever rolls — needs the Docker socket, which these
+  containers rightly lack: `scripts/check-node-compose.sh` (component 12)
+  answers those from the host. Merging a change to this file is not
+  deploying it, and `.github/workflows/compose-deploy-reminder.yml` says so
+  on every pull request that touches it — one marker-keyed comment naming
+  the per-node ritual, posted once rather than per push.
 - Which profiles a node runs is set by `COMPOSE_PROFILES` in its `.env`, so the
   operator's command is `docker compose up -d` on every node regardless.
 - Three named volumes carry everything that must survive a container being
@@ -820,10 +847,17 @@ runs unattended.
    its **own branch**, `nodes/<NODE_NAME>`, every few minutes from the
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
-   stamps `heartbeat.json` (`{node, role, ts, last_cycle}`) into the branch
-   root — on a standby, which has no cycles to publish, the heartbeat is the
-   entire point, and it is what lets the fleet dashboard tell a quiet node
-   from a dead one. Each branch is a single rolling commit — `commit
+   stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose}`)
+   into the branch root — on a standby, which has no cycles to publish, the
+   heartbeat is the entire point, and it is what lets the fleet dashboard
+   tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
+   — what code the node is running, knowable to the fleet only because the
+   node says so itself, since a peer publishes no container. `compose` is
+   `lib/compose-drift.sh`'s, on the same reasoning one layer down: whether
+   the node's own `compose.yaml` still matches the copy its image shipped
+   (see "The node stack"), a question only that node can ask because the
+   file lives on its host and only its own containers mount it (#131).
+   Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)
    and a commit per push would be a second, redundant history whose only
@@ -2898,6 +2932,21 @@ What exists, and the requirements each part answers to:
     (component 7, including `cloud-init.yaml`) so every node carries it from
     the start. Unit-tested against a stubbed `docker` on `PATH`
     (`test/watch-node.test.sh`); must pass `shellcheck`.
+12. `scripts/check-node-compose.sh` — the host-side half of the compose-drift
+    answer (see "The node stack"; the in-container half is
+    `lib/compose-drift.sh`). Run on a node's host from the stack directory
+    (or `STACK_DIR`; a host running two stacks, once per directory), it
+    verifies what no container can: the stack's `compose.yaml` against the
+    copy inside the *running* image, the mount that arms the in-container
+    check, the watchtower pre-update hook label on every running agent-ops
+    container, and watchtower's actual environment — lifecycle hooks
+    enabled, schedule and interval not both set — plus an advisory count of
+    lifecycle mentions in watchtower's log. Read-only throughout
+    (`docker compose exec/ps`, `docker inspect/logs`, `diff`), so it is safe
+    to allow-list like `watch-node.sh`. Exit 0 all checks passed, 1 at least
+    one failed, 2 unable to check. Fetched at bring-up beside
+    `compose.yaml` (component 7, including `cloud-init.yaml`); must pass
+    `shellcheck`.
 
 ## Acceptance checks
 
@@ -3010,11 +3059,25 @@ pull request, run the ones the change touches and any it could regress.
    The socket-level half of the property — that a request from another machine
    is refused — is check 1c, which needs the stack up; this check runs in the
    image, where there is no Docker.
+1c-iii. **A node can tell when its compose.yaml has fallen behind.**
+   `test/compose-drift.test.sh` passes: identical copies read `in-sync` and
+   so do copies differing only in comments and blank lines; a material
+   difference reads `drifted` with a positive `diff_lines`; a missing mount
+   reads `unmounted` inside a container and `null` outside one; an image
+   carrying no copy of its own reads `null`, never a guess; no path returns
+   non-zero (the verdict is computed inside a heartbeat push running under
+   `set -e`); and `deploy/docker/compose.yaml` mounts itself read-only at
+   `/host/compose.yaml`, the path the library reads — the line through which
+   the check is armed. The file-level assertions of 1c-i pin the
+   repository's copy and prove nothing about any node's; this check is what
+   covers the gap they leave.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the
    locks or the dashboard, onto the node's own `nodes/<NODE_NAME>` branch
-   with a heartbeat naming the node, its role and its newest cycle; a second
+   with a heartbeat naming the node, its role, its newest cycle, its version
+   and its compose-drift verdict (asserted end to end: a node whose fixture
+   copies differ publishes `drifted` with the differing-line count); a second
    push amends rather than accumulating history; a standby pushes its own
    branch and never a peer's; the branch keeps
    `cycles_retained` cycles while the node's own `cycles/` and `reviews/` are

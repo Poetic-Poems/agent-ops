@@ -52,6 +52,14 @@ x-agent-ops: &agent-ops
     - state:/home/agent/.local/state/poetic-agents
     - claude-config:/home/agent/.claude
     - workspaces:/home/agent/.cache/poetic-agents/workspaces
+    # This file, handed to the containers it creates, so a node can tell when
+    # its copy has fallen behind the repository (issue #131: nothing else can
+    # — an image roll delivers new code but never compose-level config, and a
+    # node holds no clone to compare against). lib/compose-drift.sh diffs the
+    # mount against the image's own copy and the verdict travels in the
+    # heartbeat; a container that finds no file here is running from a
+    # compose.yaml too old to carry this line, and reports exactly that.
+    - ./compose.yaml:/host/compose.yaml:ro
   labels:
     # Only containers carrying this label are watchtower's business — the
     # laptop runs unrelated containers that are none of it.

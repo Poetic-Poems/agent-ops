@@ -1,0 +1,69 @@
+# compose-deploy-reminder.yml — merging a change to compose.yaml deploys
+# nothing, and this workflow says so where it can still be acted on.
+#
+# A node runs its own copy of deploy/docker/compose.yaml on its host; an image
+# roll delivers new code but never compose-level configuration (labels,
+# service environment, mounts), so a merged edit to that file reaches a node
+# only when a human re-fetches the file there and runs `docker compose up -d`.
+# Twice that step went unperformed and a merged fix sat inert on every node
+# while every check in this repository stayed green (issue #131). The
+# heartbeat's compose-drift verdict and the dashboard's badge now catch the
+# omission after the fact; this comment is the before, posted at the moment
+# the change is being reviewed and the ritual can be planned.
+#
+# One comment per pull request, keyed by an HTML marker, not one per push:
+# a reminder that repeats on every rebase is a reminder that gets muted.
+
+name: Compose deployment reminder
+
+on:
+  pull_request:
+    paths:
+      - deploy/docker/compose.yaml
+
+permissions:
+  pull-requests: write
+
+jobs:
+  remind:
+    name: Merging is not deployment
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comment once on the pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          marker='<!-- compose-deploy-reminder -->'
+          # Captured before grepping: under the runner's pipefail, `grep -q`
+          # closing the pipe early would fail the pipeline and read an
+          # existing marker as absent — posting the duplicate the marker
+          # exists to prevent.
+          bodies="$(gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" \
+            --paginate --jq '.[].body')"
+          if grep -qF "$marker" <<<"$bodies"; then
+            echo "already reminded on this pull request"
+            exit 0
+          fi
+          cat > body.md <<EOF
+          $marker
+          **This pull request changes \`deploy/docker/compose.yaml\` — merging it deploys nothing.**
+
+          A node runs its own copy of that file on its host, and an image roll cannot
+          carry compose-level changes. After this merges, **each node** needs, at a
+          moment when it is idle (\`--status\` first — a manual \`up -d\` bypasses the
+          pre-update hook and kills a running cycle):
+
+          \`\`\`bash
+          docker compose exec scheduler /app/agent-cycle.sh --status   # wait for idle
+          curl -fsSLO https://raw.githubusercontent.com/$GITHUB_REPOSITORY/main/deploy/docker/compose.yaml
+          docker compose up -d
+          \`\`\`
+
+          On a host running two stacks, repeat from each stack directory. Until that is
+          done, the fleet strip on every dashboard flags the node (**compose drifted** /
+          **compose unverified**), and \`scripts/check-node-compose.sh\`, run on the
+          node's host, verifies the file *and* the running containers. See
+          \`deploy/docker/README.md\`, "Keeping the compose file current".
+          EOF
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@body.md
