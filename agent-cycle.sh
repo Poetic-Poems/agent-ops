@@ -57,6 +57,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/refinement.sh"
 # shellcheck source=lib/prompt-overrides.sh
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
+# shellcheck source=lib/coordinator-brief.sh
+. "$SCRIPT_DIR/lib/coordinator-brief.sh"
 
 usage() {
   cat <<'EOF'
@@ -1964,7 +1966,17 @@ coordinator_input="$(jq -nc \
     candidates_max: $cmax}')"
 
 # --- 4. Co-Ordinator stage ---
-coordinator_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")
+# The repo/work-sources table prompts/coordinator.md used to hand-maintain is
+# generated from config.json instead (requirement 4b) and substituted for the
+# @@WORK_SOURCES_TABLE@@ marker the base prompt carries in its place — built
+# from the plain configured repo list (`all_repos_json`), never the
+# cycle's back-pressure-restricted `ordered_repos_json`, so it always shows
+# each repo's full configured priority regardless of this cycle's
+# restrictions.
+coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
+coordinator_base_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
+coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coordinator_sources_table}"
+coordinator_prompt="$coordinator_base_prompt
 
 ## Runtime input for this cycle
 
