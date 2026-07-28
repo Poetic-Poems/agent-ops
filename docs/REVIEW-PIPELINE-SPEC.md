@@ -131,7 +131,8 @@ confirmed defaults; the README documents each key.
   "branch_prefix": "review/",
   "timeout_review": 120,
   "lock_stale_after": 6,
-  "min_days_between_reviews": 6
+  "min_days_between_reviews": 6,
+  "not_before": "2026-07-30T16:00:00Z"
 }
 ```
 
@@ -144,6 +145,7 @@ confirmed defaults; the README documents each key.
 | `review.timeout_review` | `120` | Minutes. Per-repo wall-clock timeout for the Reviewer-Agent, enforced by the Script. A full review is long; this is generous. |
 | `review.lock_stale_after` | `6` | Hours. Larger than the implementation pipeline's 3 h, because two full reviews back-to-back can exceed it. |
 | `review.min_days_between_reviews` | `6` | The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next. |
+| `review.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3) — every repo, not one. Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. |
 
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch command.
@@ -220,6 +222,20 @@ R3. **Stand-down checks.** Each logs its reason and exits 0:
    2. *Implementation pipeline busy* — if `lock.json` is held by a live
       process, stand down and wait for the next tick (defer to it, per
       "Relationship to the existing pipelines").
+   3. *A dated stand-down* — if `review.not_before` is set and now is before
+      it, stand down, logging the timestamp on the event so an operator can
+      tell this apart from a switch. Checked before the lock, like R2a, so a
+      review that must not start never takes a lock a roll would then defer
+      for. This exists because R2a's switch is deliberately **shared** with
+      the implementation pipeline: holding the weekly review off until a date
+      while cycles carry on is a thing the switch cannot say. A value
+      `date -d` cannot parse stands the pipeline down rather than running
+      through it — the operator evidently meant to hold reviews off, and
+      guessing otherwise spends whatever they were protecting. Absent or
+      empty is not a stand-down. Preferred over raising
+      `min_days_between_reviews` because it expires by itself: a threshold
+      has to be put back by hand, and one left raised throttles every repo
+      indefinitely without anyone noticing.
 
 R2a. **The switch.** Before the lock, read the shared switch
    (`state_dir/disabled.json`) through `lib/toggle.sh` and stand down while it

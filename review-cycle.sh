@@ -34,7 +34,13 @@ for bin in claude gh git jq; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.json"
+# AGENT_OPS_CONFIG is for tests, as the positional argument is in
+# watchtower-pre-update.sh; cron and the container invoke this bare and get the
+# config beside the script. A test that drives the real script needs to vary one
+# key without editing the shipped file — and without that, adding any key here
+# silently reaches into every such test: `review.not_before` stood
+# test/review-claim.test.sh down before it reached the claim it was asserting on.
+CONFIG_FILE="${AGENT_OPS_CONFIG:-$SCRIPT_DIR/config.json}"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
 SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 
@@ -104,6 +110,9 @@ branch_prefix="$(cfg '.review.branch_prefix')"
 timeout_review_min="$(cfg '.review.timeout_review')"
 lock_stale_after_hours="$(cfg '.review.lock_stale_after')"
 min_days_between_reviews="$(cfg '.review.min_days_between_reviews')"
+# A stand-down with a date on it (R3.3). Empty or absent means none in force.
+review_not_before="$(cfg '.review.not_before // ""')"
+[[ "$review_not_before" == "null" ]] && review_not_before=""
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 review_repos_json="$(cfg_json '.review.repos')"
 state_repo="$(cfg '.state_repo // ""')"
@@ -308,6 +317,42 @@ if [[ "$(jq -r '.state' <<<"$fleet_review_switch")" == "disabled" ]]; then
     '{reason: $r}')"
   (( ONCE )) && echo "review-cycle: the fleet switch is set — agent-cycle.sh --enable clears it everywhere" >&2
   exit 0
+fi
+
+# --- The dated stand-down (R3.3) ---
+# `review.not_before` holds a timestamp before which no review may start. It
+# exists for the case the switch above cannot express: the operator wants the
+# weekly review held off until a date, and wants the implementation pipeline to
+# carry on meanwhile. The switch is deliberately shared between both pipelines
+# (see its comment), so reaching for it here would stop the cycles too — a far
+# bigger stand-down than "not this week's review".
+#
+# Checked before the lock, like the switches, and for the same reason: a review
+# that must not start should not take a lock, however briefly, that a roll would
+# then defer for.
+#
+# Self-expiring by construction, which is the whole point of a timestamp over a
+# raised `min_days_between_reviews`: the latter has to be put back by hand, and
+# a cadence quietly left throttled is the kind of thing nobody notices for
+# weeks. An unparseable value stands the pipeline down rather than running
+# through it — the operator plainly meant to hold reviews off, and guessing
+# otherwise spends the quota they were protecting.
+if [[ -n "$review_not_before" ]]; then
+  not_before_epoch="$(date -d "$review_not_before" +%s 2>/dev/null || echo "")"
+  now_epoch="$(date +%s)"
+  if [[ -z "$not_before_epoch" ]]; then
+    log_event "review-stand-down" "$(jq -nc --arg r \
+      "review.not_before is set to an unparseable value ($review_not_before) — standing down rather than guessing" \
+      '{reason: $r}')"
+    (( ONCE )) && echo "review-cycle: review.not_before ($review_not_before) is not a date this system can parse" >&2
+    exit 0
+  fi
+  if (( now_epoch < not_before_epoch )); then
+    log_event "review-stand-down" "$(jq -nc --arg r "review.not_before: no review before $review_not_before" \
+      --arg nb "$review_not_before" '{reason: $r, not_before: $nb}')"
+    (( ONCE )) && echo "review-cycle: standing down until $review_not_before (review.not_before)" >&2
+    exit 0
+  fi
 fi
 
 # --- Lock (R2) ---
