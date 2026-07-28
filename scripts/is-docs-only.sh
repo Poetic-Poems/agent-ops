@@ -2,15 +2,31 @@
 #
 # scripts/is-docs-only.sh — is this set of changed paths prose and nothing else?
 #
-# Exit 0 when every path handed to it is one the running system never reads,
-# and non-zero otherwise, printing the paths that forced the "no" so the
-# caller's log says which file cost the build.
+# Exit 0 when every path handed to it is one that cannot reach a node through
+# the image, and non-zero otherwise, printing the paths that forced the "no" so
+# the caller's log says which file cost the build.
 #
 # `.github/workflows/build-image.yml` asks the question to decide whether a
 # change needs an image at all. /app inside the image *is* this repository, so
 # very little here is incapable of changing what a node does — but a document
-# nothing in the container reads cannot, and a change confined to those is not
-# worth a build on a pull request nor an image roll across the fleet on `main`.
+# the image is not the delivery path for cannot, and a change confined to those
+# is worth neither a build on a pull request nor an image roll across the fleet
+# on `main`.
+#
+# "Cannot reach a node through the image" is the exact test, and it is not the
+# same thing as "nobody reads it". A cycle working on *this* repository does
+# read its `CLAUDE.md` and its `TECH-DEBT.md` — but out of the fresh
+# `gh repo clone` in `workspace_root`, and scripts/gather-register-hygiene.sh
+# reads the register straight from the contents API. Both arrive from GitHub
+# the moment a pull request merges, with no image in the path, so no build can
+# make them arrive sooner and skipping one delays nothing.
+#
+# What is never read is the copy at /app. Every `claude -p` in agent-cycle.sh
+# and review-cycle.sh runs with its working directory under `workspace_root`
+# or `state_dir` (`assert_in_workspace` pins the first of those), so /app is
+# neither a working directory nor an ancestor of one, and /app/CLAUDE.md is
+# never loaded as project memory. Moving a stage's cwd would break that, which
+# is why it is written down here.
 #
 # Paths on the command line, or one per line on stdin when there are none:
 #
@@ -40,8 +56,8 @@ is_inert() {
   case "$1" in
     docs/*) return 0 ;;                   # the as-built specs and the roadmap
     README.md) return 0 ;;
-    CLAUDE.md) return 0 ;;                # read by an interactive session, never by a cycle
-    TECH-DEBT.md) return 0 ;;             # tech-debt-register.yml checks it, and runs regardless
+    CLAUDE.md) return 0 ;;                # a cycle reads the clone's copy, never /app's
+    TECH-DEBT.md) return 0 ;;             # likewise, and via the contents API
     LICENCE) return 0 ;;
     deploy/docker/README.md) return 0 ;;  # the node runbook
     *) return 1 ;;

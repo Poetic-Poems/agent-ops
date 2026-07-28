@@ -2661,7 +2661,7 @@ What exists, and the requirements each part answers to:
    the workflow's own `GITHUB_TOKEN`, so nothing about publishing depends on a
    human's credentials. Its `changes` job decides whether there is an image
    worth building at all, through `scripts/is-docs-only.sh` — the allowlist of
-   paths the running system never reads (requirement 1b-i). The rule lives in
+   paths the image is not the delivery path for (requirement 1b-i). The rule lives in
    the script rather than in the workflow for the reason component 10 gives
    about its own file set, and because a rule that decides what reaches a node
    is worth unit-testing.
@@ -2717,7 +2717,16 @@ pull request, run the ones the change touches and any it could regress.
    included, since those are Markdown documents *and* the operating
    instructions of requirement 1a's stages, so classifying by file extension
    would let a change to a node's behaviour skip the build that deploys it. An
-   empty path list, or none, is code. `.github/workflows/build-image.yml`'s
+   empty path list, or none, is code. The test the allowlist encodes is "the
+   image is not the delivery path for this file", which is weaker than "nothing
+   reads it" and has to be: a cycle working on this repository reads its own
+   `CLAUDE.md` and `TECH-DEBT.md`, but from the `gh repo clone` in
+   `workspace_root` and from the contents API (requirement 3i) — both current
+   the moment a pull request merges, with no image involved. The copy at /app
+   is what nothing reads, because every stage's working directory is under
+   `workspace_root` or `state_dir` (requirement 6's assertion pins the first),
+   so /app is never a working directory nor an ancestor of one and its
+   `CLAUDE.md` is never loaded as project memory. `.github/workflows/build-image.yml`'s
    `changes` job runs it over the change's own diff (three-dot, so a pull
    request is judged on what its branch did and not on what `main` did
    meanwhile) and skips the `build` jobs — and so `publish` — when the answer

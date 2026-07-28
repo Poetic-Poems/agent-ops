@@ -11,8 +11,12 @@ name: Build the node image
 # Almost every file in this repository is copied into the image and can change
 # what a node runs, so there is deliberately no `paths:` filter and no clever
 # early exit. The exception is prose — `docs/`, `README.md`, `CLAUDE.md`,
-# `TECH-DEBT.md`, `LICENCE`, the node runbook — which nothing in the container
-# reads. A change confined to those has no image worth testing on a pull
+# `TECH-DEBT.md`, `LICENCE`, the node runbook — which the image is not the
+# delivery path for. That is a weaker claim than "nothing reads them", and
+# deliberately so: a cycle working on this repository reads its `CLAUDE.md` and
+# its `TECH-DEBT.md`, but out of a fresh GitHub clone that a merge updates with
+# no image in the path. scripts/is-docs-only.sh carries the detail.
+# A change confined to those has no image worth testing on a pull
 # request and none worth rolling a fleet for on `main`, so the `changes` job
 # below stops the workflow at that point. It fails safe: anything it cannot
 # classify with certainty is built.
