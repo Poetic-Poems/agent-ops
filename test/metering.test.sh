@@ -112,14 +112,38 @@ printf '{}' > "$empty"
 malformed="$work_dir/malformed.out"
 printf 'not json at all' > "$malformed"
 
+# `model` is the argument, never read from the envelope, so it is the one
+# field still populated when everything else degrades.
 all_null='{"model":"claude-sonnet-5","cost_usd":null,"duration_ms":null,"num_turns":null,"is_error":null,"tokens":null}'
 
-assert_eq "a missing out-file degrades to an all-null record" \
+assert_eq "a missing out-file degrades to nulls, keeping the passed-in model" \
   "$all_null" "$(metering_fields claude-sonnet-5 "$missing" | jq -c .)"
-assert_eq "an empty-object envelope degrades to an all-null record" \
+assert_eq "an empty-object envelope degrades to nulls, keeping the passed-in model" \
   "$all_null" "$(metering_fields claude-sonnet-5 "$empty" | jq -c .)"
-assert_eq "an unparseable envelope degrades to an all-null record" \
+assert_eq "an unparseable envelope degrades to nulls, keeping the passed-in model" \
   "$all_null" "$(metering_fields claude-sonnet-5 "$malformed" | jq -c .)"
+
+# --- An envelope no shape above anticipates must still yield one valid
+#     object. The callers interpolate this into `jq --argjson m` at the
+#     stage-end site, so printing nothing would cost the event its `stage` and
+#     `exit_code` too, not just its metering. ---
+scalar_usage="$work_dir/scalar-usage.out"
+printf '{"total_cost_usd":0.4,"modelUsage":{"claude-opus-5":7}}' > "$scalar_usage"
+
+assert_eq "a modelUsage entry that is not an object is skipped, not fatal" \
+  "null" "$(field claude-opus-5 "$scalar_usage" '.tokens')"
+assert_eq "and the rest of that envelope is still read" \
+  "0.4" "$(field claude-opus-5 "$scalar_usage" '.cost_usd')"
+
+mixed_usage="$work_dir/mixed-usage.out"
+printf '{"modelUsage":{"claude-opus-5":{"inputTokens":10,"outputTokens":5},"broken":"x"}}' > "$mixed_usage"
+
+assert_eq "a mix of usable and unusable entries sums the usable ones" \
+  '{"input":10,"output":5,"cache_creation":0,"cache_read":0}' \
+  "$(field claude-opus-5 "$mixed_usage" '.tokens')"
+
+assert_eq "every envelope shape yields a parseable object, never empty output" \
+  "object" "$(metering_fields claude-opus-5 "$scalar_usage" | jq -r 'type')"
 
 echo
 if (( failures == 0 )); then

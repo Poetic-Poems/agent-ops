@@ -2107,8 +2107,14 @@ runs unattended.
     `metering_fields` derives this from the stage's own out-file, and is the
     one implementation both this Script and `review-cycle.sh` call for their
     `stage-end`/`review-stage-end` events — a stage whose out-file was never
-    written, or whose envelope doesn't parse, degrades every field to `null`
-    rather than dropping the event or failing the cycle.
+    written, or whose envelope cannot be read, degrades every envelope-derived
+    field to `null` (`model` stays, being the id it was given) rather than
+    dropping the event or failing the cycle. That holds for any envelope, not
+    only the unreadable ones: the record is merged into the event as it is
+    logged, so a derivation that produced nothing would cost the event its own
+    `stage` and `exit_code` — the fields requirement 33 above and requirement
+    34 below key on — and the metering of a stage must never be able to do
+    that.
     `docs/METERING-SCHEMA.md` is the field-by-field contract: types, units,
     the per-cycle aggregation rule, and what future change is additive versus
     breaking.
@@ -3321,9 +3327,12 @@ pull request, run the ones the change touches and any it could regress.
     `is_error` and `tokens{input,output,cache_creation,cache_read}` from a
     single-model envelope and from a multi-model (subagent) envelope, summing
     `tokens` across every `modelUsage` entry in the latter; a genuinely zero or
-    `false` value survives rather than collapsing to `null`; and a missing,
-    empty or unparseable out-file degrades every field to `null` without
-    erroring. Both `agent-cycle.sh` and `review-cycle.sh` source
+    `false` value survives rather than collapsing to `null`; a missing, empty
+    or unparseable out-file degrades the envelope-derived fields to `null`
+    while `model` keeps the id it was passed; and an envelope whose
+    `modelUsage` entries are unreadable still yields one valid object, so no
+    envelope can cost a `stage-end` event its `stage` and `exit_code`. Both
+    `agent-cycle.sh` and `review-cycle.sh` source
     `lib/metering.sh` and merge its output into every `stage-end` /
     `review-stage-end` event they log, so this one function's correctness is
     what "both pipelines emit conforming records" reduces to.

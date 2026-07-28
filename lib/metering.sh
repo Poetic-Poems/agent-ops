@@ -21,10 +21,20 @@
 # null when `modelUsage` is absent or empty, exactly as `cost_usd` and the
 # rest are null when the envelope itself is missing or unparseable — a stage
 # that never ran, or crashed before writing one, degrades this whole object
-# to nulls rather than aborting the log_event call it feeds.
+# to nulls rather than aborting the log_event call it feeds. `model` alone is
+# always present: it is the argument, not something read out of the envelope.
+#
+# That degradation has to hold for *any* envelope, not just the shapes
+# anticipated below, because of what the callers do with the result: it is
+# interpolated into `jq --argjson m` at the `stage-end` site, so a run that
+# printed nothing would fail that jq too and cost the whole event its `stage`
+# and `exit_code` — the fields requirements 33/34 key on — not merely its
+# metering. Hence both the per-entry `select` in `tokens` and the fallback
+# after the call: whatever jq makes of the envelope, this function prints one
+# valid object.
 metering_fields() {
-  local model="$1" out_file="$2"
-  jq -nc --arg model "$model" \
+  local model="$1" out_file="$2" record
+  record="$(jq -nc --arg model "$model" \
     --rawfile raw <(cat "$out_file" 2>/dev/null || printf '{}') '
     ($raw | try fromjson catch {}) as $raw_e
     | (if ($raw_e | type) == "object" then $raw_e else {} end) as $e
@@ -39,16 +49,26 @@ metering_fields() {
         duration_ms: (if present("duration_ms") then $e.duration_ms else null end),
         num_turns: (if present("num_turns") then $e.num_turns else null end),
         is_error: (if present("is_error") then $e.is_error else null end),
+        # `select(type == "object")` per entry, not just on the map: indexing
+        # a scalar entry with `.inputTokens` is a hard jq error, which would
+        # take the whole program — and with it `cost_usd`, which was perfectly
+        # readable — down with it. Skipping the entry sums what is countable.
         tokens: (
           ($e.modelUsage // {}) as $mu
-          | if ($mu | type) != "object" or ($mu | length) == 0 then null
+          | (if ($mu | type) == "object" then [$mu[] | select(type == "object")] else [] end) as $used
+          | if ($used | length) == 0 then null
             else {
-              input: ([$mu[] | (.inputTokens // 0)] | add),
-              output: ([$mu[] | (.outputTokens // 0)] | add),
-              cache_creation: ([$mu[] | (.cacheCreationInputTokens // 0)] | add),
-              cache_read: ([$mu[] | (.cacheReadInputTokens // 0)] | add)
+              input: ([$used[] | (.inputTokens // 0)] | add),
+              output: ([$used[] | (.outputTokens // 0)] | add),
+              cache_creation: ([$used[] | (.cacheCreationInputTokens // 0)] | add),
+              cache_read: ([$used[] | (.cacheReadInputTokens // 0)] | add)
             }
             end
         )
-      }' 2>/dev/null
+      }' 2>/dev/null)" || record=""
+  if [[ -z "$record" ]]; then
+    record="$(jq -nc --arg model "$model" \
+      '{model: $model, cost_usd: null, duration_ms: null, num_turns: null, is_error: null, tokens: null}')"
+  fi
+  printf '%s\n' "$record"
 }
