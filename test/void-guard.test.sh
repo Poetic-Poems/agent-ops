@@ -71,10 +71,38 @@ assert_contains() {
 # `gh api repos/<slug>/pulls/<n>/files --jq length` answers with the contents of
 # $tmp_dir/files-<n>, or fails when that file does not exist (a PR the API will
 # not talk about).
+#
+# `gh api repos/<slug>/contents/<path>?ref=<ref>` (no `--jq`, as
+# `void_evidence_resolves` calls it) answers with the contents of
+# $tmp_dir/contents-<ref>-<path, `/` replaced by `_`>. When that file does not
+# exist it fails the way the real thing fails: exit 1, with GitHub's own error
+# body still on stdout — `{"message": "Not Found", "status": "404"}`, verbatim
+# from `gh api repos/…/contents/NO-SUCH-FILE.md?ref=main`. A `<file>.err`
+# alongside overrides that body, so a test can ask for the failures that are
+# *not* absence (a rate limit, an unresolvable ref) and check they are refused.
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
 [[ "$1" == "api" ]] || exit 1
+if [[ "$2" == */contents/* ]]; then
+  rest="${2#*/contents/}"
+  path="${rest%%\?*}"
+  ref="${rest##*ref=}"
+  key="${path//\//_}"
+  f="$d/contents-$ref-$key"
+  if [[ -f "$f.err" ]]; then
+    cat "$f.err"
+    echo "gh: the stub was asked for a failure (HTTP 4xx)" >&2
+    exit 1
+  fi
+  if [[ ! -f "$f" ]]; then
+    printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"}'
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  cat "$f"
+  exit 0
+fi
 n="${2##*/pulls/}"; n="${n%%/*}"
 [[ -f "$d/files-$n" ]] || exit 1
 cat "$d/files-$n"
@@ -150,6 +178,88 @@ assert_eq "an item with no PR-backed candidate finds nothing" \
 assert_eq "an empty item matches nothing" \
   "" "$(void_candidate_prs '{"repo": "Poetic-Poems/poetic", "evidence": "x"}' "$REPOS")"
 
+# --- void_entry_resolvable_evidence: what counts as a citation the Script can
+# resolve itself, rather than a free-text claim it can only check for presence
+# (TD26072601) ------------------------------------------------------------------
+assert_eq "a well-formed present citation is resolvable" \
+  '{"ref":"main","path":"TECH-DEBT.md","expect":"present","pattern":"TD26072601.*resolved"}' \
+  "$(void_entry_resolvable_evidence '{"evidence": {"ref": "main", "path": "TECH-DEBT.md",
+      "expect": "present", "pattern": "TD26072601.*resolved"}}')"
+assert_eq "pattern is optional on a resolvable citation" \
+  '{"ref":"main","path":".github/workflows/ci.yml","expect":"absent","pattern":""}' \
+  "$(void_entry_resolvable_evidence '{"evidence": {"ref": "main",
+      "path": ".github/workflows/ci.yml", "expect": "absent"}}')"
+assert_eq "a prose citation is not resolvable" \
+  "" "$(void_entry_resolvable_evidence '{"evidence": "main@aad1405 has no timeout-minutes"}')"
+assert_eq "an object missing path is not resolvable" \
+  "" "$(void_entry_resolvable_evidence '{"evidence": {"ref": "main", "expect": "present"}}')"
+assert_eq "an object missing ref is not resolvable" \
+  "" "$(void_entry_resolvable_evidence '{"evidence": {"path": "x", "expect": "present"}}')"
+assert_eq "an object with an unrecognised expect is not resolvable" \
+  "" "$(void_entry_resolvable_evidence '{"evidence": {"ref": "main", "path": "x", "expect": "gone"}}')"
+assert_eq "no evidence at all is not resolvable" \
+  "" "$(void_entry_resolvable_evidence '{"reason": "already done"}')"
+
+# --- void_evidence_resolves: testing one citation against the repository ------
+printf '{"content":"%s"}' "$(printf 'irrelevant' | base64)" >"$tmp_dir/contents-main-EXISTS.md"
+printf '{"content":"%s"}' \
+  "$(printf '| TD26072601 | title | resolved | 2026-07-28 | #116 |\n' | base64)" \
+  >"$tmp_dir/contents-main-TECH-DEBT.md"
+
+assert_eq "absent holds when the API has nothing at that ref/path" \
+  "0" "$(void_evidence_resolves '{"ref":"main","path":"GONE.md","expect":"absent","pattern":""}' \
+    "Poetic-Poems/poetic"; echo $?)"
+out="$(void_evidence_resolves '{"ref":"main","path":"EXISTS.md","expect":"absent","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "absent is refused when the file exists" "1" "$rc"
+assert_contains "  ... saying so" "exists" "$out"
+
+out="$(void_evidence_resolves '{"ref":"main","path":"GONE.md","expect":"present","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "present is refused when the API has nothing there" "1" "$rc"
+assert_contains "  ... saying so" "could not be read" "$out"
+
+assert_eq "present holds with no pattern to check" \
+  "0" "$(void_evidence_resolves '{"ref":"main","path":"EXISTS.md","expect":"present","pattern":""}' \
+    "Poetic-Poems/poetic"; echo $?)"
+
+assert_eq "present with a matching pattern holds" \
+  "0" "$(void_evidence_resolves \
+    '{"ref":"main","path":"TECH-DEBT.md","expect":"present","pattern":"TD26072601.*resolved"}' \
+    "Poetic-Poems/poetic"; echo $?)"
+
+out="$(void_evidence_resolves \
+  '{"ref":"main","path":"TECH-DEBT.md","expect":"present","pattern":"TD26072601.*open"}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "present with a non-matching pattern is refused" "1" "$rc"
+assert_contains "  ... saying so" "does not" "$out"
+
+# An `absent` claim rests entirely on the API saying "not found", so every
+# other way a fetch can fail must refuse it. Accepting them would make a rate
+# limit — or a moment without a network — silently corroborate any absence a
+# model cared to assert, which is precisely the unchecked-claim hole this test
+# file exists to close.
+printf '{"message":"API rate limit exceeded for user ID 1.","status":"403"}' \
+  >"$tmp_dir/contents-main-RATELIMITED.md.err"
+out="$(void_evidence_resolves '{"ref":"main","path":"RATELIMITED.md","expect":"absent","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "absent is refused when the API would not answer" "1" "$rc"
+assert_contains "  ... naming what came back instead" "rate limit exceeded" "$out"
+
+# A ref GitHub cannot resolve is a 404 as well, but it establishes nothing
+# about absence: there was no tree to be absent from.
+printf '{"message":"No commit found for the ref nope","status":"404"}' \
+  >"$tmp_dir/contents-nope-GONE.md.err"
+out="$(void_evidence_resolves '{"ref":"nope","path":"GONE.md","expect":"absent","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "absent is refused when the ref itself does not resolve" "1" "$rc"
+assert_contains "  ... saying so" "No commit found for the ref" "$out"
+
+# The same failures on a `present` claim were already refused, and still are.
+out="$(void_evidence_resolves '{"ref":"main","path":"RATELIMITED.md","expect":"present","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "present is refused when the API would not answer" "1" "$rc"
+
 # --- void_guard_reason: the verdict -------------------------------------------
 
 # The exact defect. Reason, no evidence: refused before any API call is made.
@@ -184,6 +294,46 @@ out="$(void_guard_reason '{"item": "review-2026-07-21-R-04", "repo": "Poetic-Poe
 rc=$?
 assert_eq "an evidenced void with no PR to check is allowed" "0" "$rc"
 
+# TD26072601: exactly the case above is what the resolvable shape exists to
+# strengthen — an item with no PR candidate, corroborated by fetching the file
+# instead of trusting the sentence.
+out="$(void_guard_reason '{"item": "TD26072601", "repo": "Poetic-Poems/poetic",
+  "reason": "the ledger row is resolved",
+  "evidence": {"ref": "main", "path": "TECH-DEBT.md", "expect": "present",
+               "pattern": "TD26072601.*resolved"}}' "$REPOS")"
+rc=$?
+assert_eq "a resolvable citation that holds is allowed" "0" "$rc"
+assert_eq "  ... silently" "" "$out"
+
+# The false-citation shape the gap actually was: an entry that both looks
+# evidenced and names a repo, but whose claim does not survive the fetch.
+out="$(void_guard_reason '{"item": "TD26072601", "repo": "Poetic-Poems/poetic",
+  "reason": "the ledger row is resolved",
+  "evidence": {"ref": "main", "path": "TECH-DEBT.md", "expect": "present",
+               "pattern": "TD26072601.*open"}}' "$REPOS")"
+rc=$?
+assert_eq "a resolvable citation that does not hold is refused" "1" "$rc"
+assert_contains "  ... as unresolved" "unresolved" "$out"
+
+# A resolvable-shaped citation names a repo to resolve it against; without one
+# there is nothing to fetch, so it is refused rather than silently skipped.
+out="$(void_guard_reason '{"item": "TD26072601",
+  "reason": "the ledger row is resolved",
+  "evidence": {"ref": "main", "path": "TECH-DEBT.md", "expect": "present"}}' "$REPOS")"
+rc=$?
+assert_eq "a resolvable citation with no repo to resolve against is refused" "1" "$rc"
+assert_contains "  ... saying so" "names no repo" "$out"
+
+# And an `absent` claim the API would not answer for reaches the same verdict
+# as the unreadable PR below: refused, not waved through on the fetch having
+# failed.
+out="$(void_guard_reason '{"item": "TD26072601", "repo": "Poetic-Poems/poetic",
+  "reason": "the workaround is gone from main",
+  "evidence": {"ref": "main", "path": "RATELIMITED.md", "expect": "absent"}}' "$REPOS")"
+rc=$?
+assert_eq "an absent citation the API would not answer for is refused" "1" "$rc"
+assert_contains "  ... as unresolved" "unresolved" "$out"
+
 # Unreadable is not innocent. Refusing costs a blocked item the Enabler will
 # look at; accepting costs an item nothing will ever look at again.
 rm -f "$tmp_dir/files-92"
@@ -209,6 +359,15 @@ printf '3' >"$tmp_dir/files-92"
   fi
   if r="$(void_guard_reason '{"item": "X"}')"; then exit 7; fi
   [[ "$r" == *"no evidence"* ]] || exit 6
+  # A resolvable citation reads `$?` straight after a command substitution, so
+  # it is the shape `set -e` is most likely to take exception to — and a `gh`
+  # that will not run at all is how the fetch fails when a node is misconfigured
+  # rather than merely offline. Refused, and the cycle still standing.
+  if r="$(void_guard_reason '{"item": "X", "repo": "Poetic-Poems/poetic",
+      "evidence": {"ref": "main", "path": "TECH-DEBT.md", "expect": "absent"}}')"; then
+    exit 5
+  fi
+  [[ "$r" == *"unresolved"* ]] || exit 4
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shape survives set -e and bad input" "0" "$?"

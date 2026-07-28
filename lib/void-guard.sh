@@ -20,6 +20,21 @@
 # buying a Co-Ordinator turn. The pipeline looks healthy and idle. It is idle
 # because it has been lied to.
 #
+# The PR-diff check below only fires when the voided repo+item matches a
+# gathered candidate carrying a `pr_number` — the finishing sources
+# (review-feedback, merge-conflicts, abandoned-drafts). For everything else —
+# most tech-debt items, every review recommendation, a failed-runs entry —
+# nothing tested the citation itself, only that the `evidence` field was
+# non-empty, and a model willing to assert a false reason is just as willing
+# to write a plausible-looking free-text citation for it (TD26072601). So a
+# second, independent test resolves what it can: an `evidence` value shaped
+# `{ref, path, expect, pattern}` names a specific file at a specific ref and a
+# specific claim about it, which is exactly as checkable as a PR diff — fetch
+# it and see. A citation that does not take that shape is unstructured prose,
+# accepted on the presence test alone as before; one that does take the shape
+# but does not hold when fetched is refused, on the same "uncorroborated is
+# not innocent" reasoning as an unreadable PR.
+#
 # It happened. A Co-Ordinator voided a tech-debt item with
 # "PR #92 work is finished: workflow timeout, fetch timeouts, retry-on-rejection
 # and tests all merged; TECH-DEBT.md Ledger marked resolved" — while the
@@ -111,6 +126,114 @@ void_entry_evidence() {
   entry_field_text "$1" evidence
 }
 
+# void_entry_resolvable_evidence ENTRY_JSON
+# Print the entry's evidence, normalised to `{ref, path, expect, pattern}`,
+# when it is shaped for the Script to dereference — `ref` and `path` non-empty
+# strings, `expect` one of `"present"`/`"absent"`, `pattern` optional. Print
+# nothing when the evidence is anything else: a string, a differently-shaped
+# object, or absent. That "anything else" bucket is deliberately wide — it is
+# where free-text citations live, and TD26072601 keeps them accepted on the
+# presence test alone rather than demanding every void fit one mould.
+void_entry_resolvable_evidence() {
+  jq -c '
+    (.evidence // null) as $e
+    | if ($e | type) != "object" then empty else
+      ( ($e.ref  // "") | if type == "string" then . else "" end) as $ref
+    | ( ($e.path // "") | if type == "string" then . else "" end) as $path
+    | ( ($e.expect // "") | if type == "string" then . else "" end) as $expect
+    | if ($ref | length) == 0 or ($path | length) == 0
+         or ($expect != "present" and $expect != "absent")
+      then empty
+      else {ref: $ref, path: $path, expect: $expect,
+            pattern: (($e.pattern // "") | if type == "string" then . else "" end)}
+      end
+    end' <<<"$1" 2>/dev/null || true
+}
+
+# void_api_is_not_found API_BODY
+# True when a failed contents fetch failed because GitHub has nothing at that
+# path — and not because it would not answer at all.
+#
+# `gh api` exits non-zero for every HTTP error alike, but GitHub's own response
+# body says which one it was, and `gh` hands that body back on stdout even as
+# it exits: `{"message": "Not Found", …, "status": "404"}`. Testing GitHub's
+# answer rather than `gh`'s phrasing of it is the idiom
+# `scripts/gather-register-hygiene.sh` already uses to tell "this repo keeps no
+# register" from "we could not look", and it is the same distinction here.
+#
+# A `ref` GitHub cannot resolve is a 404 too, but a differently-worded one
+# ("No commit found for the ref …"), and it is *not* absence: nothing was
+# established about a ref that does not exist. Both directions of drift in that
+# wording fail towards refusing a void, which is the safe direction.
+void_api_is_not_found() {
+  local body="$1" http_status message
+  http_status="$(jq -r '.status // ""' <<<"$body" 2>/dev/null || true)"
+  message="$(jq -r '.message // ""' <<<"$body" 2>/dev/null || true)"
+  [[ "$http_status" == "404" && "$message" == "Not Found" ]]
+}
+
+# void_evidence_resolves RESOLVABLE_JSON SLUG
+# Test one `{ref, path, expect, pattern}` citation against `repos/<slug>` via
+# the GitHub contents API. Prints nothing and returns 0 when the citation
+# holds; prints a one-line reason and returns 1 otherwise — including when the
+# API will not answer, on the same "uncorroborated is not innocent" reasoning
+# `void_guard_reason` already applies to an unreadable PR.
+#
+# `expect: "absent"` is satisfied only by GitHub answering `404 Not Found` (see
+# `void_api_is_not_found`). A fetch that fails any other way — rate limited,
+# unauthenticated, no network, a `ref` GitHub cannot resolve — has established
+# nothing, and an unanswered fetch must not read as corroboration when the
+# unreadable PR two checks below is refused for exactly that. Within a real
+# 404 no further distinction is drawn: the claim being made ("the fix is on
+# `main`" for a file `main` no longer needs) doesn't separate "removed" from
+# "never existed at that ref", so neither do we. `expect: "present"` requires
+# the fetch to succeed and, when `pattern` is given, the decoded content to
+# match it (extended regex, `grep -E`) — the shape the second claim TD26072601
+# names takes: "the Ledger row says resolved" is a pattern match against
+# TECH-DEBT.md, not just the file existing.
+void_evidence_resolves() {
+  local resolvable="$1" slug="$2" gh_bin="${VOID_GUARD_GH:-gh}"
+  local ref path expect pattern api_out status content detail
+
+  ref="$(jq -r '.ref' <<<"$resolvable")"
+  path="$(jq -r '.path' <<<"$resolvable")"
+  expect="$(jq -r '.expect' <<<"$resolvable")"
+  pattern="$(jq -r '.pattern' <<<"$resolvable")"
+
+  api_out="$("$gh_bin" api "repos/$slug/contents/$path?ref=$ref" 2>/dev/null)"
+  status=$?
+
+  if [[ "$expect" == "absent" ]]; then
+    if (( status == 0 )) && [[ -n "$api_out" ]]; then
+      printf 'evidence claims %s is absent from %s@%s, but it exists' "$path" "$slug" "$ref"
+      return 1
+    fi
+    if ! void_api_is_not_found "$api_out"; then
+      detail="$(jq -r '.message // ""' <<<"$api_out" 2>/dev/null || true)"
+      [[ -n "$detail" ]] || detail="the API did not answer"
+      printf 'evidence claims %s is absent from %s@%s, but the fetch failed with "%s" rather than reporting it absent' \
+        "$path" "$slug" "$ref" "$detail"
+      return 1
+    fi
+    return 0
+  fi
+
+  if (( status != 0 )) || [[ -z "$api_out" ]]; then
+    printf 'evidence claims %s is present at %s@%s, but it could not be read' "$path" "$slug" "$ref"
+    return 1
+  fi
+
+  if [[ -n "$pattern" ]]; then
+    content="$(jq -r '.content // empty' <<<"$api_out" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null)"
+    if ! grep -qE -- "$pattern" <<<"$content"; then
+      printf 'evidence claims %s at %s@%s matches %s, but it does not' "$path" "$slug" "$ref" "$pattern"
+      return 1
+    fi
+  fi
+
+  return 0
+}
+
 # void_candidate_prs ENTRY_JSON REPOS_JSON
 # Print, one per line as `<owner/repo>#<number>`, every open pull request this
 # cycle's gathered candidates associate with the voided entry's repo and item.
@@ -159,11 +282,25 @@ void_candidate_prs() {
 # will look at; accepting costs an item nothing will ever look at again.
 void_guard_reason() {
   local entry="$1" repos="${2:-[]}" gh_bin="${VOID_GUARD_GH:-gh}"
-  local ref slug num files
+  local ref slug num files resolvable repo_slug resolve_reason
 
   if [[ -z "$(void_entry_evidence "$entry")" ]]; then
     printf 'no evidence recorded, and requirement 34c makes evidence what a terminal verdict is'
     return 1
+  fi
+
+  resolvable="$(void_entry_resolvable_evidence "$entry")"
+  if [[ -n "$resolvable" ]]; then
+    repo_slug="$(jq -r '.repo // ""' <<<"$entry")"
+    if [[ -z "$repo_slug" ]]; then
+      printf 'evidence names %s to resolve against, but the entry names no repo' \
+        "$(jq -r '.path' <<<"$resolvable")"
+      return 1
+    fi
+    if ! resolve_reason="$(void_evidence_resolves "$resolvable" "$repo_slug")"; then
+      printf 'unresolved: %s' "$resolve_reason"
+      return 1
+    fi
   fi
 
   while IFS= read -r ref; do
