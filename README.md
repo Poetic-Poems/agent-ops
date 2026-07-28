@@ -80,15 +80,63 @@ always has, and nothing is quietly demoted for want of triage.
 Three things the field does *not* do. It doesn't change how the work is done:
 an issue's band decides when it is picked up, and a `Low` issue is implemented
 and reviewed to the same standard as any other. It doesn't override the
-exclusions — an issue that is assigned, labelled `blocked`, or is really a
+exclusions — an issue that is assigned (see [Reserving an issue for
+yourself](#reserving-an-issue-for-yourself)), labelled `blocked`, or is really a
 question stays out of the pipeline at every priority, `Urgent` included. And it
 doesn't outrank security: an issue labelled `security` or `vulnerability` is
 security work first, whatever its `Priority`.
+
+**No band keeps an issue out of the pipeline**, `Low` included: a band decides
+*when* an issue is reached, never *whether*. To reserve one, assign it — see
+below.
 
 Re-prioritising an issue is picked up on the next cycle: the band is part of
 what the no-op check watches (see [Skipping no-op cycles](#skipping-no-op-cycles)),
 so a re-triage always wakes the Co-Ordinator rather than being absorbed by a
 "nothing changed" skip.
+
+## Reserving an issue for yourself
+
+**Assign an issue and the pipeline will not touch it.** Assignment is the
+reservation switch, and it is a hard one: `scripts/gather-issues.sh` drops every
+issue that has an assignee before the Co-Ordinator is handed the candidate list,
+so a reserved issue is never ranked, never skipped, never reasoned about — it
+simply isn't there to consider. Unassign it and the next cycle has it back.
+
+Reach for this when an issue is work you mean to do yourself, in an interactive
+session, or that you want to think about before anything starts implementing it.
+It is the counterpart of [Handing a pull request to the
+pipeline](#handing-a-pull-request-to-the-pipeline): one hands work over, the
+other keeps it.
+
+```bash
+gh issue edit <n> -R Poetic-Poems/<repo> --add-assignee @me      # reserve
+gh issue edit <n> -R Poetic-Poems/<repo> --remove-assignee @me   # release
+```
+
+Three things to know:
+
+- **`Priority: Low` is not a reservation.** `issues:low` is a source in every
+  repo's walk, so a cycle with nothing above it to do will reach a `Low` issue
+  and select it. Use the band to say how urgent the work is; use assignment to
+  say who is doing it.
+- **The `blocked` label does the same job, but says something else.** It is the
+  same deterministic drop, applied in the same place, and it is the right switch
+  when real work is genuinely waiting on something outside itself. An issue you
+  have simply claimed is not blocked, and labelling it so tells the next person
+  reading the queue the wrong thing.
+- **It's the guarantee the Enabler already leans on.** Every escalation issue the
+  Enabler raises is assigned to `enabler_assignee`, precisely so the pipeline
+  cannot pick up its own request for help — the Script refuses to start a cycle
+  when `enabler_model` is set and that assignee is not, rather than raise one
+  unassigned. Reserving your own issues rests on the same mechanism.
+
+Assignment hides nothing: the issue stays open, keeps its band, and still appears
+in the dashboard's open-issues panel, which lists what is open rather than what
+is selectable. Releasing one is picked up on the next cycle — the assignee is
+part of the fingerprint the no-op check watches, alongside labels and `Priority`
+(see [Skipping no-op cycles](#skipping-no-op-cycles)) — so unassigning always
+wakes the Co-Ordinator rather than being absorbed by a "nothing changed" skip.
 
 ## Handing a pull request to the pipeline
 
