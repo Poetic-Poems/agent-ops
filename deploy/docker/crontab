@@ -39,3 +39,7 @@ LOGDIR=/home/agent/.local/state/poetic-agents
 # when they do coincide.
 */5 * * * *  /app/scripts/state-sync.sh push  >> $LOGDIR/state-sync.log 2>&1
 */7 * * * *  /app/scripts/state-sync.sh fetch >> $LOGDIR/state-sync.log 2>&1
+
+# Bounds state_dir's own diagnostic and cron logs (TD26072501); log.jsonl
+# and review-log.jsonl are never touched — see scripts/rotate-logs.sh.
+19  * * * *  /app/scripts/rotate-logs.sh >> $LOGDIR/dashboard.log 2>&1

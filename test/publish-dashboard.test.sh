@@ -3,8 +3,9 @@
 # test/publish-dashboard.test.sh — regression tests for
 # scripts/publish-dashboard.sh and scripts/publish-dashboard-launcher.sh.
 #
-# Four behaviours here have already failed in production and one is a scaling
-# property, so they get tests rather than a careful reading:
+# Four behaviours here have already failed in production, one is a scaling
+# property, and one is an invariant the detail window's jq port could silently
+# break, so they get tests rather than a careful reading:
 #
 #   the launcher's exit   a healthy window must end 0 — its status once came
 #                         from the final tick's lock bookkeeping, so
@@ -24,6 +25,11 @@
 #                         envelope mid-write, and unconditional redaction
 #   the process budget    a long history must not translate into thousands of
 #                         jq forks per publish (tens of seconds under WSL2)
+#   the transcript cap    TRANSCRIPT_CAP is a byte budget; jq's own string
+#                         slicing counts codepoints, so a multi-byte-heavy
+#                         transcript could blow well past the cap and grow
+#                         data.js — exactly the size concern this budget exists
+#                         for
 #
 # No network and no GitHub: every publish runs --no-github against a
 # synthesised state dir (a throwaway HOME, since config.json's state_dir is
@@ -177,6 +183,24 @@ raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
 assert_lacks "no raw token survives"        "ghp_0123456789abcdefXYZ0123" "$raw"
 assert_lacks "no /home path survives"       "/home/fixtureuser" "$raw"
+
+# --- The transcript cap is bytes, not codepoints ----------------------------------
+# TRANSCRIPT_CAP (40000) is a byte budget. 20000 repeats of a 3-byte codepoint
+# is 60000 bytes — comfortably over the cap either way a slice could count —
+# and floor(40000/3) = 13333 whole codepoints (39999 bytes) is what a
+# byte-honouring truncation keeps; a codepoint-counting slice (jq's own
+# `.[0:$cap]`, used naively) would instead keep 40000 codepoints, 120000 bytes,
+# three times the budget.
+t="$(new_home nodeT)"
+multibyte_result="$(printf '\xe2\x82\xac%.0s' $(seq 1 20000))"
+make_cycle "$t" "${today_day}T090000Z-41" 0.25 model-a "$multibyte_result"
+run_publish "$t"
+tdata="$(data_of "$t")"
+result_field="$(jq -j '.cycles[0].stages.coordinator.result' <<<"$tdata")"
+assert_eq "a multi-byte-heavy result is truncated to the byte cap" \
+  "39999" "$(printf '%s' "$result_field" | wc -c)"
+assert_eq "and to the whole-codepoint count that implies" \
+  "13333" "$(printf '%s' "$result_field" | wc -m)"
 
 # --- Only cycles are cycles ------------------------------------------------------
 # A record no cycle produced — the hand-appended kind, which uses the
@@ -363,6 +387,37 @@ env HOME="$l" LAUNCHER_WINDOW=15 LAUNCHER_PUBLISH_CMD="$stub" \
     TICK_LOG="$tick_log" GH_STAMP="$gh_stamp" "$LAUNCHER" >/dev/null 2>&1
 assert_lacks "an intact log gets no repair marker" "repaired: dropped" "$(cat "$launcher_log")"
 assert_contains "and keeps what it had" "nothing wrong here" "$(cat "$launcher_log")"
+
+# --- The cron panel survives a rotation (TD26072501, spec requirement 2.6) ------
+# scripts/rotate-logs.sh renames cron.log to cron.log.1 once it grows past
+# log_retained_bytes, leaving a fresh, short cron.log behind. The panel must
+# not go blank for the tick that lands between rotation and the log
+# regaining 40 lines of its own — it reads cron.log.1 too, oldest first.
+p="$(new_home nodeP)"
+cron_log="$p/.local/state/poetic-agents/cron.log"
+printf 'old-line-%d\n' 1 2 3 > "$cron_log.1"
+printf 'new-line-%d\n' 1 2 > "$cron_log"
+run_publish "$p"
+pdata="$(data_of "$p")"
+assert_eq "the panel carries every line, old and new" "5" \
+  "$(jq '.cron_tail | length' <<<"$pdata")"
+assert_eq "the oldest rotated line comes first" "old-line-1" \
+  "$(jq -r '.cron_tail[0]' <<<"$pdata")"
+assert_eq "the newest live line comes last" "new-line-2" \
+  "$(jq -r '.cron_tail[-1]' <<<"$pdata")"
+
+# A live file that already fills the 40-line window on its own needs nothing
+# from .1 — the rotated generation must not leak into a panel that doesn't
+# need it.
+q="$(new_home nodeQ)"
+cron_log_q="$q/.local/state/poetic-agents/cron.log"
+printf 'stale-rotated-line\n' > "$cron_log_q.1"
+for i in $(seq 1 45); do printf 'live-line-%d\n' "$i"; done > "$cron_log_q"
+run_publish "$q"
+qdata="$(data_of "$q")"
+assert_eq "the panel stays capped at 40" "40" "$(jq '.cron_tail | length' <<<"$qdata")"
+assert_lacks "and a rotated line the live file doesn't need is left out" \
+  "stale-rotated-line" "$(jq -c '.cron_tail' <<<"$qdata")"
 
 # --- The fleet view (DASHBOARD-SPEC "one fleet view from every node") -----------
 # A synthetic peer materialised the way state-sync fetch would: its own state

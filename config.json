@@ -18,6 +18,8 @@
   "state_repo": "Poetic-Poems/agent-ops-state",
   "cycles_retained": 200,
   "state_local_cycles_retained": 1000,
+  "log_retained_bytes": 2000000,
+  "log_generations": 3,
   "coordinator_model": "claude-haiku-4-5-20251001",
   "implementor_model_default": "claude-sonnet-5",
   "implementor_model_trivial": "claude-haiku-4-5-20251001",
