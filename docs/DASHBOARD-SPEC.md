@@ -116,7 +116,21 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   flight — so the page bounds the claim rather than the Publisher overstating
   it: a stale heartbeat renders as "state unknown", and a cycle running past
   `lock_stale_after` (the pipeline's own bound, past which it would take such a
-  lock over) is flagged as possibly dead.
+  lock over) is flagged as possibly dead. A second, far earlier bound catches
+  the case that actually happens. Every stage is capped by its own `timeout_*`,
+  which `run_claude_stage` enforces by killing the process group and logging
+  `stage-end` after — so a live stage older than its cap is not a slow stage but
+  one whose process is already gone, and the page says so in minutes where
+  `lock_stale_after` takes hours. A Co-Ordinator is capped at 15 minutes against
+  that rule's 4, which is the whole of the gap: a node rolled mid-cycle read as
+  "coordinator choosing work" for most of the way to its next cycle. Both bounds
+  are measured to the node's own heartbeat rather than to the reader's clock —
+  what is known is what that node had published, and both timestamps are stamped
+  by its clock, so the difference carries no skew between machines.
+  `live.stage_since` is what makes this answerable, and `timeout_coordinator` /
+  `_implementor` / `_reviewer` / `_enabler` reach the page in `config` for it. A
+  stage with no configured timeout (the review pipeline's) is one the rule makes
+  no claim about.
 - **`fleet-cache/{disabled,limit}.json`** — the fleet flags' cached copies
   (requirement 2.3a), maintained by `lib/toggle.sh` and refreshed by this
   Publisher's own GitHub tick. Read as plain files, so a `--no-github` tick and
@@ -936,6 +950,18 @@ same number's twins elsewhere on the page.
   over an unfinished cycle is reported as **no clean end**, which is what a
   stopped container leaves behind and which "idle" would quietly
   absorb.
+
+  A fourth reaches the same verdict far sooner, and is the one that fires in
+  practice. A stage still live past its own `timeout_*` has outlived the timer
+  that would have killed it, so the cycle is over whatever the log says; a
+  Co-Ordinator is bounded at 15 minutes where `lock_stale_after` is 4 hours,
+  and a node rolled mid-cycle sat in that gap reading "coordinator choosing
+  work". Judged against the node's own heartbeat, never the reader's clock, so
+  the verdict is about what that node published and not about how long ago it
+  published it. Our own row is **not** exempt from this one, unlike the three
+  above: a live pid proves the cycle script is alive, not that the stage it
+  last logged still is — and were that script alive, its own timer would have
+  ended the stage.
 - **The page refreshes its data in place, not by reloading.** The heartbeat
   once published every 5 minutes and the page reloaded itself every 60s with
   `location.reload()`. When the heartbeat moved to ~5s

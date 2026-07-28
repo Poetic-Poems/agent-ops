@@ -595,6 +595,61 @@
     return "no cycle-end after " + hours + "h — the node may have died mid-cycle";
   }
 
+  // The same doubt, reached in minutes instead of hours, and on far better
+  // evidence. `lock_stale_after` is a bound on how long a *cycle* may plausibly
+  // run; a stage has a much tighter one of its own. agent-cycle.sh hands every
+  // stage to run_claude_stage with a timeout, which kills the process group when
+  // it expires and logs `stage-end` unconditionally after — so a live stage
+  // older than its own timeout is not a slow stage. It is a stage whose process
+  // is gone, and whose log never got the ending.
+  //
+  // That gap is the whole reason this exists: a Co-Ordinator is bounded at 15
+  // minutes, so a node rolled mid-cycle goes on reading "coordinator choosing
+  // work" for the three and three-quarter hours before the rule above will
+  // doubt it — most of the way to its next cycle, and long past when an
+  // operator wants to know.
+  //
+  // A stage the map does not name (the review pipeline's, or one added since)
+  // has no timeout to be held against, and gets no claim made about it.
+  var STAGE_TIMEOUT_KEY = {
+    coordinator: "timeout_coordinator", implementor: "timeout_implementor",
+    reviewer:    "timeout_reviewer",    enabler:     "timeout_enabler"
+  };
+  // run_claude_stage polls every 2s, then SIGTERMs, waits 5s and SIGKILLs, and
+  // the `stage-end` after that still has to reach a push. This is the room that
+  // sequence needs — wide enough that nothing healthy ever trips the rule.
+  var STAGE_OVERRUN_GRACE_MIN = 2;
+
+  // `asOfIso` is the heartbeat, never the clock. A missing `stage-end` is known
+  // only as far as the state that node last published, so measuring to now would
+  // flag a stage that ended a second after its final push. It also keeps the
+  // arithmetic honest across machines: `stage_since` and the heartbeat are both
+  // stamped by the node being judged, so their difference carries no skew
+  // between one node's clock and another's.
+  function stageOverrun(stage, stageSince, asOfIso) {
+    var key = STAGE_TIMEOUT_KEY[stage];
+    if (!key) return null;
+    var limit = +((D.config || {})[key]);
+    if (!(limit > 0)) return null;
+    var started = parseTs(stageSince), asOf = parseTs(asOfIso);
+    if (!started || !asOf) return null;
+    var mins = (asOf.getTime() - started.getTime())/60000;
+    if (mins <= limit + STAGE_OVERRUN_GRACE_MIN) return null;
+    return stage + " has been live " + Math.round(mins) + "m against its own " + limit
+         + "m timeout — the pipeline would have killed it, so this cycle is over"
+         + " and its log never recorded the end";
+  }
+
+  // The node-row form. Self is *not* exempt the way it is above: there the lock's
+  // live pid answers the question outright, but a pid proves the cycle script is
+  // alive, not that the stage it last logged still is — and were that script
+  // alive, its own timer would have ended the stage. So an overrun is worth
+  // saying on any row, ours included.
+  function nodeStageOverrun(n) {
+    if (!n || !n.live || n.live.running !== true) return null;
+    return stageOverrun(n.live.stage, n.live.stage_since, n.heartbeat_ts || D.generated_at);
+  }
+
   // The node currently running this cycle, if any. A cycle with no `cycle-end`
   // is either in flight or the trace of a node killed mid-cycle, and the log
   // alone cannot tell those apart — only a node claiming the cycle as its live
@@ -633,7 +688,10 @@
       [ el("span", {class:"dot idle"}), document.createTextNode("Not ended") ]);
     if (!n) return el("span", {class:"badge b-amber", text:"No clean end",
       title:"a cycle-start with no cycle-end, and no node running it now — the node was stopped mid-cycle, or its log lost the tail"});
-    var doubt = livenessDoubt(n), stale = nodeUnknown(n), stage = (n.live || {}).stage;
+    // The node cards' doubt, in this column's vocabulary — the same two rules,
+    // so a cycle cannot read "In progress" here while the card that owns it
+    // reads "may be dead" a scroll above.
+    var doubt = livenessDoubt(n) || nodeStageOverrun(n), stale = nodeUnknown(n), stage = (n.live || {}).stage;
     return el("span", {class:"badge " + (doubt ? "b-amber" : stale ? "b-grey" : "b-blue"),
       title: doubt ? n.node + ": " + doubt
            : stale ? "running as of " + n.node + "'s last push more than 30 minutes ago — that answer can no longer be called current"
@@ -759,7 +817,10 @@
   function nodeCard(n) {
     var live = n.live || null;
     var unknown = nodeUnknown(n), running = nodeRunning(n);
-    var doubt = livenessDoubt(n);
+    // Two readings of the same doubt, and at most one badge for them: past
+    // `lock_stale_after` the liveness rule is the stronger claim and wins, and
+    // before it the stage's own timeout is the only one that can fire at all.
+    var doubt = livenessDoubt(n) || nodeStageOverrun(n);
     var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
                           title: nodeFilter === n.node ? "click to show every node's cycles" : "click to filter cycles to " + n.node});
     card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]));
@@ -1368,6 +1429,11 @@
   function localHeader(live, st) {
     if (st.running && st.lock) {
       live.appendChild(el("span", {}, [ el("span",{class:"dot live"}), "running" ]));
+      // A one-node page has no card to carry this, and it is the page most
+      // likely to need it: nothing else here would ever contradict the lock.
+      var over = stageOverrun((st.current || {}).stage, (st.current || {}).stage_since, D.generated_at);
+      if (over) live.appendChild(el("span", {class:"badge b-amber", style:"margin-left:6px",
+                                            title: over, text:"may be dead"}));
       var what = workDetail(st.current);
       if (what) { live.appendChild(el("span", {class:"muted", text:" · "})); live.appendChild(what); }
       live.appendChild(el("span", {class:"muted", text: " · since " + fmtTime(st.lock.started_at) + " (" + fmtAgo(st.lock.started_at) + ")"}));
