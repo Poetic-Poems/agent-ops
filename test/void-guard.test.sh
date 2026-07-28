@@ -74,9 +74,12 @@ assert_contains() {
 #
 # `gh api repos/<slug>/contents/<path>?ref=<ref>` (no `--jq`, as
 # `void_evidence_resolves` calls it) answers with the contents of
-# $tmp_dir/contents-<ref>-<path, `/` replaced by `_`>, or fails when that file
-# does not exist — a 404, exactly what a real ref/path GitHub does not have
-# looks like.
+# $tmp_dir/contents-<ref>-<path, `/` replaced by `_`>. When that file does not
+# exist it fails the way the real thing fails: exit 1, with GitHub's own error
+# body still on stdout — `{"message": "Not Found", "status": "404"}`, verbatim
+# from `gh api repos/…/contents/NO-SUCH-FILE.md?ref=main`. A `<file>.err`
+# alongside overrides that body, so a test can ask for the failures that are
+# *not* absence (a rate limit, an unresolvable ref) and check they are refused.
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -87,7 +90,16 @@ if [[ "$2" == */contents/* ]]; then
   ref="${rest##*ref=}"
   key="${path//\//_}"
   f="$d/contents-$ref-$key"
-  [[ -f "$f" ]] || exit 1
+  if [[ -f "$f.err" ]]; then
+    cat "$f.err"
+    echo "gh: the stub was asked for a failure (HTTP 4xx)" >&2
+    exit 1
+  fi
+  if [[ ! -f "$f" ]]; then
+    printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest/repos/contents#get-repository-content","status":"404"}'
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
   cat "$f"
   exit 0
 fi
@@ -222,6 +234,32 @@ out="$(void_evidence_resolves \
 assert_eq "present with a non-matching pattern is refused" "1" "$rc"
 assert_contains "  ... saying so" "does not" "$out"
 
+# An `absent` claim rests entirely on the API saying "not found", so every
+# other way a fetch can fail must refuse it. Accepting them would make a rate
+# limit — or a moment without a network — silently corroborate any absence a
+# model cared to assert, which is precisely the unchecked-claim hole this test
+# file exists to close.
+printf '{"message":"API rate limit exceeded for user ID 1.","status":"403"}' \
+  >"$tmp_dir/contents-main-RATELIMITED.md.err"
+out="$(void_evidence_resolves '{"ref":"main","path":"RATELIMITED.md","expect":"absent","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "absent is refused when the API would not answer" "1" "$rc"
+assert_contains "  ... naming what came back instead" "rate limit exceeded" "$out"
+
+# A ref GitHub cannot resolve is a 404 as well, but it establishes nothing
+# about absence: there was no tree to be absent from.
+printf '{"message":"No commit found for the ref nope","status":"404"}' \
+  >"$tmp_dir/contents-nope-GONE.md.err"
+out="$(void_evidence_resolves '{"ref":"nope","path":"GONE.md","expect":"absent","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "absent is refused when the ref itself does not resolve" "1" "$rc"
+assert_contains "  ... saying so" "No commit found for the ref" "$out"
+
+# The same failures on a `present` claim were already refused, and still are.
+out="$(void_evidence_resolves '{"ref":"main","path":"RATELIMITED.md","expect":"present","pattern":""}' \
+  "Poetic-Poems/poetic")"; rc=$?
+assert_eq "present is refused when the API would not answer" "1" "$rc"
+
 # --- void_guard_reason: the verdict -------------------------------------------
 
 # The exact defect. Reason, no evidence: refused before any API call is made.
@@ -285,6 +323,16 @@ out="$(void_guard_reason '{"item": "TD26072601",
 rc=$?
 assert_eq "a resolvable citation with no repo to resolve against is refused" "1" "$rc"
 assert_contains "  ... saying so" "names no repo" "$out"
+
+# And an `absent` claim the API would not answer for reaches the same verdict
+# as the unreadable PR below: refused, not waved through on the fetch having
+# failed.
+out="$(void_guard_reason '{"item": "TD26072601", "repo": "Poetic-Poems/poetic",
+  "reason": "the workaround is gone from main",
+  "evidence": {"ref": "main", "path": "RATELIMITED.md", "expect": "absent"}}' "$REPOS")"
+rc=$?
+assert_eq "an absent citation the API would not answer for is refused" "1" "$rc"
+assert_contains "  ... as unresolved" "unresolved" "$out"
 
 # Unreadable is not innocent. Refusing costs a blocked item the Enabler will
 # look at; accepting costs an item nothing will ever look at again.

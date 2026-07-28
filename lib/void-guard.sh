@@ -150,6 +150,28 @@ void_entry_resolvable_evidence() {
     end' <<<"$1" 2>/dev/null || true
 }
 
+# void_api_is_not_found API_BODY
+# True when a failed contents fetch failed because GitHub has nothing at that
+# path — and not because it would not answer at all.
+#
+# `gh api` exits non-zero for every HTTP error alike, but GitHub's own response
+# body says which one it was, and `gh` hands that body back on stdout even as
+# it exits: `{"message": "Not Found", …, "status": "404"}`. Testing GitHub's
+# answer rather than `gh`'s phrasing of it is the idiom
+# `scripts/gather-register-hygiene.sh` already uses to tell "this repo keeps no
+# register" from "we could not look", and it is the same distinction here.
+#
+# A `ref` GitHub cannot resolve is a 404 too, but a differently-worded one
+# ("No commit found for the ref …"), and it is *not* absence: nothing was
+# established about a ref that does not exist. Both directions of drift in that
+# wording fail towards refusing a void, which is the safe direction.
+void_api_is_not_found() {
+  local body="$1" http_status message
+  http_status="$(jq -r '.status // ""' <<<"$body" 2>/dev/null || true)"
+  message="$(jq -r '.message // ""' <<<"$body" 2>/dev/null || true)"
+  [[ "$http_status" == "404" && "$message" == "Not Found" ]]
+}
+
 # void_evidence_resolves RESOLVABLE_JSON SLUG
 # Test one `{ref, path, expect, pattern}` citation against `repos/<slug>` via
 # the GitHub contents API. Prints nothing and returns 0 when the citation
@@ -157,17 +179,21 @@ void_entry_resolvable_evidence() {
 # API will not answer, on the same "uncorroborated is not innocent" reasoning
 # `void_guard_reason` already applies to an unreadable PR.
 #
-# `expect: "absent"` is satisfied by the API reporting no such file at that
-# ref, whatever the reason; the claim being made ("the fix is on `main`" for a
-# file `main` no longer needs) doesn't distinguish "removed" from "never
-# existed at that ref", so neither do we. `expect: "present"` requires the
-# fetch to succeed and, when `pattern` is given, the decoded content to match
-# it (extended regex, `grep -E`) — the shape the second claim TD26072601 names
-# takes: "the Ledger row says resolved" is a pattern match against
+# `expect: "absent"` is satisfied only by GitHub answering `404 Not Found` (see
+# `void_api_is_not_found`). A fetch that fails any other way — rate limited,
+# unauthenticated, no network, a `ref` GitHub cannot resolve — has established
+# nothing, and an unanswered fetch must not read as corroboration when the
+# unreadable PR two checks below is refused for exactly that. Within a real
+# 404 no further distinction is drawn: the claim being made ("the fix is on
+# `main`" for a file `main` no longer needs) doesn't separate "removed" from
+# "never existed at that ref", so neither do we. `expect: "present"` requires
+# the fetch to succeed and, when `pattern` is given, the decoded content to
+# match it (extended regex, `grep -E`) — the shape the second claim TD26072601
+# names takes: "the Ledger row says resolved" is a pattern match against
 # TECH-DEBT.md, not just the file existing.
 void_evidence_resolves() {
   local resolvable="$1" slug="$2" gh_bin="${VOID_GUARD_GH:-gh}"
-  local ref path expect pattern api_out status content
+  local ref path expect pattern api_out status content detail
 
   ref="$(jq -r '.ref' <<<"$resolvable")"
   path="$(jq -r '.path' <<<"$resolvable")"
@@ -180,6 +206,13 @@ void_evidence_resolves() {
   if [[ "$expect" == "absent" ]]; then
     if (( status == 0 )) && [[ -n "$api_out" ]]; then
       printf 'evidence claims %s is absent from %s@%s, but it exists' "$path" "$slug" "$ref"
+      return 1
+    fi
+    if ! void_api_is_not_found "$api_out"; then
+      detail="$(jq -r '.message // ""' <<<"$api_out" 2>/dev/null || true)"
+      [[ -n "$detail" ]] || detail="the API did not answer"
+      printf 'evidence claims %s is absent from %s@%s, but the fetch failed with "%s" rather than reporting it absent' \
+        "$path" "$slug" "$ref" "$detail"
       return 1
     fi
     return 0

@@ -2070,9 +2070,13 @@ runs unattended.
       pattern}` names a specific claim about a specific file at a specific ref —
       "the fix is on `main`", "the Ledger row says resolved" — and the guard
       fetches `repos/<slug>/contents/<path>?ref=<ref>` and tests it: `expect:
-      "absent"` holds iff the API has nothing there, `expect: "present"` holds
-      iff the fetch succeeds and, when `pattern` is given, the decoded content
-      matches it. A citation that does not fit that shape is free text, and is
+      "absent"` holds iff GitHub answers `404 Not Found`, `expect: "present"`
+      holds iff the fetch succeeds and, when `pattern` is given, the decoded
+      content matches it. Only that one answer establishes absence: a fetch
+      that fails any other way — rate limited, unauthenticated, no network, a
+      `ref` GitHub cannot resolve — has established nothing, and reads as the
+      unreadable pull request below does, not as the absence it was asked
+      about. A citation that does not fit the shape at all is free text, and is
       accepted on the presence test alone, as it always was — the guard tests
       what it can test, not a shape every claim must take. A citation that does
       fit the shape but does not resolve — the fetch fails, or the
@@ -3037,7 +3041,11 @@ pull request, run the ones the change touches and any it could regress.
    `evidence` is shaped `{ref, path, expect, pattern}` is fetched and tested —
    refused when the fetch fails, or the presence/absence or pattern does not
    hold, or the entry names no repo to resolve against — while a citation that
-   does not fit that shape is accepted on the presence test alone; an entry
+   does not fit that shape is accepted on the presence test alone. Assert that
+   an `absent` claim rests on `404 Not Found` and on nothing else: stub a rate
+   limit and an unresolvable `ref`, both of which fail the fetch exactly as a
+   real absence does, and both must be refused. That is the difference between
+   a checked citation and a fetch nobody looked at the answer of. An entry
    whose repo+item matches a gathered candidate whose PR still changes files is
    refused naming that PR; a PR the API will not answer for is refused as
    uncorroborated; and an evidenced entry with an empty PR diff, or with no PR
