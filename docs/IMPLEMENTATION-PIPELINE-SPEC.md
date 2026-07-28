@@ -250,7 +250,7 @@ file and carries placeholders only; `.env` itself is never committed.
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
 | poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review recommendations · 11. `issues:low` · 12. code-quality findings · 13. register-hygiene |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 11. project-review recommendations · 12. `issues:low` · 13. code-quality findings · 14. register-hygiene |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `implementation-plan` (its configured plan document, `docs/IMPLEMENTATION-PLAN.md`; next milestone task) · 11. project-review recommendations · 12. `issues:low` · 13. code-quality findings · 14. register-hygiene |
 
 The `security` and `code-quality` sources draw on GitHub's own automated
 analysis, not just files in the tree:
@@ -413,7 +413,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -1019,6 +1019,18 @@ runs unattended.
      loud on stderr (teed to `issues-<repo>.err` in the cycle record).
    - Both reads take one 100-item page, like every gatherer. The bound is
      stated in the script header rather than silently applied.
+3k. **Implementation-plan path passthrough.** The `implementation-plan` source
+   names no path of its own: for each configured repo whose `sources` include
+   it, attach that repo's `implementation_plan_path` (from its `config.json`
+   entry) to its runtime-input entry, so the Co-Ordinator knows where to read
+   that repo's plan document without any path fixed in the prompt or in code —
+   a repo with a differently named or located plan needs only its own
+   `implementation_plan_path`, never a prompt change. A repo that lists the
+   source without configuring the path is a startup misconfiguration: the
+   Script exits with an error before any stage runs, the same guard as
+   `enabler_assignee` (Configuration table). There is no gatherer script and no
+   pre-fetch, as for `project-review`: the Co-Ordinator reads the file itself
+   (`gh api repos/<slug>/contents/<path>`).
 3h. **Refinement carry-forward.** The Co-Ordinator's runtime input carries a
    `refinements` map — repo → item → the latest `item-refined` payload
    (requirement 33), for items that are not void — built from the fleet's log
@@ -1337,7 +1349,11 @@ runs unattended.
     `review-<review-date>-R-NN`; the paired improvement prompt is the brief.
     The `issues` source's candidates are the pre-fetched `issues` array
     (requirement 3j), and it appears at four ranks rather than one, banded by
-    each entry's `priority` — see requirement 15e.
+    each entry's `priority` — see requirement 15e. The `implementation-plan`
+    source's candidates are the next unblocked task(s) in the repo's own plan
+    document, read at the path in that repo's runtime-input
+    `implementation_plan_path` (requirement 3k) — no pre-fetch, and no path
+    named in the prompt.
 15b. **Review feedback comes third, across all repos.** Like security and
     urgent issues, this outranks the plain repo-then-source walk: any selectable
     `review_feedback` candidate in any repo is taken before any work below it
@@ -2541,10 +2557,11 @@ What exists, and the requirements each part answers to:
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
    pre-fetch, requirement 3a; the switches, requirements 2.3 and 2.3a; the
-   role guard, requirement 2.4; and the no-op short-circuit, requirement 3b)
-   and the Enabler's engagement, requirements 35–37: `maybe_run_enabler` (the
-   single call site in the cleanup, every guard, and the per-verdict actions),
-   `enabler_claim_key` and `create_escalation_issue`.
+   role guard, requirement 2.4; the no-op short-circuit, requirement 3b; and
+   the implementation-plan path passthrough and its startup validation,
+   requirement 3k) and the Enabler's engagement, requirements 35–37:
+   `maybe_run_enabler` (the single call site in the cleanup, every guard, and
+   the per-verdict actions), `enabler_claim_key` and `create_escalation_issue`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
    slug, prints a normalised JSON array of the repo's open Dependabot and
    code-scanning alerts, degrading to `[]` (exit 0) when a feature is

@@ -24,6 +24,7 @@ heading, the Script gives you one JSON object:
       "slug": "Poetic-Poems/poetic-fiddle",
       "default_branch": "main",
       "sources": ["security", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"],
+      "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md",
       "findings": [
         {"source": "security", "kind": "dependabot", "security": true, "severity": "high", "number": 1, "ref": "dependabot-alert-1", "title": "postcss: …", "package": "postcss", "url": "https://github.com/…/security/dependabot/1", "state": "open"},
         {"source": "code-quality", "kind": "code-scanning", "security": false, "severity": "warning", "number": 4, "ref": "code-scanning-alert-4", "rule": "js/unused-local-variable", "title": "Unused variable", "location": "src/x.js:12", "url": "https://github.com/…/security/code-scanning/4", "state": "open"}
@@ -82,6 +83,15 @@ heading, the Script gives you one JSON object:
   branch we own, and untouched for at least the staleness threshold — **already
   fetched and filtered for you** by the Script (see "Abandoned drafts" below). An
   empty array means no draft of ours has stalled — do not go looking.
+- Each entry's `implementation_plan_path` is present only for a repo whose
+  `sources` lists `implementation-plan`: the path, relative to the repo root,
+  of *that repo's* plan document, drawn from `config.json`. Read it with
+  `gh api repos/<slug>/contents/<path>`, the same way you read `TECH-DEBT.md` —
+  there is no pre-fetch, as for `project-review`. This is the only place the
+  path comes from; nothing about it is fixed by this prompt, so a repo with a
+  differently named or located plan needs no prompt change, only its own
+  `implementation_plan_path`. Absent (not empty) for a repo that doesn't list
+  the source.
 - Each entry's `register_hygiene` is the repo's own `TECH-DEBT.md`, when it has
   fallen out of internal consistency — a resolved item whose body was never
   removed, an open item with no body, a duplicate or malformed Ledger row —
@@ -207,7 +217,7 @@ selectable item:
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
 | poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review · 11. `issues:low` · 12. code-quality · 13. register-hygiene |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `docs/IMPLEMENTATION-PLAN.md` (next milestone task) · 11. project-review · 12. `issues:low` · 13. code-quality · 14. register-hygiene |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `implementation-plan` (its configured plan document; next milestone task) · 11. project-review · 12. `issues:low` · 13. code-quality · 14. register-hygiene |
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
@@ -226,6 +236,14 @@ selectable item:
   excludes it, what you put in the work order — is identical in every band.
   See "Issue priority" below for what the bands mean. `issues:urgent` also
   outranks the plain walk across all repos, second only to security.
+- **implementation-plan** — only for a repo whose `sources` lists it (currently
+  poetic-fiddle). Candidates are the next unblocked task(s) in that repo's plan
+  document, at the path given in its runtime-input entry's
+  `implementation_plan_path` (see "What you receive" above) — read it with
+  `gh api repos/<slug>/contents/<path>`, the same way as `TECH-DEBT.md`; there
+  is no pre-fetch. Nothing here names a path or a repo: a repo that lists this
+  source without configuring `implementation_plan_path` never reaches you —
+  the Script refuses to run rather than guess.
 - **project-review** — the prioritised recommendations from the **most recent**
   weekly project review, which lives on the default branch under
   `reviews/project-review-YYYY-MM-DD/`. Read that folder's
@@ -597,10 +615,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    never happens on its own.
 6. Dependent on a product or architecture decision that has not been made.
    Example: poetic-fiddle's milestone M2 is gated on the §6.1 packaging
-   decision in `docs/IMPLEMENTATION-PLAN.md` — while that decision is open,
-   M2 tasks do not meet the bar. Decisions belong to the human; never guess
-   one on their behalf, and never treat "I could pick a reasonable default"
-   as grounds to proceed. Skip it and **report it** in `needs_refinement`.
+   decision in its plan document (the file at that repo's
+   `implementation_plan_path`) — while that decision is open, M2 tasks do not
+   meet the bar. Decisions belong to the human; never guess one on their
+   behalf, and never treat "I could pick a reasonable default" as grounds to
+   proceed. Skip it and **report it** in `needs_refinement`.
 
 **From the remaining candidates**, rank the qualifying items best-first and
 return up to `candidates_max` of them (see "Output"). Each must be a
