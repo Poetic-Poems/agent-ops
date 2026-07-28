@@ -447,6 +447,7 @@ values below are the confirmed defaults; the README must document each key.
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Empty disables the projection only: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
+| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
@@ -1133,8 +1134,11 @@ runs unattended.
      by something else" is how a source ends up covered by nothing; the Enabler's eligible
      set projected to `repo|item|reason` together with its config and prompt
      hash (requirement 35b); and — the two everyone
-     forgets — the selection config and a hash of `prompts/coordinator.md`.
-     Without those last two, editing the selection rules does nothing until an
+     forgets — the selection config and a hash of `prompts/coordinator.md`
+     **and any `prompt_overrides.coordinator` files configured for it**
+     (requirement 4a).
+     Without those last two, editing the selection rules — in the shipped
+     prompt or in an installation's own extension — does nothing until an
      unrelated commit lands, and you spend the afternoon debugging an edit that
      was correct.
    - **Digest what the verdict reads, not what merely changed.** Requirement 15
@@ -1179,6 +1183,51 @@ runs unattended.
    its pre-fetched `findings`) and the blocked-item extract from the shared
    log. Capture its final message with Claude Code's JSON output format and
    parse the work order from it.
+4a. **Per-installation prompt overrides.** Every stage prompt this Script
+   assembles — the Co-Ordinator's here, the Implementor's (requirement 7), the
+   Reviewer's (requirement 8), and the Enabler's (requirement 35) — is built by
+   `lib/prompt-overrides.sh`'s `stage_prompt_text`, not a bare
+   `cat prompts/<stage>.md`, so a consumer can add or replace a stage's operating
+   prompt from `config.json`'s `prompt_overrides` without forking `prompts/`
+   (issue #79). For stage `<s>`, `prompt_overrides.<s>.extend` names zero or
+   more files whose content is appended, in order, after the base prompt, each
+   wrapped in a fixed disclaimer that it may add guidance but does not exempt
+   the installation from any numbered requirement in this document — the
+   specs outrank every prompt, and an extension is not an exception to that.
+   `prompt_overrides.<s>.replace` names one file substituted for
+   `prompts/<s>.md` as the base, before any `extend` fragments are appended;
+   it is the sharper tool, since a replaced prompt stops receiving this
+   product's updates to that stage entirely, and the README flags it as such.
+   A relative path in either key resolves against `state_dir` — the one
+   location this repository guarantees survives an image roll or a
+   `git pull`, unlike `prompts/` itself, which is baked into the image and the
+   working tree alike. `prompt_overrides` absent, or a stage missing from it,
+   reproduces today's exact prompt bytes: `stage_prompt_text` degrades to
+   `cat prompts/<s>.md` with nothing appended. An unreadable configured path
+   (missing file, bad permissions) is tolerated the same way — dropped from
+   the assembled prompt, not a cycle failure — but still moves
+   `stage_prompt_sha` (below), so a broken path cannot silently reproduce the
+   fingerprint of a working one. That tolerance covers configured overrides
+   only: the base prompt is this product's own content, so an unreadable
+   `prompts/<s>.md` that no readable `replace` has substituted fails the cycle
+   rather than launching the stage on an empty prompt — a stage given a work
+   order and no instructions would spend a model to no purpose.
+   `config.json`'s `prompt_overrides` must
+   itself be an object (possibly `{}`); anything else is a fatal
+   misconfiguration at startup, the same as a missing
+   `implementation_plan_path` (requirement 3k).
+
+   The Co-Ordinator's and Enabler's assembled prompts also feed the no-op
+   fingerprint (requirement 3b, 35b): `coordinator_prompt_sha` and
+   `enabler_prompt_sha` are `stage_prompt_sha`'s digest of every file that
+   contributes to that stage's prompt — the base file and each configured
+   `extend`/`replace` path, whether or not it currently exists — rather than a
+   bare `sha256sum` of `prompts/<s>.md`. A changed, added, removed, or newly
+   unreadable override therefore busts the fingerprint exactly as an edit to
+   the shipped prompt does; without this, an installation's own extension
+   could change the Co-Ordinator's or Enabler's behaviour while the
+   short-circuit went on citing a `none-selected` verdict reached under the
+   old text.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -2361,7 +2410,8 @@ runs unattended.
     parse — an unreadable setting is not a licence to spend.
 35b. **The eligible set is part of the no-op fingerprint** (requirement 3b),
     projected to `repo|item|reason`, alongside the Enabler's config and a hash
-    of `prompts/enabler.md`. It is the third array whose candidacy turns on
+    of `prompts/enabler.md` and any configured `prompt_overrides.enabler`
+    files (requirement 4a). It is the third array whose candidacy turns on
     something no repo signal carries: an item becomes eligible once enough
     Co-Ordinator cycles have run since the block, which moves no commit,
     issue, alert or PR — so without it the escalation path would come due during
@@ -2374,8 +2424,9 @@ runs unattended.
     empty the set and skipping resumes.
 
     One consequence is deliberate, not an oversight: because the eligible set
-    turns on the *log*, editing `prompts/enabler.md` busts the fingerprint but
-    does not re-open items already examined. `enabler_recheck_hours` is the
+    turns on the *log*, editing `prompts/enabler.md` (or its configured
+    overrides) busts the fingerprint but does not re-open items already
+    examined. `enabler_recheck_hours` is the
     lever for "look at this one again"; a prompt edit is not.
 35c. **One engagement per item, fleet-wide.** Before engaging, the Script takes
     a per-item file claim through `lib/claim.sh` under the pseudo-slug
@@ -2691,6 +2742,17 @@ What exists, and the requirements each part answers to:
    from this document so a stage never depends on context it wasn't given. The
    Enabler's additionally carries the escalation issue's template, since the
    quality of that issue is the whole of requirement 36a's ask of a human.
+4a. `lib/prompt-overrides.sh` implementing requirement 4a: `stage_prompt_text`
+   (the assembled prompt for a stage, honouring `config.json`'s
+   `prompt_overrides.<stage>.extend`/`.replace`) and `stage_prompt_sha` (the
+   same assembly's contribution to the no-op fingerprint, requirements 3b and
+   35b). Sourced by `agent-cycle.sh` only — `review-cycle.sh` runs its own
+   `prompts/project-reviewer.md` outside this mechanism. Byte-identical to
+   `cat prompts/<stage>.md` with nothing configured; unit-tested
+   (`test/prompt-overrides.test.sh`) for that no-op case, for `extend`
+   ordering and its disclaimer wrapper, for `replace` (including falling back
+   to the shipped prompt when the configured file is unreadable), and for
+   every one of those changing `stage_prompt_sha`; must pass `shellcheck`.
 5. `README.md`: what the system does, every config key, install steps
    (below), how to operate it (`--dry-run`, `--once`, reading the log and
    stage transcripts), and how to uninstall. It presents the container as the
@@ -2895,6 +2957,22 @@ pull request, run the ones the change touches and any it could regress.
    `once-pr4-verify.log` is removed if present. `test/publish-dashboard.test.sh`
    passes its cron-panel case: with `cron.log` short and `cron.log.1` present,
    the panel's tail draws from both, newest last.
+1i. **Per-installation prompt overrides extend or replace a stage's prompt,
+   and the fingerprint tracks them (requirement 4a).**
+   `test/prompt-overrides.test.sh` passes: with no `prompt_overrides`
+   configured (or a stage absent from it), `stage_prompt_text` is
+   byte-identical to `cat prompts/<stage>.md`; a configured `extend` list is
+   appended in order, each fragment wrapped in the "specs outrank every
+   prompt" disclaimer; a configured
+   `replace` substitutes the base prompt entirely, with any `extend` still
+   appended after it, and falls back to the shipped prompt when the
+   configured file is unreadable; an override for a different stage has no
+   effect; an unreadable base prompt that no `replace` covers makes
+   `stage_prompt_text` fail rather than return empty; and `stage_prompt_sha`
+   changes for every one of those cases,
+   including a configured `extend` file that does not exist. `config.json`'s
+   `prompt_overrides` set to anything other than an object makes
+   `agent-cycle.sh` exit non-zero at startup, before any stage runs.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing

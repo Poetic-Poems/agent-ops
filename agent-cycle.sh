@@ -51,6 +51,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/prompt-overrides.sh
+. "$SCRIPT_DIR/lib/prompt-overrides.sh"
 
 usage() {
   cat <<'EOF'
@@ -262,6 +264,18 @@ missing_plan_path="$(jq -r \
   <<<"$all_repos_json")"
 if [[ -n "$missing_plan_path" ]]; then
   echo "agent-cycle: repo(s) [$missing_plan_path] list the implementation-plan source but have no implementation_plan_path configured — set it in config.json's repos entry or drop the source" >&2
+  exit 1
+fi
+
+# Per-installation prompt overrides (requirement 4a, lib/prompt-overrides.sh):
+# config-pointed files, outside prompts/*.md, appended to (or, for `replace`,
+# substituted for) a stage's shipped prompt. Absent entirely, every stage
+# assembles byte-identical to today. Validated here, at startup, like every
+# other config shape above — a typo'd `prompt_overrides` should fail loudly
+# rather than silently drop the whole installation's extension every cycle.
+prompt_overrides_json="$(cfg_json '.prompt_overrides // {}')"
+if [[ "$(jq -r 'type' <<<"$prompt_overrides_json" 2>/dev/null || echo invalid)" != "object" ]]; then
+  echo "agent-cycle: config.json's prompt_overrides must be an object keyed by stage (coordinator/implementor/reviewer/enabler) — see README.md" >&2
   exit 1
 fi
 
@@ -1183,7 +1197,7 @@ maybe_run_enabler() {
     2>/dev/null || true)"
   [[ -n "$input" ]] || return 0
 
-  prompt="$(cat "$PROMPTS_DIR/enabler.md")
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" enabler "$prompt_overrides_json")
 
 ## Runtime input for this engagement
 
@@ -1841,14 +1855,15 @@ fi
 # visible bug. Two of them are not repo state at all and are the easiest to
 # leave out: the config that decides which repos and sources exist, and the
 # prompt that holds the selection rules. Without them, editing coordinator.md
-# would do nothing until an unrelated commit happened to land somewhere.
+# — or a configured prompt_overrides.coordinator fragment (requirement
+# 4a) — would do nothing until an unrelated commit happened to land somewhere.
 selection_config_json="$(jq -nc \
   --arg cm "$coordinator_model" \
   --arg md "$implementor_model_default" \
   --arg mt "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
   '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}')"
-coordinator_prompt_sha="$(sha256sum "$PROMPTS_DIR/coordinator.md" | cut -d' ' -f1)"
+coordinator_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
 
 # The Enabler's three inputs join the fingerprint for the same reason (requirement
 # 35b). Its eligible set is the third array whose candidacy turns on something no
@@ -1867,9 +1882,11 @@ enabler_config_json="$(jq -nc \
     refinement_max_per_engagement: $rmax}')"
 # Absent rather than fatal when the prompt is missing: a missing Enabler prompt
 # is a stage that does not run (see `maybe_run_enabler`), not a cycle that dies.
+# Covers a configured prompt_overrides.enabler fragment too (requirement 4a),
+# the same as the Co-Ordinator's hash above.
 enabler_prompt_sha=""
 [[ -f "$PROMPTS_DIR/enabler.md" ]] \
-  && enabler_prompt_sha="$(sha256sum "$PROMPTS_DIR/enabler.md" | cut -d' ' -f1)"
+  && enabler_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" enabler "$prompt_overrides_json")"
 
 noop_input="$(jq -nc \
   --argjson repos "$ordered_repos_json" \
@@ -1923,7 +1940,7 @@ coordinator_input="$(jq -nc \
     candidates_max: $cmax}')"
 
 # --- 4. Co-Ordinator stage ---
-coordinator_prompt="$(cat "$PROMPTS_DIR/coordinator.md")
+coordinator_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")
 
 ## Runtime input for this cycle
 
@@ -2072,7 +2089,7 @@ if ! gh repo clone "$repo_slug" "$clone_dir" -- --quiet 2>"$cycle_dir/clone.err"
 fi
 
 # --- 7. Implementor stage ---
-implementor_prompt="$(cat "$PROMPTS_DIR/implementor.md")
+implementor_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementor "$prompt_overrides_json")
 
 ## Work order
 
@@ -2169,7 +2186,7 @@ rev_complexity="$(reviewer_complexity "$impl_complexity" "$impl_trivial" ${label
 rev_model="$reviewer_model_default"
 [[ "$rev_complexity" == "high" ]] && rev_model="$reviewer_model_complex"
 
-reviewer_prompt="$(cat "$PROMPTS_DIR/reviewer.md")
+reviewer_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" reviewer "$prompt_overrides_json")
 
 ## Work order
 

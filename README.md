@@ -146,6 +146,7 @@ Edit `config.json` before first run. Keys:
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. Create it in each target repo (`gh label create enabler-escalation -R Poetic-Poems/<repo>`); without it the issue is still raised, just unlabelled. |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). Create it in each target repo (`gh label create needs-refinement -R Poetic-Poems/<repo>`); without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list. Leave it empty to switch the labelling off. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
 | `refinement_max_per_engagement` | 3 | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
+| `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `8` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
@@ -176,6 +177,69 @@ any other provider is rejected at cycle start with an error naming the key,
 not passed to the `claude` CLI. No existing config needs to change.
 
 The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
+
+### Prompt overrides
+
+`prompts/*.md` are this product's own content — they ship with every image
+and every `git pull`. Editing one directly is a fork: it stops receiving this
+repository's future updates to that stage. `prompt_overrides` in
+`config.json` lets you add to, or replace, any stage's prompt from files that
+live outside `prompts/`, so an installation's house rules survive an update
+instead of needing to be re-applied after every one.
+
+```json
+"prompt_overrides": {
+  "coordinator": {
+    "extend": ["prompt-overrides/coordinator-house-rules.md"]
+  },
+  "implementor": {
+    "extend": ["prompt-overrides/implementor-house-rules.md"]
+  }
+}
+```
+
+Keys are stage names — `coordinator`, `implementor`, `reviewer`, `enabler`
+— each holding:
+
+- **`extend`** — an array of file paths, appended to the stage's prompt in
+  the order listed, after everything `prompts/<stage>.md` already says. This
+  is the mode to reach for: it adds guidance without touching a single byte
+  of the shipped prompt, so it can never fall out of sync with an update to
+  it. Each fragment is wrapped with a fixed reminder that this repository's
+  specs (`docs/*-SPEC.md`) outrank every prompt — an extension may add
+  guidance, it cannot exempt your installation from a numbered requirement.
+- **`replace`** — a single file path substituted for `prompts/<stage>.md`
+  itself, before any `extend` fragments are appended. **Use this rarely, and
+  know what it costs**: a replaced prompt stops receiving this product's
+  updates to that stage's behaviour entirely — every future fix or new
+  capability that ships in `prompts/<stage>.md` passes your installation by
+  until you re-merge it by hand. `extend` covers nearly everything a house
+  rule needs; reach for `replace` only when a stage's approach itself, not
+  just its guidance, needs to differ.
+
+A relative path in either key resolves against `state_dir` (the default
+`~/.local/state/poetic-agents`), not the agent-ops working tree — the one
+location this repository guarantees survives an image roll on a container
+node and a `git pull` on the host, so your override content is never at risk
+of being overwritten by an update the way a change committed to `prompts/`
+would be. An absolute path, or one starting `~/`, is honoured as given. A
+path that does not resolve to a readable file is treated as if it were
+absent — a typo does not fail a cycle. For the `coordinator` and `enabler`
+stages, that is still visible: a configured file going missing (or a new one
+appearing, or an existing one changing) moves the hash the no-op
+short-circuit tracks (see [Skipping no-op cycles](#skipping-no-op-cycles)),
+so a broken path shows up as an unexplained Co-Ordinator or Enabler run
+rather than being silently swallowed. `implementor` and `reviewer` overrides
+need no such tracking — those stages only ever run once an item is already
+selected, so nothing about them feeds the "is there anything new to do at
+all" decision.
+
+Leaving `prompt_overrides` out of `config.json` entirely — or a stage out of
+it — reproduces today's exact prompt, byte for byte; nothing here changes
+behaviour until you configure it. There is no per-repo scoping yet: an
+override applies to every repo the stage runs against, because the
+Co-Ordinator selects across every configured repo in one invocation per
+cycle rather than one per repo.
 
 ## Installation
 
@@ -539,7 +603,8 @@ So before launching it, the Script fingerprints everything the Co-Ordinator's
 verdict depends on: each repo's head commit, its pre-fetched findings, its open
 issues (with labels, assignees and `Priority`), the conclusion of each workflow's latest
 run, its open PRs (a PR is a claim), the blocked and void lists, the selection
-config, and a hash of `prompts/coordinator.md`. If that fingerprint matches the
+config, and a hash of `prompts/coordinator.md` and any `prompt_overrides.coordinator`
+files you've configured (see [Prompt overrides](#prompt-overrides)). If that fingerprint matches the
 one recorded against the last `none-selected`, nothing the Co-Ordinator reads
 has moved, so its answer cannot have changed — the cycle stands down for the
 price of a few `gh` calls.
