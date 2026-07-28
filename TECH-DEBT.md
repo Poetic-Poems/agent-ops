@@ -69,19 +69,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072201 The publisher's per-cycle detail loop still forks ~300 jq serially
-
-The transcript cost scan and the array accumulations are batched now, but
-`cycle_json`/`stage_json` in `scripts/publish-dashboard.sh` still fork
-roughly a dozen `jq` per shown cycle — about 5 s for the 40-cycle detail
-window against real transcripts under WSL2, which is the whole 5-second
-heartbeat budget on its own. The cost is bounded (`MAX_CYCLES`, not history
-length), and the launcher's lock plus its end-of-window margin absorb the
-occasional overshoot, so this is a budget squeeze rather than a failure.
-Fix: assemble the detail window in one `jq` program over the 40 cycles'
-envelope and event files (they are already individual files on disk),
-which should take a `--no-github` publish to around a second.
-
 ### TD26072501 The state dir's logs grow without bound
 
 TD26072004 bounded the *records* in `state_dir` — `cycles/` and `reviews/` are
@@ -380,6 +367,49 @@ blocked-extract descriptions) travels in the same PR.
 
 Filed 2026-07-28, from the review discussion on #109.
 
+### TD26072802 A stage with an empty result silently drops its whole cycle from the dashboard
+
+`scripts/publish-dashboard.sh`'s detail-window assembly (`stage_json`,
+pre-TD26072201; now the `extract_status`/`build_stage` jq port that replaced
+it) treats a stage's extracted `.result` text as "unparseable" whenever it is
+empty or whitespace-only — and an unparseable stage does not just render with
+a blank status, it drops the **whole cycle** from `.cycles` on the dashboard,
+silently.
+
+This was not a deliberate design choice; it fell out of a shell quirk. The
+pre-TD26072201 code built each stage's JSON via
+`jq -n --argjson status "$status_json" …`, where `$status_json` came from
+`extract_status_json`. That function's first move is `jq empty <<<"$text"`,
+and `jq empty` on whitespace-only input (which is what an empty `$text`
+becomes once `<<<` appends its trailing newline) succeeds trivially with no
+output — so `jq -c '.' <<<"$text"` right after it also prints nothing, and
+`status_json` ends up the empty string rather than the literal `"null"` every
+other unparseable case falls through to. `--argjson status ""` is invalid
+JSON, so the enclosing `jq -n` call for that stage — and, since cycle_json
+passes each stage straight through as its own `--argjson`, the whole cycle's
+`jq -n` call — fails outright, leaving that cycle's JSON unparseable and
+excluded by the `jq -e . "$cf"` check in the assembly loop. Confirmed by
+direct reproduction: a well-formed envelope with `"result":""` disappears
+from `.cycles` exactly like a torn envelope does, even though nothing about
+it failed to run.
+
+TD26072201's jq port (`extract_status` in `scripts/publish-dashboard.sh`)
+preserves this behaviour on purpose — marked `ok:false` and commented in
+place — rather than fixing it as a drive-by change bundled with an unrelated
+performance rewrite; retiring it is its own review-sized change with its own
+test.
+
+Fix: decide what a genuinely empty stage result should mean (most likely:
+render the stage with `status: null` like any other unparseable text, and
+never let one stage's content silently take its cycle's row off the page),
+change `extract_status` (and, for symmetry, agent-cycle.sh's
+`extract_json_result`, which shares the same straight-parse-else-fenced-block
+algorithm per DASHBOARD-SPEC.md) accordingly, and add a
+`test/publish-dashboard.test.sh` case with a well-formed envelope whose
+`result` is `""` asserting the cycle still renders.
+
+Filed 2026-07-28, from TD26072201.
+
 ## Ledger
 
 Every tech-debt ID ever allocated — open, in-progress, resolved, or not-debt —
@@ -397,7 +427,7 @@ above.
 | TD26072004 | An active node's state_dir grows without bound | resolved | 2026-07-22 | #52 |
 | TD26072101 | New evidence on a blocked item is not read until the Enabler's recheck | resolved | 2026-07-27 | #109 |
 | TD26072102 | No sanctioned way to watch a node's cycle events from outside | resolved | 2026-07-27 | #107 |
-| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | open | | |
+| TD26072201 | The publisher's per-cycle detail loop still forks ~300 jq serially | resolved | 2026-07-28 | #113 |
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | open | | |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | open | | |
@@ -408,3 +438,4 @@ above.
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
 | TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
 | TD26072801 | A still-valid block is re-read every cycle once its issue's thread has moved | open | | |
+| TD26072802 | A stage with an empty result silently drops its whole cycle from the dashboard | open | | |
