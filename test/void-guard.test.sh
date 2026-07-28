@@ -359,6 +359,15 @@ printf '3' >"$tmp_dir/files-92"
   fi
   if r="$(void_guard_reason '{"item": "X"}')"; then exit 7; fi
   [[ "$r" == *"no evidence"* ]] || exit 6
+  # A resolvable citation reads `$?` straight after a command substitution, so
+  # it is the shape `set -e` is most likely to take exception to — and a `gh`
+  # that will not run at all is how the fetch fails when a node is misconfigured
+  # rather than merely offline. Refused, and the cycle still standing.
+  if r="$(void_guard_reason '{"item": "X", "repo": "Poetic-Poems/poetic",
+      "evidence": {"ref": "main", "path": "TECH-DEBT.md", "expect": "absent"}}')"; then
+    exit 5
+  fi
+  [[ "$r" == *"unresolved"* ]] || exit 4
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shape survives set -e and bad input" "0" "$?"
