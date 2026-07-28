@@ -50,11 +50,18 @@ set -uo pipefail
 # an operator wondering why a node has not taken the new image should look.
 say() { printf 'watchtower-pre-update: %s\n' "$*"; }
 
-# sysexits.h. watchtower singles this code out as a *deliberate* deferral, and
-# logs it as such. Read the source before assuming the rest: every other
-# non-zero status cancels the update too, just noisily, as a hook that failed.
-# Which is why nothing below ever exits non-zero except on purpose — see the
-# fail-open branches.
+# sysexits.h. 75 is the *only* status that defers: watchtower's ExecuteCommand
+# returns `SkipUpdate = true` for it alone, and for every other non-zero status
+# returns `SkipUpdate = false` with an error — "an exit code different than 0 or
+# 75 (EX_TEMPFAIL) will not prevent watchtower from updating the container", as
+# its documentation puts it. So a hook that fails does not hold the roll back;
+# it is logged and ignored, and the cycle dies exactly as if there were no hook.
+#
+# Which is why the fail-open branches below still exit 0 rather than erroring:
+# not because a non-zero status would freeze the node's image — it would not —
+# but because 0 says "I checked, there is nothing to protect" in the one
+# vocabulary watchtower acts on, and an error log that changes no behaviour is
+# a worse way to say the same thing.
 EX_TEMPFAIL=75
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
