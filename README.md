@@ -720,10 +720,9 @@ reopens any of them that are void. The item is back in the Co-Ordinator's pool
 in that same cycle. Only you can do this: no stage in the pipeline ever applies
 this label, which is what keeps "only a human may clear a void" true.
 
-**Leave the label where it is** once it has worked. Nothing removes it — taking
-it off would move the pull request's `updatedAt`, and that is the clock the
-pipeline uses to decide a draft has been abandoned, so tidying up would delay
-the very PR you are unsticking. It cannot fire twice: a label only reopens voids
+**Leave the label where it is** once it has worked. Nothing removes it, and
+nothing needs to: the rule is self-limiting rather than one-shot, so a label
+left behind costs nothing. It cannot fire twice: a label only reopens voids
 recorded *before* you applied it, so an old label can never quietly clear a
 fresh verdict.
 

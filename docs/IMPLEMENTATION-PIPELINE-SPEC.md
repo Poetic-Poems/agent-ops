@@ -996,9 +996,12 @@ runs unattended.
      including this system's own housekeeping, and when this system touches a PR
      that usually means the opposite of "somebody is on it". So this source
      computes its own measure instead: the latest of the head commit's
-     `committedDate`, every review's `submittedAt`, and every comment's
-     `createdAt` **except** one carrying the invisible marker
-     `lib/pipeline-marker.sh` defines. Two writes are therefore never evidence of
+     `committedDate`, every review's `submittedAt` and every comment's
+     `createdAt`, **excepting** any review or comment carrying the invisible
+     marker `lib/pipeline-marker.sh` defines — the body is what is tested, not
+     which collection the write landed in, because `gh pr comment` and `gh pr
+     review --comment` file the same words under different ones and the Reviewer
+     may use either. Two writes are therefore never evidence of
      activity: a **label edit** is discounted unconditionally (the label set is
      this system's own bookkeeping, never a sign of work in progress), and a
      **comment this system posted itself** — stamped by `agent-cycle.sh`'s own
@@ -1414,8 +1417,10 @@ runs unattended.
    the implementor prompt plus the work order.
 8. **Reviewer stage.** If the Implementor reports `complete`, launch the
    Reviewer in the same workspace (model per requirement 8a, same flags,
-   stage timeout), passing the reviewer prompt, the work order, and the
-   Implementor's summary (PR URL, branch, complexity).
+   stage timeout), passing the reviewer prompt, the work order, the
+   Implementor's summary (PR URL, branch, complexity), and this cycle's
+   `cycle` id — the last because any comment the Reviewer leaves must carry
+   requirement 3e's marker, and a model cannot know its own cycle.
 8a. **The Reviewer's model follows the item's complexity.** The Script
    resolves an effective complexity for the PR and launches the Reviewer with
    `reviewer_model_complex` when it is `high`, `reviewer_model_default`
@@ -2679,7 +2684,8 @@ runs unattended.
     entry rather than the PR — the `kind` and `refined_before` of requirement
     35a, and the last `escalation` if there is one), plus
     `escalation_label`, `assignee`, and this cycle's `cycle` id and `node` — the
-    last two because requirement 36a's issue footer carries them, and a model
+    last two because requirement 36a's issue footer carries them, and requirement
+    3e's marker stamps the Enabler's own comments with the `cycle`, and a model
     cannot know its own cycle.
 
     Its entire final message is one JSON object:
@@ -2836,7 +2842,7 @@ What exists, and the requirements each part answers to:
 3f. `scripts/gather-abandoned-drafts.sh` implementing requirement 3e: given a
    repo slug, PR label, branch prefix and staleness threshold, prints the JSON
    array of this system's own abandoned draft PRs (open, draft, ours, whose last
-   real activity — commits, reviews, and comments not carrying
+   real activity — commits, and the reviews and comments not carrying
    `lib/pipeline-marker.sh`'s marker — is untouched past the threshold), each
    carrying the draft PR's body verbatim and a head-SHA-scoped ref. Its
    candidate rule is regression-tested in `test/abandoned-drafts.test.sh`. Fails
@@ -2847,9 +2853,11 @@ What exists, and the requirements each part answers to:
    pipeline-authored PR comment is stamped with — `agent-cycle.sh`'s own
    stage-failure comments directly, and the Enabler's and Reviewer's comment
    instructions (`prompts/enabler.md`, `prompts/reviewer.md`) via the cycle id
-   each receives at invocation. One definition (requirement 34a): every writer
-   and the one reader source this file, so the marker string cannot drift
-   between them.
+   each receives at invocation. One definition (requirement 34a): the reader and
+   every writer that is a shell source this file, and the two prompts — which a
+   model reads, so they must spell the marker out — are asserted against
+   `PIPELINE_COMMENT_MARKER_PREFIX` by `test/abandoned-drafts.test.sh`, so the
+   marker cannot drift between any of them.
 3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g: given a
    repo slug, PR label and branch prefix, prints the JSON array of this system's
    own ready-but-conflicted PRs (open, non-draft, ours, `mergeable` definitively

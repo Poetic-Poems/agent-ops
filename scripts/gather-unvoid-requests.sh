@@ -53,11 +53,11 @@
 #
 #   - **It is idempotent without touching the label.** A void already cleared is
 #     not cleared again, so nothing needs removing and no cycle logs a duplicate.
-#     That is why the label is never removed here — removing it would move the
-#     item's `updatedAt`, which is the clock the abandoned-drafts source
-#     measures staleness by (requirement 3e), so tidying up after the human
-#     would push the very pull request they are trying to unstick another
-#     `abandoned_draft_after_hours` into the future.
+#     That is why the label is never removed here: a self-limiting rule needs no
+#     cleanup, and label edits are this system writing to its own bookkeeping
+#     surface — the abandoned-drafts source discounts them for exactly that
+#     reason (requirement 3e), so the only thing removal could achieve is churn
+#     on the pull request a human is trying to unstick.
 #   - **A label left behind cannot become a standing gag-removal.** A void
 #     recorded *after* the label was applied is a fresh verdict the label never
 #     saw, and it stands. Without that test an old label would silently

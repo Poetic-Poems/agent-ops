@@ -939,9 +939,10 @@ $(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
 #
 # Deliberately silent on the PR itself. The Reviewer has already left its
 # concerns there in its own words (requirement 30), which is the record the
-# Enabler reads; a second comment from the Script would say nothing new, and
-# would move `updatedAt` — the clock the abandoned-drafts source measures
-# staleness by (requirement 3e).
+# Enabler reads; a second comment from the Script would say nothing new. It
+# would not distort the abandoned-drafts clock — a comment this system posts
+# carries the marker that keeps it out of that measure (requirement 3e) — but
+# "nothing new to say" is reason enough not to post it.
 log_reviewer_handback() {
   local detail="$1" pr_url="${2:-}" unblock_condition="${3:-}"
   log_attempt_failed "reviewer" "$detail" \
