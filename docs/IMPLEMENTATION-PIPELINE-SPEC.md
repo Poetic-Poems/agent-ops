@@ -2733,12 +2733,14 @@ pull request, run the ones the change touches and any it could regress.
    is yes; a checked-out state it cannot diff builds. The skip is a job-level
    `if:` rather than a `paths-ignore:` filter, because a skipped job reports
    success to the branch ruleset's required checks while a filtered-out
-   workflow never reports at all. Only an explicit "yes" skips: a `changes`
-   job that fails rather than answers leaves the `build` jobs' condition
-   unsatisfied-by-emptiness and they run, since that same
-   skipped-reads-as-success is what would otherwise turn a dead runner into a
-   mergeable pull request with no image. A documentation-only merge to `main`
-   publishes no image, and no tag carries that commit's SHA.
+   workflow never reports at all — so every job here reports on every pull
+   request, and `Work out what changed` joins the other three as a required
+   check. Only an explicit "yes" skips: a `changes` job that fails rather than
+   answers leaves the `build` jobs' condition unsatisfied-by-emptiness and they
+   run, since that same skipped-reads-as-success would otherwise carry a dead
+   runner through to `publish` and leave a merge to `main` with no image at
+   all. A documentation-only merge to `main` publishes no image, and no tag
+   carries that commit's SHA.
 1c. **The stack comes up from nothing and is idempotent.** With a `.env` copied
    from `.env.example` and `COMPOSE_PROFILES=local`, `docker compose up -d` in
    `deploy/docker/` starts `scheduler` and `dashboard-local` on fresh volumes;
