@@ -99,7 +99,7 @@ if [[ -z "$diff_out" ]]; then
   ok "compose.yaml matches the running image's copy"
 else
   bad "compose.yaml differs materially from the running image's copy (< image, > this host):"
-  sed 's/^/       /' <<<"$diff_out"
+  printf '       %s\n' "${diff_out//$'\n'/$'\n'       }"
 fi
 
 # --- The mount that arms the in-container check -------------------------------

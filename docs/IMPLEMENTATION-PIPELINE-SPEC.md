@@ -2944,9 +2944,10 @@ What exists, and the requirements each part answers to:
     lifecycle mentions in watchtower's log. Read-only throughout
     (`docker compose exec/ps`, `docker inspect/logs`, `diff`), so it is safe
     to allow-list like `watch-node.sh`. Exit 0 all checks passed, 1 at least
-    one failed, 2 unable to check. Fetched at bring-up beside
-    `compose.yaml` (component 7, including `cloud-init.yaml`); must pass
-    `shellcheck`.
+    one failed, 2 unable to check — and unable is never reported as clean.
+    Fetched at bring-up beside `compose.yaml` (component 7, including
+    `cloud-init.yaml`). Unit-tested against a stubbed `docker` on `PATH`
+    (`test/check-node-compose.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
