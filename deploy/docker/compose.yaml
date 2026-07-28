@@ -76,8 +76,23 @@ x-agent-ops: &agent-ops
     # the value is load-bearing and a reader should not have to know the
     # default. The check is a handful of jq invocations, so a minute is
     # enormous; it exists for the case where the container is too wedged to
-    # answer, and watchtower cancels the update when the hook times out, which
-    # is the safe way for that to fail.
+    # answer.
+    #
+    # And that case fails OPEN, which is the opposite of what this comment used
+    # to claim. watchtower's timeout branch is `case <-timeout: return nil`,
+    # giving `SkipUpdate = false` — its own documentation puts it as "a timeout
+    # will occur, forcing Watchtower to continue the update loop". So a
+    # container too wedged to answer within the minute is rolled anyway, and the
+    # cycle it was running dies: precisely the outcome the hook exists to
+    # prevent, in the one situation the timeout was set for.
+    #
+    # Left at one minute regardless, deliberately. The documented alternative is
+    # `0`, which disables the timeout entirely and so fails closed — but it
+    # trades a bounded, rare loss for an unbounded one, because watchtower then
+    # waits on the hook indefinitely and a single wedged container stops the
+    # whole fleet updating. A minute is the lesser hazard while the hook stays
+    # this cheap; revisit if it ever grows work that could legitimately take
+    # longer, since the failure is silent either way.
     com.centurylinklabs.watchtower.lifecycle.pre-update-timeout: "1"
 
 services:
