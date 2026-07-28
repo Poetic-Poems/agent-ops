@@ -132,6 +132,8 @@ Edit `config.json` before first run. Keys:
 | `claim_ttl_hours` | 6 | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `abandoned_draft_after_hours` | 3 | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. |
 | `cycles_retained` | 200 | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
+| `log_retained_bytes` | 2000000 | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
+| `log_generations` | 3 | Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`). |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | For code changes. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | For docs, comments, register entries only. |

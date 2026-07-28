@@ -669,8 +669,15 @@ log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL
 [[ -z "$log_tail_json" ]] && log_tail_json='[]'
 
 # --- cron.log tail -----------------------------------------------------------
+# scripts/rotate-logs.sh (TD26072501) renames cron.log to cron.log.1 once it
+# grows past log_retained_bytes, leaving the live file to start over empty —
+# reading the previous generation too means the panel never goes blank the
+# moment that happens.
 cron_tail_json='[]'
-[[ -f "$cron_log" ]] && cron_tail_json="$(tail -n 40 "$cron_log" 2>/dev/null | jq -R -s 'split("\n") | map(select(length>0))' 2>/dev/null || echo '[]')"
+if [[ -f "$cron_log" ]]; then
+  cron_tail_json="$( { [[ -f "$cron_log.1" ]] && cat -- "$cron_log.1"; cat -- "$cron_log"; } 2>/dev/null \
+    | tail -n 40 | jq -R -s 'split("\n") | map(select(length>0))' 2>/dev/null || echo '[]')"
+fi
 
 # --- What each node is doing (requirement 33 / 2.5) ---------------------------
 # `status.current` above answers "what is being worked on right now" for one
