@@ -3190,9 +3190,9 @@ requirements above, which state only what is.
   security-related candidate outranks all non-security work (requirement 15a),
   even a red `main` — a known, exploitable vulnerability is the highest-stakes
   thing the pipeline can be pointed at. Non-security code-scanning findings
-  become the lowest-priority `code-quality` source: real, but more speculative
-  and higher-volume than curated tech-debt or filed issues, so they never
-  crowd out deliberate work.
+  become the `code-quality` source, ranked below every curated source: real, but
+  more speculative and higher-volume than curated tech-debt or filed issues, so
+  they never crowd out deliberate work.
 - **Findings are pre-fetched by the Script, not the model** (requirement 3a,
   `scripts/gather-findings.sh`). The Dependabot and code-scanning APIs are
   paginated and verbose; digesting them in the cheap Co-Ordinator session

@@ -439,17 +439,19 @@ candidates and the register is consistent; there is nothing to verify.
   Do not summarise it, count the problems for the Implementor, or decide which
   of them matter. Add the entry's `url` and `blob_sha`.
 - `acceptance` is: `perl scripts/td-check.pl TECH-DEBT.md` exits 0 in the target
-  repo, with the repair discipline of `prompts/implementor.md` followed — no
-  code changes, and nothing touched in the Ledger beyond a row the check itself
-  flags as broken.
+  repo, with no code changes and nothing touched in the Ledger beyond a row the
+  check itself flags as broken. The Implementor's own prompt carries the rest of
+  the repair discipline — chiefly that a stale body is deleted only once the
+  resolution is verified to have landed — so you do not need to restate it.
 - `model` is always `models.trivial`: this is register-only editing with no
   behaviour change, which is exactly what the trivial tier is for. Say so in
   `model_reason` — that classification is also what makes the Implementor grade
   the finished diff `low` by definition, without deliberating over it.
-- `branch` is the ordinary derived claim branch, `agent/<ref>` — the Script
-  creates it. Unlike the three finishing sources, nothing exists yet here: this
-  is a *starting* source, so it is subject to back-pressure like any other, and
-  a full human gate correctly narrows it away until the gate clears.
+- **No `branch`**, as for every source but the three finishing ones: the Script
+  derives and creates the claim branch (`agent/<ref>`) itself. Nothing exists
+  yet here — this is a *starting* source, not a finishing one, so it is subject
+  to back-pressure like any other, and a full human gate correctly narrows it
+  away until the gate clears.
 
 The ordinary claim rule applies here unchanged. An open PR referencing the ref
 is a claim under exclusion 3, exactly as for any other source — there is no
