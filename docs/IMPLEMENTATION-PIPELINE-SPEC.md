@@ -232,10 +232,19 @@ file and carries placeholders only; `.env` itself is never committed.
   the same judgement requirement 1's `acquire_lock` makes, so the hook
   protects exactly what a cycle would have respected and a deferral can never
   outlast `lock_stale_after`. It exits 0 when both are free, and also on any
-  internal failure: watchtower cancels the update on *every* non-zero status,
-  not only 75, so a hook that could not answer must answer 0 or it would
-  freeze the node's image indefinitely. The label carries a
-  `pre-update-timeout` of 1 minute (watchtower's unit is minutes).
+  internal failure — not because a non-zero status would freeze the node's
+  image, but because **75 is the only status watchtower defers on**: every
+  other non-zero code is logged as a failed hook and the update proceeds
+  regardless ("an exit code different than 0 or 75 (EX_TEMPFAIL) will not
+  prevent watchtower from updating the container"). A hook that cannot answer
+  therefore cannot protect anything whatever it returns, and 0 is simply the
+  honest way to say so. The label carries a `pre-update-timeout` of 1 minute
+  (watchtower's unit is minutes), and that bound **fails open** too: on
+  expiry watchtower continues the update loop, so a container too wedged to
+  answer inside the minute is rolled anyway. Setting the label to `0` would
+  disable the timeout and fail closed, at the price of one wedged container
+  stalling every node's updates indefinitely; the minute stands as the lesser
+  hazard while the hook remains a handful of `jq` calls.
   `test/watchtower-pre-update.test.sh` pins all of this.
   The hook covers the automatic roll and nothing else: a manual `up -d`,
   `restart`, `down` or host reboot recreates containers without consulting
