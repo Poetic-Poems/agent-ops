@@ -23,8 +23,8 @@ README](../../README.md) and `docs/*-SPEC.md`.
   security alerts. One token per node, so a single node can be revoked without
   disturbing the others.
 - A **git identity** — a name and an email — for the commits this node's
-  cycles make. There is no default; the container refuses to start without
-  both.
+  cycles make. There is no default; an active node's cycles refuse to run
+  without both.
 - A **Tailscale pre-auth key** from the tailnet's admin console, unless this
   node will run the `local` profile.
 - Somewhere to log in to Claude interactively, once, after step 3.
@@ -313,7 +313,7 @@ minutes.
 | A fresh node's first `up` aborts with `mkdir … /cycles: file exists` | Two services seeding the same new `state` volume at once — the current `compose.yaml` prevents this by starting the dashboard after the scheduler, so you only see it on a compose file fetched before that fix | `docker compose down -v`, then `docker compose up -d scheduler` before `docker compose up -d` |
 | Every cycle fails at its first stage | Claude was never authenticated on this node | Step 4 above |
 | `WARNING: GH_TOKEN is unset` | No token in `.env` | Add it; this node can otherwise neither read nor push anything |
-| `ERROR: GIT_USER_NAME and/or GIT_USER_EMAIL is unset` | No git identity in `.env` | Add both; the container exits immediately and stays down until they're set |
+| `agent-cycle: ERROR: GIT_USER_NAME and/or GIT_USER_EMAIL is unset` in the cron log | No git identity in `.env` — checked by the cycle itself, not the container, so this only appears once an active node's next tick tries to do real work | Add both to `.env` and `docker compose up -d` to pick them up; the next tick will use them |
 | `cannot clone …agent-ops-state` | The token cannot read the private state repo | Widen the token's repository access |
 | `gh auth status` says the token is invalid, but the same token works on the host; `git clone` resets; `claude` hangs | The bridge MTU exceeds the host's egress MTU — full-sized packets vanish, so every TLS handshake fails while DNS and plain HTTP still work | Set `DOCKER_MTU` in `.env` to the host's egress MTU and `docker compose up -d` |
 | The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on any node that should spend — several may be |

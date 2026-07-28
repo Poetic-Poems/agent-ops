@@ -88,15 +88,24 @@ a node updates by pulling a new image rather than by pulling a branch.
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
   persistent volume holding refreshing OAuth credentials, and the seed carries
-  model/effort defaults only — no plugins and no local marketplaces), sets the
-  git identity from `GIT_USER_NAME`/`GIT_USER_EMAIL` — both required, with no
-  default, so a node can never commit under the wrong name — runs
+  model/effort defaults only — no plugins and no local marketplaces), runs
   `gh auth setup-git` when `GH_TOKEN` is present so https pushes authenticate,
   creates `state_dir` and `workspace_root`, and then execs the service it was
   given. It refuses to start if `state_dir` is not writable, rather than
-  letting a mis-owned volume become a silent failure to record anything, or if
-  either git identity variable is unset, rather than falling back to a wrong
-  default.
+  letting a mis-owned volume become a silent failure to record anything. It
+  does *not* set the git identity: every container this image runs — including
+  the dashboard services and every command a `docker run` might be given —
+  goes through this same entrypoint, and only a cycle that might actually
+  commit needs an identity to commit under.
+- `GIT_USER_NAME`/`GIT_USER_EMAIL` are instead required, with no default, by
+  `agent-cycle.sh` and `review-cycle.sh` themselves (`lib/git-identity.sh`),
+  checked once each has confirmed this tick will do real work — past its role
+  guard, the switch, the fleet switch, the usage-limit stand-down, and (for
+  review-cycle.sh) a lost or failed claim — and before the first git operation
+  that could commit. A silent default would let a node commit every pull
+  request it opens under the wrong name; checking this late means a standby
+  tick, a switched-off node, a stood-down node, or a tick that ends up with
+  nothing to do never needs an identity it was never going to use.
 - The image sets `CLAUDE_CONFIG_DIR=/home/agent/.claude` — the `claude-config`
   volume's mount point. Claude Code's global config file defaults to
   `~/.claude.json`, a *sibling* of its config directory rather than a member of

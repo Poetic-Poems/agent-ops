@@ -52,6 +52,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
+# shellcheck source=lib/git-identity.sh
+. "$SCRIPT_DIR/lib/git-identity.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
 
@@ -548,6 +550,13 @@ review_one() {
       '{repo: $r, detail: ("could not claim " + $b + " — standing this repo down, fail closed")}')"
     return 0
   fi
+
+  # The claim succeeded, so this repo is about to be cloned and reviewed —
+  # the first point in this cycle that can actually commit. Every earlier
+  # return above (role, switch, usage-limit, lost or failed claim) commits
+  # nothing and must not be blocked on an identity it never uses. See
+  # lib/git-identity.sh.
+  require_git_identity review-cycle
 
   clone_dir="$workspace_root/${review_id}-${safe}"
   assert_in_workspace "$clone_dir"
