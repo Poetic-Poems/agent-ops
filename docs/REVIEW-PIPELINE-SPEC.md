@@ -48,8 +48,9 @@ cron (weekly; a daily tick with a skip-guard is recommended — see R4)
 - **Separate everything that must be separate:** its own Script
   (`review-cycle.sh`), its own cron entry, its own lock (`review-lock.json`),
   its own PR label (`project-review`). **Shared where sharing is correct:**
-  `config.json`, `state_dir`, `workspace_root`, `lib/limit-detect.sh`, the
-  ephemeral-clone discipline, the `PATH` bootstrap, and the result parser.
+  `config.json`, `state_dir`, `workspace_root`, `lib/limit-detect.sh`,
+  `lib/git-identity.sh`, the ephemeral-clone discipline, the `PATH`
+  bootstrap, and the result parser.
 - **The review pipeline defers to the implementation pipeline.** If the
   implementation lock (`lock.json`) is held by a live process, the Review
   Script stands down and waits for the next tick — two heavy `claude` runs
@@ -333,6 +334,14 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       survives, as does an abandoned-but-open PR); a raised PR releases the
       registry entry only (`release file` — the PR supersedes the claim and
       the branch is its head). `--dry-run` exits before any claim.
+   0a. *Git identity.* Immediately after the claim succeeds — the first point
+      in this repo's run that could actually commit — require
+      `GIT_USER_NAME`/`GIT_USER_EMAIL` via the shared `lib/git-identity.sh`
+      (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`, "The node image"): both are
+      required, with no default, and their absence exits non-zero with an
+      actionable message rather than falling back to any identity. The claim's
+      own lost/error skips, and every stand-down before it, commit nothing and
+      are never gated on this.
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
       clone the repo fresh from GitHub — the multi-agent ways-of-working rule
       shared by all Poetic repositories: every agent works in its own
