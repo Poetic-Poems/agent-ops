@@ -272,7 +272,14 @@ node and a `git pull` on the host, so your override content is never at risk
 of being overwritten by an update the way a change committed to `prompts/`
 would be. An absolute path, or one starting `~/`, is honoured as given. A
 path that does not resolve to a readable file is treated as if it were
-absent — a typo does not fail a cycle. For the `coordinator` and `enabler`
+absent — a typo in a *path* does not fail a cycle. A typo in the
+*structure* does, at startup: an unknown stage key, a string where
+`extend`'s array is meant, or a misspelled `extend`/`replace` would each be
+silently ignored if tolerated — you would get today's exact shipped prompt
+with no indication why — so `agent-cycle.sh` refuses to start until
+`prompt_overrides` is an object keyed only by the four stage names, each
+holding only `extend` (an array of strings) and/or `replace` (a string).
+For the `coordinator` and `enabler`
 stages, that is still visible: a configured file going missing (or a new one
 appearing, or an existing one changing) moves the hash the no-op
 short-circuit tracks (see [Skipping no-op cycles](#skipping-no-op-cycles)),

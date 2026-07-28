@@ -11,7 +11,13 @@
 # the fingerprint (`stage_prompt_sha`) moves for every change that
 # `stage_prompt_text` would reflect — including a configured file going
 # missing, which `stage_prompt_text` silently tolerates but the fingerprint
-# must not.
+# must not — and holds still for every change that `stage_prompt_text` would
+# not reflect: the digest is content-addressed, so relocating the
+# installation without changing a byte of served content computes the same
+# fingerprint (it is compared fleet-wide across the shared log). Last,
+# `prompt_overrides_config_error`'s shape verdicts: silence for a valid
+# config, one line for each class of structural typo the assembly functions
+# would otherwise swallow.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -68,8 +74,8 @@ assert_eq "a stage missing from prompt_overrides behaves the same as {}" \
   "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator '{"implementor":{"extend":["x.md"]}}')"
 
 sha_none="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator '{}')"
-assert_eq "no override: the fingerprint is just the base file's own sha256sum line, hashed" \
-  "$(sha256sum "$prompts_dir/coordinator.md" | sha256sum | cut -d' ' -f1)" \
+assert_eq "no override: the fingerprint is just the base file's content hash, hashed — no path" \
+  "$(sha256sum "$prompts_dir/coordinator.md" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)" \
   "$sha_none"
 
 # --- extend: appended, in order, each wrapped with the specs-outrank-prompts
@@ -91,6 +97,13 @@ case "$extended" in
     printf 'ok   - %s\n' "extend: each fragment carries the specs-outrank-prompts disclaimer" ;;
   *)
     printf 'FAIL - extend: missing the specs-outrank-prompts disclaimer\n'
+    failures=$(( failures + 1 )) ;;
+esac
+case "$extended" in
+  *"## Installation extension (one.md)"*)
+    printf 'ok   - %s\n' "extend: a fragment's heading names the configured path, not the node-resolved one" ;;
+  *)
+    printf 'FAIL - extend: fragment heading does not use the configured path\n     actual: %s\n' "$extended"
     failures=$(( failures + 1 )) ;;
 esac
 
@@ -154,6 +167,28 @@ sha_replace="$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator "$overri
 assert_ne "replace changes the fingerprint relative to no override" "$sha_none" "$sha_replace"
 assert_ne "replace and extend produce different fingerprints from each other" "$sha_extend" "$sha_replace"
 
+# --- The digest is content-addressed (it is compared fleet-wide across the
+#     shared log, so nodes serving identical prompt bytes must agree): the
+#     same config and the same bytes compute the same fingerprint wherever
+#     the installation lives, and a change that does not alter the served
+#     bytes does not move it. ---
+reloc="$tmp_dir/relocated"
+mkdir -p "$reloc/prompts" "$reloc/state"
+cp "$prompts_dir/coordinator.md" "$reloc/prompts/coordinator.md"
+cp "$state_dir/one.md" "$reloc/state/one.md"
+overrides_portable='{"coordinator":{"extend":["one.md","gone.md"]}}'
+assert_eq "relocating the installation with identical content leaves the fingerprint unchanged" \
+  "$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator "$overrides_portable")" \
+  "$(stage_prompt_sha "$reloc/prompts" "$reloc/state" coordinator "$overrides_portable")"
+assert_eq "relocating the installation with identical content leaves the assembled text unchanged" \
+  "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_portable")" \
+  "$(stage_prompt_text "$reloc/prompts" "$reloc/state" coordinator "$overrides_portable")"
+
+printf 'base coordinator prompt\n' > "$state_dir/shipped-twin.md"
+assert_eq "a replace file with the shipped prompt's exact content computes the no-override fingerprint" \
+  "$sha_none" \
+  "$(stage_prompt_sha "$prompts_dir" "$state_dir" coordinator '{"coordinator":{"replace":"shipped-twin.md"}}')"
+
 # --- A different stage's override does not leak into this one, and an
 #     absolute extend path is used as-is. ---
 overrides_other_stage='{"implementor":{"extend":["one.md"]}}'
@@ -182,6 +217,29 @@ case "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_ab
     printf 'FAIL - an absolute extend path was not honoured\n'
     failures=$(( failures + 1 )) ;;
 esac
+
+# --- Structural validation (prompt_overrides_config_error): silence for a
+#     valid shape, one line for each class of structural typo. Every fault
+#     below is one the assembly functions above silently tolerate — which is
+#     exactly why startup must not. ---
+assert_eq "config check: {} is valid" "" \
+  "$(prompt_overrides_config_error '{}')"
+assert_eq "config check: a full well-formed config is valid" "" \
+  "$(prompt_overrides_config_error '{"coordinator":{"extend":["a.md"],"replace":"b.md"},"enabler":{}}')"
+assert_ne "config check: a non-object is reported" "" \
+  "$(prompt_overrides_config_error '[]')"
+assert_ne "config check: a misspelled stage key is reported" "" \
+  "$(prompt_overrides_config_error '{"coordintor":{"extend":["a.md"]}}')"
+assert_ne "config check: a non-object stage value is reported" "" \
+  "$(prompt_overrides_config_error '{"coordinator":"a.md"}')"
+assert_ne "config check: an unknown key inside a stage is reported" "" \
+  "$(prompt_overrides_config_error '{"coordinator":{"extned":["a.md"]}}')"
+assert_ne "config check: a string where extend's array is meant is reported" "" \
+  "$(prompt_overrides_config_error '{"coordinator":{"extend":"a.md"}}')"
+assert_ne "config check: a non-string extend entry is reported" "" \
+  "$(prompt_overrides_config_error '{"coordinator":{"extend":[1]}}')"
+assert_ne "config check: a non-string replace is reported" "" \
+  "$(prompt_overrides_config_error '{"coordinator":{"replace":["a.md"]}}')"
 
 echo
 if (( failures == 0 )); then

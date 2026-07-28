@@ -1200,6 +1200,9 @@ runs unattended.
    prompt from `config.json`'s `prompt_overrides` without forking `prompts/`
    (issue #79). For stage `<s>`, `prompt_overrides.<s>.extend` names zero or
    more files whose content is appended, in order, after the base prompt, each
+   under a heading naming the entry's *configured* path — the string written
+   in `config.json`, never the node-resolved location, so the assembled text
+   is identical on every node serving the same config and content — and each
    wrapped in a fixed disclaimer that it may add guidance but does not exempt
    the installation from any numbered requirement in this document — the
    specs outrank every prompt, and an extension is not an exception to that.
@@ -1221,22 +1224,42 @@ runs unattended.
    `prompts/<s>.md` that no readable `replace` has substituted fails the cycle
    rather than launching the stage on an empty prompt — a stage given a work
    order and no instructions would spend a model to no purpose.
-   `config.json`'s `prompt_overrides` must
-   itself be an object (possibly `{}`); anything else is a fatal
-   misconfiguration at startup, the same as a missing
-   `implementation_plan_path` (requirement 3k).
+   That tolerance is for *runtime* faults only.
+   `config.json`'s `prompt_overrides` itself must be structurally valid to
+   full depth — an object (possibly `{}`) keyed only by the four stage names,
+   each stage an object holding only `extend` (an array of file-path strings)
+   and/or `replace` (a file-path string); any other shape — an unknown stage
+   key, a non-object stage value, an unknown key within a stage, a wrong
+   type — is a fatal misconfiguration at startup
+   (`prompt_overrides_config_error`), the same as a missing
+   `implementation_plan_path` (requirement 3k). The two faults differ in
+   kind: a configured file can legitimately be absent this cycle and its
+   absence still moves the fingerprint, but a structural typo is a static
+   authoring error that would otherwise be swallowed by the assembly
+   functions' own tolerance and serve the unmodified shipped prompt every
+   cycle — with, for a misspelled stage key, no fingerprint movement to
+   betray it.
 
    The Co-Ordinator's and Enabler's assembled prompts also feed the no-op
    fingerprint (requirement 3b, 35b): `coordinator_prompt_sha` and
-   `enabler_prompt_sha` are `stage_prompt_sha`'s digest of every file that
-   contributes to that stage's prompt — the base file and each configured
-   `extend`/`replace` path, whether or not it currently exists — rather than a
-   bare `sha256sum` of `prompts/<s>.md`. A changed, added, removed, or newly
+   `enabler_prompt_sha` are `stage_prompt_sha`'s content-addressed digest of
+   the stage's assembled prompt: the base file's content hash, then each
+   configured `extend` entry's content hash keyed by its configured path,
+   with a configured-but-unreadable entry recorded explicitly under that
+   same configured name — rather than a bare `sha256sum` of
+   `prompts/<s>.md`. A changed, added, removed, or newly
    unreadable override therefore busts the fingerprint exactly as an edit to
    the shipped prompt does; without this, an installation's own extension
    could change the Co-Ordinator's or Enabler's behaviour while the
    short-circuit went on citing a `none-selected` verdict reached under the
-   old text.
+   old text. No resolved filesystem path enters the digest: `none-selected`
+   fingerprints are compared fleet-wide across the shared log (requirement
+   3b), so two nodes serving identical prompt bytes from different install
+   paths must compute the same fingerprint, and relocating an installation
+   without changing a byte of served content must not bust the
+   short-circuit. The digest is a pure function of the override
+   configuration and the contributing files' bytes, never of the node's
+   filesystem layout.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -2987,9 +3010,17 @@ pull request, run the ones the change touches and any it could regress.
    effect; an unreadable base prompt that no `replace` covers makes
    `stage_prompt_text` fail rather than return empty; and `stage_prompt_sha`
    changes for every one of those cases,
-   including a configured `extend` file that does not exist. `config.json`'s
-   `prompt_overrides` set to anything other than an object makes
-   `agent-cycle.sh` exit non-zero at startup, before any stage runs.
+   including a configured `extend` file that does not exist. The digest is
+   content-addressed: relocating the whole installation (prompts, state
+   directory, `$HOME`) with identical config and content computes the
+   identical fingerprint, and a `replace` file whose content equals the
+   shipped prompt's computes the no-override fingerprint, because it serves
+   the same bytes. `prompt_overrides_config_error` prints nothing for a
+   valid shape and one line for each class of structural fault — a
+   non-object, an unknown stage key, a non-object stage value, an unknown
+   key within a stage, a non-array `extend`, a non-string `extend` entry or
+   `replace` — and any such fault makes `agent-cycle.sh` exit non-zero at
+   startup, before any stage runs.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing

@@ -54,26 +54,35 @@ stage_base_prompt_file() {
 }
 
 # stage_extend_files STATE_DIR STAGE OVERRIDES_JSON
-# Prints one resolved, readable extension path per line, in configured
-# order. An unreadable or unconfigured entry contributes no line.
+# Prints one line per configured, readable extension file, in configured
+# order: the configured path exactly as written in config.json, a tab, then
+# the resolved path the content is read from. Both travel because they serve
+# different masters — the resolved path is what this node can open, the
+# configured path is the node-independent name the assembled text and the
+# fingerprint identify the fragment by. An unreadable or unconfigured entry
+# contributes no line.
 stage_extend_files() {
   local state_dir="$1" stage="$2" overrides_json="$3"
   local raw resolved
   while IFS= read -r raw; do
     [[ -n "$raw" ]] || continue
     resolved="$(resolve_prompt_override_path "$state_dir" "$raw")"
-    [[ -r "$resolved" ]] && printf '%s\n' "$resolved"
+    [[ -r "$resolved" ]] && printf '%s\t%s\n' "$raw" "$resolved"
   done < <(jq -r --arg s "$stage" '(.[$s].extend // [])[]?' <<<"$overrides_json" 2>/dev/null || true)
 }
 
-# _prompt_override_fragment PATH
-# The appended section for one extension file: its content, plus a fixed
-# disclaimer that it is guidance, not a licence to skip a numbered
-# requirement (CLAUDE.md, "As-built specifications": specs outrank prompts).
+# _prompt_override_fragment CONFIGURED_PATH FILE
+# The appended section for one extension file: a heading naming the entry's
+# configured path (as written in config.json, never the node-resolved
+# location — the assembled text must be identical on every node serving the
+# same config and content, or the fleet-compared fingerprint below cannot
+# be), its content, plus a fixed disclaimer that it is guidance, not a
+# licence to skip a numbered requirement (CLAUDE.md, "As-built
+# specifications": specs outrank prompts).
 _prompt_override_fragment() {
-  local path="$1"
+  local configured="$1" file="$2"
   printf '\n\n## Installation extension (%s)\n\n%s\n\n> This extension may add guidance for this installation. It does not\n> exempt this installation from any numbered requirement in this\n> repository'"'"'s specs (see CLAUDE.md, "As-built specifications") — the\n> specs outrank every prompt, this text included.\n' \
-    "$path" "$(cat "$path")"
+    "$configured" "$(cat "$file")"
 }
 
 # stage_prompt_text PROMPTS_DIR STATE_DIR STAGE OVERRIDES_JSON
@@ -93,8 +102,8 @@ stage_prompt_text() {
   # `replace` that is unreadable never reaches this line — it has already
   # fallen back to the shipped prompt.)
   cat "$base_file" || return 1
-  while IFS= read -r ext; do
-    _prompt_override_fragment "$ext"
+  while IFS=$'\t' read -r cfg ext; do
+    _prompt_override_fragment "$cfg" "$ext"
   done < <(stage_extend_files "$state_dir" "$stage" "$overrides_json")
 }
 
@@ -102,26 +111,78 @@ stage_prompt_text() {
 # A digest that changes iff stage_prompt_text's output for STAGE would
 # change — for the no-op fingerprint (requirement 3b), which must notice an
 # edited or newly-broken override exactly as it notices an edited
-# prompts/<stage>.md. Hashes each contributing file's own sha256sum line
-# (so a rename without a content change still registers, matching how a
-# `replace` path becoming readable changes what would be served) rather than
-# stage_prompt_text's output directly, and records a missing configured
-# `extend` file explicitly, so a fragment silently going missing also busts
-# the fingerprint rather than reproducing the same "no work" verdict forever.
+# prompts/<stage>.md. Content-addressed: the base file contributes its
+# content hash alone, and each configured `extend` entry contributes its
+# content hash keyed by its *configured* path — the config.json string the
+# fragment heading also serves, so it is already part of the text — with a
+# configured-but-unreadable entry recorded explicitly under that same name,
+# so a fragment silently going missing busts the fingerprint rather than
+# reproducing the same "no work" verdict forever. No resolved filesystem
+# path enters the digest: `none-selected` fingerprints are compared
+# fleet-wide (requirement 3b reads the shared log), so two nodes serving
+# identical prompt bytes from different install paths must compute the same
+# fingerprint, and moving an installation without changing a byte of content
+# must not bust the short-circuit. A `replace` file becoming readable, or a
+# rename, registers exactly when it changes the bytes served — and not when
+# it does not.
 stage_prompt_sha() {
   local prompts_dir="$1" state_dir="$2" stage="$3" overrides_json="$4"
   local base_file raw resolved
   base_file="$(stage_base_prompt_file "$prompts_dir" "$state_dir" "$stage" "$overrides_json")"
   {
-    [[ -r "$base_file" ]] && sha256sum "$base_file"
+    [[ -r "$base_file" ]] && sha256sum "$base_file" | cut -d' ' -f1
     while IFS= read -r raw; do
       [[ -n "$raw" ]] || continue
       resolved="$(resolve_prompt_override_path "$state_dir" "$raw")"
       if [[ -r "$resolved" ]]; then
-        sha256sum "$resolved"
+        printf '%s %s\n' "$(sha256sum "$resolved" | cut -d' ' -f1)" "$raw"
       else
-        printf 'missing %s\n' "$resolved"
+        printf 'missing %s\n' "$raw"
       fi
     done < <(jq -r --arg s "$stage" '(.[$s].extend // [])[]?' <<<"$overrides_json" 2>/dev/null || true)
   } | sha256sum | cut -d' ' -f1
+}
+
+# prompt_overrides_config_error OVERRIDES_JSON
+# Prints one line naming the first structural fault in OVERRIDES_JSON — a
+# non-object at the top, an unknown stage key, a non-object stage value, an
+# unknown key inside a stage, a non-array `extend`, a non-string `extend`
+# entry or `replace` — and prints nothing when the shape is valid. Called at
+# startup (agent-cycle.sh, requirement 4a): every fault here is a config.json
+# authoring error that the `?`/`// empty` tolerance in the functions above
+# would otherwise swallow, serving the unmodified shipped prompt every cycle
+# with no error and, for a misspelled stage key, no fingerprint movement
+# either. Runtime faults — a well-formed entry whose file is unreadable this
+# cycle — are deliberately not this function's business.
+prompt_overrides_config_error() {
+  local overrides_json="$1"
+  jq -r '
+    def stages: ["coordinator", "implementor", "reviewer", "enabler"];
+    if type != "object" then
+      "must be an object keyed by stage (coordinator/implementor/reviewer/enabler)"
+    else
+      first(
+        (keys_unsorted[] | select(. as $k | stages | index($k) | not)
+          | "unknown stage \"\(.)\" — stages are coordinator/implementor/reviewer/enabler"),
+        (to_entries[] | .key as $s | .value |
+          if type != "object" then
+            "\($s): must be an object holding \"extend\" and/or \"replace\""
+          else
+            (keys_unsorted[] | select(. != "extend" and . != "replace")
+              | "\($s): unknown key \"\(.)\" — valid keys are \"extend\" and \"replace\""),
+            (if has("extend") then
+              if (.extend | type) != "array" then
+                "\($s).extend: must be an array of file paths"
+              else
+                (.extend[] | select(type != "string")
+                  | "\($s).extend: every entry must be a file-path string")
+              end
+            else empty end),
+            (if has("replace") and ((.replace | type) != "string") then
+              "\($s).replace: must be a single file-path string"
+            else empty end)
+          end)
+      ) // empty
+    end
+  ' <<<"$overrides_json" 2>/dev/null || printf 'is not valid JSON\n'
 }

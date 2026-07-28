@@ -271,11 +271,19 @@ fi
 # config-pointed files, outside prompts/*.md, appended to (or, for `replace`,
 # substituted for) a stage's shipped prompt. Absent entirely, every stage
 # assembles byte-identical to today. Validated here, at startup, like every
-# other config shape above — a typo'd `prompt_overrides` should fail loudly
-# rather than silently drop the whole installation's extension every cycle.
+# other config shape above — and to full depth, not merely "is an object": a
+# misspelled stage key, a string where `extend`'s array is meant, or a
+# misspelled `extend`/`replace` would each be swallowed by the jq `?`
+# tolerance in lib/prompt-overrides.sh and silently serve the shipped bytes
+# every cycle — exactly the failure failing loudly here exists to prevent.
+# Runtime faults (a well-formed entry whose file is unreadable this cycle)
+# stay tolerated in the lib: files legitimately come and go, and an
+# unreadable one still moves the fingerprint, where a structural typo moves
+# nothing.
 prompt_overrides_json="$(cfg_json '.prompt_overrides // {}')"
-if [[ "$(jq -r 'type' <<<"$prompt_overrides_json" 2>/dev/null || echo invalid)" != "object" ]]; then
-  echo "agent-cycle: config.json's prompt_overrides must be an object keyed by stage (coordinator/implementor/reviewer/enabler) — see README.md" >&2
+prompt_overrides_shape_error="$(prompt_overrides_config_error "$prompt_overrides_json")"
+if [[ -n "$prompt_overrides_shape_error" ]]; then
+  echo "agent-cycle: config.json prompt_overrides: $prompt_overrides_shape_error — see README.md" >&2
   exit 1
 fi
 
