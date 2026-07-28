@@ -66,13 +66,14 @@ if [[ ! -e "$CLAUDE_CONFIG_DIR/.credentials.json" ]]; then
   say "         authenticated once: docker compose exec scheduler claude"
 fi
 
-# --- git and gh ---
-# The identity the Implementor's commits carry. Defaulted rather than required:
-# an unattended node that cannot commit because nobody set a name is a silly
-# way to lose a cycle.
-git config --global user.name "${GIT_USER_NAME:-Warwick Allen}"
-git config --global user.email "${GIT_USER_EMAIL:-warwick@datumprocess.co.nz}"
-
+# --- gh ---
+# The commit identity (GIT_USER_NAME/GIT_USER_EMAIL) is deliberately not set
+# here: this entrypoint gates every container this image runs — the dashboard
+# services and every CI smoke-test invocation included — and neither touches
+# git. Requiring it here would refuse a dashboard-only node, and every one of
+# those invocations, over an identity they never use. agent-cycle.sh and
+# review-cycle.sh require and configure it themselves, right before a cycle
+# that might actually commit — see lib/git-identity.sh.
 if [[ -n "${GH_TOKEN:-}" ]]; then
   # Teaches git to use GH_TOKEN for github.com https remotes, which is how the
   # cycles push their branches — they clone over https into workspace_root and

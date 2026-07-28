@@ -148,7 +148,8 @@ run_review() {  # run_review <home> <claim-gh> [env…] — real review-cycle.sh
     PATH="$fail_bin:$PATH" TOGGLE_GH=/bin/false \
     CLAIM_GH="$claim_gh" GH_STUB_DIR="$GH_STUB_DIR" \
     AGENT_OPS_CONFIG="$claim_config" \
-    STATE_SYNC_REMOTE="$state_remote" "$@" \
+    STATE_SYNC_REMOTE="$state_remote" \
+    GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" "$@" \
     "$REVIEW" --repo poetic >/dev/null 2>&1
 }
 

@@ -44,6 +44,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
+# shellcheck source=lib/git-identity.sh
+. "$SCRIPT_DIR/lib/git-identity.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
 # shellcheck source=lib/void-guard.sh
@@ -1663,6 +1665,13 @@ backpressure_tripped=0
 if (( open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
 fi
+
+# --- 2b. Git identity ---
+# After every stand-down check above (switch, fleet switch, usage-limit) and
+# before the first repo this cycle might actually touch: none of those
+# earlier exits commit anything and must not be blocked on an identity they
+# never use, but everything from here on can. See lib/git-identity.sh.
+require_git_identity agent-cycle
 
 # --- 3. Repo ordering (least recently updated default branch first) ---
 if [[ -n "$REPO_FILTER" ]]; then
