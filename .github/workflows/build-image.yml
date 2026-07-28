@@ -31,9 +31,10 @@ name: Build the node image
 # The skip is a job-level `if:` and not a workflow-level `paths-ignore:`,
 # because the two report differently to the branch ruleset. A skipped *job*
 # reports success and satisfies a required status check; a workflow filtered
-# out by `paths` never reports at all, and the three checks this workflow owes
+# out by `paths` never reports at all, and the four checks this workflow owes
 # the ruleset would sit pending forever — a docs-only pull request could never
-# be merged.
+# be merged. Every job here therefore reports on every pull request: `changes`
+# and `stamp` unconditionally, the two `build` legs as a success or a skip.
 #
 # What the skip costs is that the `test/` suite runs only here, so a docs-only
 # pull request does not run it. On a diff that touches no code that is a
@@ -185,13 +186,18 @@ jobs:
     # request stays mergeable with no image built for it.
     #
     # Which is exactly why `changes` failing must not skip this job. The
-    # default `needs` gate would do that — and a skipped required check reads
-    # as success, so a runner that died at checkout would quietly produce a
-    # mergeable pull request with no image ever built. `!cancelled()` replaces
-    # that gate with this expression, under which a `changes` job that
-    # produced no answer leaves `docs_only` empty and builds. Only an explicit
-    # `true` skips. `stamp` keeps its gate stated by hand, since its outputs
-    # are the build arguments below.
+    # default `needs` gate would do that, and a skipped required check reads as
+    # success — so a runner that died at checkout would skip both legs and
+    # `publish` with them, and on `main` that is a merge with no image, found
+    # only when somebody wonders why the fleet never rolled. (On a pull request
+    # the ruleset now catches it too: "Work out what changed" is a required
+    # check. This guard is what makes the build still *happen* rather than
+    # merely blocking the merge.)
+    #
+    # `!cancelled()` replaces the default gate with this expression, under
+    # which a `changes` job that produced no answer leaves `docs_only` empty
+    # and builds. Only an explicit `true` skips. `stamp` keeps its gate stated
+    # by hand, since its outputs are the build arguments below.
     if: >-
       !cancelled()
       && needs.stamp.result == 'success'
