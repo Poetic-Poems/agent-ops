@@ -34,7 +34,13 @@ for bin in claude gh git jq; do
 done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_FILE="$SCRIPT_DIR/config.json"
+# AGENT_OPS_CONFIG is for tests, as the positional argument is in
+# watchtower-pre-update.sh; cron and the container invoke this bare and get the
+# config beside the script. A test that drives the real script needs to vary one
+# key without editing the shipped file — and without that, adding any key here
+# silently reaches into every such test: `review.not_before` stood
+# test/review-claim.test.sh down before it reached the claim it was asserting on.
+CONFIG_FILE="${AGENT_OPS_CONFIG:-$SCRIPT_DIR/config.json}"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
 SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 
