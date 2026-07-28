@@ -240,10 +240,30 @@ file and carries placeholders only; `.env` itself is never committed.
   block so every service carrying the image has it). The script exits **75**
   (`EX_TEMPFAIL`), which watchtower reads as "cancel this container's update
   and re-check on the next poll", whenever `lock.json` or `review-lock.json`
-  names a live process **younger than that pipeline's `lock_stale_after`** —
+  is held: always bounded by **that pipeline's `lock_stale_after`**, and
+  beyond that judged by who is asking. A lock the running container itself
+  wrote (the recorded `host` matches) is held while its process is alive —
   the same judgement requirement 1's `acquire_lock` makes, so the hook
-  protects exactly what a cycle would have respected and a deferral can never
-  outlast `lock_stale_after`. It exits 0 when both are free, and also on any
+  protects exactly what a cycle would have respected. A lock written by any
+  other container, or one carrying no `host`, is held **until released or
+  stale, with no liveness check at all**: a pid is only meaningful in the PID
+  namespace that minted it, and on a tailnet node the dashboard reads the
+  scheduler's locks through the shared `state` volume. Either way a deferral
+  can never outlast `lock_stale_after`, and the fail-closed side is the cheap
+  one — a leftover foreign lock is taken over or removed within the hour by
+  the next cycle (requirement 1 precedes the stand-down checks, so standby
+  nodes clear it too), while a foreign `kill -0` answers for the wrong
+  process in both directions, and watchtower undid a live deferral off
+  exactly that answer once (issue #130): its restart map is keyed by *image*
+  id, so the dashboard's wrong exit 0 led it to recreate the deferred
+  scheduler sharing that image, stopped only by the name conflict with the
+  never-stopped container. That name conflict remains the only backstop
+  against a *second compose project* running the same image on one host: its
+  own state volume is rightly separate, so it rolls whenever its own node is
+  idle and its map entry still names the shared image — the deferred
+  container survives because the create fails on its own name, at the price
+  of a `Failed` count and a name-conflict error in watchtower's log each
+  poll. It exits 0 when both are free, and also on any
   internal failure — not because a non-zero status would freeze the node's
   image, but because **75 is the only status watchtower defers on**: every
   other non-zero code is logged as a failed hook and the update proceeds
@@ -523,12 +543,15 @@ runs unattended.
 
 ### The Script (`agent-cycle.sh`)
 
-1. **Lock.** On start, acquire a lock file in `state_dir` recording PID and
-   start time. If the lock is held by a live process younger than
-   `lock_stale_after`, log `cycle-skipped` and exit 0. If the holder is dead
-   or older than `lock_stale_after`, kill its whole process group if still
-   alive, log a `warning` (a stale cycle indicates a fault — it should not
-   occur in normal operation), take the lock, and continue.
+1. **Lock.** On start, acquire a lock file in `state_dir` recording PID,
+   start time, and the writer's hostname (`host` — on a containerised node
+   the container, which is the PID namespace the recorded PID is meaningful
+   in; the watchtower pre-update hook reads it, see the node stack section).
+   If the lock is held by a live process younger than `lock_stale_after`,
+   log `cycle-skipped` and exit 0. If the holder is dead or older than
+   `lock_stale_after`, kill its whole process group if still alive, log a
+   `warning` (a stale cycle indicates a fault — it should not occur in
+   normal operation), take the lock, and continue.
 1a. **Model id resolution (D12 groundwork).** Every model key read from
    config — `coordinator_model`, `implementor_model_default`,
    `implementor_model_trivial`, `reviewer_model_default`,
@@ -2956,11 +2979,17 @@ pull request, run the ones the change touches and any it could regress.
    another machine on the host's network is refused. Check 1c-ii is the same
    property guarded on every commit, where this one needs a node.
 1c-i. **A roll waits for a cycle.** `test/watchtower-pre-update.test.sh`
-   passes: `deploy/docker/watchtower-pre-update.sh` exits 75 while either
-   `lock.json` or `review-lock.json` names a live process inside that
-   pipeline's `lock_stale_after`, exits 0 when they are free, dead, stale or
-   unreadable, and exits 0 rather than blocking when it cannot read
-   `config.json` at all. `docker compose config` shows every service on the
+   passes: `deploy/docker/watchtower-pre-update.sh` exits 75 while, inside
+   that pipeline's `lock_stale_after`, either `lock.json` or
+   `review-lock.json` names a live process in the hook's own container — or
+   *any* process in another container: the suite models one lock read under
+   the writer's hostname and a neighbour's, deferring in both while the
+   writer's process lives, and deferring for the neighbour regardless of the
+   pid, which it has no way to check. It exits 0 when the locks are free,
+   stale, unreadable, or dead by the writer's own reading, and exits 0
+   rather than blocking when it cannot read `config.json` at all. Both cycle
+   scripts stamp `host` into the locks they write; the suite pins that too.
+   `docker compose config` shows every service on the
    agent-ops image carrying
    `com.centurylinklabs.watchtower.lifecycle.pre-update` pointing at that
    script, and `watchtower` carrying `WATCHTOWER_LIFECYCLE_HOOKS=true`.

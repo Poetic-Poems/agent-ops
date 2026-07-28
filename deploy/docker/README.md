@@ -184,11 +184,15 @@ the process group its cycle runs in, so watchtower asks first: with
 `WATCHTOWER_LIFECYCLE_HOOKS` on, it runs
 `deploy/docker/watchtower-pre-update.sh` inside each agent-ops container before
 touching it, and that script exits 75 (`EX_TEMPFAIL`) — watchtower's "cancel
-this one" — while either pipeline's lock is held by a live process. The roll
-lands on the next poll instead, five minutes later, and keeps landing there
-until the node is idle. A cycle can only push it back by so far: the hook
-respects a lock exactly as long as a cycle would, so a lock past
-`lock_stale_after` stops deferring anything.
+this one" — while either pipeline's lock is held. Held is judged by whoever is
+asked: the container that wrote the lock checks its process is alive, while
+any other container — the dashboard shares the scheduler's state volume, so it
+reads the scheduler's locks — honours it without a check, because a pid means
+nothing outside the PID namespace that minted it (#130). The roll lands on the
+next poll instead, five minutes later, and keeps landing there until the node
+is idle. A cycle can only push it back by so far: the hook respects a lock
+exactly as long as a cycle would, so a lock past `lock_stale_after` stops
+deferring anything, whoever wrote it.
 
 You can watch it happen:
 
@@ -199,7 +203,14 @@ docker compose logs watchtower | grep -A2 'Command output'
 `no cycle in flight` means the roll went ahead; `deferring this update` names
 the pipeline and the pid it waited for. A deferral is counted as a *failed*
 container in watchtower's session summary — that is watchtower's own wording
-for "did not update", not a fault.
+for "did not update", not a fault — so on a healthy node `Failed=1` recurring
+every poll is what a working deferral looks like; do not build alerting on it.
+On a host running two nodes off one image, a deferral may also log a
+name-conflict `ERROR` (`Creating <container> … name is already in use`): the
+other node's roll asks watchtower to recreate everything on the shared image,
+and the deferred container survives because it was never stopped, so the
+create fails on its own name. Same signature, same meaning — the deferral
+held.
 
 **A node provisioned before this existed is not protected until its stack is
 re-created.** The labels that carry the hook are read off the *running*
@@ -319,7 +330,7 @@ minutes.
 | The hourly line only ever says `skipped — this node is standby` | Working as intended on a standby | Set `ROLE=active` on any node that should spend — several may be |
 | A cycle logs `claim-lost` and moves on | A peer node won that item's claim | Working as intended — the next candidate (or the next cycle) picks different work |
 | A cycle died mid-run around an image update | Something recreated the scheduler while a cycle was running, and that kills the whole process group. watchtower no longer does this — the pre-update hook defers its roll — so the culprit is a manual `docker compose up -d`, `restart`, or `down`, none of which consult the hook | Nothing to repair: the lock is taken over as stale next hour and the claim GC releases anything it held, though an orphaned clone under `workspace_root` and any branch already pushed are left behind. Run `--status` and wait for a running cycle to finish before any manual recreate |
-| A node has stopped taking new images, and `docker compose logs watchtower` shows `deferring this update` every poll | The pre-update hook is doing its job — a cycle really is in flight — or a lock is being held by a live process that is itself wedged | Neither needs a fix: the hook stops honouring a lock once it passes `lock_stale_after` (4h for a cycle, 6h for a review), so the roll lands by then at the latest. To roll now, `--disable 'reason'`, wait for `--status` to read idle, `docker compose pull && up -d`, then `--enable` |
+| A node has stopped taking new images, and `docker compose logs watchtower` shows `deferring this update` every poll | The pre-update hook is doing its job — a cycle really is in flight — or a lock is being held by a live process that is itself wedged. If the message says `written by container`, the deferring container is honouring a lock it cannot liveness-check (the dashboard reading the scheduler's, or a lock left by a crashed cycle): that clears when the writer releases it, the next cycle takes it over (within the hour), or it goes stale | None of these needs a fix: the hook stops honouring a lock once it passes `lock_stale_after` (4h for a cycle, 6h for a review), so the roll lands by then at the latest. To roll now, `--disable 'reason'`, wait for `--status` to read idle, `docker compose pull && up -d`, then `--enable` |
 | `watchtower` exits at start with `Only schedule or interval can be defined, not both` | `.env` sets `WATCHTOWER_SCHEDULE` without clearing `WATCHTOWER_POLL_INTERVAL` | They are mutually exclusive. Either drop the schedule, or add a bare `WATCHTOWER_POLL_INTERVAL=` line beneath it — an empty value does not count as set |
 | The dashboard URL times out | The page is only ever reachable on the host's loopback: over the tailnet on the `tailnet` profile, at `http://127.0.0.1:$DASHBOARD_PORT` on the `local` one. From another machine, neither answers by design | Browse it from the host itself, or use the `tailnet` profile and browse the node's tailnet name |
 | `Bind for 127.0.0.1:8787 failed: port is already allocated` on the `local` profile | Something already holds that port on the host — a second node's stack, or on the laptop the legacy SysV dashboard | Set `DASHBOARD_PORT` in `.env` |

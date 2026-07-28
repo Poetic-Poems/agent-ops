@@ -69,8 +69,26 @@ x-agent-ops: &agent-ops
     # id, then restarts every container marked for update whose image is in
     # that map. A scheduler that deferred while a dashboard on the same image
     # did not would be recreated anyway, by the dashboard's entry — the
-    # deferral would be silently undone. Labelling every container that shares
-    # the image means the three of them always agree.
+    # deferral would be silently undone.
+    #
+    # The label alone does not make them agree, though this comment used to
+    # claim it did. Agreement needs each container to *evaluate* the shared
+    # lock correctly, and a pid is only meaningful in the PID namespace that
+    # minted it: on 2026-07-28 the dashboard ran the hook on the scheduler's
+    # live lock, found the pid dead in its own namespace, exited 0, and
+    # watchtower duly tried to recreate the deferred scheduler off the
+    # dashboard's map entry (#130). The hook therefore honours any lock its
+    # own container did not write, without a liveness check, until it is
+    # released or stale — which is what actually makes the sharers agree.
+    #
+    # One disagreement no hook can close: a second compose project on the same
+    # host (the two-nodes-one-machine layout) runs this image over its *own*
+    # state volume, so it rolls whenever its own node is idle, and its map
+    # entry still names the shared image. What holds a deferral then is that
+    # the deferred container was never stopped, so the create fails on its
+    # name — noisy in watchtower's log (a Failed count and a name-conflict
+    # error every poll), but the cycle survives, and the roll lands on the
+    # first poll after it ends.
     com.centurylinklabs.watchtower.lifecycle.pre-update: /app/deploy/docker/watchtower-pre-update.sh
     # Minutes (watchtower's unit here), and also its default — stated because
     # the value is load-bearing and a reader should not have to know the

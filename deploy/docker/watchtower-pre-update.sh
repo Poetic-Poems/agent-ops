@@ -31,6 +31,34 @@
 # Both pipelines count. agent-cycle.sh holds `lock.json` and review-cycle.sh
 # holds `review-lock.json`, and either dying to a roll costs the same.
 #
+# One thing acquire_lock never has to think about: *which container* wrote the
+# lock. This script must — watchtower runs it in every container carrying the
+# label, and on a tailnet node the dashboard shares the scheduler's state
+# volume, so it reads the scheduler's locks. A pid is only meaningful inside
+# the PID namespace that minted it, and `kill -0` from any other container
+# answers a question about the wrong process. That is not theoretical: on
+# 2026-07-28 the dashboard read the scheduler's live lock, found pid 55423
+# dead in its own namespace, exited 0 — and that put the image the two share
+# into watchtower's restart map, which is keyed by image id, so watchtower
+# tried to recreate the very scheduler it had just agreed to defer. Only the
+# name conflict with the never-stopped container saved the cycle (#130).
+#
+# So the lock records the hostname of the container that wrote it, and the
+# rule here is:
+#
+#   - our own lock ($HOSTNAME matches): judge liveness with `kill -0`, exactly
+#     as acquire_lock would;
+#   - anyone else's (the host differs, or an old lock carries no host): the
+#     pid is unanswerable from here, so honour the lock — fail *closed*,
+#     bounded by the same staleness as everything else. The asymmetry is
+#     priced: honouring a lock whose process is actually gone defers this
+#     container's roll until the next cycle takes the leftover lock over (the
+#     lock is acquired before the stand-down checks, so every node clears it
+#     within the hour; `lock_stale_after` bounds even a node whose cron is
+#     dead), while trusting a foreign `kill -0` kills live cycles — and pid
+#     collisions make it wrong in both directions, since an unrelated local
+#     process at the same number would defer for a cycle that ended hours ago.
+#
 # The judgement is reimplemented here rather than sourced from lib/toggle.sh on
 # purpose: this is the one script in the tree that runs from outside the
 # pipeline, on a container that is about to be destroyed, and its answer must
@@ -94,25 +122,37 @@ review_stale_after="$(jq -r '.review.lock_stale_after // 6' "$CONFIG_FILE")"
 [[ "$review_stale_after" =~ ^[0-9]+$ ]] || review_stale_after=6
 
 # held_by LOCK_FILE STALE_AFTER_HOURS
-# Print a one-line description if LOCK_FILE is held by a live process that a
-# cycle would still respect; print nothing otherwise. Always succeeds.
+# Print a one-line description if LOCK_FILE is a lock this container must
+# respect; print nothing otherwise. Always succeeds.
 #
 # An unparseable `started_at` reads as epoch 0 and so as impossibly old, which
 # is exactly what acquire_lock does with it: a lock whose age cannot be
 # established is one the next cycle would take over, and this hook must not
 # protect what the pipeline itself would not.
+#
+# Staleness is judged before liveness because it applies to every lock, while
+# `kill -0` is meaningful only for a lock this container's own pipeline wrote
+# — the `host` comparison decides which kind this is (see the header). The
+# comparison deliberately treats an empty `host` on either side as foreign:
+# a lock that cannot prove it is ours is one whose pid we must not trust.
 held_by() {
-  local f="$1" stale_after_hours="$2" pid started_at started_epoch now_epoch age_sec
+  local f="$1" stale_after_hours="$2" pid started_at host started_epoch now_epoch age_sec
   [[ -f "$f" ]] || return 0
   pid="$(jq -r '.pid // empty' "$f" 2>/dev/null || true)"
   started_at="$(jq -r '.started_at // empty' "$f" 2>/dev/null || true)"
+  host="$(jq -r '.host // empty' "$f" 2>/dev/null || true)"
   [[ "$pid" =~ ^[0-9]+$ ]] || return 0
-  kill -0 "$pid" 2>/dev/null || return 0
   started_epoch="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"
   now_epoch="$(date +%s)"
   age_sec=$(( now_epoch - started_epoch ))
   (( age_sec < stale_after_hours * 3600 )) || return 0
-  printf 'pid %s since %s, %ss old' "$pid" "${started_at:-unknown}" "$age_sec"
+  if [[ -n "$host" && "$host" == "${HOSTNAME:-}" ]]; then
+    kill -0 "$pid" 2>/dev/null || return 0
+    printf 'pid %s since %s, %ss old' "$pid" "${started_at:-unknown}" "$age_sec"
+  else
+    printf 'written by container %s since %s, %ss old — a foreign pid cannot be liveness-checked, so the lock is honoured until released or stale' \
+      "${host:-unknown}" "${started_at:-unknown}" "$age_sec"
+  fi
 }
 
 defer=0

@@ -10,6 +10,12 @@
 #     the property that stops one wedged process freezing a node's image for
 #     ever: the hook protects exactly what a cycle would have respected, and
 #     a cycle would have taken that lock over;
+#   - only the container that wrote a lock judges it by pid. Any other reader
+#     — the dashboard shares the scheduler's state volume but not its PID
+#     namespace — honours the lock until released or stale, in both
+#     directions: a pid that reads as dead here may be a live cycle next
+#     door, and one that reads as alive may be an unrelated local process
+#     (#130);
 #   - anything the hook cannot read fails *open*, because a node that quietly
 #     stops updating is worse than a roll that lands badly once.
 #
@@ -75,11 +81,15 @@ dead_pid() {
   printf '4194303'
 }
 
-write_lock() {  # write_lock FILE PID AGE_HOURS
-  local f="$1" pid="$2" age_hours="$3"
+# The default HOST is this shell's own, which is what acquire_lock writes: a
+# bare `write_lock` therefore models the pipeline's own lock, read back by the
+# container that wrote it.
+write_lock() {  # write_lock FILE PID AGE_HOURS [HOST]
+  local f="$1" pid="$2" age_hours="$3" host="${4-$HOSTNAME}"
   jq -n --argjson pid "$pid" \
         --arg started_at "$(date -u -d "-${age_hours} hours" +%Y-%m-%dT%H:%M:%SZ)" \
-        '{pid: $pid, started_at: $started_at}' > "$f"
+        --arg host "$host" \
+        '{pid: $pid, started_at: $started_at, host: $host}' > "$f"
 }
 
 # One run, both answers: `rc` and `out` are read by the assertions below.
@@ -87,6 +97,14 @@ rc=0
 out=""
 run_hook() {
   out="$("$HOOK" "${1:-$config}" 2>&1)"
+  rc=$?
+}
+
+# The same run wearing another container's name: bash keeps an inherited
+# HOSTNAME, so this is exactly what the hook sees when watchtower execs it in
+# a different container over the same state volume.
+run_hook_as() {  # run_hook_as HOST [CONFIG]
+  out="$(HOSTNAME="$1" "$HOOK" "${2:-$config}" 2>&1)"
   rc=$?
 }
 
@@ -151,6 +169,54 @@ run_hook
 assert_eq "a lock left by a process that is gone does not defer" "0" "$rc"
 rm -f "$state_dir/lock.json"
 
+# --- A lock written by another container (#130) --------------------------------
+# The dashboard shares the scheduler's state volume but not its PID namespace,
+# so it reads locks it can never `kill -0`. Modelled exactly: one lock file,
+# read as the container that wrote it and as a neighbour.
+
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 0 "writer-container"
+run_hook_as "writer-container"
+assert_eq "the writer's own container still judges by pid: live defers" "75" "$rc"
+run_hook_as "reader-container"
+assert_eq "and a neighbour honours the same lock without one" "75" "$rc"
+assert_contains "saying whose it is" "written by container writer-container" "$out"
+stop_sleeper
+
+# The regression observed at 07:58Z on 2026-07-28: a pid dead in the reader's
+# namespace while the writer's cycle was alive. The reader's own `kill -0` said
+# exit 0, and watchtower undid the writer's deferral off the shared image.
+write_lock "$state_dir/lock.json" "$(dead_pid)" 0 "writer-container"
+run_hook_as "reader-container"
+assert_eq "a fresh foreign lock defers even when its pid reads as dead here" "75" "$rc"
+run_hook_as "writer-container"
+assert_eq "while the writer, who can really check, lets the roll through" "0" "$rc"
+
+# The converse hazard: pid numbers repeat across namespaces, so a foreign lock
+# may name a pid that some unrelated local process happens to hold. Liveness
+# here buys a foreign lock nothing — staleness alone bounds it.
+start_sleeper
+write_lock "$state_dir/lock.json" "$sleeper_pid" 5 "writer-container"   # lock_stale_after: 4
+run_hook_as "reader-container"
+assert_eq "a stale foreign lock does not defer, however alive its pid looks here" "0" "$rc"
+stop_sleeper
+
+# A lock carrying no host at all — written by an image from before the stamp —
+# cannot prove it is ours, so it is honoured like any other foreign lock.
+jq -n --argjson pid "$(dead_pid)" \
+      --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+      '{pid: $pid, started_at: $started_at}' > "$state_dir/lock.json"
+run_hook
+assert_eq "an unstamped lock is foreign: fresh means deferred" "75" "$rc"
+rm -f "$state_dir/lock.json"
+
+# And the review lock walks the same path.
+write_lock "$state_dir/review-lock.json" "$(dead_pid)" 0 "writer-container"
+run_hook_as "reader-container"
+assert_eq "a foreign review lock defers the same way" "75" "$rc"
+assert_contains "naming that pipeline" "project review is in flight" "$out"
+rm -f "$state_dir/review-lock.json"
+
 # --- Junk in the lock ---------------------------------------------------------
 
 printf 'not json at all\n' > "$state_dir/lock.json"
@@ -195,6 +261,18 @@ assert_contains "with lifecycle hooks enabled on watchtower" \
   "WATCHTOWER_LIFECYCLE_HOOKS" "$(cat "$compose")"
 assert_eq "and the script is executable, since the label execs it" \
   "1" "$([[ -x "$HOOK" ]] && echo 1 || echo 0)"
+
+# --- The writers stamp their container into the lock ---------------------------
+# The foreign-lock rule only tells anyone anything if acquire_lock writes the
+# stamp: an unstamped lock is honoured blindly until stale, costing the writer
+# its own exact liveness check along the way.
+
+# shellcheck disable=SC2016  # the needle is a literal jq fragment
+assert_contains "agent-cycle.sh stamps the lock with its container" \
+  'host: $host' "$(cat "$SCRIPT_DIR/agent-cycle.sh")"
+# shellcheck disable=SC2016
+assert_contains "review-cycle.sh does the same" \
+  'host: $host' "$(cat "$SCRIPT_DIR/review-cycle.sh")"
 
 printf '\n'
 if (( failures > 0 )); then
