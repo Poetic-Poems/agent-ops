@@ -251,6 +251,19 @@ abandoned_draft_after_hours="$(cfg '.abandoned_draft_after_hours // 3')"
 state_repo="$(cfg '.state_repo // ""')"
 [[ "$state_repo" == "null" ]] && state_repo=""
 all_repos_json="$(cfg_json '.repos')"
+# The implementation-plan source has no path of its own in the prompt or the
+# code (issue #77): a repo that lists it must say where its plan document
+# lives. A repo that lists the source without configuring the path is a fatal
+# misconfiguration, not a silent fallback — the Co-Ordinator would have
+# nothing to read — so this fails the same way the enabler_assignee guard
+# above does: at startup, before any stage runs.
+missing_plan_path="$(jq -r \
+  '[.[] | select((.sources // []) | any(. == "implementation-plan")) | select((.implementation_plan_path // "") == "") | .slug] | join(", ")' \
+  <<<"$all_repos_json")"
+if [[ -n "$missing_plan_path" ]]; then
+  echo "agent-cycle: repo(s) [$missing_plan_path] list the implementation-plan source but have no implementation_plan_path configured — set it in config.json's repos entry or drop the source" >&2
+  exit 1
+fi
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
 log_file="$state_dir/log.jsonl"
@@ -1675,10 +1688,22 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
     issues="$(gather_issues "$slug")"
   fi
+  # The implementation-plan source's path is per-repo config, never a path
+  # fixed in the prompt (issue #77): echo it into the runtime-input entry only
+  # when the repo actually lists the source, so the Co-Ordinator reads it from
+  # its own input rather than a repo it happens to know about. The startup
+  # guard above already refused to run if this were missing.
+  implementation_plan_path=""
+  if jq -e 'any(.[]; . == "implementation-plan")' <<<"$sources" >/dev/null 2>&1; then
+    implementation_plan_path="$(jq -r --arg s "$slug" \
+      '.[] | select(.slug == $s) | .implementation_plan_path // ""' <<<"$repos_json")"
+  fi
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
     --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" --argjson issues "$issues" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, issues: $issues}')"
+    --arg ipp "$implementation_plan_path" \
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, issues: $issues}
+     + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
