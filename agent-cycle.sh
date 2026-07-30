@@ -57,6 +57,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/refinement.sh"
 # shellcheck source=lib/prompt-overrides.sh
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
+# shellcheck source=lib/coordinator-brief.sh
+. "$SCRIPT_DIR/lib/coordinator-brief.sh"
 
 usage() {
   cat <<'EOF'
@@ -1888,6 +1890,22 @@ selection_config_json="$(jq -nc \
   --argjson cmax "$candidates_max" \
   '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}')"
 coordinator_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
+# The repo/work-sources table prompts/coordinator.md used to hand-maintain is
+# generated from config.json instead (requirement 4b), from the plain
+# configured repo list (`all_repos_json`), never the cycle's back-pressure-
+# restricted `ordered_repos_json` — so it always shows each repo's full
+# configured priority regardless of this cycle's restrictions (see "--- 4.
+# Co-Ordinator stage ---" below, which substitutes this same value into the
+# prompt). Computed here, ahead of the fingerprint, and hashed verbatim:
+# `ordered_repos_json`'s `sources` is *not* a substitute for it, because
+# back-pressure (requirement 2.2a) narrows that array's `sources` to the three
+# finishing sources for a repo with work waiting, while this table — and the
+# prompt text the Co-Ordinator actually reads — still shows that repo's full
+# configured list regardless. Without hashing the table itself, a config edit
+# to a non-finishing source during a back-pressure cycle would change the
+# assembled prompt while leaving the fingerprint's `repos[].sources`
+# unchanged — the exact silent-stall shape this rule exists to prevent.
+coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
 
 # The Enabler's three inputs join the fingerprint for the same reason (requirement
 # 35b). Its eligible set is the third array whose candidacy turns on something no
@@ -1923,6 +1941,7 @@ noop_input="$(jq -nc \
   --argjson ec "$enabler_config_json" \
   --arg psha "$coordinator_prompt_sha" \
   --arg esha "$enabler_prompt_sha" \
+  --arg wst "$coordinator_sources_table" \
   '{
      repos: [ $repos[] as $r
               | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
@@ -1933,7 +1952,8 @@ noop_input="$(jq -nc \
      selection_config: $sc,
      coordinator_prompt_sha: $psha,
      enabler_config: $ec,
-     enabler_prompt_sha: $esha
+     enabler_prompt_sha: $esha,
+     coordinator_work_sources_table: $wst
    }')"
 noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 
@@ -1964,7 +1984,12 @@ coordinator_input="$(jq -nc \
     candidates_max: $cmax}')"
 
 # --- 4. Co-Ordinator stage ---
-coordinator_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")
+# `coordinator_sources_table` (computed above, ahead of the no-op fingerprint
+# so its bytes join it) is substituted for the @@WORK_SOURCES_TABLE@@ marker
+# the base prompt carries in its place.
+coordinator_base_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
+coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coordinator_sources_table}"
+coordinator_prompt="$coordinator_base_prompt
 
 ## Runtime input for this cycle
 
