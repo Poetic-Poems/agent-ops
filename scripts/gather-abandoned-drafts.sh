@@ -202,9 +202,11 @@ fi
 # Reviewer may use either, so a marker that only worked in one of them would
 # leave the pipeline resetting its own clock through the other. A PR with no
 # computable activity (no commit) is dropped rather than treated as infinitely
-# stale — `real_activity` compares as greater than any cutoff string when null,
-# via the explicit `!= null` guard below, so a malformed response excludes the
-# PR instead of wrongly claiming it.
+# stale, and the explicit `!= null` guard below is what does the dropping — do
+# not remove it as redundant. jq sorts `null` *below* every string, so a null
+# activity satisfies `$activity < $cutoff` on its own: without the guard a
+# malformed API response would make the PR look maximally stale and this source
+# would hand a human's live work to an Implementor to force-push over.
 prs="$(jq -c --arg cutoff "$cutoff" --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" '
   [.[]
    | (([ (.commits[-1].committedDate // empty) ]
