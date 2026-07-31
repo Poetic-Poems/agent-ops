@@ -69,34 +69,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072602 A human-applied needs-refinement label is inert
-
-Requirement 34e's label projection is deliberately one-way: the Script applies
-`needs-refinement` to an issue when a Co-Ordinator reports the block and takes
-it off when the block clears, but nothing ever reads the label back. So a
-human who applies it by hand gets nothing — no block is recorded, the item
-stays selectable, and the label sits there looking as though it did something.
-The one person the flow exists to serve has no way to invoke it deliberately.
-
-Deferred from #84 because it is a design decision, not an omission: it adds a
-second writer of refinement state, and a reconciliation path the current
-design gets to live without (a hand-applied label the human later removes, a
-label on an item already blocked for another reason, a label applied while
-the Enabler holds the item).
-
-Fix: keep the log as the only record and make the label a report rather than a
-state. During source gathering the Script scans open issues for the configured
-label (one search per repo) and, where no refinement block is open for that
-item, records one — kind `needs-refinement`, detail naming the label and who
-applied it — after which the ordinary lifecycle owns it, including the label's
-removal when the block clears. A human removing the label while the block is
-open maps to the existing hand-appended `unblocked` path. Decide when building
-it whether a hand-flagged item waits the full
-`enabler_after_coordinator_cycles` like a reported one — a human has already
-established the thing that threshold exists to establish.
-
-Filed 2026-07-26, deferred from #84 (requirement 34e).
-
 ### TD26072603 A refinement block is indistinguishable on the dashboard
 
 A refinement block renders in the dashboard's blocked panel as an ordinary
@@ -315,7 +287,7 @@ above.
 | TD26072301 | A watchtower roll mid-cycle kills the running pipeline | resolved | 2026-07-26 | #89 |
 | TD26072501 | The state dir's logs grow without bound | resolved | 2026-07-28 | #114 |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | resolved | 2026-07-28 | #116 |
-| TD26072602 | A human-applied needs-refinement label is inert | open | | |
+| TD26072602 | A human-applied needs-refinement label is inert | resolved | 2026-07-29 | #140 |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | resolved | 2026-07-29 | #139 |

@@ -854,6 +854,25 @@ gather_unvoid_requests() {
   fi
 }
 
+# Pre-fetch the issues a human has labelled directly, asking the pipeline to
+# treat them as too under-specified to select (requirement 34g). Like
+# gather_unvoid_requests, this is not a work source and runs for every repo
+# regardless of `sources`: the label only ever means something on an issue, but
+# it is not one of the `issues` source's own candidates, and a repo that opted
+# out of `issues` as work can still have a human flagging one by hand.
+gather_hand_flagged_refinements() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-hand-flagged-refinements.sh" "$slug" "$needs_refinement_label" \
+        2>"$cycle_dir/hand-flagged-refinements-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/hand-flagged-refinements-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 gather_source_state() {
   local slug="$1" branch="$2" out safe
   safe="${slug//\//_}"
@@ -1698,6 +1717,7 @@ fi
 ordered_repos_json="[]"
 source_states_json="[]"
 unvoid_requests_json="[]"
+hand_flagged_refinements_json="[]"
 while IFS= read -r slug; do
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
   commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>/dev/null || echo "1970-01-01T00:00:00Z")"
@@ -1763,6 +1783,14 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # land *before* the extract the Co-Ordinator is handed, not after it.
   unvoid_requests_json="$(jq -c --argjson r "$(gather_unvoid_requests "$slug")" '. + $r' \
     <<<"$unvoid_requests_json")"
+  # Requirement 34g, same reasoning: a human's hand-applied label has to reach
+  # the skip-list before the Co-Ordinator is handed it. An empty
+  # `needs_refinement_label` disables the projection entirely (README.md), so
+  # there is nothing to scan for and no `gh` call to spend.
+  if [[ -n "$needs_refinement_label" ]]; then
+    hand_flagged_refinements_json="$(jq -c --argjson r "$(gather_hand_flagged_refinements "$slug")" '. + $r' \
+      <<<"$hand_flagged_refinements_json")"
+  fi
 done < <(sort "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
@@ -1804,6 +1832,48 @@ if [[ "$(jq 'length' <<<"$unvoid_clearances_json" 2>/dev/null || echo 0)" != "0"
                                     cleared_void_ts: .void_ts}' <<<"$clearance")"
   done < <(jq -c '.[]' <<<"$unvoid_clearances_json" 2>/dev/null || true)
   tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+fi
+
+# Requirement 34g, applied next and for the same reason as 34f above: a human
+# labelled an issue directly, asking the pipeline to treat it as too
+# under-specified to select, and that has to land before `blocked_json` is
+# read below — a cycle late here is a human watching nothing happen and
+# concluding, the same way they would for an unread `unvoided`, that the label
+# does not work.
+#
+# New blocks first, against `blocked_items` as it stands after the unvoid
+# clearances above (an item a void just reopened has no other block to
+# collide with); then, against the extract as it stands after those new
+# blocks, which hand-flagged blocks this mechanism created have lost their
+# label since — the `unblocked` half of the same requirement.
+if [[ -n "$needs_refinement_label" ]]; then
+  hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_refinements_json" "$(blocked_items "$union_log")")"
+  if [[ "$(jq 'length' <<<"$hand_flag_new_json" 2>/dev/null || echo 0)" != "0" ]]; then
+    log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+    while IFS= read -r flag; do
+      [[ -n "$flag" ]] || continue
+      log_event "attempt-failed" "$(item_event_fields "coordinator" \
+        "$(jq -r '"hand-applied the " + .label + " label" + (if (.by // "") == "" then "" else " (by " + .by + ")" end)' <<<"$flag")" \
+        "$(jq -r '.repo' <<<"$flag")" "$(jq -r '.number' <<<"$flag")" \
+        "$(refinement_hand_flag_fields "$(jq -r '.repo' <<<"$flag")" "$(jq -r '.number' <<<"$flag")" \
+             "$(jq -r '.label' <<<"$flag")" "$(jq -r '.by // ""' <<<"$flag")" \
+             "$(jq -r '.labelled_at // ""' <<<"$flag")" "$(jq -r '.url // ""' <<<"$flag")")")"
+    done < <(jq -c '.[]' <<<"$hand_flag_new_json" 2>/dev/null || true)
+    tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+  fi
+
+  hand_flag_cleared_json="$(refinement_hand_flag_cleared "$hand_flagged_refinements_json" "$(blocked_items "$union_log")")"
+  if [[ "$(jq 'length' <<<"$hand_flag_cleared_json" 2>/dev/null || echo 0)" != "0" ]]; then
+    log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+    while IFS= read -r cleared; do
+      [[ -n "$cleared" ]] || continue
+      # `by: "label-removed"` distinguishes this from the Co-Ordinator's own
+      # `unblocked` (requirement 18) and the Enabler's — the same trail
+      # `unvoided`'s `by: "label"` leaves for a void reopened the same way.
+      log_event "unblocked" "$(jq -c '{item: .item, repo: .repo, by: "label-removed"}' <<<"$cleared")"
+    done < <(jq -c '.[]' <<<"$hand_flag_cleared_json" 2>/dev/null || true)
+    tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+  fi
 fi
 
 blocked_json="$(blocked_items "$union_log")"
