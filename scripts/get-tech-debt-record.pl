@@ -104,24 +104,36 @@ sub parse_item {
   return (\%meta, join '', @body);
 }
 
+# The per-item format is signalled by the tech-debt/ directory, or — for a
+# register that has not yet filed its first item, and so cannot commit an
+# empty directory — by a scope: declaration in TECH-DEBT.md's frontmatter.
+sub policy_scope {
+  my @policy = eval { read_lines('TECH-DEBT.md') };
+  return unless @policy and $policy[0] =~ /^---\s*$/;
+  for my $i (1 .. $#policy) {
+    last if $policy[$i] =~ /^---\s*$/;
+    return $1 if $policy[$i] =~ /^scope:[ \t]*(\S+)\s*$/;
+  }
+  return;
+}
+
 my $new_format;
 if (defined $ref) {
   $new_format =
-    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt");
+    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt")
+    || defined policy_scope();
 } else {
-  $new_format = -d "$repo_root/tech-debt";
+  $new_format = -d "$repo_root/tech-debt" || defined policy_scope();
 }
 
 my @records;
 if ($new_format) {
+  # A per-item register whose directory does not exist yet is simply empty.
   my @names;
   if (defined $ref) {
     my $listing = git_lines('ls-tree', '--name-only', "$ref:tech-debt");
-    defined $listing or die "Cannot list tech-debt/ at ref '$ref'\n";
-    @names = map { chomp; $_ } @$listing;
-  } else {
-    opendir my $dh, "$repo_root/tech-debt"
-      or die "Cannot open $repo_root/tech-debt: $!";
+    @names = defined $listing ? (map { chomp; $_ } @$listing) : ();
+  } elsif (opendir my $dh, "$repo_root/tech-debt") {
     @names = readdir $dh;
     closedir $dh;
   }
