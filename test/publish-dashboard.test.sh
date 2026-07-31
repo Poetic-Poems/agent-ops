@@ -771,6 +771,24 @@ assert_eq "a cold index is filled a few references a tick, not all at once" \
   "1" "$(( y_views <= 8 ))"
 assert_eq "and it does make progress" "1" "$(( y_views > 0 ))"
 
+# --- Blocked rows carry `kind` for a refinement block (TD26072603) --------------
+# A refinement block (`kind: "needs-refinement"`, lib/refinement.sh) is one
+# `attempt-failed` event among ordinary ones; the extract must not drop the
+# marker on its way into data.js, since the page's badge and filter both key
+# on it.
+z="$(new_home nodeZ)"
+zlog="$z/.local/state/poetic-agents/log.jsonl"
+printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072610","stage":"coordinator","detail":"a red check on the base branch"}\n' \
+  > "$zlog"
+printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072611","stage":"coordinator","detail":"never specified what done means","kind":"needs-refinement","unblock_condition":"a human decision","source":"tech-debt"}\n' \
+  >> "$zlog"
+run_publish "$z"
+zdata="$(data_of "$z")"
+assert_eq "an ordinary block's kind is the empty string" "" \
+  "$(jq -r '.blocked[] | select(.item=="TD26072610") | .kind' <<<"$zdata")"
+assert_eq "a refinement block's kind survives into data.js" "needs-refinement" \
+  "$(jq -r '.blocked[] | select(.item=="TD26072611") | .kind' <<<"$zdata")"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

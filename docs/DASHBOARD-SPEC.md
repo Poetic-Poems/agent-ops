@@ -280,6 +280,22 @@ each one itself rather than a fork per cycle re-reading and re-parsing it —
 plus the fleet-wide event union slurped once, and every potentially large
 intermediate reaches `jq` as a file, never argv (a single argument caps at
 128 KB, which transcript-bearing JSON exceeds).
+
+`data.js`'s size is dominated by capped transcripts, not by the small
+per-item records like `blocked[]`: one cycle at both caps (`TRANSCRIPT_CAP`
+of `result` and of `stderr`, on all three stages) measures 245,676 bytes on
+its own — `(40000 + 40000) * 3` bytes of capped text plus ~5.7 KB of envelope
+and structure — so the `MAX_CYCLES`-cycle window bounds near `40 *
+245,676 ≈ 9.4 MB` in the pathological case of every shown cycle maxing out
+both caps on every stage (measured directly, not derived from the constants
+alone). Against that, `blocked[]`'s `kind` field (added for TD26072603) costs
+9 bytes a row when empty (`"kind":""`) and 25 when it is `needs-refinement`
+(`"kind":"needs-refinement"`) — measured by publishing a 20-row synthetic
+`blocked[]` before and after the field was added (14,910 bytes total, +340
+bytes for the field across the 20 rows, half of them `needs-refinement`) — so
+even a blocked list two orders of magnitude longer than any fleet has run
+stays a rounding error against the transcript budget above. No cap on
+`blocked[]`'s length exists or is warranted by this change.
 `--no-github` skips the live GitHub fetch for a faster, offline run. Rather
 than blanking the GitHub panels, it reuses the last real fetch — cached at
 `<state_dir>/.dashboard-github.json` and re-marked `stale` — so the PR list,
@@ -314,6 +330,8 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                        //   ids of the cycle shape only — a
                                        //   hand-appended record is not a cycle
   blocked: [ { repo, item, ts, detail, stage,           // from the log union
+               kind,                                    // "" ordinarily, "needs-refinement" for a
+                                                         //   refinement block (implementation spec 34e)
                escalation_issue, escalation_url,        // an open ask of the human
                enabler_outcome, enabler_ts } ],         //   … or the last verdict
   void:    [ { repo, item, ts, detail, stage, evidence } ],
@@ -656,6 +674,13 @@ number's twins elsewhere on the page.
   Failures, and its transcript + stderr open inline. On a fleet, each node's
   card names what that node is doing and the header counts how many are working;
   on a single node the header carries the detail itself and there is no strip.
+- With a `blocked` row whose `kind` is `needs-refinement` in `data.js`, the
+  Blocked items table shows a **refinement** badge next to that row's item id,
+  the heading names how many refinement blocks there are, and its "hide N
+  refinement blocks" checkbox — shown only when at least one exists — removes
+  those rows from the table (and the heading's count) when checked, restoring
+  them when unchecked. An ordinary blocked row (`kind` unset or `""`) carries
+  no badge and is unaffected by the filter.
 - While a cycle is in flight, its row in Recent cycles reads **in progress**
   from the moment it starts — including during the Co-Ordinator stage, before
   any `selection` is logged, which is the whole window in which the log-derived
@@ -1003,6 +1028,20 @@ number's twins elsewhere on the page.
   to the operator* looked exactly like the four that had not. The link is
   deliberately the escalation issue rather than a copy of its text: the issue is
   where the ask is maintained, and closing it is the whole protocol.
+
+  A blocked row also carries `kind` (implementation spec 34e), and a row whose
+  `kind` is `needs-refinement` gets a **refinement** badge and counts toward a
+  "hide N refinement blocks" filter beside the panel's heading (TD26072603). An
+  ordinary block is waiting on the world — a merge, a fix, an answer already
+  asked for — and the Co-Ordinator is expected to clear it once that changes. A
+  refinement block is waiting on the pipeline's own Enabler and, past one
+  refinement, on a human: reading "blocked: 9" with no way to tell the two
+  populations apart understates how much of the backlog is a specification gap
+  rather than a stalled merge. The filter defaults to showing both — hiding is
+  an explicit, per-session choice, never the page's default view — because the
+  count in the heading is itself information ("that many things need
+  attention"), and defaulting to hidden would bury exactly the population this
+  change exists to surface.
 - **The live indicator says what, not just that.** The header's running dot
   once reported only that a cycle was in flight and since when; the item it was
   working on lived several panels down, in the cycles table. But "what is the

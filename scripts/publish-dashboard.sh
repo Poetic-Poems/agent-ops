@@ -640,7 +640,7 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$cost
 # they mean opposite things to a human deciding whether to intervene: a blocked
 # item is waiting on something, a void item is finished with.
 blocked_json="$(printf '%s\n' "$ALL_EVENTS" | blocked_items - | jq -c \
-  'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // "")})' 2>/dev/null)"
+  'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // ""), kind: (.kind // "")})' 2>/dev/null)"
 [[ -z "$blocked_json" ]] && blocked_json='[]'
 
 # What the Enabler has made of each blocked item (implementation spec 35, 36a),
