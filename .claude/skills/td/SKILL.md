@@ -51,10 +51,14 @@ git -C <repo> fetch -q origin main
 (If the fetch fails — e.g. offline — fall back to the working tree, without
 `--ref`, and note that in the final report.)
 
-The script prints each matching record as a YAML map (`id`, `title`, `body`,
-`start_line_number`, `end_line_number`) and sets its exit code to
-(matches − 1), so **exit 0 means exactly one match in that repo**. Collect
-every match across all candidate repos as (repo, ID) pairs, then branch:
+The script prints each matching record as a YAML map (`id`, `title`,
+`status`, `path`, `body`, plus `legacy-id` where one exists) and sets its
+exit code to (matches − 1), so **exit 0 means exactly one match in that
+repo**. It reads whichever register format the repo uses — a per-item
+`tech-debt/` directory, or a legacy single-file `TECH-DEBT.md` — and, in the
+per-item format, a segment also matches against the record's `legacy-id`.
+Collect every match across all candidate repos as (repo, ID) pairs, then
+branch:
 
 - **Exactly one (repo, ID) pair.** Proceed to step 3 with that record and its
   repo.
@@ -63,12 +67,13 @@ every match across all candidate repos as (repo, ID) pairs, then branch:
   list every match as `<repo> — <id> — <title>`, and ask the user which one
   they mean. Do not launch an agent.
 - **No matches in any repo.** Nothing matched `<id-segment>`. Stop, say so,
-  and suggest the user check the IDs in each repo's `TECH-DEBT.md`. Do not
-  launch an agent.
+  and suggest the user check the IDs in each repo's register (`tech-debt/`
+  or `TECH-DEBT.md`). Do not launch an agent.
 - **Invalid or missing segment** (the script died — stderr contains
   "Invalid ID segment" or "Please supply an ID segment"). Stop and ask the user
-  for a valid segment: digits, optionally prefixed by `D` or `TD`. Do not launch
-  an agent.
+  for a valid segment: digits, optionally prefixed by `D` or `TD`, or the
+  trailing part of a scoped ID (e.g. `poet-26070801`,
+  `TD-PPpoet-26070801`). Do not launch an agent.
 
 If `/td` is invoked with no argument at all, treat it as the missing-segment
 case above and ask which item to work on.
@@ -88,30 +93,33 @@ full description and the suggested fix, and instruct it to:
    conventions (Conventional Commits, the CHANGELOG/as-built-docs policy, and
    the tech-debt policy).
 2. Before doing anything else, follow `TECH-DEBT.md`'s "Claiming an item"
-   workflow: confirm the record's Ledger row is `open` (not `in-progress`)
+   workflow: confirm the record's status is `open` (not `in-progress`)
    **as of `origin/main`**, confirm no claim branch exists
    (`git ls-remote origin "refs/heads/td/<id>"` returns nothing), and skim
    open pull requests for its ID — if it looks already claimed, stop and
    report that instead of duplicating work. Otherwise create the claim branch,
-   named exactly **`td/<id>`**, flip the record's Ledger row to `in-progress`,
-   commit, and push. The branch name is the claim lock: **if the push is
-   rejected because the branch already exists, another agent claimed the item
-   in the race window — stop and report; never force-push.** Then open a
-   **draft** pull request right away (the Ledger-flip commit can be the PR's
-   first commit).
+   named exactly **`td/<id>`**, flip the record's status to `in-progress`
+   (its `status:` frontmatter in a per-item `tech-debt/<id>.md` register;
+   its Ledger row in a legacy single-file register), commit, and push. The
+   branch name is the claim lock: **if the push is rejected because the
+   branch already exists, another agent claimed the item in the race window —
+   stop and report; never force-push.** Then open a **draft** pull request
+   right away (the status-flip commit can be the PR's first commit).
 3. Implement the fix described in the record's `body`, pushing further
    commits to the same branch/PR.
 4. Run the relevant checks for the area it touched (e.g. `npm test`,
    `npm run build`, `npm run check`, `npm run check:build`; on WSL/Linux via
    `./scripts/setup-linux.sh`).
-5. On success, remove the resolved entry from `TECH-DEBT.md` — delete the whole
+5. On success, mark the record resolved per its register's format. Per-item
+   register: edit only the item's frontmatter — `status: resolved`,
+   `resolved:` (today's date), `ref:` (the PR number); the body stays, and
+   the file is never deleted or renamed. Legacy register: delete the whole
    `### <id> <title>` section under `## Current Items` (locate it by the
-   `### <id>` heading rather than by the reported line numbers, which drift once
-   editing starts) — and flip its
-   Ledger row to `resolved`, filling in `Resolved` (today's date) and `Ref`
-   (the PR number). If the record's body notes references to its ID
-   elsewhere (e.g. in code comments), remove those too, per `CLAUDE.md`'s
-   tech-debt policy.
+   `### <id>` heading) and flip its Ledger row to `resolved`, filling in
+   `Resolved` (today's date) and `Ref` (the PR number). Either way, if the
+   record's body notes references to its ID elsewhere (e.g. in code
+   comments), remove those too, per `CLAUDE.md`'s tech-debt policy, and
+   verify with `perl scripts/td-check.pl` before pushing.
 6. Add an `[Unreleased]` `CHANGELOG.md` entry, but only if the resolved repo
    maintains a `CHANGELOG.md` in the first place — skip this step otherwise
    (agent-ops currently has no `CHANGELOG.md`, so skip it here).
@@ -128,8 +136,8 @@ full description and the suggested fix, and instruct it to:
    stage without pausing to ask first. If verification fails and the agent
    can't resolve it, close the draft PR and delete the `td/<id>` branch (this
    releases the claim — the in-progress flip only ever lived on the branch,
-   so `main`'s Ledger still says `open`), and report what blocked it instead
-   of leaving a stale claim in place.
+   so the record on `main` still says `open`), and report what blocked it
+   instead of leaving a stale claim in place.
 
 The agent's final message comes back as the tool result and is not shown to the
 user, so relay its outcome (what it changed, test results, the PR URL, and

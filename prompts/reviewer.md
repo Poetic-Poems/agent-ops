@@ -85,11 +85,17 @@ your review:
   the Implementor left a non-conforming commit message anywhere on the
   branch, that's a CI failure you should fix (reword via rebase, not just
   the PR title).
-- `TECH-DEBT.md` has a permanent Ledger table (`open` / `in-progress` /
-  `resolved`). If this item came from tech debt, its Ledger row must be
-  `resolved` (with `Resolved` and `Ref` filled in) and its `### <id> ...`
-  section removed from `## Current Items` — not still `in-progress` with the
-  fix sitting unrecorded.
+- The tech-debt register records every item's status (`open` /
+  `in-progress` / `resolved` / `not-debt`), in whichever of the two formats
+  the repo uses. If this item came from tech debt it must now read
+  `resolved`: in a per-item register (a `tech-debt/` directory), the item
+  file's frontmatter has `status: resolved` with `resolved:` and `ref:`
+  filled and the body left in place — the file is never deleted or renamed;
+  in a legacy register, the Ledger row is `resolved` (with `Resolved` and
+  `Ref` filled in) and the `### <id> ...` section is removed from
+  `## Current Items`. Either way, not still `in-progress` with the fix
+  sitting unrecorded — `perl scripts/td-check.pl` (argless) verifies
+  whichever format it finds.
 - If this item came from a `security` or `code-quality` finding (a Dependabot
   or code-scanning alert), there is no ledger to flip: confirm instead that
   the diff genuinely resolves the flagged alert (the right dependency bumped

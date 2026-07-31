@@ -118,7 +118,7 @@ mergeable again, and nothing more.
 - **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
   resolving a conflict does **not** complete the underlying work — the item is
   done when the PR *merges*, which is still the human's or Reviewer's call. So do
-  **not** flip a Ledger row to `resolved`, add a `Closes #…`, or write a
+  **not** flip a tech-debt record to `resolved`, add a `Closes #…`, or write a
   `CHANGELOG.md` entry here; those already happened (or will happen) on the PR's
   own terms. Touch only what resolving the conflict requires.
 - **Verify like CI does, then confirm the conflict is gone** (Procedure steps 3–4
@@ -157,9 +157,9 @@ usual fields, and `branch` names the existing branch. Your job is to *finish* it
   Continue from there rather than starting the item over; finishing a draft
   instead of starting fresh only pays off if you build on the work already done.
 - **The originating claim is already made.** If this began as a tech-debt item its
-  Ledger row is already `in-progress`, and any issue was already commented on, by
+  record is already `in-progress`, and any issue was already commented on, by
   the cycle that opened the draft — do not redo that. You still **close the loop**
-  on completion (Procedure step 5): flip the Ledger row to `resolved`, add the
+  on completion (Procedure step 5): mark the record `resolved`, add the
   `Closes #…` reference or `CHANGELOG.md` entry, exactly as for a normal item.
 - **Finish to the work order's `acceptance`, and verify like CI does** (Procedure
   steps 3–4). Keep it scoped to what the draft set out to do; if the draft's whole
@@ -229,10 +229,14 @@ Both target repos follow these rules:
   `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`). CI checks
   **both** the PR title and every individual commit message on the branch,
   so write every commit — not just the eventual PR title — in that format.
-- `TECH-DEBT.md` holds deferred work as dated entries (`TD<YYMMDD><NN>`)
-  plus a permanent Ledger table with a `Status` column (`open` /
-  `in-progress` / `resolved`). `scripts/get-tech-debt-record.pl` resolves an
-  ID to its record; `scripts/next-tech-debt-id.pl` allocates new IDs — you
+- The tech-debt register holds deferred work as dated records with a
+  status (`open` / `in-progress` / `resolved` / `not-debt`), in one of two
+  formats the tooling detects for itself: **legacy** — a single
+  `TECH-DEBT.md` of `### <id>` sections plus a permanent Ledger table — or
+  **per-item** — one `tech-debt/<id>.md` file per record, its frontmatter
+  carrying what the Ledger row used to, with `TECH-DEBT.md` holding only
+  policy. `scripts/get-tech-debt-record.pl` resolves an ID to its record in
+  either format; `scripts/next-tech-debt-id.pl` allocates new IDs — you
   won't need either for a normal item (the Co-Ordinator already resolved
   yours), but use them if the work order's `context` is thin and you need
   to re-read the record yourself.
@@ -272,8 +276,10 @@ matching "When `source` is …" section above.)*
    - **Tech-debt items:** the work order's branch is `td/<ID>` — the same
      claim branch the repo's own "Claiming an item" workflow in
      `TECH-DEBT.md` prescribes, already pushed on your behalf. Complete
-     that workflow: flip the item's Ledger row to `in-progress` as your
-     first commit, then open the draft PR.
+     that workflow: flip the record's status to `in-progress` — the
+     `status:` frontmatter of `tech-debt/<ID>.md` in a per-item register,
+     the item's Ledger row in a legacy one — as your first commit, then
+     open the draft PR.
    - **Issues:** comment on the issue linking the draft PR, instead of (or
      in addition to) a Ledger flip.
    - **Security / code-quality findings** (`source` of `security` or
@@ -308,9 +314,15 @@ matching "When `source` is …" section above.)*
    Don't report completion on the strength of the diff looking right —
    run the checks.
 5. **Close the loop on the originating record:**
-   - Tech-debt: remove the entry's `### <id> ...` section from
+   - Tech-debt: mark the record resolved per its register's format.
+     Per-item register: edit only `tech-debt/<id>.md`'s frontmatter —
+     `status: resolved`, `resolved:` (today's date), `ref:` (the PR) —
+     leaving the body in place; never delete or rename the file. Legacy
+     register: remove the entry's `### <id> ...` section from
      `TECH-DEBT.md`'s `## Current Items` and flip its Ledger row to
-     `resolved`, filling in `Resolved` and `Ref` per that file's own format.
+     `resolved`, filling in `Resolved` and `Ref` per that file's own
+     format. Either way, `perl scripts/td-check.pl` (argless — it detects
+     the format) must exit 0 before you push.
    - Issue: reference it with a closing keyword (`Closes #123`) in the PR
      body.
    - Implementation-plan task: mark it done where the plan tracks that
@@ -332,7 +344,11 @@ matching "When `source` is …" section above.)*
      can make, report `"status": "blocked"` rather than guessing.
    - Register hygiene: there is no originating record to close — the register
      itself is the item — but the repair has a discipline, and skipping it turns
-     a tidy-up into a loss of information:
+     a tidy-up into a loss of information. Which discipline depends on the
+     register's format, which the problem labels in `context` tell you.
+
+     **Legacy-format labels** (STALE BODY, MISSING BODY, DUPLICATE BODY,
+     NO LEDGER ROW, DUPLICATE ROW, BAD ROW):
      - **STALE BODY** (a `resolved`/`not-debt` row whose body is still there):
        verify the resolution really landed before deleting anything. Follow the
        Ledger row's `Ref` to the pull request or commit and confirm the work is
@@ -357,13 +373,40 @@ matching "When `source` is …" section above.)*
        and the only row you may edit is one the check itself flags as broken.
        Do not renumber, re-sort, re-word titles, or fill in blank `Resolved`
        cells you happen to notice.
-     - Re-run `perl scripts/td-check.pl TECH-DEBT.md` until it exits 0. That is
-       the acceptance, and it is also what the repo's own CI will run on your
-       PR.
-     - **The pull request must be pure register housekeeping** — `TECH-DEBT.md`
-       and nothing else. If a stale body turns out to describe work that was
-       never done, do not do that work here; leave the item open (which is the
-       repair) and let it be selected on its own merits.
+
+     **Per-item-format labels** (BAD NAME, BAD FRONTMATTER, MISSING FIELD,
+     BAD FIELD, BAD STATUS, BAD SCOPE, NO SCOPE, ID MISMATCH, DATE MISMATCH,
+     STALE FIELD, DUPLICATE ID):
+     - Most are one-line frontmatter corrections — a missing `ref:` on a
+       resolved item, a status typo, a `filed:` date disagreeing with the
+       ID's. Correct the frontmatter to match the facts — the pull request
+       the item's `ref:` names, the filename, the `scope:` declared in
+       `TECH-DEBT.md` — never the facts to match the frontmatter. Where the
+       facts are not recoverable from git history (`git log --follow --
+       tech-debt/<id>.md`, and the PRs it names), report
+       `"status": "blocked"` naming the file and what you could not
+       establish.
+     - **STALE FIELD** (a resolution field set on an open item) is judged
+       the way STALE BODY is in the legacy format: follow the `ref:` and
+       confirm whether the fix actually landed on the default branch. If it
+       did, the *status* is what is stale — flip it to `resolved`; if it did
+       not, clear the resolution fields and leave the item open.
+     - **Never delete or rename an item file** — the register is an
+       append-only set and CI enforces it. An ID MISMATCH is repaired by
+       fixing the `id:` field to match the filename (or, only for a file
+       not yet on the default branch, renaming to the next free NN).
+     - **Touch nothing the check does not flag.** Item files are permanent
+       records; do not re-word titles, trim bodies, or tidy frontmatter the
+       checker accepts.
+
+     Common to both formats:
+     - Re-run `perl scripts/td-check.pl` (argless — it detects the register's
+       format) until it exits 0. That is the acceptance, and it is also what
+       the repo's own CI will run on your PR.
+     - **The pull request must be pure register housekeeping** — the register
+       and nothing else. If a stale body or field turns out to describe work
+       that was never done, do not do that work here; leave the item open
+       (which is the repair) and let it be selected on its own merits.
    - Add a `CHANGELOG.md` entry if the change is notable by the repo's own
      definition of that (a security fix usually is).
 6. **Verify the PR itself**, against GitHub's view, not your local guess:

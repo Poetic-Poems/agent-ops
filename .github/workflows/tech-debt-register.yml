@@ -1,23 +1,25 @@
 name: Tech-debt register check
 
-# The deterministic half of keeping TECH-DEBT.md honest (the other half is the
-# pipeline's `register-hygiene` work source, which repairs drift that lands
-# anyway). Resolving an item removes its `### <id>` body from Current Items and
-# leaves its Ledger row behind forever; in July 2026 twelve items across the
-# three repos were flipped to `resolved` with their bodies still in place, and
-# nothing noticed until somebody read the file. prompts/implementor.md has
-# prescribed the removal since it was written — but resolutions also arrive from
-# humans and from interactive sessions, which no prompt governs.
+# Gates the tech-debt register's consistency, whichever format the repository
+# is on:
+#   - per-item format (a tech-debt/ directory): every item file must carry
+#     well-formed frontmatter — id matching its filename and the repository's
+#     declared scope, a recognised status, resolution fields consistent with
+#     that status — no register file may ever be deleted or renamed (the
+#     append-only Ledger guarantee), and the old single-file format must not
+#     regrow inside TECH-DEBT.md.
+#   - legacy format (a single TECH-DEBT.md): every open/in-progress Ledger
+#     row must have exactly one "### <id>" body under Current Items, and no
+#     resolved or not-debt row may still have one. Resolving is a two-part
+#     edit — flip the Ledger row, remove the body — and the second part was
+#     repeatedly missed, leaving resolved items looking live.
 #
-# So the rule is checked here instead, on the pull request that would introduce
-# the drift, where the author is still holding the file. This job is uniform
-# across poetic, poetic-fiddle and agent-ops, as is scripts/td-check.pl (whose
-# canonical copy lives in Poetic-Poems/poetic — see td-tooling-drift.yml).
+# Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
+# runs with write-scoped secrets, and ungated by `paths:` — the register is
+# checked on every PR, since drift can also arrive from an edit elsewhere.
 #
-# Deliberately not gated by `paths:`: the check reads one small file and costs
-# seconds, and "did this PR touch TECH-DEBT.md" is the wrong question when a
-# merge can bring drift in from the base. Deliberately `pull_request`, never
-# `pull_request_target`, so a fork PR never runs with write-scoped secrets.
+# scripts/td-check.pl is the canonical copy for the sibling repositories,
+# which hold byte-identical copies guarded by their td-tooling-drift workflow.
 
 on:
   pull_request:
@@ -30,7 +32,33 @@ permissions:
 jobs:
   register:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v7
-      - name: Check TECH-DEBT.md consistency
-        run: perl scripts/td-check.pl TECH-DEBT.md
+        with:
+          # Full history, so the deletion guard can diff against the merge
+          # base of the PR's base branch.
+          fetch-depth: 0
+      - name: Check register consistency
+        run: perl scripts/td-check.pl
+      - name: Register files are permanent
+        if: github.event_name == 'pull_request'
+        # The append-only Ledger guarantee: once an item file is on the base
+        # branch, no PR may delete or rename it. Files not yet on the base
+        # can still be renamed, e.g. to resolve an ID-allocation collision.
+        run: |
+          removed=$(git diff --name-only --diff-filter=DR \
+            "origin/${GITHUB_BASE_REF}...HEAD" -- tech-debt/)
+          if [ -n "$removed" ]; then
+            echo "::error::tech-debt/ item files are permanent, but this PR deletes or renames:"
+            echo "$removed"
+            exit 1
+          fi
+      - name: Old format must not regrow
+        # Once the per-item register exists, item bodies belong in
+        # tech-debt/, never as "### TD..." sections in the policy document.
+        run: |
+          if [ -d tech-debt ] && grep -qE '^### TD' TECH-DEBT.md; then
+            echo "::error file=TECH-DEBT.md::per-item register present, but TECH-DEBT.md still contains old-format item sections"
+            exit 1
+          fi

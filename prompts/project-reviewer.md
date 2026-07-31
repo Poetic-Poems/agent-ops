@@ -115,22 +115,27 @@ Both target repos follow these rules:
    warrants). It is effective to parallelise the dimension reviews across
    subagents, as the skill describes; keep each subagent on the lowest-cost
    model tier likely to do its slice correctly.
-2. **Update `TECH-DEBT.md` in place.** Where the review surfaces debt, record it
-   in the existing `TECH-DEBT.md` following this repo's Ledger workflow exactly
-   — allocate IDs with `scripts/next-tech-debt-id.pl`, add a Ledger row per new
-   entry, and preserve the file's established format. Mark items the review
-   finds already resolved rather than deleting their history, per that file's
-   rules. Do not create a competing tech-debt file.
+2. **Update the tech-debt register in place.** Where the review surfaces debt,
+   record it in the existing register following this repo's own workflow
+   exactly — allocate IDs with `scripts/next-tech-debt-id.pl`, and add each
+   record in the register's own format: a new `tech-debt/<id>.md` item file
+   (frontmatter plus body) in a per-item register, or a `### <id>` section
+   plus a Ledger row in a legacy single-file one. Mark items the review
+   finds already resolved rather than deleting their history, per the
+   register's rules (in a per-item register that is a frontmatter status
+   flip; item files are never deleted or renamed). Do not create a competing
+   tech-debt file.
 
    **Cross-reference each mirrored recommendation.** Where an item you file
    covers the whole of a recommendation's *Intended end state*, record that
-   recommendation's `R-NN` against it in `TECH-DEBT.md`, where a `grep` of
-   that file will find it (the row, or the file's provenance table if it has
-   one). The implementation pipeline's Co-Ordinator uses exactly this
-   cross-reference to tell that the register entry and the recommendation are
-   the same work; without it, it re-selects and re-investigates the
-   recommendation every cycle unless a *merged* PR happens to reference it —
-   which work that lands as a direct commit never will.
+   recommendation's `R-NN` against it where a `grep` of the register will
+   find it (a `review:` frontmatter line in a per-item register; the row, or
+   the file's provenance table, in a legacy one). The implementation
+   pipeline's Co-Ordinator uses exactly this cross-reference to tell that
+   the register entry and the recommendation are the same work; without it,
+   it re-selects and re-investigates the recommendation every cycle unless a
+   *merged* PR happens to reference it — which work that lands as a direct
+   commit never will.
 
    Record the mapping only where the item covers the recommendation's whole
    end state. Where the recommendation is broader, leave the remainder to the
