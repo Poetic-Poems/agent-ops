@@ -59,6 +59,8 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
 # shellcheck source=lib/coordinator-brief.sh
 . "$SCRIPT_DIR/lib/coordinator-brief.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 usage() {
   cat <<'EOF'
@@ -914,7 +916,9 @@ handle_stage_failure() {
   log_attempt_failed "$stage" "$detail" \
     "$(jq -nc --arg u "$pr_url" 'if $u == "" then {} else {pr_url: $u} end')"
   if [[ -n "$pr_url" ]]; then
-    gh pr comment "$pr_url" --body "Autonomous agent ($stage) stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed." >/dev/null 2>&1 || true
+    gh pr comment "$pr_url" --body "Autonomous agent ($stage) stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -935,9 +939,10 @@ handle_stage_failure() {
 #
 # Deliberately silent on the PR itself. The Reviewer has already left its
 # concerns there in its own words (requirement 30), which is the record the
-# Enabler reads; a second comment from the Script would say nothing new, and
-# would move `updatedAt` — the clock the abandoned-drafts source measures
-# staleness by (requirement 3e).
+# Enabler reads; a second comment from the Script would say nothing new. It
+# would not distort the abandoned-drafts clock — a comment this system posts
+# carries the marker that keeps it out of that measure (requirement 3e) — but
+# "nothing new to say" is reason enough not to post it.
 log_reviewer_handback() {
   local detail="$1" pr_url="${2:-}" unblock_condition="${3:-}"
   log_attempt_failed "reviewer" "$detail" \
@@ -2197,7 +2202,9 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
        '{unblock_condition: (.unblock_condition // "")}
         + (if $u == "" then {} else {pr_url: $u} end)' <<<"$impl_status_json")"
   if [[ -n "$impl_pr_url" ]]; then
-    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed." >/dev/null 2>&1 || true
+    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -2250,6 +2257,10 @@ $(jq . <<<"$work_order_json")
 \`\`\`json
 $(jq . <<<"$impl_status_json")
 \`\`\`
+
+## Cycle
+
+$cycle_id
 "
 rev_out="$cycle_dir/reviewer.out"
 

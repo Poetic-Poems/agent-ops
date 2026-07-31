@@ -75,10 +75,9 @@ assert_eq "  ... and nothing else in the repo" "1" \
   "$(unvoid_clearances "$REQ_92" "$VOIDS" | jq 'length')"
 
 # --- Idempotence, which is what lets the label stay where the human put it ---
-# Removing the label would move the PR's `updatedAt`, and for a draft PR that is
-# the clock abandoned-drafts measures staleness by — so tidying up after the
-# human would delay the very PR they are unsticking. The rule has to be
-# self-limiting instead.
+# Nothing removes the label, so the rule has to be self-limiting rather than
+# one-shot: a second cycle seeing the same label must clear nothing, or a void
+# recorded later would be reopened by a label that never saw it.
 assert_eq "a second cycle clears nothing, the void already being gone" \
   "" "$(cleared "$REQ_92" '[]')"
 

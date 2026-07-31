@@ -21,11 +21,11 @@
 # fresh void stands on its own.
 #
 # Together the two tests make the source idempotent without touching the label,
-# which is what lets the label stay where the human put it. That matters
-# practically: removing it would move the item's `updatedAt`, and for a pull
-# request that is the clock `abandoned_draft_after_hours` is measured against
-# (requirement 3e) — so tidying up would delay the very PR the human is trying
-# to unstick.
+# which is what lets the label stay where the human put it: a self-limiting rule
+# needs no cleanup, and label edits are this system writing to its own
+# bookkeeping surface — the abandoned-drafts source discounts them for exactly
+# that reason (requirement 3e) — so the only thing removal could achieve is
+# churn on the pull request a human is trying to unstick.
 #
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail`.

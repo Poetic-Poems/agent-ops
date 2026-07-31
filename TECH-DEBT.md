@@ -136,75 +136,6 @@ behaviour once the day-one backlog of previously silent items has drained.
 
 Filed 2026-07-26, deferred from #84.
 
-### TD26072605 The pipeline's own writes to a pull request reset its abandoned-draft clock
-
-`scripts/gather-abandoned-drafts.sh` decides a draft is abandoned when its
-`updatedAt` is older than `abandoned_draft_after_hours`, and its header explains
-why that is right: a push, a comment, a peer node still working it, or a human
-poking it all reset the clock, and each genuinely means "somebody is on this".
-But `updatedAt` moves for anything at all, including the pipeline's own
-housekeeping — and when *this system* touches a pull request, that is not
-evidence somebody is on it. It is usually evidence the opposite just happened.
-
-Two measurements on poetic#92, both from 2026-07-26:
-
-- **A label edit.** The `unvoided` label went on at 21:40:28Z and `updatedAt`
-  moved to 21:40:44Z with nothing else touching the PR. The perverse part is
-  what the label *was*: the maintainer's attempt to unstick it. That attempt
-  failed twice over — it did not clear the void, which requirement 34f now
-  fixes, and it pushed the one source that could have surfaced the PR out by a
-  further `abandoned_draft_after_hours`.
-- **The Enabler's own comment, which is the sharper case.** At 00:39:30Z the
-  Enabler commented on #92 — "the permission grant took effect, the item's work
-  is now complete on this branch, and only a rebase stands between it and
-  review" — and at 00:39:53Z logged `unblocked` for `TD26072114`. That is the
-  system working exactly as designed: it diagnosed the stall and cleared the
-  block. And in the same breath it reset the staleness clock on the pull request
-  it had just declared ready to finish, deferring `abandoned-drafts` from
-  00:39:30Z to 03:39:30Z. **The better the Enabler explains itself, the longer
-  the recovery it enables is delayed.**
-
-The pipeline has several such writes: the Enabler's comment (`prompts/enabler.md`
-sanctions one per item), the Implementor's `complexity:*` label on raise and the
-Reviewer's correction of it (requirement 8a), requirement 34e's
-`needs-refinement` projection and retraction, and the stage-failure comment in
-`handle_stage_failure`. Each is on a pull request the system may later need to
-recognise as stalled.
-
-**Ruled out, so nobody re-derives it:** a `cross-referenced` event does *not*
-move `updatedAt`. agent-ops#83 and #88 both link to poetic#92, firing
-cross-references at 21:20:55Z and 00:15:06Z, and `updatedAt` did not move for
-either — confirmed against the GraphQL field and both REST endpoints. Mentioning
-a stalled pull request from another repository is safe.
-
-**A fix that looks right and is not.** "Take the latest of the head commit's
-date, the newest comment and the newest review, and ignore label edits" handles
-the first measurement and misses the second entirely — the Enabler's write *is*
-a comment, and a human's comment must keep resetting the clock. Filtering by
-author cannot separate them either: the fleet raises and comments as
-`warwickallen`, the maintainer's own account, so every write has the same author.
-
-The distinction that actually holds is *whose write it was*, and the only
-component that knows is the writer. So: **stamp what the pipeline writes**, the
-way the Vercel bot does — an invisible marker (an HTML comment carrying the
-cycle id) on every comment this system posts, and the gatherer discounts
-marker-carrying comments when computing staleness while still counting
-everything else. Label edits are discounted unconditionally; the label set is
-the pipeline's own bookkeeping surface and a human who wants a PR looked at has
-`autonomous-agent` for that.
-
-Worth deciding at the same time whether a stamped comment should reset the clock
-*partially* — the Enabler having just examined an item is a reason not to
-re-select it immediately — or not at all. Not at all is simpler and safe here,
-because the Enabler's verdict already lands as an `unblocked`/`still-blocked`
-event that the selection rules read directly.
-
-Check the same measure where else it is used before changing it:
-`gather-source-state.sh`'s open-PR digest keys on `updated_at` deliberately, to
-notice *any* change, and must keep doing so.
-
-Filed 2026-07-26; second measurement and the revised fix added the same day.
-
 ### TD26072606 Nothing tests the dashboard page's JavaScript
 
 `test/` covers the Publisher thoroughly and the page not at all. The ~1,265
@@ -387,7 +318,7 @@ above.
 | TD26072602 | A human-applied needs-refinement label is inert | open | | |
 | TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
-| TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | open | | |
+| TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | resolved | 2026-07-29 | #139 |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
 | TD26072607 | The published arm64 image has never been run | resolved | 2026-07-26 | #102 |
 | TD26072801 | A still-valid block is re-read every cycle once its issue's thread has moved | open | | |

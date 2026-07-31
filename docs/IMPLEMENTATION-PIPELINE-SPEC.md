@@ -528,7 +528,7 @@ values below are the confirmed defaults; the README must document each key.
 | `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 30 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
-| `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit untouched (`updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
+| `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
 | `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
@@ -978,19 +978,54 @@ runs unattended.
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
    to that repo's entry as `abandoned_drafts`. It prints the draft PRs *this
    system raised and then abandoned*: open, **draft**, carrying `pr_label`, head
-   branch under `branch_prefix` (or `td/`), and with `updatedAt` older than
-   `now − abandoned_draft_after_hours`. Each entry carries the round's ref, the PR
-   number and URL, the existing branch, the head SHA, the `updatedAt`, and the
-   draft PR's own body verbatim (the original plan).
+   branch under `branch_prefix` (or `td/`), and whose last **real** activity
+   (below) is older than `now − abandoned_draft_after_hours`. Each entry carries
+   the round's ref, the PR number and URL, the existing branch, the head SHA,
+   that last-real-activity timestamp (as `updated_at`), and the draft PR's own
+   body verbatim (the original plan).
 
    - **A draft is the claim; a stale draft is an abandoned claim.** Requirement 23
      has the Implementor open a draft PR the moment it starts, as the visible
      claim. A draft that has sat untouched past the threshold is therefore a claim
      whose owner never returned — a stage that timed out, hit a usage limit, or
-     died. `updatedAt` advances on any push, comment, label or title edit, so a
-     draft that is merely being worked (or that a peer node has picked up) keeps
-     resetting its clock and never qualifies; the threshold sits comfortably
-     beyond a whole cycle for exactly this reason.
+     died. A genuine push, review or comment resets the clock, so a draft that is
+     merely being worked (or that a peer node has picked up) never qualifies; the
+     threshold sits comfortably beyond a whole cycle for exactly this reason.
+   - **Last real activity, not GitHub's raw `updatedAt`** (TD26072605). `updatedAt`
+     advances on *anything* — a push, a comment, a label or a title edit —
+     including this system's own housekeeping, and when this system touches a PR
+     that usually means the opposite of "somebody is on it". So this source
+     computes its own measure instead: the latest of the head commit's
+     `committedDate`, every review's `submittedAt` and every comment's
+     `createdAt`, **excepting** any review or comment carrying the invisible
+     marker `lib/pipeline-marker.sh` defines — the body is what is tested, not
+     which collection the write landed in, because `gh pr comment` and `gh pr
+     review --comment` file the same words under different ones and the Reviewer
+     may use either. Two writes are therefore never evidence of
+     activity: a **label edit** is discounted unconditionally (the label set is
+     this system's own bookkeeping, never a sign of work in progress), and a
+     **comment this system posted itself** — stamped by `agent-cycle.sh`'s own
+     stage-failure comments and by the Enabler's and Reviewer's comment
+     instructions (`prompts/enabler.md`, `prompts/reviewer.md`) — is discounted
+     because it carries the marker. A human's comment (or a peer node commenting
+     on a human's behalf) carries no marker and always counts; filtering by
+     author cannot make this distinction, because every pipeline write happens
+     under the same GitHub account a human also comments as. A marked comment
+     resets the clock **not at all**, never partially — the Enabler's own verdict
+     already reaches selection as an `unblocked`/`still-blocked` event
+     (requirement 18), so a partial reset would add nothing.
+   - **A nested collection at `gh`'s cap is missing evidence, not evidence.**
+     `gh pr list` does not paginate the collections this computation reads —
+     `commits`, `reviews` and `comments` each arrive capped at 100 items, with
+     `comments` oldest-first — so at the cap the newest activity may be absent,
+     and at the commits cap `commits[-1]` is not the head. A PR with any
+     collection at the cap is excluded this cycle, loudly on stderr: the same
+     uncomputable-activity treatment as the missing-commit case below, chosen
+     over paginating per candidate because the failure it guards against is the
+     dangerous direction (a live human conversation past the cap misread as
+     silence) while the cost is the safe one — a stalled draft that has somehow
+     accumulated 100 of anything waits for a human, and on this system's own
+     drafts such a PR is an anomaly worth a human's eye anyway.
    - **Ready PRs are not ours to touch here.** A non-draft PR is finished work
      waiting on the human; answering it is `review-feedback`'s job, and
      force-pushing it would violate the Human Gate. Only drafts qualify.
@@ -1001,13 +1036,16 @@ runs unattended.
      Same reasoning as requirement 3c's per-round refs.
    - **Its candidacy turns on the clock**, uniquely among the sources, and that is
      the deciding reason it is pre-fetched rather than left to the Co-Ordinator:
-     the staleness transition moves no commit, issue, alert or even the PR's own
-     `updatedAt`, so only an array computed against the clock here makes it visible
+     the staleness transition moves no commit, issue, alert or even a PR's real
+     activity, so only an array computed against the clock here makes it visible
      to the no-op fingerprint (requirement 3b). As with requirement 3c the rule
      must exist for the fingerprint anyway, so it gets one definition
      (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
-     3c. `shellcheck`-clean.
+     3c. A PR whose real activity cannot be computed (no commit — should never
+     happen — or a collection at the cap, above) is excluded rather than treated
+     as maximally stale: the dangerous direction is stealing live work, not
+     leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
    include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
    <pr_label> <branch_prefix>` and attach the array to that repo's entry as
@@ -1391,8 +1429,10 @@ runs unattended.
    the implementor prompt plus the work order.
 8. **Reviewer stage.** If the Implementor reports `complete`, launch the
    Reviewer in the same workspace (model per requirement 8a, same flags,
-   stage timeout), passing the reviewer prompt, the work order, and the
-   Implementor's summary (PR URL, branch, complexity).
+   stage timeout), passing the reviewer prompt, the work order, the
+   Implementor's summary (PR URL, branch, complexity), and this cycle's
+   `cycle` id — the last because any comment the Reviewer leaves must carry
+   requirement 3e's marker, and a model cannot know its own cycle.
 8a. **The Reviewer's model follows the item's complexity.** The Script
    resolves an effective complexity for the PR and launches the Reviewer with
    `reviewer_model_complex` when it is `high`, `reviewer_model_default`
@@ -2151,11 +2191,13 @@ runs unattended.
 
     The Script leaves no comment of its own on the PR here. The Reviewer has
     already stated its concerns there in its own words (requirement 30) and that
-    is the record the Enabler reads; a second comment would add nothing and would
-    move `updatedAt`, which is the clock requirement 3e measures staleness by.
-    Where the Script does comment on a stage failure it says the item is recorded
-    blocked and that the Enabler will re-examine it — never that the PR has been
-    left for a human, which under this requirement is not true.
+    is the record the Enabler reads; a second comment would add nothing —
+    marking it (requirement 3e) would keep it from resetting the staleness
+    clock, but there is still nothing for it to say that the thread does not
+    already contain. Where the Script does comment on a stage failure it says
+    the item is recorded blocked and that the Enabler will re-examine it —
+    never that the PR has been left for a human, which under this requirement
+    is not true.
 32b. **`complete_handoff`.** An Enabler `unblocked` verdict may carry
     `complete_handoff: true` on an item whose `pr_url` is set (requirement 35a),
     meaning: this block *is* an unfinished handoff — an open draft this system
@@ -2654,7 +2696,8 @@ runs unattended.
     entry rather than the PR — the `kind` and `refined_before` of requirement
     35a, and the last `escalation` if there is one), plus
     `escalation_label`, `assignee`, and this cycle's `cycle` id and `node` — the
-    last two because requirement 36a's issue footer carries them, and a model
+    last two because requirement 36a's issue footer carries them, and requirement
+    3e's marker stamps the Enabler's own comments with the `cycle`, and a model
     cannot know its own cycle.
 
     Its entire final message is one JSON object:
@@ -2810,9 +2853,26 @@ What exists, and the requirements each part answers to:
    `shellcheck`.
 3f. `scripts/gather-abandoned-drafts.sh` implementing requirement 3e: given a
    repo slug, PR label, branch prefix and staleness threshold, prints the JSON
-   array of this system's own abandoned draft PRs (open, draft, ours, untouched
-   past the threshold), each carrying the draft PR's body verbatim and a
-   head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
+   array of this system's own abandoned draft PRs (open, draft, ours, whose last
+   real activity — commits, and the reviews and comments not carrying
+   `lib/pipeline-marker.sh`'s marker — is untouched past the threshold), each
+   carrying the draft PR's body verbatim and a head-SHA-scoped ref. A PR any of
+   whose nested collections `gh pr list` returned at its 100-item cap is
+   excluded for the cycle rather than judged on possibly-incomplete activity
+   (requirement 3e). Its
+   candidate rule is regression-tested in `test/abandoned-drafts.test.sh`. Fails
+   safe to `[]` (exit 0). Must pass `shellcheck`. Sources
+   `lib/pipeline-marker.sh`, which implements the write side of the same
+   requirement: `PIPELINE_COMMENT_MARKER_PREFIX`, the fixed substring this
+   script matches on, and `pipeline_comment_marker CYCLE_ID`, which every
+   pipeline-authored PR comment is stamped with — `agent-cycle.sh`'s own
+   stage-failure comments directly, and the Enabler's and Reviewer's comment
+   instructions (`prompts/enabler.md`, `prompts/reviewer.md`) via the cycle id
+   each receives at invocation. One definition (requirement 34a): the reader and
+   every writer that is a shell source this file, and the two prompts — which a
+   model reads, so they must spell the marker out — are asserted against
+   `PIPELINE_COMMENT_MARKER_PREFIX` by `test/abandoned-drafts.test.sh`, so the
+   marker cannot drift between any of them.
 3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g: given a
    repo slug, PR label and branch prefix, prints the JSON array of this system's
    own ready-but-conflicted PRs (open, non-draft, ours, `mergeable` definitively
@@ -3658,14 +3718,17 @@ requirements above, which state only what is.
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
   silted with a dead draft into a PR a human can merge; under back-pressure it is
   one of the three
-  finishing sources the cycle narrows to (requirement 2.2a). Three choices make it
+  finishing sources the cycle narrows to (requirement 2.2a). Four choices make it
   safe: the draft/label/branch filter keeps it to *our* stalled work (never a
   human's PR, never a ready one); the ref is scoped to the head SHA, so a
   re-abandoned draft that has since gained commits is a new item rather than one
-  stuck behind an old block; and, because its candidacy uniquely turns on the
-  clock, the candidate array is fed to the no-op fingerprint verbatim so the
-  staleness transition — which moves no other signal — still wakes the pipeline
-  (requirement 3b).
+  stuck behind an old block; the clock is last **real** activity rather than
+  GitHub's raw `updatedAt`, so the pipeline's own label edits and marked comments
+  (`lib/pipeline-marker.sh`) cannot make a genuinely stalled draft look worked
+  (TD26072605 — see the Gotchas table); and, because its candidacy uniquely turns
+  on the clock, the candidate array is fed to the no-op fingerprint verbatim so
+  the staleness transition — which moves no other signal — still wakes the
+  pipeline (requirement 3b).
 - **A merge conflict on an otherwise-ready PR is itself a work source.** A PR this
   system raised can go green, be reviewed, even be approved, and then conflict when
   the base advances underneath it — leaving a finished PR a human cannot merge and
@@ -3958,3 +4021,4 @@ confident, recurring no-op.
 | A cost-control feature that makes cost the *only* thing it protects | Skipping a stage to save money is a decision to do nothing, and doing nothing is what a healthy idle pipeline also looks like. Get the skip condition subtly wrong — a source outside the fingerprint, a failed API call digested as "empty" — and the pipeline stops picking up work while reporting perfect health, forever, because nothing that stands down ever fails. | Make the skip's claim narrow enough to be provable ("nothing changed"), never broad enough to be wrong ("there is no work"). Mark unusable samples rather than degrading them to empty. Cap the whole mechanism with a time-based valve (`none_selected_recheck_hours`) so a gap in coverage is a bounded delay rather than an outage, and pay the occasional wasted run for it — the run you skipped wrongly costs more than the one you ran needlessly. |
 | A switch with no way back on | An agent disables the pipeline to edit safely, then dies mid-session — killed, timed out, or just finished and forgetful. The switch stays set. No cycle runs again. Nothing alerts, because "no PRs this week" is exactly what a quiet week looks like, and the operator finds out days later. | Give any deliberate stop an expiry (requirement 2.3), and make indefinite something a human explicitly asks for. Same shape as the stale-lock rule (requirement 1): every mechanism that halts this system needs an answer to "what if whoever set it never comes back?" |
 | One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |
+| A staleness clock reset by the system's own housekeeping | `abandoned-drafts` (requirement 3e) measured a draft's staleness from `updatedAt`, which moves for anything at all. On poetic#92 a label edit deferred detection by a full `abandoned_draft_after_hours`, and — the sharper case — the Enabler's own comment correctly diagnosing the stall reset the clock in the same breath it cleared the block, deferring the very recovery it had just enabled. Filtering by comment author could not fix it: every pipeline write happens under the same GitHub account a human also comments as. | Ask "would *this system itself* ever produce this signal, and does that mean what a human producing it would mean?" before trusting a timestamp as "somebody is on it" (TD26072605). Where the answer differs, stamp what you write (`lib/pipeline-marker.sh`'s invisible marker) so the reader can tell its own hand from a human's, and discount your own bookkeeping (label edits) unconditionally. Same shape as "a change-detection digest that tracks churn instead of meaning" above, but the churn here is the system talking to itself. |
