@@ -60,11 +60,13 @@ assert_docs_only "anything nested under docs/ is documentation" docs/notes/adr/0
 assert_docs_only "the README is documentation" README.md
 assert_docs_only "CLAUDE.md is documentation" CLAUDE.md
 assert_docs_only "TECH-DEBT.md is documentation" TECH-DEBT.md
+assert_docs_only "a per-item register file is documentation" \
+  tech-debt/TD-PPagop-26073101.md
 assert_docs_only "the licence is documentation" LICENCE
 assert_docs_only "the node runbook is documentation" deploy/docker/README.md
 assert_docs_only "the whole inert set at once is documentation" \
   docs/ROADMAP.md docs/DASHBOARD-SPEC.md README.md CLAUDE.md TECH-DEBT.md \
-  LICENCE deploy/docker/README.md
+  tech-debt/TD-PPagop-26073101.md LICENCE deploy/docker/README.md
 
 # --- Markdown that is not prose. These are the assertions that matter: each
 #     one is a file whose contents change what a node does. ---

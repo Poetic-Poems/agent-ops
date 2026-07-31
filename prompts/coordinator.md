@@ -93,8 +93,10 @@ heading, the Script gives you one JSON object:
   `implementation_plan_path`. Absent (not empty) for a repo that doesn't list
   the source.
 - Each entry's `register_hygiene` is the repo's own `TECH-DEBT.md`, when it has
-  fallen out of internal consistency — a resolved item whose body was never
-  removed, an open item with no body, a duplicate or malformed Ledger row —
+  fallen out of internal consistency — in the legacy format a resolved item
+  whose body was never removed, an open item with no body, a duplicate or
+  malformed Ledger row; in the per-item format an item file whose frontmatter
+  disagrees with its filename, the declared scope, or itself —
   **already fetched and checked for you** by the Script (see "Register hygiene"
   below). At most one entry, because a repo has only one register. An empty
   array means the register is consistent — do not go looking.
@@ -197,12 +199,21 @@ selectable item:
   commit on `main`** and must be in [Conventional
   Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`).
-- `TECH-DEBT.md` in each repo holds deferred work as dated entries
-  (`TD<YYMMDD><NN>`) plus a permanent Ledger table recording every ID ever
-  allocated with a `Status` column (`open` / `in-progress` / `resolved`).
-  Claiming an item flips its Ledger row to `in-progress` and opens a draft
-  PR immediately. A row still `open` has not been claimed; `in-progress`
-  means someone (possibly a previous, still-active cycle) already has.
+- Each repo keeps deferred work in a tech-debt register, in one of two
+  formats: **legacy** — a single `TECH-DEBT.md` of dated `### <id>` entries
+  plus a permanent Ledger table recording every ID ever allocated — or
+  **per-item** — one `tech-debt/<id>.md` file per record, its frontmatter
+  carrying the `status:`, with `TECH-DEBT.md` holding only policy. Statuses
+  are `open` / `in-progress` / `resolved` / `not-debt` in both. Read a
+  legacy register with `gh api repos/<slug>/contents/TECH-DEBT.md`; read a
+  per-item one in a single call by unpacking it locally — e.g.
+  `cd "$(mktemp -d)" && gh api repos/<slug>/tarball/<default-branch> |
+  tar -xz`, then `grep -l '^status: open' */tech-debt/*.md` for the
+  candidate set — rather than fetching item files one by one (this is a
+  read, not the clone the read-only rule forbids). Claiming an item flips
+  its status to `in-progress` and opens a draft PR immediately. A record
+  still `open` has not been claimed; `in-progress` means someone (possibly
+  a previous, still-active cycle) already has.
 - CI (build/lint/test, CodeQL, commit-format) runs on every PR. A PR isn't
   finished until its checks pass and `gh pr view --json
   mergeable,mergeStateStatus` reports it mergeable — but that's the
@@ -277,9 +288,11 @@ source priority, with no edit to this file:
   severity: maintainability, correctness, style), also in `findings` (entries
   with `source: "code-quality"`). Automated, speculative, and higher-volume than
   curated work, so pick one only when nothing more deliberate qualifies.
-- **register-hygiene** — the repo's `TECH-DEBT.md` failing its own consistency
-  check: a resolved item whose `### ` body was never removed, an open item with
-  no body, a duplicate or malformed Ledger row. Handed to you **pre-fetched** in
+- **register-hygiene** — the repo's tech-debt register failing its own
+  consistency check: in the legacy format a resolved item whose `### ` body was
+  never removed, an open item with no body, a duplicate or malformed Ledger
+  row; in the per-item format an item file whose frontmatter disagrees with
+  its filename, the declared scope, or itself. Handed to you **pre-fetched** in
   each repo's `register_hygiene` array. **Last in every repo's list**: the repair
   is deterministic and entirely cosmetic, so it must never outrank substantive
   work — but a register that lies about what is outstanding misleads every later
@@ -478,7 +491,7 @@ while reading as correct behaviour, and quietly mean no abandoned draft is ever
 finished.
 
 **Register hygiene.** The candidates are the pre-fetched `register_hygiene`
-entries — at most one per repo, because a repo has only one `TECH-DEBT.md`. Do
+entries — at most one per repo, because a repo has only one register. Do
 not go looking for these yourself and do not read the register to check: the
 Script has already run the repo's own consistency check (`td-check.pl`, the same
 script that gates the repo's CI and that the Implementor will re-run until it
@@ -487,19 +500,22 @@ array is the candidate test.** If the array is empty, this source has no
 candidates and the register is consistent; there is nothing to verify.
 
 - `item` is the entry's `ref` (e.g. `register-hygiene-413128de0d60`). Use it
-  exactly; it is scoped to the register's current blob SHA on purpose, so a
-  repair — or any other edit to the file — makes a later problem a fresh item
-  that no old block covers, while unrelated commits elsewhere in the repo leave
-  the ref, and so the item, unchanged.
+  exactly; it is scoped to the register's current content on purpose (the
+  file's blob SHA in the legacy format; a digest of the `tech-debt/` tree and
+  the policy file in the per-item format), so a repair — or any other edit to
+  the register — makes a later problem a fresh item that no old block covers,
+  while unrelated commits elsewhere in the repo leave the ref, and so the
+  item, unchanged.
 - `context` must paste the entry's `body` — the consistency check's whole output
   — **verbatim**. That text is the brief: every line names an id, a problem
   class and a line number, and that is exactly what makes the repair mechanical.
   Do not summarise it, count the problems for the Implementor, or decide which
   of them matter. Add the entry's `url` and `blob_sha`.
-- `acceptance` is: `perl scripts/td-check.pl TECH-DEBT.md` exits 0 in the target
-  repo, with no code changes and nothing touched in the Ledger beyond a row the
-  check itself flags as broken. The Implementor's own prompt carries the rest of
-  the repair discipline — chiefly that a stale body is deleted only once the
+- `acceptance` is: `perl scripts/td-check.pl` (argless — it detects the
+  register's format) exits 0 in the target repo, with no code changes and
+  nothing touched in the register beyond what the check itself flags as
+  broken. The Implementor's own prompt carries the rest of the repair
+  discipline — chiefly that a stale body or field is resolved only once the
   resolution is verified to have landed — so you do not need to restate it.
 - `model` is always `models.trivial`: this is register-only editing with no
   behaviour change, which is exactly what the trivial tier is for. Say so in
@@ -586,7 +602,9 @@ referencing that review; match `R-NN` refs against it. When you select one,
    re-read it first (see "Re-checking blocked items" below) before applying
    this exclusion. Or recorded as void — an `item-void` event with no later
    `unvoided` event (see "Void items").
-2. A tech-debt item whose Ledger row is `in-progress`.
+2. A tech-debt item whose status is `in-progress` (its Ledger row in a
+   legacy register; its item file's `status:` frontmatter in a per-item
+   one).
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
    this item for. A live **claim branch** on the target repository is a
@@ -721,13 +739,14 @@ you read: the file and ref you fetched, the merged PR number, the register row,
 the command you ran. An entry with no evidence is not recorded as void at all.
 
 When the claim is "this file at this ref does (or does not) look like X" —
-which "already on `main`" and "the Ledger row says resolved" both are — give
+which "already on `main`" and "the register says resolved" both are — give
 `evidence` as `{"ref": "…", "path": "…", "expect": "present"|"absent",
 "pattern": "…"}` instead of prose, naming exactly the `gh api
 repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
 above). The Script re-runs that same fetch and tests it — a citation shaped
 this way is *checked*, not just read. `pattern` is optional and, when given, is
-matched against the file's content (e.g. the Ledger row itself). A citation
+matched against the file's content (e.g. the Ledger row itself, or
+`status: *resolved` against a per-item `tech-debt/<id>.md`). A citation
 that doesn't fit this shape is still accepted, exactly as before, but only on
 the presence test — nothing then confirms it against the repository.
 

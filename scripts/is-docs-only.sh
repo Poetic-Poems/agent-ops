@@ -58,6 +58,7 @@ is_inert() {
     README.md) return 0 ;;
     CLAUDE.md) return 0 ;;                # a cycle reads the clone's copy, never /app's
     TECH-DEBT.md) return 0 ;;             # likewise, and via the contents API
+    tech-debt/*) return 0 ;;              # the per-item register: item files are records, not code
     LICENCE) return 0 ;;
     deploy/docker/README.md) return 0 ;;  # the node runbook
     *) return 1 ;;
