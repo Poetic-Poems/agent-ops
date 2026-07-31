@@ -80,24 +80,54 @@ prs='[
    "comments": []}
 ]'
 
-# Mirrors the two-stage computation in scripts/gather-abandoned-drafts.sh: the
+# gh's nested collections arrive capped at 100 items, unpaginated, and
+# `comments` oldest-first — so a collection at exactly the cap may be missing
+# the newest activity, and at the commits cap `[-1]` is not the head. These
+# fixtures are appended with jq because writing a hundred rows out longhand
+# would bury the point. Every date *visible* on #90–#92 is stale; the point is
+# that at the cap what is visible cannot be trusted, so the PR must not be
+# judged at all. #93 is the boundary contrast: one under the cap, the data is
+# complete, and judgement resumes.
+prs="$(jq -c '
+  . + [{"number": 90, "isDraft": true, "headRefName": "agent/comments-at-cap",
+        "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b2"}], "reviews": [],
+        "comments": [range(100) | {"createdAt": "2026-07-20T01:00:00Z", "body": "old chatter"}]},
+       {"number": 91, "isDraft": true, "headRefName": "agent/reviews-at-cap",
+        "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b3"}],
+        "reviews": [range(100) | {"submittedAt": "2026-07-20T01:00:00Z", "body": "old review"}],
+        "comments": []},
+       {"number": 92, "isDraft": true, "headRefName": "agent/commits-at-cap",
+        "commits": [range(100) | {"committedDate": "2026-07-20T00:00:00Z", "oid": "b4"}],
+        "reviews": [], "comments": []},
+       {"number": 93, "isDraft": true, "headRefName": "agent/comments-under-cap",
+        "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b5"}], "reviews": [],
+        "comments": [range(99) | {"createdAt": "2026-07-20T01:00:00Z", "body": "old chatter"}]}]' <<<"$prs")"
+
+# Mirrors the computation in scripts/gather-abandoned-drafts.sh: the
 # draft/branch filter first, then last-real-activity (latest commit, or review
-# or comment not carrying the marker) against the cutoff.
+# or comment not carrying the marker) against the cutoff — unless any nested
+# collection is at gh's 100-item cap, in which case activity is uncomputable
+# and the PR is excluded outright.
 candidate_filter() {
   jq -c --arg cutoff "$cutoff" --arg marker "$marker" \
     '[.[] | select(.isDraft)
           | select((.headRefName | startswith("agent/"))
                    or (.headRefName | startswith("td/")))
-          | (([ (.commits[-1].committedDate // empty) ]
-              + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
-              + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
-             | max) as $activity
+          | (if ((((.commits  // []) | length) >= 100)
+                 or (((.reviews  // []) | length) >= 100)
+                 or (((.comments // []) | length) >= 100))
+             then null
+             else (([ (.commits[-1].committedDate // empty) ]
+                    + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
+                    + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
+                   | max)
+             end) as $activity
           | select($activity != null and $activity < $cutoff)
           | .number]' <<<"$prs"
 }
 
 assert_eq "only open, draft, ours-by-branch, actually-stale PRs are candidates" \
-  "[80,84,85,86,89]" "$(candidate_filter)"
+  "[80,84,85,86,89,93]" "$(candidate_filter)"
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
 # - #81 ready: a ready PR is finished work waiting on the human. Finishing it is
@@ -158,6 +188,28 @@ assert_eq "a review carrying the pipeline's own marker does not reset the clock 
   "true" "$(is_candidate 89)"
 assert_eq "a marked review and an unmarked one at the same timestamp differ" \
   "true false" "$(is_candidate 89) $(is_candidate 88)"
+
+# --- gh's nested-collection cap: at-cap data is missing data ---
+#
+# `gh pr list` caps `commits`, `reviews` and `comments` at 100 items each,
+# unpaginated, and `comments` arrives oldest-first — so on a PR past the cap
+# the response holds the *oldest* writes and the newest are absent. Every date
+# visible on #90–#92 is stale, and each would be a candidate if judged; the
+# rule is that at the cap the PR is not judged at all, because a human's
+# comment posted yesterday could be precisely the entry the cap cut off — and
+# stealing that draft is the failure the script's header names as the one to
+# avoid. #92 is the same rule for commits, where `[-1]` at the cap is the
+# hundredth commit, not the head. The exclusion is deliberate and costs
+# something real: a genuinely abandoned draft carrying 100 of anything waits
+# for a human instead of being auto-finished. That is the safe direction.
+assert_eq "comments at gh's 100-item cap: the newest may be missing, so the PR is never judged" \
+  "false" "$(is_candidate 90)"
+assert_eq "reviews at the cap are excluded the same way" \
+  "false" "$(is_candidate 91)"
+assert_eq "commits at the cap: [-1] is not the head, so the PR is excluded too" \
+  "false" "$(is_candidate 92)"
+assert_eq "one under the cap, the data is complete and the draft is judged normally" \
+  "true" "$(is_candidate 93)"
 
 # --- One definition: the marker as every writer of it spells it ---
 #

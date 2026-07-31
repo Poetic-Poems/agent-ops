@@ -528,7 +528,7 @@ values below are the confirmed defaults; the README must document each key.
 | `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 30 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
-| `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit untouched (`updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
+| `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
 | `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
@@ -1014,6 +1014,18 @@ runs unattended.
      resets the clock **not at all**, never partially — the Enabler's own verdict
      already reaches selection as an `unblocked`/`still-blocked` event
      (requirement 18), so a partial reset would add nothing.
+   - **A nested collection at `gh`'s cap is missing evidence, not evidence.**
+     `gh pr list` does not paginate the collections this computation reads —
+     `commits`, `reviews` and `comments` each arrive capped at 100 items, with
+     `comments` oldest-first — so at the cap the newest activity may be absent,
+     and at the commits cap `commits[-1]` is not the head. A PR with any
+     collection at the cap is excluded this cycle, loudly on stderr: the same
+     uncomputable-activity treatment as the missing-commit case below, chosen
+     over paginating per candidate because the failure it guards against is the
+     dangerous direction (a live human conversation past the cap misread as
+     silence) while the cost is the safe one — a stalled draft that has somehow
+     accumulated 100 of anything waits for a human, and on this system's own
+     drafts such a PR is an anomaly worth a human's eye anyway.
    - **Ready PRs are not ours to touch here.** A non-draft PR is finished work
      waiting on the human; answering it is `review-feedback`'s job, and
      force-pushing it would violate the Human Gate. Only drafts qualify.
@@ -1031,9 +1043,9 @@ runs unattended.
      (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
      3c. A PR whose real activity cannot be computed (no commit — should never
-     happen) is excluded rather than treated as maximally stale: the dangerous
-     direction is stealing live work, not leaving a stalled draft one more cycle.
-     `shellcheck`-clean.
+     happen — or a collection at the cap, above) is excluded rather than treated
+     as maximally stale: the dangerous direction is stealing live work, not
+     leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
    include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
    <pr_label> <branch_prefix>` and attach the array to that repo's entry as
@@ -2844,7 +2856,10 @@ What exists, and the requirements each part answers to:
    array of this system's own abandoned draft PRs (open, draft, ours, whose last
    real activity — commits, and the reviews and comments not carrying
    `lib/pipeline-marker.sh`'s marker — is untouched past the threshold), each
-   carrying the draft PR's body verbatim and a head-SHA-scoped ref. Its
+   carrying the draft PR's body verbatim and a head-SHA-scoped ref. A PR any of
+   whose nested collections `gh pr list` returned at its 100-item cap is
+   excluded for the cycle rather than judged on possibly-incomplete activity
+   (requirement 3e). Its
    candidate rule is regression-tested in `test/abandoned-drafts.test.sh`. Fails
    safe to `[]` (exit 0). Must pass `shellcheck`. Sources
    `lib/pipeline-marker.sh`, which implements the write side of the same

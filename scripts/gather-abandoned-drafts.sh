@@ -138,7 +138,10 @@
 # whose real activity cannot be computed (no commit — should never happen, but a
 # malformed API response is not licence to guess) is excluded rather than treated
 # as maximally stale: the dangerous direction here is stealing live work, not
-# leaving a genuinely stalled draft for one more cycle.
+# leaving a genuinely stalled draft for one more cycle. A PR any of whose nested
+# collections came back at `gh pr list`'s 100-item cap is excluded the same way
+# (see the note at the fetch below): a capped response may be missing the newest
+# activity, and incomplete data is not licence to guess either.
 
 set -uo pipefail
 
@@ -194,6 +197,34 @@ if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
   exit 0
 fi
 
+# `gh pr list` does not paginate the nested collections this computation reads:
+# `commits`, `reviews` and `comments` each arrive capped at 100 items
+# (`GH_DEBUG=api` shows `comments(first: 100)`; only `gh pr view` special-cases
+# comment pagination), and `comments` is served oldest-first — so a collection
+# at the cap may be missing the *newest* entries, and at the commits cap
+# `.commits[-1]` is the hundredth commit, not the head. Last-real-activity
+# computed from such a response would be an old date wearing a current one's
+# face — exactly the misread the header names as the dangerous direction, an
+# actively-discussed draft judged abandoned. So each PR is flagged `at_cap`
+# here, and the computation below treats a flagged PR's activity as
+# uncomputable: excluded this cycle, like the missing-commit case, never judged
+# on data known to be incomplete. Said out loud on stderr because the exclusion
+# also defers a PR that may be genuinely abandoned — and 100 of anything on one
+# of this system's own drafts is an anomaly worth a human's eye anyway
+# (requirement 3e).
+prs="$(jq -c '[.[] | . + {at_cap: ((((.commits  // []) | length) >= 100)
+                                or (((.reviews  // []) | length) >= 100)
+                                or (((.comments // []) | length) >= 100))}]' \
+        <<<"$prs" 2>/dev/null || true)"
+if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
+  printf '[]'
+  exit 0
+fi
+capped="$(jq -r '[.[] | select(.at_cap) | "#\(.number)"] | join(" ")' <<<"$prs" 2>/dev/null || true)"
+if [[ -n "$capped" ]]; then
+  echo "gather-abandoned-drafts: $slug $capped: a nested collection is at gh's 100-item cap, so last real activity cannot be computed; excluded this cycle" >&2
+fi
+
 # Last-real-activity, then the cutoff: the latest of the head commit's
 # `committedDate`, every review's `submittedAt` and every comment's
 # `createdAt`, *excepting* any review or comment whose body carries our own
@@ -201,18 +232,21 @@ fi
 # and `gh pr review --comment` are two ways of writing the same note and the
 # Reviewer may use either, so a marker that only worked in one of them would
 # leave the pipeline resetting its own clock through the other. A PR with no
-# computable activity (no commit) is dropped rather than treated as infinitely
-# stale, and the explicit `!= null` guard below is what does the dropping — do
-# not remove it as redundant. jq sorts `null` *below* every string, so a null
-# activity satisfies `$activity < $cutoff` on its own: without the guard a
-# malformed API response would make the PR look maximally stale and this source
-# would hand a human's live work to an Implementor to force-push over.
+# computable activity — no commit, or flagged `at_cap` above — is dropped
+# rather than treated as infinitely stale, and the explicit `!= null` guard
+# below is what does the dropping — do not remove it as redundant. jq sorts
+# `null` *below* every string, so a null activity satisfies
+# `$activity < $cutoff` on its own: without the guard a malformed API response
+# would make the PR look maximally stale and this source would hand a human's
+# live work to an Implementor to force-push over.
 prs="$(jq -c --arg cutoff "$cutoff" --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" '
   [.[]
-   | (([ (.commits[-1].committedDate // empty) ]
-       + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
-       + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
-      | max) as $activity
+   | (if .at_cap then null
+      else (([ (.commits[-1].committedDate // empty) ]
+             + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
+             + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
+            | max)
+      end) as $activity
    | select($activity != null and $activity < $cutoff)
    | . + {real_activity: $activity}]' <<<"$prs" 2>/dev/null || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
