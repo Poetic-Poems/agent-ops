@@ -21,7 +21,7 @@ heading, the Script gives you one JSON object:
 {
   "repos": [
     {
-      "slug": "Poetic-Poems/poetic-fiddle",
+      "slug": "org/repo-a",
       "default_branch": "main",
       "sources": ["security", "failed-runs", "tech-debt", "issues", "implementation-plan", "project-review", "code-quality"],
       "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md",
@@ -40,7 +40,7 @@ heading, the Script gives you one JSON object:
       ]
     },
     {
-      "slug": "Poetic-Poems/poetic",
+      "slug": "org/repo-b",
       "default_branch": "main",
       "sources": ["security", "failed-runs", "tech-debt", "issues", "project-review", "code-quality"],
       "findings": []
@@ -50,7 +50,7 @@ heading, the Script gives you one JSON object:
     {"ts": "…", "cycle": "…", "event": "attempt-failed", "repo": "…", "item": "…", "detail": "…"}
   ],
   "refinements": {
-    "Poetic-Poems/poetic-fiddle": {
+    "org/repo-a": {
       "TD26071805": {"ts": "…", "cycle": "…", "spec": "the refined specification, in markdown"},
       "52": {"ts": "…", "cycle": "…", "comment_url": "https://github.com/…/issues/52#issuecomment-…"}
     }
@@ -214,10 +214,13 @@ selectable item:
 
 ## Target repositories and work sources
 
-| Repo | GitHub | Work sources, in priority order |
-|---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review · 11. `issues:low` · 12. code-quality · 13. register-hygiene |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `implementation-plan` (its configured plan document; next milestone task) · 11. project-review · 12. `issues:low` · 13. code-quality · 14. register-hygiene |
+The table below is generated from `config.json`'s `repos` array by the
+Script at cycle time — the same data the JSON runtime input's `repos[].sources`
+carries (see "What you receive" above) — so it always names this
+installation's actual repos and each one's actual, currently configured
+source priority, with no edit to this file:
+
+@@WORK_SOURCES_TABLE@@
 
 - **security** — open Dependabot alerts and security-severity code-scanning
   alerts, handed to you pre-fetched in each repo's `findings` (entries with
@@ -236,9 +239,9 @@ selectable item:
   excludes it, what you put in the work order — is identical in every band.
   See "Issue priority" below for what the bands mean. `issues:urgent` also
   outranks the plain walk across all repos, second only to security.
-- **implementation-plan** — only for a repo whose `sources` lists it (currently
-  poetic-fiddle). Candidates are the next unblocked task(s) in that repo's plan
-  document, at the path given in its runtime-input entry's
+- **implementation-plan** — only for a repo whose `sources` lists it.
+  Candidates are the next unblocked task(s) in that repo's plan document, at
+  the path given in its runtime-input entry's
   `implementation_plan_path` (see "What you receive" above) — read it with
   `gh api repos/<slug>/contents/<path>`, the same way as `TECH-DEBT.md`; there
   is no pre-fetch. Nothing here names a path or a repo: a repo that lists this
@@ -283,8 +286,12 @@ selectable item:
   reader, human and agent alike, so it should not sit unfixed either. See
   "Register hygiene" below.
 
-This table is the fixed default. Use whatever the Script actually passed
-you (see "What you receive") if it's more specific or has changed.
+The table above always shows each repo's full configured source order.
+Use whatever the Script actually passed you in the runtime input's
+`repos[].sources` (see "What you receive") if it's narrower — that happens
+only when back-pressure has restricted a repo to its finishing sources for
+this one cycle (see "Merge conflicts", "Review feedback", and "Abandoned
+drafts" below), not because the table is stale.
 
 ## Selection algorithm
 
@@ -614,7 +621,7 @@ referencing that review; match `R-NN` refs against it. When you select one,
    (below), because "a future cycle or a human can take it" is exactly what
    never happens on its own.
 6. Dependent on a product or architecture decision that has not been made.
-   Example: poetic-fiddle's milestone M2 is gated on the §6.1 packaging
+   Example: a repo's milestone M2 is gated on an open §6.1 packaging
    decision in its plan document (the file at that repo's
    `implementation_plan_path`) — while that decision is open, M2 tasks do not
    meet the bar. Decisions belong to the human; never guess one on their
@@ -752,7 +759,7 @@ candidate:
 
 ```json
 {
-  "repo": "Poetic-Poems/poetic-fiddle",
+  "repo": "org/repo-a",
   "item": "TD26071805",
   "source": "tech-debt",
   "reason": "one line: why it fails the selection bar",
@@ -849,7 +856,7 @@ the list, and one strong candidate alone is a perfectly good list.
   "needs_refinement": [],
   "candidates": [
     {
-      "repo": "Poetic-Poems/poetic-fiddle",
+      "repo": "org/repo-a",
       "default_branch": "main",
       "source": "tech-debt",
       "item": "TD26051201",
@@ -945,7 +952,7 @@ If you found nothing selectable anywhere:
 ```json
 {
   "selected": false,
-  "reason": "one-line reason, e.g. 'poetic: no candidates in any source; poetic-fiddle: only candidate (M2 tasks) gated on open §6.1 decision'",
+  "reason": "one-line reason, e.g. 'org/repo-b: no candidates in any source; org/repo-a: only candidate (M2 tasks) gated on open §6.1 decision'",
   "unblocked": [],
   "voided": [],
   "needs_refinement": []

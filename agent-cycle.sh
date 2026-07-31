@@ -57,6 +57,10 @@ PROMPTS_DIR="$SCRIPT_DIR/prompts"
 . "$SCRIPT_DIR/lib/refinement.sh"
 # shellcheck source=lib/prompt-overrides.sh
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
+# shellcheck source=lib/coordinator-brief.sh
+. "$SCRIPT_DIR/lib/coordinator-brief.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 usage() {
   cat <<'EOF'
@@ -931,7 +935,9 @@ handle_stage_failure() {
   log_attempt_failed "$stage" "$detail" \
     "$(jq -nc --arg u "$pr_url" 'if $u == "" then {} else {pr_url: $u} end')"
   if [[ -n "$pr_url" ]]; then
-    gh pr comment "$pr_url" --body "Autonomous agent ($stage) stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed." >/dev/null 2>&1 || true
+    gh pr comment "$pr_url" --body "Autonomous agent ($stage) stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -952,9 +958,10 @@ handle_stage_failure() {
 #
 # Deliberately silent on the PR itself. The Reviewer has already left its
 # concerns there in its own words (requirement 30), which is the record the
-# Enabler reads; a second comment from the Script would say nothing new, and
-# would move `updatedAt` — the clock the abandoned-drafts source measures
-# staleness by (requirement 3e).
+# Enabler reads; a second comment from the Script would say nothing new. It
+# would not distort the abandoned-drafts clock — a comment this system posts
+# carries the marker that keeps it out of that measure (requirement 3e) — but
+# "nothing new to say" is reason enough not to post it.
 log_reviewer_handback() {
   local detail="$1" pr_url="${2:-}" unblock_condition="${3:-}"
   log_attempt_failed "reviewer" "$detail" \
@@ -1958,6 +1965,22 @@ selection_config_json="$(jq -nc \
   --argjson cmax "$candidates_max" \
   '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}')"
 coordinator_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
+# The repo/work-sources table prompts/coordinator.md used to hand-maintain is
+# generated from config.json instead (requirement 4b), from the plain
+# configured repo list (`all_repos_json`), never the cycle's back-pressure-
+# restricted `ordered_repos_json` — so it always shows each repo's full
+# configured priority regardless of this cycle's restrictions (see "--- 4.
+# Co-Ordinator stage ---" below, which substitutes this same value into the
+# prompt). Computed here, ahead of the fingerprint, and hashed verbatim:
+# `ordered_repos_json`'s `sources` is *not* a substitute for it, because
+# back-pressure (requirement 2.2a) narrows that array's `sources` to the three
+# finishing sources for a repo with work waiting, while this table — and the
+# prompt text the Co-Ordinator actually reads — still shows that repo's full
+# configured list regardless. Without hashing the table itself, a config edit
+# to a non-finishing source during a back-pressure cycle would change the
+# assembled prompt while leaving the fingerprint's `repos[].sources`
+# unchanged — the exact silent-stall shape this rule exists to prevent.
+coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
 
 # The Enabler's three inputs join the fingerprint for the same reason (requirement
 # 35b). Its eligible set is the third array whose candidacy turns on something no
@@ -1993,6 +2016,7 @@ noop_input="$(jq -nc \
   --argjson ec "$enabler_config_json" \
   --arg psha "$coordinator_prompt_sha" \
   --arg esha "$enabler_prompt_sha" \
+  --arg wst "$coordinator_sources_table" \
   '{
      repos: [ $repos[] as $r
               | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
@@ -2003,7 +2027,8 @@ noop_input="$(jq -nc \
      selection_config: $sc,
      coordinator_prompt_sha: $psha,
      enabler_config: $ec,
-     enabler_prompt_sha: $esha
+     enabler_prompt_sha: $esha,
+     coordinator_work_sources_table: $wst
    }')"
 noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 
@@ -2034,7 +2059,12 @@ coordinator_input="$(jq -nc \
     candidates_max: $cmax}')"
 
 # --- 4. Co-Ordinator stage ---
-coordinator_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")
+# `coordinator_sources_table` (computed above, ahead of the no-op fingerprint
+# so its bytes join it) is substituted for the @@WORK_SOURCES_TABLE@@ marker
+# the base prompt carries in its place.
+coordinator_base_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
+coordinator_base_prompt="${coordinator_base_prompt//@@WORK_SOURCES_TABLE@@/$coordinator_sources_table}"
+coordinator_prompt="$coordinator_base_prompt
 
 ## Runtime input for this cycle
 
@@ -2242,7 +2272,9 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
        '{unblock_condition: (.unblock_condition // "")}
         + (if $u == "" then {} else {pr_url: $u} end)' <<<"$impl_status_json")"
   if [[ -n "$impl_pr_url" ]]; then
-    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed." >/dev/null 2>&1 || true
+    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -2295,6 +2327,10 @@ $(jq . <<<"$work_order_json")
 \`\`\`json
 $(jq . <<<"$impl_status_json")
 \`\`\`
+
+## Cycle
+
+$cycle_id
 "
 rev_out="$cycle_dir/reviewer.out"
 
