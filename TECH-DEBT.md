@@ -288,7 +288,7 @@ above.
 | TD26072501 | The state dir's logs grow without bound | resolved | 2026-07-28 | #114 |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | resolved | 2026-07-28 | #116 |
 | TD26072602 | A human-applied needs-refinement label is inert | resolved | 2026-07-29 | #140 |
-| TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
+| TD26072603 | A refinement block is indistinguishable on the dashboard | in-progress | | |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | resolved | 2026-07-29 | #139 |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
