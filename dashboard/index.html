@@ -623,6 +623,7 @@
   var expanded = Object.create(null);     // cycle id -> true while its detail row is open
   var openDetails = Object.create(null);  // "cycle/stage/kind" -> true for open <details>
   var nodeFilter = null;                  // node name while the cycle list is filtered to one node
+  var hideRefinement = false;             // true while needs-refinement blocks are hidden from the blocked list
 
   // ---------- fleet helpers ----------
   function fleetNodes()  { return (D.fleet && D.fleet.nodes)  || []; }
@@ -1152,24 +1153,56 @@
     return document.createTextNode("—");
   }
 
+  // A refinement block (kind: "needs-refinement") is not waiting on the world
+  // like an ordinary block — it is waiting on the pipeline's own Enabler and,
+  // past one refinement, on a human. Reading "blocked: 9" with no way to tell
+  // the two populations apart understates how much of the backlog is really a
+  // specification gap, so each such row gets a badge and the panel a filter to
+  // set them aside.
+  var REFINEMENT_KIND = "needs-refinement";
+  function isRefinementBlock(b) { return b.kind === REFINEMENT_KIND; }
+  function refinementBadge(b) {
+    if (!isRefinementBlock(b)) return null;
+    return el("span", {class:"badge b-purple", style:"margin-left:6px",
+      title:"waiting on the pipeline's own Enabler, and past one refinement, on a human",
+      text:"refinement"});
+  }
+
   // ---------- failures & blocked ----------
   function failuresPanel() {
     var wrap = el("div");
-    var blocked = D.blocked || [];
+    var blockedAll = D.blocked || [];
+    var refinementCount = blockedAll.filter(isRefinementBlock).length;
+    var blocked = hideRefinement ? blockedAll.filter(function (b) { return !isRefinementBlock(b); }) : blockedAll;
     var failedCycles = (D.cycles || []).filter(function (cy){ return cy.outcome === "failed"; });
 
-    if (blocked.length) {
-      wrap.appendChild(el("h2", {style:"margin-top:0", text:"Blocked items (" + blocked.length + ")"}));
-      var brows = blocked.map(function (b) {
-        return el("tr", {}, [
-          el("td", {class:"mono", text: b.item}),
-          el("td", {class:"mono muted", text: b.repo ? b.repo.split("/")[1] : "—"}),
-          el("td", {class:"muted", text: fmtAgo(b.ts)}),
-          el("td", {class:"wrap", text: (b.stage ? b.stage + ": " : "") + (b.detail || "")}),
-          el("td", {}, escalationCell(b))
-        ]);
-      });
-      wrap.appendChild(tableOf(["Item","Repo","Since","Blocker","Escalated"], brows));
+    if (blockedAll.length) {
+      var head = el("h2", {style:"margin-top:0"}, [
+        document.createTextNode("Blocked items (" + blocked.length +
+          (blocked.length !== blockedAll.length ? " of " + blockedAll.length : "") + ")")
+      ]);
+      if (refinementCount) {
+        head.appendChild(el("label", {class:"muted", style:"font-weight:400; font-size:12px; margin-left:12px; cursor:pointer"}, [
+          el("input", {type:"checkbox", style:"margin-right:4px", checked: hideRefinement ? "" : null,
+            onchange: function (ev) { hideRefinement = ev.target.checked; renderBody(); }}),
+          document.createTextNode("hide " + refinementCount + " refinement block" + (refinementCount === 1 ? "" : "s"))
+        ]));
+      }
+      wrap.appendChild(head);
+      if (blocked.length) {
+        var brows = blocked.map(function (b) {
+          return el("tr", {}, [
+            el("td", {class:"mono"}, [ document.createTextNode(b.item), refinementBadge(b) ]),
+            el("td", {class:"mono muted", text: b.repo ? b.repo.split("/")[1] : "—"}),
+            el("td", {class:"muted", text: fmtAgo(b.ts)}),
+            el("td", {class:"wrap", text: (b.stage ? b.stage + ": " : "") + (b.detail || "")}),
+            el("td", {}, escalationCell(b))
+          ]);
+        });
+        wrap.appendChild(tableOf(["Item","Repo","Since","Blocker","Escalated"], brows));
+      } else {
+        wrap.appendChild(el("div", {class:"muted", text:"All blocked items are refinement blocks — hidden by the filter above."}));
+      }
     }
 
     // Void items are listed apart from blocked ones because they call for the
@@ -1177,7 +1210,7 @@
     // void item is closed and only needs one if the verdict itself is wrong.
     var voided = D.void || [];
     if (voided.length) {
-      wrap.appendChild(el("h2", {style: blocked.length ? "" : "margin-top:0", text:"Void items (" + voided.length + ")"}));
+      wrap.appendChild(el("h2", {style: blockedAll.length ? "" : "margin-top:0", text:"Void items (" + voided.length + ")"}));
       wrap.appendChild(el("div", {class:"muted", style:"margin:-6px 0 8px", text:"No work to do — closed permanently. Only a human can reopen these (append an `unvoided` event to the log)."}));
       var vrows = voided.map(function (v) {
         return el("tr", {}, [
@@ -1190,7 +1223,7 @@
       wrap.appendChild(tableOf(["Item","Repo","Since","Why there is no work"], vrows));
     }
 
-    wrap.appendChild(el("h2", {style: (blocked.length || voided.length) ? "" : "margin-top:0", text:"Failed cycles (" + failedCycles.length + ")"}));
+    wrap.appendChild(el("h2", {style: (blockedAll.length || voided.length) ? "" : "margin-top:0", text:"Failed cycles (" + failedCycles.length + ")"}));
     if (!failedCycles.length) return (wrap.appendChild(el("div",{class:"panel"}, el("div",{class:"empty",text:"No failed cycles in view."}))), wrap);
     var rows = failedCycles.map(function (cy) {
       return el("tr", {}, [

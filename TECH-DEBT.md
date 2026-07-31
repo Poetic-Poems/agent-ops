@@ -69,23 +69,6 @@ it is always obvious where a new item's body belongs.
 
 <!-- Add new items directly below, as `### <id> <title>` sections. -->
 
-### TD26072603 A refinement block is indistinguishable on the dashboard
-
-A refinement block renders in the dashboard's blocked panel as an ordinary
-blocked row. That is accurate — it is a block — but the two populations ask
-different things of the operator: an ordinary block waits on the world (a
-merge, a fix, an answer already asked for), while a refinement block waits on
-the pipeline's own Enabler and, past one refinement, on the human. Reading
-"blocked: 9" without knowing how many are specification gaps understates how
-much of the backlog the fleet is quietly parking. The `kind` marker is already
-on every event; nothing surfaces it.
-
-Fix: carry `kind` through the blocked extract into `data.js` and render a
-badge (and a filter) in the blocked panel; `docs/DASHBOARD-SPEC.md` travels
-with the change, and the data.js size budget gets re-checked, not assumed.
-
-Filed 2026-07-26, deferred from #84.
-
 ### TD26072604 Refinement blocks inherit the ordinary Enabler threshold
 
 A refinement block becomes Enabler-eligible after
@@ -288,7 +271,7 @@ above.
 | TD26072501 | The state dir's logs grow without bound | resolved | 2026-07-28 | #114 |
 | TD26072601 | A void with no pull request behind it is checked for evidence, not for truth | resolved | 2026-07-28 | #116 |
 | TD26072602 | A human-applied needs-refinement label is inert | resolved | 2026-07-29 | #140 |
-| TD26072603 | A refinement block is indistinguishable on the dashboard | open | | |
+| TD26072603 | A refinement block is indistinguishable on the dashboard | resolved | 2026-08-01 | #141 |
 | TD26072604 | Refinement blocks inherit the ordinary Enabler threshold | open | | |
 | TD26072605 | The pipeline's own writes to a pull request reset its abandoned-draft clock | resolved | 2026-07-29 | #139 |
 | TD26072606 | Nothing tests the dashboard page's JavaScript | open | | |
