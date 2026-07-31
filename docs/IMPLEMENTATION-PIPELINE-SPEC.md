@@ -360,20 +360,25 @@ analysis, not just files in the tree:
   tech-debt or filed issues, so they are picked up only when nothing more
   deliberate is waiting.
 
-The `register-hygiene` source draws on the repo's own `TECH-DEBT.md`, checked
-against the convention that file states for itself:
+The `register-hygiene` source draws on the repo's own tech-debt register,
+checked against the convention that register states for itself, in whichever
+of the two formats — legacy `TECH-DEBT.md` or per-item `tech-debt/` — the repo
+uses:
 
 - **`register-hygiene`** — the repo's register failing `scripts/td-check.pl`
-  (requirement 3i): a `resolved`/`not-debt` row whose `### <id>` body is still
-  under `## Current Items`, an `open`/`in-progress` row with no body, a
-  duplicated body or row, or a row whose status is unrecognised. **Last in every
-  repo's list.** The repair is deterministic and touches nothing but the
-  register, so it must never outrank substantive work; but a register that
-  advertises finished work as outstanding misleads every later reader, human and
-  agent alike, and this pipeline reads it as a work source. It is a *starting*
-  source like any other, and so subject to back-pressure (requirement 2.2a). Its
-  volume trends to zero, because each consumer repo also runs the same check in
-  CI (`.github/workflows/tech-debt-register.yml`), which fails the pull request
+  (requirement 3i): in the legacy format, a `resolved`/`not-debt` row whose
+  `### <id>` body is still under `## Current Items`, an `open`/`in-progress`
+  row with no body, a duplicated body or row, or a row whose status is
+  unrecognised; in the per-item format, an item file whose frontmatter
+  disagrees with its filename, its repository's declared scope, or itself.
+  **Last in every repo's list.** The repair is deterministic and touches
+  nothing but the register, so it must never outrank substantive work; but a
+  register that advertises finished work as outstanding misleads every later
+  reader, human and agent alike, and this pipeline reads it as a work source.
+  It is a *starting* source like any other, and so subject to back-pressure
+  (requirement 2.2a). Its volume trends to zero, because each consumer repo
+  also runs the same check in CI
+  (`.github/workflows/tech-debt-register.yml`), which fails the pull request
   that would introduce the drift; this source exists for the drift that lands
   anyway — a register that predates the guard, a direct push, a merge that
   reintroduces a body.
@@ -424,7 +429,7 @@ merged PR:
   detectable later. The improvement prompt is the Implementor's brief and the
   recommendation's *Intended end state* is its acceptance. This source sits
   **below tech-debt and `issues:medium`** deliberately: the review already
-  mirrors its debt-shaped recommendations into `TECH-DEBT.md`
+  mirrors its debt-shaped recommendations into the tech-debt register
   (cross-referencing the `R-NN`), and those curated, status-tracked entries are
   the primary channel — the `project-review` source exists to pick up the
   review's remaining recommendations (typically smaller improvements) that were
@@ -475,19 +480,28 @@ Conventions shared by both repos (agents must honour all of these):
 - `main` is protected: no direct pushes by anyone or anything; every change
   lands via a pull request, squash-merged, so **the PR title becomes the
   commit on `main` and must be in Conventional Commits format**.
-- `TECH-DEBT.md` holds deferred work, with a permanent Ledger table and a
-  "Claiming an item" workflow: flip the Ledger row to `in-progress` and open
-  a **draft** pull request immediately, so the claim is visible; flip to
-  `resolved` and mark the PR ready when done. Live item bodies live under a
-  `## Current Items` heading (above `## Ledger`) as `### <id> <title>`
-  sections — that heading is where a new item's body goes, and a resolved
-  item's `### ` section is removed from it while its Ledger row stays forever.
-  `scripts/get-tech-debt-record.pl` resolves an ID to its record;
-  `scripts/next-tech-debt-id.pl` allocates IDs; `scripts/td-check.pl`
-  cross-checks the two halves against each other (exit 0 consistent, 1
-  problems) and `scripts/drop-sections.pl` removes item bodies without
-  touching the Ledger. All four are canonical in `Poetic-Poems/poetic` and held
-  here as byte-identical copies (`.github/workflows/td-tooling-drift.yml`).
+- The tech-debt register holds deferred work as dated records carrying a
+  status (`open` / `in-progress` / `resolved` / `not-debt`), in one of two
+  formats the tooling detects for itself. In the **legacy** format — a single
+  `TECH-DEBT.md` — the "Claiming an item" workflow flips the Ledger row to
+  `in-progress` and opens a **draft** pull request immediately, so the claim
+  is visible; flip to `resolved` and mark the PR ready when done. Live item
+  bodies live under a `## Current Items` heading (above `## Ledger`) as
+  `### <id> <title>` sections — that heading is where a new item's body goes,
+  and a resolved item's `### ` section is removed from it while its Ledger row
+  stays forever. In the **per-item** format — a `tech-debt/` directory — each
+  record is one `tech-debt/<id>.md` file, frontmatter plus a Markdown body;
+  claiming and resolving are both frontmatter-only edits (`status:`, and on
+  resolution `resolved:` and `ref:`), the body stays in place either way, and
+  a file already on the default branch is never deleted or renamed.
+  `scripts/get-tech-debt-record.pl` resolves an ID to its record and
+  `scripts/next-tech-debt-id.pl` allocates IDs, in either format;
+  `scripts/td-check.pl` cross-checks a register against its own rules (exit 0
+  consistent, 1 problems), auto-detecting which format it has been given; and
+  `scripts/drop-sections.pl` removes a legacy item's body without touching the
+  Ledger (the per-item format has no body-removal step — resolving it is the
+  frontmatter flip above). All four are canonical in `Poetic-Poems/poetic` and
+  held here as byte-identical copies (`.github/workflows/td-tooling-drift.yml`).
 - CI runs on every PR (build/lint/test workflows plus CodeQL and
   commit-format checks). A PR is not finished until its checks pass and
   `gh pr view --json mergeable,mergeStateStatus` reports it mergeable.
@@ -1082,49 +1096,73 @@ runs unattended.
 3i. **Register-hygiene pre-fetch.** For each configured repo whose `sources`
    include `register-hygiene`, run `scripts/gather-register-hygiene.sh <slug>
    <default_branch>` and attach the array to that repo's entry as
-   `register_hygiene`. It reads the repo's `TECH-DEBT.md` through the contents
-   API (which returns the file and its blob SHA in one call), runs
-   `scripts/td-check.pl` over it, and prints at most one candidate carrying a
-   blob-SHA-scoped ref, the file's URL on the default branch, the blob SHA, the
-   problem lines as an array, and the checker's whole output verbatim as `body`.
+   `register_hygiene`. One root-tree listing read
+   (`gh api repos/<slug>/git/trees/<default_branch>`) answers both which of
+   the two register formats the repo uses and what its identity is: a
+   `tech-debt` tree names the per-item format; failing that, a
+   `TECH-DEBT.md` blob names the legacy one. In the legacy format it then
+   reads the file through the contents API (which returns the file and its
+   blob SHA in one call); in the per-item format it reads the whole register
+   in one call via the tarball endpoint
+   (`gh api repos/<slug>/tarball/<default_branch>`) and extracts
+   `tech-debt/`. Either way it runs `scripts/td-check.pl` over what
+   it fetched — the script auto-detects which format it has been given — and
+   prints at most one candidate carrying a ref scoped to the register's
+   identity, the register's URL on the default branch, that identity as
+   `blob_sha`, the problem lines as an array, and the checker's whole output
+   verbatim as `body`.
 
    - **The candidate rule is the checker's exit status**, and deliberately
-     nothing more: `td-check.pl` exits 1 when the register reports any of STALE
-     BODY, MISSING BODY, DUPLICATE BODY, NO LEDGER ROW, DUPLICATE ROW or BAD
-     ROW. There is no severity ordering and no partial candidacy — the file is
+     nothing more: `td-check.pl` exits 1 when the register reports any
+     problem in its format's vocabulary — legacy: STALE BODY, MISSING BODY,
+     DUPLICATE BODY, NO LEDGER ROW, DUPLICATE ROW, BAD ROW; per-item: BAD
+     NAME, BAD FRONTMATTER, MISSING FIELD, BAD FIELD, BAD STATUS, BAD SCOPE,
+     NO SCOPE, ID MISMATCH, DATE MISMATCH, STALE FIELD, DUPLICATE ID. There
+     is no severity ordering and no partial candidacy — the register is
      either consistent or it is not, and either way the repair is one pull
-     request. At most one candidate per repo, because a repo has one register.
-   - **The same script is the CI guard and the acceptance test.** Each consumer
-     repo runs `perl scripts/td-check.pl TECH-DEBT.md` on every pull request
-     (`.github/workflows/tech-debt-register.yml`), this pre-fetch runs it to
-     decide candidacy, and the Implementor re-runs it until it exits 0. One
-     definition, three consumers (requirement 34a); a model re-deriving the rule
-     would be a fourth opinion about what a consistent register looks like, and
-     the one that disagreed would be the one nobody noticed. `td-check.pl` and
-     `drop-sections.pl` are canonical in `Poetic-Poems/poetic` and held here as
-     byte-identical copies, guarded by `td-tooling-drift.yml`.
-   - **The ref is scoped to the register's blob SHA** —
-     `register-hygiene-<blob-sha>`, not a bare `register-hygiene` — so a block
-     recorded against one state of the file does not swallow a later,
-     possibly-repairable one, while a repair (which changes the blob) retires the
-     ref and drift re-detected against an unchanged file keeps it. Commits that
-     touch anything else in the repo leave the blob, and so the item, alone.
-     Same expiry-by-irrelevance reasoning as requirements 3c, 3e and 3g.
+     request. At most one candidate per repo, because a repo has one
+     register.
+   - **The same script is the CI guard and the acceptance test.** Each
+     consumer repo runs argless `perl scripts/td-check.pl` on every pull
+     request (`.github/workflows/tech-debt-register.yml`), which detects
+     `./tech-debt` over `./TECH-DEBT.md` the same way this pre-fetch does;
+     this pre-fetch runs it to decide candidacy, and the Implementor re-runs
+     it until it exits 0. One definition, three consumers (requirement 34a);
+     a model re-deriving the rule would be a fourth opinion about what a
+     consistent register looks like, and the one that disagreed would be the
+     one nobody noticed. `td-check.pl` is canonical in `Poetic-Poems/poetic`
+     and held here as a byte-identical copy, guarded by `td-tooling-drift.yml`
+     — as is `drop-sections.pl`, which repairs a legacy register's stale
+     bodies and has no per-item counterpart, since resolving a per-item
+     record is a frontmatter edit with no body to remove.
+   - **The ref is scoped to the register's identity** — in the legacy format
+     `register-hygiene-<blob-sha[:12]>`, the file's own blob SHA; in the
+     per-item format the first 12 hex characters of a sha256 digest of
+     `<tech-debt-tree-sha>:<policy-blob-sha>`, digesting both the
+     `tech-debt/` tree and the scope-declaring `TECH-DEBT.md` blob so a
+     repair to either retires the ref — not a bare `register-hygiene` — so a
+     block recorded against one state of the register does not swallow a
+     later, possibly-repairable one, while a repair retires the ref and
+     drift re-detected against an unchanged register keeps it. Commits that
+     touch anything else in the repo leave the identity, and so the item,
+     alone. Same expiry-by-irrelevance reasoning as requirements 3c, 3e and
+     3g.
    - **Unlike requirements 3e and 3g, its candidacy needs no rescuing by the
      fingerprint**, and the spec says so rather than leaving a reader to assume
-     the usual argument applies: drift is a pure function of one file's content,
-     so it can only appear on a commit to the default branch, which moves the
-     `head_sha` requirement 3b already hashes. The array is fed to the
-     fingerprint verbatim anyway — for uniformity, because a per-source
+     the usual argument applies: drift is a pure function of the register's
+     content, so it can only appear on a commit to the default branch, which
+     moves the `head_sha` requirement 3b already hashes. The array is fed to
+     the fingerprint verbatim anyway — for uniformity, because a per-source
      exception is a thing to remember and "covered by something else" is how a
      source ends up covered by nothing, and because candidacy depends on the
      checker too, so an edit to `td-check.pl` can add or retire the item with no
      commit to the target repo at all.
-   - **A repo with no `TECH-DEBT.md` contributes `[]`, and that is normal** —
-     not every repo this fleet touches keeps a register. It is distinguished
-     from a failure by the API's own 404, not by parsing `gh`'s wording, and
-     only the failure prints to stderr. Otherwise fails safe to `[]` (exit 0)
-     with the same stderr discipline as requirement 3c. `shellcheck`-clean.
+   - **A repo with neither `TECH-DEBT.md` nor a `tech-debt/` directory
+     contributes `[]`, and that is normal** — not every repo this fleet
+     touches keeps a register. It is distinguished from a failure by the
+     API's own 404, not by parsing `gh`'s wording, and only the failure
+     prints to stderr. Otherwise fails safe to `[]` (exit 0) with the same
+     stderr discipline as requirement 3c. `shellcheck`-clean.
 3j. **Issues pre-fetch.** For each configured repo whose `sources` include any
    `issues:<band>` entry (one source at four ranks — any band warrants the one
    fetch), run `scripts/gather-issues.sh <slug>` and attach the array to that
@@ -1188,7 +1226,7 @@ runs unattended.
    It exists because a refinement has to land where a *future* Co-Ordinator will
    read it, and for most item types there is nowhere. An issue has a thread, and
    requirement 36b puts the refinement there as one authoritative comment that
-   requirement 20 already pastes into the work order; a `TECH-DEBT.md` row, a
+   requirement 20 already pastes into the work order; a tech-debt record, a
    review recommendation, a plan task or a finding has no such surface, and no
    actor here may edit the register. So for those the specification lives in the
    log and this map is what returns it to selection. Without it the Enabler would
@@ -1707,7 +1745,9 @@ runs unattended.
       followed by an `unblocked` event for that item) — for a GitHub issue,
       only once requirement 18a's mandatory re-check, where it applies, has
       found the recorded blocker still holds;
-    - a tech-debt item whose Ledger row is `in-progress`;
+    - a tech-debt item whose status is `in-progress` (its Ledger row in a
+      legacy register; its item file's `status:` frontmatter in a per-item
+      one);
     - already referenced by any open PR or draft (a claim, per the repos'
       claiming workflow), or already held by a live **claim branch** on the
       target repository (`td/<ID>` or `agent/<item-ref>` existing on origin —
@@ -1722,7 +1762,7 @@ runs unattended.
     - a `project-review` recommendation that is already **done** — a *merged*
       PR references its ref (`review-<date>-R-NN`) — or that is already owned
       by a higher-priority source: the review mirrors debt-shaped
-      recommendations into `TECH-DEBT.md` (or files them as issues)
+      recommendations into the tech-debt register (or files them as issues)
       cross-referencing the `R-NN`, so a recommendation cross-referenced by a
       current tech-debt entry or open issue is left to that source and skipped
       here. (A single `gh` PR search per repo for the review date surfaces the
@@ -1965,8 +2005,9 @@ runs unattended.
     register-only editing, no behaviour change — and `context` must paste the
     entry's `body`, the consistency check's whole output, **verbatim**: each
     line names an id, a problem class and a line number, and that is precisely
-    what makes the repair mechanical. `acceptance` is `td-check.pl` exiting 0
-    with the repair discipline of requirement 25 followed. For a
+    what makes the repair mechanical. `acceptance` is argless
+    `perl scripts/td-check.pl` exiting 0, with the repair discipline of
+    requirement 25 followed. For a
     `security`/`code-quality`
     finding, `item` is the finding's stable `ref` (e.g. `dependabot-alert-42`,
     `code-scanning-alert-17`) and `context` must paste the finding verbatim
@@ -2023,8 +2064,10 @@ runs unattended.
     the clone — `.git/` is never part of the tracked tree, so this can't
     leak into a commit — so the Script can still identify the PR even if
     this stage never reaches a parseable final message (requirement 9). For
-    tech-debt items this follows the repo's claiming workflow exactly
-    (Ledger flip to `in-progress` as the first commit). For issues, it
+    tech-debt items this follows the repo's claiming workflow exactly —
+    flipping the record's status to `in-progress` as the first commit, in
+    the register's own format — a per-item register's `status:`
+    frontmatter, or a legacy register's Ledger row. For issues, it
     comments on the issue linking the draft PR; the work order's `context`
     already carries the issue body and its comments (requirement 20), but if
     the Implementor consults the issue directly it reads the whole thread
@@ -2039,8 +2082,11 @@ runs unattended.
 24. Implements the item, then runs the same checks the repo's CI runs (as
     documented in that repo's `CLAUDE.md` and workflow files) and fixes
     anything they surface.
-25. Updates the originating record: tech-debt entry removed and Ledger row
-    flipped to `resolved` per the register's rules; issues linked with a
+25. Updates the originating record: the tech-debt record marked `resolved`
+    per the register's own format — a per-item register's `status:`
+    frontmatter flipped (with `resolved:` and `ref:` filled in) and its body
+    left in place, the file never deleted or renamed; a legacy register's
+    entry removed and Ledger row flipped to `resolved`; issues linked with a
     closing keyword in the PR body; implementation-plan task marked done.
     For `security`/`code-quality` findings, no ledger flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
@@ -2056,8 +2102,12 @@ runs unattended.
 
     For a `register-hygiene` item (requirement 3i) there is no originating
     record to close — the register *is* the item — but the repair has a
-    discipline, and without it a tidy-up destroys information:
+    discipline, and without it a tidy-up destroys information. Which
+    discipline applies depends on the register's format, told apart by the
+    problem labels the work order carries:
 
+    In a **legacy** register (STALE BODY, MISSING BODY, DUPLICATE BODY, NO
+    LEDGER ROW, DUPLICATE ROW, BAD ROW):
     - A **STALE BODY** is deleted only once the resolution is verified to have
       landed, by following the Ledger row's `Ref` to the pull request or commit.
       A row flipped in error is a live item whose body is the only surviving
@@ -2069,12 +2119,32 @@ runs unattended.
       Implementor reports `blocked` naming the id. A guessed register entry is
       worse than a flagged one.
     - Nothing in the Ledger is touched except a row the check itself flags as
-      broken — its rows are permanent history — and the pull request is pure
-      register housekeeping, `TECH-DEBT.md` and nothing else. A stale body that
-      turns out to describe work never done leaves the item **open**; that *is*
-      the repair, and doing the work belongs to whatever cycle selects it.
-    - `perl scripts/td-check.pl TECH-DEBT.md` exits 0 before the item is
-      complete — the same check the target repo's own CI will run on the PR.
+      broken — its rows are permanent history. A stale body that turns out to
+      describe work never done leaves the item **open**; that *is* the
+      repair, and doing the work belongs to whatever cycle selects it.
+
+    In a **per-item** register (BAD NAME, BAD FRONTMATTER, MISSING FIELD, BAD
+    FIELD, BAD STATUS, BAD SCOPE, NO SCOPE, ID MISMATCH, DATE MISMATCH, STALE
+    FIELD, DUPLICATE ID):
+    - Most are one-line frontmatter corrections, made to match the facts —
+      the pull request its `ref:` names, the filename, the `scope:` declared
+      in `TECH-DEBT.md` — never the other way round. Where the facts are not
+      recoverable from git history, the Implementor reports `blocked` naming
+      the file and what could not be established.
+    - A **STALE FIELD** (a resolution field set on an open item) is judged
+      the way a STALE BODY is: the `ref:` is followed and the fix's landing
+      confirmed before the status itself is flipped to `resolved`, or the
+      resolution fields cleared and the item left open.
+    - An item file is **never deleted or renamed** once on the default
+      branch — the directory is an append-only set and CI enforces it — and
+      nothing is touched beyond what the check flags: item files are
+      permanent records, not a place to re-word titles or tidy accepted
+      frontmatter.
+
+    Either way, the pull request is pure register housekeeping — the
+    register and nothing else — and `perl scripts/td-check.pl` (argless; it
+    detects the format) exits 0 before the item is complete, the same check
+    the target repo's own CI will run on the PR.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -2361,7 +2431,7 @@ runs unattended.
       with no PR open, a review recommendation, a `failed-runs` entry. For
       those, `evidence` shaped `{ref, path, expect: "present"|"absent",
       pattern}` names a specific claim about a specific file at a specific ref —
-      "the fix is on `main`", "the Ledger row says resolved" — and the guard
+      "the fix is on `main`", "the register says resolved" — and the guard
       fetches `repos/<slug>/contents/<path>?ref=<ref>` and tests it: `expect:
       "absent"` holds iff GitHub answers `404 Not Found`, `expect: "present"`
       holds iff the fetch succeeds and, when `pattern` is given, the decoded
@@ -2442,7 +2512,7 @@ runs unattended.
     the Script applies `needs_refinement_label` to it as it records the block,
     records on the event which label it applied, and removes that label when the
     block is cleared or the item is voided. Nothing ever reads the label back.
-    Work items here are heterogeneous — issues, `TECH-DEBT.md` rows, review
+    Work items here are heterogeneous — issues, tech-debt records, review
     recommendations, findings, plan tasks, per-round PR refs — and a label can
     reach exactly one of those sources, so a pipeline that read it would see a
     fraction of its own state and be confidently wrong about the rest. The label
@@ -2947,19 +3017,23 @@ What exists, and the requirements each part answers to:
    head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
    repo slug and default branch, prints a JSON array holding at most one
-   candidate — the repo's `TECH-DEBT.md`, when `scripts/td-check.pl` says it
-   disagrees with itself — carrying a blob-SHA-scoped ref, the file's URL, the
-   blob SHA, the problem lines, and the checker's output verbatim. A repo with
-   no register prints `[]` silently; an API failure prints `[]` with `gh`'s
-   diagnosis on stderr. Fails safe to `[]` (exit 0). Its candidate rule is
-   regression-tested in `test/register-hygiene.test.sh`; must pass `shellcheck`.
-   `scripts/td-check.pl` and `scripts/drop-sections.pl` are byte-identical
-   copies of the canonical scripts in `Poetic-Poems/poetic`, held here (as this
+   candidate — the repo's tech-debt register, in whichever of the two formats
+   it uses, when `scripts/td-check.pl` says it disagrees with itself —
+   carrying a ref scoped to the register's identity (the file's blob SHA in
+   the legacy format, a digest of the `tech-debt/` tree and policy blob in
+   the per-item format), the register's URL, that identity as the blob SHA,
+   the problem lines, and the checker's output verbatim. A repo with neither
+   `TECH-DEBT.md` nor `tech-debt/` prints `[]` silently; an API failure
+   prints `[]` with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0).
+   Its candidate rule is regression-tested in `test/register-hygiene.test.sh`;
+   must pass `shellcheck`. `scripts/td-check.pl` is a byte-identical copy of
+   the canonical script in `Poetic-Poems/poetic`, held here (as this
    repository does not framework-sync) and guarded by
-   `.github/workflows/td-tooling-drift.yml`;
-   `.github/workflows/tech-debt-register.yml` runs the check on this
-   repository's own register on every pull request, the deterministic layer that
-   keeps this source's volume near zero.
+   `.github/workflows/td-tooling-drift.yml` — as is `scripts/drop-sections.pl`,
+   legacy-only tooling with no per-item counterpart.
+   `.github/workflows/tech-debt-register.yml` runs the check (argless) on this
+   repository's own register on every pull request, the deterministic layer
+   that keeps this source's volume near zero.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
    prints the JSON array of the repo's candidate issues — open, unassigned,
    not labelled `blocked`, pull requests dropped — each carrying the bare
@@ -3153,18 +3227,20 @@ pull request, run the ones the change touches and any it could regress.
    workflow publishes both architectures as one manifest list per tag.
 1b-i. **A documentation-only change builds nothing, and everything else
    builds.** `test/is-docs-only.test.sh` passes: `scripts/is-docs-only.sh`
-   calls a change documentation-only when every path in it is under `docs/` or
-   is `README.md`, `CLAUDE.md`, `TECH-DEBT.md`, `LICENCE` or
-   `deploy/docker/README.md`, and calls it code otherwise — `prompts/*.md`
+   calls a change documentation-only when every path in it is under `docs/`
+   or `tech-debt/`, or is `README.md`, `CLAUDE.md`, `TECH-DEBT.md`, `LICENCE`
+   or `deploy/docker/README.md`, and calls it code otherwise — `prompts/*.md`
    included, since those are Markdown documents *and* the operating
    instructions of requirement 1a's stages, so classifying by file extension
    would let a change to a node's behaviour skip the build that deploys it. An
    empty path list, or none, is code. The test the allowlist encodes is "the
    image is not the delivery path for this file", which is weaker than "nothing
    reads it" and has to be: a cycle working on this repository reads its own
-   `CLAUDE.md` and `TECH-DEBT.md`, but from the `gh repo clone` in
-   `workspace_root` and from the contents API (requirement 3i) — both current
-   the moment a pull request merges, with no image involved. The copy at /app
+   `CLAUDE.md` and its tech-debt register, but from the `gh repo clone` in
+   `workspace_root`, and `scripts/gather-register-hygiene.sh` reads the
+   register — `TECH-DEBT.md` or `tech-debt/`, whichever this repository
+   uses — directly from the API (requirement 3i) — both current the moment a
+   pull request merges, with no image involved. The copy at /app
    is what nothing reads, because every stage's working directory is under
    `workspace_root` or `state_dir` (requirement 6's assertion pins the first),
    so /app is never a working directory nor an ancestor of one and its
@@ -3357,16 +3433,24 @@ pull request, run the ones the change touches and any it could regress.
    never aborts the cycle. Its candidate rule is regression-tested in
    `test/merge-conflicts.test.sh`.
 2e. `scripts/gather-register-hygiene.sh Poetic-Poems/does-not-exist main` prints
-   `[]` and exits 0, silently — a repo (or a repo without a register) is a
-   normal `[]`, not an error. Against each configured repo it prints `[]` while
-   that repo's register is consistent. `test/register-hygiene.test.sh` passes:
-   against a stubbed contents endpoint, a consistent register yields `[]`; a
-   drifted one yields exactly one candidate whose `ref` is
-   `register-hygiene-<blob-sha[:12]>`, whose `problems` array holds one entry per
-   problem line, and whose `body` is the checker's output verbatim; a missing
-   file yields `[]` with nothing on stderr; and an API error yields `[]` *with*
-   stderr, since the difference between "no register" and "no answer" is the
-   whole of what a silent `[]` costs you at 3 a.m.
+   `[]` and exits 0, silently — a repo (or a repo without a register in either
+   format) is a normal `[]`, not an error. Against each configured repo it
+   prints `[]` while that repo's register is consistent.
+   `test/register-hygiene.test.sh` passes for both formats, distinguished by a
+   stubbed root-tree listing: against a `TECH-DEBT.md`-only tree (legacy) and
+   a stubbed contents endpoint, a consistent register yields `[]`; a drifted
+   one yields exactly one candidate whose `ref` is
+   `register-hygiene-<blob-sha[:12]>`. Against a tree that also names a
+   `tech-debt` directory (per-item) and a stubbed tarball endpoint, a
+   consistent register likewise yields `[]`; a drifted one yields exactly one
+   candidate whose `ref` digests *both* the `tech-debt` tree SHA and the
+   policy blob SHA together (so a repair to either retires it) and whose
+   `blob_sha` carries the tree SHA. In both formats the candidate's
+   `problems` array holds one entry per problem line and its `body` is the
+   checker's output verbatim; a tree naming neither `TECH-DEBT.md` nor
+   `tech-debt` yields `[]` with nothing on stderr; and an API error at any
+   step yields `[]` *with* stderr, since the difference between "no register"
+   and "no answer" is the whole of what a silent `[]` costs you at 3 a.m.
 2d. **Issue priority is read, defaulted and fingerprinted.**
    `test/issue-priority.test.sh` passes: against a stubbed issues endpoint,
    `scripts/gather-source-state.sh` bands each issue by its `Priority` issue
@@ -3830,33 +3914,43 @@ requirements above, which state only what is.
   candidacy.
 - **A register that lies about itself is repaired by the pipeline, and prevented
   by CI — two layers, because one was demonstrably not enough.** Every repo here
-  keeps its deferred work under one convention (live bodies under
-  `## Current Items`, a permanent Ledger row for every id ever allocated), and
-  resolving an item means removing the body and keeping the row. In July 2026
-  twelve items across the three repos were found flipped to `resolved` with
-  their bodies still in place — `## Current Items` advertising a dozen pieces of
-  work already done, to humans and to this pipeline alike.
+  keeps its deferred work under one of two conventions the tooling detects for
+  itself: the legacy single `TECH-DEBT.md` (live bodies under `## Current
+  Items`, a permanent Ledger row for every id ever allocated, resolving meaning
+  removing the body and keeping the row), or the per-item `tech-debt/`
+  directory (one file per record, resolving meaning a frontmatter flip with the
+  body kept in place). In July 2026, in the legacy format every repo still used
+  then, twelve items across the three repos were found flipped to `resolved`
+  with their bodies still in place — `## Current Items` advertising a dozen
+  pieces of work already done, to humans and to this pipeline alike.
   `prompts/implementor.md` had prescribed the removal since it was written; the
   drift accumulated anyway, because resolutions also arrive from humans and from
-  interactive sessions that no prompt governs. So the rule is enforced where it
-  can be *checked* rather than only where it is instructed: each consumer repo
-  runs `scripts/td-check.pl` on its own register in CI, so the pull request that
-  creates drift fails its own checks; and the `register-hygiene` source
-  (requirement 3i) detects and repairs whatever lands anyway — a register that
-  predates the guard, a direct push, a merge that reintroduces a body. The first
-  layer is what makes the second cheap: with the guards in place the source's
-  volume trends to zero, and an empty array costs one API call.
+  interactive sessions that no prompt governs. (The per-item format retires
+  that particular failure — resolution is a frontmatter flip, with no second
+  edit to forget — but keeps its own smaller surface: a copy-pasted id, a wrong
+  scope, a status typo.) So the rule is enforced where it can be *checked*
+  rather than only where it is instructed: each consumer repo runs
+  `scripts/td-check.pl` on its own register in CI, whichever format it is in,
+  so the pull request that creates drift fails its own checks; and the
+  `register-hygiene` source (requirement 3i) detects and repairs whatever
+  lands anyway — a register that predates the guard, a direct push, a merge
+  that reintroduces a body. The first layer is what makes the second cheap:
+  with the guards in place the source's volume trends to zero, and an empty
+  array costs one or two API calls.
 
   Three choices carry the design. It is **last in every repo's list**, because a
   deterministic cosmetic repair must never outrank substantive work, and a
   source that cannot be starved (its volume is bounded by CI) loses nothing by
   waiting. It is worked by the **ordinary Implementor, not a new actor role**:
-  the repair is an edit to one file against a machine-checkable acceptance test,
-  which is precisely what that role already does, and a role exists to carry a
-  different *kind* of judgement, not a different kind of file. And the ref is
-  scoped to the register's **blob SHA**, so an item retires itself the moment
-  the file changes and unrelated commits never fork a new one — the same
-  expiry-by-irrelevance the PR-derived sources get from their head SHAs.
+  the repair is an edit to the register against a machine-checkable acceptance
+  test, which is precisely what that role already does, and a role exists to
+  carry a different *kind* of judgement, not a different kind of file. And the
+  ref is scoped to the register's **identity** — the file's blob SHA in the
+  legacy format, a digest of both the `tech-debt/` tree SHA and the policy blob
+  SHA in the per-item one, so a repair to either object retires it — so an item
+  retires itself the moment the register changes and unrelated commits never
+  fork a new one — the same expiry-by-irrelevance the PR-derived sources get
+  from their head SHAs.
 - **An issue's `Priority` is a rank, not a label — so the source is banded, not
   sorted.** Issues were a single rank in the walk, which meant the only way a
   human could say "this one first" was to file it as something else. GitHub's
@@ -3864,7 +3958,7 @@ requirements above, which state only what is.
   the walk obey. The banding is expressed as four `issues:<band>` tokens in the
   repo's `sources` rather than as a sort *within* the issues source, because the
   ranking question is not "which issue first" but "an issue against a tech-debt
-  row, a red `main`, a review recommendation" — a question a within-source sort
+  item, a red `main`, a review recommendation" — a question a within-source sort
   cannot answer, and one the ordered `sources` list already answers for every
   other source. Keeping the ordering in config also keeps re-ranking a
   config-only change, which is what that list is for.
@@ -3922,9 +4016,10 @@ requirements above, which state only what is.
   repo has them; the config structure accepts new sources when they appear.
 - **The weekly project review feeds the pipeline as a work source.** The
   review pipeline (`docs/REVIEW-PIPELINE-SPEC.md`) lands, in each repo, both an
-  updated `TECH-DEBT.md` (the primary, status-tracked channel — picked up by
-  the `tech-debt` source) and a `reviews/project-review-*/` folder of
-  prioritised recommendations with ready-to-run improvement prompts. The
+  updated tech-debt register — the primary, status-tracked channel, in
+  whichever of the two formats the repo uses (picked up by the `tech-debt`
+  source) — and a `reviews/project-review-*/` folder of prioritised
+  recommendations with ready-to-run improvement prompts. The
   `project-review` source consumes the latter so that recommendations *not*
   also filed as tech-debt or an issue are still actioned rather than left to
   rot in a folder. It sits just above `code-quality` (a human-approved
@@ -3935,8 +4030,8 @@ requirements above, which state only what is.
   it, which is why the dedup silently didn't work; see Gotchas). Because the recommendations file is
   regenerated each week (its `R-NN` IDs are per-review, so a ref is
   review-dated), an un-actioned recommendation is simply re-offered under a new
-  ref by the next review; persistent items live in `TECH-DEBT.md`, which has
-  stable IDs — so the regeneration doesn't strand work. Done-ness is tracked by
+  ref by the next review; persistent items live in the tech-debt register,
+  which has stable IDs — so the regeneration doesn't strand work. Done-ness is tracked by
   the PR referencing the ref (open = claimed, merged = done), the same
   PR-as-source-of-truth pattern the findings sources use, so the review folder
   stays an immutable point-in-time record.
@@ -3957,10 +4052,13 @@ requirements above, which state only what is.
   extract. It fails safe to `[]` so a repo without the feature (or without
   token scope) costs nothing and breaks nothing.
 - **Tech-debt handling uses the repos' own claiming workflow directly**
-  (both repos have identical `TECH-DEBT.md` machinery and a `/td` skill;
-  the Implementor follows the documented workflow rather than dispatching
-  through the skill, which exists to launch agents — the Implementor
-  already is one).
+  (both repos today keep identical legacy `TECH-DEBT.md` machinery and a
+  `/td` skill, but the tooling that reads and repairs a register —
+  `td-check.pl`, `get-tech-debt-record.pl`, `next-tech-debt-id.pl` — detects
+  either that or the per-item `tech-debt/` convention for itself, so a repo
+  moving formats needs no pipeline change; the Implementor follows the
+  documented workflow rather than dispatching through the skill, which
+  exists to launch agents — the Implementor already is one).
 - **The Co-Ordinator falls through** to the next category or repo when
   candidates fail the suitability bar, instead of giving up after the first
   category that yielded any candidate.

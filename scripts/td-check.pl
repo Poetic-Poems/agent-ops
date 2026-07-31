@@ -1,8 +1,23 @@
 #!/usr/bin/perl
 
-# td-check.pl <TECH-DEBT.md>
+# td-check.pl [<TECH-DEBT.md> | <tech-debt-dir>]
 #
-# Cross-check a TECH-DEBT.md register for internal consistency:
+# Cross-check a tech-debt register for internal consistency.  With no
+# argument, checks ./tech-debt when that directory exists, else
+# ./TECH-DEBT.md — so one invocation works for either register format.
+#
+# Per-item register (the argument is a directory): every entry must be one
+# item file — named TD-<ORG><repo>-<YYMMDD><NN>.md (NN 01-99 then a0-z9,
+# never 00) — whose frontmatter parses and carries id/title/status/filed,
+# with id equal to the filename stem and scoped to the `scope:` declared in
+# the frontmatter of the TECH-DEBT.md beside the directory, a recognised
+# status, resolution fields consistent with that status, and a filed date
+# matching the ID's.  Problem labels:
+#   BAD NAME, BAD FRONTMATTER, MISSING FIELD, BAD FIELD, BAD STATUS,
+#   BAD SCOPE, NO SCOPE, ID MISMATCH, DATE MISMATCH, STALE FIELD,
+#   DUPLICATE ID
+#
+# Legacy register (the argument is a file):
 #   - every open/in-progress Ledger row has exactly one "### <id>" body
 #     under Current Items (MISSING BODY / DUPLICATE BODY otherwise);
 #   - no resolved/not-debt row still has a body (STALE BODY otherwise);
@@ -21,65 +36,206 @@
 use strict;
 use warnings;
 
-my $file = shift or die "usage: td-check.pl <TECH-DEBT.md>\n";
-open my $fh, '<', $file or die "$file: $!\n";
+my $target = shift;
+$target = -d 'tech-debt' ? 'tech-debt' : 'TECH-DEBT.md'
+  unless defined $target;
 
-my (%body_count, %body_line, %status, %status_line, %row_count, %title);
-my (@order, @problems);
-my $line = 0;
-while (<$fh>) {
-  $line++;
-  if (/^###\s+(TD\d+)/) {
-    $body_count{$1}++;
-    $body_line{$1} //= $line;
-  }
-  if (/^\|\s*(TD\d+)\s*\|/) {
-    my $id = $1;
-    if (/^\|\s*TD\d+\s*\|\s*(.*?)\s*\|\s*(open|in-progress|resolved|not-debt)\s*\|/) {
-      my ($row_title, $row_status) = ($1, $2);
-      if ($row_count{$id}++) {
-        push @problems, "DUPLICATE ROW  $id  ledger:$line";
-        next;
+if (-d $target) { exit check_dir($target) }
+else            { exit check_file($target) }
+
+sub problem_line {
+  my ($label, $detail) = @_;
+  return sprintf '%-15s%s', $label, $detail;
+}
+
+sub check_dir {
+  my $dir = shift;
+  (my $parent = $dir) =~ s{/?[^/]+/?$}{};
+  $parent = '.' unless length $parent;
+  my $policy = "$parent/TECH-DEBT.md";
+
+  my (@problems, %status, %seen_id);
+  my @order;
+
+  # The register's scope is declared beside it, in the policy document's
+  # frontmatter.
+  my $scope;
+  if (open my $fh, '<', $policy) {
+    my @lines = <$fh>;
+    close $fh;
+    if (@lines and $lines[0] =~ /^---\s*$/) {
+      for my $i (1 .. $#lines) {
+        last if $lines[$i] =~ /^---\s*$/;
+        if ($lines[$i] =~ /^scope:[ \t]*(\S+)\s*$/) { $scope = $1; last }
       }
-      $status{$id}      = $row_status;
-      $title{$id}       = $row_title;
-      $status_line{$id} = $line;
-      push @order, $id;
-    } else {
-      push @problems, "BAD ROW        $id  ledger:$line  (unrecognised status)";
     }
   }
-}
-close $fh;
+  push @problems, problem_line('NO SCOPE',
+    "$policy missing or lacking a scope: frontmatter declaration")
+    unless defined $scope and $scope =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/;
 
-for my $id (@order) {
-  my $live = $status{$id} eq 'open' || $status{$id} eq 'in-progress';
-  my $n    = $body_count{$id} // 0;
-  if ($live && $n == 0) {
-    push @problems,
-      "MISSING BODY   $id  ledger:$status_line{$id} ($status{$id})  $title{$id}";
+  opendir my $dh, $dir or die "$dir: $!\n";
+  my @names = sort grep { !/^\.\.?$/ } readdir $dh;
+  closedir $dh;
+
+  for my $name (@names) {
+    if (-d "$dir/$name"
+        or $name !~ /^(TD-([A-Z0-9]{2}[a-z0-9]{4})-(\d{6})([0-9a-z]\d))\.md$/
+        or $4 eq '00') {
+      push @problems, problem_line('BAD NAME', $name);
+      next;
+    }
+    my ($stem, $name_scope, $date, $nn) = ($1, $2, $3, $4);
+
+    open my $fh, '<', "$dir/$name" or die "$dir/$name: $!\n";
+    my @lines = <$fh>;
+    close $fh;
+
+    my %meta;
+    my $end;
+    if (@lines and $lines[0] =~ /^---\s*$/) {
+      for my $i (1 .. $#lines) {
+        if ($lines[$i] =~ /^---\s*$/) { $end = $i; last }
+        $meta{lc $1} = $2
+          if $lines[$i] =~ /^([A-Za-z][A-Za-z-]*):[ \t]*(.*?)\s*$/;
+      }
+    }
+    unless (defined $end) {
+      push @problems, problem_line('BAD FRONTMATTER', $name);
+      next;
+    }
+
+    for my $key (qw(id title status filed)) {
+      push @problems, problem_line('MISSING FIELD', "$name ($key)")
+        unless defined $meta{$key} and length $meta{$key};
+    }
+
+    my $id = $meta{id} // '';
+    if (length $id and $id ne $stem) {
+      push @problems, problem_line('ID MISMATCH', "$name (id: $id)");
+    }
+    if (length $id) {
+      push @problems, problem_line('DUPLICATE ID', "$name (also $seen_id{$id})")
+        if $seen_id{$id};
+      $seen_id{$id} //= $name;
+    }
+
+    if (defined $scope and $name_scope ne $scope) {
+      push @problems, problem_line('BAD SCOPE',
+        "$name (scope $name_scope, repository declares $scope)");
+    }
+
+    my $st = $meta{status};
+    if (defined $st and length $st) {
+      if ($st =~ /^(open|in-progress|resolved|not-debt)$/) {
+        $status{$name} = $st;
+        push @order, $name;
+        my $live = $st eq 'open' || $st eq 'in-progress';
+        if ($live) {
+          for my $key (qw(resolved ref)) {
+            push @problems, problem_line('STALE FIELD',
+              "$name ($key: set on an $st item)")
+              if defined $meta{$key} and length $meta{$key};
+          }
+        } else {
+          push @problems, problem_line('MISSING FIELD', "$name (ref)")
+            unless defined $meta{ref} and length $meta{ref};
+          push @problems, problem_line('MISSING FIELD', "$name (resolved)")
+            if $st eq 'resolved'
+            and not(defined $meta{resolved} and length $meta{resolved});
+        }
+      } else {
+        push @problems, problem_line('BAD STATUS', "$name ($st)");
+      }
+    }
+
+    my $filed = $meta{filed};
+    if (defined $filed and length $filed) {
+      if ($filed =~ /^\d{2}(\d{2})-(\d{2})-(\d{2})$/) {
+        push @problems, problem_line('DATE MISMATCH',
+          "$name (filed $filed, ID date $date)")
+          unless "$1$2$3" eq $date;
+      } else {
+        push @problems, problem_line('BAD FIELD', "$name (filed: $filed)");
+      }
+    }
+
+    my $legacy = $meta{'legacy-id'};
+    push @problems, problem_line('BAD FIELD', "$name (legacy-id: $legacy)")
+      if defined $legacy and length $legacy and $legacy !~ /^TD\d{8}$/;
   }
-  if (!$live && $n > 0) {
-    push @problems,
-      "STALE BODY     $id  body:$body_line{$id} ledger:$status_line{$id} ($status{$id})  $title{$id}";
-  }
-  if ($n > 1) {
-    push @problems,
-      "DUPLICATE BODY $id  ${n}x, first at body:$body_line{$id}";
-  }
-}
-for my $id (sort keys %body_count) {
-  push @problems, "NO LEDGER ROW  $id  body:$body_line{$id}"
-    unless $row_count{$id};
+
+  printf "%s: %d items\n", $dir, scalar @order;
+  my %tally;
+  $tally{ $status{$_} }++ for @order;
+  printf "  status: %s\n", join(', ', map {"$_=$tally{$_}"} sort keys %tally)
+    if @order;
+  if (@problems) { print "  $_\n" for @problems }
+  else           { print "  consistent\n" }
+  return @problems ? 1 : 0;
 }
 
-printf "%s: %d ledger rows, %d bodies\n",
-  $file, scalar(@order), scalar(keys %body_count);
-my %tally;
-$tally{ $status{$_} }++ for @order;
-printf "  status: %s\n", join(', ', map {"$_=$tally{$_}"} sort keys %tally)
-  if @order;
-if (@problems) { print "  $_\n" for @problems }
-else           { print "  consistent\n" }
+sub check_file {
+  my $file = shift;
+  open my $fh, '<', $file or die "$file: $!\n";
 
-exit(@problems ? 1 : 0);
+  my (%body_count, %body_line, %status, %status_line, %row_count, %title);
+  my (@order, @problems);
+  my $line = 0;
+  while (<$fh>) {
+    $line++;
+    if (/^###\s+(TD\d+)/) {
+      $body_count{$1}++;
+      $body_line{$1} //= $line;
+    }
+    if (/^\|\s*(TD\d+)\s*\|/) {
+      my $id = $1;
+      if (/^\|\s*TD\d+\s*\|\s*(.*?)\s*\|\s*(open|in-progress|resolved|not-debt)\s*\|/) {
+        my ($row_title, $row_status) = ($1, $2);
+        if ($row_count{$id}++) {
+          push @problems, "DUPLICATE ROW  $id  ledger:$line";
+          next;
+        }
+        $status{$id}      = $row_status;
+        $title{$id}       = $row_title;
+        $status_line{$id} = $line;
+        push @order, $id;
+      } else {
+        push @problems, "BAD ROW        $id  ledger:$line  (unrecognised status)";
+      }
+    }
+  }
+  close $fh;
+
+  for my $id (@order) {
+    my $live = $status{$id} eq 'open' || $status{$id} eq 'in-progress';
+    my $n    = $body_count{$id} // 0;
+    if ($live && $n == 0) {
+      push @problems,
+        "MISSING BODY   $id  ledger:$status_line{$id} ($status{$id})  $title{$id}";
+    }
+    if (!$live && $n > 0) {
+      push @problems,
+        "STALE BODY     $id  body:$body_line{$id} ledger:$status_line{$id} ($status{$id})  $title{$id}";
+    }
+    if ($n > 1) {
+      push @problems,
+        "DUPLICATE BODY $id  ${n}x, first at body:$body_line{$id}";
+    }
+  }
+  for my $id (sort keys %body_count) {
+    push @problems, "NO LEDGER ROW  $id  body:$body_line{$id}"
+      unless $row_count{$id};
+  }
+
+  printf "%s: %d ledger rows, %d bodies\n",
+    $file, scalar(@order), scalar(keys %body_count);
+  my %tally;
+  $tally{ $status{$_} }++ for @order;
+  printf "  status: %s\n", join(', ', map {"$_=$tally{$_}"} sort keys %tally)
+    if @order;
+  if (@problems) { print "  $_\n" for @problems }
+  else           { print "  consistent\n" }
+
+  return @problems ? 1 : 0;
+}

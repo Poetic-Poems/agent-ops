@@ -2,17 +2,31 @@
 
 # next-tech-debt-id.pl [--ref REF] [YYMMDD]
 #
-# Print the next free TECH-DEBT.md ID (TD<YYMMDD><NN>) for the given date,
-# or today's date if none is given. Scans the whole file for any "TD"
-# followed by 8 digits — covering both the Ledger table and any live
-# "### TD########" entry headers — so the result stays correct even if a
-# resolved entry's Ledger row is all that's left.
+# Print the next free tech-debt ID for the given date, or today's date if
+# none is given.
 #
-# With --ref, TECH-DEBT.md is read from that git ref (e.g. --ref origin/main,
+# The register is read adaptively:
+#   - per-item format (a tech-debt/ directory exists): IDs are
+#     TD-<ORG><repo>-<YYMMDD><NN>, where <ORG><repo> is this repository's
+#     scope code, declared as `scope:` in TECH-DEBT.md's frontmatter.  <NN>
+#     runs 01-99 then a0-a9 .. z9, never 00 — an encoding chosen so plain
+#     alphanumeric order equals allocation order.  The next NN is computed
+#     from the item filenames for the date; past z9 the script dies, since a
+#     repository filing 360 items in one day has bigger problems.
+#   - legacy format: IDs are TD<YYMMDD><NN> with numeric NN.  The whole
+#     TECH-DEBT.md is scanned for any "TD" followed by 8 digits — covering
+#     both the Ledger table and any live "### TD########" entry headers — so
+#     the result stays correct even if a resolved entry's Ledger row is all
+#     that's left.
+#
+# With --ref, the register is read from that git ref (e.g. --ref origin/main,
 # after a fetch) instead of the working tree, so the allocation reflects the
 # shared repository state rather than a possibly stale local checkout. Note
 # this still cannot see IDs allocated on unmerged claim branches — check open
 # pull requests and td/* branches before relying on the result.
+#
+# The canonical copy lives in Poetic-Poems/poetic; other repositories hold
+# byte-identical copies, guarded by their td-tooling-drift workflow.
 
 use strict;
 use warnings;
@@ -41,24 +55,109 @@ my $repo_root = do {
   $_ = '.' unless length;
   $_
 };
-my $fname = "$repo_root/TECH-DEBT.md";
-if (defined $ref) {
-  open IN, '-|', 'git', '-C', $repo_root, 'show', "$ref:TECH-DEBT.md"
-    or die "Cannot run git show: $!";
-} else {
-  open IN, '<', $fname or die "Cannot open $fname for reading: $!";
+
+# Run git in the repo root; return an arrayref of output lines, or undef if
+# the command failed.
+sub git_lines {
+  my @cmd = @_;
+  open my $fh, '-|', 'git', '-C', $repo_root, @cmd
+    or die "Cannot run git: $!";
+  my @lines = <$fh>;
+  close $fh;
+  return $? == 0 ? \@lines : undef;
 }
 
-my $max_nn = 0;
-while (my $line = <IN>) {
-  while ($line =~ /\bTD(\d{6})(\d{2})\b/g) {
-    next unless $1 eq $date;
-    my $nn = $2 + 0;
-    $max_nn = $nn if $nn > $max_nn;
+# Read a repo-relative path from the working tree, or from --ref when given.
+sub read_lines {
+  my $path = shift;
+  if (defined $ref) {
+    my $lines = git_lines('show', "$ref:$path");
+    defined $lines
+      or die "Cannot read $path at ref '$ref' (git show failed)\n";
+    return @$lines;
   }
+  open my $fh, '<', "$repo_root/$path"
+    or die "Cannot open $repo_root/$path for reading: $!";
+  my @lines = <$fh>;
+  close $fh;
+  return @lines;
 }
-close IN;
-defined $ref and $? != 0
-  and die "Cannot read TECH-DEBT.md at ref '$ref' (git show failed)\n";
 
-printf "TD%s%02d\n", $date, $max_nn + 1;
+# The NN sequence: 01-99, then a0-a9 .. z9.  ASCII digits sort before
+# lowercase letters, so string comparison finds the maximum and alphanumeric
+# listings stay in allocation order.
+sub next_nn {
+  my $max = shift;
+  return '01' unless defined $max;
+  if ($max =~ /^\d\d$/) {
+    return $max < 99 ? sprintf('%02d', $max + 1) : 'a0';
+  }
+  my ($letter, $digit) = $max =~ /^([a-z])(\d)$/
+    or die "Unrecognised NN '$max'\n";
+  return $letter . ($digit + 1) if $digit < 9;
+  $letter ne 'z'
+    or die "NN overflow: $date has used its last ID (z9) — something has "
+         . "gone seriously wrong\n";
+  return chr(ord($letter) + 1) . '0';
+}
+
+my $new_format;
+if (defined $ref) {
+  $new_format =
+    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt");
+} else {
+  $new_format = -d "$repo_root/tech-debt";
+}
+
+if ($new_format) {
+  my $scope = do {
+    my @policy = read_lines('TECH-DEBT.md');
+    my $s;
+    if (@policy and $policy[0] =~ /^---\s*$/) {
+      for my $i (1 .. $#policy) {
+        last if $policy[$i] =~ /^---\s*$/;
+        if ($policy[$i] =~ /^scope:[ \t]*(\S+)\s*$/) { $s = $1; last }
+      }
+    }
+    defined $s
+      or die "TECH-DEBT.md declares no scope: in its frontmatter\n";
+    $s =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/
+      or die "Declared scope '$s' is not <ORG><repo> "
+           . "([A-Z0-9]{2}[a-z0-9]{4})\n";
+    $s
+  };
+
+  my @names;
+  if (defined $ref) {
+    my $listing = git_lines('ls-tree', '--name-only', "$ref:tech-debt");
+    defined $listing or die "Cannot list tech-debt/ at ref '$ref'\n";
+    @names = map { chomp; $_ } @$listing;
+  } else {
+    opendir my $dh, "$repo_root/tech-debt"
+      or die "Cannot open $repo_root/tech-debt: $!";
+    @names = readdir $dh;
+    closedir $dh;
+  }
+
+  my $max;
+  for my $name (@names) {
+    $name =~ /^TD-[A-Z0-9]{2}[a-z0-9]{4}-(\d{6})([0-9a-z]\d)\.md$/ or next;
+    next unless $1 eq $date;
+    $max = $2 if !defined $max or $2 gt $max;
+  }
+  print 'TD-', $scope, '-', $date, next_nn($max), "\n";
+} else {
+  my $max_nn;
+  for my $line (read_lines('TECH-DEBT.md')) {
+    while ($line =~ /\bTD(\d{6})(\d{2})\b/g) {
+      next unless $1 eq $date;
+      my $nn = $2 + 0;
+      $max_nn = $nn if !defined $max_nn or $nn > $max_nn;
+    }
+  }
+  $max_nn //= 0;
+  $max_nn < 99
+    or die "NN overflow: the legacy register cannot exceed 99 IDs per day; "
+         . "migrate to the per-item tech-debt/ register\n";
+  printf "TD%s%02d\n", $date, $max_nn + 1;
+}

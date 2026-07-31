@@ -73,16 +73,21 @@ checkouts under `~/Code` are never touched.
 ## Tech debt
 
 When you defer work, take a shortcut, or notice a known gap, record it in
-`TECH-DEBT.md` at the repo root — do not leave it only in a commit message or
-in chat. Follow the format and workflow described at the top of
-`TECH-DEBT.md`, and delete an entry when it is resolved.
+the tech-debt register — do not leave it only in a commit message or in
+chat. This repository's register is the legacy single-file format:
+`TECH-DEBT.md` at the repo root, with the format and claiming workflow
+described at the top of that file. The tooling itself is format-adaptive
+and also reads the per-item format (one `tech-debt/<id>.md` file per
+record); `docs/TECH-DEBT-REGISTER.md` in `Poetic-Poems/poetic` specifies
+that format and the scope-code registry.
 
-Resolving an item means removing its `### <id>` body from `## Current Items`
-*and* flipping its Ledger row — the row stays forever, the body does not.
-`perl scripts/td-check.pl TECH-DEBT.md` checks the two halves against each
-other and is what `.github/workflows/tech-debt-register.yml` runs on every
-pull request, so run it before you push. `scripts/drop-sections.pl
-TECH-DEBT.md <id>…` does the body removal without touching the Ledger. Both
-are byte-identical copies of the canonical scripts in `Poetic-Poems/poetic`
+Resolving an item in this register means removing its `### <id>` body from
+`## Current Items` *and* flipping its Ledger row — the row stays forever,
+the body does not. `perl scripts/td-check.pl` (argless — it detects the
+register's format) checks the register and is what
+`.github/workflows/tech-debt-register.yml` runs on every pull request, so
+run it before you push. `scripts/drop-sections.pl TECH-DEBT.md <id>…` does
+the body removal without touching the Ledger. All of these are
+byte-identical copies of the canonical scripts in `Poetic-Poems/poetic`
 (see `.github/workflows/td-tooling-drift.yml`) — fix them upstream, never
 here.

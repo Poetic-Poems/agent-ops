@@ -915,6 +915,13 @@ if (( WITH_GITHUB )); then
       | map(select(.conclusion == "failure"))' <<<"$runs" 2>/dev/null)"; failed_runs="${failed_runs:-[]}"
 
     td_raw="$(gh_json api "repos/$slug/contents/TECH-DEBT.md" --jq '.content' | tr -d '\n' | base64 -d 2>/dev/null | grep -iE '^\|.*\b(open|in-progress|resolved)\b' | head -n 40)"
+    if [[ -z "$td_raw" ]]; then
+      # A per-item register keeps no Ledger rows in TECH-DEBT.md: one listing
+      # read of tech-debt/ gives the item roster instead. Statuses live inside
+      # each item file and are not worth a read per item here; a legacy repo
+      # without the directory just 404s to an empty string, as before.
+      td_raw="$(gh_json api "repos/$slug/contents/tech-debt" --jq '.[].name' | sed -n 's/\.md$//p' | sed 's/^/| /; s/$/ |/' | head -n 40)"
+    fi
     td_json="$(printf '%s' "$td_raw" | jq -R -s 'split("\n") | map(select(length>0))' 2>/dev/null || echo '[]')"
 
     # Security & code-quality findings, via the same script the pipeline uses,

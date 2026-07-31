@@ -27,10 +27,10 @@ A second, independent pipeline that runs alongside the hourly implementation
 pipeline. Once a week, for each target repository, it produces a full project
 review — via the vendored `project-review` skill — against a fresh ephemeral
 clone, and leaves **one** mergeable pull request carrying the review reports
-and an updated `TECH-DEBT.md`. A human merges it. The review's new tech-debt
-entries and improvement prompts then feed the hourly implementation pipeline
-(and/or the `project-remediation` skill). The only human involvement is
-merging the review pull request.
+and an updated tech-debt register. A human merges it. The review's new
+tech-debt entries and improvement prompts then feed the hourly
+implementation pipeline (and/or the `project-remediation` skill). The only
+human involvement is merging the review pull request.
 
 ```
 cron (weekly; a daily tick with a skip-guard is recommended — see R4)
@@ -82,7 +82,8 @@ Identical to `docs/IMPLEMENTATION-PIPELINE-SPEC.md` ("Environment" and "Target
 repositories"); not repeated here. The two target repositories are the same
 `Poetic-Poems/poetic` and `Poetic-Poems/poetic-fiddle`, and their shared
 conventions (protected `main`, squash-merge so the PR title becomes the commit,
-Conventional Commits, the `TECH-DEBT.md` Ledger with `scripts/next-tech-debt-id.pl`)
+Conventional Commits, the tech-debt register — legacy Ledger or per-item
+`tech-debt/`, whichever the repo uses — with `scripts/next-tech-debt-id.pl`)
 bind the Reviewer-Agent exactly as they bind the Implementor.
 
 One repository-specific fact worth noting: `poetic` already stores prior
@@ -169,12 +170,12 @@ and its body summarises the verdict and links the review index. A human merges
 it — the single point at which a human is required.
 
 The point of the pipeline is the *loop*, not the report. When a review PR
-merges, its updated `TECH-DEBT.md` and its `04-improvement-prompts.md` land on
-`main`, where:
+merges, its updated tech-debt register and its `04-improvement-prompts.md`
+land on `main`, where:
 
 - the **hourly implementation pipeline's** Co-Ordinator picks up the new
-  tech-debt items on its next cycle (its `tech-debt` work source reads exactly
-  that Ledger); and/or
+  tech-debt items on its next cycle (its `tech-debt` work source reads
+  exactly that register); and/or
 - the human runs the **`project-remediation`** skill (the review's
   counterpart) to work down the recommendations deliberately.
 
@@ -417,13 +418,13 @@ R9. **One-shot constraint** (requirement 21). A single non-interactive
 
 R10. **Obey the repo.** Runs inside the clone. First reads the repo's
    `CLAUDE.md` and obeys it throughout (branch workflow, commit format,
-   tech-debt Ledger, documentation-as-built rules, the `npm run check`
-   whitespace gate, etc.).
+   tech-debt register conventions, documentation-as-built rules, the
+   `npm run check` whitespace gate, etc.).
 
 R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
    and follow it to completion: produce the `reviews/project-review-YYYY-MM-DD/`
    report set (index, summary, findings, recommendations, improvement prompts)
-   and update `TECH-DEBT.md` **in place**. The injected skill under
+   and update the tech-debt register **in place**. The injected skill under
    `.claude/skills/project-review/` is *tooling staged for this run*, **not**
    part of the repository under review: exclude it from the review's scope and
    findings, and never `git add` it (R5b also git-excludes it as a backstop).
@@ -431,19 +432,26 @@ R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
    `review-state.json`) so only the finished reports remain.
 
 R12. **Tech-debt conventions.** When the review adds tech-debt items, follow
-   the repo's Ledger workflow exactly — allocate IDs with
-   `scripts/next-tech-debt-id.pl`, add each item's body under the
-   `## Current Items` heading as a `### <id> <title>` section, add Ledger rows,
-   and preserve the existing format — rather than inventing a competing
-   structure. The skill updates the file in place; this requirement pins it to
-   *this* repo's conventions.
+   the repo's own register workflow exactly, in whichever of the two formats
+   the repo uses — allocate IDs with `scripts/next-tech-debt-id.pl`, then add
+   each record in the register's own format: a new `tech-debt/<id>.md` item
+   file (frontmatter plus a Markdown body) in a per-item register, or the
+   item's body under the `## Current Items` heading as a `### <id> <title>`
+   section plus a Ledger row in a legacy one — preserving the existing
+   format rather than inventing a competing structure. Mark items the review
+   finds already resolved per the register's own rules, not by deleting
+   their history (a frontmatter status flip in a per-item register, with the
+   item file never deleted or renamed; body removal plus a Ledger flip in a
+   legacy one). The skill updates the register in place; this requirement
+   pins it to *this* repo's conventions.
 
 R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    item the review files — or a GitHub issue it opens — covers the whole of a
    recommendation's *Intended end state*, record that recommendation's `R-NN`
-   against the item, somewhere a reader and a `grep` will find it from the
-   register itself (the row, or a provenance table in the same file). Do it
-   when the item is filed, not when it is resolved.
+   against the item, somewhere a reader and a `grep` of the register will
+   find it (a `review:` frontmatter line in a per-item register; the row, or
+   a provenance table, in a legacy one). Do it when the item is filed, not
+   when it is resolved.
 
    This is not book-keeping. A recommendation and its mirrored register entry
    are two channels onto one piece of work, and the hourly implementation
@@ -463,9 +471,9 @@ R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    visible; claiming it here would silently retire work nobody has done.
 
 R13. **Raise one pull request.** Create the branch `review/<date>` from the
-   default branch; commit the review folder and the updated `TECH-DEBT.md`;
-   open **one** pull request, **ready for review** (not draft), labelled
-   `review.pr_label`, with a Conventional-Commits title
+   default branch; commit the review folder and the updated tech-debt
+   register; open **one** pull request, **ready for review** (not draft),
+   labelled `review.pr_label`, with a Conventional-Commits title
    (`docs(review): weekly project review <date>` — it becomes the squash commit
    on `main`) and a body that summarises the verdict and links the review
    index. Record the PR URL to `.git/agent-ops-review-pr-url` immediately on
@@ -581,15 +589,20 @@ a pull request, run the ones the change touches and any it could regress.
    down; and a simulated limit phrase in a transcript causes a `limit-hit` to
    be written to `log.jsonl`.
 7. One supervised full run (`--once`): for each non-skipped repo it produces a
-   labelled, ready, mergeable review PR, with `TECH-DEBT.md` updated per that
-   repo's Ledger conventions and a clean `review-log.jsonl` trail. Report the PR
-   URL(s) to the human; merge nothing.
-8. **Cross-references land (R12a):** in that run's `TECH-DEBT.md` diff, every
-   item mirroring a recommendation names its `R-NN`, and `grep -c 'R-[0-9]'`
-   on the file is non-zero whenever the review mirrored anything. Check this
-   explicitly: it is invisible in the review's own output — the reports look
-   complete either way — and only shows up weeks later as the implementation
-   pipeline paying to re-investigate recommendations that are already done.
+   labelled, ready, mergeable review PR, with its tech-debt register updated
+   per that repo's own conventions (Ledger rows in a legacy register,
+   frontmatter in a per-item one) and a clean `review-log.jsonl` trail.
+   Report the PR URL(s) to the human; merge nothing.
+8. **Cross-references land (R12a):** in that run's tech-debt register diff,
+   every item mirroring a recommendation names its `R-NN`. In a legacy
+   register, `grep -c 'R-[0-9]' TECH-DEBT.md` is non-zero whenever the review
+   mirrored anything; in a per-item register the `R-NN` lands in a `review:`
+   frontmatter line of the item file, so the check greps the `tech-debt/`
+   diff instead (`grep -rc 'R-[0-9]' tech-debt/` non-zero the same way).
+   Check this explicitly: it is invisible in the review's own output — the
+   reports look complete either way — and only shows up weeks later as the
+   implementation pipeline paying to re-investigate recommendations that are
+   already done.
 
 ## Host provisioning (human steps)
 
@@ -661,10 +674,11 @@ state only what is.
 - **"Once a week" is implemented as a daily tick plus a skip-guard**, because a
   strict weekly cron on a machine that sleeps can miss its one tick and lose a
   whole week. The guard also makes re-runs idempotent.
-- **The outputs feed the existing pipelines by design.** The review updates the
-  same `TECH-DEBT.md` the hourly Co-Ordinator already reads and writes the
-  improvement prompts the `project-remediation` skill consumes — so the review
-  is the front of an existing loop, not a parallel dead-end.
+- **The outputs feed the existing pipelines by design.** The review updates
+  the same tech-debt register the hourly Co-Ordinator already reads —
+  whichever of the two formats the repo uses — and writes the improvement
+  prompts the `project-remediation` skill consumes — so the review is the
+  front of an existing loop, not a parallel dead-end.
 - **`min_days_between_reviews` is 6, not 7**, so a review that lands a day late
   one week is not deferred a full extra week the next.
 

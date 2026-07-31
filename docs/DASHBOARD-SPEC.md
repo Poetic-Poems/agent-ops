@@ -230,14 +230,18 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   band the Co-Ordinator ranks it by (read from the REST issues listing's
   `issue_field_values`, since `gh issue list --json` cannot see issue fields,
   and defaulted to `Medium` exactly as the pipeline defaults it — see the
-  implementation-pipeline spec, requirement 15e); the `TECH-DEBT.md` ledger
-  rows; and one record per pull request the page refers to (`github.pr_index`,
-  keyed `<owner>/<repo>#<number>`) — the open ones from the query above, the
-  rest by `gh pr view`, cached permanently once terminal (see the Publisher).
-  If `gh` fails, the GitHub panels mark themselves stale and the rest
-  still renders. On a `--no-github` refresh the fetch is skipped entirely and
-  the last successful result is carried forward (see the Publisher below), so
-  only a fetch that was *attempted and failed* ever shows as unavailable.
+  implementation-pipeline spec, requirement 15e); the tech-debt register's
+  rows — a legacy repo's `TECH-DEBT.md` Ledger rows, or, when that grep finds
+  none, one listing read of `tech-debt/` rendering each per-item register's
+  item filenames as rows instead (statuses live inside the item files and are
+  not worth a read per item here); and one record per pull request the page
+  refers to (`github.pr_index`, keyed `<owner>/<repo>#<number>`) — the open
+  ones from the query above, the rest by `gh pr view`, cached permanently
+  once terminal (see the Publisher). If `gh` fails, the GitHub panels mark
+  themselves stale and the rest still renders. On a `--no-github` refresh the
+  fetch is skipped entirely and the last successful result is carried forward
+  (see the Publisher below), so only a fetch that was *attempted and failed*
+  ever shows as unavailable.
 
 **Usage-limit detection.** The pipeline's own detector and the Publisher share
 one phrase pattern and reset-time parser (`lib/limit-detect.sh`), so a
