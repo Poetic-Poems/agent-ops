@@ -101,40 +101,42 @@ sub next_nn {
   return chr(ord($letter) + 1) . '0';
 }
 
+# The per-item format is signalled by the tech-debt/ directory, or — for a
+# register that has not yet filed its first item, and so cannot commit an
+# empty directory — by a scope: declaration in TECH-DEBT.md's frontmatter.
+sub policy_scope {
+  my @policy = eval { read_lines('TECH-DEBT.md') };
+  return unless @policy and $policy[0] =~ /^---\s*$/;
+  for my $i (1 .. $#policy) {
+    last if $policy[$i] =~ /^---\s*$/;
+    return $1 if $policy[$i] =~ /^scope:[ \t]*(\S+)\s*$/;
+  }
+  return;
+}
+
 my $new_format;
 if (defined $ref) {
   $new_format =
-    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt");
+    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt")
+    || defined policy_scope();
 } else {
-  $new_format = -d "$repo_root/tech-debt";
+  $new_format = -d "$repo_root/tech-debt" || defined policy_scope();
 }
 
 if ($new_format) {
-  my $scope = do {
-    my @policy = read_lines('TECH-DEBT.md');
-    my $s;
-    if (@policy and $policy[0] =~ /^---\s*$/) {
-      for my $i (1 .. $#policy) {
-        last if $policy[$i] =~ /^---\s*$/;
-        if ($policy[$i] =~ /^scope:[ \t]*(\S+)\s*$/) { $s = $1; last }
-      }
-    }
-    defined $s
-      or die "TECH-DEBT.md declares no scope: in its frontmatter\n";
-    $s =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/
-      or die "Declared scope '$s' is not <ORG><repo> "
-           . "([A-Z0-9]{2}[a-z0-9]{4})\n";
-    $s
-  };
+  my $scope = policy_scope();
+  defined $scope
+    or die "TECH-DEBT.md declares no scope: in its frontmatter\n";
+  $scope =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/
+    or die "Declared scope '$scope' is not <ORG><repo> "
+         . "([A-Z0-9]{2}[a-z0-9]{4})\n";
 
+  # A per-item register whose directory does not exist yet is simply empty.
   my @names;
   if (defined $ref) {
     my $listing = git_lines('ls-tree', '--name-only', "$ref:tech-debt");
-    defined $listing or die "Cannot list tech-debt/ at ref '$ref'\n";
-    @names = map { chomp; $_ } @$listing;
-  } else {
-    opendir my $dh, "$repo_root/tech-debt"
-      or die "Cannot open $repo_root/tech-debt: $!";
+    @names = defined $listing ? (map { chomp; $_ } @$listing) : ();
+  } elsif (opendir my $dh, "$repo_root/tech-debt") {
     @names = readdir $dh;
     closedir $dh;
   }

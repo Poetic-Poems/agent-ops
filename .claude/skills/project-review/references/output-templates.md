@@ -19,7 +19,7 @@ All outputs are Markdown. Follow these templates in structure; adapt headings on
 | [Findings](02-findings.md) | <One or two sentences, including the finding count by severity, e.g., "31 findings: 2 critical, 7 high, 14 medium, 8 low.".> |
 | [Recommendations](03-recommendations.md) | <One or two sentences, including the number of recommendations.> |
 | [Improvement prompts](04-improvement-prompts.md) | <One or two sentences.> |
-| [Tech debt register](<relative path to TECH-DEBT.md>) | <One or two sentences; note whether it was updated or newly created.> |
+| [Tech debt register](<relative path to TECH-DEBT.md, or to tech-debt/ for a per-item register>) | <One or two sentences; note whether it was updated or newly created.> |
 ```
 
 Add rows for any supplementary annexes.
@@ -114,9 +114,47 @@ Every `Critical` and `High` finding must appear in some recommendation's **Addre
 ​```
 ```
 
-## `TECH-DEBT.md` (tech-debt register)
+## Tech-debt register
 
-If the project already has a tech-debt file, **preserve its format and its existing entries**: update statuses, mark items the review found to be resolved (do not delete them), and append newly found debt in the file's own style, noting the review date. Only if no such file exists, create `TECH-DEBT.md` at the project root:
+Registers come in two formats: **per-item** — a `tech-debt/` directory exists, or the project's own `TECH-DEBT.md` declares `scope:` in its YAML frontmatter, and each item lives in its own `tech-debt/<id>.md` file, with `TECH-DEBT.md` holding only policy — or **legacy**: a single `TECH-DEBT.md` holding `### <id> <title>` sections under a "Current Items" heading plus a permanent "Ledger" table. If the project already has a register, in **either** format, **preserve that format and update it in place**: never migrate a register to the other format as a side effect of a review.
+
+For an existing **per-item** register: add a new `tech-debt/<id>.md` file (template below) per newly filed item, and mark any item the review found to be resolved by editing only its frontmatter (`status: resolved`, `resolved:` date, `ref:`) — never its body, and never delete or rename the file. For an existing **legacy** register: update statuses, mark items the review found to be resolved (do not delete them), and append newly found debt in the file's own style, noting the review date.
+
+Only if the project has no register in either format, create one — **per-item is the default format for a new register**. Choose a scope: two characters of `[A-Z0-9]` for the org, four of `[a-z0-9]` for the repo (e.g. `PPpoet`), declared once as `scope:` in `TECH-DEBT.md`'s frontmatter — and record it in the project's scope-code registry if one exists (a governance repo, or its own `docs/TECH-DEBT-REGISTER.md`); if there is nowhere to register it, say so in the review and let the user record it.
+
+`TECH-DEBT.md` holds only policy — no items live here:
+
+```markdown
+---
+scope: <ORG><repo>              # e.g. PPpoet: two-char org code + four-char repo code
+---
+
+# Tech debt register
+
+Deferred work and known compromises. One file per item under `tech-debt/`; this file holds only policy. IDs: `TD-<scope>-<YYMMDD><NN>`, allocated in filing order for that date (`01`–`99`, then `a0`–`z9`, never `00`). Statuses: `open` / `in-progress` / `resolved` / `not-debt`. Last reviewed: <YYYY-MM-DD> (project-review).
+```
+
+One `tech-debt/<id>.md` per filed item, filename equal to `id`:
+
+```markdown
+---
+id: TD-<scope>-<YYMMDD><NN>
+title: <short title>
+status: open
+filed: <YYYY-MM-DD>
+review: project-review-<YYYY-MM-DD> R-<NN> F-<CODE>-<NN>
+resolved:
+ref:
+---
+
+**Severity:** <Critical / High / Medium / Low>
+
+<Free prose: what the compromise is, with paths; why it exists, if discernible, otherwise "Unknown — predates this register."; its ongoing cost — what it slows, risks, or breaks; and a suggested remedy, cross-referencing R-<NN> / F-<CODE>-<NN> where applicable.>
+```
+
+The `review:` line is the item's provenance — where a legacy register keeps a separate two-column table, a per-item register carries it inline, one line per item. The severity/what/why/cost/remedy prompts above shape the body's free prose; they are not frontmatter fields. The body **stays when the item is resolved**: resolving is a frontmatter-only edit (`status: resolved`, `resolved:` date, `ref:` the PR), never a body rewrite, and the file is never deleted or renamed once committed.
+
+Follow this template only when updating an existing **legacy** register (per-item is the default for a new one, above):
 
 ```markdown
 # Tech debt register
@@ -150,7 +188,7 @@ Every tech-debt ID ever allocated, in ID order. A row is never removed — even 
 
 | ID | Title | Status | Resolved | Ref |
 |----|-------|--------|----------|-----|
-| <id> | <short title> | Open | | |
+| <id> | <short title> | open | | |
 ```
 
 Tech debt overlaps with, but is not identical to, the findings: debt is a known compromise that lives with the project; the register is the durable file that survives after the dated review folder is archived. Duplication between the two is acceptable and expected.
