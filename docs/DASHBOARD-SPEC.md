@@ -632,7 +632,11 @@ number's twins elsewhere on the page.
   fetches from GitHub exactly once, a window following a fresh fetch not at
   all, and an aged stamp is refetched on the next tick; the batched cost scan
   matches the per-file semantics (day cut-off, torn-file tolerance) and the
-  whole publish stays within its process budget on a long history; and every
+  whole publish stays within its process budget on a long history; a stage
+  whose envelope parses but whose `result` is empty or whitespace-only still
+  renders its cycle, with that stage's status `null`, while a stage whose
+  envelope itself does not parse (a torn, mid-write file) still drops the
+  whole cycle, exactly as before (TD26072802); and every
   node in a synthetic fleet answers for **itself** — a peer mid-cycle reports
   its own running stage, repo, source and item from its published log, a peer
   whose cycle ended reports idle and when, a node that has never run reports

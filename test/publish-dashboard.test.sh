@@ -178,6 +178,8 @@ assert_eq "by_day buckets by the cycle directory's day" \
   "1" "$(jq -r --arg d "$today_day" '.counts.by_day[] | select(.day==$d) | .usd' <<<"$data")"
 assert_eq "a cycle surfaces the node that produced it" "nodeA-test" \
   "$(jq -r '.cycles[0].node' <<<"$data")"
+assert_eq "a torn envelope still drops its whole cycle" "0" \
+  "$(jq -r --arg d "$today_day" '[.cycles[] | select(.id == ($d + "T235959Z-99"))] | length' <<<"$data")"
 
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
@@ -201,6 +203,21 @@ assert_eq "a multi-byte-heavy result is truncated to the byte cap" \
   "39999" "$(printf '%s' "$result_field" | wc -c)"
 assert_eq "and to the whole-codepoint count that implies" \
   "13333" "$(printf '%s' "$result_field" | wc -m)"
+
+# --- A well-formed empty result does not drop its cycle (TD26072802) --------------
+# A stage that ran and reported a genuinely empty `result` is not a torn
+# envelope: the envelope itself parses fine, only the text inside it is
+# blank. That must render like any other unparseable-text stage — status
+# null — rather than vanishing the whole cycle the way a torn envelope does
+# (asserted against node "a" above).
+e="$(new_home nodeE)"
+make_cycle "$e" "${today_day}T100000Z-51" 0.25 model-a ""
+run_publish "$e"
+edata="$(data_of "$e")"
+assert_eq "a well-formed envelope with an empty result still renders its cycle" \
+  "1" "$(jq -r '.cycles | length' <<<"$edata")"
+assert_eq "the empty stage renders with a null status, not a dropped row" \
+  "null" "$(jq -r '.cycles[0].stages.coordinator.status' <<<"$edata")"
 
 # --- Only cycles are cycles ------------------------------------------------------
 # A record no cycle produced — the hand-appended kind, which uses the
