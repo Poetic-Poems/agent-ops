@@ -114,8 +114,13 @@ assert_contains "the open-PR panel renders the pull request" \
   "fix the thing" "$out"
 assert_contains "with its checks summarised" \
   "checks pass" "$out"
+# Single-quoted: these are literal rendered dollar amounts, not shell
+# expansions, so the SC2016 the pinned linter raises on them is a false
+# positive.
+# shellcheck disable=SC2016
 assert_contains "stage cost is broken out per stage" \
   '$0.9000' "$out"
+# shellcheck disable=SC2016
 assert_contains "and totalled per cycle" \
   '$1.23' "$out"
 assert_contains "spend-by-day renders a bar per day" \
