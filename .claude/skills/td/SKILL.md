@@ -54,11 +54,9 @@ git -C <repo> fetch -q origin main
 The script prints each matching record as a YAML map (`id`, `title`,
 `status`, `path`, `body`, plus `legacy-id` where one exists) and sets its
 exit code to (matches − 1), so **exit 0 means exactly one match in that
-repo**. It reads whichever register format the repo uses — a per-item
-`tech-debt/` directory, or a legacy single-file `TECH-DEBT.md` — and, in the
-per-item format, a segment also matches against the record's `legacy-id`.
-Collect every match across all candidate repos as (repo, ID) pairs, then
-branch:
+repo**. A segment also matches against a record's `legacy-id`, so IDs from
+before the per-item register still resolve. Collect every match across all
+candidate repos as (repo, ID) pairs, then branch:
 
 - **Exactly one (repo, ID) pair.** Proceed to step 3 with that record and its
   repo.
@@ -98,9 +96,8 @@ full description and the suggested fix, and instruct it to:
    (`git ls-remote origin "refs/heads/td/<id>"` returns nothing), and skim
    open pull requests for its ID — if it looks already claimed, stop and
    report that instead of duplicating work. Otherwise create the claim branch,
-   named exactly **`td/<id>`**, flip the record's status to `in-progress`
-   (its `status:` frontmatter in a per-item `tech-debt/<id>.md` register;
-   its Ledger row in a legacy single-file register), commit, and push. The
+   named exactly **`td/<id>`**, flip the record's `status:` frontmatter in
+   `tech-debt/<id>.md` to `in-progress`, commit, and push. The
    branch name is the claim lock: **if the push is rejected because the
    branch already exists, another agent claimed the item in the race window —
    stop and report; never force-push.** Then open a **draft** pull request
@@ -110,16 +107,12 @@ full description and the suggested fix, and instruct it to:
 4. Run the relevant checks for the area it touched (e.g. `npm test`,
    `npm run build`, `npm run check`, `npm run check:build`; on WSL/Linux via
    `./scripts/setup-linux.sh`).
-5. On success, mark the record resolved per its register's format. Per-item
-   register: edit only the item's frontmatter — `status: resolved`,
-   `resolved:` (today's date), `ref:` (the PR number); the body stays, and
-   the file is never deleted or renamed. Legacy register: delete the whole
-   `### <id> <title>` section under `## Current Items` (locate it by the
-   `### <id>` heading) and flip its Ledger row to `resolved`, filling in
-   `Resolved` (today's date) and `Ref` (the PR number). Either way, if the
-   record's body notes references to its ID elsewhere (e.g. in code
-   comments), remove those too, per `CLAUDE.md`'s tech-debt policy, and
-   verify with `perl scripts/td-check.pl` before pushing.
+5. On success, mark the record resolved: edit only the item's
+   frontmatter — `status: resolved`, `resolved:` (today's date), `ref:`
+   (the PR number); the body stays, and the file is never deleted or
+   renamed. If the record's body notes references to its ID elsewhere
+   (e.g. in code comments), remove those too, per `CLAUDE.md`'s tech-debt
+   policy, and verify with `perl scripts/td-check.pl` before pushing.
 6. Add an `[Unreleased]` `CHANGELOG.md` entry, but only if the resolved repo
    maintains a `CHANGELOG.md` in the first place — skip this step otherwise
    (agent-ops currently has no `CHANGELOG.md`, so skip it here).

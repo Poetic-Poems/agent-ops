@@ -23,7 +23,7 @@ jobs:
           set -euo pipefail
           status=0
           for f in scripts/get-tech-debt-record.pl scripts/next-tech-debt-id.pl \
-                   scripts/td-check.pl scripts/drop-sections.pl; do
+                   scripts/td-check.pl; do
             curl -fsSL "https://raw.githubusercontent.com/Poetic-Poems/poetic/main/$f" -o /tmp/upstream
             if ! diff -u /tmp/upstream "$f"; then
               echo "::error file=$f::$f has drifted from Poetic-Poems/poetic main"

@@ -2,8 +2,8 @@
 #
 # test/register-hygiene.test.sh — regression test for
 # scripts/gather-register-hygiene.sh (requirement 3i): the source that notices a
-# repository's TECH-DEBT.md has stopped agreeing with itself, and hands the
-# repair to an ordinary Implementor.
+# repository's tech-debt register has stopped agreeing with itself, and hands
+# the repair to an ordinary Implementor.
 #
 # Four behaviours are asserted, and each of them fails silently if broken:
 #
@@ -11,9 +11,10 @@
 #     cycle gets, and getting it wrong the other way files a repair pull request
 #     against a file that is fine — hourly, in three repositories.
 #   - **A drifted register contributes exactly one candidate**, whose `ref` is
-#     scoped to the blob SHA, whose `problems` array holds one entry per problem
-#     line, and whose `body` is the checker's output *verbatim*. The body is the
-#     entire brief: every line names an id, a problem class and a line number,
+#     scoped to the register's identity (a digest of the tech-debt tree and
+#     policy blob SHAs), whose `problems` array holds one entry per problem
+#     line, and whose `body` is the checker's output *verbatim*. The body is
+#     the entire brief: every line names an item file and a problem class,
 #     and that is what makes the repair mechanical rather than a rewrite.
 #   - **A repository with no register contributes `[]`, silently.** Not every
 #     repository this fleet touches keeps one; a 404 is a normal answer here, and
@@ -65,10 +66,9 @@ assert_eq() {
 # real `gh` does, and the gatherer reads the JSON rather than parsing that
 # summary); any other failure prints only the stderr line, with no JSON body
 # at all — the network-and-auth shape. On a hit, `$STUB_FORMAT` decides what
-# the listing names: `legacy` (a TECH-DEBT.md blob), `peritem` (that plus a
-# tech-debt tree), or `none` (neither — a repo that keeps no register). The
-# contents endpoint answers with base64 `content` plus the blob `sha`; the
-# tarball endpoint streams `$STUB_TARBALL`.
+# the listing names: `peritem` (a TECH-DEBT.md policy blob plus a tech-debt
+# tree) or `none` (no register directory). The tarball endpoint streams
+# `$STUB_TARBALL`.
 mkdir -p "$tmp_dir/bin"
 cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -78,11 +78,7 @@ case "${2:-}" in
   */git/trees/*)
     case "${STUB_MODE:-hit}" in
       hit)
-        case "${STUB_FORMAT:-legacy}" in
-          legacy)
-            printf '{"tree":[{"path":"TECH-DEBT.md","type":"blob","sha":"%s"}]}\n' \
-              "$STUB_BLOB_SHA"
-            ;;
+        case "${STUB_FORMAT:-peritem}" in
           peritem)
             printf '{"tree":[{"path":"TECH-DEBT.md","type":"blob","sha":"%s"},{"path":"tech-debt","type":"tree","sha":"%s"}]}\n' \
               "$STUB_POLICY_SHA" "$STUB_TREE_SHA"
@@ -103,10 +99,6 @@ case "${2:-}" in
         exit 1
         ;;
     esac
-    ;;
-  */contents/TECH-DEBT.md)
-    printf '{"sha":"%s","encoding":"base64","content":"%s"}\n' \
-      "$STUB_BLOB_SHA" "$(base64 -w0 <"$STUB_FILE")"
     ;;
   */tarball/*)
     cat "$STUB_TARBALL"
@@ -136,83 +128,20 @@ export STUB_BLOB_SHA="413128de0d60d9502bf469348bc70fbbacccf569"
 export STUB_POLICY_SHA="9f2c11d34d5f0b6ba7a1c56d2e8f4a0b1c2d3e4f"
 export STUB_TREE_SHA="5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b1c2d3e4f"
 export STUB_TARBALL="$tmp_dir/register.tar.gz"
-export STUB_FILE="$FIXTURES_DIR/tech-debt-consistent.md"
 export STUB_MODE=hit
-export STUB_FORMAT=legacy
+export STUB_FORMAT=peritem
 
 run() {  # prints stdout; stderr lands in $tmp_dir/err
   "$GATHER" "Poetic-Poems/poetic" main 2>"$tmp_dir/err"
 }
 
-# --- A consistent register is not a candidate -----------------------------------
-
-out="$(run)"; rc=$?
-assert_eq "a consistent register contributes []" "[]" "$out"
-assert_eq "  ... and exits 0" "0" "$rc"
-
-# --- A drifted register is exactly one candidate --------------------------------
+# --- A consistent register is [], a drifted one is exactly one candidate --------
 #
-# One candidate, never one per problem: the file is either consistent or it is
-# not, and either way the repair is a single pull request. The fixture carries a
-# STALE BODY, a MISSING BODY and a NO LEDGER ROW so a change that stops
-# reporting any one class fails here rather than quietly narrowing what this
-# source can see.
-export STUB_FILE="$FIXTURES_DIR/tech-debt-drifted.md"
-out="$(run)"; rc=$?
-assert_eq "a drifted register contributes exactly one candidate" \
-  "1" "$(jq 'length' <<<"$out")"
-assert_eq "  ... and still exits 0 — this source never aborts a cycle" "0" "$rc"
-assert_eq "the candidate names its source" \
-  "register-hygiene" "$(jq -r '.[0].source' <<<"$out")"
-
-# The ref is scoped to the register's blob SHA, not left bare. An item recorded
-# blocked (requirement 34) stays blocked until something clears it, so a bare
-# `register-hygiene` that an Implementor once failed to repair would still be
-# blocked after the file had moved on. Scoping to the blob means a repair retires
-# the ref, drift re-detected against an unchanged file keeps it, and a commit
-# elsewhere in the repository leaves it — and so the item — untouched.
-assert_eq "the ref pins to the first 12 chars of the blob SHA" \
-  "register-hygiene-413128de0d60" "$(jq -r '.[0].ref' <<<"$out")"
-assert_eq "the full blob SHA is carried too" \
-  "$STUB_BLOB_SHA" "$(jq -r '.[0].blob_sha' <<<"$out")"
-assert_eq "the url points at the register on the default branch" \
-  "https://github.com/Poetic-Poems/poetic/blob/main/TECH-DEBT.md" \
-  "$(jq -r '.[0].url' <<<"$out")"
-
-# One string per problem line, each stripped of the report's indentation, in the
-# checker's own order. The Co-Ordinator prices the item from this without
-# parsing prose.
-assert_eq "problems holds one entry per problem line" \
-  "3" "$(jq '.[0].problems | length' <<<"$out")"
-assert_eq "every problem class in the fixture is reported" \
-  "STALE BODY MISSING BODY NO LEDGER ROW" \
-  "$(jq -r '[.[0].problems[] | .[0:14] | sub(" +$"; "")] | join(" ")' <<<"$out")"
-assert_eq "problem lines name their item" \
-  "TD26071501 TD26071503 TD26071599" \
-  "$(jq -r '[.[0].problems[] | capture("(?<id>TD[0-9]+)").id] | join(" ")' <<<"$out")"
-assert_eq "problem lines are not indented — the report's leading spaces are stripped" \
-  "0" "$(jq '[.[0].problems[] | select(startswith(" "))] | length' <<<"$out")"
-
-# The body is the whole report, verbatim — summary line, status tally and every
-# problem. It is what the work order pastes as the brief, so an assertion that it
-# survives the round trip intact is an assertion about the Implementor's input.
-body="$(jq -r '.[0].body' <<<"$out")"
-expected_body="$( cd "$tmp_dir" \
-                  && cp "$FIXTURES_DIR/tech-debt-drifted.md" TECH-DEBT.md \
-                  && perl "$SCRIPT_DIR/scripts/td-check.pl" TECH-DEBT.md; true )"
-assert_eq "body is td-check.pl's output verbatim" "$expected_body" "$body"
-assert_eq "  ... and names the file as TECH-DEBT.md, not a scratch path" \
-  "1" "$(grep -c '^TECH-DEBT\.md: ' <<<"$body")"
-
-# --- A per-item register: consistent is [], drifted is one candidate ------------
-#
-# The same gatherer, the same candidate rule, the other format: the root tree
-# names a `tech-debt` directory, the register arrives as a tarball, and the
-# checker runs against the directory. The drifted fixture carries a STALE
-# FIELD, an ID MISMATCH and a BAD SCOPE so a change that stops reporting any
-# one per-item class fails here rather than quietly narrowing what this
-# source can see.
-export STUB_FORMAT=peritem
+# The root tree names a `tech-debt` directory, the register arrives as a
+# tarball, and the checker runs against the directory. The drifted fixture
+# carries a STALE FIELD, an ID MISMATCH and a BAD SCOPE so a change that
+# stops reporting any one problem class fails here rather than quietly
+# narrowing what this source can see.
 make_tarball "$FIXTURES_DIR/tech-debt-items-consistent" "$STUB_TARBALL"
 out="$(run)"; rc=$?
 assert_eq "a consistent per-item register contributes []" "[]" "$out"
@@ -248,8 +177,6 @@ expected_body="$( cd "$tmp_dir" \
                   && perl "$SCRIPT_DIR/scripts/td-check.pl" tech-debt; true )"
 assert_eq "per-item body is td-check.pl's output verbatim" "$expected_body" "$body"
 
-export STUB_FORMAT=legacy
-
 # --- A repository with no register is a normal, silent [] -----------------------
 #
 # Not every repository keeps a register in either format — a root tree naming
@@ -263,7 +190,7 @@ assert_eq "a repository with no register contributes []" "[]" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
 assert_eq "  ... and says nothing on stderr — a missing register is not an error" \
   "" "$(cat "$tmp_dir/err")"
-export STUB_FORMAT=legacy
+export STUB_FORMAT=peritem
 
 export STUB_MODE=404
 out="$(run)"; rc=$?

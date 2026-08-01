@@ -3,18 +3,19 @@
 # get-tech-debt-record.pl [--ref REF] ID_SEGMENT
 #
 # Find tech-debt records for which ID_SEGMENT matches the end of the record's
-# ID — or, in the per-item register, the end of its legacy-id.  E.g., all of
-# the below match the ID "TD-PPpoet-26070801" (legacy-id "TD26070801"):
+# ID — or, for an item migrated from the earlier single-file register, the
+# end of its legacy-id.  E.g., all of the below match the ID
+# "TD-PPpoet-26070801" (legacy-id "TD26070801"):
 #     get-tech-debt-record.pl 1
 #     get-tech-debt-record.pl 801
 #     get-tech-debt-record.pl poet-26070801
 #     get-tech-debt-record.pl TD-PPpoet-26070801
 #     get-tech-debt-record.pl TD26070801
 #
-# The register is read adaptively:
-#   - per-item format: one record per file under tech-debt/, YAML frontmatter
-#     plus Markdown body — used whenever that directory exists;
-#   - legacy format: "### <id> <title>" sections in a single TECH-DEBT.md.
+# The register is per-item: one record per file under tech-debt/, YAML
+# frontmatter plus a Markdown body.  A register whose directory does not
+# exist yet — the scope: declaration in TECH-DEBT.md's frontmatter is then
+# what marks the repository as keeping one — is simply empty.
 #
 # With --ref, the register is read from that git ref (e.g. --ref origin/main,
 # after a fetch) instead of the working tree, so resolution reflects the
@@ -23,9 +24,9 @@
 #
 # The matched records are printed as a YAML map having these keys:
 # - id
-# - legacy-id  (per-item register only, when the record carries one)
+# - legacy-id  (only where the record carries one)
 # - title
-# - status     (omitted when a legacy register has no Ledger row for the ID)
+# - status
 # - path
 # - body
 #
@@ -88,6 +89,13 @@ sub read_lines {
   return @lines;
 }
 
+# With --ref, an unresolvable ref is its own loud failure — never mistaken
+# for a repository that simply keeps no register.
+if (defined $ref) {
+  defined git_lines('rev-parse', '--verify', '--quiet', "$ref^{commit}")
+    or die "Cannot resolve ref '$ref'\n";
+}
+
 # Split an item file into a frontmatter hash and a body string; returns the
 # empty list unless a complete frontmatter block is present.
 sub parse_item {
@@ -104,9 +112,6 @@ sub parse_item {
   return (\%meta, join '', @body);
 }
 
-# The per-item format is signalled by the tech-debt/ directory, or — for a
-# register that has not yet filed its first item, and so cannot commit an
-# empty directory — by a scope: declaration in TECH-DEBT.md's frontmatter.
 sub policy_scope {
   my @policy = eval { read_lines('TECH-DEBT.md') };
   return unless @policy and $policy[0] =~ /^---\s*$/;
@@ -117,19 +122,22 @@ sub policy_scope {
   return;
 }
 
-my $new_format;
+# The register is the tech-debt/ directory; a repository that keeps one but
+# has not yet filed its first item signals so by declaring its scope.
+my $have_dir;
 if (defined $ref) {
-  $new_format =
-    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt")
-    || defined policy_scope();
+  $have_dir =
+    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt");
 } else {
-  $new_format = -d "$repo_root/tech-debt" || defined policy_scope();
+  $have_dir = -d "$repo_root/tech-debt";
 }
+$have_dir
+  or defined policy_scope()
+  or die "No tech-debt register found (no tech-debt/ directory, and "
+       . "TECH-DEBT.md declares no scope:)\n";
 
-my @records;
-if ($new_format) {
-  # A per-item register whose directory does not exist yet is simply empty.
-  my @names;
+my @names;
+if ($have_dir) {
   if (defined $ref) {
     my $listing = git_lines('ls-tree', '--name-only', "$ref:tech-debt");
     @names = defined $listing ? (map { chomp; $_ } @$listing) : ();
@@ -137,49 +145,24 @@ if ($new_format) {
     @names = readdir $dh;
     closedir $dh;
   }
-  for my $name (sort grep { /\.md$/ } @names) {
-    my ($meta, $body) = parse_item(read_lines("tech-debt/$name"));
-    next unless $meta and defined $meta->{id};
-    my $legacy = $meta->{'legacy-id'};
-    $meta->{id} =~ /\Q$id_segment\E$/
-      or (defined $legacy and $legacy =~ /\Q$id_segment\E$/)
-      or next;
-    push @records, {
-      id     => $meta->{id},
-      legacy => $legacy,
-      title  => $meta->{title} // '',
-      status => $meta->{status},
-      path   => "tech-debt/$name",
-      body   => $body,
-    };
-  }
-} else {
-  my @lines = read_lines('TECH-DEBT.md');
-  my %status;
-  for (@lines) {
-    $status{$1} = $2
-      if /^\|\s*(TD\d+)\s*\|.*?\|\s*(open|in-progress|resolved|not-debt)\s*\|/;
-  }
-  for (my $i = 0; $i <= $#lines; $i++) {
-    $lines[$i] =~ /^### (TD\d{8}) (.*)/ or next;
-    my ($id, $title) = ($1, $2);
-    my $body = '';
-    my $j = $i + 1;
-    while ($j <= $#lines
-        and $lines[$j] !~ /^### TD\d{8}/ and $lines[$j] !~ /^## /) {
-      $body .= $lines[$j];
-      $j++;
-    }
-    $i = $j - 1;
-    next unless $id =~ /\Q$id_segment\E$/;
-    push @records, {
-      id     => $id,
-      title  => $title,
-      status => $status{$id},
-      path   => 'TECH-DEBT.md',
-      body   => $body,
-    };
-  }
+}
+
+my @records;
+for my $name (sort grep { /\.md$/ } @names) {
+  my ($meta, $body) = parse_item(read_lines("tech-debt/$name"));
+  next unless $meta and defined $meta->{id};
+  my $legacy = $meta->{'legacy-id'};
+  $meta->{id} =~ /\Q$id_segment\E$/
+    or (defined $legacy and $legacy =~ /\Q$id_segment\E$/)
+    or next;
+  push @records, {
+    id     => $meta->{id},
+    legacy => $legacy,
+    title  => $meta->{title} // '',
+    status => $meta->{status},
+    path   => "tech-debt/$name",
+    body   => $body,
+  };
 }
 
 foreach my $record (@records) {

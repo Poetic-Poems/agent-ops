@@ -1,18 +1,12 @@
 name: Tech-debt register check
 
-# Gates the tech-debt register's consistency, whichever format the repository
-# is on:
-#   - per-item format (a tech-debt/ directory): every item file must carry
-#     well-formed frontmatter — id matching its filename and the repository's
-#     declared scope, a recognised status, resolution fields consistent with
-#     that status — no register file may ever be deleted or renamed (the
-#     append-only Ledger guarantee), and the old single-file format must not
-#     regrow inside TECH-DEBT.md.
-#   - legacy format (a single TECH-DEBT.md): every open/in-progress Ledger
-#     row must have exactly one "### <id>" body under Current Items, and no
-#     resolved or not-debt row may still have one. Resolving is a two-part
-#     edit — flip the Ledger row, remove the body — and the second part was
-#     repeatedly missed, leaving resolved items looking live.
+# Gates the per-item tech-debt register's consistency: every item file must
+# carry well-formed frontmatter — id matching its filename and the
+# repository's declared scope, a recognised status, resolution fields
+# consistent with that status — no register file may ever be deleted or
+# renamed (the append-only Ledger guarantee), and the retired single-file
+# format's "### TD" item sections must not regrow inside TECH-DEBT.md,
+# which holds only policy.
 #
 # Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
 # runs with write-scoped secrets, and ungated by `paths:` — the register is
@@ -55,10 +49,10 @@ jobs:
             exit 1
           fi
       - name: Old format must not regrow
-        # Once the per-item register exists, item bodies belong in
-        # tech-debt/, never as "### TD..." sections in the policy document.
+        # Item bodies belong in tech-debt/, never as "### TD..." sections in
+        # the policy document — whether or not the directory exists yet.
         run: |
-          if [ -d tech-debt ] && grep -qE '^### TD' TECH-DEBT.md; then
-            echo "::error file=TECH-DEBT.md::per-item register present, but TECH-DEBT.md still contains old-format item sections"
+          if [ -f TECH-DEBT.md ] && grep -qE '^### TD' TECH-DEBT.md; then
+            echo "::error file=TECH-DEBT.md::TECH-DEBT.md holds only policy, but contains old-format item sections"
             exit 1
           fi

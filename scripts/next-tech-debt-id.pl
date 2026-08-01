@@ -5,19 +5,14 @@
 # Print the next free tech-debt ID for the given date, or today's date if
 # none is given.
 #
-# The register is read adaptively:
-#   - per-item format (a tech-debt/ directory exists): IDs are
-#     TD-<ORG><repo>-<YYMMDD><NN>, where <ORG><repo> is this repository's
-#     scope code, declared as `scope:` in TECH-DEBT.md's frontmatter.  <NN>
-#     runs 01-99 then a0-a9 .. z9, never 00 — an encoding chosen so plain
-#     alphanumeric order equals allocation order.  The next NN is computed
-#     from the item filenames for the date; past z9 the script dies, since a
-#     repository filing 360 items in one day has bigger problems.
-#   - legacy format: IDs are TD<YYMMDD><NN> with numeric NN.  The whole
-#     TECH-DEBT.md is scanned for any "TD" followed by 8 digits — covering
-#     both the Ledger table and any live "### TD########" entry headers — so
-#     the result stays correct even if a resolved entry's Ledger row is all
-#     that's left.
+# IDs are TD-<ORG><repo>-<YYMMDD><NN>, where <ORG><repo> is this
+# repository's scope code, declared as `scope:` in TECH-DEBT.md's
+# frontmatter.  <NN> runs 01-99 then a0-a9 .. z9, never 00 — an encoding
+# chosen so plain alphanumeric order equals allocation order.  The next NN
+# is computed from the tech-debt/ item filenames for the date (a register
+# that has not yet filed its first item has no directory, and simply starts
+# at 01); past z9 the script dies, since a repository filing 360 items in
+# one day has bigger problems.
 #
 # With --ref, the register is read from that git ref (e.g. --ref origin/main,
 # after a fetch) instead of the working tree, so the allocation reflects the
@@ -83,6 +78,23 @@ sub read_lines {
   return @lines;
 }
 
+# With --ref, an unresolvable ref is its own loud failure — never mistaken
+# for a repository that simply keeps no register.
+if (defined $ref) {
+  defined git_lines('rev-parse', '--verify', '--quiet', "$ref^{commit}")
+    or die "Cannot resolve ref '$ref'\n";
+}
+
+sub policy_scope {
+  my @policy = eval { read_lines('TECH-DEBT.md') };
+  return unless @policy and $policy[0] =~ /^---\s*$/;
+  for my $i (1 .. $#policy) {
+    last if $policy[$i] =~ /^---\s*$/;
+    return $1 if $policy[$i] =~ /^scope:[ \t]*(\S+)\s*$/;
+  }
+  return;
+}
+
 # The NN sequence: 01-99, then a0-a9 .. z9.  ASCII digits sort before
 # lowercase letters, so string comparison finds the maximum and alphanumeric
 # listings stay in allocation order.
@@ -101,65 +113,27 @@ sub next_nn {
   return chr(ord($letter) + 1) . '0';
 }
 
-# The per-item format is signalled by the tech-debt/ directory, or — for a
-# register that has not yet filed its first item, and so cannot commit an
-# empty directory — by a scope: declaration in TECH-DEBT.md's frontmatter.
-sub policy_scope {
-  my @policy = eval { read_lines('TECH-DEBT.md') };
-  return unless @policy and $policy[0] =~ /^---\s*$/;
-  for my $i (1 .. $#policy) {
-    last if $policy[$i] =~ /^---\s*$/;
-    return $1 if $policy[$i] =~ /^scope:[ \t]*(\S+)\s*$/;
-  }
-  return;
-}
+my $scope = policy_scope();
+defined $scope
+  or die "TECH-DEBT.md declares no scope: in its frontmatter\n";
+$scope =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/
+  or die "Declared scope '$scope' is not <ORG><repo> "
+       . "([A-Z0-9]{2}[a-z0-9]{4})\n";
 
-my $new_format;
+# A register whose directory does not exist yet is simply empty.
+my @names;
 if (defined $ref) {
-  $new_format =
-    defined git_lines('rev-parse', '--verify', '--quiet', "$ref:tech-debt")
-    || defined policy_scope();
-} else {
-  $new_format = -d "$repo_root/tech-debt" || defined policy_scope();
+  my $listing = git_lines('ls-tree', '--name-only', "$ref:tech-debt");
+  @names = defined $listing ? (map { chomp; $_ } @$listing) : ();
+} elsif (opendir my $dh, "$repo_root/tech-debt") {
+  @names = readdir $dh;
+  closedir $dh;
 }
 
-if ($new_format) {
-  my $scope = policy_scope();
-  defined $scope
-    or die "TECH-DEBT.md declares no scope: in its frontmatter\n";
-  $scope =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/
-    or die "Declared scope '$scope' is not <ORG><repo> "
-         . "([A-Z0-9]{2}[a-z0-9]{4})\n";
-
-  # A per-item register whose directory does not exist yet is simply empty.
-  my @names;
-  if (defined $ref) {
-    my $listing = git_lines('ls-tree', '--name-only', "$ref:tech-debt");
-    @names = defined $listing ? (map { chomp; $_ } @$listing) : ();
-  } elsif (opendir my $dh, "$repo_root/tech-debt") {
-    @names = readdir $dh;
-    closedir $dh;
-  }
-
-  my $max;
-  for my $name (@names) {
-    $name =~ /^TD-[A-Z0-9]{2}[a-z0-9]{4}-(\d{6})([0-9a-z]\d)\.md$/ or next;
-    next unless $1 eq $date;
-    $max = $2 if !defined $max or $2 gt $max;
-  }
-  print 'TD-', $scope, '-', $date, next_nn($max), "\n";
-} else {
-  my $max_nn;
-  for my $line (read_lines('TECH-DEBT.md')) {
-    while ($line =~ /\bTD(\d{6})(\d{2})\b/g) {
-      next unless $1 eq $date;
-      my $nn = $2 + 0;
-      $max_nn = $nn if !defined $max_nn or $nn > $max_nn;
-    }
-  }
-  $max_nn //= 0;
-  $max_nn < 99
-    or die "NN overflow: the legacy register cannot exceed 99 IDs per day; "
-         . "migrate to the per-item tech-debt/ register\n";
-  printf "TD%s%02d\n", $date, $max_nn + 1;
+my $max;
+for my $name (@names) {
+  $name =~ /^TD-[A-Z0-9]{2}[a-z0-9]{4}-(\d{6})([0-9a-z]\d)\.md$/ or next;
+  next unless $1 eq $date;
+  $max = $2 if !defined $max or $2 gt $max;
 }
+print 'TD-', $scope, '-', $date, next_nn($max), "\n";
