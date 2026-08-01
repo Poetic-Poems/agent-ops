@@ -138,6 +138,52 @@ EOF
 assert_eq "a repo-less unblock clears the item in every repo" \
   "0" "$(blocked_items "$log" | jq 'length')"
 
+# --- blocked_items: recheck_clean_ts (requirement 18a, TD-PPagop-26072801) ---
+
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","detail":"waiting on maintainer"}
+EOF
+assert_eq "a block with no recheck-clean event carries no recheck_clean_ts" \
+  "null" "$(blocked_items "$log" | jq -r '.[0].recheck_clean_ts // "null"')"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","detail":"waiting on maintainer"}
+{"ts":"2026-07-29T09:00:00Z","event":"recheck-clean","item":"52"}
+EOF
+assert_eq "a recheck-clean event is folded into the block as recheck_clean_ts" \
+  "2026-07-29T09:00:00Z" "$(blocked_items "$log" | jq -r '.[0].recheck_clean_ts')"
+assert_eq "recheck-clean does not clear the block" \
+  "1" "$(blocked_items "$log" | jq 'length')"
+
+# The newest recheck-clean wins, exactly as the newest attempt-failed does.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","detail":"waiting on maintainer"}
+{"ts":"2026-07-29T09:00:00Z","event":"recheck-clean","item":"52"}
+{"ts":"2026-07-30T10:00:00Z","event":"recheck-clean","item":"52"}
+EOF
+assert_eq "the newest recheck-clean ts is the one carried" \
+  "2026-07-30T10:00:00Z" "$(blocked_items "$log" | jq -r '.[0].recheck_clean_ts')"
+
+# Bare id, like `unblocked` — the Co-Ordinator has no repo to hand — so it
+# folds into every same-numbered item across repos.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/a","item":"52","detail":"a"}
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/b","item":"52","detail":"b"}
+{"ts":"2026-07-29T09:00:00Z","event":"recheck-clean","item":"52"}
+EOF
+assert_eq "a repo-less recheck-clean folds into every repo's same-numbered item" \
+  "2" "$(blocked_items "$log" | jq '[.[] | select(.recheck_clean_ts == "2026-07-29T09:00:00Z")] | length')"
+
+# A repo-scoped recheck-clean, as the Script would log for a human-appended
+# one, folds only into that repo's item.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/a","item":"52","detail":"a"}
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/b","item":"52","detail":"b"}
+{"ts":"2026-07-29T09:00:00Z","event":"recheck-clean","repo":"o/a","item":"52"}
+EOF
+assert_eq "a repo-scoped recheck-clean folds into only that repo's item" \
+  "o/a" "$(blocked_items "$log" | jq -r '[.[] | select(.recheck_clean_ts != null)][0].repo')"
+
 # --- void_items (requirement 34c) ---
 
 assert_eq "missing log yields no void items" "[]" "$(void_items "$tmp_dir/nonexistent.jsonl")"

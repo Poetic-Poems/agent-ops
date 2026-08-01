@@ -132,13 +132,53 @@ _latest_unresolved() {
   printf '%s' "$out"
 }
 
+# Requirement 18a's marker: a `recheck-clean` event records that a
+# Co-Ordinator re-read a blocked GitHub issue's thread after its `updated_at`
+# moved past the block's own `ts`, and judged that the blocker still holds. It
+# clears nothing — only `unblocked` does that — so it is folded into the
+# block's own record as `recheck_clean_ts` rather than treated as another
+# member of the set/clear pair `_latest_unresolved` computes. Bare item id,
+# like `unblocked` (the Co-Ordinator has no repo to hand for either): the same
+# over-matching requirement 34 accepts there applies here too, and for the
+# same reason — the record is read-only advice to the next Co-Ordinator about
+# what it has already re-read, not a lock, so folding it into an unrelated
+# repo's identically-numbered item costs one skippable re-read, never a
+# missed one.
+# shellcheck disable=SC2016  # jq's $b/$rechecks, not the shell's.
+BLOCKED_ITEMS_JQ='
+  def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
+  . as $all
+  | ($all | latest_unresolved("attempt-failed"; "unblocked")) as $blocked
+  | ([ $all[] | select(.event == "recheck-clean" and (.item // "") != "") ]) as $rechecks
+  | $blocked
+  | map(. as $b
+        | ($rechecks
+           | map(select(.item == $b.item
+                        and ((.repo // "") == "" or (.repo // "") == ($b.repo // ""))))
+           | map(.ts // "")
+           | sort | last) as $rc_ts
+        | if $rc_ts == null then $b else $b + {recheck_clean_ts: $rc_ts} end)
+'
+
 # blocked_items [LOG_FILE]
 # Print, as a JSON array, the most recent attempt-failed event for every item
 # with no later unblocked event — the items a Co-Ordinator must skip *for now*,
-# and may clear itself once the impediment has demonstrably gone. Reads
-# LOG_FILE, or stdin if it is omitted or "-".
+# and may clear itself once the impediment has demonstrably gone. Each entry
+# additionally carries `recheck_clean_ts` when a `recheck-clean` marker exists
+# for it (requirement 18a) — the newest such ts, for the Co-Ordinator to
+# compare a blocked GitHub issue's `updated_at` against alongside the block's
+# own `ts`. Reads LOG_FILE, or stdin if it is omitted or "-".
 blocked_items() {
-  _latest_unresolved "attempt-failed" "unblocked" "${1:--}"
+  local src="${1:--}" out=""
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$BLOCKED_ITEMS_JQ" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$BLOCKED_ITEMS_JQ" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
 }
 
 # void_items [LOG_FILE]
