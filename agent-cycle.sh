@@ -903,8 +903,18 @@ gather_source_state() {
 # sometimes prepend analysis prose anyway and put the real object in a
 # trailing fenced ```json block. Try a straight parse first; fall back to the
 # last such fenced block before giving up.
+#
+# An empty-or-whitespace-only $text is checked explicitly and fails outright
+# (TD26072802, for symmetry with publish-dashboard.sh's extract_status,
+# which shares this algorithm per DASHBOARD-SPEC.md): `jq empty` on
+# whitespace input succeeds trivially with no output, so without this check
+# the function would return 0 — success — while printing nothing. Every call
+# site already treats empty output as failure regardless of the exit code, so
+# this changes no observable behaviour; it just stops the exit code lying
+# about what happened.
 extract_json_result() {
   local text="$1" block
+  [[ "$text" =~ ^[[:space:]]*$ ]] && return 1
   if jq empty <<<"$text" >/dev/null 2>&1; then
     jq -c '.' <<<"$text"
     return 0
