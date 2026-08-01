@@ -132,13 +132,64 @@ _latest_unresolved() {
   printf '%s' "$out"
 }
 
+# Requirement 18a's marker: a `recheck-clean` event records that a
+# Co-Ordinator re-read a blocked GitHub issue's thread after its `updated_at`
+# moved past the block's own `ts`, and judged that the blocker still holds. It
+# clears nothing — only `unblocked` does that — so it is folded into the
+# block's own record as `recheck_clean_ts` rather than treated as another
+# member of the set/clear pair `_latest_unresolved` computes. The event is
+# repo-scoped (`{item, repo}`, requirement 33), unlike `unblocked`, because
+# the two fail in opposite directions: an `unblocked` that over-clears only
+# makes an item a candidate again, where a `recheck_clean_ts` folded into an
+# unrelated repo's identically-numbered item *raises* that item's comparison
+# threshold, so it suppresses a mandated re-read rather than adding one — and
+# issue numbers collide across repos far more readily than register ids do.
+# Scoping the match makes that fail safe structurally: a marker can only ever
+# suppress the one issue its Co-Ordinator actually read.
+#
+# A repo-less event (older logs, or a report the Script accepted as a bare
+# id) still folds — into every same-numbered blocked item. That fallback
+# leans on the emitting cycle rather than the match: requirement 18a obliged
+# that Co-Ordinator to re-read every blocked issue of that id whose thread
+# had moved, so its marker stands for each of them, provided it complied.
+# The residual case either way — a blocked issue no marker covers — is
+# caught by requirement 35a, whose clocks are measured from the block's own
+# `ts` and which this marker deliberately never touches.
+# shellcheck disable=SC2016  # jq's $b/$rechecks, not the shell's.
+BLOCKED_ITEMS_JQ='
+  def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
+  . as $all
+  | ($all | latest_unresolved("attempt-failed"; "unblocked")) as $blocked
+  | ([ $all[] | select(.event == "recheck-clean" and (.item // "") != "") ]) as $rechecks
+  | $blocked
+  | map(. as $b
+        | ($rechecks
+           | map(select(.item == $b.item
+                        and ((.repo // "") == "" or (.repo // "") == ($b.repo // ""))))
+           | map(.ts // "")
+           | sort | last) as $rc_ts
+        | if $rc_ts == null then $b else $b + {recheck_clean_ts: $rc_ts} end)
+'
+
 # blocked_items [LOG_FILE]
 # Print, as a JSON array, the most recent attempt-failed event for every item
 # with no later unblocked event — the items a Co-Ordinator must skip *for now*,
-# and may clear itself once the impediment has demonstrably gone. Reads
-# LOG_FILE, or stdin if it is omitted or "-".
+# and may clear itself once the impediment has demonstrably gone. Each entry
+# additionally carries `recheck_clean_ts` when a `recheck-clean` marker exists
+# for it (requirement 18a) — the newest such ts, for the Co-Ordinator to
+# compare a blocked GitHub issue's `updated_at` against alongside the block's
+# own `ts`. Reads LOG_FILE, or stdin if it is omitted or "-".
 blocked_items() {
-  _latest_unresolved "attempt-failed" "unblocked" "${1:--}"
+  local src="${1:--}" out=""
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$BLOCKED_ITEMS_JQ" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$BLOCKED_ITEMS_JQ" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
 }
 
 # void_items [LOG_FILE]

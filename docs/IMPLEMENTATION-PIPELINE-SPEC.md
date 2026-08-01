@@ -1899,18 +1899,45 @@ runs unattended.
 18a. **Fresh evidence on a blocked issue makes requirement 18's re-check
     mandatory, not discretionary.** For a blocked item that is a GitHub
     issue, before excluding it under requirement 16 the Co-Ordinator compares
-    the issue's own `updated_at` against the `ts` of the `attempt-failed`
-    event that blocked it. If `updated_at` is newer, something was posted to
-    the thread after the block was recorded, so the Co-Ordinator must read
-    the issue and every comment (requirement 14a's whole-thread rule) before
-    honouring the marker, and judge against that fresh reading whether the
-    recorded blocker still holds — reporting the item in `unblocked`, as the
-    bare item id requirement 20 specifies, when it does not. This is the same
-    outcome and the same two limits as requirement 18 (impediments only;
-    never clears a void); only the trigger changes, from "may check when
-    convenient" to "must check when the thread has moved". When
-    `updated_at` is no newer than `ts`, nothing has changed since the marker
-    was written and the ordinary skip applies without a re-read.
+    the issue's own `updated_at` against the later of two timestamps carried
+    on its `blocked` entry: the `ts` of the `attempt-failed` event that
+    blocked it, and its `recheck_clean_ts` if it has one — the newest
+    `recheck-clean` event recorded for it (below), or absent if none exists.
+    If `updated_at` is newer than that later timestamp, something was posted
+    to the thread since the block was last confirmed current, so the
+    Co-Ordinator must read the issue and every comment (requirement 14a's
+    whole-thread rule) before honouring the marker, and judge against that
+    fresh reading whether the recorded blocker still holds:
+    - If it does not, report the item in `unblocked`, as the bare item id
+      requirement 20 specifies. This is the same outcome and the same two
+      limits as requirement 18 (impediments only; never clears a void); only
+      the trigger changes, from "may check when convenient" to "must check
+      when the thread has moved".
+    - If it still holds, report the item in `recheck_clean` as
+      `{item, repo}` (requirement 20) instead of leaving the re-check
+      unrecorded — both fields off the `blocked` entry just re-checked. The
+      Script logs this as a `recheck-clean` event (requirement 33) and folds
+      the newest one per item into the `blocked` extract as
+      `recheck_clean_ts`, which is what the next cycle's comparison above
+      reads. Without this marker, a comment that fails to clear the block
+      would look, to every later cycle, exactly like one that was never
+      read: `updated_at` stays newer than the original `ts` forever, and
+      every Co-Ordinator that runs re-reads the same stale thread and
+      re-judges the same evidence until the block finally clears by some
+      other route.
+
+    When `updated_at` is no newer than the later of the two timestamps,
+    nothing has changed since the more recent of the block or its last
+    confirmed re-check, and the ordinary skip applies without a re-read.
+
+    **`recheck_clean` must never be produced by re-emitting `attempt-failed`,
+    and a re-check that still holds must never move the blocked entry's own
+    `ts`.** Requirement 35a's Enabler clock is measured from the block's `ts`
+    forward; a fresh `attempt-failed` — or any change to the existing one —
+    would advance that clock exactly as a genuine re-block does, delaying the
+    Enabler's own eventual escalation over a confirmation that changed
+    nothing. `recheck_clean` is deliberately a separate marker that only this
+    comparison reads, so confirming a block never resets anyone else's clock.
 
     This exists because the general case left a gap a periodic sweep alone
     cannot close at cycle speed: requirement 3b's fingerprint already digests
@@ -1923,7 +1950,11 @@ runs unattended.
     woke for it is cheaper than either the silent stall or the Enabler's
     eventual sweep, and does not replace the Enabler: an item this check
     finds still blocked is exactly the item the Enabler goes on to re-examine
-    on its own schedule.
+    on its own schedule. The `recheck_clean` marker exists so that reading it
+    once is also the *last* time it gets read on a thread that has not moved
+    again since — without it, the cost this requirement was meant to bound to
+    "one re-read per genuine comment" would instead recur every cycle a
+    Co-Ordinator runs, for as long as the block lasts.
 
     No other blocked source needs the same treatment, so this requirement
     binds to GitHub issues only and requirement 18's general, discretionary
@@ -1942,7 +1973,12 @@ runs unattended.
     behaviour (docs, comments, register entries); otherwise
     `implementor_model_default`. Records the reasoning.
 20. Emits its entire final message as one JSON object: `selected`,
-    `unblocked`, `voided` (entries of `{item, repo, reason, evidence}`,
+    `unblocked`, `recheck_clean` (entries of `{item, repo}`, for requirement
+    18a's mandatory re-check finding the blocker still holds — repo-scoped,
+    unlike `unblocked`, because this marker suppresses a mandatory re-read
+    where an over-broad `unblocked` merely re-admits a candidate, and the
+    `blocked` entry being re-checked carries its `repo` in any case),
+    `voided` (entries of `{item, repo, reason, evidence}`,
     requirement 34d), `needs_refinement` (entries of
     `{repo, item, source, reason, missing, evidence}`, requirement 16a), and a
     ranked `candidates` array of up to
@@ -2249,8 +2285,9 @@ runs unattended.
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
-    `item-void`, `unvoided`, `item-refined`, `enabler-examined`, `escalated`,
-    `limit-hit`, `disabled`, `enabled`, `warning`, `cycle-end`. A `claim-lost` names the repo,
+    `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
+    `enabler-examined`, `escalated`, `limit-hit`, `disabled`, `enabled`,
+    `warning`, `cycle-end`. A `claim-lost` names the repo,
     item and branch a peer node won (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
@@ -2259,7 +2296,22 @@ runs unattended.
     one (requirement 32a), and — for the refinement class of requirement 34e —
     `kind: "needs-refinement"`, the `unblock_condition` taken from the report's
     `missing`, its `evidence` and reporting `source`, plus
-    `needs_refinement_label` when the Script managed to project the label. An
+    `needs_refinement_label` when the Script managed to project the label. A
+    `recheck-clean` (requirement 18a) carries the `item` and `repo` the
+    Co-Ordinator named in `recheck_clean` — repo-scoped, unlike `unblocked`,
+    because the two fail in opposite directions: an `unblocked` that
+    over-matches across repos only makes an item a candidate again
+    (requirement 34 calls that the safe direction), where a `recheck-clean`
+    folded into an unrelated repo's identically-numbered item would raise
+    requirement 18a's comparison threshold and so *suppress* a mandated
+    re-read. The Script tolerates an entry that arrives as a bare id — the
+    event is logged without `repo`, and the extract folds it into every
+    same-numbered blocked item, leaning on requirement 18a having obliged the
+    emitting Co-Ordinator to re-read all of them — but that is a degraded
+    fallback, not the shape to emit. Unlike `unblocked` it clears nothing;
+    the `blocked` extract instead folds the newest such event per item into
+    that item's entry as `recheck_clean_ts`, for requirement 18a's own
+    comparison to read on the next cycle. An
     `item-refined` carries `repo`, `item` and either the `spec` the Enabler
     wrote or the `comment_url` of the comment it posted (requirement 36b); the
     common `cycle` and `ts` are what requirement 3h reads it back by. A
