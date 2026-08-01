@@ -111,7 +111,9 @@ if [[ -z "$slug" ]]; then
 fi
 
 if [[ -z "$sha" ]]; then
-  pr_query=( gh pr view --json headRefOid,number --jq '.headRefOid + " " + (.number|tostring)' )
+  # The field list is quoted so the comma reads as part of one argument rather
+  # than as an array separator — to shellcheck (SC2054) as much as to a reader.
+  pr_query=( gh pr view --json "headRefOid,number" --jq '.headRefOid + " " + (.number|tostring)' )
   [[ -n "$pr" ]] && pr_query+=( "$pr" )
   [[ -n "$slug" ]] && pr_query+=( --repo "$slug" )
   if ! pr_answer="$("${pr_query[@]}" 2>"$tmp_dir/err")"; then

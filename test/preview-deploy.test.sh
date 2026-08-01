@@ -255,7 +255,13 @@ assert_contains "having said it was waiting" "waiting" "$out"
 # agree; asserting them against each other here is what keeps them agreeing
 # (requirement 34a, as test/abandoned-drafts.test.sh does for the comment
 # marker).
+#
+# Both literals below are single-quoted on purpose: they are the text those
+# files must contain, not something to expand here — which is what SC2016 is
+# warning about, and exactly what is wanted.
+# shellcheck disable=SC2016
 invocation='"$AGENT_OPS_ROOT/scripts/preview-deploy.sh"'
+# shellcheck disable=SC2016
 if grep -q '^export AGENT_OPS_ROOT="\$SCRIPT_DIR"$' "$SCRIPT_DIR/agent-cycle.sh"; then
   printf 'ok   - agent-cycle.sh exports AGENT_OPS_ROOT for the stages\n'
 else
