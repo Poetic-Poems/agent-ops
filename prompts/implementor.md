@@ -309,6 +309,37 @@ matching "When `source` is …" section above.)*
    commands the repo's CI workflows run, and fix whatever they surface.
    Don't report completion on the strength of the diff looking right —
    run the checks.
+4a. **Check the preview your pull request deployed.** poetic-fiddle deploys
+   every pull request to Vercel, and nothing in step 4 — nor `gh pr checks` —
+   says a word about whether that preview built: Vercel reports through
+   GitHub's *deployments* API rather than as a check run, so a pull request can
+   be entirely green over a preview that failed. From your clone, after you have
+   pushed:
+
+   ```
+   "$AGENT_OPS_ROOT/scripts/preview-deploy.sh" --wait 180
+   ```
+
+   With no arguments it works out the repository and the pull request from where
+   you are standing; `--wait` is how long to keep polling while Vercel is still
+   building. Read the exit code, because the three outcomes are not the same
+   kind of thing:
+
+   - **0** — it deployed and the page answers. Nothing to do.
+   - **1** — the build failed, or the deployed page serves an error. **This is
+     yours to fix**, exactly like a red test: the command prints the build log
+     (or the deployment's inspector URL) to start from. A preview that does not
+     build is a broken pull request even when every check is green.
+   - **2** — it could not be checked. Overwhelmingly this means the node running
+     you has no `VERCEL_AUTOMATION_BYPASS_SECRET`, so every preview answers
+     Vercel's login page instead of the application. **That is a fact about this
+     node, not about your work**: say so in `notes` and carry on. Never report
+     `blocked` for it, and never treat it as a pass either — you simply did not
+     find out.
+
+   A repository that does not deploy from Vercel — poetic, agent-ops — reports
+   exit 2 with "no deployment for this SHA at all", which is the same
+   "carry on" as above.
 5. **Close the loop on the originating record:**
    - Tech-debt: mark the record resolved by editing only
      `tech-debt/<id>.md`'s frontmatter — `status: resolved`, `resolved:`

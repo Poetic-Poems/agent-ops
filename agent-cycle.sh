@@ -27,6 +27,13 @@ done
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
+# Exported, and the only variable here that is: a stage's working directory is
+# its own ephemeral clone, so a prompt that wants to name a tool this repository
+# ships has nothing to name it relative to. A hard-coded `/app` would be right
+# for every node as deployed and wrong for every other way this repository is
+# run — a maintainer's checkout, the test suite — and a prompt cannot tell which
+# it is in. See requirement 24a.
+export AGENT_OPS_ROOT="$SCRIPT_DIR"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"

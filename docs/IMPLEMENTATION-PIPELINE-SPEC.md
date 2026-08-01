@@ -210,6 +210,17 @@ file and carries placeholders only; `.env` itself is never committed.
   it runs on every node. `AGENT_OPS_ROLE` comes from `ROLE` in `.env` and
   **defaults to `standby`** if unset, so a half-configured node cannot become a
   second worker.
+- **The Vercel variables are a capability, not a precondition.**
+  `VERCEL_AUTOMATION_BYPASS_SECRET` and `VERCEL_TOKEN` reach both agent-ops
+  services from `.env` through the shared environment block, and requirement
+  24a's check is the only thing that reads them. A node with neither runs every
+  cycle exactly as it did before that check existed — it reports "could not
+  check" where a configured node reports a verdict — so they are never a reason
+  for a cycle to stand down or an item to block. Being compose-level, they
+  arrive only when a human edits that node's `.env` and runs
+  `docker compose up -d` there; no image roll delivers them, which is the
+  general hazard `lib/compose-drift.sh` and `scripts/check-node-compose.sh`
+  exist for.
 - **`dashboard`** (profile `tailnet`) — `scripts/serve-dashboard.sh` sharing the
   `tailscale` sidecar's network namespace (`network_mode: service:tailscale`).
   That shared namespace is what lets Tailscale Serve reach a server bound to
@@ -2101,6 +2112,39 @@ runs unattended.
 24. Implements the item, then runs the same checks the repo's CI runs (as
     documented in that repo's `CLAUDE.md` and workflow files) and fixes
     anything they surface.
+24a. **Checks the preview deployment its own pull request produced.** Where the
+    target repository deploys from GitHub — poetic-fiddle, through Vercel's Git
+    integration — every pull request head SHA gets its own preview deployment,
+    and requirement 24's checks say nothing about it: the integration reports
+    through GitHub's *deployments* API rather than as a check run, so
+    `gh pr checks` is green over a preview that never built.
+    `scripts/preview-deploy.sh` (component 13) is how a stage asks. A preview
+    that failed to build, or that answers an error, is a defect in the pull
+    request and is fixed like any other.
+
+    **A preview the stage cannot reach is not a failure of the pull request.**
+    Preview deployments sit behind Vercel Authentication, and an
+    unauthenticated request for one is answered with a 302 to
+    `vercel.com/login` — which, followed, is a **200** from the login page, so a
+    check reading a status code alone certifies a wall as a healthy deployment.
+    The script therefore judges where a response points rather than what it is
+    numbered, and reports a protected preview as "could not check" (exit 2),
+    naming the node configuration that would fix it. `VERCEL_AUTOMATION_BYPASS_SECRET`
+    is a property of the node, not of the branch: a node without it runs every
+    cycle exactly as it did before this check existed, and neither stage may
+    report `blocked` for the want of it.
+
+    Both stages reach the script through **`AGENT_OPS_ROOT`**, which
+    `agent-cycle.sh` exports as its own directory and every stage inherits. A
+    stage's working directory is its ephemeral clone, so a prompt naming a tool
+    this repository ships has nothing to name it relative to. A hard-coded
+    `/app` would be right for every node as deployed and wrong for every other
+    way this repository is run — a maintainer's checkout, the test suite, any
+    future node that is not a container — and a prompt cannot tell which it is
+    in. It is the only variable the Script
+    exports for the stages, and `test/preview-deploy.test.sh` asserts the export
+    and both prompts' use of it against each other, so the path cannot drift
+    between the three (requirement 34a).
 25. Updates the originating record: the tech-debt record marked `resolved` —
     its `status:` frontmatter flipped (with `resolved:` and `ref:` filled in)
     and its body left in place, the file never deleted or renamed; issues
@@ -2191,7 +2235,9 @@ runs unattended.
     foreground within the same session rather than ending its turn early.
 29. Reviews the PR against the work order's item and acceptance notes, and
     against the target repo's own standards and conventions; re-runs the
-    repo's checks.
+    repo's checks, and re-runs requirement 24a's preview check rather than
+    trusting the Implementor's — a preview deployment is per head SHA, and any
+    fix this stage pushes mints a new one.
 30. Where it finds a problem it can fix with confidence, it fixes it
     directly on the branch — committing, rebasing onto the current default
     branch, or force-pushing as it judges best (permitted only on
@@ -3215,6 +3261,21 @@ What exists, and the requirements each part answers to:
     Fetched at bring-up beside `compose.yaml` (component 7, including
     `cloud-init.yaml`). Unit-tested against a stubbed `docker` on `PATH`
     (`test/check-node-compose.test.sh`); must pass `shellcheck`.
+13. `scripts/preview-deploy.sh` implementing requirement 24a: given a
+    repository and a pull request — or, with no arguments at all, the pull
+    request for the branch checked out in the working directory, which is how a
+    stage runs it from its own clone — it resolves the Preview deployment
+    GitHub recorded for that head SHA, reports whether it built, and fetches the
+    deployed page past Vercel Authentication with
+    `VERCEL_AUTOMATION_BYPASS_SECRET`. `--wait` polls while a deployment is
+    still building; `--path` requests a route other than `/`. Exit 0 deployed
+    and answering, 1 the deployment failed or the page does not answer, 2 could
+    not check — which is what a protected, absent or still-building preview
+    gets, so a login page is never reported as a healthy deployment.
+    `VERCEL_TOKEN`, when set, adds the tail of the build log to a failure;
+    without it a failure names the deployment's inspector URL instead. Its
+    verdicts are regression-tested against a stubbed `gh` and `curl`
+    (`test/preview-deploy.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -3488,6 +3549,23 @@ pull request, run the ones the change touches and any it could regress.
    carries. Against the real API, `scripts/gather-issues.sh
    Poetic-Poems/poetic-fiddle` prints an array whose entries all carry
    `comments` and a four-name `priority`.
+2f. **A preview nobody can reach is never reported as a healthy one
+   (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
+   `gh` and a stubbed Vercel that answers the login flow to any request not
+   carrying the project's bypass secret, a built and reachable preview is exit
+   0; a preview behind Vercel Authentication is exit 2 naming
+   `VERCEL_AUTOMATION_BYPASS_SECRET`, with a different diagnosis for a secret
+   that is unset and one that is rejected, since the two have different fixes;
+   a failed build is exit 1 naming the inspector, and carries the tail of the
+   build log when `VERCEL_TOKEN` is set; a preview that built and then serves a
+   500 is exit 1 and is distinguished in words from a build failure; an
+   application's own redirect is followed rather than mistaken for the login
+   flow; no deployment at all, a SHA deployed only to Production, and a
+   deployment still building are each exit 2; and `--wait` re-asks rather than
+   answering from its first look. Against the real API and a real protected
+   preview, `scripts/preview-deploy.sh --repo Poetic-Poems/poetic-fiddle --pr
+   <n>` from a shell with no bypass secret set reports that the deployment
+   built and that the page could not be checked.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning. A simulated foreign lock (fake lock file
