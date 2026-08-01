@@ -1360,16 +1360,32 @@ rm -rf ~/poetic-node-1   # compose.yaml, .env, ts-serve.json, watch-node.sh, any
 
 ### 7. Reclaim the disk
 
-`down -v` returns the volumes; the images are usually the larger half, and
-they are shared with everything else on the host.
+The volumes are the dependable half, and `down -v` has already returned them:
+they are ordinary directories, so they cost what they appeared to cost. The
+images are where the arithmetic misleads, and it misleads *upwards*.
+
+**Read `UNIQUE SIZE`, never `SIZE`.** The size Docker prints in `docker images`
+— and the `RECLAIMABLE` column of plain `docker system df` — includes every
+layer an image shares with other images, so adding those figures up counts the
+same bytes several times over. Deleting an image returns only what no other
+image still references. `-v` is the view that separates them:
 
 ```bash
-docker system df       # before
-docker image prune     # dangling images only — always safe
-docker system df       # after
+docker system df -v    # REPOSITORY … SIZE  SHARED SIZE  UNIQUE SIZE  CONTAINERS
 ```
 
-If nothing else on the host wants them, name them explicitly:
+On an auto-updating node the gap between the two columns is the whole story.
+Every watchtower roll leaves its predecessor dangling, and a predecessor of
+the *same* image shares nearly all its layers with the `:latest` that replaced
+it. Half a dozen of them read as several GB in `docker images` and give back a
+megabyte or two:
+
+```bash
+docker image prune     # dangling images only — always safe, and often ~nothing
+```
+
+So don't plan around it. Delete the node's images by name once no container
+wants them, and check the unique column first to know what you are getting:
 
 ```bash
 docker image rm ghcr.io/poetic-poems/agent-ops:latest \
@@ -1381,7 +1397,21 @@ Docker refuses to remove an image a container still uses, so this is safe to
 attempt with a second node still running: it removes what it can and declines
 the rest. Resist `docker image prune -a` unless this host runs nothing but
 agent-ops — it removes every image no *running* container references, which on
-a development laptop means the images behind every stopped stack on it.
+a development laptop means the images behind every stopped stack on it, each
+one a re-pull away from being needed again.
+
+**On WSL2, none of this reaches Windows on its own.** The distro's `ext4.vhdx`
+grows to its high-water mark and never shrinks, so space freed inside it is
+free to Linux and still spoken for on the host's disk — `df -h /` will report
+plenty free while Windows reports none. Hand it back from PowerShell:
+
+```powershell
+wsl --shutdown
+Optimize-VHD -Path <BasePath>\ext4.vhdx -Mode Full   # Hyper-V module; or diskpart's `compact vdisk`
+```
+
+(`<BasePath>` is the distro's value of that name under
+`HKCU\Software\Microsoft\Windows\CurrentVersion\Lxss`.)
 
 ### Did it work?
 
