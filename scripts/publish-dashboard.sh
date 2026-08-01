@@ -199,15 +199,16 @@ def limit_info($out_full; $err_full):
 # Port of extract_status_json(): try the stage's result text as JSON
 # outright, else the last fenced ```json block within it (the same
 # straight-parse-else-last-fenced-block algorithm as agent-cycle.sh's
-# extract_json_result, per DASHBOARD-SPEC.md). `ok:false` marks a shell-era
-# quirk this port deliberately preserves rather than fixes: an
-# empty-or-whitespace result used to make `jq empty`/`jq -c '.'` produce
-# nothing, which collapsed a `--argjson` into an invalid empty string,
-# failed the enclosing `jq -n` call, and silently dropped the WHOLE cycle
-# row rather than just this one stage. TD26072802 tracks retiring that
-# behaviour; until then this keeps the output unchanged.
+# extract_json_result, per DASHBOARD-SPEC.md). An empty-or-whitespace result
+# is a stage that ran and said nothing parseable, exactly like any other
+# unparseable text (TD26072802): `ok:true` with a null status, so it renders
+# in its own cycle's row instead of the whole cycle vanishing. (The pre-jq
+# `stage_json`/`cycle_json` code went `ok:false` here by shell accident, not
+# design — `jq empty`/`jq -c '.'` produced nothing for whitespace input,
+# which collapsed a `--argjson` into invalid JSON and failed the enclosing
+# `jq -n` call for the whole cycle.)
 def extract_status($text):
-  if ($text | test("^\\s*$")) then {ok:false, value:null}
+  if ($text | test("^\\s*$")) then {ok:true, value:null}
   else
     (try_json($text)) as $direct
     | if $direct != null then {ok:true, value:$direct}
@@ -237,7 +238,8 @@ def build_stage($entry; $cap):
     ($entry.out // "") as $out_full
     | ($entry.err // "") as $err_full
     | (try_json($out_full)) as $envtry
-    | (if ($envtry | type) == "object" then $envtry else {} end) as $env
+    | (($envtry | type) == "object") as $env_ok
+    | (if $env_ok then $envtry else {} end) as $env
     # `sub("\n+$";"")` mirrors the trailing-newline strip every bash
     # `$(...)` capture in the old stage_json got for free; without it, a
     # stage whose result/stderr ends in a newline would render with one jq's
@@ -248,7 +250,14 @@ def build_stage($entry; $cap):
     | extract_status($result_stripped) as $status
     | limit_info($out_full; $err_full) as $lim
     | {
-        ok: $status.ok,
+        # $env_ok, not $status.ok (extract_status always returns ok:true —
+        # a stage that ran and produced *some* envelope always renders, even
+        # with a null status). A torn/mid-write envelope is what still drops
+        # the whole cycle: $envtry never became an object, so $env fell back
+        # to {} and $result_stripped is indistinguishable from a genuinely
+        # empty result — the two are told apart here, before extract_status
+        # ever sees the text.
+        ok: $env_ok,
         obj: {
           ran: true,
           cost_usd: ($env.total_cost_usd // null),
