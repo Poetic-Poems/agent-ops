@@ -546,6 +546,28 @@ log_unblocked_items() {
   done < <(jq -r '.unblocked[]? // empty' <<<"$wo")
 }
 
+# Requirement 18a: the Co-Ordinator re-read a blocked GitHub issue whose
+# thread had moved and judged the recorded blocker still holds. Unlike
+# `unblocked`, this clears nothing — the item stays blocked — it only leaves a
+# marker (`recheck_clean_ts`, via lib/cycle-state.sh's `blocked_items`) so a
+# later cycle does not re-read the same still-unchanged thread again.
+# Entries are `{item, repo}` (requirement 20); a bare id is tolerated and
+# logged without `repo`, which the extract folds into every same-numbered
+# blocked item — the degraded fallback requirement 33 describes.
+log_recheck_clean_items() {
+  local wo="$1" entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    log_event "recheck-clean" "$entry"
+  done < <(jq -c '
+    .recheck_clean[]?
+    | if type == "object" then
+        {item: (.item // "" | tostring)}
+        + (if (.repo // "") != "" then {repo: .repo} else {} end)
+      else {item: tostring} end
+    | select(.item != "")' <<<"$wo")
+}
+
 # --- The refinement class (requirements 16a, 34e) ---------------------------
 # An item nobody has specified well enough to work on is blocked by that fact,
 # and the Co-Ordinator is the actor that discovers it — while walking candidates
@@ -2135,6 +2157,7 @@ if (( DRY_RUN )); then
 fi
 
 log_unblocked_items "$work_order_json"
+log_recheck_clean_items "$work_order_json"
 # The repos the Co-Ordinator was given, verbatim: the void guard (requirement
 # 34d) tests a verdict against the same candidates that produced it, so it can
 # never refuse a void over something the Co-Ordinator could not have seen.
@@ -2172,7 +2195,7 @@ fi
 if jq -e '.candidates | type == "array"' <<<"$work_order_json" >/dev/null 2>&1; then
   candidates_json="$(jq -c '.candidates' <<<"$work_order_json")"
 else
-  candidates_json="$(jq -c '[del(.selected, .unblocked, .voided)]' <<<"$work_order_json")"
+  candidates_json="$(jq -c '[del(.selected, .unblocked, .recheck_clean, .voided)]' <<<"$work_order_json")"
 fi
 
 if (( DRY_RUN )); then

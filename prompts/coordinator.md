@@ -122,8 +122,11 @@ heading, the Script gives you one JSON object:
   whatever `detail` that event recorded about what would unblock it, and `ts`,
   that event's own timestamp — the moment the block was recorded, which
   "Re-checking blocked items" below uses to tell a stale block from one an
-  issue has since moved past. These are items where something is **in the
-  way** of real work.
+  issue has since moved past. An entry may also carry `recheck_clean_ts` — the
+  newest confirmation that a fresh read of the issue still found the block
+  current — which "A blocked issue with fresh evidence must be re-read" below
+  reads alongside `ts` for that same purpose. These are items where something
+  is **in the way** of real work.
 - `void` is the same extract over `item-void`/`unvoided` events: items that
   describe **no work at all** — the premise was false, almost always because the
   work was already done on the default branch. Skip them, and see "Void items"
@@ -671,24 +674,38 @@ will select it, rediscover that it is done, and file it again — forever.
 **A blocked issue with fresh evidence must be re-read — this one is not
 discretionary.** Before you apply exclusion 1 to a `blocked` item that is a
 GitHub issue — its `item` is a bare issue number — compare its `updated_at`
-against the `ts` of the `blocked` entry's `attempt-failed` event for that
-item. The `updated_at` is in the repo's `issues` array when the issue is
-there; a blocked issue the array's filter dropped (it has since been
+against the *later* of two timestamps on the `blocked` entry: the `ts` of its
+`attempt-failed` event, and its `recheck_clean_ts` if present (the newest
+confirmation, from this same check on a previous cycle, that the block still
+held — see below). The `updated_at` is in the repo's `issues` array when the
+issue is there; a blocked issue the array's filter dropped (it has since been
 assigned, or labelled `blocked`) needs one `gh issue view <n>` for the
-timestamp. If `updated_at` is newer, something was posted to the thread after
-the block was recorded: read the whole thread — from the array entry's `body`
-and `comments` when it is there, else `gh issue view <n> --comments` —
-exactly as you would for any candidate you're evaluating, and judge against
-that fresh reading whether the recorded blocker still holds.
+timestamp. If `updated_at` is newer than that later timestamp, something was
+posted to the thread since the block was last confirmed current: read the
+whole thread — from the array entry's `body` and `comments` when it is there,
+else `gh issue view <n> --comments` — exactly as you would for any candidate
+you're evaluating, and judge against that fresh reading whether the recorded
+blocker still holds.
 
 - If it does not, put the issue's id in `unblocked` — a bare item identifier,
   exactly as the general re-check above; `reason` and `evidence` are fields of
   `voided`, not of `unblocked` — and treat the issue as a live candidate for
   this same cycle.
-- If it still holds, the item stays blocked; move on. Do not report
-  `unblocked` and do not re-report `needs_refinement` for it.
-- When `updated_at` is no newer than `ts`, nothing has changed since the
-  marker was written — skip it on the marker alone, no re-read needed.
+- If it still holds, the item stays blocked; move on, but put it in
+  `recheck_clean` as `{"item": "…", "repo": "owner/name"}` — both fields
+  straight off the `blocked` entry you just re-checked — so the Script can
+  record that this reading happened. Unlike `unblocked`, the `repo` is
+  required here: this marker *suppresses* a future mandatory re-read, so a
+  bare id would suppress it for every same-numbered issue in every repo,
+  and issue numbers collide across repos all the time. Skipping this step
+  does not lose the block, but it does mean the *next* cycle sees the same
+  stale `updated_at` and pays for the same re-read, forever, on a thread that
+  said nothing new. Do not report `unblocked` and do not re-report
+  `needs_refinement` for it.
+- When `updated_at` is no newer than that later timestamp, nothing has
+  changed since the marker or the last confirmed re-check — skip it on the
+  marker alone, no re-read needed, and do not report `recheck_clean` again
+  for a re-check you did not perform this cycle.
 
 This applies to GitHub issues only: they're the one source whose items both
 carry an `updated_at` you already have (from the `issues` array) and keep
@@ -862,6 +879,7 @@ the list, and one strong candidate alone is a perfectly good list.
 {
   "selected": true,
   "unblocked": [],
+  "recheck_clean": [],
   "voided": [],
   "needs_refinement": [],
   "candidates": [
@@ -940,6 +958,17 @@ the list, and one strong candidate alone is a perfectly good list.
   unrelated to the item you selected, and independent of whether
   `selected` is `true`). Omit or leave empty if none. An item you found to be
   already *done* does not belong here — see `voided`.
+- `recheck_clean` lists any blocked GitHub issues you were required to
+  re-read under "A blocked issue with fresh evidence must be re-read" above,
+  and whose blocker you found **still holds** — each as `{"item": "…",
+  "repo": "owner/name"}`, both taken from the `blocked` entry you re-checked.
+  Unlike `unblocked`, `repo` is required: an `unblocked` that over-matches
+  only re-admits a candidate, but this marker suppresses a mandatory re-read,
+  so it must never reach past the one issue you actually read. Omit or leave
+  empty if none. Do not put an item here that you re-checked only because it
+  was cheap to (the discretionary re-check in "Re-checking blocked items");
+  this field is for the *mandatory* re-check only, so the Script can stop the
+  next cycle re-reading a thread you already confirmed has said nothing new.
 - `voided` lists any item identifiers you established describe no work at all,
   each as `{"item": "…", "repo": "owner/name", "reason": "one line", "evidence":
   …}`. Omit or leave empty if none. `evidence` is required: an entry without it
@@ -964,6 +993,7 @@ If you found nothing selectable anywhere:
   "selected": false,
   "reason": "one-line reason, e.g. 'org/repo-b: no candidates in any source; org/repo-a: only candidate (M2 tasks) gated on open §6.1 decision'",
   "unblocked": [],
+  "recheck_clean": [],
   "voided": [],
   "needs_refinement": []
 }
