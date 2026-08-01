@@ -899,8 +899,18 @@ gather_source_state() {
 # sometimes prepend analysis prose anyway and put the real object in a
 # trailing fenced ```json block. Try a straight parse first; fall back to the
 # last such fenced block before giving up.
+#
+# An empty-or-whitespace-only $text is checked explicitly and fails outright
+# (TD26072802, for symmetry with publish-dashboard.sh's extract_status,
+# which shares this algorithm per DASHBOARD-SPEC.md): `jq empty` on
+# whitespace input succeeds trivially with no output, so without this check
+# the function would return 0 — success — while printing nothing. Every call
+# site already treats empty output as failure regardless of the exit code, so
+# this changes no observable behaviour; it just stops the exit code lying
+# about what happened.
 extract_json_result() {
   local text="$1" block
+  [[ "$text" =~ ^[[:space:]]*$ ]] && return 1
   if jq empty <<<"$text" >/dev/null 2>&1; then
     jq -c '.' <<<"$text"
     return 0
@@ -1506,28 +1516,39 @@ esac
 # --- 1. Lock ---
 acquire_lock() {
   if [[ -f "$lock_file" ]]; then
-    local pid started_at
+    local pid started_at host
     pid="$(jq -r '.pid // empty' "$lock_file" 2>/dev/null || true)"
     started_at="$(jq -r '.started_at // empty' "$lock_file" 2>/dev/null || true)"
+    host="$(jq -r '.host // empty' "$lock_file" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
-      local started_epoch now_epoch age_sec stale_after_sec pgid
+      local started_epoch now_epoch age_sec pgid
       started_epoch="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"
       now_epoch="$(date +%s)"
       age_sec=$(( now_epoch - started_epoch ))
-      stale_after_sec=$(( lock_stale_after_hours * 3600 ))
-      if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
-        log_event "cycle-skipped" "$(jq -nc --arg d "lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
-        exit 0
-      fi
-      if kill -0 "$pid" 2>/dev/null; then
-        pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
-        if [[ -n "$pgid" ]]; then
-          kill -TERM "-$pgid" 2>/dev/null || true
-          sleep 2
-          kill -KILL "-$pgid" 2>/dev/null || true
+      if [[ -n "$host" && "$host" != "${HOSTNAME:-}" ]]; then
+        # A pid is only meaningful in the PID namespace that minted it. This
+        # lock's `host` names a different container, so its incarnation is
+        # gone by construction — take it over without asking `kill -0`,
+        # which would be answering about an unrelated process in ours (#130
+        # fixed the same confusion in the watchtower hook).
+        log_event "warning" "$(jq -nc --arg d "foreign lock from pid $pid on host $host (age ${age_sec}s) taken over" '{detail: $d}')"
+      else
+        local stale_after_sec
+        stale_after_sec=$(( lock_stale_after_hours * 3600 ))
+        if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
+          log_event "cycle-skipped" "$(jq -nc --arg d "lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
+          exit 0
         fi
+        if kill -0 "$pid" 2>/dev/null; then
+          pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
+          if [[ -n "$pgid" ]]; then
+            kill -TERM "-$pgid" 2>/dev/null || true
+            sleep 2
+            kill -KILL "-$pgid" 2>/dev/null || true
+          fi
+        fi
+        log_event "warning" "$(jq -nc --arg d "stale lock from pid $pid (age ${age_sec}s) taken over" '{detail: $d}')"
       fi
-      log_event "warning" "$(jq -nc --arg d "stale lock from pid $pid (age ${age_sec}s) taken over" '{detail: $d}')"
     fi
   fi
   # `host` names the container (PID namespace) the pid is meaningful in: the

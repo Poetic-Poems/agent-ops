@@ -584,11 +584,17 @@ runs unattended.
    start time, and the writer's hostname (`host` — on a containerised node
    the container, which is the PID namespace the recorded PID is meaningful
    in; the watchtower pre-update hook reads it, see the node stack section).
-   If the lock is held by a live process younger than `lock_stale_after`,
-   log `cycle-skipped` and exit 0. If the holder is dead or older than
-   `lock_stale_after`, kill its whole process group if still alive, log a
-   `warning` (a stale cycle indicates a fault — it should not occur in
-   normal operation), take the lock, and continue.
+   A pid is only meaningful in the PID namespace that minted it, so a lock
+   whose recorded `host` differs from this run's own is judged by host, not
+   pid: it was written by a container that is gone by construction, taken
+   over immediately — no liveness check, no process-group kill — logging the
+   same `warning`. Only a lock whose `host` matches (or carries none, from
+   before this stamp existed) is judged by liveness: if held by a live
+   process younger than `lock_stale_after`, log `cycle-skipped` and exit 0;
+   if the holder is dead or older than `lock_stale_after`, kill its whole
+   process group if still alive, log a `warning` (a stale cycle indicates a
+   fault — it should not occur in normal operation), take the lock, and
+   continue.
 1a. **Model id resolution (D12 groundwork).** Every model key read from
    config — `coordinator_model`, `implementor_model_default`,
    `implementor_model_trivial`, `reviewer_model_default`,
@@ -3432,7 +3438,11 @@ pull request, run the ones the change touches and any it could regress.
    `comments` and a four-name `priority`.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
-   over with a logged warning.
+   over with a logged warning. A simulated foreign lock (fake lock file
+   naming a different `host`, fresh timestamp, a pid that is alive here
+   because it collides with an unrelated local process) is taken over
+   immediately with a logged warning, and that local process is left
+   running.
 5. An injected `limit-hit` event with a future `resume_at` and
    `reset_known: true` causes a stand-down with no probe launched; an expired
    one does not stand down. With `reset_known: false`, the cycle launches
