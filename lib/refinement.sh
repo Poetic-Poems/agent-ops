@@ -78,14 +78,14 @@
 # rather than an omission (`TECH-DEBT.md` TD26072602).
 #
 # Eligibility asks nothing new of a hand-flagged block. Requirement 35a
-# already treats the `kind` marker as informational — "the kind marker changes
-# nothing about the rule, and deliberately so" — so a hand-flagged block
-# crosses the same `enabler_after_coordinator_cycles` threshold as any other.
-# Carving out a faster (or slower) path for this one origin would be the exact
-# exception 35a's own design note declines to make, and there is no fleet
-# evidence yet that a human's label needs different pacing than a model's
-# report; whether refinement blocks in general deserve their own threshold is
-# the tuning question `TECH-DEBT.md` TD26072604 leaves open, not this one.
+# already treats the `kind` marker as informational for every clause but the
+# threshold — a hand-flagged block crosses the same
+# `refinement_after_coordinator_cycles` threshold as a Co-Ordinator's own
+# refinement block, because both carry `kind: "needs-refinement"` and the rule
+# reads only that. Carving out a faster (or slower) path for this one origin
+# would be the exact exception 35a's own design note declines to make, and
+# there is no fleet evidence that a human's label needs different pacing than
+# a model's report.
 #
 # Requires `lib/void-guard.sh` (for `entry_field_text`) to be sourced first, as
 # agent-cycle.sh does. Sourced, never executed: it sets no shell options,

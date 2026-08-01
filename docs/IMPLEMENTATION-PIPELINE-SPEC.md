@@ -519,6 +519,7 @@ values below are the confirmed defaults; the README must document each key.
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
+| `refinement_after_coordinator_cycles` | *(`enabler_after_coordinator_cycles`)* | The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
@@ -2667,12 +2668,13 @@ runs unattended.
        should look first:
        - **`threshold`** — no examination newer than *B*, and at least
          `enabler_after_coordinator_cycles` distinct cycles have logged a
-         `stage-end` with `stage: "coordinator"` and `exit_code: 0` since *B*.
-         That event is the definition of "a cycle that ran a Co-Ordinator", and
-         pinning it there is what makes the threshold mean "the pipeline has had
-         several honest chances to clear this itself": every stand-down —
-         switch, cooldown, no-op short-circuit, back-pressure — logs no
-         coordinator `stage-end` and so ages nothing.
+         `stage-end` with `stage: "coordinator"` and `exit_code: 0` since *B* —
+         or `refinement_after_coordinator_cycles`, for a block whose `kind` is
+         `needs-refinement`. That event is the definition of "a cycle that ran
+         a Co-Ordinator", and pinning it there is what makes the threshold mean
+         "the pipeline has had several honest chances to clear this itself":
+         every stand-down — switch, cooldown, no-op short-circuit,
+         back-pressure — logs no coordinator `stage-end` and so ages nothing.
        - **`issue-closed`** — an escalation raised after *B* is no longer open,
          and no examination has followed it. This bypasses the threshold
          deliberately: the human acted, and requirement 36a promised them that
@@ -2695,12 +2697,14 @@ runs unattended.
     would retire the item on the strength of a failed `gh issue create`.
 
     A coordinator-stage refinement block (requirement 34e) is eligible on
-    exactly these terms — the `kind` marker changes nothing about the rule, and
-    deliberately so. Each entry additionally carries that `kind`, so the
-    engagement knows which duty it is there to perform (requirement 36b), and
-    `refined_before`: the latest `item-refined` event for the same repo+item, or
-    `null`. That field is the thrash guard's input and the record of what the
-    last engagement already specified, so a later one need not reconstruct it.
+    exactly these terms — the `kind` marker changes only which threshold the
+    `threshold` reason compares against, never the set of reasons, the escalation
+    check, or any other clause. Each entry additionally carries that `kind`, so
+    the engagement knows which duty it is there to perform (requirement 36b),
+    and `refined_before`: the latest `item-refined` event for the same
+    repo+item, or `null`. That field is the thrash guard's input and the
+    record of what the last engagement already specified, so a later one need
+    not reconstruct it.
 
     Like requirements 34 and 34c, this rule has exactly **one** implementation
     (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, which
