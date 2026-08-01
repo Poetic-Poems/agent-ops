@@ -1225,7 +1225,184 @@ The Reviewer should have caught this, or it arose after the PR was ready (anothe
 **Usage limit hit:**
 The system logs a `limit-hit` event with the reset time if parseable. It then stands down until that time or `limit_cooldown_default`, whichever is later. Check the log for the event.
 
+## Removing a node for good
+
+[Taking one node out](#taking-one-node-out-while-the-rest-keep-working) puts a
+node aside and leaves it able to come back. Decommissioning is the other
+thing: the machine is going away, or its disk is wanted for something else,
+and nothing of the node should remain — not its containers, not its volumes,
+not its branch in the fleet's memory, not its credentials.
+
+No other node depends on this one. Work is arbitrated per item, not per node
+(see [Keeping every node warm](#keeping-every-node-warm)), so the fleet
+experiences a departure as one fewer heartbeat and nothing else. The order
+below exists only so that the node leaves nothing behind for a peer to trip
+over: a claim it will never release, a branch nobody prunes, a token nobody
+revokes.
+
+Run every `docker compose` command from the departing node's stack directory —
+the one holding its `compose.yaml` and `.env` (`~/poetic-node-1`, or whatever
+it was called at bring-up), not from a checkout of this repo.
+
+### 1. Check the fleet can spare it
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --status
+```
+
+If this node is `active`, confirm that at least one other node is too before
+it goes. Several may be active at once and the fleet elects no replacement, so
+removing the last active node leaves an operation that heartbeats, syncs, and
+does no work at all — with nothing anywhere announcing it. The dashboard's
+fleet strip names each node's role. It is also the surviving actives that run
+the claim GC at the end of each cycle, so a fleet with none of them stops
+sweeping stale claims as well as stops working.
+
+### 2. Let any cycle in flight finish
+
+`--status` above reads `cycle: idle` and `review: idle`, or names what is
+running. Stopping or recreating a container kills a running cycle's whole
+process group, which leaves an orphaned clone under `workspace_root`, a lock
+to be taken over as stale, and a claim that stands until the GC sweeps it
+(`claim_ttl_hours`, 6 h). So wait — or stand the fleet down and wait:
+
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --disable 'decommissioning <node>' --for 2h
+docker compose exec scheduler /app/agent-cycle.sh --status   # until both read idle
+```
+
+Remember the switch is fleet-wide: `--enable` from a *surviving* node once
+this one is gone, or every other node stays down until the disable expires. On
+a standby node the disable is unnecessary — a standby starts no cycles.
+
+### 3. Take off it anything you want to keep
+
+Everything the node has published already lives in the state repository, and
+step 5 deletes it from there. Two things are worth a moment first:
+
+- **Its history** — `log.jsonl`, its cycle records, its stage transcripts.
+  Keep a copy by cloning the branch before you delete it:
+  ```bash
+  git clone --branch nodes/<NODE_NAME> --single-branch \
+    https://github.com/Poetic-Poems/agent-ops-state.git ~/node-<NODE_NAME>-archive
+  ```
+- **What only it knows.** The union readers learn blocked items, void
+  verdicts, and no-op fingerprints from every node's log. Deleting this node's
+  branch forgets whatever it alone recorded, so an item it blocked may be
+  tried once more by a peer. That is a re-tried cycle, not a fault — but it is
+  the reason to do this deliberately rather than by letting a branch rot.
+
+The `claude-config` volume is not worth preserving: the OAuth credentials in
+it are per node, and a replacement node logs in once (`deploy/docker/README.md`
+step 4).
+
+### 4. Destroy the stack, its volumes, and its tailnet identity
+
+If the node ran the `tailnet` profile, log it out while the sidecar still
+exists, then delete the machine in the Tailscale admin console — otherwise it
+lingers there as an offline device still holding its name, which the next node
+called the same thing will not be given:
+
+```bash
+docker compose exec tailscale tailscale logout
+```
+
+Then take the whole stack down, volumes included:
+
+```bash
+docker compose down -v --remove-orphans
+```
+
+The `-v` is the entire point of this step. Without it, `state`,
+`claude-config`, `workspaces` and `tailscale-state` survive as project volumes
+belonging to a node that no longer exists — and they are where the disk went
+(`docker volume ls`, `docker system df`).
+
+**On a host running two stacks**, check which one holds watchtower before
+choosing which to remove. The `auto-update` profile is typically enabled on
+one node only, and that single watchtower updates every labelled container on
+the host, whichever compose project it belongs to. Removing the stack that
+runs it silently stops the survivor auto-updating; the survivor then drifts
+off the fleet's image digest with no symptom but staleness. Add `auto-update`
+to the surviving node's `COMPOSE_PROFILES` and `docker compose up -d` there —
+while it is idle, per the caution in [Taking one node
+out](#taking-one-node-out-while-the-rest-keep-working) — if the departing node
+was the one running it.
+
+### 5. Remove it from the fleet's memory
+
+A node leaves the fleet by having its state branch deleted. That is the only
+signal there is, and it must come *after* step 4: a node still running would
+push the branch back within five minutes.
+
+```bash
+gh api -X DELETE repos/Poetic-Poems/agent-ops-state/git/refs/heads/nodes/<NODE_NAME>
+```
+
+(`Poetic-Poems/agent-ops-state` is `state_repo` in `config.json`.) Every
+peer's next `state-sync.sh fetch` — seven minutes at most — prunes the
+matching peer directory, and the node's card leaves every dashboard with it.
+Leave the branch in place and you get the opposite of a clean departure: a
+permanent card whose heartbeat only ever gets older, on every node's fleet
+strip, for ever.
+
+### 6. Revoke its credentials, then delete its directory
+
+The node's `.env` holds a GitHub PAT — one per node, precisely so that one
+node can be revoked without disturbing another. Revoke it at
+`github.com/settings/tokens` rather than merely deleting the file: the file is
+a copy, not the credential. Revoke the node's Tailscale auth key too, if it
+was given a dedicated one. Then the directory itself:
+
+```bash
+rm -rf ~/poetic-node-1   # compose.yaml, .env, ts-serve.json, watch-node.sh, any .bak files
+```
+
+### 7. Reclaim the disk
+
+`down -v` returns the volumes; the images are usually the larger half, and
+they are shared with everything else on the host.
+
+```bash
+docker system df       # before
+docker image prune     # dangling images only — always safe
+docker system df       # after
+```
+
+If nothing else on the host wants them, name them explicitly:
+
+```bash
+docker image rm ghcr.io/poetic-poems/agent-ops:latest \
+                containrrr/watchtower:latest \
+                tailscale/tailscale:latest
+```
+
+Docker refuses to remove an image a container still uses, so this is safe to
+attempt with a second node still running: it removes what it can and declines
+the rest. Resist `docker image prune -a` unless this host runs nothing but
+agent-ops — it removes every image no *running* container references, which on
+a development laptop means the images behind every stopped stack on it.
+
+### Did it work?
+
+From a surviving node, one fetch interval later:
+
+```bash
+docker compose exec scheduler ls /home/agent/.cache/poetic-agents/workspaces/.agent-ops-peers
+```
+
+The departed node should not be listed, and its card should be gone from the
+dashboard's fleet strip. On the host it left, `docker ps -a` names none of its
+containers and `docker volume ls` none of its volumes. If this was the last
+node, the operation is now off — there is nothing left running anywhere, and
+the state repository holds no `nodes/` branches.
+
 ## Uninstall
+
+This is the legacy host install (see [On the host (legacy,
+decommissioned)](#on-the-host-legacy-decommissioned)) — cron entries, state
+directories, and services on the machine itself. To remove a *container* node,
+follow [Removing a node for good](#removing-a-node-for-good) instead.
 
 1. **Remove the crontab lines** (the cycle, the weekly review, and, if added, the dashboard heartbeat):
    ```bash
@@ -1371,6 +1548,11 @@ obeys), so it is the wrong tool for taking a single node aside. Per node:
   carries on; per-item claims mean no other node was depending on this one.
 - **Hold it on a known image** while the rest follow `latest`: pin
   `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env`.
+
+All three leave the node able to come back, which is what makes them the wrong
+answer when the machine is going away or its disk is wanted: see [Removing a
+node for good](#removing-a-node-for-good) for the departure that also releases
+the volumes, the state branch, and the credentials.
 
 One caution before any *manual* `docker compose up -d` on a live node: after
 a watchtower roll, compose's recorded config-hash no longer matches, so
