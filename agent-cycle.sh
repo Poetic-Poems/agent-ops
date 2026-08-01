@@ -542,12 +542,21 @@ log_unblocked_items() {
 # `unblocked`, this clears nothing — the item stays blocked — it only leaves a
 # marker (`recheck_clean_ts`, via lib/cycle-state.sh's `blocked_items`) so a
 # later cycle does not re-read the same still-unchanged thread again.
+# Entries are `{item, repo}` (requirement 20); a bare id is tolerated and
+# logged without `repo`, which the extract folds into every same-numbered
+# blocked item — the degraded fallback requirement 33 describes.
 log_recheck_clean_items() {
-  local wo="$1" item
-  while IFS= read -r item; do
-    [[ -n "$item" ]] || continue
-    log_event "recheck-clean" "$(jq -nc --arg i "$item" '{item: $i}')"
-  done < <(jq -r '.recheck_clean[]? // empty' <<<"$wo")
+  local wo="$1" entry
+  while IFS= read -r entry; do
+    [[ -n "$entry" ]] || continue
+    log_event "recheck-clean" "$entry"
+  done < <(jq -c '
+    .recheck_clean[]?
+    | if type == "object" then
+        {item: (.item // "" | tostring)}
+        + (if (.repo // "") != "" then {repo: .repo} else {} end)
+      else {item: tostring} end
+    | select(.item != "")' <<<"$wo")
 }
 
 # --- The refinement class (requirements 16a, 34e) ---------------------------

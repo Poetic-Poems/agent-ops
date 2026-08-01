@@ -691,9 +691,13 @@ blocker still holds.
   exactly as the general re-check above; `reason` and `evidence` are fields of
   `voided`, not of `unblocked` — and treat the issue as a live candidate for
   this same cycle.
-- If it still holds, the item stays blocked; move on, but put its id in
-  `recheck_clean` — a bare item identifier, shaped exactly like `unblocked` —
-  so the Script can record that this reading happened. Skipping this step
+- If it still holds, the item stays blocked; move on, but put it in
+  `recheck_clean` as `{"item": "…", "repo": "owner/name"}` — both fields
+  straight off the `blocked` entry you just re-checked — so the Script can
+  record that this reading happened. Unlike `unblocked`, the `repo` is
+  required here: this marker *suppresses* a future mandatory re-read, so a
+  bare id would suppress it for every same-numbered issue in every repo,
+  and issue numbers collide across repos all the time. Skipping this step
   does not lose the block, but it does mean the *next* cycle sees the same
   stale `updated_at` and pays for the same re-read, forever, on a thread that
   said nothing new. Do not report `unblocked` and do not re-report
@@ -954,14 +958,17 @@ the list, and one strong candidate alone is a perfectly good list.
   unrelated to the item you selected, and independent of whether
   `selected` is `true`). Omit or leave empty if none. An item you found to be
   already *done* does not belong here — see `voided`.
-- `recheck_clean` lists any blocked GitHub issue identifiers you were required
-  to re-read under "A blocked issue with fresh evidence must be re-read"
-  above, and whose blocker you found **still holds** — bare item identifiers,
-  shaped exactly like `unblocked`. Omit or leave empty if none. Do not put an
-  item here that you re-checked only because it was cheap to (the
-  discretionary re-check in "Re-checking blocked items"); this field is for
-  the *mandatory* re-check only, so the Script can stop the next cycle
-  re-reading a thread you already confirmed has said nothing new.
+- `recheck_clean` lists any blocked GitHub issues you were required to
+  re-read under "A blocked issue with fresh evidence must be re-read" above,
+  and whose blocker you found **still holds** — each as `{"item": "…",
+  "repo": "owner/name"}`, both taken from the `blocked` entry you re-checked.
+  Unlike `unblocked`, `repo` is required: an `unblocked` that over-matches
+  only re-admits a candidate, but this marker suppresses a mandatory re-read,
+  so it must never reach past the one issue you actually read. Omit or leave
+  empty if none. Do not put an item here that you re-checked only because it
+  was cheap to (the discretionary re-check in "Re-checking blocked items");
+  this field is for the *mandatory* re-check only, so the Script can stop the
+  next cycle re-reading a thread you already confirmed has said nothing new.
 - `voided` lists any item identifiers you established describe no work at all,
   each as `{"item": "…", "repo": "owner/name", "reason": "one line", "evidence":
   …}`. Omit or leave empty if none. `evidence` is required: an entry without it

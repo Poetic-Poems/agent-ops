@@ -1913,16 +1913,18 @@ runs unattended.
       limits as requirement 18 (impediments only; never clears a void); only
       the trigger changes, from "may check when convenient" to "must check
       when the thread has moved".
-    - If it still holds, report the item's bare id in `recheck_clean`
-      (requirement 20) instead of leaving the re-check unrecorded. The Script
-      logs this as a `recheck-clean` event (requirement 33) and folds the
-      newest one per item into the `blocked` extract as `recheck_clean_ts`,
-      which is what the next cycle's comparison above reads. Without this
-      marker, a comment that fails to clear the block would look, to every
-      later cycle, exactly like one that was never read: `updated_at` stays
-      newer than the original `ts` forever, and every Co-Ordinator that runs
-      re-reads the same stale thread and re-judges the same evidence until
-      the block finally clears by some other route.
+    - If it still holds, report the item in `recheck_clean` as
+      `{item, repo}` (requirement 20) instead of leaving the re-check
+      unrecorded — both fields off the `blocked` entry just re-checked. The
+      Script logs this as a `recheck-clean` event (requirement 33) and folds
+      the newest one per item into the `blocked` extract as
+      `recheck_clean_ts`, which is what the next cycle's comparison above
+      reads. Without this marker, a comment that fails to clear the block
+      would look, to every later cycle, exactly like one that was never
+      read: `updated_at` stays newer than the original `ts` forever, and
+      every Co-Ordinator that runs re-reads the same stale thread and
+      re-judges the same evidence until the block finally clears by some
+      other route.
 
     When `updated_at` is no newer than the later of the two timestamps,
     nothing has changed since the more recent of the block or its last
@@ -1971,9 +1973,12 @@ runs unattended.
     behaviour (docs, comments, register entries); otherwise
     `implementor_model_default`. Records the reasoning.
 20. Emits its entire final message as one JSON object: `selected`,
-    `unblocked`, `recheck_clean` (bare item ids, shaped exactly like
-    `unblocked`, for requirement 18a's mandatory re-check finding the blocker
-    still holds), `voided` (entries of `{item, repo, reason, evidence}`,
+    `unblocked`, `recheck_clean` (entries of `{item, repo}`, for requirement
+    18a's mandatory re-check finding the blocker still holds — repo-scoped,
+    unlike `unblocked`, because this marker suppresses a mandatory re-read
+    where an over-broad `unblocked` merely re-admits a candidate, and the
+    `blocked` entry being re-checked carries its `repo` in any case),
+    `voided` (entries of `{item, repo, reason, evidence}`,
     requirement 34d), `needs_refinement` (entries of
     `{repo, item, source, reason, missing, evidence}`, requirement 16a), and a
     ranked `candidates` array of up to
@@ -2292,13 +2297,21 @@ runs unattended.
     `kind: "needs-refinement"`, the `unblock_condition` taken from the report's
     `missing`, its `evidence` and reporting `source`, plus
     `needs_refinement_label` when the Script managed to project the label. A
-    `recheck-clean` (requirement 18a) carries the bare `item` the Co-Ordinator
-    named in `recheck_clean`, with no `repo` — the same shape as a
-    Co-Ordinator `unblocked`, and for the same reason: neither has a repo to
-    hand. Unlike `unblocked` it clears nothing; the `blocked` extract instead
-    folds the newest such event per item into that item's entry as
-    `recheck_clean_ts`, for requirement 18a's own comparison to read on the
-    next cycle. An
+    `recheck-clean` (requirement 18a) carries the `item` and `repo` the
+    Co-Ordinator named in `recheck_clean` — repo-scoped, unlike `unblocked`,
+    because the two fail in opposite directions: an `unblocked` that
+    over-matches across repos only makes an item a candidate again
+    (requirement 34 calls that the safe direction), where a `recheck-clean`
+    folded into an unrelated repo's identically-numbered item would raise
+    requirement 18a's comparison threshold and so *suppress* a mandated
+    re-read. The Script tolerates an entry that arrives as a bare id — the
+    event is logged without `repo`, and the extract folds it into every
+    same-numbered blocked item, leaning on requirement 18a having obliged the
+    emitting Co-Ordinator to re-read all of them — but that is a degraded
+    fallback, not the shape to emit. Unlike `unblocked` it clears nothing;
+    the `blocked` extract instead folds the newest such event per item into
+    that item's entry as `recheck_clean_ts`, for requirement 18a's own
+    comparison to read on the next cycle. An
     `item-refined` carries `repo`, `item` and either the `spec` the Enabler
     wrote or the `comment_url` of the comment it posted (requirement 36b); the
     common `cycle` and `ts` are what requirement 3h reads it back by. A

@@ -137,22 +137,24 @@ _latest_unresolved() {
 # moved past the block's own `ts`, and judged that the blocker still holds. It
 # clears nothing — only `unblocked` does that — so it is folded into the
 # block's own record as `recheck_clean_ts` rather than treated as another
-# member of the set/clear pair `_latest_unresolved` computes. Bare item id,
-# like `unblocked` (the Co-Ordinator has no repo to hand for either), so it
-# over-matches across repos exactly as requirement 34's clear does — but the
-# fail direction is the opposite one, and worth stating plainly. An
-# `unblocked` that over-clears only makes an item a candidate again;
-# a `recheck_clean_ts` folded into an unrelated repo's identically-numbered
-# item *raises* that item's comparison threshold, so it suppresses a re-read
-# rather than adding one.
+# member of the set/clear pair `_latest_unresolved` computes. The event is
+# repo-scoped (`{item, repo}`, requirement 33), unlike `unblocked`, because
+# the two fail in opposite directions: an `unblocked` that over-clears only
+# makes an item a candidate again, where a `recheck_clean_ts` folded into an
+# unrelated repo's identically-numbered item *raises* that item's comparison
+# threshold, so it suppresses a mandated re-read rather than adding one — and
+# issue numbers collide across repos far more readily than register ids do.
+# Scoping the match makes that fail safe structurally: a marker can only ever
+# suppress the one issue its Co-Ordinator actually read.
 #
-# What makes that safe is the emitting cycle, not the match: requirement 18a
-# obliges the Co-Ordinator reporting the id to have re-read every blocked
-# issue of that id whose thread had moved, so a marker for item X stands for
-# every X it could suppress. The residual case — a repo whose blocked X that
-# Co-Ordinator did not re-read — is caught by requirement 35a, whose clocks
-# are measured from the block's own `ts` and which this marker deliberately
-# never touches.
+# A repo-less event (older logs, or a report the Script accepted as a bare
+# id) still folds — into every same-numbered blocked item. That fallback
+# leans on the emitting cycle rather than the match: requirement 18a obliged
+# that Co-Ordinator to re-read every blocked issue of that id whose thread
+# had moved, so its marker stands for each of them, provided it complied.
+# The residual case either way — a blocked issue no marker covers — is
+# caught by requirement 35a, whose clocks are measured from the block's own
+# `ts` and which this marker deliberately never touches.
 # shellcheck disable=SC2016  # jq's $b/$rechecks, not the shell's.
 BLOCKED_ITEMS_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';

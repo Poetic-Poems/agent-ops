@@ -164,8 +164,10 @@ EOF
 assert_eq "the newest recheck-clean ts is the one carried" \
   "2026-07-30T10:00:00Z" "$(blocked_items "$log" | jq -r '.[0].recheck_clean_ts')"
 
-# Bare id, like `unblocked` — the Co-Ordinator has no repo to hand — so it
-# folds into every same-numbered item across repos.
+# A repo-less event — older logs, or a report the Script accepted as a bare
+# id — is the tolerated fallback (requirement 33): it folds into every
+# same-numbered item across repos, leaning on the emitting Co-Ordinator
+# having re-read all of them.
 cat > "$log" <<'EOF'
 {"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/a","item":"52","detail":"a"}
 {"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/b","item":"52","detail":"b"}
@@ -174,10 +176,9 @@ EOF
 assert_eq "a repo-less recheck-clean folds into every repo's same-numbered item" \
   "2" "$(blocked_items "$log" | jq '[.[] | select(.recheck_clean_ts == "2026-07-29T09:00:00Z")] | length')"
 
-# The Script never logs a repo-scoped recheck-clean — requirement 33 gives the
-# event a bare `item` and no `repo` — but the match honours one if it ever
-# appears (hand-appended, or a later change of shape), folding it into that
-# repo's item alone.
+# The canonical shape (requirements 20 and 33): a repo-scoped recheck-clean
+# folds into that repo's item alone, so a marker can only suppress the one
+# issue its Co-Ordinator actually read.
 cat > "$log" <<'EOF'
 {"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/a","item":"52","detail":"a"}
 {"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/b","item":"52","detail":"b"}
