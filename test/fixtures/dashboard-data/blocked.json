@@ -1,0 +1,53 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [
+    {
+      "item": "TD-PPagop-26071900", "repo": "Poetic-Poems/agent-ops", "ts": "@ago:1d",
+      "stage": "implementor", "detail": "tests keep failing against the fixture",
+      "kind": null, "escalation_url": null, "enabler_outcome": null, "enabler_ts": null
+    },
+    {
+      "item": "TD-PPagop-26071901", "repo": "Poetic-Poems/agent-ops", "ts": "@ago:2d",
+      "stage": "coordinator", "detail": "the record does not say which flag to change",
+      "kind": "needs-refinement", "escalation_url": null,
+      "enabler_outcome": "deferred, retry after refinement", "enabler_ts": "@ago:1d"
+    },
+    {
+      "item": "TD-PPagop-26071902", "repo": "Poetic-Poems/agent-ops", "ts": "@ago:6d",
+      "stage": "coordinator", "detail": "past one refinement — needs a human decision",
+      "kind": "needs-refinement", "escalation_url": "https://github.com/Poetic-Poems/agent-ops/issues/150",
+      "escalation_issue": 150, "enabler_outcome": null, "enabler_ts": null
+    }
+  ],
+  "void": [
+    {
+      "item": "TD-PPagop-26071800", "repo": "Poetic-Poems/agent-ops", "ts": "@ago:5d",
+      "stage": "implementor", "detail": "the file it names no longer exists",
+      "evidence": "removed in #144"
+    }
+  ],
+  "github": {"ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {}, "inputs": {}},
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}
