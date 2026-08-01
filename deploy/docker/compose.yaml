@@ -45,6 +45,15 @@ x-agent-ops: &agent-ops
     GH_TOKEN: ${GH_TOKEN:-}
     GIT_USER_NAME: ${GIT_USER_NAME:-}
     GIT_USER_EMAIL: ${GIT_USER_EMAIL:-}
+    # What lets a stage check the Vercel preview its own pull request deploys
+    # (scripts/preview-deploy.sh). Both optional, and a node without either
+    # runs every cycle exactly as before: the check then reports "could not
+    # check" rather than a verdict, which is the honest answer and not a
+    # failure. The first is the project's Protection Bypass for Automation
+    # secret, without which every preview answers the SSO login page; the
+    # second buys the build log when a deployment failed.
+    VERCEL_AUTOMATION_BYPASS_SECRET: ${VERCEL_AUTOMATION_BYPASS_SECRET:-}
+    VERCEL_TOKEN: ${VERCEL_TOKEN:-}
     TZ: ${TZ:-Pacific/Auckland}
   volumes:
     # The three things that must survive a container being replaced by a newer

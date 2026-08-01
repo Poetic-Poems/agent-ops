@@ -152,6 +152,27 @@ your review:
    checks fail for a reason you can fix, go back to step 4; if they fail
    for a reason you can't, that's a `blocked` outcome (see "Ending"),
    not a PR you mark ready.
+
+   **Green checks are not the whole answer where the repo deploys.**
+   poetic-fiddle deploys every pull request to Vercel, and that deployment
+   reports through GitHub's *deployments* API rather than as a check run — so
+   `gh pr checks` is green over a preview that never built. Run it yourself
+   rather than trusting the Implementor's run, because a preview is per head
+   SHA and any fix you pushed in step 4 minted a new one:
+
+   ```
+   "$AGENT_OPS_ROOT/scripts/preview-deploy.sh" --wait 180
+   ```
+
+   Exit **0** is deployed and answering. Exit **1** is a real defect in this PR
+   — a failed build, or a page serving an error — and belongs in step 4 or, if
+   you can't fix it with confidence, in a comment and a `blocked` outcome. Exit
+   **2** means the check could not be made, almost always because this node has
+   no `VERCEL_AUTOMATION_BYPASS_SECRET` and the preview answered Vercel's login
+   page; that is this node's configuration, not this PR's problem, so note it in
+   `fixes_applied`-adjacent prose if useful and carry on to step 7. Do not
+   block on it, and do not record it as a passing preview — you did not find
+   out.
 7. **Hand off.** Once CI is passing and the PR is mergeable, mark it ready:
    `gh pr ready`. Never run `gh pr review --approve` or `gh pr merge` — the
    Human Reviewer performs both, through the ordinary GitHub process. This

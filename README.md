@@ -349,7 +349,7 @@ including the cheaper arm instance classes — with nothing to choose.
 
 The scheduler is in no profile: it runs on every node, whatever else does.
 
-Four things are worth knowing:
+Five things are worth knowing:
 
 - **`/app` is the deployment.** The image is built from this repository, so a
   node updates by pulling a new image — never by pulling a branch inside a
@@ -374,6 +374,18 @@ Four things are worth knowing:
   to the host's loopback alone (`127.0.0.1:${DASHBOARD_PORT:-8787}:8787`). If
   the host already has something on 8787, set `DASHBOARD_PORT` in `.env` — it
   moves the host side of that mapping.
+- **Set the Vercel variables if you want the stages to check preview
+  deployments.** poetic-fiddle deploys every pull request to Vercel, and that
+  deployment reports through GitHub's deployments API rather than as a check
+  run — so a pull request can be entirely green over a preview that never
+  built. `scripts/preview-deploy.sh` is what the Implementor and Reviewer run
+  to find out, and it needs `VERCEL_AUTOMATION_BYPASS_SECRET` in the node's
+  `.env` (Vercel → the project → Settings → Deployment Protection → Protection
+  Bypass for Automation), because preview deployments sit behind Vercel
+  Authentication and answer a login page to anything without it.
+  `VERCEL_TOKEN` is optional on top and buys the build log when a deployment
+  failed. Leave both empty and nothing changes: the stages report that the
+  preview could not be checked, which is never a reason to block an item.
 
 Set `ROLE=active` in the `.env` of every node meant to spend — any number may
 be, since per-item claims keep them off each other's work (see
