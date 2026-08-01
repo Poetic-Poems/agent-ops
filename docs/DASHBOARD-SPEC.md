@@ -661,6 +661,19 @@ number's twins elsewhere on the page.
   `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
   from both, oldest first, rather than going blank for the tick after a
   rotation.
+- `test/dashboard-render.test.sh` passes: `dashboard/index.html`'s own inline
+  script, run unmodified under `node` against checked-in `DASHBOARD_DATA`
+  fixtures and a DOM stub that only builds trees (`createElement`/
+  `createTextNode`/`appendChild`, plus a serialiser — no layout, styling or
+  event dispatch), renders the cells the fixtures name. This is what catches a
+  page that renders the *wrong* thing rather than merely throwing: a cycle
+  live in the Co-Ordinator stage with nothing selected yet reads "In
+  progress", never the finished-cycle "Ended"; a cycle with no `cycle-end` and
+  no node claiming it reads "No clean end" with fleet data and "Not ended"
+  without any; and a `needs-refinement` blocked row carries its badge and is
+  removed by the hide filter. Out of scope by the same tree-building limit:
+  the pull-request hover card's pointer/focus behaviour, covered only by the
+  manual and headless checks below.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -684,13 +697,18 @@ number's twins elsewhere on the page.
   refinement blocks" checkbox — shown only when at least one exists — removes
   those rows from the table (and the heading's count) when checked, restoring
   them when unchecked. An ordinary blocked row (`kind` unset or `""`) carries
-  no badge and is unaffected by the filter.
+  no badge and is unaffected by the filter. `test/dashboard-render.test.sh`
+  asserts the badge, the count and the checkbox's label from a fixture; the
+  checkbox's own click behaviour is outside its tree-building DOM stub, so
+  stays a manual check here.
 - While a cycle is in flight, its row in Recent cycles reads **in progress**
   from the moment it starts — including during the Co-Ordinator stage, before
   any `selection` is logged, which is the whole window in which the log-derived
   ladder has nothing to say — and no finished row's badge changes. Check the
   first minute of a cycle specifically: that is where reading the ladder alone
-  produces "Ended".
+  produces "Ended". `test/dashboard-render.test.sh` asserts this from a fixture
+  in that exact window; this manual check is for confirming it against a real
+  running pipeline too.
 - A pull-request number behaves the same way under a pointer, a finger and a
   keyboard. Hover one and the card opens; move off and it closes. Click it and
   the card opens **and stays**, the page does not go to GitHub, moving the
