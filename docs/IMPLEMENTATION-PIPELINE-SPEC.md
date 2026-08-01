@@ -2274,8 +2274,9 @@ runs unattended.
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
-    `recheck-clean`, `item-void`, `unvoided`, `item-refined`, `enabler-examined`,
-    `escalated`, `limit-hit`, `disabled`, `enabled`, `warning`, `cycle-end`. A `claim-lost` names the repo,
+    `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
+    `enabler-examined`, `escalated`, `limit-hit`, `disabled`, `enabled`,
+    `warning`, `cycle-end`. A `claim-lost` names the repo,
     item and branch a peer node won (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
