@@ -80,7 +80,7 @@ genuinely too slow to finish within your time budget, that is grounds for
 
 Read the repo's own `CLAUDE.md` at its root before touching anything else, and
 follow it for the rest of this session — it is binding and repo-specific
-(build/lint/test commands, tech-debt Ledger rules, documentation conventions,
+(build/lint/test commands, tech-debt register rules, documentation conventions,
 the whitespace/format gates its CI runs). Where this prompt and that file
 overlap they should agree; where `CLAUDE.md` is more specific, defer to it.
 
@@ -93,10 +93,11 @@ Both target repos follow these rules:
   [Conventional Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`). CI checks **both** the PR title and every
   individual commit on the branch, so write every commit in that format too.
-- `TECH-DEBT.md` holds deferred work as dated entries (`TD<YYMMDD><NN>`) plus a
-  permanent Ledger table with a `Status` column. `scripts/next-tech-debt-id.pl`
+- The tech-debt register is per-item: one `tech-debt/<id>.md` file per
+  record (frontmatter status plus a permanent body), `TECH-DEBT.md` holding
+  only policy and the repository's scope. `scripts/next-tech-debt-id.pl`
   allocates new IDs; `scripts/get-tech-debt-record.pl` resolves one. Never
-  reuse an ID or hand-count them.
+  reuse an ID or hand-count them; item files are never deleted or renamed.
 - CI runs on every PR: the repo's build/lint/typecheck/format/test workflow,
   CodeQL, and a commit-format check — plus a trailing-whitespace check
   (`npm run check`). Read `.github/workflows/` to see exactly what runs.
@@ -118,19 +119,15 @@ Both target repos follow these rules:
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
    record it in the existing register following this repo's own workflow
    exactly — allocate IDs with `scripts/next-tech-debt-id.pl`, and add each
-   record in the register's own format: a new `tech-debt/<id>.md` item file
-   (frontmatter plus body) in a per-item register, or a `### <id>` section
-   plus a Ledger row in a legacy single-file one. Mark items the review
-   finds already resolved rather than deleting their history, per the
-   register's rules (in a per-item register that is a frontmatter status
-   flip; item files are never deleted or renamed). Do not create a competing
-   tech-debt file.
+   record as a new `tech-debt/<id>.md` item file (frontmatter plus body).
+   Mark items the review finds already resolved with a frontmatter status
+   flip rather than deleting their history — item files are never deleted
+   or renamed. Do not create a competing tech-debt file.
 
    **Cross-reference each mirrored recommendation.** Where an item you file
    covers the whole of a recommendation's *Intended end state*, record that
-   recommendation's `R-NN` against it where a `grep` of the register will
-   find it (a `review:` frontmatter line in a per-item register; the row, or
-   the file's provenance table, in a legacy one). The implementation
+   recommendation's `R-NN` against it in the item's `review:` frontmatter
+   line, where a `grep` of the register will find it. The implementation
    pipeline's Co-Ordinator uses exactly this cross-reference to tell that
    the register entry and the recommendation are the same work; without it,
    it re-selects and re-investigates the recommendation every cycle unless a

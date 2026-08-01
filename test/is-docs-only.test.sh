@@ -77,7 +77,7 @@ assert_not_docs_only "prompts/enabler.md is the enabler's code" prompts/enabler.
 assert_not_docs_only "prompts/project-reviewer.md is the review pipeline's code" \
   prompts/project-reviewer.md
 assert_not_docs_only "a test fixture is not documentation" \
-  test/fixtures/tech-debt-consistent.md
+  test/fixtures/tech-debt-items-drifted/tech-debt/TD-PPtest-26071501.md
 assert_not_docs_only "a repository skill is not documentation" \
   .claude/skills/td/SKILL.md
 

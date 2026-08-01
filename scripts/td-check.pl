@@ -1,29 +1,23 @@
 #!/usr/bin/perl
 
-# td-check.pl [<TECH-DEBT.md> | <tech-debt-dir>]
+# td-check.pl [<tech-debt-dir>]
 #
-# Cross-check a tech-debt register for internal consistency.  With no
-# argument, checks ./tech-debt when that directory exists, else
-# ./TECH-DEBT.md — so one invocation works for either register format.
+# Cross-check a per-item tech-debt register for internal consistency.  With
+# no argument, checks ./tech-debt — or, when that directory does not exist
+# yet (a register that has not filed its first item), just validates the
+# scope declaration in ./TECH-DEBT.md and reports an empty, consistent
+# register.
 #
-# Per-item register (the argument is a directory): every entry must be one
-# item file — named TD-<ORG><repo>-<YYMMDD><NN>.md (NN 01-99 then a0-z9,
-# never 00) — whose frontmatter parses and carries id/title/status/filed,
-# with id equal to the filename stem and scoped to the `scope:` declared in
-# the frontmatter of the TECH-DEBT.md beside the directory, a recognised
-# status, resolution fields consistent with that status, and a filed date
-# matching the ID's.  Problem labels:
+# Every entry in the register directory must be one item file — named
+# TD-<ORG><repo>-<YYMMDD><NN>.md (NN 01-99 then a0-z9, never 00) — whose
+# frontmatter parses and carries id/title/status/filed, with id equal to
+# the filename stem and scoped to the `scope:` declared in the frontmatter
+# of the TECH-DEBT.md beside the directory, a recognised status, resolution
+# fields consistent with that status, and a filed date matching the ID's.
+# Problem labels:
 #   BAD NAME, BAD FRONTMATTER, MISSING FIELD, BAD FIELD, BAD STATUS,
 #   BAD SCOPE, NO SCOPE, ID MISMATCH, DATE MISMATCH, STALE FIELD,
 #   DUPLICATE ID
-#
-# Legacy register (the argument is a file):
-#   - every open/in-progress Ledger row has exactly one "### <id>" body
-#     under Current Items (MISSING BODY / DUPLICATE BODY otherwise);
-#   - no resolved/not-debt row still has a body (STALE BODY otherwise);
-#   - every body has a Ledger row (NO LEDGER ROW otherwise);
-#   - every "| TD... |" Ledger line carries a recognised status and appears
-#     only once (BAD ROW / DUPLICATE ROW otherwise).
 #
 # Prints a one-line summary, a status tally, and one line per problem.
 # Exits 0 when consistent, 1 when problems were found, >1 on usage or I/O
@@ -37,11 +31,12 @@ use strict;
 use warnings;
 
 my $target = shift;
-$target = -d 'tech-debt' ? 'tech-debt' : 'TECH-DEBT.md'
-  unless defined $target;
+if (defined $target and !-d $target) {
+  die "td-check.pl checks a per-item register directory; "
+    . "'$target' is not one\n";
+}
 
-if (-d $target) { exit check_dir($target) }
-else            { exit check_file($target) }
+exit check_dir(defined $target ? $target : 'tech-debt');
 
 sub problem_line {
   my ($label, $detail) = @_;
@@ -74,9 +69,13 @@ sub check_dir {
     "$policy missing or lacking a scope: frontmatter declaration")
     unless defined $scope and $scope =~ /^[A-Z0-9]{2}[a-z0-9]{4}$/;
 
-  opendir my $dh, $dir or die "$dir: $!\n";
-  my @names = sort grep { !/^\.\.?$/ } readdir $dh;
-  closedir $dh;
+  # A register that has not filed its first item has no directory yet:
+  # nothing to check beyond the scope declaration above.
+  my @names;
+  if (opendir my $dh, $dir) {
+    @names = sort grep { !/^\.\.?$/ } readdir $dh;
+    closedir $dh;
+  }
 
   for my $name (@names) {
     if (-d "$dir/$name"
@@ -172,70 +171,5 @@ sub check_dir {
     if @order;
   if (@problems) { print "  $_\n" for @problems }
   else           { print "  consistent\n" }
-  return @problems ? 1 : 0;
-}
-
-sub check_file {
-  my $file = shift;
-  open my $fh, '<', $file or die "$file: $!\n";
-
-  my (%body_count, %body_line, %status, %status_line, %row_count, %title);
-  my (@order, @problems);
-  my $line = 0;
-  while (<$fh>) {
-    $line++;
-    if (/^###\s+(TD\d+)/) {
-      $body_count{$1}++;
-      $body_line{$1} //= $line;
-    }
-    if (/^\|\s*(TD\d+)\s*\|/) {
-      my $id = $1;
-      if (/^\|\s*TD\d+\s*\|\s*(.*?)\s*\|\s*(open|in-progress|resolved|not-debt)\s*\|/) {
-        my ($row_title, $row_status) = ($1, $2);
-        if ($row_count{$id}++) {
-          push @problems, "DUPLICATE ROW  $id  ledger:$line";
-          next;
-        }
-        $status{$id}      = $row_status;
-        $title{$id}       = $row_title;
-        $status_line{$id} = $line;
-        push @order, $id;
-      } else {
-        push @problems, "BAD ROW        $id  ledger:$line  (unrecognised status)";
-      }
-    }
-  }
-  close $fh;
-
-  for my $id (@order) {
-    my $live = $status{$id} eq 'open' || $status{$id} eq 'in-progress';
-    my $n    = $body_count{$id} // 0;
-    if ($live && $n == 0) {
-      push @problems,
-        "MISSING BODY   $id  ledger:$status_line{$id} ($status{$id})  $title{$id}";
-    }
-    if (!$live && $n > 0) {
-      push @problems,
-        "STALE BODY     $id  body:$body_line{$id} ledger:$status_line{$id} ($status{$id})  $title{$id}";
-    }
-    if ($n > 1) {
-      push @problems,
-        "DUPLICATE BODY $id  ${n}x, first at body:$body_line{$id}";
-    }
-  }
-  for my $id (sort keys %body_count) {
-    push @problems, "NO LEDGER ROW  $id  body:$body_line{$id}"
-      unless $row_count{$id};
-  }
-
-  printf "%s: %d ledger rows, %d bodies\n",
-    $file, scalar(@order), scalar(keys %body_count);
-  my %tally;
-  $tally{ $status{$_} }++ for @order;
-  printf "  status: %s\n", join(', ', map {"$_=$tally{$_}"} sort keys %tally)
-    if @order;
-  if (@problems) { print "  $_\n" for @problems }
-  else           { print "  consistent\n" }
-
   return @problems ? 1 : 0;
 }

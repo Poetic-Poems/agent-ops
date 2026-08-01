@@ -231,10 +231,10 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   `issue_field_values`, since `gh issue list --json` cannot see issue fields,
   and defaulted to `Medium` exactly as the pipeline defaults it — see the
   implementation-pipeline spec, requirement 15e); the tech-debt register's
-  rows — a legacy repo's `TECH-DEBT.md` Ledger rows, or, when that grep finds
-  none, one listing read of `tech-debt/` rendering each per-item register's
-  item filenames as rows instead (statuses live inside the item files and are
-  not worth a read per item here); and one record per pull request the page
+  rows — one listing read of `contents/tech-debt`, its item filenames
+  rendered as rows, capped at 40 (statuses live inside the item files and are
+  not worth a read per item here; a repo with no register just 404s to an
+  empty list); and one record per pull request the page
   refers to (`github.pr_index`, keyed `<owner>/<repo>#<number>`) — the open
   ones from the query above, the rest by `gh pr view`, cached permanently
   once terminal (see the Publisher). If `gh` fails, the GitHub panels mark

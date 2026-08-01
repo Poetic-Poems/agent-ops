@@ -36,7 +36,7 @@ heading, the Script gives you one JSON object:
         {"source": "issues", "ref": "52", "number": 52, "url": "https://github.com/…/issues/52", "title": "…", "priority": "Medium", "labels": ["enhancement"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…the issue body, verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…every comment, verbatim, oldest first…"}]}
       ],
       "register_hygiene": [
-        {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/blob/main/TECH-DEBT.md", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE BODY     TD26071203  body:96 ledger:412 (resolved)  …"], "body": "…the whole of the consistency check's output, verbatim…"}
+        {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/tree/main/tech-debt", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE FIELD    TD-PPpoet-26072424.md (resolved: set on an open item)"], "body": "…the whole of the consistency check's output, verbatim…"}
       ]
     },
     {
@@ -92,10 +92,8 @@ heading, the Script gives you one JSON object:
   differently named or located plan needs no prompt change, only its own
   `implementation_plan_path`. Absent (not empty) for a repo that doesn't list
   the source.
-- Each entry's `register_hygiene` is the repo's own `TECH-DEBT.md`, when it has
-  fallen out of internal consistency — in the legacy format a resolved item
-  whose body was never removed, an open item with no body, a duplicate or
-  malformed Ledger row; in the per-item format an item file whose frontmatter
+- Each entry's `register_hygiene` is the repo's own tech-debt register, when it has
+  fallen out of internal consistency — an item file whose frontmatter
   disagrees with its filename, the declared scope, or itself —
   **already fetched and checked for you** by the Script (see "Register hygiene"
   below). At most one entry, because a repo has only one register. An empty
@@ -199,14 +197,11 @@ selectable item:
   commit on `main`** and must be in [Conventional
   Commits](https://www.conventionalcommits.org/) format
   (`<type>[(scope)]: <description>`).
-- Each repo keeps deferred work in a tech-debt register, in one of two
-  formats: **legacy** — a single `TECH-DEBT.md` of dated `### <id>` entries
-  plus a permanent Ledger table recording every ID ever allocated — or
-  **per-item** — one `tech-debt/<id>.md` file per record, its frontmatter
-  carrying the `status:`, with `TECH-DEBT.md` holding only policy. Statuses
-  are `open` / `in-progress` / `resolved` / `not-debt` in both. Read a
-  legacy register with `gh api repos/<slug>/contents/TECH-DEBT.md`; read a
-  per-item one in a single call by unpacking it locally — e.g.
+- Each repo keeps deferred work in a per-item tech-debt register: one
+  `tech-debt/<id>.md` file per record, its frontmatter carrying the
+  `status:` (`open` / `in-progress` / `resolved` / `not-debt`), with
+  `TECH-DEBT.md` holding only policy. Read a register in a single call by
+  unpacking it locally — e.g.
   `cd "$(mktemp -d)" && gh api repos/<slug>/tarball/<default-branch> |
   tar -xz`, then `grep -l '^status: open' */tech-debt/*.md` for the
   candidate set — rather than fetching item files one by one (this is a
@@ -289,10 +284,8 @@ source priority, with no edit to this file:
   with `source: "code-quality"`). Automated, speculative, and higher-volume than
   curated work, so pick one only when nothing more deliberate qualifies.
 - **register-hygiene** — the repo's tech-debt register failing its own
-  consistency check: in the legacy format a resolved item whose `### ` body was
-  never removed, an open item with no body, a duplicate or malformed Ledger
-  row; in the per-item format an item file whose frontmatter disagrees with
-  its filename, the declared scope, or itself. Handed to you **pre-fetched** in
+  consistency check: an item file whose frontmatter disagrees with its
+  filename, the declared scope, or itself. Handed to you **pre-fetched** in
   each repo's `register_hygiene` array. **Last in every repo's list**: the repair
   is deterministic and entirely cosmetic, so it must never outrank substantive
   work — but a register that lies about what is outstanding misleads every later
@@ -500,23 +493,22 @@ array is the candidate test.** If the array is empty, this source has no
 candidates and the register is consistent; there is nothing to verify.
 
 - `item` is the entry's `ref` (e.g. `register-hygiene-413128de0d60`). Use it
-  exactly; it is scoped to the register's current content on purpose (the
-  file's blob SHA in the legacy format; a digest of the `tech-debt/` tree and
-  the policy file in the per-item format), so a repair — or any other edit to
-  the register — makes a later problem a fresh item that no old block covers,
-  while unrelated commits elsewhere in the repo leave the ref, and so the
-  item, unchanged.
+  exactly; it is scoped to the register's current content on purpose (a
+  digest of the `tech-debt/` tree and the policy file), so a repair — or any
+  other edit to the register — makes a later problem a fresh item that no
+  old block covers, while unrelated commits elsewhere in the repo leave the
+  ref, and so the item, unchanged.
 - `context` must paste the entry's `body` — the consistency check's whole output
   — **verbatim**. That text is the brief: every line names an id, a problem
   class and a line number, and that is exactly what makes the repair mechanical.
   Do not summarise it, count the problems for the Implementor, or decide which
   of them matter. Add the entry's `url` and `blob_sha`.
-- `acceptance` is: `perl scripts/td-check.pl` (argless — it detects the
-  register's format) exits 0 in the target repo, with no code changes and
-  nothing touched in the register beyond what the check itself flags as
-  broken. The Implementor's own prompt carries the rest of the repair
-  discipline — chiefly that a stale body or field is resolved only once the
-  resolution is verified to have landed — so you do not need to restate it.
+- `acceptance` is: `perl scripts/td-check.pl` exits 0 in the target repo,
+  with no code changes and nothing touched in the register beyond what the
+  check itself flags as broken. The Implementor's own prompt carries the
+  rest of the repair discipline — chiefly that a stale field is resolved
+  only once the resolution is verified to have landed — so you do not need
+  to restate it.
 - `model` is always `models.trivial`: this is register-only editing with no
   behaviour change, which is exactly what the trivial tier is for. Say so in
   `model_reason` — that classification is also what makes the Implementor grade
@@ -602,9 +594,8 @@ referencing that review; match `R-NN` refs against it. When you select one,
    re-read it first (see "Re-checking blocked items" below) before applying
    this exclusion. Or recorded as void — an `item-void` event with no later
    `unvoided` event (see "Void items").
-2. A tech-debt item whose status is `in-progress` (its Ledger row in a
-   legacy register; its item file's `status:` frontmatter in a per-item
-   one).
+2. A tech-debt item whose item file's `status:` frontmatter is
+   `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
    this item for. A live **claim branch** on the target repository is a
@@ -745,8 +736,8 @@ which "already on `main`" and "the register says resolved" both are — give
 repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
 above). The Script re-runs that same fetch and tests it — a citation shaped
 this way is *checked*, not just read. `pattern` is optional and, when given, is
-matched against the file's content (e.g. the Ledger row itself, or
-`status: *resolved` against a per-item `tech-debt/<id>.md`). A citation
+matched against the file's content (e.g. `status: *resolved` against the
+item's `tech-debt/<id>.md`). A citation
 that doesn't fit this shape is still accepted, exactly as before, but only on
 the presence test — nothing then confirms it against the repository.
 
