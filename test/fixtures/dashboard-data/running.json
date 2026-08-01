@@ -1,0 +1,85 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": true,
+    "lock": {"pid": 4242, "started_at": "@ago:2m", "alive": true},
+    "current": {"stage": "coordinator", "stage_since": "@ago:2m",
+      "repo": null, "item": null, "source": null, "title": null},
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0.42, "spend_total_usd": 1.87,
+    "failures_shown": 0, "cycles_shown": 2, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [
+    {
+      "id": "20260801T003000Z-poetic-1-4242", "node": "poetic-1",
+      "started_at": "@ago:2m", "ended_at": null, "dry_run": false,
+      "repo": "Poetic-Poems/agent-ops", "item": null, "source": null, "title": null,
+      "pr_url": null, "reason": null, "fail_detail": null, "warning": null,
+      "outcome": "ended",
+      "stages": {"coordinator": null, "implementor": null, "reviewer": null},
+      "total_cost_usd": 0, "limit_hit": false
+    },
+    {
+      "id": "20260731T230000Z-poetic-2-9977", "node": "poetic-2",
+      "started_at": "@ago:90m", "ended_at": null, "dry_run": false,
+      "repo": "Poetic-Poems/poetic", "item": "TD-PPpoetic-26073099", "source": "tech-debt",
+      "title": "a stage the log never recorded the end of",
+      "pr_url": null, "reason": null, "fail_detail": null, "warning": null,
+      "outcome": "selected",
+      "stages": {"coordinator": null, "implementor": null, "reviewer": null},
+      "total_cost_usd": 1.2, "limit_hit": false
+    }
+  ],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {}, "inputs": {}
+  },
+  "log_tail": [
+    {"ts": "@ago:2m", "event": "selection", "repo": "Poetic-Poems/agent-ops",
+      "stage": "coordinator", "detail": "", "title": ""}
+  ],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3,
+  "fleet": {
+    "nodes": [
+      {
+        "node": "poetic-1", "role": "active", "heartbeat_ts": "@now", "heartbeat_age_s": 0,
+        "last_cycle": null, "self": true, "stale": false,
+        "live": {
+          "cycle": "20260801T003000Z-poetic-1-4242", "since": "@ago:2m", "running": true,
+          "ended_at": null, "stage": "coordinator", "stage_since": "@ago:2m",
+          "repo": null, "item": null, "source": null, "title": null
+        },
+        "version": {"source": "image", "pr": 145, "repo": "Poetic-Poems/agent-ops",
+          "commit": "abcdef1234567890abcdef1234567890abcdef12", "short": "abcdef1",
+          "built_at": "@ago:5h", "dirty": false},
+        "compose": {"status": "in-sync"}
+      },
+      {
+        "node": "poetic-2", "role": "standby", "heartbeat_ts": "@ago:3m", "heartbeat_age_s": 180,
+        "last_cycle": "20260731T230000Z-poetic-2-9977", "self": false, "stale": false,
+        "live": {
+          "cycle": "20260731T230000Z-poetic-2-9977", "since": "@ago:90m", "running": false,
+          "ended_at": null, "stage": "implementor", "stage_since": "@ago:85m",
+          "repo": "Poetic-Poems/poetic", "item": "TD-PPpoetic-26073099", "source": "tech-debt",
+          "title": "a stage the log never recorded the end of"
+        },
+        "version": null, "compose": null
+      }
+    ],
+    "flags": {"disabled": null, "limit": null},
+    "claims": []
+  }
+}
