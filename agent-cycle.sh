@@ -209,6 +209,15 @@ enabler_model="$(cfg '.enabler_model // ""')"
 enabler_model="$(resolve_model_id enabler_model "$enabler_model")"
 timeout_enabler_min="$(cfg '.timeout_enabler // 30')"
 enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
+# A refinement block (requirements 34e, 35a) ages on its own threshold,
+# because unlike an ordinary block it waits on the Enabler and nothing else —
+# a human refining the item first, or the Co-Ordinator's cheap re-check
+# noticing the condition already cleared. Left unconfigured it inherits
+# enabler_after_coordinator_cycles' value, which preserves the shared
+# threshold this class had before the two were split apart (TD-PPagop-26072604).
+refinement_after_coordinator_cycles="$(cfg '.refinement_after_coordinator_cycles // ""')"
+[[ -n "$refinement_after_coordinator_cycles" && "$refinement_after_coordinator_cycles" != "null" ]] \
+  || refinement_after_coordinator_cycles="$enabler_after_coordinator_cycles"
 enabler_recheck_hours="$(cfg '.enabler_recheck_hours // 72')"
 enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalation"')"
 # The assignment is what does the work — it both puts the issue in front of the
@@ -1942,7 +1951,8 @@ open_issues_json="$(jq -c '[.[] | select(.ok == true)
 [[ -n "$open_issues_json" ]] || open_issues_json='{}'
 
 enabler_eligible_json="$(enabler_eligible_items "$union_log" \
-  "$enabler_after_coordinator_cycles" "$enabler_recheck_hours" "$open_issues_json")"
+  "$enabler_after_coordinator_cycles" "$enabler_recheck_hours" "$open_issues_json" \
+  "" "$refinement_after_coordinator_cycles")"
 # Past this line the exit trap may engage the Enabler: every input it needs now
 # exists, so `maybe_run_enabler`'s own guards are all that stand between this
 # cycle and an engagement. Before it, an early exit could not have one.
@@ -2035,11 +2045,12 @@ coordinator_sources_table="$(coordinator_work_sources_table "$all_repos_json")"
 enabler_config_json="$(jq -nc \
   --arg m "$enabler_model" \
   --arg n "$enabler_after_coordinator_cycles" \
+  --arg rn "$refinement_after_coordinator_cycles" \
   --arg rh "$enabler_recheck_hours" \
   --arg lbl "$enabler_escalation_label" \
   --arg rmax "$refinement_max_per_engagement" \
-  '{enabler_model: $m, after_coordinator_cycles: $n, recheck_hours: $rh, escalation_label: $lbl,
-    refinement_max_per_engagement: $rmax}')"
+  '{enabler_model: $m, after_coordinator_cycles: $n, refinement_after_coordinator_cycles: $rn,
+    recheck_hours: $rh, escalation_label: $lbl, refinement_max_per_engagement: $rmax}')"
 # Absent rather than fatal when the prompt is missing: a missing Enabler prompt
 # is a stage that does not run (see `maybe_run_enabler`), not a cycle that dies.
 # Covers a configured prompt_overrides.enabler fragment too (requirement 4a),

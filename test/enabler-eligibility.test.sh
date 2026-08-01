@@ -45,13 +45,15 @@ now="$(date -u -d '2026-07-25T12:00:00Z' +%s)"
 open_none='{"o/r":[]}'
 open_52='{"o/r":[52]}'
 
-# eligible [MIN] [RECHECK] [OPEN_ISSUES] — the rule over $log, at a fixed now.
+# eligible [MIN] [RECHECK] [OPEN_ISSUES] [REFINEMENT_MIN] — the rule over
+# $log, at a fixed now.
 eligible() {
-  enabler_eligible_items "$log" "${1:-3}" "${2:-0}" "${3:-$open_none}" "$now"
+  enabler_eligible_items "$log" "${1:-3}" "${2:-0}" "${3:-$open_none}" "$now" "${4:-}"
 }
-# reason_for ITEM — the eligibility reason for one item, or "" if ineligible.
+# reason_for ITEM [MIN] [RECHECK] [OPEN_ISSUES] [REFINEMENT_MIN] — the
+# eligibility reason for one item, or "" if ineligible.
 reason_for() {
-  eligible "${2:-3}" "${3:-0}" "${4:-$open_none}" \
+  eligible "${2:-3}" "${3:-0}" "${4:-$open_none}" "${5:-}" \
     | jq -r --arg i "$1" '[.[] | select(.item == $i)] | first | .reason // ""'
 }
 
@@ -112,6 +114,57 @@ coord_cycles 3 >> "$log"
 assert_eq "a reviewer hand-back is eligible like any other block" "threshold" "$(reason_for TD1)"
 assert_eq "and the entry carries the pull request it is about" \
   "https://github.com/o/r/pull/111" "$(eligible | jq -r '.[0].pr_url')"
+
+# --- The refinement threshold (requirement 35a, TD-PPagop-26072604) ---
+#
+# A block whose `kind` is `needs-refinement` ages on REFINEMENT_MIN instead of
+# MIN when the two are configured apart; left unconfigured (REFINEMENT_MIN
+# unset or absent), it ages on the exact same MIN as any other block — the
+# inherited default that keeps today's behaviour unchanged.
+
+refinement_blocked_line='{"ts":"2026-07-22T09:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"TD2","kind":"needs-refinement","detail":"under-specified","unblock_condition":"a human writes acceptance criteria"}'
+
+printf '%s\n' "$refinement_blocked_line" > "$log"
+coord_cycles 3 >> "$log"
+assert_eq "unconfigured, a refinement block inherits the ordinary threshold at 3 cycles" \
+  "threshold" "$(reason_for TD2 3 0 "$open_none")"
+
+printf '%s\n' "$refinement_blocked_line" > "$log"
+coord_cycles 2 >> "$log"
+assert_eq "unconfigured, a refinement block is still below the inherited threshold at 2 cycles" \
+  "" "$(reason_for TD2 3 0 "$open_none")"
+
+# Configured apart: a refinement block now waits for its own, larger threshold,
+# while an ordinary block alongside it is unaffected.
+printf '%s\n' "$refinement_blocked_line" > "$log"
+coord_cycles 3 >> "$log"
+assert_eq "a refinement threshold of 5 is not yet crossed at 3 cycles" \
+  "" "$(reason_for TD2 3 0 "$open_none" 5)"
+
+printf '%s\n' "$refinement_blocked_line" > "$log"
+coord_cycles 5 >> "$log"
+assert_eq "a refinement threshold of 5 is crossed at 5 cycles" \
+  "threshold" "$(reason_for TD2 3 0 "$open_none" 5)"
+
+cat > "$log" <<EOF
+$blocked_line
+$refinement_blocked_line
+EOF
+coord_cycles 3 >> "$log"
+assert_eq "an ordinary block still crosses its own threshold of 3 while refinement waits for 5" \
+  "threshold" "$(reason_for TD1 3 0 "$open_none" 5)"
+assert_eq "and the refinement block alongside it is not yet eligible" \
+  "" "$(reason_for TD2 3 0 "$open_none" 5)"
+assert_eq "the eligible ordinary entry carries no kind" \
+  "" "$(eligible 3 0 "$open_none" 5 | jq -r '.[] | select(.item == "TD1") | .kind')"
+
+# A non-numeric refinement threshold is a misconfiguration, not a licence to
+# spend: it falls back to MIN, the same fail-safe direction as an unreadable
+# MIN itself.
+printf '%s\n' "$refinement_blocked_line" > "$log"
+coord_cycles 3 >> "$log"
+assert_eq "a garbage refinement threshold falls back to the ordinary one" \
+  "threshold" "$(reason_for TD2 3 0 "$open_none" "not-a-number")"
 
 # Only a *successful* Co-Ordinator counts, and only one per cycle: a stage that
 # timed out established nothing, another stage's end is not a selection pass,

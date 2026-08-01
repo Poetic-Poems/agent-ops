@@ -283,12 +283,14 @@ refinements_map() {
 #
 #      threshold    — nothing has examined it since B, and MIN_COORD_CYCLES
 #                     distinct cycles have run a Co-Ordinator (a `stage-end`
-#                     for `coordinator` with `exit_code: 0`) since. Counting
-#                     *cycles that actually selected* rather than wall-clock
-#                     hours is what makes the threshold mean "the pipeline has
-#                     had several honest chances to clear this itself": a fleet
-#                     standing down on a usage limit, or a switch, logs no
-#                     coordinator stage-end and so ages nothing.
+#                     for `coordinator` with `exit_code: 0`) since — or
+#                     REFINEMENT_MIN_COORD_CYCLES, for a block whose `kind` is
+#                     `needs-refinement`. Counting *cycles that actually
+#                     selected* rather than wall-clock hours is what makes the
+#                     threshold mean "the pipeline has had several honest
+#                     chances to clear this itself": a fleet standing down on
+#                     a usage limit, or a switch, logs no coordinator
+#                     stage-end and so ages nothing.
 #      issue-closed — an escalation raised after B is no longer open and no
 #                     examination has followed it. This bypasses the threshold
 #                     deliberately: the human acted, and the whole protocol
@@ -366,7 +368,9 @@ ENABLER_ELIGIBLE_JQ='
               and ([ $examined[] | select(.ts > $escalation.ts) ] | length) == 0
            then "issue-closed"
          elif ($examined | length) == 0
-           then (if $coord_cycles >= $min_coord then "threshold" else null end)
+           then ((if ($b.kind // "") == "needs-refinement"
+                  then $refinement_min_coord else $min_coord end) as $effective_min
+                 | if $coord_cycles >= $effective_min then "threshold" else null end)
          else
            ((try (($examined | last).ts | fromdateiso8601) catch 0) as $seen
             | if $recheck_hours > 0 and $seen > 0
@@ -392,7 +396,7 @@ ENABLER_ELIGIBLE_JQ='
     ]
 '
 
-# enabler_eligible_items [LOG_FILE] [MIN_COORD_CYCLES] [RECHECK_HOURS] [OPEN_ISSUES_JSON] [NOW_EPOCH]
+# enabler_eligible_items [LOG_FILE] [MIN_COORD_CYCLES] [RECHECK_HOURS] [OPEN_ISSUES_JSON] [NOW_EPOCH] [REFINEMENT_MIN_COORD_CYCLES]
 # Print, as a JSON array, the blocked items the Enabler may examine this cycle
 # (requirement 35a), each carrying the `reason` it became eligible. Reads
 # LOG_FILE, or stdin if it is omitted or "-".
@@ -402,27 +406,35 @@ ENABLER_ELIGIBLE_JQ='
 # is a repo we could not read, and an escalation there is treated as possibly
 # still open.
 #
+# REFINEMENT_MIN_COORD_CYCLES is the `threshold` reason's cycle count for a
+# block whose `kind` is `needs-refinement`, defaulting to MIN_COORD_CYCLES
+# when omitted or not a number — the two ages independently only when a
+# caller actually configures them apart (requirement 35a).
+#
 # Always succeeds, printing [] for a missing, empty or unreadable log, exactly
 # as `_latest_unresolved` does and for the same reason: the caller runs under
 # `set -e` inside the exit trap, and a log it cannot parse must cost an
 # engagement, never a cycle. A threshold that is not a number prints [] too —
 # an unreadable setting is not a licence to spend.
 enabler_eligible_items() {
-  local src="${1:--}" min_coord="${2:-}" recheck_hours="${3:-0}" open_issues="${4:-{\}}" now="${5:-}"
+  local src="${1:--}" min_coord="${2:-}" recheck_hours="${3:-0}" open_issues="${4:-{\}}" now="${5:-}" refinement_min_coord="${6:-}"
   local out=""
   [[ "$min_coord" =~ ^[0-9]+$ ]] || { printf '[]'; return 0; }
   [[ "$recheck_hours" =~ ^[0-9]+$ ]] || recheck_hours=0
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  [[ "$refinement_min_coord" =~ ^[0-9]+$ ]] || refinement_min_coord="$min_coord"
   jq -e 'type == "object"' <<<"$open_issues" >/dev/null 2>&1 || open_issues='{}'
   if [[ "$src" == "-" ]]; then
     out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
       | jq -sc --argjson min_coord "$min_coord" --argjson recheck_hours "$recheck_hours" \
           --argjson open "$open_issues" --argjson now "$now" \
+          --argjson refinement_min_coord "$refinement_min_coord" \
           "$ENABLER_ELIGIBLE_JQ" 2>/dev/null || true)"
   elif [[ -s "$src" ]]; then
     out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
       | jq -sc --argjson min_coord "$min_coord" --argjson recheck_hours "$recheck_hours" \
           --argjson open "$open_issues" --argjson now "$now" \
+          --argjson refinement_min_coord "$refinement_min_coord" \
           "$ENABLER_ELIGIBLE_JQ" 2>/dev/null || true)"
   fi
   [[ -n "$out" ]] || out='[]'
