@@ -367,7 +367,14 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       `review.model`, `--dangerously-skip-permissions`, `--output-format json`,
       timeout `review.timeout_review`), with the clone as the working
       directory, passing `prompts/project-reviewer.md`. Reuse `run_claude_stage`
-      so a timeout kills the whole process group.
+      so a timeout kills the whole process group. The prompt reaches the stage
+      on stdin, never as a command-line argument, for the reason
+      `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s requirement 4c gives: a single
+      argv entry is capped at 131072 bytes, and a prompt is the one input here
+      that grows without bound. This pipeline's prompt has room to spare today,
+      which is precisely why it must not diverge — the two `run_claude_stage`
+      copies are one mechanism, and the smaller prompt is the one that would
+      sit broken longest before anyone noticed.
    4. *Parse.* Extract the work summary from the final message with the same
       parser `agent-cycle.sh` uses. Recover the PR URL from the parsed
       `pr_url`, else by grepping the transcript, else from a

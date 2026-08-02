@@ -1441,6 +1441,33 @@ runs unattended.
    regardless, so a config edit to a non-finishing source landing during
    such a cycle would otherwise change the assembled prompt without busting
    the fingerprint.
+4c. **An assembled prompt reaches its stage on stdin, never in argv.** Every
+   stage this Script launches — the Co-Ordinator here, the Implementor
+   (requirement 7), the Reviewer (requirement 8) and the Enabler
+   (requirement 35) — is invoked as `claude -p` with the prompt written to
+   the process's standard input, not as a command-line argument. Linux caps a
+   single argv entry at `MAX_ARG_STRLEN`, 32 pages — 131072 bytes — a
+   compile-time constant that no `ulimit` raises and that `getconf ARG_MAX`,
+   which reports the far larger limit on the *total*, does not describe. The
+   Co-Ordinator's assembled prompt is already of that order: its base file
+   alone passed 60 KB in July 2026 and the runtime input it carries grows
+   with the fleet's repo and work-source count, so the margin is measured in
+   paragraphs and every prompt edit spends some of it. Exceeding it fails at
+   `execve`, before any model is reached: the stage exits 126 with
+   `Argument list too long` on stderr, the cycle records `attempt-failed` and
+   then ends *successfully* with nothing selected (requirement 9 makes a
+   failed stage a failed attempt, not a failed cycle), and the node is
+   indistinguishable on the dashboard from one with no work to do. It is the
+   silent-stall shape the no-op fingerprint rules exist to prevent, arriving
+   by a different door — and, because prompts ship in the image, it arrives
+   fleet-wide on the same image roll. The delivery mechanism is a here-string
+   rather than a pipe so the invocation stays a single process whose exit
+   status is the stage's own; under `pipefail` a `printf | claude` would
+   report printf's SIGPIPE as the stage's result whenever a stage exited
+   without draining its input. `review-cycle.sh` launches its stages the same
+   way (`docs/REVIEW-PIPELINE-SPEC.md`, R5.3): the two functions are one
+   mechanism, and the review pipeline's smaller prompt makes it the one that
+   would sit broken longest before anyone noticed.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -3494,6 +3521,18 @@ pull request, run the ones the change touches and any it could regress.
    `test/noop-skip.test.sh` passes: a change to the rendered table busts the
    no-op fingerprint, and an input predating the `coordinator_work_sources_
    table` key canonicalises the same as one carrying it empty.
+1k. **A stage prompt reaches `claude` on stdin, at a size argv could not
+   carry (requirement 4c).** `test/stage-prompt-delivery.test.sh` passes: for
+   `run_claude_stage` as lifted from `agent-cycle.sh` *and* from
+   `review-cycle.sh`, a 200000-byte prompt — comfortably past
+   `MAX_ARG_STRLEN` — exits 0, arrives on the stub's stdin whole, appears
+   nowhere in its argv, and leaves the JSON envelope in `out_file` where the
+   caller's parser looks for it; an ordinary short prompt is delivered byte
+   for byte. The oversize prompt is sized to the kernel's constant rather
+   than to the prompt of the day, so the check keeps its meaning if a prompt
+   is ever trimmed; the file first confirms the cap exists on the kernel it
+   is running on, and says so and skips rather than passing vacuously if it
+   does not.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
@@ -4292,3 +4331,4 @@ confident, recurring no-op.
 | A switch with no way back on | An agent disables the pipeline to edit safely, then dies mid-session — killed, timed out, or just finished and forgetful. The switch stays set. No cycle runs again. Nothing alerts, because "no PRs this week" is exactly what a quiet week looks like, and the operator finds out days later. | Give any deliberate stop an expiry (requirement 2.3), and make indefinite something a human explicitly asks for. Same shape as the stale-lock rule (requirement 1): every mechanism that halts this system needs an answer to "what if whoever set it never comes back?" |
 | One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |
 | A staleness clock reset by the system's own housekeeping | `abandoned-drafts` (requirement 3e) measured a draft's staleness from `updatedAt`, which moves for anything at all. On poetic#92 a label edit deferred detection by a full `abandoned_draft_after_hours`, and — the sharper case — the Enabler's own comment correctly diagnosing the stall reset the clock in the same breath it cleared the block, deferring the very recovery it had just enabled. Filtering by comment author could not fix it: every pipeline write happens under the same GitHub account a human also comments as. | Ask "would *this system itself* ever produce this signal, and does that mean what a human producing it would mean?" before trusting a timestamp as "somebody is on it" (TD26072605). Where the answer differs, stamp what you write (`lib/pipeline-marker.sh`'s invisible marker) so the reader can tell its own hand from a human's, and discount your own bookkeeping (label edits) unconditionally. Same shape as "a change-detection digest that tracks churn instead of meaning" above, but the churn here is the system talking to itself. |
+| An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
