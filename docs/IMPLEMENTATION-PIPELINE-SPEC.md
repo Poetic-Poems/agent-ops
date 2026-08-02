@@ -3888,6 +3888,26 @@ pull request, run the ones the change touches and any it could regress.
    — nothing else in the system will tell you they disagree, because both
    halves look correct in isolation and the only symptom is work being
    silently redone.
+7a. **The mandatory re-check round-trips too (requirement 18a).**
+   `test/cycle-state.test.sh`'s requirement-18a section passes, proving both
+   halves the requirement adds on top of check 7's general case. The
+   comparison itself — a blocked GitHub issue's `updated_at` against the
+   *later* of the block's `ts` and its `recheck_clean_ts` — is the
+   Co-Ordinator's own judgement (prompts/coordinator.md, "A blocked issue
+   with fresh evidence must be re-read"), not shell code, so the test mirrors
+   that documented rule to check the real data `blocked_items` computes:
+   with only an `attempt-failed` on record, an issue `updated_at` after the
+   block's `ts` reads as due a mandatory re-read and one no later than `ts`
+   does not (half 1, "forces the whole-thread re-read"); appending a
+   `recheck-clean` folds `recheck_clean_ts` in, and the same, unchanged
+   `updated_at` that just read as due now reads as not — a thread that said
+   nothing new is not paid for twice (half 2, "stops the next cycle repeating
+   it"); moving `updated_at` again past the `recheck_clean_ts` flips it back
+   to due, so the marker's suppression lasts only as long as the thread
+   stays quiet. Together with check 7, this is the writer
+   (`recheck-clean`, requirement 33) and the reader (`blocked_items`'s fold)
+   agreeing on both timestamps a blocked GitHub issue carries, the same way
+   check 7 catches them agreeing on one.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own

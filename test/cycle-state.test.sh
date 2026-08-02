@@ -187,6 +187,54 @@ EOF
 assert_eq "a repo-scoped recheck-clean folds into only that repo's item" \
   "o/a" "$(blocked_items "$log" | jq -r '[.[] | select(.recheck_clean_ts != null)][0].repo')"
 
+# --- requirement 18a: the mandatory re-check loop, end to end (check 7a, ---
+# --- TD-PPagop-26080102) ---
+#
+# The fold above proves `blocked_items` carries `ts` and `recheck_clean_ts`
+# correctly; this section proves the two-timestamp comparison those fields
+# exist for — prompts/coordinator.md's "A blocked issue with fresh evidence
+# must be re-read" — round-trips exactly as check 7 round-trips the general
+# blocked case. The comparison itself is the Co-Ordinator's own judgement,
+# not shell code, so `needs_mandatory_reread` below is not production logic:
+# it mirrors the documented rule verbatim so the real data `blocked_items`
+# computes can be checked against it.
+needs_mandatory_reread() {
+  local updated_at="$1" block_json="$2"
+  jq -n --arg u "$updated_at" --argjson b "$block_json" \
+    '(([$b.ts] + (if $b.recheck_clean_ts then [$b.recheck_clean_ts] else [] end)) | max) as $threshold
+     | $u > $threshold'
+}
+
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","detail":"waiting on maintainer"}
+EOF
+block="$(blocked_items "$log" | jq -c '.[0]')"
+
+# Half 1: a comment landing after the block's own `ts` forces the re-read.
+assert_eq "half 1: an issue updated after the block's ts is due a mandatory re-read" \
+  "true" "$(needs_mandatory_reread "2026-07-29T10:00:00Z" "$block")"
+assert_eq "an issue quiet since the block needs no re-read" \
+  "false" "$(needs_mandatory_reread "2026-07-28T07:00:00Z" "$block")"
+
+# The Co-Ordinator re-read the thread found above, judged the blocker still
+# holds, and reported `recheck_clean` — the Script logs it, and the next
+# cycle's `blocked_items` folds it in.
+cat >> "$log" <<'EOF'
+{"ts":"2026-07-29T10:30:00Z","event":"recheck-clean","repo":"o/r","item":"52"}
+EOF
+block="$(blocked_items "$log" | jq -c '.[0]')"
+
+# Half 2: the same, unchanged `updated_at` that demanded a re-read a moment
+# ago no longer does, now that the marker covers it — the thread said
+# nothing new, so it must not be paid for twice.
+assert_eq "half 2: a recheck-clean confirming the still-quiet thread suppresses the next re-read" \
+  "false" "$(needs_mandatory_reread "2026-07-29T10:00:00Z" "$block")"
+
+# And the marker's suppression is not permanent: a further comment past the
+# recheck-clean makes the re-read mandatory again.
+assert_eq "the thread moving again past the recheck-clean makes the re-read mandatory once more" \
+  "true" "$(needs_mandatory_reread "2026-07-30T00:00:00Z" "$block")"
+
 # --- void_items (requirement 34c) ---
 
 assert_eq "missing log yields no void items" "[]" "$(void_items "$tmp_dir/nonexistent.jsonl")"
