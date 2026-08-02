@@ -193,11 +193,19 @@ assert_eq "IMAGE_DRIFT_TTL=0 always refetches" \
 # purposes (#155's whole premise is that the registry can answer without a
 # GitHub API scope this pipeline does not hold).
 
+# .dockerignore excludes .github from the image (the workflows are not part
+# of the deployment), so this suite's own CI run — inside the built image —
+# has no such file to check; skip there rather than fail on an absence the
+# image is supposed to have.
 workflow="$SCRIPT_DIR/.github/workflows/build-image.yml"
-assert_eq "the publish step stamps org.opencontainers.image.created" \
-  "1" "$(grep -qE 'org\.opencontainers\.image\.created=' "$workflow" && echo 1 || echo 0)"
-assert_eq "and org.opencontainers.image.revision, for the commit comparison" \
-  "1" "$(grep -qE 'org\.opencontainers\.image\.revision=' "$workflow" && echo 1 || echo 0)"
+if [[ -f "$workflow" ]]; then
+  assert_eq "the publish step stamps org.opencontainers.image.created" \
+    "1" "$(grep -qE 'org\.opencontainers\.image\.created=' "$workflow" && echo 1 || echo 0)"
+  assert_eq "and org.opencontainers.image.revision, for the commit comparison" \
+    "1" "$(grep -qE 'org\.opencontainers\.image\.revision=' "$workflow" && echo 1 || echo 0)"
+else
+  printf 'ok   - build-image.yml not present in this environment (.dockerignore excludes .github) — skipping\n'
+fi
 
 # The verdict must never abort a heartbeat: the function is called under
 # `set -e` from state-sync.sh, so every path above must also return 0.
