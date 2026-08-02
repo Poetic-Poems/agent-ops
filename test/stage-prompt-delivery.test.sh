@@ -120,12 +120,16 @@ check_script() {
   capture="$tmp_dir/${name%.sh}"
   mkdir -p "$capture"
 
+  # Exported out here rather than inside the subshell: the subshell inherits it
+  # either way, and an export *within* `( … )` is a change shellcheck is right
+  # to flag as lost (SC2030/SC2031).
+  export STUB_CAPTURE="$capture"
+
   # `set -euo pipefail` matches the shell both scripts run the function under —
   # the pipefail half is load-bearing here, since a `printf | claude` delivery
   # would report printf's SIGPIPE (141) rather than the stage's own status.
   (
     set -euo pipefail
-    export STUB_CAPTURE="$capture"
     eval "$fn"
     run_claude_stage 60 test-model "$over_cap" "$capture/out" "$capture"
   )
@@ -158,7 +162,6 @@ check_script() {
   rm -f "$capture/prompt.seen"
   (
     set -euo pipefail
-    export STUB_CAPTURE="$capture"
     eval "$fn"
     run_claude_stage 60 test-model "$small" "$capture/out" "$capture"
   )
