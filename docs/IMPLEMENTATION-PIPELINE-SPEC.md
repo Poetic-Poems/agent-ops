@@ -80,10 +80,15 @@ a node updates by pulling a new image rather than by pulling a branch.
 - Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
   `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use); Node.js from NodeSource at the same major as
-  the laptop; the `claude` CLI from `@anthropic-ai/claude-code`; and
+  the laptop; the `claude` CLI from `@anthropic-ai/claude-code`;
   `supercronic`, a pinned release binary verified by SHA-1 (one pin per
   architecture), which runs the container's crontab as an ordinary process
-  with no cron daemon and no root.
+  with no cron daemon and no root; and `shellcheck`, a pinned release binary
+  verified by SHA-256 (one pin per architecture, the amd64 one
+  byte-identical to `.github/workflows/shellcheck.yml`'s own pin — component
+  10), so an Implementor working inside this image can run
+  `scripts/lint-shell.sh` — the gate its own pull request is judged by —
+  before pushing.
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
@@ -567,6 +572,8 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_reviewer` | 30 min | |
 | `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 90 + 30 + 30 minutes once the Enabler can run inside the lock (requirement 35). |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
+| `crash_loop_after` | 4 | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
+| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
@@ -979,6 +986,37 @@ runs unattended.
    `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
    `cron.log.1` too whenever the live file alone is shorter than the tail
    window, so a rotation never empties the panel.
+2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
+   (requirement 33's fields are set only after selection), so the entire
+   blocked → Enabler → escalation ladder that covers item failures never
+   sees it — and the cycle still ends 0, so the dashboard shows a healthy
+   idle fleet. When such a failure is deterministic and ships in the image,
+   every node fails identically every hour and the record diverges
+   completely from reality: the 2026-08-01 argv-cap outage ran ~15 hours ×
+   4 nodes before a human noticed, and nothing in the system would ever
+   have said so. So the Script reads the one signal that class does leave.
+   After the requirement-2.5 union snapshot and before the stand-down
+   checks (a fleet that is also standing down must still raise the alarm),
+   `lib/crash-loop.sh`'s `crash_loop_verdict` scans the union for
+   `crash_loop_after` or more **consecutive** Co-Ordinator `attempt-failed`
+   events carrying **one identical detail**, with no Co-Ordinator success
+   (`stage-end`, stage `coordinator`, exit 0) anywhere in the fleet in
+   between. Identical detail is what separates the deterministic class from
+   transient noise; any success resets the count. On a verdict, and unless
+   `crash_loop_escalated_since` finds a `crash-loop-escalated` event with
+   the same detail at or after the run's own first failure (so the same
+   loop is never escalated twice, while a fresh loop with an old detail
+   escalates anew), the Script files an issue on `crash_loop_repo` through
+   the Enabler's own `create_escalation_issue` — same open-issue dedup
+   (item ref `crash-loop:coordinator`), same label, same load-bearing
+   assignee that keeps the pipeline from selecting its own SOS as work —
+   and logs `crash-loop-escalated` with the verdict's fields and the
+   issue's number and URL. If the issue cannot be filed the Script logs a
+   `warning` and leaves no `crash-loop-escalated` event, so the next cycle
+   retries. The cycle then proceeds normally either way: detection must
+   never suppress the recovery attempt that might end the loop.
+   `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
+   `enabler_assignee`, disables the check; `--dry-run` never files.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
@@ -2020,6 +2058,37 @@ runs unattended.
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
       cycle: a supervised run contends with the fleet on equal terms.
+17b. **The orphan-branch sweep.** The gc's only-if-untouched rule (17a)
+    leaves one state behind on purpose that is right for the work and wrong
+    for the item: an Implementor that pushed commits and died before its
+    draft PR existed leaves a moved ref with no PR — which nothing recovers
+    (`gather-abandoned-drafts.sh` lists PRs, not branches), every later
+    claim 422s against, and the Co-Ordinator's exclusion reads as "claimed,
+    skip". The work is unreachable and the item permanently unselectable,
+    with no event ever saying so. Its sibling is the unmoved ref whose
+    best-effort registry write never landed, wedging the item with nothing
+    to recover. So after the gc (2.1a), every cycle runs
+    `scripts/sweep-orphan-branches.sh` over each configured repo's `td/*`
+    and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
+    three** hold: no open PR uses it, no registry entry stands for it (only
+    a clean 404 proves absence — any other failure skips the ref, fail
+    closed), and its tip commit is older than `abandoned_draft_after_hours`
+    — the same judgement that makes a draft abandoned. For each orphan the
+    sweep restores a state the pipeline already handles: commits ahead of
+    the default branch become a **draft PR** (labelled `pr_label`, so the
+    abandoned-drafts machinery recovers the work exactly as it recovers any
+    stalled draft; retried without the label, loudly, where the label is
+    missing), and a ref with nothing ahead is **deleted** — it was only
+    ever the claim, and the claim is dead. Actions are capped per run
+    (three per repo per cycle, the overflow reported, never silent), logged
+    as `orphan-branch-recovered` / `orphan-branch-released` events, and
+    every node may sweep concurrently: GitHub rejects a second open PR for
+    the same head and a second ref delete is a no-op, so the worst race
+    outcome is a warning. Skipped on `--dry-run`. One priced residual: a
+    live claim whose registry write failed and whose ref is untouched looks
+    identical to the empty orphan, so its ref can be deleted mid-run — the
+    Implementor's later push recreates it, and the cost is at worst a
+    duplicate PR, priced against an item wedged forever.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -2238,6 +2307,18 @@ runs unattended.
     the claim (and, once merged, the completion) is visible to any other cycle
     scanning PRs — there is no register entry and the review folder is not
     modified.
+23a. **Pushes at checkpoints, not only at the claim and at the end.** Once the
+    draft PR exists, the Implementor commits and pushes again at each
+    meaningful checkpoint — a passing test, a completed file, a finished
+    logical unit — rather than holding every later change in the working tree
+    until its final message. The clone is ephemeral and gone once the cycle
+    ends, so a commit that never reached `origin` is lost with it; a pushed
+    one survives on the claim branch regardless of how the stage ends. This is
+    what lets an interrupted stage's successor — most often the
+    `abandoned-drafts` recovery path (requirement 3e) — resume from the last
+    checkpoint instead of from the claim commit alone, and it is also a
+    "genuine push" in the sense requirement 3e's own activity clock already
+    watches for.
 24. Implements the item, then runs the same checks the repo's CI runs (as
     documented in that repo's `CLAUDE.md` and workflow files) and fixes
     anything they surface.
@@ -3383,9 +3464,18 @@ What exists, and the requirements each part answers to:
    blocked ids that are register ids so the read above is asked for those and no
    others. Pure — it reads nothing itself — and every unknown resolves to no
    clearance. Unit-tested (`test/work-gone.test.sh`); must pass `shellcheck`.
+3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
+   given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
+   prints one JSON action object per orphan handled (`recovered`, `released`,
+   `deferred`, `warning`) for the Script to log. Fail-closed on every
+   unanswered question; `SWEEP_GH` stubs `gh` and `AGENT_OPS_CONFIG`
+   overrides the config for tests. Unit-tested
+   (`test/sweep-orphan-branches.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh` and
+   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
+   `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
+   `crash_loop_escalated_since`, both pure readers of the union stream) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -3488,7 +3578,11 @@ What exists, and the requirements each part answers to:
     is the point: the runner image's own version moves without notice, and a
     linter that gains a check overnight fails pull requests that changed
     nothing. Component 9 runs the test suite, which only ever reads the scripts
-    it calls; this reads all of them.
+    it calls; this reads all of them. `deploy/docker/Dockerfile` (component 7)
+    installs the same pinned release — the amd64 checksum byte-identical to
+    this workflow's — so an Implementor working inside the node image can run
+    `scripts/lint-shell.sh` itself before pushing, rather than pushing blind
+    and finding out from this workflow (requirement 1b).
 11. `scripts/watch-node.sh` — a read-only wrapper around
     `docker compose exec -T scheduler tail` for watching a node's `cron.log`
     or cycle log (`log.jsonl`, requirement 33) from outside, in place of the
@@ -3561,7 +3655,9 @@ pull request, run the ones the change touches and any it could regress.
    architectures.** `docker build -f deploy/docker/Dockerfile -t agent-ops .`
    succeeds, and inside it, as user `agent`: `bash`, `git`, `jq`, `curl`,
    `python3`, `perl`, `flock`, `sha256sum`, `rsync`, `node`, `claude`, `gh`
-   (≥ 2.60) and `supercronic` all resolve; `supercronic -test
+   (≥ 2.60), `supercronic` and `shellcheck` all resolve; `shellcheck
+   --version` prints `0.10.0`, the same version
+   `.github/workflows/shellcheck.yml` pins; `supercronic -test
    /app/deploy/docker/crontab` reports the crontab valid; the `test/` suite
    passes inside the container; and `/app/agent-cycle.sh` with no role set
    exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`
@@ -3921,7 +4017,19 @@ pull request, run the ones the change touches and any it could regress.
    with no output changes no limit state and the reason ends
    `(probe: inconclusive)`. `--dry-run` with the same injected event launches
    no probe.
-6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
+5a. **A fleet-wide Co-Ordinator crash loop is detected once and escalated
+   once (requirement 2.7).** `test/crash-loop.test.sh` passes: for
+   `crash_loop_verdict`, a stream of threshold-many consecutive same-detail
+   Co-Ordinator failures yields a verdict carrying the count, the window and
+   every failing node; one fewer yields nothing; a Co-Ordinator success
+   anywhere in the run resets the count (including the `stage-end 0` that
+   precedes an `unparseable final message` failure, which counts as one, not
+   threshold-plus); a detail change restarts the count at one; item-stage
+   failures and other nodes' noise never contribute; a threshold of 0 is the
+   off switch. For `crash_loop_escalated_since`, an escalation event for the
+   same detail after the run's first failure suppresses re-escalation, while
+   an older one — a closed issue from a past loop — does not, and a
+   different detail never matches.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
 6a. **The switch stops both pipelines and lets go by itself.**
@@ -4044,6 +4152,18 @@ pull request, run the ones the change touches and any it could regress.
    (`recheck-clean`, requirement 33) and the reader (`blocked_items`'s fold)
    agreeing on both timestamps a blocked GitHub issue carries, the same way
    check 7 catches them agreeing on one.
+7b. **An orphaned claim branch is put back in front of the pipeline
+   (requirement 17b).** `test/sweep-orphan-branches.test.sh` passes: with a
+   stubbed `gh`, a stale moved ref with no PR and no registry entry yields a
+   draft PR carrying `pr_label` and a `recovered` action; a stale unmoved
+   ref in the same state yields a ref delete and a `released` action; a ref
+   with an open PR, a ref with a live registry entry, and a ref younger
+   than `abandoned_draft_after_hours` are each left untouched; a registry
+   read that fails with anything but 404 leaves the ref alone and says so
+   (`warning`, fail closed); a missing label falls back to an unlabelled PR
+   loudly; and a backlog past the per-run cap acts on the cap's worth and
+   reports the remainder (`deferred`) rather than flooding or staying
+   silent.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
