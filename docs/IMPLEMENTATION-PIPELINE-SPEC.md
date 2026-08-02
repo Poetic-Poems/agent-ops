@@ -2042,9 +2042,18 @@ runs unattended.
       most the TTL plus one cycle interval.
     - Claims **fail closed** per candidate: any outcome other than a won
       claim (a lost race, or GitHub unreachable) moves to the next
-      candidate, and a cycle whose every candidate is lost stands down with
-      reason "every candidate is already claimed elsewhere". A node that
-      cannot reach GitHub to claim could not have pushed the work either.
+      candidate. Each miss logs `claim-lost` with a `cause` — `held` for
+      `lib/claim.sh`'s rc 3 (a peer genuinely holds the item: healthy
+      contention, the work is being done, just not by this node) or
+      `unreachable` for its rc 1 (GitHub could not be reached at all,
+      fail-closed: no work is being done by anyone), any other rc verbatim.
+      A cycle whose every candidate is lost stands down with reason "every
+      candidate is already claimed elsewhere" — unless every miss was
+      `unreachable`, in which case the reason instead names the outage
+      ("GitHub could not be reached for any candidate — this is an outage,
+      not contention"), so a GitHub or token outage does not read as a fleet
+      politely yielding to itself. A node that cannot reach GitHub to claim
+      could not have pushed the work either.
     - When `state_repo` is unset (a single-node operation), file claims are
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
@@ -2535,8 +2544,10 @@ runs unattended.
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `escalated`, `limit-hit`, `disabled`, `enabled`,
-    `warning`, `cycle-end`. A `claim-lost` names the repo,
-    item and branch a peer node won (requirement 17a); `selection` carries the
+    `warning`, `cycle-end`. A `claim-lost` names the repo, item and branch of
+    the candidate the Script failed to claim, plus a `cause` — `held` when a
+    peer node won it, `unreachable` when GitHub could not be reached, or the
+    raw exit code otherwise (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
     the event means the pull request is not a draft, not that somebody said so.
