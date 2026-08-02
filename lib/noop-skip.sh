@@ -47,7 +47,7 @@
 #   claims (requirement 16.3)                            | open_prs digest
 #   blocked / void skip-lists                            | repo|item projections
 #   refinements carried forward (requirement 3h)         | repo|item|ts projection
-#   which repos, which sources, which models             | selection_config
+#   which repos, which sources, which models, attention weights | selection_config
 #   the selection rules themselves                       | coordinator_prompt_sha
 #   the repo/work-sources table the Co-Ordinator reads    | coordinator_work_sources_table
 #   the Enabler's eligible set (requirement 35b)         | repo|item|reason projection

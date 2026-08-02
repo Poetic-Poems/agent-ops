@@ -514,7 +514,7 @@ values below are the confirmed defaults; the README must document each key.
 
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -939,9 +939,31 @@ runs unattended.
    `cron.log.1` too whenever the live file alone is shorter than the tail
    window, so a rotation never empties the panel.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
-   most recent commit on its default branch via `gh api`; sort least recent
-   first. The most-overdue repo gets first look, and this ordering takes
-   precedence over the per-repo source priorities.
+   most recent commit on its default branch via `gh api`. A repo entry may
+   also carry `nice`, an optional integer from `-19` to `19` (absent means
+   `0`), read from that repo's `config.json` entry. Compute each repo's
+   effective age as `(now − timestamp) × 1.25^(-nice)` and sort
+   most-overdue-first by that effective age: `lib/repo-order.sh`'s
+   `repo_order_by_effective_age`, sourced and applied by the Script. The
+   prompt's part is descriptive only: `prompts/coordinator.md` presents the
+   order as Script-computed — staleness weighted by each repo's configured
+   attention bias — and instructs the Co-Ordinator to honour it as given;
+   the `nice` values themselves never reach the model. With every repo's
+   `nice` absent or `0`, effective age is plain age and the walk is a
+   least-recently-updated-first sort — same order, same ties. Equal effective ages break by slug, deterministically. A missing or
+   unparseable timestamp reads as epoch 0 — the oldest possible commit — so
+   that repo stays maximally overdue at neutral `nice`, because a repo the
+   Script cannot date is not one a `nice` value should be able to defer. The
+   most-overdue repo gets first look, and this ordering takes precedence
+   over the per-repo source priorities — but it does not outrank the global
+   cross-repo tiers: security (15a), review-feedback (15b), abandoned-drafts
+   (15c), merge-conflicts (15d) and urgent issues (15e) all still override
+   the walk regardless of repo order. A `nice` value biases the walk; it
+   never starves a repo, and a repo that alone has selectable work is chosen
+   whatever its `nice`. The Script refuses to start a cycle if any
+   configured repo's `nice` is not an integer in `-19`..`19`, failing fast
+   and naming every offending slug, the same guard as
+   `implementation_plan_path` (requirement 3k).
 3a. **Findings pre-fetch (cost control).** For each configured repo whose
    `sources` include `security` or `code-quality`, run
    `scripts/gather-findings.sh <repo-slug>` — a deterministic script that uses
@@ -3194,6 +3216,19 @@ What exists, and the requirements each part answers to:
    framework) and `shellcheck`-clean. These rules are the system's memory of
    what it has already tried; a second copy of one is a bug with a delay
    fuse, and both copies read correctly right up until they disagree.
+3l. `lib/repo-order.sh` implementing requirement 3's two pure functions:
+   `repo_order_by_effective_age`, given the cycle's now-epoch and the repos
+   array, reorders the Script's timestamp lines most-overdue-first by
+   nice-weighted effective age, ordering identically to a plain
+   least-recently-updated-first sort when every repo's `nice` is `0` or
+   absent; and `repo_nice_selection_config`, the fingerprint producer's
+   half, which distils the same repos array into the `selection_config`
+   contribution — `{repo_nice: …}` carrying the non-zero entries only,
+   floor-normalised, or `{}` when there are none, so a neutral config adds
+   no key at all (the canon hashes `selection_config` wholesale, and an
+   empty map is not the same bytes as an omitted key). Sourced by
+   `agent-cycle.sh` only. Unit-tested (`test/repo-order.test.sh`); must
+   pass `shellcheck`.
 4. `prompts/coordinator.md`, `prompts/implementor.md`, `prompts/reviewer.md`
    and `prompts/enabler.md` implementing requirements 14–20, 21–27, 28–32 and
    36/36b respectively. Each prompt must embed the relevant shared-repo conventions
@@ -3533,6 +3568,26 @@ pull request, run the ones the change touches and any it could regress.
    is ever trimmed; the file first confirms the cap exists on the kernel it
    is running on, and says so and skips rather than passing vacuously if it
    does not.
+1l. **Repos are walked most-overdue-first by nice-weighted effective age,
+   and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
+   passes: `repo_order_by_effective_age` returns an order byte-identical to
+   a plain least-recently-updated-first `sort` of the same lines when every
+   repo's `nice` is `0` or absent; scaling by `1.25^(-nice)` moves a
+   negative-`nice` repo earlier and a positive-`nice` repo later, checked in
+   both directions; a missing or unparseable timestamp reads as epoch 0 and
+   stays maximally overdue at neutral `nice`; two repos with equal effective
+   ages break by slug; the output is always a permutation of the input
+   lines, never a subset or a reordering that drops or duplicates one; and
+   `repo_nice_selection_config` returns `{}` — no key — for a config with
+   no non-zero `nice` (absent, `null`, `0` and `-0` alike) and exactly the
+   non-zero entries, floor-normalised, otherwise. `test/noop-skip.test.sh`
+   passes: a `repo_nice` entry in `selection_config` changes the no-op
+   fingerprint; and an input carrying an empty `repo_nice` map does *not*
+   canonicalise the same as one omitting the key entirely — omission is the
+   neutral form the producer emits for the shipped config (no `nice` keys
+   anywhere), so it must drop the key rather than emit `{}`. Separately: a
+   `nice` outside `-19`..`19`, or non-integer, makes `agent-cycle.sh` refuse
+   to start, naming every offending repo's slug.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing

@@ -233,6 +233,23 @@ assert_ne "editing prompts/coordinator.md changes the fingerprint" \
 # shellcheck disable=SC2016  # backticks are Markdown code spans, not the shell's.
 assert_ne "a change to the rendered work-sources table changes the fingerprint" \
   "$(fp_with '.coordinator_work_sources_table += "\n| `o/three` | 1. `security` |\n"')"
+# repo_nice (requirement 3, lib/repo-order.sh): repo *order* is deliberately
+# normalised out of the fingerprint (`sort_by(.slug)` above, asserted by "repo
+# order does not change the fingerprint" earlier in this file), so a `nice`
+# edit, which changes only the order, would move nothing without this key —
+# the same silent-stall shape every case in this block guards against.
+assert_ne "a repo_nice entry changes the fingerprint" \
+  "$(fp_with '.selection_config.repo_nice = {"o/one": -5}')"
+# `{}` is not the neutral form here: `selection_config` is hashed wholesale
+# (see the canon above), so an empty map still differs in bytes from a
+# selection_config that omits the key entirely, as base_input's does. The
+# producer (agent-cycle.sh) relies on that distinction — it must omit
+# `repo_nice` entirely when no repo carries a non-zero nice, never emit it as
+# `{}` — and this assertion is what stops a future refactor from emitting
+# `repo_nice: {}` unconditionally and busting every running fleet's
+# none-selected fingerprint once, on deploy.
+assert_ne "an empty repo_nice map also changes the fingerprint" \
+  "$(fp_with '.selection_config.repo_nice = {}')"
 
 # The Enabler's inputs (requirement 35b). Its eligible set is the third array
 # whose candidacy turns on something no repo signal carries: an item becomes

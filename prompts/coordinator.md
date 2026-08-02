@@ -59,9 +59,10 @@ heading, the Script gives you one JSON object:
 }
 ```
 
-- `repos` is already ordered — the repo with the least recently updated
-  default branch first. This ordering accounts for staleness; honour it as
-  given, don't re-derive it. Each entry's `sources` is that repo's work
+- `repos` is already ordered — most overdue first, as the Script computes
+  it: each repo's default-branch staleness, weighted by that repo's
+  configured attention bias. This ordering accounts for staleness; honour it
+  as given, don't re-derive it. Each entry's `sources` is that repo's work
   sources, already in priority order (see "Target repositories" below for
   the fixed default this is drawn from — trust what's actually in this
   input over the table if the two ever disagree, since `config.json` is the
