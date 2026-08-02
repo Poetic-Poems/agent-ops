@@ -2293,6 +2293,18 @@ runs unattended.
     the claim (and, once merged, the completion) is visible to any other cycle
     scanning PRs — there is no register entry and the review folder is not
     modified.
+23a. **Pushes at checkpoints, not only at the claim and at the end.** Once the
+    draft PR exists, the Implementor commits and pushes again at each
+    meaningful checkpoint — a passing test, a completed file, a finished
+    logical unit — rather than holding every later change in the working tree
+    until its final message. The clone is ephemeral and gone once the cycle
+    ends, so a commit that never reached `origin` is lost with it; a pushed
+    one survives on the claim branch regardless of how the stage ends. This is
+    what lets an interrupted stage's successor — most often the
+    `abandoned-drafts` recovery path (requirement 3e) — resume from the last
+    checkpoint instead of from the claim commit alone, and it is also a
+    "genuine push" in the sense requirement 3e's own activity clock already
+    watches for.
 24. Implements the item, then runs the same checks the repo's CI runs (as
     documented in that repo's `CLAUDE.md` and workflow files) and fixes
     anything they surface.
