@@ -422,7 +422,10 @@ cheap on almost every day, because a review exits early unless
 fleet-wide fix, if it ever stops being cheap, is `review_offset_minutes: 15` in
 `config.json`, which on this four-node ring interleaves reviews exactly between
 cycles on both hosts — at the cost of halving the gap between a node's own two
-pipelines.
+pipelines. Note also that an offset of 29 lands the reviews *on* the
+five-minute marks the cycles were nudged off (29 past `:06` is `:35`). That is
+the same light contention, once a day, on a tick that most days does nothing —
+worth knowing, not worth solving.
 
 ### Taking a node out of service
 
