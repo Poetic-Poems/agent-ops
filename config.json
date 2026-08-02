@@ -11,7 +11,8 @@
     },
     {
       "slug": "Poetic-Poems/agent-ops",
-      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality", "register-hygiene"]
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality", "register-hygiene"],
+      "nice": -5
     }
   ],
   "state_dir": "~/.local/state/poetic-agents",
