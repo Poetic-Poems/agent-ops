@@ -688,6 +688,10 @@ cat > "$gh_stub" <<'STUB'
 #!/usr/bin/env bash
 # Stands in for `gh`: records the call, then answers the Publisher's queries.
 printf '%s\n' "$*" >> "$GH_CALL_LOG"
+# `api <path> [--jq <prog>]`. The register answers below hand back the payload
+# shape GitHub really returns and let jq apply the filter, so what is under
+# test is the Publisher's own selector and not a rehearsal of it here.
+gh_jq() { if [[ "$3" == "--jq" ]]; then jq -r "$4"; else cat; fi; }
 case "$1 $2" in
   "pr list")   printf '[]' ;;
   "issue list") printf '[]' ;;
@@ -698,9 +702,37 @@ case "$1 $2" in
     printf '{"number":%s,"title":"a merged change","url":"https://github.com/%s/pull/%s","state":"MERGED","isDraft":false,"createdAt":"2026-07-20T00:00:00Z","mergedAt":"2026-07-21T00:00:00Z","closedAt":"2026-07-21T00:00:00Z","mergeCommit":{"oid":"1234567890abcdef"},"author":{"login":"someone"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"APPROVED","baseRefName":"main"}' \
       "$3" "$5" "$3" ;;
   "api "*)
-    case "$3" in
-      *default_branch*) printf 'main' ;;
-      *) exit 1 ;;
+    case "$2" in
+      # One repo keeps a register; the others 404, as a repo with none does.
+      # Four items say what the panel has to get right — open, in-progress,
+      # resolved, and one whose blob will not answer — and four more make the
+      # roster too big to read in one tick.
+      "repos/Poetic-Poems/agent-ops/contents/tech-debt")
+        { printf '[{"type":"file","name":"TD-PPagop-26070101.md","sha":"aaaaaaa1"}'
+          printf ',{"type":"file","name":"TD-PPagop-26070102.md","sha":"bbbbbbb2"}'
+          printf ',{"type":"file","name":"TD-PPagop-26070103.md","sha":"ccccccc3"}'
+          printf ',{"type":"file","name":"TD-PPagop-26070104.md","sha":"ddddddd4"}'
+          for n in 05 06 07 08; do
+            printf ',{"type":"file","name":"TD-PPagop-260702%s.md","sha":"f00000%s"}' "$n" "$n"
+          done
+          printf ',{"type":"dir","name":"drafts","sha":"eeeeeee5"}]'
+        } | gh_jq "$@" ;;
+      "repos/Poetic-Poems/agent-ops/git/blobs/"*)
+        case "${2##*/}" in
+          aaaaaaa1) td_title="An open thing";              td_status=open ;;
+          bbbbbbb2) td_title="A thing already being worked"; td_status=in-progress ;;
+          ccccccc3) td_title="A thing long since resolved"; td_status=resolved ;;
+          f00000*)  td_title="A filler item";              td_status=resolved ;;
+          *) exit 1 ;;   # ddddddd4: the read that never answers
+        esac
+        printf -- '---\nid: an-item\ntitle: %s\nstatus: %s\nfiled: 2026-07-01\n---\n\nWhy it matters.\n' \
+          "$td_title" "$td_status" \
+          | base64 -w 60 | jq -Rsc '{content: ., encoding: "base64"}' | gh_jq "$@" ;;
+      *)
+        case "$3" in
+          *default_branch*) printf 'main' ;;
+          *) exit 1 ;;
+        esac ;;
     esac ;;
   *) exit 1 ;;
 esac
@@ -787,6 +819,64 @@ y_views="$(grep -c '^pr view' "$gh_calls")"
 assert_eq "a cold index is filled a few references a tick, not all at once" \
   "1" "$(( y_views <= 8 ))"
 assert_eq "and it does make progress" "1" "$(( y_views > 0 ))"
+
+# --- The tech-debt ledger's rows -------------------------------------------------
+# The panel is headed "what the Co-Ordinator sees", so a row has to say what the
+# work *is*: an ID alone named nothing, and most of a mature register is
+# resolved items the Co-Ordinator will never pick up. Titles and statuses live
+# one blob read per item down, which is affordable only because the read is
+# keyed by the item's blob SHA and so never repeats — the property asserted
+# below, since a re-read register renders exactly like a cached one and the only
+# symptom of losing it is the API bill.
+w="$(new_home nodeW)"
+run_w_publish() {
+  env HOME="$w" NODE_NAME=nodeW-self GH_CALL_LOG="$gh_calls" \
+      DASHBOARD_GH_CMD="$gh_stub" "$PUBLISH" >/dev/null 2>&1
+}
+td_of() {  # td_of <data> <jq-suffix>
+  jq -r '.github.inputs["Poetic-Poems/agent-ops"].tech_debt'"$2" <<<"$1"
+}
+: > "$gh_calls"
+run_w_publish
+wdata="$(data_of "$w")"
+assert_eq "an item's row carries the title out of its own file" "An open thing" \
+  "$(td_of "$wdata" '[] | select(.id == "TD-PPagop-26070101") | .title')"
+assert_eq "and the status the Co-Ordinator would find" "open" \
+  "$(td_of "$wdata" '[] | select(.id == "TD-PPagop-26070101") | .status')"
+assert_eq "and a link to the item file behind it" \
+  "https://github.com/Poetic-Poems/agent-ops/blob/main/tech-debt/TD-PPagop-26070101.md" \
+  "$(td_of "$wdata" '[] | select(.id == "TD-PPagop-26070101") | .url')"
+assert_eq "a resolved item is no work source, and is not shown as one" "false" \
+  "$(td_of "$wdata" ' | any(.id == "TD-PPagop-26070103")')"
+assert_eq "an item already being worked sorts above the merely open" "TD-PPagop-26070102" \
+  "$(td_of "$wdata" '[0].id')"
+assert_eq "an item whose file would not read is still listed, as the bare ID it was" "" \
+  "$(td_of "$wdata" '[] | select(.id == "TD-PPagop-26070104") | .title')"
+# The cold-start bound, for the same reason as the pull-request index above: a
+# fleet's worth of registers is well over a hundred blobs and would not fit in
+# one publish.
+w_blobs="$(grep -c 'git/blobs' "$gh_calls")"
+assert_eq "a cold register is read a few items a tick, not all at once" \
+  "1" "$(( w_blobs <= 4 ))"
+assert_eq "and it does make progress" "1" "$(( w_blobs > 0 ))"
+
+run_w_publish            # the ticks that finish the roster
+run_w_publish
+: > "$gh_calls"
+run_w_publish            # …and one with nothing left to read
+assert_eq "a warm register re-reads none of the items it has already read" "0" \
+  "$(grep -c 'git/blobs/[abcf]' "$gh_calls")"
+assert_eq "while a read that never answered is tried again" "1" \
+  "$(grep -c 'git/blobs/ddddddd4' "$gh_calls")"
+wdata="$(data_of "$w")"
+assert_eq "and a fully-read register is down to the items that are actually work" "3" \
+  "$(td_of "$wdata" ' | length')"
+
+# A --no-github tick carries the rows forward like every other GitHub-sourced
+# panel, rather than blanking the ledger between fetches.
+run_publish "$w" NODE_NAME=nodeW-self
+assert_eq "a local-only tick carries the ledger forward" "3" \
+  "$(td_of "$(data_of "$w")" ' | length')"
 
 # --- Blocked rows carry `kind` for a refinement block (TD26072603) --------------
 # A refinement block (`kind: "needs-refinement"`, lib/refinement.sh) is one
