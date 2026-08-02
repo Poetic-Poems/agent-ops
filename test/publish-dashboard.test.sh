@@ -787,9 +787,26 @@ case "$1 $2" in
     # Publisher must never ask for one of them twice.
     printf '{"number":%s,"title":"a merged change","url":"https://github.com/%s/pull/%s","state":"MERGED","isDraft":false,"createdAt":"2026-07-20T00:00:00Z","mergedAt":"2026-07-21T00:00:00Z","closedAt":"2026-07-21T00:00:00Z","mergeCommit":{"oid":"1234567890abcdef"},"author":{"login":"someone"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"APPROVED","baseRefName":"main"}' \
       "$3" "$5" "$3" ;;
+  "api --paginate")
+    # gather-findings.sh's own shape: `api --paginate <path>`, no `--jq` — the
+    # path is $3 here, not $2. A healthy fleet with neither alert type open
+    # answers both with an ordinary empty list (TD-PPagop-26080201's failing
+    # cases, below, are what exercise the other side of this).
+    case "$3" in
+      "repos/"*"/dependabot/alerts"*)     printf '[]' ;;
+      "repos/"*"/code-scanning/alerts"*)  printf '[]' ;;
+      *) exit 1 ;;
+    esac ;;
   "api "*)
     case "$2" in
-      # One repo keeps a register; the others 404, as a repo with none does.
+      # An ordinary, healthy answer: no open issues. TD-PPagop-26080201's own
+      # cases below are what exercise a failed listing.
+      "repos/"*"/issues?"*) printf '[]' ;;
+      # One repo keeps a register; the others 404, as a repo with none does —
+      # a real `contents/tech-debt` 404 carries the API's own error body, which
+      # is what tells that apart from a call that simply did not answer
+      # (TD-PPagop-26080201); a stub that only ever printed nothing here would
+      # make every repo without a register look exactly like a failed read.
       # Four items say what the panel has to get right — open, in-progress,
       # resolved, and one whose blob will not answer — and four more make the
       # roster too big to read in one tick.
@@ -814,6 +831,10 @@ case "$1 $2" in
         printf -- '---\nid: an-item\ntitle: %s\nstatus: %s\nfiled: 2026-07-01\n---\n\nWhy it matters.\n' \
           "$td_title" "$td_status" \
           | base64 -w 60 | jq -Rsc '{content: ., encoding: "base64"}' | gh_jq "$@" ;;
+      "repos/"*"/contents/tech-debt")
+        printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1 ;;
       *)
         case "$3" in
           *default_branch*) printf 'main' ;;
@@ -963,6 +984,121 @@ assert_eq "and a fully-read register is down to the items that are actually work
 run_publish "$w" NODE_NAME=nodeW-self
 assert_eq "a local-only tick carries the ledger forward" "3" \
   "$(td_of "$(data_of "$w")" ' | length')"
+
+# --- Per-source, per-repo read state (TD-PPagop-26080201) -----------------------
+# Four of `github.inputs[<slug>]`'s five sources used to conflate "answered
+# emptily" with "did not answer at all": `issues`, `failed_runs`, `tech_debt`
+# and `findings` all degraded a failed call to the same `[]` a genuinely empty
+# one produces, indistinguishable on the page. Each now carries a `state`
+# alongside its data — "answered", "answered_404" (a legitimate absence, only
+# ever `tech_debt`) or "failed" — and `github.ok`/`error` reflect a failure
+# from any of them, not only `pr list`'s.
+#
+# The healthy fleet against `xdata` (the PR-index run above, same stub) is the
+# ordinary case: every source for every repo answered, and the two repos with
+# no register 404 legitimately rather than failing.
+assert_eq "a healthy repo's issues read as answered" "answered" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.issues' <<<"$xdata")"
+assert_eq "and its failing-runs listing too" "answered" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.failed_runs' <<<"$xdata")"
+assert_eq "and its findings gathering too" "answered" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.findings' <<<"$xdata")"
+assert_eq "a repo with no tech-debt register 404s legitimately, not a failure" \
+  "answered_404" "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.tech_debt' <<<"$xdata")"
+assert_eq "the repo whose register does exist reads it as answered" "answered" \
+  "$(jq -r '.github.inputs["Poetic-Poems/agent-ops"].state.tech_debt' <<<"$xdata")"
+
+# A second stub, parameterised by $GH_STUB_FAIL, answers every source
+# healthily except the one under test, which it fails for a reason that is
+# NOT a legitimate absence (a rate limit, `status: "403"`, distinct from the
+# `tech_debt` 404 above) — the case the fix exists for.
+gh_fail_stub="$tmp_dir/stub-gh-fail.sh"
+cat > "$gh_fail_stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+rate_limited() {
+  printf '{"message":"API rate limit exceeded for user ID 1.","status":"403"}'
+  echo "gh: API rate limit exceeded (HTTP 403)" >&2
+  exit 1
+}
+case "$1 $2" in
+  "pr list")
+    [[ "$GH_STUB_FAIL" == "prs" ]] && rate_limited
+    printf '[]' ;;
+  "run list")
+    [[ "$GH_STUB_FAIL" == "runs" ]] && rate_limited
+    printf '[]' ;;
+  "api --paginate")
+    case "$3" in
+      "repos/"*"/dependabot/alerts"*|"repos/"*"/code-scanning/alerts"*)
+        [[ "$GH_STUB_FAIL" == "findings" ]] && rate_limited
+        printf '[]' ;;
+      *) exit 1 ;;
+    esac ;;
+  "api "*)
+    case "$2" in
+      "repos/"*"/issues?"*)
+        [[ "$GH_STUB_FAIL" == "issues" ]] && rate_limited
+        printf '[]' ;;
+      "repos/Poetic-Poems/poetic/contents/tech-debt")
+        [[ "$GH_STUB_FAIL" == "tech_debt" ]] && rate_limited
+        printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1 ;;
+      "repos/"*"/contents/tech-debt")
+        # Every other repo still 404s legitimately, whichever source this run
+        # is failing, so this scenario proves `failed` and `answered_404` are
+        # told apart from each other, not just from `answered`.
+        printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1 ;;
+      *)
+        case "$3" in
+          *default_branch*) printf 'main' ;;
+          *) exit 1 ;;
+        esac ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$gh_fail_stub"
+
+run_fail_publish() {  # run_fail_publish <home> <which-source-fails>
+  env HOME="$1" NODE_NAME=nodeFail-self GH_CALL_LOG="$gh_calls" GH_STUB_FAIL="$2" \
+      DASHBOARD_GH_CMD="$gh_fail_stub" "$PUBLISH" >/dev/null 2>&1
+}
+
+f="$(new_home nodeFail)"
+run_fail_publish "$f" issues
+fdata="$(data_of "$f")"
+assert_eq "a failed issues listing is marked failed, not answered emptily" "failed" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.issues' <<<"$fdata")"
+assert_eq "and the page-wide alarm fires for it" "false" "$(jq -r '.github.ok' <<<"$fdata")"
+assert_contains "naming what failed" "issues" "$(jq -r '.github.error' <<<"$fdata")"
+
+f="$(new_home nodeFail2)"
+run_fail_publish "$f" runs
+assert_eq "a failed workflow-run listing is marked failed" "failed" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.failed_runs' <<<"$(data_of "$f")")"
+
+f="$(new_home nodeFail3)"
+run_fail_publish "$f" findings
+assert_eq "a failed findings gathering is marked failed" "failed" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.findings' <<<"$(data_of "$f")")"
+
+f="$(new_home nodeFail4)"
+run_fail_publish "$f" tech_debt
+fdata="$(data_of "$f")"
+assert_eq "a real tech-debt-listing failure is marked failed, not a legitimate 404" \
+  "failed" "$(jq -r '.github.inputs["Poetic-Poems/poetic"].state.tech_debt' <<<"$fdata")"
+assert_eq "while an unrelated repo's genuine 404 still reads as one" "answered_404" \
+  "$(jq -r '.github.inputs["Poetic-Poems/poetic-fiddle"].state.tech_debt' <<<"$fdata")"
+
+f="$(new_home nodeFail5)"
+run_fail_publish "$f" prs
+fdata="$(data_of "$f")"
+assert_eq "a failed pr list still raises the page-wide alarm" "false" "$(jq -r '.github.ok' <<<"$fdata")"
+assert_contains "naming pr list, not a source it never touched" "pr list" "$(jq -r '.github.error' <<<"$fdata")"
 
 # --- Blocked rows carry `kind` for a refinement block (TD26072603) --------------
 # A refinement block (`kind: "needs-refinement"`, lib/refinement.sh) is one

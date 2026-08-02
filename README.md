@@ -178,6 +178,8 @@ Edit `config.json` before first run. Keys:
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
 | `candidates_max` | 3 | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
 | `claim_ttl_hours` | 6 | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
+| `crash_loop_after` | 4 | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables the check. |
+| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issue is filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check. |
 | `abandoned_draft_after_hours` | 3 | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. |
 | `cycles_retained` | 200 | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
 | `log_retained_bytes` | 2000000 | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
@@ -452,7 +454,7 @@ is a container: Docker and the `.env` above are the whole of it.
      ```bash
      ./scripts/gather-findings.sh Poetic-Poems/poetic
      ```
-     You should get a JSON array of findings (or `[]` if there are none). If a feature is off or the token can't read it, the script simply returns `[]` and the pipeline keeps working — you just won't get findings from that source.
+     You should get a JSON array of findings (or `[]` if there are none). If a feature is off, the script returns `[]` (exit 0) and the pipeline keeps working — you just won't get findings from that source; a real failure (the token can't read the alerts, a rate limit, an outage) instead exits 1, which the dashboard's work-sources panel shows as "couldn't read" rather than a false zero.
 
 6. **Review and edit the local `config.json` file in this repository** (the one at `~/Code/Poetic-Poems/agent-ops/config.json` if you cloned it there). This is the agent system's own configuration file, not the target repos' config files. The main things to check are the `repos` list (which repositories and work sources to scan), the `pr_label`/`branch_prefix` values, and the timeout/cooldown settings if you want to tune behaviour for your environment.
 
@@ -725,9 +727,14 @@ finished still has a diff), is recorded **blocked** instead and handed to the
 Enabler, which can read the repository and settle it properly. You will see the
 refusal as a `warning` on the dashboard.
 
-Both are listed on the dashboard. To reopen a void item — you believe the work
-has genuinely regressed, or the verdict was wrong — **label any issue or pull
-request that names the item with `unvoided`**, in that item's repo:
+Both are listed on the dashboard. The void list only ever grows, so it is shown
+short: the ten newest rows, each three lines tall, with **See more** at the foot
+of the table for the older ones and any row opening to its full reason when you
+click it. The heading counts every void item however few rows are showing.
+
+To reopen a void item — you believe the work has genuinely regressed, or the
+verdict was wrong — **label any issue or pull request that names the item with
+`unvoided`**, in that item's repo:
 
 ```bash
 gh pr edit 92 -R Poetic-Poems/poetic --add-label unvoided
@@ -908,9 +915,10 @@ yourself to see exactly what the agents see:
 ```
 It prints a JSON array of the repo's open Dependabot alerts and code-scanning
 alerts (security-severity ones tagged `"source":"security"`, the rest
-`"source":"code-quality"`), most severe first. It always prints valid JSON and
-exits 0, returning `[]` when a repo has the features off or the token can't
-read them.
+`"source":"code-quality"`), most severe first. It always prints valid JSON,
+and exits 0 when a repo simply has the features off; a real failure to read
+them (a rate limit, an outage) is different and exits 1, so the dashboard can
+tell the two apart rather than showing a repo with nothing to report.
 
 ## Weekly project review
 

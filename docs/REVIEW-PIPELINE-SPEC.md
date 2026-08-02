@@ -205,8 +205,9 @@ R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID, start
    requirement 1 records it; its own lock, *not* the implementation
    `lock.json`). Apply the same held/stale/dead logic as requirement 1, using
    `review.lock_stale_after`: skip cleanly if a live review is younger than the
-   threshold; take over a stale or dead lock, killing its process group and
-   logging a `warning`. The lock has a second reader on a containerised node:
+   threshold; take over a stale or dead lock — TERM, a polled grace of up to
+   20 seconds so the holder's own signal handler (R7a) can write its record
+   and release its claim, then KILL — logging a `warning`. The lock has a second reader on a containerised node:
    `deploy/docker/watchtower-pre-update.sh` consults it, on the same
    `review.lock_stale_after` bound, to defer an image roll that would
    otherwise kill a review mid-flight — judging liveness only when the lock's
@@ -404,6 +405,21 @@ R7. **Cleanup (always, via a trap).** Delete each cycle's clone, write a
    stdout/stderr to `state_dir/reviews/<review-id>/` for debugging. Optionally
    refresh the dashboard the same way `agent-cycle.sh` does (isolated and
    time-bounded, so it can never affect the run's outcome).
+
+R7a. **A signal is a failure with a record.** The Script traps `TERM`, `INT`
+   and `HUP` from the moment its cleanup trap is armed, with the same
+   handler discipline — and for the same reasons, set out at length there —
+   as the implementation pipeline's requirement 9c: kill the in-flight
+   stage's own process group (which no signal to the Script's group ever
+   reaches), log `review-attempt-failed` naming the repo under review and
+   the stage in flight with detail `<stage> terminated by SIG<name>`,
+   release the review claim time-bounded (`no-pr` is safe even when the
+   model had already raised its PR — lib/claim.sh keeps a ref that has
+   moved or that an open PR uses), and exit `128+n` through `exit`, so R7's
+   trap still writes `review-end` with a truthful code and releases the
+   lock. A signal landing during cleanup itself must not re-enter the
+   handler. Covered by the same `test/signal-exit.test.sh` as the
+   implementation pipeline's acceptance check 4a.
 
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one

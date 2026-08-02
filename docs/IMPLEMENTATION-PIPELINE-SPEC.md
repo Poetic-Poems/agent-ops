@@ -567,6 +567,8 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_reviewer` | 30 min | |
 | `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 90 + 30 + 30 minutes once the Enabler can run inside the lock (requirement 35). |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
+| `crash_loop_after` | 4 | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
+| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
@@ -622,10 +624,16 @@ runs unattended.
    same `warning`. Only a lock whose `host` matches (or carries none, from
    before this stamp existed) is judged by liveness: if held by a live
    process younger than `lock_stale_after`, log `cycle-skipped` and exit 0;
-   if the holder is dead or older than `lock_stale_after`, kill its whole
-   process group if still alive, log a `warning` (a stale cycle indicates a
-   fault — it should not occur in normal operation), take the lock, and
-   continue.
+   if the holder is dead or older than `lock_stale_after`, end its whole
+   process group if still alive — TERM first, then a polled grace of up to
+   20 seconds for the process to exit, then KILL — log a `warning` (a stale
+   cycle indicates a fault — it should not occur in normal operation), take
+   the lock, and continue. The grace exists for requirement 9c: TERM is what
+   invites the doomed cycle's own signal handler to write its
+   `attempt-failed`, release its claim and log its `cycle-end`, and it is
+   sized to that handler's worst case (one process-group kill, one log
+   append, one 8-second-bounded claim release). Polled rather than slept, so
+   a cycle that records and exits in one second costs one second.
 1a. **Model id resolution (D12 groundwork).** Every model key read from
    config — `coordinator_model`, `implementor_model_default`,
    `implementor_model_trivial`, `reviewer_model_default`,
@@ -973,6 +981,37 @@ runs unattended.
    `DASHBOARD-SPEC.md` cron panel), `scripts/publish-dashboard.sh` reads
    `cron.log.1` too whenever the live file alone is shorter than the tail
    window, so a rotation never empties the panel.
+2.7. **Crash-loop escalation.** A Co-Ordinator failure pins no repo/item
+   (requirement 33's fields are set only after selection), so the entire
+   blocked → Enabler → escalation ladder that covers item failures never
+   sees it — and the cycle still ends 0, so the dashboard shows a healthy
+   idle fleet. When such a failure is deterministic and ships in the image,
+   every node fails identically every hour and the record diverges
+   completely from reality: the 2026-08-01 argv-cap outage ran ~15 hours ×
+   4 nodes before a human noticed, and nothing in the system would ever
+   have said so. So the Script reads the one signal that class does leave.
+   After the requirement-2.5 union snapshot and before the stand-down
+   checks (a fleet that is also standing down must still raise the alarm),
+   `lib/crash-loop.sh`'s `crash_loop_verdict` scans the union for
+   `crash_loop_after` or more **consecutive** Co-Ordinator `attempt-failed`
+   events carrying **one identical detail**, with no Co-Ordinator success
+   (`stage-end`, stage `coordinator`, exit 0) anywhere in the fleet in
+   between. Identical detail is what separates the deterministic class from
+   transient noise; any success resets the count. On a verdict, and unless
+   `crash_loop_escalated_since` finds a `crash-loop-escalated` event with
+   the same detail at or after the run's own first failure (so the same
+   loop is never escalated twice, while a fresh loop with an old detail
+   escalates anew), the Script files an issue on `crash_loop_repo` through
+   the Enabler's own `create_escalation_issue` — same open-issue dedup
+   (item ref `crash-loop:coordinator`), same label, same load-bearing
+   assignee that keeps the pipeline from selecting its own SOS as work —
+   and logs `crash-loop-escalated` with the verdict's fields and the
+   issue's number and URL. If the issue cannot be filed the Script logs a
+   `warning` and leaves no `crash-loop-escalated` event, so the next cycle
+   retries. The cycle then proceeds normally either way: detection must
+   never suppress the recovery attempt that might end the loop.
+   `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
+   `enabler_assignee`, disables the check; `--dry-run` never files.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
@@ -1612,6 +1651,36 @@ runs unattended.
    evidence that should have shut the item forever (*the work is done*) was
    the very evidence that reopened it. If a state can be cleared by the same
    fact that ought to make it permanent, it is the wrong state.
+9c. **A signal is a failure with a record.** The Script traps `TERM`, `INT`
+   and `HUP` from the moment its cleanup trap is armed. The kills that reach
+   it are real and routine — a peer taking over a stale lock TERMs the whole
+   process group (requirement 1), an operator stops a container, a `--once`
+   run is interrupted at the terminal — and before this requirement any of
+   them ended bash between one statement and the next: no `attempt-failed`,
+   no claim release, no `cycle-end`, and the in-flight stage's own process
+   group (detached from the Script's by design, so the timeout can kill it
+   whole) left running a model for a cycle that was already dead. The
+   handler, in an order that is itself the requirement:
+   1. kills the in-flight stage's process group, if any, with KILL — the
+      signaller's patience is unknown and may be two seconds, and a stage
+      whose cycle is dead has nothing left to negotiate;
+   2. logs `attempt-failed` against the selected repo+item where one exists
+      (so requirement 34's blocked extract sees the death), with detail
+      `<stage> terminated by SIG<name>` naming the stage that was in flight
+      — or `cycle` when none was — and carrying `pr_url` when the
+      requirement-23 breadcrumb identifies one (read before the clone is
+      deleted, since the breadcrumb dies with it);
+   3. releases the claim (`have-pr` when a PR is known, `no-pr` otherwise),
+      time-bounded to 8 seconds — releasing now beats waiting out the gc's
+      `claim_ttl_hours`, but not at the price of the exit record — and
+   4. exits `128+n` through the ordinary `exit`, so the EXIT trap still
+      writes `cycle-end` with a truthful code, releases the lock and pushes
+      state, and `maybe_run_enabler`'s cycle_rc guard skips the Enabler
+      without being asked.
+   A stage that had already ended cleanly is never blamed: the stage
+   pid/name pair is advertised only while a stage is in flight. A signal
+   landing during cleanup itself must not re-enter the handler.
+   `review-cycle.sh` carries the same discipline as R7a of its own spec.
 10. **Usage-limit detection.** Whenever any `claude` invocation's transcript
     matches the shared pattern in `lib/limit-detect.sh` (`LIMIT_PHRASE_REGEX`
     — the generic `hit your .* limit` stem plus the legacy `usage limit` /
@@ -3376,7 +3445,9 @@ What exists, and the requirements each part answers to:
    (`test/sweep-orphan-branches.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh` and
+   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
+   `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
+   `crash_loop_escalated_since`, both pure readers of the union stream) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -3891,6 +3962,17 @@ pull request, run the ones the change touches and any it could regress.
    because it collides with an unrelated local process) is taken over
    immediately with a logged warning, and that local process is left
    running.
+4a. **A signal leaves a record, a released claim, and no orphaned model
+   (requirement 9c).** `test/signal-exit.test.sh` passes: with the signal
+   machinery lifted from `agent-cycle.sh` (and from `review-cycle.sh`), a
+   TERM delivered mid-stage kills the stub stage's own process group, logs
+   an `attempt-failed` whose detail is `<stage> terminated by SIGTERM`,
+   releases the claim — `have-pr` when a breadcrumb names a PR, `no-pr`
+   otherwise — and exits 143 through the EXIT trap; a stage that had
+   already ended cleanly is not blamed (the event says `cycle`); and the
+   requirement-1 takeover grace TERMs a live stale holder, proceeds as soon
+   as the holder exits rather than sleeping out the full grace, and still
+   takes the lock over.
 5. An injected `limit-hit` event with a future `resume_at` and
    `reset_known: true` causes a stand-down with no probe launched; an expired
    one does not stand down. With `reset_known: false`, the cycle launches
@@ -3901,7 +3983,19 @@ pull request, run the ones the change touches and any it could regress.
    with no output changes no limit state and the reason ends
    `(probe: inconclusive)`. `--dry-run` with the same injected event launches
    no probe.
-6. With `max_open_agent_prs` temporarily set to 0, the Script stands down on
+5a. **A fleet-wide Co-Ordinator crash loop is detected once and escalated
+   once (requirement 2.7).** `test/crash-loop.test.sh` passes: for
+   `crash_loop_verdict`, a stream of threshold-many consecutive same-detail
+   Co-Ordinator failures yields a verdict carrying the count, the window and
+   every failing node; one fewer yields nothing; a Co-Ordinator success
+   anywhere in the run resets the count (including the `stage-end 0` that
+   precedes an `unparseable final message` failure, which counts as one, not
+   threshold-plus); a detail change restarts the count at one; item-stage
+   failures and other nodes' noise never contribute; a threshold of 0 is the
+   off switch. For `crash_loop_escalated_since`, an escalation event for the
+   same detail after the run's first failure suppresses re-escalation, while
+   an older one — a closed issue from a past loop — does not, and a
+   different detail never matches.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
 6a. **The switch stops both pipelines and lets go by itself.**

@@ -49,6 +49,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/noop-skip.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/crash-loop.sh
+. "$SCRIPT_DIR/lib/crash-loop.sh"
 # shellcheck source=lib/role.sh
 . "$SCRIPT_DIR/lib/role.sh"
 # shellcheck source=lib/git-identity.sh
@@ -240,6 +242,15 @@ enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalatio
 # the pipeline could go on to pick up as its own work.
 enabler_assignee="$(cfg '.enabler_assignee // ""')"
 [[ "$enabler_assignee" == "null" ]] && enabler_assignee=""
+# Crash-loop escalation (requirement 2.7). `crash_loop_after` is the
+# consecutive-failure threshold; 0 or absent turns the check off, so an
+# older config runs exactly as before. `crash_loop_repo` is where the
+# escalation issue is filed — the pipeline's own repository, because a
+# Co-Ordinator that cannot run belongs to no target repo's backlog.
+crash_loop_after="$(cfg '.crash_loop_after // 0')"
+[[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
+crash_loop_repo="$(cfg '.crash_loop_repo // ""')"
+[[ "$crash_loop_repo" == "null" ]] && crash_loop_repo=""
 if [[ -n "$enabler_model" && -z "$enabler_assignee" ]]; then
   echo "agent-cycle: enabler_model is set but enabler_assignee is not configured — refusing to run with an unassigned escalation target; set enabler_assignee in config.json or clear enabler_model to disable the Enabler" >&2
   exit 1
@@ -532,13 +543,21 @@ claim_active=0
 claim_kind=""
 claim_key=""
 
+# Zero means unbounded (GNU timeout treats a duration of 0 as "no timeout"),
+# which is every ordinary release. The signal handler (requirement 9c) sets a
+# small bound instead: it runs on borrowed time — a lock takeover KILLs what
+# has not exited within its grace — and a release the network stalls must not
+# cost the exit record. A claim the release never reached is retired by the
+# gc within `claim_ttl_hours` anyway.
+claim_release_timeout=0
+
 release_claim() {  # release_claim have-pr|no-pr
   (( claim_active )) || return 0
   if [[ "$1" == "have-pr" ]]; then
-    "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_key" \
+    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_key" \
       >>"$cycle_dir/claim.log" 2>&1 || true
   else
-    "$SCRIPT_DIR/lib/claim.sh" release "$claim_kind" "$selected_repo" "$claim_key" \
+    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release "$claim_kind" "$selected_repo" "$claim_key" \
       >>"$cycle_dir/claim.log" 2>&1 || true
   fi
   claim_active=0
@@ -1081,6 +1100,9 @@ lock_acquired=0
 clone_dir=""
 cleanup() {
   local exit_code=$?
+  # A signal landing mid-cleanup must not re-enter the handler over a cycle
+  # that is already writing its record (requirement 9c).
+  trap '' TERM INT HUP
   if [[ -n "$clone_dir" && -d "$clone_dir" ]]; then
     rm -rf "$clone_dir"
   fi
@@ -1113,6 +1135,60 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- Signals (requirement 9c) ---
+# The kills that reach this script are real and routine: a peer taking over a
+# stale lock TERMs this cycle's whole process group (requirement 1), an
+# operator stops a container, a `--once` run is interrupted at the terminal.
+# Untrapped, any of them ends bash between one statement and the next: no
+# `attempt-failed`, no `cycle-end`, no claim release, no PR comment — and the
+# stage's own process group, which `set -m` detached from ours precisely so a
+# timeout could kill it whole, is beyond every one of those signals, so the
+# model runs on for work whose cycle is already dead.
+#
+# The handler's order is its design. The stage is stopped first, with KILL
+# rather than TERM: the signaller's patience is unknown and may be two
+# seconds, and a stage whose cycle is dead has nothing left to negotiate.
+# The event lands second — one local file append, the thing that must
+# survive, and what makes the death visible to requirement 34's blocked
+# extract instead of silent. The claim release runs last and time-bounded
+# (see `claim_release_timeout`): releasing now beats waiting out the gc's
+# `claim_ttl_hours`, but not at the price of the record. Exiting through
+# `exit` hands 128+n to the EXIT trap, so `cycle-end` reports the truth and
+# `maybe_run_enabler`'s cycle_rc guard skips the Enabler unasked.
+#
+# `stage_pid`/`stage_name` are advertised by `run_claude_stage` while a stage
+# is in flight and empty otherwise, so the handler never blames a stage that
+# had already ended cleanly.
+stage_pid=""
+stage_name=""
+on_signal() {  # on_signal NAME NUM
+  local name="$1" num="$2" pr_url="" actor
+  trap '' TERM INT HUP
+  if [[ -n "$stage_pid" ]] && kill -0 "$stage_pid" 2>/dev/null; then
+    kill -KILL "-$stage_pid" 2>/dev/null || true
+  fi
+  # A stranded Implementor may have opened its draft PR without ever
+  # reporting it; the breadcrumb is the same fallback requirement 9 gives the
+  # ordinary failure path, and it must be read before the EXIT trap deletes
+  # the clone it lives in.
+  if [[ -n "$clone_dir" ]]; then
+    pr_url="$(read_pr_url_breadcrumb "$clone_dir")"
+  fi
+  actor="${stage_name:-cycle}"
+  log_attempt_failed "$actor" "$actor terminated by SIG$name" \
+    "$(jq -nc --arg u "$pr_url" 'if $u == "" then {} else {pr_url: $u} end')"
+  claim_release_timeout=8
+  if [[ -n "$pr_url" ]]; then
+    release_claim have-pr
+  else
+    release_claim no-pr
+  fi
+  exit "$(( 128 + num ))"
+}
+trap 'on_signal TERM 15' TERM
+trap 'on_signal INT 2'  INT
+trap 'on_signal HUP 1'  HUP
+
 # --- Workspace safety assertion (requirement 6) ---
 assert_in_workspace() {
   local dir="$1"
@@ -1129,7 +1205,7 @@ assert_in_workspace() {
 #     whole process group on timeout. `set -m` gives the backgrounded job its
 #     own process group so `kill -TERM -$pid` reaches every descendant. ---
 run_claude_stage() {
-  local timeout_sec="$1" model="$2" prompt="$3" out_file="$4" cwd="$5"
+  local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
   local pid waited=0 rc
 
   # stdout (the JSON envelope) and stderr (diagnostics) are kept in separate
@@ -1151,6 +1227,11 @@ run_claude_stage() {
     >"$out_file" 2>"$out_file.stderr" &
   pid=$!
   set +m
+  # Advertised for the signal handler (requirement 9c): the job's own process
+  # group is beyond any signal sent to ours, so a handler that does not know
+  # this pid cannot stop the model this cycle is paying for.
+  stage_pid="$pid"
+  stage_name="$stage"
 
   while kill -0 "$pid" 2>/dev/null; do
     if (( waited >= timeout_sec )); then
@@ -1158,6 +1239,8 @@ run_claude_stage() {
       sleep 5
       kill -KILL "-$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      stage_pid=""
+      stage_name=""
       return 124
     fi
     sleep 2
@@ -1166,6 +1249,8 @@ run_claude_stage() {
 
   wait "$pid"
   rc=$?
+  stage_pid=""
+  stage_name=""
   return "$rc"
 }
 
@@ -1347,7 +1432,7 @@ $(jq . <<<"$input")
 "
   out="$cycle_dir/enabler.out"
   log_event "stage-start" '{"stage": "enabler"}'
-  if run_claude_stage "$(( timeout_enabler_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir"; then
+  if run_claude_stage enabler "$(( timeout_enabler_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir"; then
     rc=0
   else
     rc=$?
@@ -1625,9 +1710,21 @@ acquire_lock() {
         if kill -0 "$pid" 2>/dev/null; then
           pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
           if [[ -n "$pgid" ]]; then
+            # TERM first, so the doomed cycle's own handler (requirement 9c)
+            # can log its `attempt-failed` and release its claim; KILL only
+            # after a grace sized to that handler's worst case — one
+            # process-group kill, one log append, one 8-second-bounded claim
+            # release. Polled rather than slept: a cycle that records and
+            # exits in one second costs one second.
             kill -TERM "-$pgid" 2>/dev/null || true
-            sleep 2
-            kill -KILL "-$pgid" 2>/dev/null || true
+            local grace_waited=0
+            while (( grace_waited < 20 )) && kill -0 "$pid" 2>/dev/null; do
+              sleep 1
+              grace_waited=$(( grace_waited + 1 ))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -KILL "-$pgid" 2>/dev/null || true
+            fi
           fi
         fi
         log_event "warning" "$(jq -nc --arg d "stale lock from pid $pid (age ${age_sec}s) taken over" '{detail: $d}')"
@@ -1655,6 +1752,63 @@ acquire_lock
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$cycle_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+
+# --- 1b. Crash-loop escalation (requirement 2.7) ---
+# A Co-Ordinator failure pins no repo/item — nothing is blocked, so the whole
+# blocked → Enabler → escalation ladder that covers item failures never sees
+# it — and the cycle still ends 0, so the dashboard shows a healthy idle
+# fleet. When the failure is deterministic and ships in the image (the
+# 2026-08-01 argv-cap outage: `coordinator exited 126`, every node, every
+# hour, ~15 hours), the record and the reality diverge completely. So the one
+# signal that class does leave — the same failure, verbatim, over and over
+# with no success anywhere in the fleet — is read here, from the same union
+# every other fleet-wide judgement uses, and escalated the same way the
+# Enabler escalates: an issue at the human, deduplicated, assigned so the
+# pipeline can never select its own SOS as work. Before the stand-down
+# checks, so a fleet that is also standing down (a limit, the switch) still
+# raises the alarm; after the union snapshot, because the loop is a property
+# of the fleet's memory, not this node's. The cycle then proceeds normally —
+# detection must never suppress the recovery attempt that might end the loop.
+if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
+    && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" && -s "$union_log" ]]; then
+  crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
+  if [[ -n "$crash_loop_json" ]]; then
+    cl_detail="$(jq -r '.detail // ""' <<<"$crash_loop_json")"
+    cl_first_ts="$(jq -r '.first_ts // ""' <<<"$crash_loop_json")"
+    if ! crash_loop_escalated_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
+      cl_body="$cycle_dir/crash-loop-issue.md"
+      {
+        printf '## What the fleet log shows\n\n'
+        jq -r '"- **\(.count) consecutive Co-Ordinator failures**, every one `\(.detail)`\n- first at `\(.first_ts)`, still failing at `\(.last_ts)`\n- nodes affected: \(.nodes | join(", "))"' \
+          <<<"$crash_loop_json"
+        cat <<'CRASH_LOOP_BODY'
+
+No Co-Ordinator has succeeded anywhere in the fleet since the first of these.
+A failure this uniform is almost certainly deterministic — something that ships
+in the image or the config, not a transient — so no amount of retrying will
+clear it, and until it clears the fleet selects no work at all.
+
+Start with the newest failing cycle's `coordinator.out.stderr` under
+`state_dir/cycles/`; the stage transcripts survive every failure.
+
+---
+Filed automatically by agent-cycle.sh (requirement 2.7).
+ref: crash-loop:coordinator
+CRASH_LOOP_BODY
+      } > "$cl_body"
+      if cl_created="$(create_escalation_issue "$crash_loop_repo" "crash-loop:coordinator" \
+            "$enabler_escalation_label" \
+            "Crash loop: the Co-Ordinator is failing fleet-wide ($cl_detail)" \
+            "$cl_body")" && [[ -n "$cl_created" ]]; then
+        log_event "crash-loop-escalated" "$(jq -c \
+          --argjson n "${cl_created%%$'\t'*}" --arg u "${cl_created#*$'\t'}" \
+          '. + {issue_number: $n, issue_url: $u}' <<<"$crash_loop_json")"
+      else
+        log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
+      fi
+    fi
+  fi
+fi
 
 # --- 2. Stand-down checks ---
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
@@ -1708,7 +1862,7 @@ if (( resume_epoch > now_epoch )); then
   # pure cost.
   if [[ "$governing_known" != "true" ]] && ! (( DRY_RUN )); then
     probe_out="$cycle_dir/limit-probe.out"
-    run_claude_stage 180 "$implementor_model_trivial" \
+    run_claude_stage limit-probe 180 "$implementor_model_trivial" \
       "Reply with the single word: ok" "$probe_out" "$cycle_dir" || true
     probe_verdict="$(limit_probe_verdict "$(cat "$probe_out" 2>/dev/null || true)" \
       "$(cat "$probe_out.stderr" 2>/dev/null || true)")"
@@ -2290,7 +2444,7 @@ $(jq . <<<"$coordinator_input")
 coordinator_out="$cycle_dir/coordinator.out"
 
 log_event "stage-start" '{"stage": "coordinator"}'
-if run_claude_stage "$(( timeout_coordinator_min * 60 ))" "$coordinator_model" "$coordinator_prompt" "$coordinator_out" "$cycle_dir"; then
+if run_claude_stage coordinator "$(( timeout_coordinator_min * 60 ))" "$coordinator_model" "$coordinator_prompt" "$coordinator_out" "$cycle_dir"; then
   coord_rc=0
 else
   coord_rc=$?
@@ -2441,7 +2595,7 @@ $(jq . <<<"$work_order_json")
 impl_out="$cycle_dir/implementor.out"
 
 log_event "stage-start" '{"stage": "implementor"}'
-if run_claude_stage "$(( timeout_implementor_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir"; then
+if run_claude_stage implementor "$(( timeout_implementor_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir"; then
   impl_rc=0
 else
   impl_rc=$?
@@ -2552,7 +2706,7 @@ rev_out="$cycle_dir/reviewer.out"
 
 log_event "stage-start" "$(jq -nc --arg c "$rev_complexity" --arg m "$rev_model" \
   '{stage: "reviewer", complexity: $c, model: $m}')"
-if run_claude_stage "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir"; then
+if run_claude_stage reviewer "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir"; then
   rev_rc=0
 else
   rev_rc=$?
