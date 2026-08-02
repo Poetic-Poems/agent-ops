@@ -131,7 +131,7 @@ check_script() {
   (
     set -euo pipefail
     eval "$fn"
-    run_claude_stage 60 test-model "$over_cap" "$capture/out" "$capture"
+    run_claude_stage test-stage 60 test-model "$over_cap" "$capture/out" "$capture"
   )
   rc=$?
 
@@ -163,7 +163,7 @@ check_script() {
   (
     set -euo pipefail
     eval "$fn"
-    run_claude_stage 60 test-model "$small" "$capture/out" "$capture"
+    run_claude_stage test-stage 60 test-model "$small" "$capture/out" "$capture"
   )
   assert_eq "$name: an ordinary prompt is delivered byte for byte" \
     "$small" "$(cat "$capture/prompt.seen" 2>/dev/null)"
