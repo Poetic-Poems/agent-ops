@@ -256,33 +256,36 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   open ones from the query above, the rest by `gh pr view`, cached permanently
   once terminal (see the Publisher).
 
-  Each of the five sources above (`pr list`, issues, failing runs, the
-  tech-debt listing, findings) is read per repo as one of three states —
-  `answered`, `answered_404` or `failed` — carried in
-  `github.inputs[<slug>].state`, rather than the call's raw output being
-  trusted at face value. The reason is that four of the five used to conflate
-  "nothing to report" with "the call did not answer": `gh_json` (the
-  Publisher's plain reader) discards stderr, so a call that timed out,
-  rate-limited or 500'd printed nothing, and nothing is exactly what a legitimately
-  empty result also prints. A repo's tech-debt ledger can be genuinely empty
-  since the resolved-items drop (PR #163), so "no unresolved debt" and "the
-  listing call failed" had become indistinguishable on the page — observed
-  directly during that PR's own testing, where a repo's ledger read empty on
-  one tick and thirteen items the next with nothing in the register having
-  changed (TD-PPagop-26080201). `gh_call` (the Publisher's stderr- and
-  exit-status-preserving reader, alongside `gh_json`) and `gather-findings.sh`'s
-  own exit code are what make the distinction: `answered_404` is reserved for
-  a legitimately empty case the API itself says so about (a repo with no
-  `tech-debt/` directory returns 404, the same way `gather-register-hygiene.sh`
-  already told that apart from a real failure; a repo with neither alert type
-  enabled, 403 or 404, is `gather-findings.sh`'s equivalent), and anything
-  else non-2xx is `failed`. A `failed` source renders a "couldn't read" marker
-  in place of its count, never a bare zero (see the Site, below); an
-  `answered_404` source renders as an ordinary, honest zero. `github.ok`/
-  `github.error` reflect a `failed` state from *any* of the five sources, not
-  only `pr list`'s (historically the only one that raised the "GitHub
-  unavailable" banner). If `gh` fails, the GitHub panels mark themselves stale
-  and the rest still renders. On a `--no-github` refresh the fetch is skipped
+  Four of the five sources above (issues, failing runs, the tech-debt
+  listing, findings) are read per repo as one of three states — `answered`,
+  `answered_404` or `failed` — carried in `github.inputs[<slug>].state`,
+  rather than the call's raw output being trusted at face value; `pr list`
+  keeps its own long-standing pass/fail signal folded straight into
+  `github.ok`/`github.error` instead, since no per-repo PR count is ever
+  rendered for a `failed` marker to replace. The reason for the other four is
+  that they used to conflate "nothing to report" with "the call did not
+  answer": `gh_json` (the Publisher's plain reader) discards stderr, so a call
+  that timed out, rate-limited or 500'd printed nothing, and nothing is
+  exactly what a legitimately empty result also prints. A repo's tech-debt
+  ledger can be genuinely empty since the resolved-items drop (PR #163), so
+  "no unresolved debt" and "the listing call failed" had become
+  indistinguishable on the page — observed directly during that PR's own
+  testing, where a repo's ledger read empty on one tick and thirteen items
+  the next with nothing in the register having changed (TD-PPagop-26080201).
+  `gh_call` (the Publisher's stderr- and exit-status-preserving reader,
+  alongside `gh_json`) and `gather-findings.sh`'s own exit code are what make
+  the distinction: `answered_404` is reserved for a legitimately empty case
+  the API itself says so about (a repo with no `tech-debt/` directory returns
+  404, the same way `gather-register-hygiene.sh` already told that apart from
+  a real failure; a repo with neither alert type enabled, 403 or 404, is
+  `gather-findings.sh`'s equivalent), and anything else non-2xx is `failed`.
+  A `failed` source renders a "couldn't read" marker in place of its count,
+  never a bare zero (see the Site, below); an `answered_404` source renders
+  as an ordinary, honest zero. `github.ok`/`github.error` reflect a `failed`
+  state from *any* of the five sources, not only `pr list`'s (historically
+  the only one that raised the "GitHub unavailable" banner). If `gh` fails,
+  the GitHub panels mark themselves stale and the rest still renders. On a
+  `--no-github` refresh the fetch is skipped
   entirely and the last successful result is carried forward (see the
   Publisher below), so only a fetch that was *attempted and failed* ever shows
   as unavailable.
