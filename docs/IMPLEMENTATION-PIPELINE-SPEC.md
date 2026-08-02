@@ -2793,6 +2793,36 @@ runs unattended.
     label is only ever read here, never applied or removed by this mechanism),
     so there is no outward change for requirement 12 to forbid.
 
+34h. **Where the two states meet, void wins.** An item may carry both marks at
+    once, and routinely does: `item-void` is a state of its own and clears no
+    block, so a `void` verdict — the Enabler's ordinary way of retiring work
+    that turned out to be already done (requirement 36a) — leaves the
+    `attempt-failed` before it standing for as long as the log remembers it.
+    Requirements 34 and 34c are the same rule over different events, but they
+    are not symmetric in what they ask of whoever reads them, so any consumer
+    that must reduce an item to *one* state resolves it to **void**: a void item
+    is waiting for nothing, is never selected, and is never re-examined at the
+    Enabler's prices, and reporting it as blocked overstates the backlog with
+    work the pipeline has already closed the book on.
+
+    That subtraction is a rule in its own right and so has exactly **one**
+    implementation (requirement 34a): `open_blocked_items` in
+    `lib/cycle-state.sh`, which composes the blocked and void extracts rather
+    than re-deriving either, matches a void to a block on requirement 34's own
+    terms — a void naming no repo covers the item in every repo, since either
+    half of that pair may be hand-appended by a human with no repo to hand —
+    and carries each entry through unchanged, `recheck_clean_ts` and all. Both
+    consumers that owe a single answer use it: the Enabler's eligibility rule
+    (requirement 35a, clauses 1 and 2) and the monitoring dashboard's Blocked
+    items table (`docs/DASHBOARD-SPEC.md`).
+
+    The Co-Ordinator's own input is **not** reduced. It is handed the blocked
+    list and the void list side by side (requirement 18), and requirement 34c
+    means it to see both: "skip this for now, and clear it when the impediment
+    goes" and "never select this again, and never clear it" are different
+    instructions, and an item that has become the second is one the Co-Ordinator
+    must be told about under the state that binds it.
+
 ### The Enabler
 
 35. **Engagement.** At the end of a cycle — from the cleanup of requirement 11,
@@ -2895,8 +2925,9 @@ runs unattended.
     not reconstruct it.
 
     Like requirements 34 and 34c, this rule has exactly **one** implementation
-    (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, which
-    shares the blocked and void extracts rather than re-deriving either, always
+    (requirement 34a): `enabler_eligible_items` in `lib/cycle-state.sh`, whose
+    clauses 1 and 2 above *are* requirement 34h's `open_blocked_items` rather
+    than a second reduction of the same two extracts, always
     succeeds, and yields `[]` for a log it cannot read or a threshold it cannot
     parse — an unreadable setting is not a licence to spend.
 35b. **The eligible set is part of the no-op fingerprint** (requirement 3b),
@@ -3957,6 +3988,18 @@ pull request, run the ones the change touches and any it could regress.
    table carries the issue link, or the Enabler's last verdict where there is no
    open issue (`docs/DASHBOARD-SPEC.md`). Otherwise the one row on the page that
    is addressed *to the reader* looks exactly like the rows that are not.
+8g. **An item in both states reads as void, everywhere (requirement 34h).**
+   `test/cycle-state.test.sh` passes: `open_blocked_items` drops a blocked item
+   that a later `item-void` covers, keeps one whose void was itself cleared by
+   an `unvoided`, honours a repo-less void across every repo, and returns the
+   entry otherwise untouched — while `blocked_items` beside it still reports the
+   raw requirement 34 set, since the Co-Ordinator is owed both. Then assert it
+   through the Publisher: `test/publish-dashboard.test.sh` passes with a log
+   carrying a blocked-and-void item, which must appear in `data.js`'s `void[]`
+   and **not** in its `blocked[]`. Assert the double negative too — an ordinary
+   block beside it is still listed — because a subtraction that over-reaches
+   empties the one panel that says the pipeline is stuck, and an empty panel and
+   a healthy pipeline look identical.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

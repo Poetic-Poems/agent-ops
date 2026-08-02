@@ -297,6 +297,92 @@ EOF
 assert_eq "a malformed trailing line does not strand void items" \
   "R-02" "$(void_items "$log" | jq -r '.[].item')"
 
+# --- open_blocked_items (requirement 34h) ---
+# Where the two states meet, void wins. The shape is not exotic: `item-void`
+# clears no block, so every `void` verdict the Enabler reaches leaves the
+# `attempt-failed` before it standing, and an item finished with stays in the
+# blocked set for as long as the log remembers it. The dashboard listed fifteen
+# such items as blocked, one of them a fortnight after the pipeline had closed
+# the book on it.
+
+assert_eq "missing log yields no open blocked items" "[]" \
+  "$(open_blocked_items "$tmp_dir/nonexistent.jsonl")"
+
+: > "$log"
+assert_eq "empty log yields no open blocked items" "[]" "$(open_blocked_items "$log")"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-01","detail":"dep unmerged"}
+{"ts":"2026-07-16T09:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-02","detail":"dep unmerged"}
+{"ts":"2026-07-18T09:00:00Z","event":"item-void","repo":"o/r","item":"R-02","detail":"already done","evidence":"e0ac584"}
+EOF
+assert_eq "a blocked item a later void covers is not open" \
+  "R-01" "$(open_blocked_items "$log" | jq -r '.[].item')"
+# The raw rule is untouched: the Co-Ordinator is handed both lists and
+# requirement 34c means it to see the item under the state that binds it.
+assert_eq "blocked_items still reports the raw requirement 34 set" \
+  "2" "$(blocked_items "$log" | jq 'length')"
+assert_eq "and the void item is still void" \
+  "R-02" "$(void_items "$log" | jq -r '.[].item')"
+
+# Order is not the rule — the mark is. A void recorded *before* the block still
+# covers it, because void is terminal until a human says otherwise; only an
+# `unvoided` reopens the item, and then the block underneath it stands again.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"item-void","repo":"o/r","item":"R-03","detail":"already done"}
+{"ts":"2026-07-17T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-03","detail":"dep unmerged"}
+EOF
+assert_eq "a void older than the block still covers it" "0" \
+  "$(open_blocked_items "$log" | jq 'length')"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-03","detail":"dep unmerged"}
+{"ts":"2026-07-17T08:00:00Z","event":"item-void","repo":"o/r","item":"R-03","detail":"already done"}
+{"ts":"2026-07-18T08:00:00Z","event":"unvoided","item":"R-03"}
+EOF
+assert_eq "a human's unvoided returns the item to the blocked list" \
+  "R-03" "$(open_blocked_items "$log" | jq -r '.[].item')"
+
+# Requirement 34's matching rule, not a stricter one: either half of the void
+# pair may be hand-appended by a human, who has no repo to hand.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/a","item":"R-04","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:01Z","event":"attempt-failed","stage":"implementor","repo":"o/b","item":"R-04","detail":"dep unmerged"}
+{"ts":"2026-07-17T08:00:00Z","event":"item-void","item":"R-04","detail":"already done"}
+EOF
+assert_eq "a repo-less void covers the item in every repo" "0" \
+  "$(open_blocked_items "$log" | jq 'length')"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/a","item":"R-05","detail":"dep unmerged"}
+{"ts":"2026-07-16T08:00:01Z","event":"attempt-failed","stage":"implementor","repo":"o/b","item":"R-05","detail":"dep unmerged"}
+{"ts":"2026-07-17T08:00:00Z","event":"item-void","repo":"o/a","item":"R-05","detail":"already done"}
+EOF
+assert_eq "a repo-scoped void covers only that repo's item" \
+  "o/b" "$(open_blocked_items "$log" | jq -r '.[].repo')"
+
+# The entry is `blocked_items`' entry, unchanged — the Publisher's projection
+# and requirement 18a's marker both read fields off it.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"41","detail":"needs specifying","kind":"needs-refinement"}
+{"ts":"2026-07-17T08:00:00Z","event":"recheck-clean","repo":"o/r","item":"41"}
+EOF
+assert_eq "an open block keeps its kind" \
+  "needs-refinement" "$(open_blocked_items "$log" | jq -r '.[0].kind')"
+assert_eq "and its recheck_clean_ts" \
+  "2026-07-17T08:00:00Z" "$(open_blocked_items "$log" | jq -r '.[0].recheck_clean_ts')"
+
+# Same tolerance as every other extract: the caller runs under `set -e`, and a
+# torn append must not empty the panel that says the pipeline is stuck.
+cat > "$log" <<'EOF'
+{"ts":"2026-07-16T08:00:00Z","event":"attempt-failed","stage":"implementor","repo":"o/r","item":"R-06","detail":"dep unmerged"}
+{"ts":"2026-07-16T09:01:00Z","event":"cycle-e
+EOF
+assert_eq "a malformed trailing line does not strand open blocked items" \
+  "R-06" "$(open_blocked_items "$log" | jq -r '.[].item')"
+assert_eq "stdin reads the same as a file" \
+  "R-06" "$(open_blocked_items - < "$log" | jq -r '.[].item')"
+
 # --- reviewer_complexity (requirement 8a) ---
 # The reviewer tier follows the highest valid grade offered by the summary and
 # the PR's labels; garbage degrades to nothing; no grade at all falls back on
