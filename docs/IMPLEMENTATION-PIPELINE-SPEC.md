@@ -319,6 +319,25 @@ file and carries placeholders only; `.env` itself is never committed.
   deploying it, and `.github/workflows/compose-deploy-reminder.yml` says so
   on every pull request that touches it — one marker-keyed comment naming
   the per-node ritual, posted once rather than per push.
+- **A node's running image is watched for staleness against the registry.**
+  Comparing nodes with each other (`version`, above) answers *divergence* —
+  are the nodes on the same commit — but not *staleness*: a fleet that
+  adopts one broken image at once agrees with itself perfectly and reads as
+  healthy on that measure alone, which is exactly what happened across
+  issues #149/#154. `lib/image-drift.sh` answers against a reference outside
+  the fleet instead — `ghcr.io/poetic-poems/agent-ops:latest`'s own
+  `org.opencontainers.image.revision` label, read anonymously over the OCI
+  Distribution API (no GitHub `read:packages` scope needed) — never against
+  `origin/main`, since a documentation-only merge publishes no image at all
+  and would otherwise read as false staleness. The verdict —
+  `{status: "current"}`, `{status: "behind", registry_commit,
+  registry_created_at}`, `{status: "unverified", reason}`, or `null` for a
+  node not running a CI-stamped image — travels in the node's heartbeat
+  (requirement 2.5) and is rendered on every dashboard's fleet strip
+  (`DASHBOARD-SPEC.md`) with a threshold that tolerates the ordinary
+  mid-roll deferral. `scripts/check-node-image.sh` answers the same question
+  by hand from a node's host, exec'd into the scheduler container to reuse
+  the same library rather than duplicating a registry client there.
 - Which profiles a node runs is set by `COMPOSE_PROFILES` in its `.env`, so the
   operator's command is `docker compose up -d` on every node regardless.
 - Three named volumes carry everything that must survive a container being
@@ -547,6 +566,7 @@ values below are the confirmed defaults; the README must document each key.
 | `timeout_implementor` | 90 min | |
 | `timeout_reviewer` | 30 min | |
 | `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 90 + 30 + 30 minutes once the Enabler can run inside the lock (requirement 35). |
+| `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
@@ -860,11 +880,13 @@ runs unattended.
    **What replicates.** Everything under `state_dir` except the live locks
    (`lock.json`, `review-lock.json`), the dashboard's own machinery
    (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
-   `.dashboard-github.json`), and `state-sync.log`. The
-   exclusions are not tidiness: a copied `lock.json` is a lock no process
+   `.dashboard-github.json`, `.image-drift-cache.json`), and `state-sync.log`.
+   The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
-   copying a derivative of what is already being copied. `log.jsonl`,
+   copying a derivative of what is already being copied; a copied
+   `.image-drift-cache.json` would answer for a registry query nobody on the
+   peer ran. `log.jsonl`,
    `review-log.jsonl`, `cycles/`, `reviews/`, `disabled.json` and the cron logs
    do replicate — they are what makes a spare node warm rather than merely
    installed. Git stores no empty directories, so a cycle that stood down
@@ -874,7 +896,8 @@ runs unattended.
    its **own branch**, `nodes/<NODE_NAME>`, every few minutes from the
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
-   stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose}`)
+   stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
+   image}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -884,6 +907,18 @@ runs unattended.
    the node's own `compose.yaml` still matches the copy its image shipped
    (see "The node stack"), a question only that node can ask because the
    file lives on its host and only its own containers mount it (#131).
+   `image` is `lib/image-drift.sh`'s: whether the node's own commit is the
+   one `ghcr.io/poetic-poems/agent-ops:latest` currently names, read
+   anonymously over the registry's own API rather than GitHub's (which would
+   need the `read:packages` scope this pipeline does not hold) — the gap
+   `version` alone cannot close, since comparing nodes only with each other
+   cannot tell a fleet uniformly stale from a healthy one (#155). Unlike
+   `version` and `compose`, a real network round trip sits behind it, so
+   `scripts/publish-dashboard.sh`'s own 5-second tick cannot pay for it on
+   every run: `.image-drift-cache.json`, named identically by both callers,
+   holds the last answer for `IMAGE_DRIFT_TTL` seconds (240 by default) so
+   whichever of the two next crosses that age pays the one query and the
+   other reads its answer off disk.
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)
@@ -3323,6 +3358,23 @@ What exists, and the requirements each part answers to:
     Fetched at bring-up beside `compose.yaml` (component 7, including
     `cloud-init.yaml`). Unit-tested against a stubbed `docker` on `PATH`
     (`test/check-node-compose.test.sh`); must pass `shellcheck`.
+12a. `scripts/check-node-image.sh` — asks whether this node is running the
+    newest image the repository has published (see "The node stack"; the
+    library is `lib/image-drift.sh`). Rather than a second, host-side
+    registry client, it runs the check inside the scheduler container over
+    its stdin (`docker compose exec -T scheduler bash <<INNER`, following
+    #154's stdin-not-argv fix at a smaller scale) — the container carries
+    the toolchain and the node's own `build-info.json`, neither of which the
+    host is assumed to have. An empty cache path is passed, so the answer is
+    always this instant's, never `scripts/state-sync.sh` or
+    `scripts/publish-dashboard.sh`'s last cached one. Exit 0 current, or
+    behind by less than `config.json`'s `image_behind_grace_hours`
+    (read from inside the container, the same value the dashboard badge
+    uses), 1 behind past it, 2 unable to check — a registry the container
+    could not reach, or no `compose.yaml` in the stack directory. Fetched at
+    bring-up beside `compose.yaml` (component 7). Unit-tested against a
+    stubbed `docker` on `PATH` (`test/check-node-image.test.sh`); must pass
+    `shellcheck`.
 13. `scripts/preview-deploy.sh` implementing requirement 24a: given a
     repository and a pull request — or, with no arguments at all, the pull
     request for the branch checked out in the working directory, which is how a
@@ -3464,13 +3516,34 @@ pull request, run the ones the change touches and any it could regress.
    the check is armed. The file-level assertions of 1c-i pin the
    repository's copy and prove nothing about any node's; this check is what
    covers the gap they leave.
+1c-iv. **A node can tell when it has fallen behind the newest published
+   image.** `test/image-drift.test.sh` passes: a checkout (not a CI-stamped
+   image) reads `null`; a matching commit reads `current`; a differing one
+   reads `behind`, carrying the registry's commit and the image's creation
+   label; a token, manifest or config-blob fetch that fails, or an image
+   carrying no revision label, reads `unverified` with a reason, never a
+   guessed verdict; the multi-platform index this repository actually
+   publishes is walked one level to reach the labels; a second call inside
+   `IMAGE_DRIFT_TTL` costs no network call, while an empty cache-file path
+   always re-fetches; no path returns non-zero; and
+   `.github/workflows/build-image.yml`'s publish step stamps both the
+   revision and creation labels the check reads. `test/check-node-image.test.sh`
+   passes against a stubbed `docker`: current, and behind within the
+   configured grace, both exit 0; behind past the grace exits 1, naming the
+   registry commit and the grace exceeded; a registry the container could
+   not reach exits 2; a node not running a CI-stamped image at all is not a
+   failure; and no `compose.yaml` in the stack directory, or a scheduler
+   that cannot be exec'd into, is exit 2, never a clean pass.
 1d. **State replicates per node, and comes back as peers.**
    `test/state-sync.test.sh`
    passes: a push carries the logs, cycles, reviews and switch but not the
    locks or the dashboard, onto the node's own `nodes/<NODE_NAME>` branch
-   with a heartbeat naming the node, its role, its newest cycle, its version
-   and its compose-drift verdict (asserted end to end: a node whose fixture
-   copies differ publishes `drifted` with the differing-line count); a second
+   with a heartbeat naming the node, its role, its newest cycle, its version,
+   its compose-drift verdict (asserted end to end: a node whose fixture
+   copies differ publishes `drifted` with the differing-line count) and an
+   image-drift slot (what the verdict itself says is 1c-iv's own coverage;
+   this asserts only that state-sync.sh asks for one, and that its cache file
+   does not replicate); a second
    push amends rather than accumulating history; a standby pushes its own
    branch and never a peer's; the branch keeps
    `cycles_retained` cycles while the node's own `cycles/` and `reviews/` are
@@ -4387,3 +4460,4 @@ confident, recurring no-op.
 | One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |
 | A staleness clock reset by the system's own housekeeping | `abandoned-drafts` (requirement 3e) measured a draft's staleness from `updatedAt`, which moves for anything at all. On poetic#92 a label edit deferred detection by a full `abandoned_draft_after_hours`, and — the sharper case — the Enabler's own comment correctly diagnosing the stall reset the clock in the same breath it cleared the block, deferring the very recovery it had just enabled. Filtering by comment author could not fix it: every pipeline write happens under the same GitHub account a human also comments as. | Ask "would *this system itself* ever produce this signal, and does that mean what a human producing it would mean?" before trusting a timestamp as "somebody is on it" (TD26072605). Where the answer differs, stamp what you write (`lib/pipeline-marker.sh`'s invisible marker) so the reader can tell its own hand from a human's, and discount your own bookkeeping (label edits) unconditionally. Same shape as "a change-detection digest that tracks churn instead of meaning" above, but the churn here is the system talking to itself. |
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
+| A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |

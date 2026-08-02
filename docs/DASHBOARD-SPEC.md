@@ -93,7 +93,7 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   distinction.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
-  entry ({node, role, heartbeat, last cycle, version, compose}; older than 30
+  entry ({node, role, heartbeat, last cycle, version, compose, image}; older than 30
   minutes → `stale: true` — three missed pushes, not clock jitter); its
   `cycles/<id>/`
   and `reviews/<id>/` transcripts
@@ -374,6 +374,11 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   compose.yaml against its
                                             //   image's copy (#131); null if
                                             //   unreported
+                         image: { status, registry_commit,  // the node's own
+                                  registry_created_at },     //   commit against
+                                            //   the registry's newest
+                                            //   published one (#155); null if
+                                            //   unreported
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -635,6 +640,16 @@ number's twins elsewhere on the page.
 - `lib/version.sh` — what code this node is running: the image's CI stamp
   (`build-info.json`) if there is one, else git `HEAD`, else nothing. Shared
   with `scripts/state-sync.sh`, which publishes the answer in every heartbeat.
+- `lib/image-drift.sh` — whether that code is the registry's newest published
+  commit (#155): `image_drift_status` reads `ghcr.io/poetic-poems/agent-ops
+  :latest`'s `org.opencontainers.image.revision`/`.created` labels anonymously
+  over the OCI Distribution API and compares against `lib/version.sh`'s
+  answer. Backed by a cache file (`<state_dir>/.image-drift-cache.json`,
+  `IMAGE_DRIFT_TTL` seconds, 240 default) that this script and
+  `scripts/state-sync.sh` name identically, since unlike `lib/version.sh` and
+  `lib/compose-drift.sh` a real network round trip sits behind it — one this
+  Publisher's 5-second tick cannot pay on every run. `IMAGE_DRIFT_CURL_CMD`
+  is the test seam, following `DASHBOARD_GH_CMD`.
 - `scripts/publish-dashboard-launcher.sh` — the sub-minute heartbeat driver
   (cron runs it every 5 min; it self-loops on 5-second boundaries).
 - `dashboard/index.html` — the page (committed source; copied beside the
@@ -722,9 +737,9 @@ number's twins elsewhere on the page.
   Reviewer rather than a second cycle Reviewer, and leaves the actors summing
   to the total. Each node's version comes from its own heartbeat, and a peer
   publishing none reads as unknown rather than inheriting ours; the
-  compose-drift verdict rides the same rule — a peer's from its heartbeat, a
-  peer publishing none as null, never locally computed, and our own row
-  answering for itself. And the
+  compose-drift and image-drift verdicts ride the same rule — a peer's from
+  its heartbeat, a peer publishing none as null, never locally computed, and
+  our own row answering for itself. And the
   pull-request index — driven through `DASHBOARD_GH_CMD`, so a GitHub tick
   costs no API call — resolves every reference the page holds including the
   version a node runs (which no open-PR query names), reads each pull request
@@ -747,7 +762,7 @@ number's twins elsewhere on the page.
   progress", never the finished-cycle "Ended"; a cycle with no `cycle-end` and
   no node claiming it reads "No clean end" with fleet data and "Not ended"
   without any; a `needs-refinement` blocked row carries its badge and is
-  removed by the hide filter; and the log tail's Node / Repo / Actor cell
+  removed by the hide filter; the log tail's Node / Repo / Actor cell
   answers all three slots positionally — an actor read from `stage`, from `by`
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
@@ -758,8 +773,11 @@ number's twins elsewhere on the page.
   at `3` a grey badge naming `×0.51` and later, both disclaiming starvation,
   under a note naming the Script rather than the Co-Ordinator; a repo with no
   key beside them carries nothing; and a config whose repos are all `0` or
-  keyless renders no badge and no note anywhere on the page. Out of
-  scope by the same tree-building limit:
+  keyless renders no badge and no note anywhere on the page. And a
+  node behind an image published longer ago than `image_behind_grace_hours`
+  carries an **image behind** badge naming the registry commit, while one
+  whose registry check failed carries **image unverified** instead (#155).
+  Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.
 - On a node that has been up for at least ten minutes,
@@ -1141,6 +1159,38 @@ number's twins elsewhere on the page.
   because for an image the roll already on its way will start answering, and
   a node whose rolls have stopped is the version line's `behind` failing to
   clear, already caught above.
+- **The `behind` version marker cannot tell a uniformly stale fleet from a
+  healthy one, so a second badge compares against the registry instead
+  (#155).** `behind` (above) compares nodes with each other —
+  `fleetNewestVersion()` — which is exactly what reads as agreement when
+  every node adopts the same broken image at once, as happened across
+  #149/#154: four nodes, four identical commits, four green cards. The image
+  badge (`lib/image-drift.sh`, via the heartbeat) instead compares each
+  node's own commit against `ghcr.io/poetic-poems/agent-ops:latest`'s own
+  `org.opencontainers.image.revision` label — read anonymously over the
+  registry's API, never `origin/main`, since a documentation-only merge
+  publishes no image at all and would otherwise read as false staleness (see
+  "The node stack" in the implementation-pipeline spec).
+
+  **image behind** is grey while the registry's newest image is younger than
+  `image_behind_grace_hours` (`config.json`, surfaced in `config`) — the same
+  colour and the same reasoning as the version line's own `behind`, since the
+  same explanation applies. Past the grace it turns amber, `compose`'s
+  colour: by then the ordinary deferred-roll explanation has had time to
+  resolve itself, and a node still behind may have a watchtower that has
+  stopped rolling altogether. **image unverified** is its own grey badge
+  rather than silence — unlike compose's absent-verdict case, nothing else
+  on the page would otherwise say the registry check was even attempted,
+  whether because it failed outright or (routinely, right after this code
+  first rolls out) a peer's heartbeat predates it. `current` renders
+  nothing, the same rule every other in-sync verdict on this page follows.
+
+  The registry query is a real network round trip, unlike every other field
+  on this card, so it is not repeated on the dashboard's 5-second tick:
+  `<state_dir>/.image-drift-cache.json` (excluded from state-sync
+  replication, like the other local caches) holds the last answer, and
+  `scripts/state-sync.sh`'s own heartbeat push shares the same file, so
+  whichever of the two next crosses `IMAGE_DRIFT_TTL` pays the one query.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing
