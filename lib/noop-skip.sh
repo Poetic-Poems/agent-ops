@@ -45,6 +45,7 @@
 #   issues (incl. their Priority band, req. 15e)         | issues (verbatim) + issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
+#   the fleet's active claims (requirement 3o)           | claimed, repo|item projection
 #   blocked / void skip-lists                            | repo|item projections
 #   refinements carried forward (requirement 3h)         | repo|item|ts projection
 #   which repos, which sources, which models, attention weights | selection_config
@@ -86,6 +87,18 @@
 # cycle the work becomes visible. gather-merge-conflicts.sh samples mergeability
 # and this array carries the result, so the flip to CONFLICTING *adds an entry*
 # and busts the fingerprint. Same failure shape as abandoned-drafts; same fix.
+#
+# `claimed` (requirement 3o) is hashed too, projected to `repo|item` like
+# `blocked`/`void`, for the same class of gap `abandoned_drafts` and
+# `merge_conflicts` close: a peer node claiming an item — winning a branch
+# create-ref, or writing a registry entry for a file claim — moves no commit,
+# issue, alert, or (until its PR exists) the `open_prs` digest above. Without
+# this line a claim appearing or a claim ageing past `claim_ttl_hours` (both
+# add or remove an entry) could sit unnoticed behind a matching fingerprint
+# until the forced recheck, which is exactly the silent-stall shape this rule
+# exists to close — and the reason `claimed` was introduced in the first
+# place (issue #175) was to stop the model's own live check from being the
+# only thing that ever noticed a peer's claim.
 #
 # `register_hygiene` is hashed verbatim too, but for a weaker reason, and saying
 # so is the point: unlike the two above, this source needs no rescuing. A
@@ -185,11 +198,11 @@
 # order or the timestamps and prose that ride along on a log event. `jq -S` then
 # sorts every object key, making the serialisation canonical.
 #
-# The three `enabler_*` keys, `refinements`, and `coordinator_work_sources_table`
-# all default to empty, so an input that predates them canonicalises exactly as
-# one that carries them empty: replaying an older cycle's input yields its
-# original fingerprint, and a node whose config sets no Enabler keys agrees
-# with itself.
+# The three `enabler_*` keys, `refinements`, `claimed`, and
+# `coordinator_work_sources_table` all default to empty, so an input that
+# predates them canonicalises exactly as one that carries them empty:
+# replaying an older cycle's input yields its original fingerprint, and a
+# node whose config sets no Enabler keys agrees with itself.
 # shellcheck disable=SC2016  # jq's syntax, not the shell's.
 NOOP_CANON_JQ='
   if ([.repos[]?.state.ok] | all) | not then empty
@@ -211,6 +224,7 @@ NOOP_CANON_JQ='
       }] | sort_by(.slug)),
       blocked: ([.blocked[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
       void: ([.void[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
+      claimed: ([.claimed[]? | ((.repo // "") + "|" + (.item // ""))] | sort | unique),
       refinements: ([(.refinements // {}) | to_entries[]
                      | .key as $repo
                      | (.value // {}) | to_entries[]

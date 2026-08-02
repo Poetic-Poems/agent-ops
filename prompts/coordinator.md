@@ -55,6 +55,9 @@ heading, the Script gives you one JSON object:
       "52": {"ts": "…", "cycle": "…", "comment_url": "https://github.com/…/issues/52#issuecomment-…"}
     }
   },
+  "claimed": [
+    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2}
+  ],
   "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}
 }
 ```
@@ -140,6 +143,17 @@ heading, the Script gives you one JSON object:
   where the refinement already lives in the thread you would read anyway. Look
   the item up here before you decide it is under-specified, and see "Items that
   have been refined" below for what to do with what you find.
+- `claimed` is the fleet's active claims, gathered fresh by the Script
+  immediately before this cycle: registry entries younger than
+  `claim_ttl_hours` (covering both the branch claims ordinary items use and
+  the file claims `review-feedback`, `merge-conflicts` and `abandoned-drafts`
+  use) unioned with every live `td/*`/`agent/*` claim branch on each target
+  repository — whichever peer node holds an item, however it holds it. Each
+  entry is `{"repo": "…", "item": "…", "age_hours": N}` (`age_hours` is
+  `null` when only a live branch, not a registry entry, is behind it). Treat
+  a fresh entry as a claim under exclusion 3 below — this is exactly the live
+  `gh`/`git` check that exclusion used to ask you to perform yourself, now
+  pre-fetched so there is nothing to query.
 - `models` is `config.json`'s `implementor_model_default` and
   `implementor_model_trivial`, resolved for this cycle. Use these values
   verbatim for the work order's `model` field (see "Choosing the
@@ -602,12 +616,14 @@ referencing that review; match `R-NN` refs against it. When you select one,
    `in-progress`.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
-   this item for. A live **claim branch** on the target repository is a
-   claim too, even before its draft PR appears: `td/<ID>` or
-   `agent/<item-ref>` existing on origin means a peer node holds the item —
-   one `git ls-remote origin 'refs/heads/td/*' 'refs/heads/agent/*'` per
-   repo shows them all. (The Script's own atomic claim is the hard gate;
-   this exclusion just saves you proposing work that will lose the race.)
+   this item for. A peer node's claim is excluded too, even before its draft
+   PR appears — `td/<ID>` or `agent/<item-ref>` existing on origin, or a
+   fresh registry entry — but there is nothing to check live for this half:
+   the runtime input's pre-fetched `claimed` array (see "What you receive"
+   above) already names every repo+item a peer currently holds. An item
+   whose repo and item ref appear together in `claimed` is excluded; one that
+   doesn't isn't. (The Script's own atomic claim is the hard gate; this
+   exclusion just saves you proposing work that will lose the race.)
    **This exclusion does not apply to the `review-feedback`, `merge-conflicts`,
    or `abandoned-drafts` sources**, where the open PR is the item itself (see
    "Review feedback", "Merge conflicts", and "Abandoned drafts"). For

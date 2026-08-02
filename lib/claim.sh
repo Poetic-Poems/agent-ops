@@ -26,16 +26,24 @@
 # only when it is exactly where the claim left it — pushed work is never
 # deleted, whoever has to clean it up later.
 #
-#   claim.sh claim   branch <target-slug> <branch> <default-branch>
-#   claim.sh claim   file   <target-slug> <key>
-#   claim.sh release branch <target-slug> <branch>   # ref iff unmoved+PR-less, then registry
-#   claim.sh release file   <target-slug> <key>      # registry only
-#   claim.sh count   <target-slug>                   # live registry entries
-#   claim.sh gc                                      # sweep entries older than claim_ttl_hours
+#   claim.sh claim    branch <target-slug> <branch> <default-branch>
+#   claim.sh claim    file   <target-slug> <key>
+#   claim.sh release  branch <target-slug> <branch>   # ref iff unmoved+PR-less, then registry
+#   claim.sh release  file   <target-slug> <key>      # registry only
+#   claim.sh count    <target-slug>                   # live registry entries
+#   claim.sh claims   <target-slug>                   # registry entries younger than claim_ttl_hours,
+#                                                      # as {item, kind, age_hours} (both shapes)
+#   claim.sh branches <target-slug>                   # live td/*, <branch_prefix>* branch names
+#   claim.sh gc                                       # sweep entries older than claim_ttl_hours
 #
 # Exit codes: 0 won / done · 3 lost (someone else holds it) · 1 error.
 # A caller treating 1 as "lost" fails closed — correct: a node that cannot
-# reach GitHub to claim could not push the work either.
+# reach GitHub to claim could not push the work either. `claims` and
+# `branches` are read-only listings, not claim/release outcomes: each always
+# prints a JSON array (empty on any read failure) and exits 0, because their
+# caller (the Script, gathering fleet-wide claim visibility before the
+# Co-Ordinator runs — requirement 3o) must never fail a cycle over a listing
+# it can simply come up short on this once.
 #
 # Environment:
 #   CLAIM_GH      override `gh` (tests stub it).
@@ -71,10 +79,12 @@ cfg() { jq -r "$1" "$CONFIG_FILE" 2>/dev/null; }
 state_repo="$(cfg '.state_repo // ""')"
 [[ "$state_repo" == "null" ]] && state_repo=""
 claim_ttl_hours="$(cfg '.claim_ttl_hours // 6')"
+branch_prefix="$(cfg '.branch_prefix // "agent/"')"
+[[ "$branch_prefix" == "null" || -z "$branch_prefix" ]] && branch_prefix="agent/"
 
 say() { printf 'claim: %s\n' "$*"; }
 
-usage() { sed -n '3,40p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
@@ -199,6 +209,46 @@ do_count() {  # <target-slug> -> number of live registry entries
     --jq '[.[] | select(.type == "file")] | length' 2>/dev/null || echo 0
 }
 
+do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours} younger than claim_ttl_hours
+  local slug="$1" now_epoch cutoff files f key entry ts_epoch item kind age_hours out
+  out='[]'
+  [[ -n "$state_repo" ]] || { printf '%s\n' "$out"; return 0; }
+  now_epoch="$(date +%s)"
+  cutoff=$(( now_epoch - claim_ttl_hours * 3600 ))
+  files="$("$GH" api "repos/$state_repo/contents/claims/$(san "$slug")" \
+    --jq '[.[] | select(.type == "file") | .name] | .[]' 2>/dev/null)" || { printf '%s\n' "$out"; return 0; }
+  while IFS= read -r f; do
+    [[ -n "$f" ]] || continue
+    key="${f%.json}"; key="${key//__//}"
+    entry="$(registry_get "$slug" "$key" || true)"
+    [[ -n "$entry" ]] || continue
+    ts_epoch="$(date -d "$(jq -r '.ts // ""' <<<"$entry")" +%s 2>/dev/null || echo 0)"
+    (( ts_epoch > 0 && ts_epoch >= cutoff )) || continue
+    item="$(jq -r '.item // ""' <<<"$entry")"
+    [[ -n "$item" ]] || continue
+    kind="$(jq -r '.kind // "file"' <<<"$entry")"
+    age_hours=$(( (now_epoch - ts_epoch) / 3600 ))
+    out="$(jq -c --arg i "$item" --arg k "$kind" --argjson a "$age_hours" \
+      '. + [{item: $i, kind: $k, age_hours: $a}]' <<<"$out" 2>/dev/null || printf '%s' "$out")"
+  done <<<"$files"
+  printf '%s\n' "$out"
+}
+
+do_branches() {  # <target-slug> -> JSON array of live td/*, <branch_prefix>* branch names
+  local slug="$1" prefix td_refs pfx_refs
+  td_refs="$("$GH" api "repos/$slug/git/matching-refs/heads/td/" \
+    --jq '[.[].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
+  [[ -n "$td_refs" ]] || td_refs='[]'
+  prefix="$branch_prefix"
+  pfx_refs='[]'
+  if [[ "$prefix" != "td/" ]]; then
+    pfx_refs="$("$GH" api "repos/$slug/git/matching-refs/heads/$prefix" \
+      --jq '[.[].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
+    [[ -n "$pfx_refs" ]] || pfx_refs='[]'
+  fi
+  jq -c -n --argjson a "$td_refs" --argjson b "$pfx_refs" '$a + $b' 2>/dev/null || echo '[]'
+}
+
 do_gc() {
   [[ -n "$state_repo" ]] || return 0
   local now_epoch cutoff dirs dir files f entry ts_epoch kind slug key sha
@@ -241,8 +291,10 @@ case "$MODE" in
     KIND="${1:-}"; shift || true
     [[ ( "$KIND" == "branch" || "$KIND" == "file" ) && $# -eq 2 ]] || { usage >&2; exit 64; }
     do_release "$KIND" "$@"; exit $? ;;
-  count) [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_count "$@"; exit $? ;;
-  gc)    [[ $# -eq 0 ]] || { usage >&2; exit 64; }; do_gc; exit $? ;;
+  count)    [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_count "$@";    exit $? ;;
+  claims)   [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_claims "$@";   exit $? ;;
+  branches) [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_branches "$@"; exit $? ;;
+  gc)       [[ $# -eq 0 ]] || { usage >&2; exit 64; }; do_gc;            exit $? ;;
   -h|--help) usage; exit 0 ;;
   *) usage >&2; exit 64 ;;
 esac
