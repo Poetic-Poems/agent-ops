@@ -1311,6 +1311,20 @@
       var findings = g.findings || [];
       var secCount = findings.filter(function (f){ return f.security; }).length;
       var cqCount  = findings.length - secCount;
+      // The ledger rows, as the Co-Ordinator would meet them: {id, title,
+      // status, url}, resolved items already dropped by the publisher. An item
+      // whose metadata the publisher has not read yet carries no status; it is
+      // shown, because it is not yet known *not* to be work, but it is counted
+      // apart from the ones that are known open — a cold cache must degrade to
+      // saying less, never to overstating the debt.
+      var td = (g.tech_debt || []).map(function (t) {
+        // A fetch carried forward from before the rows carried titles is a
+        // "| ID |" string; nothing else ever is.
+        return (typeof t === "string")
+          ? { id: t.replace(/^\s*\|\s*/, "").replace(/\s*\|\s*$/, ""), title:"", status:"", url:"" }
+          : (t || {});
+      });
+      var tdRead = td.filter(function (t){ return t.status; }).length;
       var box = el("div", {class:"panel", style:"padding:14px; margin-bottom:12px"});
       box.appendChild(el("div", {style:"font-weight:650; margin-bottom:8px"}, [
         el("span",{class:"mono",text: slug}),
@@ -1319,7 +1333,8 @@
           "  ·  " + secCount + " security findings · " +
           (g.failed_runs? g.failed_runs.length:0) + " failing workflows · " +
           (g.issues? g.issues.length:0) + " open issues · " +
-          (g.tech_debt? g.tech_debt.length:0) + " tech-debt rows · " +
+          tdRead + " open tech-debt items" +
+          (td.length > tdRead ? " (+" + (td.length - tdRead) + " unread)" : "") + " · " +
           cqCount + " code-quality findings"})
       ]));
       if (findings.length) {
@@ -1362,9 +1377,19 @@
           ]));
         });
       }
-      if (g.tech_debt && g.tech_debt.length) {
-        box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Tech-debt ledger:"}));
-        g.tech_debt.slice(0,12).forEach(function (t){ box.appendChild(el("div", {class:"mono", style:"font-size:11.5px; white-space:normal", text: t})); });
+      if (td.length) {
+        var TD_CLASS = { "in-progress": "b-blue", open: "b-amber" };
+        box.appendChild(el("div", {class:"muted", style:"margin:8px 0 2px", text:"Tech-debt ledger (unresolved items):"}));
+        td.slice(0,12).forEach(function (t){
+          box.appendChild(el("div", {style:"margin:2px 0; white-space:normal"}, [
+            t.status ? el("span", {class:"badge " + (TD_CLASS[t.status] || "b-grey"), text: t.status}) : null,
+            t.status ? document.createTextNode(" ") : null,
+            t.url ? el("a", {href:t.url, target:"_blank", class:"mono", style:"font-size:11.5px", text: t.id})
+                  : el("span", {class:"mono", style:"font-size:11.5px", text: t.id}),
+            document.createTextNode(t.title ? "  " + esc(t.title) : "")
+          ]));
+        });
+        if (td.length > 12) box.appendChild(el("div", {class:"muted", style:"font-size:11.5px", text:"… and " + (td.length - 12) + " more"}));
       }
       wrap.appendChild(box);
     });

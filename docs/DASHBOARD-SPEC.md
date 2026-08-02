@@ -231,10 +231,12 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   `issue_field_values`, since `gh issue list --json` cannot see issue fields,
   and defaulted to `Medium` exactly as the pipeline defaults it — see the
   implementation-pipeline spec, requirement 15e); the tech-debt register's
-  rows — one listing read of `contents/tech-debt`, its item filenames
-  rendered as rows, capped at 40 (statuses live inside the item files and are
-  not worth a read per item here; a repo with no register just 404s to an
-  empty list); and one record per pull request the page
+  unresolved items — one listing read of `contents/tech-debt` for the roster
+  and each item's blob SHA, then that item's own `title` and `status` out of
+  its frontmatter, capped at 40 (`{id, title, status, url}`; an ID names no
+  work, and a mature register is mostly resolved items the Co-Ordinator will
+  never pick up, so those are dropped here — a repo with no register just 404s
+  to an empty list); and one record per pull request the page
   refers to (`github.pr_index`, keyed `<owner>/<repo>#<number>`) — the open
   ones from the query above, the rest by `gh pr view`, cached permanently
   once terminal (see the Publisher). If `gh` fails, the GitHub panels mark
@@ -340,7 +342,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                enabler_outcome, enabler_ts } ],         //   … or the last verdict
   void:    [ { repo, item, ts, detail, stage, evidence } ],
   github:  { ok, error, fetched_at, stale, prs[], claims[],
-             inputs:{<slug>:{issues,failed_runs,tech_debt}},
+             inputs:{<slug>:{issues, failed_runs, findings,
+                             tech_debt:[{id,title,status,url}]}},  // unresolved
+                                       //   items only; title/status empty
+                                       //   until the item file has been read
              pr_index: { "<owner>/<repo>#<n>":                  // one per
                          { repo, number, title, url, state,     //   number the
                            is_draft, author, labels[], base,    //   page shows
@@ -377,6 +382,21 @@ still open are refreshed, and only hourly. A cold index is filled at most eight
 references per tick: forty `gh pr view` calls at up to `GH_TIMEOUT` each would
 not fit in the heartbeat's window, and nothing waits on it — an unindexed
 number renders as the plain link it has always been.
+
+`github.inputs[<slug>].tech_debt` is that repo's register as work: one row per
+**unresolved** item, carrying the item's own `title` and `status` and a link to
+the file, because an ID on its own names nothing and most of a mature register
+is items already resolved. The roster listing hands back each item's blob SHA
+free, so the metadata behind it is read once and cached by SHA in
+`<state_dir>/.dashboard-td.json` — the same never-stale-by-construction
+argument as the claim cache below, and an item file is written once and touched
+again only when its status flips, so a warm register costs no call at all.
+A cold one is filled at most four items **per repo** per tick, so that every
+register fills at once rather than the first repo in the config consuming the
+whole budget; an item not yet read has no status, is kept (it is not yet known
+*not* to be work), and renders as the bare ID the panel used to show. Entries
+are dropped a month after the last register that named them, which bounds a
+file that would otherwise collect a SHA per status flip for ever.
 
 `fleet.claims` is the live claim registry (implementation spec 17a), read on
 the GitHub tick and carried between ticks by the same cache as `github` (it

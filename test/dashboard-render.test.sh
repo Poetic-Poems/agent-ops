@@ -153,6 +153,31 @@ assert_contains "a single-node page's header carries live state itself" \
   "last cycle" "$out"
 assert_not_contains "with no fleet strip to duplicate it" \
   'class="cards fleet"' "$out"
+# The work-sources panel's tech-debt ledger. A row is the item's own title and
+# status, not the ID alone — the whole point of reading the item files — and an
+# item whose metadata has not been read yet still appears, as the bare ID.
+assert_contains "a tech-debt row names the work, not just its ID" \
+  "An active node's state_dir grows without bound" "$out"
+# Against the tree flattened to one line: the harness serialises each node on
+# its own line at its own depth, so a badge and its text are only adjacent
+# once the newlines and indentation are gone.
+flat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
+assert_contains "and carries the status the Co-Ordinator would find" \
+  '<span class="badge b-amber"> open ' "$flat"
+assert_contains "an item already being worked is badged as such" \
+  '<span class="badge b-blue"> in-progress ' "$flat"
+assert_contains "each row links its own item file" \
+  "blob/main/tech-debt/TD-PPagop-26072801.md" "$out"
+assert_contains "an unread item still appears, as the bare ID it always was" \
+  "TD-PPagop-26072803" "$out"
+assert_contains "the header counts the read items as open and the rest as unread" \
+  "2 open tech-debt items (+1 unread)" "$out"
+# A fetch cached before the ledger rows carried titles is a "| ID |" string,
+# and a --no-github tick carries it forward until the next real fetch.
+assert_contains "a ledger row from an older fetch still renders as its ID" \
+  "TD-PPfid-26071501" "$out"
+assert_not_contains "with the old row's table pipes gone" \
+  "| TD-PPfid-26071501 |" "$out"
 
 # --- blocked.json: ordinary vs refinement blocks, and void items -----------------
 out="$(render blocked.json)" || { printf 'FAIL - blocked.json did not render:\n%s\n' "$out"; exit 1; }
