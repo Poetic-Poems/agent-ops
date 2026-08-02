@@ -1761,6 +1761,38 @@ if ! (( DRY_RUN )); then
   "$SCRIPT_DIR/lib/claim.sh" gc >>"$cycle_dir/claim.log" 2>&1 || true
 fi
 
+# 2.1b Orphan-branch sweep (requirement 17b) — the state the gc above leaves
+# behind on purpose. Retiring a moved branch's registry entry while keeping
+# its ref is right for the work (pushed commits are never deleted) and wrong
+# for the item: with no PR, nothing ever finds those commits again, every
+# later claim 422s against the live ref, and the Co-Ordinator's exclusion
+# reads it as "claimed, skip" — the item is wedged and nothing has said so.
+# The sweep turns each provable orphan back into a state the pipeline already
+# handles: a draft PR the abandoned-drafts source recovers, or (for a ref
+# with nothing on it) no ref at all. Every node runs it, like the gc and for
+# the same reason: GitHub rejects a second PR for the same head and a second
+# ref delete is a no-op, so the worst race outcome is a warning. Fleet-wide
+# like the gc, regardless of --repo. Skipped on --dry-run: the sweep opens
+# PRs and deletes refs.
+if ! (( DRY_RUN )); then
+  while IFS= read -r sweep_slug; do
+    [[ -n "$sweep_slug" ]] || continue
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        recovered) log_event "orphan-branch-recovered" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        released)  log_event "orphan-branch-released" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        deferred|warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
+          '{detail: ("orphan-branch sweep (" + $r + "): " + (del(.repo) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-orphan-branches.sh" "$sweep_slug" \
+               2>>"$cycle_dir/orphan-sweep.err" || true)
+  done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+fi
+
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
 #
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-

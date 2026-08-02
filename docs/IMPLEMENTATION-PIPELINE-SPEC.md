@@ -1975,6 +1975,37 @@ runs unattended.
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
       cycle: a supervised run contends with the fleet on equal terms.
+17b. **The orphan-branch sweep.** The gc's only-if-untouched rule (17a)
+    leaves one state behind on purpose that is right for the work and wrong
+    for the item: an Implementor that pushed commits and died before its
+    draft PR existed leaves a moved ref with no PR — which nothing recovers
+    (`gather-abandoned-drafts.sh` lists PRs, not branches), every later
+    claim 422s against, and the Co-Ordinator's exclusion reads as "claimed,
+    skip". The work is unreachable and the item permanently unselectable,
+    with no event ever saying so. Its sibling is the unmoved ref whose
+    best-effort registry write never landed, wedging the item with nothing
+    to recover. So after the gc (2.1a), every cycle runs
+    `scripts/sweep-orphan-branches.sh` over each configured repo's `td/*`
+    and `<branch_prefix>*` refs. A ref is a provable orphan only when **all
+    three** hold: no open PR uses it, no registry entry stands for it (only
+    a clean 404 proves absence — any other failure skips the ref, fail
+    closed), and its tip commit is older than `abandoned_draft_after_hours`
+    — the same judgement that makes a draft abandoned. For each orphan the
+    sweep restores a state the pipeline already handles: commits ahead of
+    the default branch become a **draft PR** (labelled `pr_label`, so the
+    abandoned-drafts machinery recovers the work exactly as it recovers any
+    stalled draft; retried without the label, loudly, where the label is
+    missing), and a ref with nothing ahead is **deleted** — it was only
+    ever the claim, and the claim is dead. Actions are capped per run
+    (three per repo per cycle, the overflow reported, never silent), logged
+    as `orphan-branch-recovered` / `orphan-branch-released` events, and
+    every node may sweep concurrently: GitHub rejects a second open PR for
+    the same head and a second ref delete is a no-op, so the worst race
+    outcome is a warning. Skipped on `--dry-run`. One priced residual: a
+    live claim whose registry write failed and whose ref is untouched looks
+    identical to the empty orphan, so its ref can be deleted mid-run — the
+    Implementor's later push recreates it, and the cost is at worst a
+    duplicate PR, priced against an item wedged forever.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -3336,6 +3367,13 @@ What exists, and the requirements each part answers to:
    blocked ids that are register ids so the read above is asked for those and no
    others. Pure — it reads nothing itself — and every unknown resolves to no
    clearance. Unit-tested (`test/work-gone.test.sh`); must pass `shellcheck`.
+3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
+   given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
+   prints one JSON action object per orphan handled (`recovered`, `released`,
+   `deferred`, `warning`) for the Script to log. Fail-closed on every
+   unanswered question; `SWEEP_GH` stubs `gh` and `AGENT_OPS_CONFIG`
+   overrides the config for tests. Unit-tested
+   (`test/sweep-orphan-branches.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh` and
@@ -3986,6 +4024,18 @@ pull request, run the ones the change touches and any it could regress.
    (`recheck-clean`, requirement 33) and the reader (`blocked_items`'s fold)
    agreeing on both timestamps a blocked GitHub issue carries, the same way
    check 7 catches them agreeing on one.
+7b. **An orphaned claim branch is put back in front of the pipeline
+   (requirement 17b).** `test/sweep-orphan-branches.test.sh` passes: with a
+   stubbed `gh`, a stale moved ref with no PR and no registry entry yields a
+   draft PR carrying `pr_label` and a `recovered` action; a stale unmoved
+   ref in the same state yields a ref delete and a `released` action; a ref
+   with an open PR, a ref with a live registry entry, and a ref younger
+   than `abandoned_draft_after_hours` are each left untouched; a registry
+   read that fails with anything but 404 leaves the ref alone and says so
+   (`warning`, fail closed); a missing label falls back to an unlabelled PR
+   loudly; and a backlog past the per-run cap acts on the cap's worth and
+   reports the remainder (`deferred`) rather than flooding or staying
+   silent.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
