@@ -4,7 +4,8 @@
   "config": {
     "timeout_coordinator": 15, "timeout_implementor": 90,
     "timeout_reviewer": 30, "timeout_enabler": 30,
-    "lock_stale_after": 4, "dashboard_refresh_seconds": 5
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "image_behind_grace_hours": 2
   },
   "status": {
     "switch": {"disabled": false},
@@ -68,7 +69,8 @@
         "version": {"source": "image", "pr": 145, "repo": "Poetic-Poems/agent-ops",
           "commit": "abcdef1234567890abcdef1234567890abcdef12", "short": "abcdef1",
           "built_at": "@ago:5h", "dirty": false},
-        "compose": {"status": "in-sync"}
+        "compose": {"status": "in-sync"},
+        "image": {"status": "current", "checked_at": "@now"}
       },
       {
         "node": "poetic-2", "role": "standby", "heartbeat_ts": "@ago:3m", "heartbeat_age_s": 180,
@@ -79,7 +81,29 @@
           "repo": "Poetic-Poems/poetic", "item": "TD-PPpoetic-26073099", "source": "tech-debt",
           "title": "a stage the log never recorded the end of"
         },
-        "version": null, "compose": null
+        "version": null, "compose": null, "image": null
+      },
+      {
+        "node": "poetic-3", "role": "standby", "heartbeat_ts": "@ago:1m", "heartbeat_age_s": 60,
+        "last_cycle": null, "self": false, "stale": false,
+        "live": null,
+        "version": {"source": "image", "pr": 130, "repo": "Poetic-Poems/agent-ops",
+          "commit": "0011223344556677889900112233445566778899", "short": "0011223",
+          "built_at": "@ago:14h", "dirty": false},
+        "compose": {"status": "in-sync"},
+        "image": {"status": "behind", "registry_commit": "abc1234567890",
+          "registry_created_at": "@ago:10h", "checked_at": "@ago:1m"}
+      },
+      {
+        "node": "poetic-4", "role": "standby", "heartbeat_ts": "@ago:1m", "heartbeat_age_s": 60,
+        "last_cycle": null, "self": false, "stale": false,
+        "live": null,
+        "version": {"source": "image", "pr": 130, "repo": "Poetic-Poems/agent-ops",
+          "commit": "0011223344556677889900112233445566778899", "short": "0011223",
+          "built_at": "@ago:14h", "dirty": false},
+        "compose": {"status": "in-sync"},
+        "image": {"status": "unverified", "reason": "could not get a registry pull token",
+          "checked_at": "@ago:1m"}
       }
     ],
     "flags": {"disabled": null, "limit": null},

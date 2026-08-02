@@ -889,6 +889,49 @@
     return el("div", {class:"ver"}, badge);
   }
 
+  // Whether this node is running the registry's newest published image —
+  // lib/image-drift.sh's verdict, which versionLine's own "behind" badge
+  // cannot give: that one compares nodes against each other, so a fleet
+  // uniformly stale (#149, #154 — every node adopting the same broken image
+  // at once) reads as perfect agreement, not staleness. This one compares
+  // against the registry itself, the one party that always knows what
+  // "newest" actually means.
+  //
+  // Grey while the newest image is younger than image_behind_grace_hours —
+  // the same colour versionLine's own "behind" uses, because the same
+  // explanation applies: a roll defers while a cycle is in flight
+  // (deploy/docker/watchtower-pre-update.sh), so being behind for a while is
+  // routine. Past the grace period it turns amber, composeLine's colour for
+  // "this wants a human" — by then the ordinary explanation has had time to
+  // resolve itself, and a node still behind may have a watchtower that has
+  // stopped rolling at all (issue #155). "unverified" (a registry read that
+  // failed, or — routinely, right after this code first rolls out — a peer
+  // whose heartbeat predates this check) gets its own grey badge rather than
+  // silence: unlike compose's absent-verdict case, nothing else on the page
+  // would otherwise say the question was even asked.
+  function imageLine(n) {
+    var img = n.image;
+    if (!img || !img.status || img.status === "current") return null;
+    if (img.status === "unverified") {
+      return el("div", {class:"ver"}, el("span", {class:"badge b-grey", text:"image unverified",
+        title: "could not tell whether this node runs the registry's newest image" +
+               (img.reason ? " — " + img.reason : "")}));
+    }
+    var hours = Math.max(1, +((D.config || {}).image_behind_grace_hours) || 3);
+    var createdT = parseTs(img.registry_created_at);
+    var ageH = createdT ? (Date.now() - createdT.getTime()) / 3600000 : null;
+    var stuck = ageH == null || ageH > hours;
+    var ageText = createdT ? fmtAgo(img.registry_created_at) : "an unknown time ago";
+    var commit = (img.registry_commit || "").slice(0, 7);
+    var badge = el("span", {class: "badge " + (stuck ? "b-amber" : "b-grey"), text: "image behind",
+      title: "the registry's newest image (" + commit + ") was published " + ageText +
+             (stuck
+               ? " — longer than the " + hours + "h grace this page gives a deferred roll; " +
+                 "this node may need attention (scripts/check-node-image.sh, run on its host)"
+               : " — a roll waits for a cycle in flight, so this is normal for a while")});
+    return el("div", {class:"ver"}, badge);
+  }
+
   // ---------- section builder ----------
   function sectionOf(title, body) {
     return el("section", {}, [ el("h2", {text:title}), body ]);
@@ -999,6 +1042,8 @@
     card.appendChild(versionLine(n));
     var compose = composeLine(n);
     if (compose) card.appendChild(compose);
+    var image = imageLine(n);
+    if (image) card.appendChild(image);
 
     card.appendChild(el("div", {class:"hb" + (n.stale ? " stale" : ""),
       title: n.self ? "read from this node's own lock and log"
