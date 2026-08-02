@@ -66,6 +66,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
 # shellcheck source=lib/coordinator-brief.sh
 . "$SCRIPT_DIR/lib/coordinator-brief.sh"
+# shellcheck source=lib/repo-order.sh
+. "$SCRIPT_DIR/lib/repo-order.sh"
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
@@ -288,6 +290,26 @@ missing_plan_path="$(jq -r \
   <<<"$all_repos_json")"
 if [[ -n "$missing_plan_path" ]]; then
   echo "agent-cycle: repo(s) [$missing_plan_path] list the implementation-plan source but have no implementation_plan_path configured — set it in config.json's repos entry or drop the source" >&2
+  exit 1
+fi
+
+# The walk order below (section 3) is derived from each repo's `nice`
+# (requirement 3, lib/repo-order.sh) — an optional integer, -19..19, absent
+# or null meaning 0. jq's `// 0` fallback the ordering function uses to treat
+# an absent key as neutral would just as happily coerce a string or an
+# out-of-range number into 0, or into whatever `pow(1.25; -N)` makes of it,
+# and hand back an order the operator never asked for with nothing to show it
+# happened. That is the same silent misconfiguration the guards above refuse
+# to let through, so this one fails the same way: at startup, before any repo
+# is touched, naming every offending slug at once.
+bad_nice="$(jq -r \
+  '[.[] | select(.nice != null)
+        | select(((.nice | type) != "number") or ((.nice | floor) != .nice)
+                 or (.nice < -19) or (.nice > 19))
+        | .slug] | join(", ")' \
+  <<<"$all_repos_json")"
+if [[ -n "$bad_nice" ]]; then
+  echo "agent-cycle: repo(s) [$bad_nice] carry an invalid nice — it must be an integer from -19 to 19 (absent means 0) — fix the repos entry in config.json" >&2
   exit 1
 fi
 
@@ -1773,7 +1795,7 @@ fi
 # never use, but everything from here on can. See lib/git-identity.sh.
 require_git_identity agent-cycle
 
-# --- 3. Repo ordering (least recently updated default branch first) ---
+# --- 3. Repo ordering (most overdue first: staleness age weighted by each repo's nice — lib/repo-order.sh; identical to least-recent-first when no nice is set) ---
 if [[ -n "$REPO_FILTER" ]]; then
   repos_json="$(jq -c --arg f "$REPO_FILTER" '[.[] | select(.slug == $f or (.slug | endswith("/" + $f)))]' <<<"$all_repos_json")"
   if [[ "$(jq 'length' <<<"$repos_json")" == "0" ]]; then
@@ -1788,6 +1810,7 @@ ordered_repos_json="[]"
 source_states_json="[]"
 unvoid_requests_json="[]"
 hand_flagged_refinements_json="[]"
+repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
   commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>/dev/null || echo "1970-01-01T00:00:00Z")"
@@ -1861,7 +1884,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
     hand_flagged_refinements_json="$(jq -c --argjson r "$(gather_hand_flagged_refinements "$slug")" '. + $r' \
       <<<"$hand_flagged_refinements_json")"
   fi
-done < <(sort "$cycle_dir/.repo_ts")
+done < <(repo_order_by_effective_age "$repo_order_now" "$repos_json" < "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
 # --- Skip-list extracts (requirement 34: blocked iff the most recent
@@ -2029,12 +2052,31 @@ fi
 # prompt that holds the selection rules. Without them, editing coordinator.md
 # — or a configured prompt_overrides.coordinator fragment (requirement
 # 4a) — would do nothing until an unrelated commit happened to land somewhere.
+#
+# `repo_nice` belongs in this same object for the same reason, though what it
+# guards against is the ordering feature (requirement 3, lib/repo-order.sh)
+# rather than a source: repo *order* is deliberately normalised out of the
+# fingerprint — `sort_by(.slug)` in lib/noop-skip.sh's canon, asserted by
+# test/noop-skip.test.sh — because the walk order was never itself an input
+# to what the Co-Ordinator may select, only to which candidate it reaches
+# first. An edit to a repo's `nice` changes only that order, so without this
+# key such an edit would move nothing: the exact silent-stall shape the rest
+# of this block already describes, just reached from the ordering side
+# instead of a missing source. Only non-zero entries are carried, and the key
+# is omitted entirely when the map is empty — repo_nice_selection_config
+# (lib/repo-order.sh) returns `{repo_nice: …}` or a bare `{}` accordingly —
+# so a config with no `nice` set anywhere fingerprints byte-identical to how
+# it did before this feature shipped: no fleet-wide spurious wake the day
+# this lands.
+repo_nice_json="$(repo_nice_selection_config "$all_repos_json")"
 selection_config_json="$(jq -nc \
   --arg cm "$coordinator_model" \
   --arg md "$implementor_model_default" \
   --arg mt "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
-  '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}')"
+  --argjson nice "$repo_nice_json" \
+  '{coordinator_model: $cm, models: {default: $md, trivial: $mt}, candidates_max: $cmax}
+   + $nice')"
 coordinator_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" coordinator "$prompt_overrides_json")"
 # The repo/work-sources table prompts/coordinator.md used to hand-maintain is
 # generated from config.json instead (requirement 4b), from the plain
