@@ -186,9 +186,23 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   kind; do not expect one to appear here. See the design decision on plan
   limits below before building anything that treats these dollars as budget.
   Missing/partial files degrade to a null stage — never a crash.
-- **`lock.json`** — `{pid, started_at}`. A live pid (`kill -0`) means a cycle
-  is running now. The cycle id is `<started>-<node>-<pid>` (older records
-  `<started>-<pid>`) and the lock carries that same pid — last in either shape —
+- **`lock.json`** — `{pid, started_at, host}`. A live pid means a cycle is
+  running now — but `kill -0` only answers that question inside the PID
+  namespace that minted the pid, and the dashboard shares the scheduler's
+  state volume without ever sharing its PID namespace (they are separate
+  containers, `deploy/docker/compose.yaml`). So the Publisher reads `host`
+  (the container that wrote the lock) first: only when it matches this
+  container's own `$HOSTNAME`, or is absent (a lock predating the `host`
+  stamp), does it trust `kill -0`. Any other lock is unanswerable from here —
+  a pid that happens to match a live process in the dashboard's own namespace
+  proves nothing about the scheduler's, and the reverse — so it reads as not
+  alive, exactly as if there were no lock at all; `fleet.nodes[].live` for
+  this node then falls back to the same log-derived state a peer's row uses.
+  This is the same namespace confusion #130 fixed in the watchtower
+  pre-update hook and TD-PPagop-26072901 fixed in both cycle scripts'
+  `acquire_lock`. The cycle id is `<started>-<node>-<pid>` (older records
+  `<started>-<pid>`) and the lock carries that same pid — last in either
+  shape —
   so the running cycle's own events are exactly those whose id ends in
   `-<pid>`. From them the Publisher derives `status.current` — what the live
   cycle is working on right now: the running stage (the last `stage-start` with

@@ -95,6 +95,17 @@ new_home() {  # new_home <name> -> prints its HOME
   printf '%s' "$home"
 }
 
+# A pid nothing holds, in *this* namespace — the point of the lock-liveness
+# tests below is that a foreign-host lock must not be judged by `kill -0`
+# even when it would (wrongly) say "dead" here.
+dead_pid() {
+  local p
+  for (( p = $(cat /proc/sys/kernel/pid_max 2>/dev/null || echo 32768) - 1; p > 300; p-- )); do
+    kill -0 "$p" 2>/dev/null || { printf '%s' "$p"; return 0; }
+  done
+  printf '4194303'
+}
+
 # One stage envelope, the shape `claude -p --output-format json` writes: a
 # single line of compact JSON. Costs are chosen float-exact (quarters) so jq's
 # additions compare cleanly.
@@ -602,6 +613,65 @@ g="$(new_home nodeG)"
 run_publish "$g" NODE_NAME=nodeG-self
 assert_eq "a node with no history reports no live state" "null" \
   "$(jq -r '.fleet.nodes[0].live' <<<"$(data_of "$g")")"
+
+# --- Lock-liveness is host-aware (TD-PPagop-26080101) -----------------------------
+# The dashboard shares the scheduler's state volume but never its PID
+# namespace (deploy/docker/compose.yaml: dashboard and scheduler are separate
+# containers), so a bare `kill -0` against `lock.json`'s pid answers a
+# question about an *unrelated* process in the dashboard's own namespace, in
+# both directions — the same confusion #130 fixed in the watchtower
+# pre-update hook and TD-PPagop-26072901 fixed in both cycle scripts'
+# `acquire_lock`. `host` names the container that wrote the lock: only when
+# it matches ours (or is absent, predating the stamp) can `kill -0` answer for
+# it; any other lock is unanswerable from here and must read as not alive,
+# never falling back to `kill -0` regardless of what it would say.
+h="$(new_home nodeH)"
+lock_of_h="$h/.local/state/poetic-agents/lock.json"
+write_lock() {  # write_lock FILE PID HOST
+  local f="$1" pid="$2" host="$3"
+  jq -n --argjson pid "$pid" \
+        --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        --arg host "$host" \
+        '{pid: $pid, started_at: $started_at, host: $host}' > "$f"
+}
+
+# Our own container's lock: a pid is answerable by `kill -0` exactly here.
+write_lock "$lock_of_h" "$$" "containerA"
+run_publish "$h" NODE_NAME=nodeH-self HOSTNAME=containerA
+assert_eq "our own container's live pid is read as running" "true" \
+  "$(jq -r '.status.running' <<<"$(data_of "$h")")"
+
+write_lock "$lock_of_h" "$(dead_pid)" "containerA"
+run_publish "$h" NODE_NAME=nodeH-self HOSTNAME=containerA
+assert_eq "and a dead one in our own container is not" "false" \
+  "$(jq -r '.status.running' <<<"$(data_of "$h")")"
+
+# The regression itself: a lock written by another container, naming a pid
+# that happens to be alive in *this* namespace too ($$, this test process).
+# A bare `kill -0` would say "running" — coincidence, not evidence, since the
+# pid is meaningless outside the namespace that minted it — and that false
+# positive is exactly what the host check must prevent.
+write_lock "$lock_of_h" "$$" "containerB"
+run_publish "$h" NODE_NAME=nodeH-self HOSTNAME=containerA
+assert_eq "a foreign lock is not running, however alive its pid looks here" "false" \
+  "$(jq -r '.status.running' <<<"$(data_of "$h")")"
+
+# The reverse hazard (pid 55423 on 2026-07-28): a foreign lock whose pid
+# reads as dead here must not be trusted either — the writer's namespace is
+# simply unanswerable from this one, in both directions.
+write_lock "$lock_of_h" "$(dead_pid)" "containerB"
+run_publish "$h" NODE_NAME=nodeH-self HOSTNAME=containerA
+assert_eq "and a foreign lock with a locally-dead pid reads the same way" "false" \
+  "$(jq -r '.status.running' <<<"$(data_of "$h")")"
+
+# An unstamped lock (written before `host` existed) cannot name a foreign
+# container, so it falls back to `kill -0` like our own.
+jq -n --argjson pid "$$" --arg started_at "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  '{pid: $pid, started_at: $started_at}' > "$lock_of_h"
+run_publish "$h" NODE_NAME=nodeH-self HOSTNAME=containerA
+assert_eq "an unstamped lock's live pid still reads as running" "true" \
+  "$(jq -r '.status.running' <<<"$(data_of "$h")")"
+rm -f "$lock_of_h"
 
 # --- Cost by actor, and the review pipeline's share of it ------------------------
 # Which agent the money went on is the cut an operator can act on — the model
