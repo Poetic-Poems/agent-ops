@@ -1092,8 +1092,19 @@ run_claude_stage() {
   # stdout (the JSON envelope) and stderr (diagnostics) are kept in separate
   # files — merging them would let stray stderr output break the JSON parse
   # of the final result.
+  #
+  # The prompt goes in on stdin, never as an argument (requirement 4c). Linux
+  # caps a *single* argv entry at MAX_ARG_STRLEN — 32 pages, 131072 bytes,
+  # fixed at compile time and unaffected by `ulimit`, so `getconf ARG_MAX`'s
+  # far larger total is no guide to it. An assembled stage prompt is already
+  # the same order of magnitude and grows with every prompt edit, so passing
+  # it as `claude -p "$prompt"` puts the pipeline one paragraph away from an
+  # exec that fails with E2BIG before the model is ever reached. A here-string
+  # (rather than a pipe) keeps the invocation a single process whose status is
+  # the stage's own: under `pipefail` a `printf | claude` would report
+  # printf's SIGPIPE, 141, whenever a stage exited without draining stdin.
   set -m
-  ( cd "$cwd" && claude -p "$prompt" --model "$model" --dangerously-skip-permissions --output-format json ) \
+  ( cd "$cwd" && claude -p --model "$model" --dangerously-skip-permissions --output-format json <<<"$prompt" ) \
     >"$out_file" 2>"$out_file.stderr" &
   pid=$!
   set +m

@@ -261,8 +261,14 @@ run_claude_stage() {
   local timeout_sec="$1" model="$2" prompt="$3" out_file="$4" cwd="$5"
   local pid waited=0 rc
 
+  # The prompt goes in on stdin, never as an argument, for the reason
+  # agent-cycle.sh's copy of this function sets out at length: Linux caps a
+  # single argv entry at 131072 bytes, and a stage prompt is the one input
+  # here that grows without bound. This pipeline's prompt is well short of
+  # that today, but the two functions are the same mechanism and drifting
+  # them apart would leave the smaller one waiting to fail the same way.
   set -m
-  ( cd "$cwd" && claude -p "$prompt" --model "$model" --dangerously-skip-permissions --output-format json ) \
+  ( cd "$cwd" && claude -p --model "$model" --dangerously-skip-permissions --output-format json <<<"$prompt" ) \
     >"$out_file" 2>"$out_file.stderr" &
   pid=$!
   set +m
