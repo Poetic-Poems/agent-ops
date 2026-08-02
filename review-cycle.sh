@@ -223,6 +223,9 @@ lock_acquired=0
 clone_dir=""
 cleanup() {
   local exit_code=$?
+  # A signal landing mid-cleanup must not re-enter the handler over a run
+  # that is already writing its record (R7a).
+  trap '' TERM INT HUP
   if [[ -n "$clone_dir" && -d "$clone_dir" ]]; then
     rm -rf "$clone_dir"
   fi
@@ -243,6 +246,46 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# --- Signals (R7a; the implementation spec's requirement 9c sets out the
+#     rationale at length) ---
+# A stale-lock takeover TERMs this run's whole process group, an operator
+# stops a container, a `--once` run is interrupted at the terminal. Untrapped,
+# any of them ends bash with no `review-attempt-failed`, no `review-end`, no
+# claim release — and the Reviewer-Agent's own process group, which `set -m`
+# detached from ours, reviewing on for a run that is already dead.
+#
+# Same order as agent-cycle.sh's handler, for the same reasons: stop the stage
+# (KILL — the signaller's patience is unknown), land the event (a local file
+# append), release the claim time-bounded, and exit through `exit` so
+# `review-end` reports 128+n.
+stage_pid=""
+stage_name=""
+signal_claim_slug=""
+signal_claim_branch=""
+signal_claim_safe=""
+on_signal() {  # on_signal NAME NUM
+  local name="$1" num="$2" actor
+  trap '' TERM INT HUP
+  if [[ -n "$stage_pid" ]] && kill -0 "$stage_pid" 2>/dev/null; then
+    kill -KILL "-$stage_pid" 2>/dev/null || true
+  fi
+  actor="${stage_name:-cycle}"
+  log_event "review-attempt-failed" "$(jq -nc \
+    --arg r "$signal_claim_slug" --arg s "$actor" \
+    --arg d "$actor terminated by SIG$name" \
+    '(if $r == "" then {} else {repo: $r} end) + {stage: $s, detail: $d}')"
+  if [[ -n "$signal_claim_branch" ]]; then
+    # no-pr is safe even when the model had already raised its PR:
+    # lib/claim.sh keeps the ref whenever it has moved or an open PR uses it.
+    claim_release_timeout=8
+    release_review_claim "$signal_claim_slug" "$signal_claim_branch" "$signal_claim_safe" no-pr
+  fi
+  exit "$(( 128 + num ))"
+}
+trap 'on_signal TERM 15' TERM
+trap 'on_signal INT 2'  INT
+trap 'on_signal HUP 1'  HUP
+
 # --- Workspace safety assertion (requirement 6) ---
 assert_in_workspace() {
   local dir="$1"
@@ -258,7 +301,7 @@ assert_in_workspace() {
 # --- Run a headless claude invocation with a wall-clock timeout, killing its
 #     whole process group on timeout (identical mechanism to agent-cycle.sh). ---
 run_claude_stage() {
-  local timeout_sec="$1" model="$2" prompt="$3" out_file="$4" cwd="$5"
+  local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
   local pid waited=0 rc
 
   # The prompt goes in on stdin, never as an argument, for the reason
@@ -272,6 +315,11 @@ run_claude_stage() {
     >"$out_file" 2>"$out_file.stderr" &
   pid=$!
   set +m
+  # Advertised for the signal handler (R7a): the job's own process group is
+  # beyond any signal sent to ours, so a handler that does not know this pid
+  # cannot stop the model this run is paying for.
+  stage_pid="$pid"
+  stage_name="$stage"
 
   while kill -0 "$pid" 2>/dev/null; do
     if (( waited >= timeout_sec )); then
@@ -279,6 +327,8 @@ run_claude_stage() {
       sleep 5
       kill -KILL "-$pid" 2>/dev/null || true
       wait "$pid" 2>/dev/null || true
+      stage_pid=""
+      stage_name=""
       return 124
     fi
     sleep 2
@@ -287,6 +337,8 @@ run_claude_stage() {
 
   wait "$pid"
   rc=$?
+  stage_pid=""
+  stage_name=""
   return "$rc"
 }
 
@@ -394,9 +446,20 @@ acquire_lock() {
         if kill -0 "$pid" 2>/dev/null; then
           pgid="$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')"
           if [[ -n "$pgid" ]]; then
+            # TERM first, so the doomed run's own handler (R7a; implementation
+            # spec requirement 9c) can log its record and release its claim;
+            # KILL only after a grace sized to that handler's worst case.
+            # Polled rather than slept: a run that records and exits in one
+            # second costs one second.
             kill -TERM "-$pgid" 2>/dev/null || true
-            sleep 2
-            kill -KILL "-$pgid" 2>/dev/null || true
+            local grace_waited=0
+            while (( grace_waited < 20 )) && kill -0 "$pid" 2>/dev/null; do
+              sleep 1
+              grace_waited=$(( grace_waited + 1 ))
+            done
+            if kill -0 "$pid" 2>/dev/null; then
+              kill -KILL "-$pgid" 2>/dev/null || true
+            fi
           fi
         fi
         log_event "warning" "$(jq -nc --arg d "stale review lock from pid $pid (age ${age_sec}s) taken over" '{detail: $d}')"
@@ -531,15 +594,25 @@ fi
 # is its head; "no-pr" releases fully, and lib/claim.sh deletes the ref only
 # if it still points where the claim left it AND no open PR uses it, so a
 # review the model pushed before failing is never deleted.
+#
+# `claim_release_timeout` follows agent-cycle.sh's convention: 0 (unbounded)
+# for every ordinary release, a small bound when the signal handler (R7a) is
+# the caller and runs on borrowed time. Clearing the signal globals here, in
+# the one funnel every release passes through, is what keeps the handler from
+# releasing a claim this run had already let go.
+claim_release_timeout=0
 release_review_claim() {
   local slug="$1" branch="$2" safe="$3" mode="$4"
   if [[ "$mode" == "have-pr" ]]; then
-    "$SCRIPT_DIR/lib/claim.sh" release file "$slug" "$branch" \
+    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$slug" "$branch" \
       >>"$review_dir/claim-$safe.log" 2>&1 || true
   else
-    "$SCRIPT_DIR/lib/claim.sh" release branch "$slug" "$branch" \
+    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release branch "$slug" "$branch" \
       >>"$review_dir/claim-$safe.log" 2>&1 || true
   fi
+  signal_claim_slug=""
+  signal_claim_branch=""
+  signal_claim_safe=""
 }
 
 review_one() {
@@ -572,6 +645,12 @@ review_one() {
       '{repo: $r, detail: ("could not claim " + $b + " — standing this repo down, fail closed")}')"
     return 0
   fi
+
+  # From here until this repo's release, the claim is what a signal must not
+  # strand (R7a): the handler releases exactly what these name.
+  signal_claim_slug="$slug"
+  signal_claim_branch="$branch"
+  signal_claim_safe="$safe"
 
   # The claim succeeded, so this repo is about to be cloned and reviewed —
   # the first point in this cycle that can actually commit. Every earlier
@@ -611,7 +690,7 @@ $(jq . <<<"$reviewer_input")
   out_file="$review_dir/reviewer-$safe.out"
 
   log_event "review-stage-start" "$(jq -nc --arg r "$slug" --arg m "$review_model" '{repo: $r, model: $m}')"
-  if run_claude_stage "$(( timeout_review_min * 60 ))" "$review_model" "$reviewer_prompt" "$out_file" "$clone_dir"; then
+  if run_claude_stage reviewer "$(( timeout_review_min * 60 ))" "$review_model" "$reviewer_prompt" "$out_file" "$clone_dir"; then
     rc=0
   else
     rc=$?

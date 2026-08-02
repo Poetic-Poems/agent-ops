@@ -48,7 +48,8 @@
         "issues": [], "failed_runs": [], "tech_debt": ["| TD-PPagop-26072900 |"], "findings": []
       },
       "Poetic-Poems/poetic-fiddle": {
-        "issues": [], "failed_runs": [], "tech_debt": [], "findings": []
+        "issues": [], "failed_runs": [], "tech_debt": [], "findings": [],
+        "state": {"issues": "failed", "failed_runs": "answered", "tech_debt": "answered_404", "findings": "answered"}
       }
     }
   },

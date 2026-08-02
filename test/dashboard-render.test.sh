@@ -215,6 +215,33 @@ assert_contains "void items are listed separately, with their own count" \
   "Void items (1)" "$out"
 assert_contains "and the evidence for why there is no work" \
   "removed in #144" "$out"
+assert_not_contains "a void list inside the row cap offers no see-more control" \
+  "See more" "$out"
+
+# --- void-many.json: the void list's two caps ------------------------------------
+# The void list is the page's one list that grows without bound while asking
+# nothing of the reader — a fleet retires items steadily, and every panel that
+# does want an answer sits below it. So it shows ten rows, three lines each,
+# and both caps open on demand. The fixture holds twelve with the oldest two
+# first in the array, because a row cap only means anything once the list is
+# ordered: `void_items` groups by repo and item, so unsorted the ten kept rows
+# would be whichever ids happened to sort first.
+out="$(render void-many.json)" || { printf 'FAIL - void-many.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "the heading counts every void item, not the rows shown" \
+  "Void items (12)" "$out"
+assert_contains "the tenth-newest is the last row inside the cap" \
+  "the tenth-newest void" "$out"
+assert_not_contains "an item past the cap is not rendered, however early it sits in the data" \
+  "TD-PPagop-26071801" "$out"
+assert_not_contains "nor the other one past it" \
+  "TD-PPagop-26071812" "$out"
+assert_contains "a control offers the rest, counted" \
+  "See more — 2 older items" "$out"
+assert_contains "each void row is capped in height" \
+  'class="clip"' "$out"
+assert_contains "and is clickable, to open it to its full text" \
+  'class="clickable"' "$out"
 
 # --- work-sources.json: the per-repo `nice` badge --------------------------------
 # The rendering half of the pipeline spec's requirement 3. What makes this
@@ -252,6 +279,21 @@ assert_contains "and says plainly that the Co-Ordinator is not told" \
 # indistinguishable from one configured before the feature existed.
 assert_not_contains "a repo with no nice key renders no badge for it" \
   "nice 0" "$out"
+
+# A failed source (TD-PPagop-26080201) must not render as a bare zero, which
+# would be indistinguishable from a repo that genuinely has none: the fixture
+# fails poetic-fiddle's `issues` read and marks its `tech_debt` a legitimate
+# 404, so the two must render differently from each other and from a repo
+# (poetic, agent-ops) whose fixture carries no `state` at all, which must
+# still render exactly as it did before this field existed.
+assert_contains "a failed source reads 'couldn't read', never a false zero" \
+  "couldn't read open issues" "$out"
+assert_contains "a legitimate absence (a repo with no register) still reads as an honest zero" \
+  "0 open tech-debt items" "$out"
+assert_not_contains "and never shows the couldn't-read marker for it" \
+  "couldn't read tech-debt" "$out"
+assert_contains "a repo with no state field at all renders exactly as before" \
+  "0 security findings" "$out"
 
 # --- work-sources-neutral.json: every repo at 0 or absent ------------------------
 # The whole-page form of the same silence, and the one that matters to a fleet
