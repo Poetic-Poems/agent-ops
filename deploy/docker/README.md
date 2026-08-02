@@ -19,9 +19,15 @@ README](../../README.md) and `docs/*-SPEC.md`.
 - A **GitHub token** for this node: read and write on `Poetic-Poems/poetic`,
   `Poetic-Poems/poetic-fiddle`, `Poetic-Poems/agent-ops` (a target repo of its
   own pipeline since the roadmap's dogfood rule) and
-  `Poetic-Poems/agent-ops-state` (contents, pull requests, issues) plus read on
-  security alerts. One token per node, so a single node can be revoked without
-  disturbing the others.
+  `Poetic-Poems/agent-ops-state` (contents, pull requests, issues, workflows,
+  actions) plus read on security alerts. Workflows and actions are separate
+  permissions on a fine-grained token and both are needed: workflows write is
+  what lets a cycle's PR touch `.github/workflows/`; actions write is what
+  lets an agent dispatch, rerun or cancel a workflow run. A call refused with
+  `HTTP 403: Resource not accessible by personal access token` names the
+  permission it wanted in its `x-accepted-github-permissions` response header
+  — read that rather than guessing. One token per node, so a single node can
+  be revoked without disturbing the others.
 - A **git identity** — a name and an email — for the commits this node's
   cycles make. There is no default; an active node's cycles refuse to run
   without both.
