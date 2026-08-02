@@ -204,6 +204,7 @@ Edit `config.json` before first run. Keys:
 | `timeout_reviewer` | 30 | Minutes. |
 | `timeout_enabler` | 30 | Minutes. |
 | `lock_stale_after` | 4 | Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 90 + 30 + 30 minutes). |
+| `image_behind_grace_hours` | 3 | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
 | `limit_cooldown_default` | 3 | Hours. Stand-down after a usage-limit error. |
 | `disable_default_ttl` | 4 | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | 24 | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
