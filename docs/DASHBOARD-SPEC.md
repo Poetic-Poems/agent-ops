@@ -762,7 +762,7 @@ number's twins elsewhere on the page.
   progress", never the finished-cycle "Ended"; a cycle with no `cycle-end` and
   no node claiming it reads "No clean end" with fleet data and "Not ended"
   without any; a `needs-refinement` blocked row carries its badge and is
-  removed by the hide filter; the log tail's Node / Repo / Actor cell
+  removed by the hide filter; and the log tail's Node / Repo / Actor cell
   answers all three slots positionally — an actor read from `stage`, from `by`
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
@@ -773,10 +773,10 @@ number's twins elsewhere on the page.
   at `3` a grey badge naming `×0.51` and later, both disclaiming starvation,
   under a note naming the Script rather than the Co-Ordinator; a repo with no
   key beside them carries nothing; and a config whose repos are all `0` or
-  keyless renders no badge and no note anywhere on the page. And a
-  node behind an image published longer ago than `image_behind_grace_hours`
-  carries an **image behind** badge naming the registry commit, while one
-  whose registry check failed carries **image unverified** instead (#155).
+  keyless renders no badge and no note anywhere on the page. A node behind an
+  image published longer ago than `image_behind_grace_hours` carries an
+  **image behind** badge naming the registry commit, while one whose registry
+  check failed carries **image unverified** instead (#155).
   Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.
