@@ -460,6 +460,19 @@ blocked and void items; work sources per repo (including the security and
 code-quality findings, shown first, that the Co-Ordinator prioritises, and the
 open issues, listed in `Priority` band order with the band on each, which is
 the order the Co-Ordinator reaches them in);
+each repo whose `config.json` entry carries a non-zero `nice` (pipeline spec,
+requirement 3) also carries a **badge** naming that value, blue below zero and
+grey above, with the weighting it buys — `1.25^(-nice)`, the multiple by which
+the Script inflates that repo's staleness age when it orders the repo walk —
+and the disclaimer that it biases the walk without starving anything. A note
+above the panel says the **Script** is what acts on a `nice`, because the panel
+is headed with what the *Co-Ordinator* sees and a `nice` is the one ordering
+input it is never given; without that line the badge would assert, on the
+page's only per-repo surface, exactly the thing requirement 3 is careful not to
+do. A repo at `0` or with no key carries neither badge nor note, so a fleet
+that has set no `nice` anywhere renders the panel it rendered before the
+feature existed. The values reach the page unaided — `config.repos` already
+ships wholesale — so this is rendering only: the Publisher is unchanged;
 the cost charts — by-day on the left, by-model and by-actor stacked beside it,
 since the first runs to sixty rows and the other two to five; recent log;
 `cron.log` tail.
@@ -704,7 +717,14 @@ number's twins elsewhere on the page.
   answers all three slots positionally — an actor read from `stage`, from `by`
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
-  keeping its slot rather than letting the repository slide into it. Out of
+  keeping its slot rather than letting the repository slide into it. The
+  per-repo `nice` badge is asserted from two fixtures, because both of its
+  silences are load-bearing and neither is visible on the page that has them:
+  a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one
+  at `3` a grey badge naming `×0.51` and later, both disclaiming starvation,
+  under a note naming the Script rather than the Co-Ordinator; a repo with no
+  key beside them carries nothing; and a config whose repos are all `0` or
+  keyless renders no badge and no note anywhere on the page. Out of
   scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.
@@ -924,6 +944,29 @@ number's twins elsewhere on the page.
   dropped and never silently blank: a source added upstream then shows up
   unstyled, which is a prompt to add a colour, rather than invisibly missing
   from the mix — the one thing the column exists to show.
+- **A `nice` badge has to name the Script, because the panel it sits in names
+  the Co-Ordinator.** The page's one per-repo surface is headed "Work sources
+  (what the Co-Ordinator sees)", and a `nice` is the one ordering input the
+  Co-Ordinator is deliberately never given: the Script computes the walk order
+  and hands over the finished list, and the values themselves never reach the
+  model (pipeline spec, requirement 3). A badge dropped in unqualified would
+  therefore make the page assert the opposite of the design, on the surface an
+  operator reads precisely when asking why a repo keeps coming up first — and
+  the next place that reading sends them is the Co-Ordinator's prompt, where
+  there is nothing to find. Hence the note above the panel rather than the
+  tooltip alone: a tooltip is invisible to a glance, absent under a finger, and
+  this is the half of the answer that decides where someone looks next.
+- **A neutral `nice` renders nothing, not a zero.** A repo at `0` and a repo
+  with no `nice` key are the same repo, and a fleet that has set none is the
+  ordinary case, so neither draws a badge and the note stays off the page
+  entirely — a config with no `nice` anywhere renders byte-for-byte the page it
+  rendered before the feature existed. This is the same omit-never-empty
+  contract `lib/repo-order.sh` keeps for the no-op fingerprint, kept here for
+  the matching reason: a neutral config should be indistinguishable from one
+  predating the feature, on the page as in the hash. A `nice 0` badge would
+  also be the wrong kind of information — three repos each wearing one says
+  the weighting is a thing being *used*, when what it means is that nobody has
+  touched it.
 - **Plan limits are not on this page, because they are not obtainable
   (checked 2026-07-17).** The obvious feature request — show used vs remaining
   credits for the current session and the weekly limit, in the header — was

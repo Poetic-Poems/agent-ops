@@ -1237,12 +1237,75 @@
     return wrap;
   }
 
+  // ---------- repo nice ----------
+  // config.json's per-repo `nice` (pipeline spec, requirement 3): an integer
+  // from -19 to 19, absent meaning 0, that multiplies the repo's
+  // default-branch staleness age by 1.25^(-nice) before the Script orders its
+  // repo walk. It reaches the page for free — `repos` already ships wholesale
+  // into `config` — so all that is here is the rendering, and two properties
+  // of the feature decide its shape:
+  //
+  //   - **It is the Script's ordering input, not the Co-Ordinator's.** The
+  //     values never reach the model (pipeline spec, requirement 3). An
+  //     unqualified badge inside a panel headed "what the Co-Ordinator sees"
+  //     would assert exactly the thing that design is careful not to do, so
+  //     the panel gains a line naming who acts on it — the operator asking
+  //     "why does this repo keep coming up first" needs the answer to name
+  //     the right half of the pipeline, or the next place they look is the
+  //     Co-Ordinator's prompt, where there is nothing to find.
+  //   - **Absent and 0 are the same repo, and both are the ordinary case.**
+  //     Neither renders anything: no badge, no note, so a fleet with no
+  //     `nice` set anywhere sees the page exactly as it was before this
+  //     existed. That is the same omit-never-empty contract
+  //     lib/repo-order.sh keeps for the fingerprint, kept here for the
+  //     matching reason — a neutral config should be indistinguishable from
+  //     one predating the feature, on the page as in the hash.
+  //
+  // The page shows what is *configured*, which on a running node is also what
+  // the walk used: a non-integer or out-of-range value never gets this far,
+  // the Script having refused the cycle at startup. `Math.floor` mirrors the
+  // normalisation the fingerprint applies to the integer-valued float
+  // spelling (`-5.0`) that guard deliberately admits.
+  function niceOf(slug) {
+    var repos = (D.config && D.config.repos) || [];
+    for (var i = 0; i < repos.length; i++) {
+      if (repos[i] && repos[i].slug === slug) {
+        var n = +repos[i].nice;
+        return isFinite(n) ? Math.floor(n) : 0;
+      }
+    }
+    return 0;
+  }
+  // The weighting a `nice` buys, to two decimal places: 1.25^(-nice), i.e. how
+  // much older than the clock says this repo looks when the walk is ordered.
+  function niceWeight(n) { return Math.pow(1.25, -n).toFixed(2); }
+  function niceBadge(slug) {
+    var n = niceOf(slug);
+    if (!n) return null;
+    return el("span", {
+      class: "badge " + (n < 0 ? "b-blue" : "b-grey"),
+      style: "margin-left:8px; font-weight:600",
+      title: "nice " + n + " (config.json): the Script weights this repo's staleness age ×" +
+             niceWeight(n) + " when it orders the repo walk, so it gets " +
+             (n < 0 ? "earlier" : "later") + " attention. It biases the order and never starves a repo — " +
+             "the global cross-repo tiers still outrank the walk, and a repo that alone has qualifying " +
+             "work is selected whatever its nice.",
+      text: "nice " + n
+    });
+  }
+
   // ---------- inputs ----------
   function inputsPanel() {
     var inputs = (D.github && D.github.inputs) || {};
     var slugs = Object.keys(inputs);
     if (!slugs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text: (D.github && D.github.ok===false) ? "GitHub unreachable." : "No work-source data."}));
     var wrap = el("div");
+    if (slugs.some(function (s) { return niceOf(s) !== 0; })) {
+      wrap.appendChild(el("div", {class:"muted", style:"margin:-2px 0 10px", text:
+        "A nice badge is that repo's configured attention bias: the Script weights its staleness age by " +
+        "1.25^(-nice) when it orders the repo walk. The Co-Ordinator is never told these values — it is " +
+        "handed the finished order."}));
+    }
     slugs.forEach(function (slug) {
       var g = inputs[slug] || {};
       var findings = g.findings || [];
@@ -1251,6 +1314,7 @@
       var box = el("div", {class:"panel", style:"padding:14px; margin-bottom:12px"});
       box.appendChild(el("div", {style:"font-weight:650; margin-bottom:8px"}, [
         el("span",{class:"mono",text: slug}),
+        niceBadge(slug),
         el("span",{class:"muted", style:"font-weight:400", html:
           "  ·  " + secCount + " security findings · " +
           (g.failed_runs? g.failed_runs.length:0) + " failing workflows · " +
