@@ -177,8 +177,9 @@ _image_drift_registry_head() {  # <owner/repo> <cache-file>
 
   if [[ -n "$cache_file" ]]; then
     mkdir -p "$(dirname "$cache_file")" 2>/dev/null || true
-    printf '%s' "$fresh" > "$cache_file.tmp.$$" 2>/dev/null \
-      && mv "$cache_file.tmp.$$" "$cache_file" 2>/dev/null || true
+    if printf '%s' "$fresh" > "$cache_file.tmp.$$" 2>/dev/null; then
+      mv "$cache_file.tmp.$$" "$cache_file" 2>/dev/null || true
+    fi
   fi
   printf '%s' "$fresh"
 }
