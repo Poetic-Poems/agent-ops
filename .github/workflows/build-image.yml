@@ -450,10 +450,16 @@ jobs:
             type=gha,scope=arm64
           # `image.source` is what links the package to this repository, so the
           # package page carries the README and the commit history rather than
-          # standing on its own with no explanation.
+          # standing on its own with no explanation. `image.revision` and
+          # `image.created` are what lib/image-drift.sh reads back over the
+          # registry API (#155): a node has no other way to learn which commit
+          # `:latest` names, or how long it has carried it, without the GitHub
+          # packages API and the `read:packages` scope this pipeline does not
+          # hold.
           labels: |
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.created=${{ needs.stamp.outputs.built_at }}
             org.opencontainers.image.description=The agent-ops node image: the pipelines and their whole toolchain.
             org.opencontainers.image.licenses=NOASSERTION
 
