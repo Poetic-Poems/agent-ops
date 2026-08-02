@@ -2823,6 +2823,65 @@ runs unattended.
     instructions, and an item that has become the second is one the Co-Ordinator
     must be told about under the state that binds it.
 
+34i. **A block whose work is gone is cleared without asking anyone.** The
+    common way a block ends is not that the impediment lifts — it is that
+    somebody finishes the work: the issue is closed, the pull request merged,
+    the register entry flipped to `resolved`. None of that emits an event, and
+    both readers requirement 34 relies on are blind to it in the same place. The
+    Co-Ordinator never revisits the item, because a finished item is offered by
+    no source and so never reaches its candidates; the Enabler does, but only
+    after `enabler_recheck_hours`, and it pays a full engagement to learn what
+    one read of state the cycle already holds would have said. Until then the
+    item is reported as blocked, and the count an operator reads at a glance
+    says the pipeline is stuck on work that is done.
+
+    So, in the same pre-extract window as requirements 34f and 34g, and against
+    the *open* blocked set (34h — a void item needs no unblocking), the Script
+    answers one question per item class and logs `unblocked` with
+    `by: "work-gone"` and a `detail` naming the fact that decided it:
+
+    - **an issue** (a bare number) — the number is not in that repo's open-issue
+      digest (requirement 3b);
+    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
+      the number is not in that repo's open-PR digest;
+    - **a register item** (`TD<date><nn>` or `TD-<scope>-<date><nn>`) — the
+      item's own file on the default branch says `status: resolved` or
+      `status: not-debt`, read by `scripts/gather-register-status.sh` for the
+      blocked ids and no others, so a fleet with no blocked register items pays
+      nothing and the read is bounded by the backlog rather than the register.
+      It sits above the no-op skip of requirement 3b, like the rest of this
+      window, so an item that stays *genuinely* blocked does cost a listing and
+      a file read every cycle. Deciding whether to reconcile only after deciding
+      whether to run is the cycle-late failure 34f and 34g are placed here to
+      avoid, and two reads is a small price beside the Enabler engagements that
+      item is already earning.
+
+    Three properties make this safe enough to run unattended:
+
+    - **Unknown is never gone.** A repo missing from the digest, a digest
+      carrying `ok: false`, an id no register file claims by `id` or
+      `legacy-id`, or one that two files claim, all decide nothing and leave the
+      item blocked. The failure is a delayed clearance, which costs a cycle; the
+      other direction clears a block out from under work that is still real,
+      which costs a cycle an hour until someone notices.
+    - **The findings sources are excluded, and that is not an oversight.**
+      `gather-findings.sh` degrades to `[]` on an API error by design
+      (requirement 3), because a Co-Ordinator that sees no findings declines and
+      the two agree. Read as a clearing signal the same `[]` says "every alert
+      is fixed", so one 403 would clear every alert block on the fleet. The
+      file-backed sources (`project-review`, `implementation-plan`) are excluded
+      for the plainer reason that the Script holds nothing to compare their ids
+      against. All of them remain the Enabler's, exactly as before.
+    - **It clears, it never voids.** The event is `unblocked`, which requirement
+      34 calls the safe direction — a wrongly cleared item becomes a candidate
+      again, is offered by no source, and nothing happens. A void is terminal
+      (34c) and must be corroborated (34d), and neither is what a deterministic
+      tidy-up has earned.
+
+    The rule has one implementation, `work_gone_clearances` in
+    `lib/work-gone.sh`, which is pure: it decides from the blocked set, the
+    digests and the register statuses it is handed, and reads nothing itself.
+
 ### The Enabler
 
 35. **Engagement.** At the end of a cycle — from the cleanup of requirement 11,
@@ -3219,6 +3278,17 @@ What exists, and the requirements each part answers to:
    plus `comments`). Fails safe to `[]` (exit 0) with failures loud on
    stderr. Its filter and shape are regression-tested in
    `test/issues-prefetch.test.sh`; must pass `shellcheck`.
+3k. `scripts/gather-register-status.sh` implementing requirement 34i's register
+   half: given a repo slug, default branch and item ids, prints a JSON object
+   mapping each id to the `status` its own item file declares on that branch.
+   An id resolves only when exactly one file claims it by `id` or `legacy-id`
+   — the filename is a shortlist, never the answer — and everything short of
+   that certainty is absent from the output, which the caller reads as "not
+   known to be gone". A repo with no `tech-debt` tree prints `{}` silently; an
+   API failure prints `{}` with `gh`'s diagnosis on stderr. Called once per
+   repo that has blocked register items and not at all otherwise, so it is
+   bounded by the backlog rather than by the register. Fails safe to `{}` (exit
+   0); regression-tested in `test/work-gone.test.sh`; must pass `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -3259,9 +3329,17 @@ What exists, and the requirements each part answers to:
    `lib/void-guard.sh`, whose `entry_field_text` it shares rather than keeping a
    second opinion about what counts as a filled-in field (requirement 34a).
    Unit-tested (`test/needs-refinement.test.sh`); must pass `shellcheck`.
+3m. `lib/work-gone.sh` implementing requirement 34i's decision:
+   `work_gone_clearances`, which given the open blocked set, the cycle's
+   source-state digests and the register statuses prints one entry per block
+   whose work no longer exists, and `work_gone_register_ids`, which names the
+   blocked ids that are register ids so the read above is asked for those and no
+   others. Pure — it reads nothing itself — and every unknown resolves to no
+   clearance. Unit-tested (`test/work-gone.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/model-id.sh` and `lib/metering.sh`) holding every
+   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh` and
+   `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
    dashboard reports what came of it), requirement 3h's refinement
@@ -4000,6 +4078,24 @@ pull request, run the ones the change touches and any it could regress.
    block beside it is still listed — because a subtraction that over-reaches
    empties the one panel that says the pipeline is stuck, and an empty panel and
    a healthy pipeline look identical.
+8h. **A block outlives its impediment, never its work (requirement 34i).**
+   `test/work-gone.test.sh` passes, and every assertion in it is made in both
+   directions, because the two ways this can be wrong are not alike. Too eager
+   clears a block out from under real work and costs a full cycle an hour until
+   somebody notices: so a closed issue, a merged pull request and a `resolved`
+   or `not-debt` register item each clear their block, while an **open** issue,
+   an **open** pull request and an **open** register item each do not, and every
+   unreadable shape — a repo missing from the digest, a digest carrying
+   `ok: false`, an id no item file claims by `id` or `legacy-id`, an id two of
+   them claim, a register read that failed — clears nothing at all. Too shy is
+   the silent failure this requirement exists to end: so assert the legacy id
+   (`TD26072401`) resolving through the renamed file that carries it, and assert
+   that the classes left to the Enabler stay blocked — a review recommendation,
+   an implementation-plan item, and above all a `dependabot-alert-N`, whose
+   source degrades to `[]` on an API error and would otherwise read as "every
+   alert is fixed". `scripts/gather-register-status.sh` runs for real against a
+   stubbed contents API in that file, so what is asserted is the shipped script
+   rather than a copy of its logic.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
