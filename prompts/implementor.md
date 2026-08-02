@@ -315,7 +315,9 @@ matching "When `source` is …" section above.)*
 4. **Verify like CI does.** Run the same lint/typecheck/format/test/build
    commands the repo's CI workflows run, and fix whatever they surface.
    Don't report completion on the strength of the diff looking right —
-   run the checks.
+   run the checks. When the work touched `*.sh` in a repo whose CI lints
+   shell, run the repo's lint script (here, `scripts/lint-shell.sh`) before
+   pushing, and fix whatever it surfaces.
 4a. **Check the preview your pull request deployed.** poetic-fiddle deploys
    every pull request to Vercel, and nothing in step 4 — nor `gh pr checks` —
    says a word about whether that preview built: Vercel reports through
