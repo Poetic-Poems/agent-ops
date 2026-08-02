@@ -3523,7 +3523,11 @@ pull request, run the ones the change touches and any it could regress.
    label; a token, manifest or config-blob fetch that fails, or an image
    carrying no revision label, reads `unverified` with a reason, never a
    guessed verdict; the multi-platform index this repository actually
-   publishes is walked one level to reach the labels; a second call inside
+   publishes is walked one level to reach the labels, into a per-platform
+   image and never into one of the attestation manifests buildx writes
+   beside them (whose config blob carries none of these labels, so reading
+   one would report the whole fleet `unverified` while the registry was
+   answering perfectly well); a second call inside
    `IMAGE_DRIFT_TTL` costs no network call, while an empty cache-file path
    always re-fetches; no path returns non-zero; and
    `.github/workflows/build-image.yml`'s publish step stamps both the

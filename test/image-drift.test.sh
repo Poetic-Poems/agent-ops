@@ -16,8 +16,10 @@
 #     old publish, from before this file existed, is not "current" by
 #     omission;
 #   - the multi-platform index this repository actually publishes (one
-#     manifest per architecture) is walked one level to reach the config that
-#     carries the labels;
+#     manifest per architecture, plus the attestation manifest buildx writes
+#     beside each — which carries none of these labels) is walked one level
+#     into a per-platform image, never an attestation, to reach the config
+#     that carries the labels;
 #   - and the cache means a second call inside IMAGE_DRIFT_TTL costs no
 #     network call at all, while an empty cache-file path (what the fleet
 #     scripts never pass, but this suite does to isolate scenarios) always
@@ -74,14 +76,36 @@ case "$url" in
   *"/manifests/latest")
     [[ "${MANIFEST_FAIL:-0}" == "1" ]] && exit 22
     if [[ "${AS_INDEX:-0}" == "1" ]]; then
-      printf '{"manifests":[{"digest":"sha256:childdigest","platform":{"architecture":"amd64"}}]}'
+      # The shape `:latest` actually carries: two per-platform images and the
+      # two attestation manifests buildx writes beside them. The attestations
+      # come first here deliberately — nothing but buildx's emission order
+      # puts the images first in the real index, and an attestation's config
+      # blob carries none of the labels this library reads, so picking one
+      # would read as a fleet-wide "unverified".
+      printf '%s' '{"manifests":[
+        {"digest":"sha256:attestdigest","platform":{"architecture":"unknown","os":"unknown"},
+         "annotations":{"vnd.docker.reference.type":"attestation-manifest"}},
+        {"digest":"sha256:attestdigest","platform":{"architecture":"unknown","os":"unknown"},
+         "annotations":{"vnd.docker.reference.type":"attestation-manifest"}},
+        {"digest":"sha256:childdigest","platform":{"architecture":"amd64","os":"linux"}},
+        {"digest":"sha256:childdigest2","platform":{"architecture":"arm64","os":"linux"}}]}'
     else
       printf '{"config":{"digest":"sha256:configdigest"}}'
     fi
     ;;
-  *"/manifests/sha256:childdigest")
+  *"/manifests/sha256:childdigest"*)
     [[ "${MANIFEST_FAIL:-0}" == "1" ]] && exit 22
     printf '{"config":{"digest":"sha256:configdigest"}}'
+    ;;
+  # An attestation manifest names an in-toto config blob, which carries no
+  # `org.opencontainers.image.*` labels — so a walk that lands here reads
+  # "unverified" rather than a commit, which is what the index above pins.
+  *"/manifests/sha256:attestdigest")
+    [[ "${MANIFEST_FAIL:-0}" == "1" ]] && exit 22
+    printf '{"config":{"digest":"sha256:attestconfig"}}'
+    ;;
+  *"/blobs/sha256:attestconfig")
+    printf '{"config":{"Labels":null}}'
     ;;
   *"/blobs/sha256:configdigest")
     [[ "${CONFIG_FAIL:-0}" == "1" ]] && exit 22
@@ -129,6 +153,18 @@ assert_eq "carrying the registry's commit" \
   "newcommit0000000" "$(jq -r '.registry_commit' <<<"$verdict")"
 assert_eq "and the image's creation label" \
   "2026-08-01T09:00:00Z" "$(jq -r '.registry_created_at' <<<"$verdict")"
+
+# The index above leads with buildx's attestation manifests. Reading one of
+# those instead of a per-platform image is the silent failure this guards:
+# its config blob has no labels, so the verdict would be "unverified" — a
+# whole fleet reporting the registry unreadable while it was answering fine.
+: > "$call_log"
+verdict="$(AS_INDEX=1 REVISION=newcommit0000000 CREATED=2026-08-01T09:00:00Z \
+  image_drift_status "$(version_json image oldcommit0000000 Poetic-Poems/agent-ops)" "")"
+assert_eq "an attestation manifest is never the one walked into" \
+  "0" "$(grep -c '/manifests/sha256:attestdigest' "$call_log" 2>/dev/null || true)"
+assert_eq "a per-platform image manifest is" \
+  "1" "$(grep -c '/manifests/sha256:childdigest' "$call_log" 2>/dev/null || true)"
 
 # --- Behind, with no creation label (an old publish) -------------------------
 

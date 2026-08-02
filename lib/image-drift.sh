@@ -118,8 +118,26 @@ _image_drift_fetch_registry_head() {  # <owner/repo>
   # .github/workflows/build-image.yml's publish job — so any one of them
   # carries the labels this file wants); a single-platform republish has no
   # `manifests[]` at all and `top` already is the manifest to read.
+  #
+  # Not simply `manifests[0]`: buildx also writes one *attestation* manifest
+  # per platform into the same index (build-push-action defaults provenance
+  # on), and `:latest` really does carry four entries today — two images and
+  # two attestations, the latter marked `platform.architecture: "unknown"`
+  # and annotated `vnd.docker.reference.type: attestation-manifest`. An
+  # attestation's config blob carries no `org.opencontainers.image.*` labels
+  # at all, so reading one would report "no revision label" — a fleet-wide
+  # `unverified` that looks exactly like a registry outage — and nothing but
+  # buildx's current emission order keeps the images first. So select on what
+  # the entry *is* rather than where it sits, falling back to the first entry
+  # only if nothing looks like an image.
   local child_digest="" manifest="$top"
-  child_digest="$(jq -r '(.manifests // [])[0].digest // empty' <<<"$top" 2>/dev/null || true)"
+  child_digest="$(jq -r '
+      (.manifests // []) as $m
+      | ($m | map(select(
+          ((.annotations // {})["vnd.docker.reference.type"] // "") != "attestation-manifest"
+          and (.platform.architecture // "") != "unknown"))) as $img
+      | (if ($img | length) > 0 then $img[0] else $m[0] end)
+      | .digest // empty' <<<"$top" 2>/dev/null || true)"
   if [[ -n "$child_digest" ]]; then
     manifest="$("$curl_cmd" -fsSL --max-time "$timeout" -H "Authorization: Bearer $token" \
         -H 'Accept: application/vnd.oci.image.manifest.v1+json,application/vnd.docker.distribution.manifest.v2+json' \
