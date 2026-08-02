@@ -51,7 +51,8 @@ curl -fsSL  "$base/.env.example" -o .env
 scripts=https://raw.githubusercontent.com/Poetic-Poems/agent-ops/main/scripts
 curl -fsSLO "$scripts/watch-node.sh"
 curl -fsSLO "$scripts/check-node-compose.sh"
-chmod +x watch-node.sh check-node-compose.sh
+curl -fsSLO "$scripts/check-node-image.sh"
+chmod +x watch-node.sh check-node-compose.sh check-node-image.sh
 $EDITOR .env
 ```
 
@@ -59,8 +60,11 @@ $EDITOR .env
 once it is up (see [Follow a node's events](#follow-a-nodes-events) below);
 `check-node-compose.sh` audits this node's `compose.yaml` — and the
 containers created from it — against the running image (see [Keeping the
-compose file current](#keeping-the-compose-file-current)). Both are fetched
-now so they sit beside `compose.yaml` from the start.
+compose file current](#keeping-the-compose-file-current)); `check-node-image.sh`
+asks whether this node is running the newest image the repository has
+published (see [Is this node on the newest
+image](#is-this-node-on-the-newest-image) below). All three are fetched now
+so they sit beside `compose.yaml` from the start.
 
 At minimum set `NODE_NAME`, `GH_TOKEN`, `GIT_USER_NAME`, `GIT_USER_EMAIL` and —
 for the `tailnet` profile — `TS_AUTHKEY`. Leave `ROLE=standby` unless this node
@@ -296,6 +300,41 @@ actual environment, and exits non-zero if anything has drifted — the checks
 cover exactly the properties whose silent loss cost the cycles behind
 issue #131.
 
+### Is this node on the newest image
+
+`compose.yaml` is one half of "is this node current" — the other is the
+image itself, which watchtower is meant to keep rolling forward on its own.
+When it does, "behind" is a normal transient: a roll defers while a cycle is
+in flight (the pre-update hook above), so a node reading a commit or two
+behind `main` for a while is the mechanism working as designed, not a fault.
+What has no other answer on this page is a node whose roll has *stopped* —
+a wedged hook, a registry token that quietly expired — which looks
+identical to a healthy mid-roll for as long as nobody checks (issue #155).
+
+Every dashboard's fleet strip carries the answer, from each node's own
+comparison against `ghcr.io/poetic-poems/agent-ops:latest` (`lib/image-drift.sh`,
+via the heartbeat):
+
+- **image behind** (grey) — the registry's newest image is younger than
+  `image_behind_grace_hours` (`config.json`; a few hours by default) — the
+  ordinary mid-roll state, nothing to do;
+- **image behind** (amber) — older than that, and this node still has not
+  adopted it;
+- **image unverified** — the registry could not be reached, or (only right
+  after this check itself first rolls out) the node's heartbeat predates it.
+
+To ask directly from a node's host, run `check-node-image.sh` (fetched at
+bring-up) from the stack directory:
+
+```bash
+./check-node-image.sh
+```
+
+It runs the same check inside the scheduler container — a live registry
+query, not a cached answer — and exits non-zero only once the node has been
+behind for longer than the grace period; use `docker compose logs
+watchtower` to see whether it is still polling at all.
+
 ### Changing a node's role
 
 Edit `ROLE` in `.env`, then:
@@ -487,6 +526,8 @@ fleet across the hour](#spreading-the-fleet-across-the-hour).
 | `Bind for 127.0.0.1:8787 failed: port is already allocated` on the `local` profile | Something already holds that port on the host — a second node's stack, or on the laptop the legacy SysV dashboard | Set `DASHBOARD_PORT` in `.env` |
 | Nothing happens on any node | The shared switch is set | `--status` to see the reason, `--enable` to clear it |
 | A node's card shows `compose drifted` or `compose unverified` | Its `compose.yaml` has fallen behind the repository — a merged compose change was never applied there (`drifted`), or the file is too old even to carry the mount the check reads (`unverified`) | The ritual in [Keeping the compose file current](#keeping-the-compose-file-current): wait for idle, re-fetch `compose.yaml`, `docker compose up -d`; `./check-node-compose.sh` to verify, containers included |
+| A node's card shows an amber `image behind` | The registry's newest image has existed longer than `image_behind_grace_hours` and this node still has not adopted it — a normal deferral has outlived the grace period this page gives it | See [Is this node on the newest image](#is-this-node-on-the-newest-image): `docker compose logs watchtower` for whether it is still polling, `./check-node-image.sh` to re-check directly |
+| A node's card shows `image unverified` | The registry could not be reached from inside the node, or (only right after this check first rolls out) its heartbeat predates it | Usually resolves on its own within a few heartbeats; `./check-node-image.sh` names the reason if it does not |
 | `watchtower` crash-loops (`Restarting`) with `client version 1.25 is too old. Minimum supported API version is 1.40` | The unmaintained `containrrr/watchtower` image defaults to an ancient Docker API version that a modern daemon (Docker 25+, e.g. a fresh Ubuntu 26.04 host) rejects — so the node stops auto-updating and drifts off the fleet digest | `compose.yaml` now pins `DOCKER_API_VERSION` (default `1.40`) for watchtower; a node provisioned before that needs its `compose.yaml` re-fetched, then `docker compose up -d watchtower`. Override the version in `.env` only if a daemon needs a different one |
 
 ---
