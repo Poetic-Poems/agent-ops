@@ -304,11 +304,20 @@ matching "When `source` is …" section above.)*
    in `acceptance`. Keep it scoped to the item — this pipeline depends on
    small, reviewable PRs; if you find adjacent cleanup you're tempted to
    do, leave it (a new `TECH-DEBT.md` entry is the right way to note it,
-   not scope creep in this PR).
+   not scope creep in this PR). **Commit and push at each meaningful
+   checkpoint** — a passing test, a completed file, a finished logical
+   unit — rather than saving every change for one push at the end. The
+   branch is already claimed and the PR is already open, so a half-done
+   push costs nothing; an unpushed working tree dies with the clone if this
+   stage is killed, times out, or hits a usage limit, and everything since
+   the last push is lost with it. Never let good work sit only in the
+   working tree while you move on to the next unit.
 4. **Verify like CI does.** Run the same lint/typecheck/format/test/build
    commands the repo's CI workflows run, and fix whatever they surface.
    Don't report completion on the strength of the diff looking right —
-   run the checks.
+   run the checks. When the work touched `*.sh` in a repo whose CI lints
+   shell, run the repo's lint script (here, `scripts/lint-shell.sh`) before
+   pushing, and fix whatever it surfaces.
 4a. **Check the preview your pull request deployed.** poetic-fiddle deploys
    every pull request to Vercel, and nothing in step 4 — nor `gh pr checks` —
    says a word about whether that preview built: Vercel reports through

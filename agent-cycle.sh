@@ -2570,6 +2570,8 @@ fi
 
 claimed_json=""
 n_cand="$(jq 'length' <<<"$candidates_json")"
+claim_attempts=0
+claim_unreachable=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -2577,6 +2579,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_source="$(jq -r '.source // ""' <<<"$cand")"
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
+  claim_attempts=$(( claim_attempts + 1 ))
   claim_rc=0
   if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" || "$c_source" == "merge-conflicts" ]]; then
     # No new branch to create — the PR already exists (a human's review round for
@@ -2601,15 +2604,29 @@ for (( ci = 0; ci < n_cand; ci++ )); do
     claimed_json="$(jq -c --arg b "$c_branch" '. + {branch: $b}' <<<"$cand")"
     break
   fi
-  # 3 = a peer holds it. Anything else fails closed for this candidate — a
-  # node that cannot reach GitHub to claim could not push the work either.
+  # 3 = a peer holds it (healthy contention: the work is being done, just not
+  # by this node) — 1 = GitHub was unreachable (fail-closed: this node could
+  # not have pushed the work either, but no work is being done by anyone).
+  # Opposite operational conditions, so `cause` tells them apart instead of
+  # the event wearing one reason for both.
+  case "$claim_rc" in
+    3) claim_cause="held" ;;
+    1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
+    *) claim_cause="$claim_rc" ;;
+  esac
   log_event "claim-lost" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg b "$c_branch" \
-    --argjson rc "$claim_rc" '{repo: $r, item: $i, branch: $b, rc: $rc}')"
+    --argjson rc "$claim_rc" --arg cause "$claim_cause" \
+    '{repo: $r, item: $i, branch: $b, rc: $rc, cause: $cause}')"
 done
 
 if [[ -z "$claimed_json" ]]; then
-  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" \
-    '{reason: "every candidate is already claimed elsewhere", candidates: $n}')"
+  if (( claim_attempts > 0 && claim_unreachable == claim_attempts )); then
+    standdown_reason="GitHub could not be reached for any candidate — this is an outage, not contention"
+  else
+    standdown_reason="every candidate is already claimed elsewhere"
+  fi
+  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" \
+    '{reason: $r, candidates: $n}')"
   exit 0
 fi
 

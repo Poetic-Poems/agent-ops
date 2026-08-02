@@ -1637,7 +1637,7 @@
     var evs = (D.log_tail || []).slice(0, 80);
     if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No log events."}));
     var rows = evs.map(function (e) {
-      var extra = e.reason || e.detail || e.title || e.pr_url || e.resume_at || "";
+      var extra = e.reason || e.detail || e.cause || e.title || e.pr_url || e.resume_at || "";
       return el("tr", {}, [
         el("td", {class:"muted mono", text: fmtTime(e.ts)}),
         el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: e.event})),
