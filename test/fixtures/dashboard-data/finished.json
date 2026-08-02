@@ -95,9 +95,16 @@
     "inputs": {}
   },
   "log_tail": [
-    {"ts": "@ago:100m", "event": "pr-ready", "repo": "Poetic-Poems/agent-ops",
-      "stage": "reviewer", "detail": "", "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/200"},
-    {"ts": "@ago:3h", "event": "attempt-failed", "repo": "Poetic-Poems/agent-ops",
+    {"ts": "@ago:100m", "event": "pr-ready", "node": "poetic-1", "handoff": "reviewer",
+      "detail": "", "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/200"},
+    {"ts": "@ago:2h", "event": "enabler-examined", "node": "poetic-1", "repo": "Poetic-Poems/poetic-fiddle",
+      "item": "TD-PPfidd-26072001", "outcome": "deferred", "detail": "waiting on the upstream sync"},
+    {"ts": "@ago:150m", "event": "review-stage-end", "node": "ockham-container",
+      "repo": "Poetic-Poems/poetic", "exit_code": 0, "detail": ""},
+    {"ts": "@ago:170m", "event": "attempt-failed", "node": "poetic-1", "repo": "Poetic-Poems/agent-ops",
+      "stage": "workspace", "detail": "could not clone the repository"},
+    {"ts": "@ago:3h", "event": "cycle-start", "node": "poetic-1", "once": false, "dry_run": false},
+    {"ts": "@ago:3h", "event": "attempt-failed", "node": "poetic-1", "repo": "Poetic-Poems/agent-ops",
       "stage": "implementor", "detail": "exceeded the stage timeout"}
   ],
   "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],

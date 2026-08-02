@@ -93,6 +93,18 @@ assert_contains "and the idle peer is tagged by name too" \
   "poetic-2" "$out"
 assert_contains "the header summarises how many of the fleet are running" \
   "1 of 2 nodes running" "$out"
+# The log tail's Node / Repo / Actor cell. Three fixed slots read positionally,
+# so what each one is claiming does not depend on how many of them the event
+# happened to carry — the case that used to make the old "Where" column
+# ambiguous, since a lone token could be either the repo or the stage.
+assert_contains "the log tail heads its where-column with all three data" \
+  "Node / Repo / Actor" "$out"
+assert_contains "a stage event names the node it ran on and the actor that ran" \
+  "poetic-1 / — / coordinator" "$out"
+assert_contains "an event whose actor is named in 'by' rather than 'stage' still names it" \
+  "poetic-2 / poetic-fiddle / enabler" "$out"
+assert_contains "and a missing node keeps its slot rather than shifting the repo into it" \
+  "— / agent-ops / —" "$out"
 
 # --- finished.json: ended cycles (ready, failed) + one cycle a fleet-less --------
 # data.js (no `fleet` key at all) would have carried before the strip existed.
@@ -129,6 +141,14 @@ assert_contains "spend-by-model renders a bar per model" \
   "opus-5" "$out"
 assert_contains "spend-by-actor renders a bar per actor" \
   "implementor" "$out"
+assert_contains "the review pipeline's single agent is named as the Project Reviewer" \
+  "ockham-container / poetic / project-reviewer" "$out"
+assert_contains "a pr-ready names the actor that took the PR out of draft" \
+  "poetic-1 / — / reviewer" "$out"
+assert_contains "the clone step names no actor, being a stage with no agent in it" \
+  "poetic-1 / agent-ops / —" "$out"
+assert_contains "and a cycle-level event names neither repo nor actor" \
+  "poetic-1 / — / —" "$out"
 assert_contains "a single-node page's header carries live state itself" \
   "last cycle" "$out"
 assert_not_contains "with no fleet strip to duplicate it" \
