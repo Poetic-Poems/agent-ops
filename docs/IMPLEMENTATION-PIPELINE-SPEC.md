@@ -80,10 +80,15 @@ a node updates by pulling a new image rather than by pulling a branch.
 - Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
   `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use); Node.js from NodeSource at the same major as
-  the laptop; the `claude` CLI from `@anthropic-ai/claude-code`; and
+  the laptop; the `claude` CLI from `@anthropic-ai/claude-code`;
   `supercronic`, a pinned release binary verified by SHA-1 (one pin per
   architecture), which runs the container's crontab as an ordinary process
-  with no cron daemon and no root.
+  with no cron daemon and no root; and `shellcheck`, a pinned release binary
+  verified by SHA-256 (one pin per architecture, the amd64 one
+  byte-identical to `.github/workflows/shellcheck.yml`'s own pin — component
+  10), so an Implementor working inside this image can run
+  `scripts/lint-shell.sh` — the gate its own pull request is judged by —
+  before pushing.
 - `deploy/docker/entrypoint.sh` runs as `agent` on every container start and is
   idempotent: it seeds `$CLAUDE_CONFIG_DIR/settings.json` from
   `deploy/docker/claude-settings.json` **only when absent** (that directory is a
@@ -3441,7 +3446,11 @@ What exists, and the requirements each part answers to:
     is the point: the runner image's own version moves without notice, and a
     linter that gains a check overnight fails pull requests that changed
     nothing. Component 9 runs the test suite, which only ever reads the scripts
-    it calls; this reads all of them.
+    it calls; this reads all of them. `deploy/docker/Dockerfile` (component 7)
+    installs the same pinned release — the amd64 checksum byte-identical to
+    this workflow's — so an Implementor working inside the node image can run
+    `scripts/lint-shell.sh` itself before pushing, rather than pushing blind
+    and finding out from this workflow (requirement 1b).
 11. `scripts/watch-node.sh` — a read-only wrapper around
     `docker compose exec -T scheduler tail` for watching a node's `cron.log`
     or cycle log (`log.jsonl`, requirement 33) from outside, in place of the
@@ -3514,7 +3523,9 @@ pull request, run the ones the change touches and any it could regress.
    architectures.** `docker build -f deploy/docker/Dockerfile -t agent-ops .`
    succeeds, and inside it, as user `agent`: `bash`, `git`, `jq`, `curl`,
    `python3`, `perl`, `flock`, `sha256sum`, `rsync`, `node`, `claude`, `gh`
-   (≥ 2.60) and `supercronic` all resolve; `supercronic -test
+   (≥ 2.60), `supercronic` and `shellcheck` all resolve; `shellcheck
+   --version` prints `0.10.0`, the same version
+   `.github/workflows/shellcheck.yml` pins; `supercronic -test
    /app/deploy/docker/crontab` reports the crontab valid; the `test/` suite
    passes inside the container; and `/app/agent-cycle.sh` with no role set
    exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`

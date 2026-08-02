@@ -32,6 +32,14 @@ ARG NODE_MAJOR=26
 ARG SUPERCRONIC_VERSION=v0.2.47
 ARG SUPERCRONIC_SHA1SUM_AMD64=712d2ece75da6f6e530192a151488578153e4e96
 ARG SUPERCRONIC_SHA1SUM_ARM64=93323899ddca3f1198f1796a4bf4418ed1e7982e
+# shellcheck, pinned to the same release .github/workflows/shellcheck.yml
+# installs on the CI runner, so a cycle running scripts/lint-shell.sh inside
+# this image sees exactly what CI will see. The amd64 checksum is
+# byte-identical to that workflow's; CI only ever runs on amd64, so the arm64
+# checksum is this image's own pin of the same release.
+ARG SHELLCHECK_VERSION=v0.10.0
+ARG SHELLCHECK_SHA256_AMD64=6c881ab0698e4e6ea235245f22832860544f17ba386442fe7e9d629f8cbedf87
+ARG SHELLCHECK_SHA256_ARM64=324a7e89de8fa2aed0d0c28f3dab59cf84c6d74264022c00c22af665ed1a09bb
 # `latest` at build time rather than a pin: CI rebuilds on every merge, the
 # CLI moves fast, and a stale claude is a broken pipeline sooner than a
 # surprising one. Pin it here if a release ever breaks a cycle.
@@ -51,7 +59,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # coreutils, and rsync for scripts/state-sync.sh) plus the small comforts an
 # operator needs when they exec into a node to work out what went wrong.
 # util-linux is already in the base image and carries `flock`, which the
-# dashboard heartbeat relies on.
+# dashboard heartbeat relies on. xz-utils unpacks the shellcheck release
+# tarball below; nothing else here needs it.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -66,6 +75,7 @@ RUN apt-get update \
         rsync \
         tzdata \
         vim-tiny \
+        xz-utils \
     && rm -rf /var/lib/apt/lists/*
 
 # gh from GitHub's own apt repository: the distro package is years behind, and
@@ -105,6 +115,22 @@ RUN case "$TARGETARCH" in \
         "https://github.com/aptible/supercronic/releases/download/${SUPERCRONIC_VERSION}/supercronic-linux-${TARGETARCH}" \
     && echo "${supercronic_sha1sum}  /usr/local/bin/supercronic" | sha1sum -c - \
     && chmod +x /usr/local/bin/supercronic
+
+# shellcheck: an Implementor working inside this image needs to run
+# scripts/lint-shell.sh — the gate its own pull request is judged by — before
+# pushing, and cannot without a shellcheck on PATH. Release asset name and
+# checksum key off TARGETARCH, the same pattern as supercronic above.
+RUN case "$TARGETARCH" in \
+        amd64) shellcheck_sha256="$SHELLCHECK_SHA256_AMD64"; shellcheck_arch=x86_64 ;; \
+        arm64) shellcheck_sha256="$SHELLCHECK_SHA256_ARM64"; shellcheck_arch=aarch64 ;; \
+        *) echo "unsupported TARGETARCH: $TARGETARCH" >&2; exit 1 ;; \
+    esac \
+    && curl -fsSL -o /tmp/shellcheck.tar.xz \
+        "https://github.com/koalaman/shellcheck/releases/download/${SHELLCHECK_VERSION}/shellcheck-${SHELLCHECK_VERSION}.linux.${shellcheck_arch}.tar.xz" \
+    && echo "${shellcheck_sha256}  /tmp/shellcheck.tar.xz" | sha256sum -c - \
+    && tar -xJf /tmp/shellcheck.tar.xz -C /tmp \
+    && install -m 0755 "/tmp/shellcheck-${SHELLCHECK_VERSION}/shellcheck" /usr/local/bin/shellcheck \
+    && rm -rf /tmp/shellcheck.tar.xz "/tmp/shellcheck-${SHELLCHECK_VERSION}"
 
 # A non-root user with a real home, because config.json's paths are ~-relative
 # and Claude's credentials live under it. ubuntu:24.04 ships a stock `ubuntu`
