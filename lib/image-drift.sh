@@ -89,7 +89,7 @@
 #   {ok: false, reason}
 _image_drift_fetch_registry_head() {  # <owner/repo>
   local repo_lower="" registry="" tag="" curl_cmd="" timeout=""
-  repo_lower="$(tr 'A-Z' 'a-z' <<<"$1" 2>/dev/null || true)"
+  repo_lower="$(tr '[:upper:]' '[:lower:]' <<<"$1" 2>/dev/null || true)"
   registry="${IMAGE_DRIFT_REGISTRY:-ghcr.io}"
   tag="${IMAGE_DRIFT_TAG:-latest}"
   curl_cmd="${IMAGE_DRIFT_CURL_CMD:-curl}"

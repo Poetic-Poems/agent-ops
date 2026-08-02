@@ -49,6 +49,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/version.sh"
 # shellcheck source=lib/compose-drift.sh
 . "$SCRIPT_DIR/lib/compose-drift.sh"
+# shellcheck source=lib/image-drift.sh
+. "$SCRIPT_DIR/lib/image-drift.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -107,6 +109,14 @@ pr_cache="$state_dir/.dashboard-prs.json"
 # once and touched again only when its status flips, so a warm register costs
 # no call at all. Kept out of the served dir like the three caches above.
 td_cache="$state_dir/.dashboard-td.json"
+# This node's own image-drift verdict (lib/image-drift.sh), cached because
+# unlike compose_drift_status and agent_ops_version it costs a real network
+# round trip — one this script cannot pay on every 5-second tick. The name is
+# fixed rather than derived from anything here so that scripts/state-sync.sh
+# (which computes the identical verdict for the fleet heartbeat) names the
+# same file: whichever of the two next crosses the cache's TTL pays the one
+# query and the other reads its answer off disk.
+image_cache="$state_dir/.image-drift-cache.json"
 mkdir -p "$out_dir"
 
 # Large JSON blobs (the cycles array carries full transcripts) are handed to jq
@@ -836,13 +846,15 @@ for entry in "$cycles_dir"/*; do
   [[ -e "$entry" ]] || continue
   last_local_cycle="${entry##*/}"
 done
+self_version_json="$(agent_ops_version "$SCRIPT_DIR")"
 jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg lc "$last_local_cycle" \
   --argjson live "$self_live_json" \
-  --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
+  --argjson version "$self_version_json" \
   --argjson compose "$(compose_drift_status)" \
+  --argjson image "$(image_drift_status "$self_version_json" "$image_cache")" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
-    live: $live, version: $version, compose: $compose}' > "$nodes_rows"
+    live: $live, version: $version, compose: $compose, image: $image}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -861,7 +873,12 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # Same rule for the compose-drift verdict (lib/compose-drift.sh): only
        # the node itself can read the compose.yaml on its own host, so a
        # heartbeat carrying no verdict yields null, never a local answer.
-       compose: ($h.compose // null)}' \
+       compose: ($h.compose // null),
+       # And for the image-drift verdict (lib/image-drift.sh): only the
+       # peer itself can query the registry on its own behalf, so an absent
+       # field (a peer on an image built before this check existed) yields
+       # null rather than this node answering in its place.
+       image: ($h.image // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"

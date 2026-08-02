@@ -105,6 +105,7 @@ printf '{"pid":999}\n' > "$state/lock.json"
 printf '{"pid":998}\n' > "$state/review-lock.json"
 printf 'server noise\n' > "$state/dashboard.log"
 printf '{}\n' > "$state/.dashboard-github.json"
+printf '{"ok":false}\n' > "$state/.image-drift-cache.json"
 mkdir -p "$state/dashboard"
 printf '<html>\n' > "$state/dashboard/index.html"
 
@@ -126,6 +127,7 @@ assert_eq "the lock does not replicate" "0" "$(test -e "$pushed/lock.json" && ec
 assert_eq "the review lock does not replicate" "0" "$(test -e "$pushed/review-lock.json" && echo 1 || echo 0)"
 assert_eq "the dashboard log does not replicate" "0" "$(test -e "$pushed/dashboard.log" && echo 1 || echo 0)"
 assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboard-github.json" && echo 1 || echo 0)"
+assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
 assert_eq "the generated dashboard does not replicate" "0" "$(test -e "$pushed/dashboard" && echo 1 || echo 0)"
 
 assert_contains "the commit names the node" "state: active-node" \
@@ -135,6 +137,16 @@ hb="$(cat "$pushed/heartbeat.json" 2>/dev/null || echo '{}')"
 assert_eq "the heartbeat names the node" "active-node" "$(jq -r '.node' <<<"$hb")"
 assert_eq "the heartbeat records the role" "active" "$(jq -r '.role' <<<"$hb")"
 assert_eq "the heartbeat records the newest cycle" "20260720T010000Z-1" "$(jq -r '.last_cycle' <<<"$hb")"
+
+# --- The heartbeat carries an image-drift verdict slot (#155) -----------------
+# lib/image-drift.sh's own suite (test/image-drift.test.sh) covers what the
+# verdict says; what belongs here is only that state-sync.sh asks for one at
+# all. This suite runs from a plain checkout (source "checkout", not "image"
+# — SCRIPT_DIR names this repository's own working tree, which ships no
+# build-info.json), so the verdict is null by lib/image-drift.sh's own rule
+# for a node not running a CI-stamped image — the key existing, not its
+# value, is the wiring this asserts.
+assert_eq "the heartbeat carries an image-drift slot" "true" "$(jq 'has("image")' <<<"$hb")"
 
 # --- The heartbeat carries the compose-drift verdict (#131) -------------------
 # End to end: a node whose compose.yaml has drifted publishes that fact with

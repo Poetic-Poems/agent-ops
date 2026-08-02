@@ -719,7 +719,7 @@ vh="$(new_home nodeV)"
 vpeer="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerV"
 vold="$vh/.cache/poetic-agents/workspaces/.agent-ops-peers/peerOld"
 mkdir -p "$vpeer" "$vold"
-printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3}}\n' \
+printf '{"node":"peerV","role":"active","ts":"%s","last_cycle":"","version":{"pr":88,"commit":"aa53d62f1b0c4e9a7d2839fbc5104e6a8d7b3f21","short":"aa53d62","built_at":"2026-07-26T11:21:00Z","repo":"Poetic-Poems/agent-ops","source":"image","dirty":false},"compose":{"status":"drifted","diff_lines":3},"image":{"status":"behind","registry_commit":"bb64d73a2c1d","registry_created_at":"2026-07-26T12:00:00Z","checked_at":"2026-07-26T12:05:00Z"}}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vpeer/heartbeat.json"
 printf '{"node":"peerOld","role":"standby","ts":"%s","last_cycle":""}\n' \
   "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$vold/heartbeat.json"
@@ -743,6 +743,22 @@ assert_eq "a peer that publishes none reads null, never a locally computed one" 
   "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .compose' <<<"$vdata")"
 assert_eq "and this node answers for its own compose file too" "1" \
   "$(jq '[.fleet.nodes[] | select(.self) | has("compose")] | length' <<<"$vdata")"
+
+# The image-drift verdict (#155) rides the same rules once more: only the
+# node itself can query the registry on its own behalf, so a peer's verdict
+# comes from its heartbeat or not at all. This node's own verdict is asserted
+# only to exist (has), not for its content — lib/image-drift.sh's own suite
+# covers what the verdict says, and this suite runs from a plain checkout
+# (agent_ops_version's source is "checkout" here, not "image"), for which the
+# verdict is null by lib/image-drift.sh's own rule.
+assert_eq "a peer's image verdict comes from its heartbeat" "behind" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .image.status' <<<"$vdata")"
+assert_eq "with the registry commit it named" "bb64d73a2c1d" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerV") | .image.registry_commit' <<<"$vdata")"
+assert_eq "a peer that publishes none reads null, never a locally computed one" "null" \
+  "$(jq -r '.fleet.nodes[] | select(.node=="peerOld") | .image' <<<"$vdata")"
+assert_eq "and this node answers for its own image too" "1" \
+  "$(jq '[.fleet.nodes[] | select(.self) | has("image")] | length' <<<"$vdata")"
 
 # --- The pull-request index ------------------------------------------------------
 # Every `#number` on the page resolves to a record here. Two properties are what
