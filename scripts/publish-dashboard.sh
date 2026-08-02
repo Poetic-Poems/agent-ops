@@ -474,11 +474,27 @@ jq -n -f "$detail_prog" "${rawfile_args[@]}" --argjson cap "$TRANSCRIPT_CAP" \
 jq -e . "$cycles_file" >/dev/null 2>&1 || printf '[]' > "$cycles_file"
 
 # --- Status ------------------------------------------------------------------
+# `host` names the container (PID namespace) the lock's pid is meaningful in
+# (agent-cycle.sh's acquire_lock, #130). This reader is almost always a
+# foreign one: the dashboard shares the scheduler's state volume but never its
+# PID namespace (deploy/docker/compose.yaml), so a bare `kill -0` here answers
+# about an unrelated process in *our* namespace, not the scheduler's — able to
+# say "running" for a pid that only coincidentally matches something local, or
+# "not running" for a writer that is very much alive next door, exactly the
+# confusion #130 fixed in the watchtower pre-update hook and
+# TD-PPagop-26072901 fixed in both cycle scripts' `acquire_lock`. Only a lock
+# this container itself wrote, or one from before the `host` stamp existed, is
+# answerable by `kill -0`; any other lock is unanswerable from here and reads
+# as not alive, exactly as if there were no lock at all — `self_live_json`
+# below already falls back to the log-derived state on that path.
 lock_pid=""; lock_started=""; lock_alive=false
 if [[ -f "$lock_file" ]]; then
   lock_pid="$(jq -r '.pid // empty' "$lock_file" 2>/dev/null)"
   lock_started="$(jq -r '.started_at // empty' "$lock_file" 2>/dev/null)"
-  [[ "$lock_pid" =~ ^[0-9]+$ ]] && kill -0 "$lock_pid" 2>/dev/null && lock_alive=true
+  lock_host="$(jq -r '.host // empty' "$lock_file" 2>/dev/null)"
+  if [[ "$lock_pid" =~ ^[0-9]+$ && ( -z "$lock_host" || "$lock_host" == "${HOSTNAME:-}" ) ]]; then
+    kill -0 "$lock_pid" 2>/dev/null && lock_alive=true
+  fi
 fi
 
 # The events of the cycle that holds the lock right now, so the header can say
