@@ -245,20 +245,55 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   band the Co-Ordinator ranks it by (read from the REST issues listing's
   `issue_field_values`, since `gh issue list --json` cannot see issue fields,
   and defaulted to `Medium` exactly as the pipeline defaults it — see the
-  implementation-pipeline spec, requirement 15e); the tech-debt register's
+  implementation-pipeline spec, requirement 15e); security and code-quality
+  findings, via `scripts/gather-findings.sh`; the tech-debt register's
   unresolved items — one listing read of `contents/tech-debt` for the roster
   and each item's blob SHA, then that item's own `title` and `status` out of
   its frontmatter, capped at 40 (`{id, title, status, url}`; an ID names no
   work, and a mature register is mostly resolved items the Co-Ordinator will
-  never pick up, so those are dropped here — a repo with no register just 404s
-  to an empty list); and one record per pull request the page
-  refers to (`github.pr_index`, keyed `<owner>/<repo>#<number>`) — the open
-  ones from the query above, the rest by `gh pr view`, cached permanently
-  once terminal (see the Publisher). If `gh` fails, the GitHub panels mark
+  never pick up, so those are dropped here); and one record per pull request
+  the page refers to (`github.pr_index`, keyed `<owner>/<repo>#<number>`) — the
+  open ones from the query above, the rest by `gh pr view`, cached permanently
+  once terminal (see the Publisher).
+
+  Four of the five sources above (issues, failing runs, the tech-debt
+  listing, findings) are read per repo as one of two states, `answered` or
+  `failed`, carried in `github.inputs[<slug>].state` — the tech-debt listing
+  alone can also read a third, `answered_404`, for a repo with no register
+  (below) — rather than the call's raw output being trusted at face value;
+  `pr list` keeps its own long-standing pass/fail signal folded straight into
+  `github.ok`/`github.error` instead, since no per-repo PR count is ever
+  rendered for a `failed` marker to replace. The reason for the other four is
+  that they used to conflate "nothing to report" with "the call did not
+  answer": `gh_json` (the Publisher's plain reader) discards stderr, so a call
+  that timed out, rate-limited or 500'd printed nothing, and nothing is
+  exactly what a legitimately empty result also prints. A repo's tech-debt
+  ledger can be genuinely empty since the resolved-items drop (PR #163), so
+  "no unresolved debt" and "the listing call failed" had become
+  indistinguishable on the page — observed directly during that PR's own
+  testing, where a repo's ledger read empty on one tick and thirteen items
+  the next with nothing in the register having changed (TD-PPagop-26080201).
+  `gh_call` (the Publisher's stderr- and exit-status-preserving reader,
+  alongside `gh_json`) and `gather-findings.sh`'s own exit code are what make
+  the distinction: for the tech-debt listing, `answered_404` is reserved for
+  a legitimately empty case the API itself says so about — a repo with no
+  `tech-debt/` directory returns 404, the same way
+  `gather-register-hygiene.sh` already told that apart from a real failure —
+  and anything else non-2xx is `failed`. `gather-findings.sh` draws the same
+  line without a state of its own to carry it: a repo with neither alert type
+  enabled (403 or 404, provided a 403's own message does not name a rate
+  limit) still exits 0 and reads `answered`, exactly as a repo with both
+  features on and nothing open does; only a real failure — a timeout, rate
+  limit or outage — exits 1 and reads `failed`. A `failed` source renders a
+  "couldn't read" marker in place of its count, never a bare zero (see the
+  Site, below); an `answered_404` source renders as an ordinary, honest zero.
+  `github.ok`/`github.error` reflect a `failed` state from *any* of the five
+  sources, not only `pr list`'s (historically the only one that raised the
+  "GitHub unavailable" banner). If `gh` fails, the GitHub panels mark
   themselves stale and the rest still renders. On a `--no-github` refresh the
-  fetch is skipped entirely and the last successful result is carried forward
-  (see the Publisher below), so only a fetch that was *attempted and failed*
-  ever shows as unavailable.
+  fetch is skipped entirely and the last successful result is carried
+  forward (see the Publisher below), so only a fetch that was *attempted and
+  failed* ever shows as unavailable.
 
 **Usage-limit detection.** The pipeline's own detector and the Publisher share
 one phrase pattern and reset-time parser (`lib/limit-detect.sh`), so a
@@ -359,9 +394,14 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   void:    [ { repo, item, ts, detail, stage, evidence } ],
   github:  { ok, error, fetched_at, stale, prs[], claims[],
              inputs:{<slug>:{issues, failed_runs, findings,
-                             tech_debt:[{id,title,status,url}]}},  // unresolved
+                             tech_debt:[{id,title,status,url}],  // unresolved
                                        //   items only; title/status empty
                                        //   until the item file has been read
+                             state:{issues, failed_runs, tech_debt, findings}}},
+                                       // "answered" | "answered_404" | "failed"
+                                       //   per source, per repo — "answered_404"
+                                       //   only ever on tech_debt (a repo with
+                                       //   no register)
              pr_index: { "<owner>/<repo>#<n>":                  // one per
                          { repo, number, title, url, state,     //   number the
                            is_draft, author, labels[], base,    //   page shows
@@ -757,7 +797,16 @@ number's twins elsewhere on the page.
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty
   the panel that says the pipeline is stuck, which looks exactly like a pipeline
-  that is not.
+  that is not. Each of the five GitHub sources (TD-PPagop-26080201) is
+  exercised both ways against a stubbed `gh`: healthy, each of the four
+  state-carrying sources reads `answered` and a repo with no tech-debt
+  register reads `answered_404`, never `failed`, while a healthy `pr list`
+  leaves `github.ok` true; with one source's call failing (a rate limit, not
+  the register's 404), that source alone reads `failed` (or, for `pr list`,
+  is named in `github.error` directly), `github.ok` turns false — while an
+  unrelated repo's own legitimate 404 still reads `answered_404` in the same
+  tick, proving the two are told apart from each other and not just from the
+  healthy case.
 - `test/dashboard-render.test.sh` passes: `dashboard/index.html`'s own inline
   script, run unmodified under `node` against checked-in `DASHBOARD_DATA`
   fixtures and a DOM stub that only builds trees (`createElement`/
@@ -782,7 +831,13 @@ number's twins elsewhere on the page.
   keyless renders no badge and no note anywhere on the page. A node behind an
   image published longer ago than `image_behind_grace_hours` carries an
   **image behind** badge naming the registry commit, while one whose registry
-  check failed carries **image unverified** instead (#155).
+  check failed carries **image unverified** instead (#155). A source marked
+  `failed` in `github.inputs[<slug>].state` (TD-PPagop-26080201) renders a
+  "couldn't read" marker in place of its count, a source marked
+  `answered_404` (a repo with no tech-debt register) still renders an
+  ordinary zero, and a fixture carrying no `state` field at all — every
+  repo's data from before this field existed — renders exactly as it always
+  did.
   Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.

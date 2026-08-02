@@ -140,6 +140,25 @@ read_events() { fleet_logs "$state_dir" "$peers_dir" log.jsonl | jq -c -R 'fromj
 
 gh_json() { timeout "$GH_TIMEOUT" "$DASHBOARD_GH_CMD" "$@" 2>/dev/null; }
 
+# gh_call — like gh_json, but a source that needs to tell "answered emptily"
+# from "failed to answer" (TD-PPagop-26080201) cannot afford gh_json's own
+# trade: it discards stderr and the caller is left reading an empty string
+# either way. Prints stdout exactly as gh_json does and returns gh's exit
+# status, so `x="$(gh_call …)"; rc=$?` gives a caller both the answer and
+# whether the call actually succeeded; gh_call_err (below) gives it gh's own
+# diagnosis of that same call, on request.
+gh_call() {
+  timeout "$GH_TIMEOUT" "$DASHBOARD_GH_CMD" "$@" 2>"$work_tmp/gh_call.err"
+}
+# gh's own diagnosis of the *last* gh_call, one line. Every caller checks it
+# immediately after its own gh_call and before anyone else's, so there is
+# nothing here yet to overwrite it — a plain file rather than a variable
+# gh_call itself sets, because every caller is `x="$(gh_call …)"`, and a
+# command substitution runs in a subshell: an assignment gh_call made to a
+# "global" there would vanish the moment that subshell exited, exactly the
+# trap scripts/gather-findings.sh's own fetch() avoids the same way.
+gh_call_err() { tr '\n' ' ' < "$work_tmp/gh_call.err" 2>/dev/null; }
+
 epoch_of() { date -d "$1" +%s 2>/dev/null || echo 0; }
 
 # td_frontmatter — read a tech-debt item file on stdin, print "<title>\t<status>".
@@ -962,6 +981,11 @@ TD_META_MISS_BUDGET=4
 TD_CACHE_TTL=2592000   # 30 days
 
 prs_json='[]'; inputs_json='{}'; gh_ok=false; gh_err=""
+# Every source's failure this tick (TD-PPagop-26080201): each entry is one
+# source, one repo. `gh_err` — the single string the "GitHub unavailable"
+# banner reads — is their join, so the banner names every source that failed,
+# not only the first (historically `pr list`, the only one that raised it).
+gh_fail_msgs=()
 pr_rows="$work_tmp/pr.rows"; : > "$pr_rows"
 # This tick's tech-debt reads, and every item SHA the registers still name.
 td_new="$work_tmp/td.new";   : > "$td_new"
@@ -976,9 +1000,14 @@ if (( WITH_GITHUB )); then
   gh_ok=true
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
-    prs="$(gh_json pr list -R "$slug" --state open --label "$pr_label" \
+    prs="$(gh_call pr list -R "$slug" --state open --label "$pr_label" \
              --json "$PR_INDEX_FIELDS",mergeable,mergeStateStatus,headRefName,statusCheckRollup)"
-    if [[ -z "$prs" ]]; then gh_ok=false; gh_err="pr list failed for $slug"; prs='[]'; fi
+    pr_rc=$?
+    if (( pr_rc != 0 )); then
+      gh_ok=false
+      gh_fail_msgs+=("pr list failed for $slug: $(gh_call_err)")
+      prs='[]'
+    fi
     prs_json="$(jq -c --arg slug "$slug" --argjson add "$prs" "$PR_JQ"'
       . + ($add | map({
         repo: $slug, number, title, url, isDraft, state, mergeable, mergeStateStatus, headRefName, createdAt,
@@ -997,21 +1026,39 @@ if (( WITH_GITHUB )); then
     # matching what the Co-Ordinator itself will do — a panel that showed a
     # different band from the one the pipeline acted on would be worse than no
     # band at all. The endpoint returns pull requests too, so they are dropped.
-    issues="$(gh_json api "repos/$slug/issues?state=open&per_page=30" --jq \
-      '[.[] | select(has("pull_request") | not)
-            | {number, title, url: .html_url,
-               labels: [.labels[] | {name}], assignees: [.assignees[] | {login}],
-               priority: (([.issue_field_values[]?
-                            | select(.issue_field_name == "Priority")
-                            | .single_select_option.name
-                            | select(. == "Urgent" or . == "High"
-                                     or . == "Medium" or . == "Low")] | first) // "Medium")}]')"
-    issues="${issues:-[]}"
-    runs="$(gh_json run list -R "$slug" --branch "$db" --limit 40 --json workflowName,conclusion,status,event,createdAt,url)"; runs="${runs:-[]}"
-    failed_runs="$(jq -c '
-      [ .[] | select(.event == "push" or .event == "schedule" or .event == "dynamic") ]
-      | group_by(.workflowName) | map(sort_by(.createdAt) | last)
-      | map(select(.conclusion == "failure"))' <<<"$runs" 2>/dev/null)"; failed_runs="${failed_runs:-[]}"
+    issues_raw="$(gh_call api "repos/$slug/issues?state=open&per_page=30")"
+    issues_rc=$?
+    if (( issues_rc != 0 )); then
+      state_issues="failed"; issues='[]'
+      gh_ok=false; gh_fail_msgs+=("issues listing failed for $slug: $(gh_call_err)")
+    else
+      state_issues="answered"
+      issues="$(jq -c \
+        '[.[] | select(has("pull_request") | not)
+              | {number, title, url: .html_url,
+                 labels: [.labels[] | {name}], assignees: [.assignees[] | {login}],
+                 priority: (([.issue_field_values[]?
+                              | select(.issue_field_name == "Priority")
+                              | .single_select_option.name
+                              | select(. == "Urgent" or . == "High"
+                                       or . == "Medium" or . == "Low")] | first) // "Medium")}]' \
+        <<<"$issues_raw" 2>/dev/null)"
+      issues="${issues:-[]}"
+    fi
+
+    runs="$(gh_call run list -R "$slug" --branch "$db" --limit 40 --json workflowName,conclusion,status,event,createdAt,url)"
+    runs_rc=$?
+    if (( runs_rc != 0 )); then
+      state_runs="failed"; failed_runs='[]'
+      gh_ok=false; gh_fail_msgs+=("run list failed for $slug: $(gh_call_err)")
+    else
+      state_runs="answered"
+      failed_runs="$(jq -c '
+        [ .[] | select(.event == "push" or .event == "schedule" or .event == "dynamic") ]
+        | group_by(.workflowName) | map(sort_by(.createdAt) | last)
+        | map(select(.conclusion == "failure"))' <<<"$runs" 2>/dev/null)"
+      failed_runs="${failed_runs:-[]}"
+    fi
 
     # The per-item register. One listing read gives the roster, and free with
     # each filename comes the item's blob SHA — which is what makes the title
@@ -1022,11 +1069,25 @@ if (( WITH_GITHUB )); then
     # those are dropped here rather than shown as work sources. Items whose
     # metadata has not been read yet are kept — they are not yet known *not* to
     # be work — and render as the bare ID until the cache reaches them.
-    # A repo with no register just 404s to an empty roster.
+    # A repo with no register just 404s to an empty roster — legitimate, and
+    # distinguished from a real failure the same way gather-register-hygiene.sh
+    # tells the two apart: gh still prints the API's own JSON error body (with
+    # its own `.status`) on a non-2xx response, so a genuine 404 and a rate
+    # limit or outage are told apart from the body, not guessed from an empty
+    # string either could equally produce.
     td_rows="$work_tmp/td.rows"; : > "$td_rows"
-    gh_json api "repos/$slug/contents/tech-debt" --jq \
-      '.[] | select(.type == "file" and (.name | endswith(".md"))) | "\(.sha)\t\(.name)"' \
-      > "$td_rows" 2>/dev/null || true
+    td_raw="$(gh_call api "repos/$slug/contents/tech-debt")"
+    td_rc=$?
+    if (( td_rc == 0 )); then
+      state_td="answered"
+      jq -r '.[] | select(.type == "file" and (.name | endswith(".md"))) | "\(.sha)\t\(.name)"' \
+        <<<"$td_raw" > "$td_rows" 2>/dev/null || true
+    elif [[ "$(jq -r '.status // ""' <<<"$td_raw" 2>/dev/null)" == "404" ]]; then
+      state_td="answered_404"
+    else
+      state_td="failed"
+      gh_ok=false; gh_fail_msgs+=("tech-debt listing failed for $slug: $(gh_call_err)")
+    fi
     cat "$td_rows" >> "$td_seen"
     td_fetched=0
     while IFS= read -r td_sha; do
@@ -1069,14 +1130,33 @@ if (( WITH_GITHUB )); then
 
     # Security & code-quality findings, via the same script the pipeline uses,
     # so the dashboard shows the highest-priority work source the Co-Ordinator
-    # actually sees. Always valid JSON; degrades to [] on any failure.
-    findings="$(timeout "$GH_TIMEOUT" "$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>/dev/null || echo '[]')"
-    findings="$(jq -c 'if type == "array" then . else [] end' <<<"$findings" 2>/dev/null || echo '[]')"
+    # actually sees. Always valid JSON; a disabled feature or a repo with
+    # neither alert type enabled degrades to [] and exit 0 (gather-findings.sh's
+    # own contract), but a real failure — a timeout, a rate limit, an outage —
+    # now exits non-zero rather than looking exactly like "nothing to report".
+    findings="$(timeout "$GH_TIMEOUT" "$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>/dev/null)"
+    findings_rc=$?
+    if (( findings_rc != 0 )); then
+      state_findings="failed"; findings='[]'
+      gh_ok=false; gh_fail_msgs+=("findings gathering failed for $slug")
+    else
+      state_findings="answered"
+      findings="$(jq -c 'if type == "array" then . else [] end' <<<"$findings" 2>/dev/null || echo '[]')"
+    fi
 
     inputs_json="$(jq -c --arg slug "$slug" \
-      --argjson issues "$issues" --argjson failed "$failed_runs" --argjson td "$td_json" --argjson findings "$findings" '
-      . + {($slug): {issues: $issues, failed_runs: $failed, tech_debt: $td, findings: $findings}}' <<<"$inputs_json")"
+      --argjson issues "$issues" --argjson failed "$failed_runs" --argjson td "$td_json" --argjson findings "$findings" \
+      --arg s_issues "$state_issues" --arg s_runs "$state_runs" --arg s_td "$state_td" --arg s_findings "$state_findings" '
+      . + {($slug): {issues: $issues, failed_runs: $failed, tech_debt: $td, findings: $findings,
+                     state: {issues: $s_issues, failed_runs: $s_runs, tech_debt: $s_td, findings: $s_findings}}}' \
+      <<<"$inputs_json")"
   done < <(jq -r '.[].slug' <<<"$repos_json")
+
+  # Every source that failed this tick, across every repo — not just `pr
+  # list`'s — so the "GitHub unavailable" banner names what actually broke.
+  if (( ${#gh_fail_msgs[@]} > 0 )); then
+    gh_err="$(IFS='; '; echo "${gh_fail_msgs[*]}")"
+  fi
 
   # Fold this tick's item reads into the metadata cache, stamp everything the
   # registers still name as seen, and drop what none of them has named for a

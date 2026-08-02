@@ -253,6 +253,21 @@ assert_contains "and says plainly that the Co-Ordinator is not told" \
 assert_not_contains "a repo with no nice key renders no badge for it" \
   "nice 0" "$out"
 
+# A failed source (TD-PPagop-26080201) must not render as a bare zero, which
+# would be indistinguishable from a repo that genuinely has none: the fixture
+# fails poetic-fiddle's `issues` read and marks its `tech_debt` a legitimate
+# 404, so the two must render differently from each other and from a repo
+# (poetic, agent-ops) whose fixture carries no `state` at all, which must
+# still render exactly as it did before this field existed.
+assert_contains "a failed source reads 'couldn't read', never a false zero" \
+  "couldn't read open issues" "$out"
+assert_contains "a legitimate absence (a repo with no register) still reads as an honest zero" \
+  "0 open tech-debt items" "$out"
+assert_not_contains "and never shows the couldn't-read marker for it" \
+  "couldn't read tech-debt" "$out"
+assert_contains "a repo with no state field at all renders exactly as before" \
+  "0 security findings" "$out"
+
 # --- work-sources-neutral.json: every repo at 0 or absent ------------------------
 # The whole-page form of the same silence, and the one that matters to a fleet
 # that has set no `nice` anywhere: no badge and no note — the page this file

@@ -1340,6 +1340,23 @@
   }
 
   // ---------- inputs ----------
+  // A source's per-repo read state (TD-PPagop-26080201): "answered" (the
+  // ordinary case), "answered_404" (a legitimate absence — e.g. a repo with
+  // no tech-debt register), or "failed" (the call did not answer at all).
+  // Absent altogether on data carried forward from before this field existed,
+  // which reads as "answered" — the only state that renders exactly as it
+  // always did.
+  function srcState(g, key) {
+    return (g.state && g.state[key]) || "answered";
+  }
+  // A failed source must not show a count of zero — indistinguishable from a
+  // repo that genuinely has none — so it renders a "couldn't read" marker
+  // instead. `answered_404` is a real, legitimate zero (unlike `failed`) and
+  // renders as an ordinary count.
+  function countText(g, key, count, label) {
+    return srcState(g, key) === "failed" ? ("couldn't read " + label) : (count + " " + label);
+  }
+
   function inputsPanel() {
     var inputs = (D.github && D.github.inputs) || {};
     var slugs = Object.keys(inputs);
@@ -1375,12 +1392,16 @@
         el("span",{class:"mono",text: slug}),
         niceBadge(slug),
         el("span",{class:"muted", style:"font-weight:400", html:
-          "  ·  " + secCount + " security findings · " +
-          (g.failed_runs? g.failed_runs.length:0) + " failing workflows · " +
-          (g.issues? g.issues.length:0) + " open issues · " +
-          tdRead + " open tech-debt items" +
-          (td.length > tdRead ? " (+" + (td.length - tdRead) + " unread)" : "") + " · " +
-          cqCount + " code-quality findings"})
+          "  ·  " + [
+            countText(g, "findings", secCount, "security findings"),
+            countText(g, "failed_runs", g.failed_runs ? g.failed_runs.length : 0, "failing workflows"),
+            countText(g, "issues", g.issues ? g.issues.length : 0, "open issues"),
+            (srcState(g, "tech_debt") === "failed"
+              ? "couldn't read tech-debt items"
+              : (tdRead + " open tech-debt items" +
+                 (td.length > tdRead ? " (+" + (td.length - tdRead) + " unread)" : ""))),
+            countText(g, "findings", cqCount, "code-quality findings")
+          ].join(" · ")})
       ]));
       if (findings.length) {
         var sevClass = { critical:"b-red", high:"b-red", error:"b-amber", medium:"b-amber", warning:"b-amber", low:"b-grey", note:"b-grey" };
