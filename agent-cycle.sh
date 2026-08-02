@@ -59,6 +59,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/unvoid-label.sh
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
+# shellcheck source=lib/work-gone.sh
+. "$SCRIPT_DIR/lib/work-gone.sh"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
@@ -943,6 +945,25 @@ gather_source_state() {
     printf '%s' "$out"
   else
     jq -nc --arg s "$slug" '{slug: $s, ok: false}'
+  fi
+}
+
+# What the register says about specific blocked items (requirement 34i). Unlike
+# every gatherer above it, this is not called in the repo walk and not called
+# per repo: the ids come from the blocked extract, so it runs only for a repo
+# that has blocked register items — which is usually none of them, at no cost.
+# An unreadable answer is `{}`, and `{}` clears nothing.
+gather_register_status() {
+  local slug="$1" branch="$2" out safe
+  shift 2
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-register-status.sh" "$slug" "$branch" "$@" \
+        2>"$cycle_dir/register-status-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/register-status-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '{}'
   fi
 }
 
@@ -1967,6 +1988,54 @@ if [[ -n "$needs_refinement_label" ]]; then
     done < <(jq -c '.[]' <<<"$hand_flag_cleared_json" 2>/dev/null || true)
     tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
   fi
+fi
+
+# Requirement 34i, applied last of the three reconciliations, and for the same
+# reason as 34f and 34g above: it has to land before the extract the
+# Co-Ordinator, the Enabler's eligible set and the dashboard are all handed.
+# What it clears is the block whose *work* has gone — the issue closed, the
+# pull request merged, the register entry flipped to `resolved` — none of which
+# emits an event, and none of which any other reader of the log can see. The
+# Co-Ordinator never revisits such an item (a finished item is offered by no
+# source, so it never reaches the candidates), which leaves only the Enabler's
+# recheck, a full engagement `enabler_recheck_hours` later to learn what one
+# read of state already on disk says now.
+#
+# Against the *open* blocked set (requirement 34h): a void item needs no
+# unblocking, and an `unblocked` written against a void would put a clear in the
+# log for no reason at all.
+open_blocked_now="$(open_blocked_items "$union_log")"
+# The register read, for the repos that have blocked register items and no
+# others — usually none, and then it costs nothing. `ordered_repos_json` is what
+# names each repo's default branch; a repo this cycle did not walk has no entry
+# there and is asked nothing, which is the same "unknown decides nothing" the
+# source-state digest's `ok` gives the other two classes.
+register_status_json='{}'
+while IFS=$'\t' read -r reg_slug reg_ids; do
+  [[ -n "$reg_slug" && -n "$reg_ids" ]] || continue
+  reg_branch="$(jq -r --arg s "$reg_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+    <<<"$ordered_repos_json" 2>/dev/null || true)"
+  [[ -n "$reg_branch" ]] || continue
+  # shellcheck disable=SC2086  # $reg_ids is a deliberate word-split id list.
+  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" $reg_ids)"
+  register_status_json="$(jq -c --arg s "$reg_slug" --argjson m "$reg_map" '. + {($s): $m}' \
+    <<<"$register_status_json" 2>/dev/null || printf '%s' "$register_status_json")"
+done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+         <<<"$(work_gone_register_ids "$open_blocked_now")" 2>/dev/null || true)
+
+work_gone_json="$(work_gone_clearances "$open_blocked_now" "$source_states_json" "$register_status_json")"
+if [[ "$(jq 'length' <<<"$work_gone_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  while IFS= read -r clearance; do
+    [[ -n "$clearance" ]] || continue
+    # `by: "work-gone"` distinguishes this from the Co-Ordinator's own
+    # `unblocked` (requirement 18), the Enabler's, and the label-driven one of
+    # requirement 34g; `detail` carries the fact that decided it, so a later
+    # reader can audit the clearance without re-deriving it.
+    log_event "unblocked" "$(jq -c '{item: .item, repo: .repo, by: "work-gone",
+                                     detail: .reason}' <<<"$clearance")"
+  done < <(jq -c '.[]' <<<"$work_gone_json" 2>/dev/null || true)
+  tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
 fi
 
 blocked_json="$(blocked_items "$union_log")"
