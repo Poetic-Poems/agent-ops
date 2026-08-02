@@ -725,9 +725,14 @@ finished still has a diff), is recorded **blocked** instead and handed to the
 Enabler, which can read the repository and settle it properly. You will see the
 refusal as a `warning` on the dashboard.
 
-Both are listed on the dashboard. To reopen a void item — you believe the work
-has genuinely regressed, or the verdict was wrong — **label any issue or pull
-request that names the item with `unvoided`**, in that item's repo:
+Both are listed on the dashboard. The void list only ever grows, so it is shown
+short: the ten newest rows, each three lines tall, with **See more** at the foot
+of the table for the older ones and any row opening to its full reason when you
+click it. The heading counts every void item however few rows are showing.
+
+To reopen a void item — you believe the work has genuinely regressed, or the
+verdict was wrong — **label any issue or pull request that names the item with
+`unvoided`**, in that item's repo:
 
 ```bash
 gh pr edit 92 -R Poetic-Poems/poetic --add-label unvoided
