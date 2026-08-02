@@ -329,6 +329,104 @@ docker compose exec scheduler tail -n 3 /home/agent/.cache/poetic-agents/workspa
 Those should name the *other* nodes and show their recent events. That is the
 whole purpose of the fetch: a lesson any node learned spares the rest.
 
+### Changing when a node's cycles run
+
+A node's implementation cycle fires at one minute of every hour, and that
+minute is the node's own: `CYCLE_MINUTE` in `.env` when it is set, otherwise a
+stable hash of `NODE_NAME`. The crontab is rendered at every container start —
+`entrypoint.sh` runs `render-crontab.sh`, which fills `crontab.tmpl` from
+`config.json`'s `schedule` block and this one variable — so the minute belongs
+to the node's `.env`, not to the image, and moving it is the same two steps as
+changing a role:
+
+1. Set `CYCLE_MINUTE=<1-59>` in the node's `.env`.
+2. `docker compose up -d`, in an idle window — `docker compose exec scheduler
+   /app/agent-cycle.sh --status` first, because recreating the scheduler kills
+   a cycle in flight, and this `up -d` bypasses the pre-update hook exactly as
+   a compose refresh does.
+
+Time it so that the *old* minute has passed and the *new* one has not yet come
+round, and the change costs nothing at all. Then read back what the node
+actually rendered, which is the only answer that counts:
+
+```bash
+docker compose exec scheduler grep -E 'agent-cycle|review-cycle' /app/deploy/docker/crontab
+docker compose logs scheduler | grep render-crontab   # node <name>: cycle at minute N …
+```
+
+Two things decide what minute you may ask for:
+
+- **`config.json`'s `schedule.excluded_minutes` outranks `.env`.** This repo
+  excludes minute `0`, because poetic's hourly sync workflow owns the top of
+  the hour. `CYCLE_MINUTE=0` — or anything that is not a number in `0-59` — is
+  refused with a `WARNING` in the scheduler's log and the node falls back to
+  its hash default. The container starts either way, so a typo shows up only
+  in that log or in the rendered crontab above: read one of them.
+- **The review tick follows the cycle.** It is rendered at
+  `schedule.review_offset_minutes` (29) past `CYCLE_MINUTE`, mod 60, at
+  `schedule.review_hour` (03:00) — so moving a cycle moves that node's daily
+  review with it, and the two stay a half hour apart within the node. Nothing
+  else in the crontab moves: the heartbeat, both state-sync directions and the
+  log rotation are fleet-wide values from `config.json`, identical on every
+  node.
+
+Both of those, and the schedule keys generally, are tabulated in the [main
+README](../../README.md#configuration). They live in the image, so changing
+one is a pull request and an image roll, not an `.env` edit — which is the
+reason `CYCLE_MINUTE` exists as a per-node override at all.
+
+### Spreading the fleet across the hour
+
+The hash default is deliberately arbitrary, because any spread beats none:
+every active node spends the same Claude account and pushes to the same repos,
+so nodes that fire together collide on quota and on refs for no gain.
+Arbitrary is not the same as even, though, and once nodes share hosts it is
+worth dealing the minutes out by hand:
+
+- Put `60 / N` minutes between consecutive cycles — with four nodes, one every
+  quarter hour.
+- Then walk that ring **alternating hosts**, so the nodes sharing a machine end
+  up as far apart as the ring allows. Two nodes on one host at `:06` and `:36`
+  leave it a clear half hour between cycle starts; the same two at `:06` and
+  `:21` leave it fifteen minutes and then forty-five idle.
+- Finally, nudge the whole ring off the five-minute marks. The heartbeat and
+  `state-sync push` lines both run `*/5`, so a cycle starting at `:05` starts
+  on top of two of its own node's other jobs; one minute later it does not.
+  They are light and the mirror lock arbitrates when they do coincide, so this
+  is a refinement rather than a fix — but it is free. Minute `:19` is the log
+  rotation, and minute `0` is excluded outright.
+
+The four-node, two-host fleet this repo runs is therefore:
+
+| Minute | Host | Node | `.env` |
+| - | - | - | - |
+| `:06` | WSL laptop | `ockham-container` | `~/poetic-node-1/.env` |
+| `:21` | Hetzner VM | `poetic-2` | `/opt/poetic-node-2/.env` |
+| `:36` | WSL laptop | `ockham-2` | `~/poetic-node-2/.env` |
+| `:51` | Hetzner VM | `poetic-1` | `/opt/poetic-node/.env` |
+
+What the spacing buys is a lower *peak*, not less total work: each start burst
+— a fresh clone, a `claude` process, the first stage's tokens — lands on a host
+that is otherwise quiet. It does not stop cycles overlapping, and is not meant
+to. A cycle can and does run past the hour, so a host with two nodes can have
+two running at once whatever their minutes; what bounds it is the per-node
+lock, which keeps any one node to a single cycle and lets the tick it would
+have collided with pass by.
+
+One overlap the spacing cannot remove, worth knowing rather than chasing:
+`review_offset_minutes` is fleet-wide, so on a host whose two nodes sit exactly
+30 minutes apart, one node's review tick lands one minute before the other
+node's cycle (`03:05` and `03:06` here, `03:35` and `03:36` again). It is
+cheap on almost every day, because a review exits early unless
+`review.min_days_between_reviews` has passed for the repo it would review. The
+fleet-wide fix, if it ever stops being cheap, is `review_offset_minutes: 15` in
+`config.json`, which on this four-node ring interleaves reviews exactly between
+cycles on both hosts — at the cost of halving the gap between a node's own two
+pipelines. Note also that an offset of 29 lands the reviews *on* the
+five-minute marks the cycles were nudged off (29 past `:06` is `:35`). That is
+the same light contention, once a day, on a tick that most days does nothing —
+worth knowing, not worth solving.
+
 ### Taking a node out of service
 
 ```bash
@@ -362,8 +460,10 @@ Before setting `ROLE=active` on the newcomer: `docker compose images` in
 **both** directories — the two nodes must run the same image digest (a claim
 scheme only arbitrates between nodes that share it); then watch the fleet
 strip on either dashboard until the new node's heartbeat shows. `CYCLE_MINUTE`
-can stay unset — the hash default already lands the two nodes on different
-minutes.
+can stay unset to begin with — the hash default already lands the two nodes on
+different minutes — but two nodes on one host is exactly the case where the
+arbitrary default is worth replacing with a chosen one: see [Spreading the
+fleet across the hour](#spreading-the-fleet-across-the-hour).
 
 ---
 

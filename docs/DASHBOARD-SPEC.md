@@ -464,6 +464,31 @@ the cost charts — by-day on the left, by-model and by-actor stacked beside it,
 since the first runs to sixty rows and the other two to five; recent log;
 `cron.log` tail.
 
+The **recent log** is the newest 80 events, one row each: time, the event as a
+badge, **Node / Repo / Actor**, and the event's own detail. Those three are
+different kinds of answer to "where did this happen" — which machine ran it,
+which repository it was aimed at, which agent was acting — so they are three
+fixed slots read positionally, each carrying a dash when the event does not
+answer it: the middle token is the repository whether or not the other two are
+known. The actor is derived rather than logged, because no event carries an
+`actor` field and each pipeline already records it somewhere else: the
+implementation pipeline's `stage`; `handoff` on `pr-ready`, naming which actor
+took the pull request out of draft; `by` on `unblocked` (and on that event
+only — `by` elsewhere names a *person*, who set the switch or cleared a
+stand-down); the Enabler's own `escalated`, `enabler-examined` and
+`item-refined`, which carry none of them. A review-pipeline event is the
+Project Reviewer's, which is a different actor from the cycle Reviewer even
+where the review pipeline writes `stage: "reviewer"` — the same distinction
+the Publisher's cost scan draws from the transcript path, drawn the same way
+so the two halves of the page cannot disagree about who did what. Steps with
+no agent in them name none: the clone (`stage: "workspace"`) and a handoff the
+Script completed itself (`handoff: "script"`), as do the cycle-level events
+(`cycle-start`, `selection`, `cycle-end`, and the review pipeline's
+lifecycle), which are the Script's records of a cycle's progress rather than
+any agent's work. Like the source tags and the by-actor chart, this fails
+open: a token the page has never heard of renders as itself, so an actor added
+upstream shows up unlabelled rather than vanishing into a dash.
+
 Every pull-request number anywhere on the page is rendered by one widget,
 which makes it a link with a **record card** carrying that PR's entry from
 `github.pr_index`: repo and number, state, title, author, when it was opened
@@ -674,8 +699,13 @@ number's twins elsewhere on the page.
   live in the Co-Ordinator stage with nothing selected yet reads "In
   progress", never the finished-cycle "Ended"; a cycle with no `cycle-end` and
   no node claiming it reads "No clean end" with fleet data and "Not ended"
-  without any; and a `needs-refinement` blocked row carries its badge and is
-  removed by the hide filter. Out of scope by the same tree-building limit:
+  without any; a `needs-refinement` blocked row carries its badge and is
+  removed by the hide filter; and the log tail's Node / Repo / Actor cell
+  answers all three slots positionally — an actor read from `stage`, from `by`
+  and from `handoff`, the review pipeline's named as the Project Reviewer, the
+  clone step and the cycle-level events naming none, and a missing node
+  keeping its slot rather than letting the repository slide into it. Out of
+  scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.
 - On a node that has been up for at least ten minutes,

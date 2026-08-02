@@ -1367,6 +1367,63 @@
   }
 
   // ---------- log & cron ----------
+  // Which agent an event is the work of, or null where none was acting.
+  //
+  // There is no `actor` field to read: the pipelines record it in whichever
+  // field the event already had a reason to carry, and this reads all of them
+  // rather than asking either pipeline to log something new for the page's
+  // benefit.
+  //
+  // - `stage` is the implementation pipeline's own name for its actors, and
+  //   also where it records the one step of a cycle that is *not* an agent —
+  //   the clone (`workspace`). Nothing acted there, so it names nobody.
+  // - the review pipeline runs a single agent, so its stage events name no
+  //   stage at all; the one place it does write `stage: "reviewer"` it means
+  //   its own Project Reviewer, a different actor from the cycle Reviewer of
+  //   the implementation pipeline. The cost scan draws that same distinction
+  //   from the transcript path (see the Publisher), and drawing it differently
+  //   here would put the two halves of the page at odds over who spent what.
+  //   Its lifecycle events (started, skipped, stood down) are the Script's,
+  //   exactly as `cycle-start` and `selection` are on the other pipeline.
+  // - `pr-ready` carries the actor as `handoff` — which of them took the pull
+  //   request out of draft — where `script` means the pipeline completed a
+  //   handoff its Reviewer left undone, so again no agent.
+  // - `unblocked` names the Enabler in `by`. `by` on any other event is a
+  //   *person* (who set the switch, who cleared the stand-down), never an
+  //   agent, which is why this is read for that one event and not in general.
+  // - the Enabler's own three events predate all of the above and carry none
+  //   of them.
+  //
+  // Failing open like sourceTag() and the by-actor chart: a token this page
+  // has never heard of renders as itself rather than as a dash, so an actor
+  // added upstream shows up unlabelled instead of vanishing.
+  var ENABLER_EVENT = { "escalated": 1, "enabler-examined": 1, "item-refined": 1 };
+  function eventActor(e) {
+    var ev = e.event || "";
+    if (e.stage === "workspace") return null;
+    if (ev.slice(0, 7) === "review-") {
+      return (e.stage || ev === "review-stage-start" || ev === "review-stage-end")
+        ? "project-reviewer" : null;
+    }
+    if (e.stage) return e.stage;
+    if (ENABLER_EVENT[ev]) return "enabler";
+    if (ev === "unblocked" && e.by) return e.by;
+    if (ev === "pr-ready" && e.handoff && e.handoff !== "script") return e.handoff;
+    return null;
+  }
+  // "Where" used to run the repo and the stage together, unlabelled and each
+  // present only when the event carried it — so a one-token cell could be
+  // either, and the node that ran it (the fleet's first question) was not
+  // there at all. The three are different kinds of answer, so they are three
+  // fixed slots read positionally, with a dash for whatever the event does not
+  // carry: the middle token is the repository whether or not the other two are
+  // known.
+  function whereText(e) {
+    var actor = eventActor(e);
+    return [ e.node || "—",
+             e.repo ? e.repo.split("/")[1] : "—",
+             actor || "—" ].join(" / ");
+  }
   function logPanel() {
     var evs = (D.log_tail || []).slice(0, 80);
     if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No log events."}));
@@ -1375,11 +1432,11 @@
       return el("tr", {}, [
         el("td", {class:"muted mono", text: fmtTime(e.ts)}),
         el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: e.event})),
-        el("td", {class:"mono muted", text: (e.repo? e.repo.split("/")[1]:"") + (e.stage? " "+e.stage:"")}),
+        el("td", {class:"mono muted", text: whereText(e)}),
         el("td", {class:"wrap muted", text: esc(extra)})
       ]);
     });
-    return tableOf(["Time","Event","Where","Detail"], rows);
+    return tableOf(["Time","Event","Node / Repo / Actor","Detail"], rows);
   }
   function cronPanel() {
     var lines = D.cron_tail || [];
