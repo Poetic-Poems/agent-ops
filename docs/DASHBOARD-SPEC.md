@@ -484,7 +484,8 @@ configurable interval (`config.json`'s `dashboard_refresh_seconds`, default
 `fetch()`, so it keeps working from a `file://` URL with no server or CORS —
 and re-renders the body **only when the data actually changed** (a signature
 compare that ignores the always-moving `generated_at`). Expanded cycle rows,
-open transcript panels and scroll position survive the re-render; the header's
+opened void rows and a void list showing past its cap, open transcript panels
+and scroll position survive the re-render; the header's
 staleness clock ticks every interval and warns if the heartbeat looks stopped.
 
 The header carries **two** clocks, because the page has two ages: `data <age>`
@@ -537,7 +538,12 @@ amber and questioned once it is running past `lock_stale_after`), **no clean
 end** when no node is running it, and **not ended** when the data carries no
 node state to ask; click a row for per-stage detail with
 the parsed status, full transcript, and stderr); failures,
-blocked and void items; work sources per repo (including the security and
+blocked and void items (the void list newest first — it arrives grouped by
+repo and item, which no reader wants — and **capped twice**: the ten newest
+rows, each three lines tall, with the rest behind a `See more — N older items`
+control at the foot of the table and any row opening to its full text when
+clicked, both choices surviving a refresh. The heading counts every void item,
+not the rows shown); work sources per repo (including the security and
 code-quality findings, shown first, that the Co-Ordinator prioritises, and the
 open issues, listed in `Priority` band order with the band on each, which is
 the order the Co-Ordinator reaches them in);
@@ -837,7 +843,13 @@ number's twins elsewhere on the page.
   `answered_404` (a repo with no tech-debt register) still renders an
   ordinary zero, and a fixture carrying no `state` field at all — every
   repo's data from before this field existed — renders exactly as it always
-  did.
+  did. The void list's two caps are asserted from a twelve-row fixture whose
+  two oldest rows sit *first* in the data, because the cap is only meaningful
+  once the list is sorted: the heading counts twelve, the ten newest render
+  (the tenth-newest last), neither old row appears until asked for, the
+  see-more control names how many are held back, and every row carries both
+  the height cap and the class that makes it open. A fixture inside the cap
+  renders no control at all.
   Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.
@@ -868,6 +880,14 @@ number's twins elsewhere on the page.
   asserts the badge, the count and the checkbox's label from a fixture; the
   checkbox's own click behaviour is outside its tree-building DOM stub, so
   stays a manual check here.
+- With more than ten `void` rows in `data.js`, the Void items table shows the
+  ten newest, `See more — N older items` at its foot reveals the rest and turns
+  into `See fewer`, and a row whose reason runs past three lines is clipped with
+  an ellipsis and opens to the whole of it when clicked (clicking again closes
+  it). Leave a row open and use the control: the re-render that follows must
+  keep both that row open and the list expanded — the same survives-a-rebuild
+  rule the cycle rows and open transcripts follow. Like the refinement filter,
+  the assertions cover what renders and the clicking is manual here.
 - While a cycle is in flight, its row in Recent cycles reads **in progress**
   from the moment it starts — including during the Co-Ordinator stage, before
   any `selection` is logged, which is the whole window in which the log-derived
@@ -1273,6 +1293,28 @@ number's twins elsewhere on the page.
   to say *the pipeline is stuck on these* was reporting a backlog that had been
   cleared. The heading's count is the part that misleads fastest: it is read at
   a glance, by someone deciding whether to intervene at all.
+
+  **The void list is capped and the blocked list is not**, for the same reason
+  they are separate. Void is the page's one unbounded list of work nobody need
+  act on: rows only accumulate — a hand-appended `unvoided` is the sole way one
+  leaves — while the panels that do want an answer sit below it, so left whole
+  it eventually pushes failed cycles and the work sources off the screen with a
+  list whose entire message is "nothing to do here". Blocked is the opposite
+  and is never capped: hiding a row there hides work. So void shows its ten
+  newest rows, each clipped to three lines, and both caps open where they are —
+  a `See more` at the foot of the table, any row expanding to its full text on
+  a click — because the Enabler's reason *is* the row, and a truncation that
+  could not be undone would leave the one question a void item ever raises
+  ("is this verdict right?") unanswerable on the page. The heading keeps
+  counting every void item rather than the rows shown, so the number read at a
+  glance stays the fleet's.
+
+  Ordering is part of that cap, not a nicety beside it: `void_items` groups by
+  repo and item, so a cap over the list as it arrives keeps whichever ids sort
+  first, which answers no question anyone has. The page sorts newest-first
+  before slicing, making the kept rows the ten most recent verdicts — the ones
+  a mistaken void is most likely to be among, and the only ones whose `Since`
+  column then reads in order.
 
   The blocked list then makes one further distinction *within* itself, in its
   `Escalated` column: an item waiting on a human through an open issue, versus

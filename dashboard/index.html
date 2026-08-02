@@ -91,6 +91,21 @@
   tbody tr.clickable:hover { background: var(--grey-bg); }
   td.wrap { white-space: normal; max-width: 420px; }
   td.wrap.roomy { max-width: none; width: 100%; }
+  /* A cell capped at three lines, in a table whose rows open to their full
+     text on click (the void list). The cap sits on an inner block because the
+     clamp needs `display: -webkit-box`, and a `td` given that stops being a
+     table cell. The ellipsis it draws is the affordance: a row with nothing
+     hidden shows none, so the cue appears on exactly the rows that have more. */
+  td.wrap .clip { display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 3; line-clamp: 3; overflow: hidden; }
+  /* The see-more control belongs to the table it uncovers, so it is that
+     table's last row rather than a button beside it — full width, inside the
+     panel border, reading as the continuation of the list. */
+  td.morecell { padding: 0; }
+  button.more { font: inherit; font-size: 12px; width: 100%; padding: 8px 12px; border: 0;
+    background: none; color: var(--accent); cursor: pointer; text-align: center; }
+  button.more:hover { background: var(--grey-bg); }
+  button.more:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
   td.stages { white-space: normal; max-width: 132px; }
   .badge { display: inline-block; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 600;
     border: 1px solid transparent; }
@@ -624,6 +639,8 @@
   var openDetails = Object.create(null);  // "cycle/stage/kind" -> true for open <details>
   var nodeFilter = null;                  // node name while the cycle list is filtered to one node
   var hideRefinement = false;             // true while needs-refinement blocks are hidden from the blocked list
+  var voidShowAll = false;                // true while the void list shows past its first VOID_ROWS rows
+  var voidOpen = Object.create(null);     // "repo/item/row" -> true while that void row shows its full text
 
   // ---------- fleet helpers ----------
   function fleetNodes()  { return (D.fleet && D.fleet.nodes)  || []; }
@@ -1213,6 +1230,10 @@
       text:"refinement"});
   }
 
+  // How many void rows the list shows before the see-more control; the rest are
+  // one click away. Ten is about a screen of a panel nobody is here to read.
+  var VOID_ROWS = 10;
+
   // ---------- failures & blocked ----------
   function failuresPanel() {
     var wrap = el("div");
@@ -1253,18 +1274,51 @@
     // Void items are listed apart from blocked ones because they call for the
     // opposite response: a blocked item may need a human to clear its path, a
     // void item is closed and only needs one if the verdict itself is wrong.
-    var voided = D.void || [];
+    //
+    // It is also the page's one unbounded list of work nobody need act on: a
+    // fleet retires items steadily, so this grows without limit while every
+    // panel that *does* want an answer sits below it. Hence the two caps —
+    // the first ten rows, each three lines tall — and both open on demand,
+    // because the reason an item was retired is the whole content of a row
+    // and truncation that could not be undone would be a lie. The choices are
+    // held in the state maps up top, so a refresh mid-read leaves them alone.
+    //
+    // Newest first, which the list is not as it arrives: `void_items` groups by
+    // repo and item, so untouched the ten rows a cap keeps would be whichever
+    // item ids happened to sort first — a truncation with no meaning. Every
+    // event on this page carries the same UTC `%Y-%m-%dT%H:%M:%SZ` stamp, so a
+    // string compare orders them, and a copy is sorted rather than `D.void`
+    // itself, which the refresh signature reads.
+    var voided = (D.void || []).slice().sort(function (a, b) {
+      return String(b.ts || "").localeCompare(String(a.ts || ""));
+    });
     if (voided.length) {
       wrap.appendChild(el("h2", {style: blockedAll.length ? "" : "margin-top:0", text:"Void items (" + voided.length + ")"}));
       wrap.appendChild(el("div", {class:"muted", style:"margin:-6px 0 8px", text:"No work to do — closed permanently. Only a human can reopen these (append an `unvoided` event to the log)."}));
-      var vrows = voided.map(function (v) {
-        return el("tr", {}, [
+      var vrows = (voidShowAll ? voided : voided.slice(0, VOID_ROWS)).map(function (v, i) {
+        // Repo and item name the record; the index keeps two nameless rows
+        // from sharing one key and opening together.
+        var key = (v.repo || "") + "/" + (v.item || "") + "/" + i;
+        var why = el("div", {class: voidOpen[key] ? "" : "clip",
+          text: (v.stage ? v.stage + ": " : "") + (v.detail || "") + (v.evidence ? " — " + v.evidence : "")});
+        var tr = el("tr", {class:"clickable"}, [
           el("td", {class:"mono", text: v.item}),
           el("td", {class:"mono muted", text: v.repo ? v.repo.split("/")[1] : "—"}),
           el("td", {class:"muted", text: fmtAgo(v.ts)}),
-          el("td", {class:"wrap", text: (v.stage ? v.stage + ": " : "") + (v.detail || "") + (v.evidence ? " — " + v.evidence : "")})
+          el("td", {class:"wrap"}, why)
         ]);
+        tr.addEventListener("click", function () {
+          if (voidOpen[key]) { delete voidOpen[key]; why.className = "clip"; }
+          else { voidOpen[key] = true; why.className = ""; }
+        });
+        return tr;
       });
+      if (voided.length > VOID_ROWS) {
+        var hidden = voided.length - VOID_ROWS;
+        vrows.push(el("tr", {}, el("td", {class:"morecell", colspan:4},
+          el("button", {class:"more", type:"button", onclick: function () { voidShowAll = !voidShowAll; renderBody(); },
+            text: voidShowAll ? "See fewer" : "See more — " + hidden + " older item" + (hidden === 1 ? "" : "s")}))));
+      }
       wrap.appendChild(tableOf(["Item","Repo","Since","Why there is no work"], vrows));
     }
 
