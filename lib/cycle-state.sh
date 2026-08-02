@@ -206,6 +206,62 @@ void_items() {
   _latest_unresolved "item-void" "unvoided" "${1:--}"
 }
 
+# The two states meet in one place, and the answer there is always the same:
+# **void wins** (requirement 34h). An item can hold both marks at once, and
+# routinely does — `item-void` is a state of its own and clears no block, so the
+# Enabler's `void` verdict, which is its ordinary way of retiring work that
+# turned out to be already done, leaves the last `attempt-failed` standing for
+# ever. Nothing re-examines such an item and nothing selects it: it is finished
+# with, and every consumer that *acts* on the blocked set already subtracts the
+# void one before it does.
+#
+# This is that subtraction, written once (requirement 34a). It had been written
+# twice — inline in the Enabler's eligibility rule, and not at all in the
+# Publisher — which is exactly the drift 34a warns about, and it surfaced where
+# 34a says it would: the dashboard's Blocked items table, the page you would go
+# to to find this class of bug, listed fifteen items the pipeline had already
+# closed the book on, one of them for a fortnight.
+#
+# The match is requirement 34's, not a stricter one: a void naming no repo
+# covers the item in every repo, for the reason 34c gives — both an `item-void`
+# and its `unvoided` may be hand-appended by a human, who has no repo to hand.
+# shellcheck disable=SC2016  # jq's $all/$void/$b, not the shell's.
+OPEN_BLOCKED_JQ='
+  def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
+  . as $all
+  | ($all | latest_unresolved("item-void"; "unvoided")) as $void
+  | ($all | ('"$BLOCKED_ITEMS_JQ"'))
+  | map(. as $b
+        | select($void
+                 | any(.item == $b.item
+                       and ((.repo // "") == "" or (.repo // "") == ($b.repo // "")))
+                 | not))
+'
+
+# open_blocked_items [LOG_FILE]
+# Print, as a JSON array, the blocked items that are not void — the items still
+# waiting on something, in the sense a human reading a dashboard or an Enabler
+# deciding where to spend means it. Entries are `blocked_items`' entries
+# unchanged, `recheck_clean_ts` and all. Reads LOG_FILE, or stdin if it is
+# omitted or "-".
+#
+# `blocked_items` remains the raw rule of requirement 34 and is what the
+# Co-Ordinator's own skip list is built from: it is handed the void list beside
+# the blocked one and requirement 34c is emphatic that it must be able to see
+# both, so nothing is subtracted there.
+open_blocked_items() {
+  local src="${1:--}" out=""
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$OPEN_BLOCKED_JQ" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$OPEN_BLOCKED_JQ" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # The refinements a later Co-Ordinator must be given (requirement 3h), as one jq
 # program over the fleet's whole event stream: the latest `item-refined` event
 # per repo+item, for items that are not void.
@@ -262,17 +318,17 @@ refinements_map() {
 }
 
 # The Enabler's eligibility rule (requirement 35a), as one jq program over the
-# fleet's whole event stream. It re-uses the blocked and void extracts above
-# rather than re-deriving either: the set it computes is a subset of "blocked
-# and not void", and a second opinion about which items those are is exactly
-# the drift requirement 34a exists to prevent.
+# fleet's whole event stream. It re-uses the extracts above rather than
+# re-deriving any of them: the set it computes is a subset of `open_blocked_items`
+# — blocked and not void — and a second opinion about which items those are is
+# exactly the drift requirement 34a exists to prevent.
 #
 # An item is eligible iff all of:
 #
-#   1. it is blocked — call that latest attempt-failed event B;
-#   2. it is not void — an item with no work needs no unblocking, and the live
-#      blocked∩void shape (an item recorded both ways before the two states
-#      were split) must not be re-examined at Opus prices;
+#   1. it is blocked — call that latest attempt-failed event B — and
+#   2. it is not void: an item with no work needs no unblocking, and the
+#      blocked∩void shape every `void` verdict creates (requirement 34h) must
+#      not be re-examined at Opus prices. Both clauses are `open_blocked_items`;
 #   3. no escalation issue for it is still open — the human has been asked and
 #      has not answered yet, so there is nothing new to read. When the repo's
 #      issue digest is missing (its source state could not be sampled) we
@@ -328,15 +384,12 @@ refinements_map() {
 # said, so a second one need not guess at it.
 # shellcheck disable=SC2016  # jq's $ vars ($all/$b/$open/…), not the shell's.
 ENABLER_ELIGIBLE_JQ='
-  def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
   def same_item($e): (.item // "") == ($e.item // "")
                      and ((.repo // "") == "" or (.repo // "") == ($e.repo // ""));
   . as $all
-  | ($all | latest_unresolved("attempt-failed"; "unblocked")) as $blocked
-  | ($all | latest_unresolved("item-void"; "unvoided")) as $void
+  | ($all | ('"$OPEN_BLOCKED_JQ"')) as $blocked
   | [ $blocked[]
       | . as $b
-      | select($void | any(same_item($b)) | not)
       | ([ $all[]
            | select(.event == "escalated" and same_item($b)
                     and ((.issue_number // "") | tostring | test("^[0-9]+$"))) ]

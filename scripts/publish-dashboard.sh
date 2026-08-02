@@ -695,13 +695,20 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$cost
                       | sort_by(-.usd))
   }')"
 
-# --- Blocked and void items (requirements 34, 34c) ---------------------------
+# --- Blocked and void items (requirements 34, 34c, 34h) ----------------------
 # Both rules live in lib/cycle-state.sh, shared with agent-cycle.sh, so what the
 # dashboard calls blocked or void is by construction what the Co-Ordinator is
 # told. Only the projection for display is local. They are shown apart because
 # they mean opposite things to a human deciding whether to intervene: a blocked
 # item is waiting on something, a void item is finished with.
-blocked_json="$(printf '%s\n' "$ALL_EVENTS" | blocked_items - | jq -c \
+#
+# Which is why the blocked list is `open_blocked_items` and not `blocked_items`:
+# an item can carry both marks, and one that does is void (requirement 34h).
+# Every `void` verdict the Enabler reaches leaves the block that preceded it
+# standing — `item-void` clears nothing — so listing the raw blocked set here
+# put items in *both* tables, in the one panel whose whole purpose is to keep
+# the two apart, and left them there for as long as the log remembered them.
+blocked_json="$(printf '%s\n' "$ALL_EVENTS" | open_blocked_items - | jq -c \
   'map({repo: (.repo // ""), item: .item, ts: .ts, detail: (.detail // ""), stage: (.stage // ""), kind: (.kind // "")})' 2>/dev/null)"
 [[ -z "$blocked_json" ]] && blocked_json='[]'
 

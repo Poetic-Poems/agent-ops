@@ -73,8 +73,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   `lib/fleet.sh` read the pipelines use. Parsed line-by-line
   with `fromjson? // empty` so a half-written trailing line (the Script may be
   appending) never aborts the parse. Blocked items use requirement 34's
-  semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`); void
-  items use requirement 34c's (most recent `item-void`/`unvoided`). Both come
+  semantics (most recent `attempt-failed`/`unblocked` per `repo`+`item`) *less*
+  the void set, which is requirement 34h's `open_blocked_items`; void items use
+  requirement 34c's (most recent `item-void`/`unvoided`). Both come
   from the shared library, never from a local copy of the rule. With no peers
   the union reduces exactly to the old local read. Each blocked row is joined
   against the `escalated` and `enabler-examined` events *later than that block*
@@ -349,7 +350,8 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                events[] } ],           // most recent 40 FLEET-WIDE, newest first
                                        //   ids of the cycle shape only — a
                                        //   hand-appended record is not a cycle
-  blocked: [ { repo, item, ts, detail, stage,           // from the log union
+  blocked: [ { repo, item, ts, detail, stage,           // from the log union,
+                                                        //   blocked and not void
                kind,                                    // "" ordinarily, "needs-refinement" for a
                                                          //   refinement block (implementation spec 34e)
                escalation_issue, escalation_url,        // an open ask of the human
@@ -751,7 +753,11 @@ number's twins elsewhere on the page.
   log tail. And with `cron.log` short and a `cron.log.1` beside it —
   `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
   from both, oldest first, rather than going blank for the tick after a
-  rotation.
+  rotation. An item that is blocked *and* void reaches `void[]` and not
+  `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
+  block beside it is still listed — a subtraction that over-reached would empty
+  the panel that says the pipeline is stuck, which looks exactly like a pipeline
+  that is not.
 - `test/dashboard-render.test.sh` passes: `dashboard/index.html`'s own inline
   script, run unmodified under `node` against checked-in `DASHBOARD_DATA`
   fixtures and a DOM stub that only builds trees (`createElement`/
@@ -896,8 +902,8 @@ number's twins elsewhere on the page.
 - **The blocked and void lists are not computed here.** `blocked[]` and
   `void[]` come from the same shared implementation the Script feeds its
   Co-Ordinator (`lib/cycle-state.sh`, per requirement 34a of
-  `docs/IMPLEMENTATION-PIPELINE-SPEC.md`); only the projection for
-  display is local. The dashboard originally had its own near-copy of the
+  `docs/IMPLEMENTATION-PIPELINE-SPEC.md`) — `open_blocked_items` and
+  `void_items`; only the projection for display is local. The dashboard originally had its own near-copy of the
   rule, and the two silently disagreed — which matters more here than
   anywhere else, because this page is where someone looks to find out why the
   pipeline is repeating itself. A monitor that reimplements the thing it
@@ -1199,6 +1205,19 @@ number's twins elsewhere on the page.
   the page, since it is the only escape hatch and it exists nowhere in the
   UI). Collapsing them costs the operator the one distinction the pipeline
   cannot make for itself.
+
+  Separate lists means *separate*: an item holding both marks is void
+  (implementation spec 34h) and belongs to the void list alone, which is why
+  `blocked[]` is `open_blocked_items` and not `blocked_items`. It is not a
+  corner case. `item-void` clears no block, so every `void` verdict the Enabler
+  reaches — its ordinary way of retiring work that turned out to be already
+  done — leaves the `attempt-failed` before it standing, and the page listed the
+  item in both tables from then on. On the fleet that found this, fifteen of the
+  sixteen rows under "Blocked items" were items the pipeline had already
+  finished with, the oldest of them a fortnight dead, and the panel that exists
+  to say *the pipeline is stuck on these* was reporting a backlog that had been
+  cleared. The heading's count is the part that misleads fastest: it is read at
+  a glance, by someone deciding whether to intervene at all.
 
   The blocked list then makes one further distinction *within* itself, in its
   `Escalated` column: an item waiting on a human through an open issue, versus

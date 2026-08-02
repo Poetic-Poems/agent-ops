@@ -971,16 +971,27 @@ assert_eq "a local-only tick carries the ledger forward" "3" \
 # on it.
 z="$(new_home nodeZ)"
 zlog="$z/.local/state/poetic-agents/log.jsonl"
-printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072610","stage":"coordinator","detail":"a red check on the base branch"}\n' \
-  > "$zlog"
-printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072611","stage":"coordinator","detail":"never specified what done means","kind":"needs-refinement","unblock_condition":"a human decision","source":"tech-debt"}\n' \
-  >> "$zlog"
+{
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072610","stage":"coordinator","detail":"a red check on the base branch"}\n'
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072611","stage":"coordinator","detail":"never specified what done means","kind":"needs-refinement","unblock_condition":"a human decision","source":"tech-debt"}\n'
+  # A third item, blocked and then voided: `item-void` clears no block, so this
+  # is the shape every Enabler `void` verdict leaves behind, and the page must
+  # show it under one heading, not two (requirement 34h).
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"attempt-failed","repo":"Poetic-Poems/agent-ops","item":"TD26072612","stage":"implementor","detail":"waiting on an upstream release"}\n'
+  printf '{"ts":"2026-07-27T00:00:00Z","event":"item-void","repo":"Poetic-Poems/agent-ops","item":"TD26072612","detail":"already on main","evidence":"merged in #144"}\n'
+} > "$zlog"
 run_publish "$z"
 zdata="$(data_of "$z")"
 assert_eq "an ordinary block's kind is the empty string" "" \
   "$(jq -r '.blocked[] | select(.item=="TD26072610") | .kind' <<<"$zdata")"
 assert_eq "a refinement block's kind survives into data.js" "needs-refinement" \
   "$(jq -r '.blocked[] | select(.item=="TD26072611") | .kind' <<<"$zdata")"
+assert_eq "a blocked item that has since been voided is not listed as blocked" "0" \
+  "$(jq '[.blocked[] | select(.item=="TD26072612")] | length' <<<"$zdata")"
+assert_eq "it is listed as void instead, with its evidence" "merged in #144" \
+  "$(jq -r '.void[] | select(.item=="TD26072612") | .evidence' <<<"$zdata")"
+assert_eq "and the blocks either side of it are untouched" "2" \
+  "$(jq '.blocked | length' <<<"$zdata")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
