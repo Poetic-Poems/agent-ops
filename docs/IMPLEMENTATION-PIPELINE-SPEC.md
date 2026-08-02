@@ -622,10 +622,16 @@ runs unattended.
    same `warning`. Only a lock whose `host` matches (or carries none, from
    before this stamp existed) is judged by liveness: if held by a live
    process younger than `lock_stale_after`, log `cycle-skipped` and exit 0;
-   if the holder is dead or older than `lock_stale_after`, kill its whole
-   process group if still alive, log a `warning` (a stale cycle indicates a
-   fault — it should not occur in normal operation), take the lock, and
-   continue.
+   if the holder is dead or older than `lock_stale_after`, end its whole
+   process group if still alive — TERM first, then a polled grace of up to
+   20 seconds for the process to exit, then KILL — log a `warning` (a stale
+   cycle indicates a fault — it should not occur in normal operation), take
+   the lock, and continue. The grace exists for requirement 9c: TERM is what
+   invites the doomed cycle's own signal handler to write its
+   `attempt-failed`, release its claim and log its `cycle-end`, and it is
+   sized to that handler's worst case (one process-group kill, one log
+   append, one 8-second-bounded claim release). Polled rather than slept, so
+   a cycle that records and exits in one second costs one second.
 1a. **Model id resolution (D12 groundwork).** Every model key read from
    config — `coordinator_model`, `implementor_model_default`,
    `implementor_model_trivial`, `reviewer_model_default`,
@@ -1612,6 +1618,36 @@ runs unattended.
    evidence that should have shut the item forever (*the work is done*) was
    the very evidence that reopened it. If a state can be cleared by the same
    fact that ought to make it permanent, it is the wrong state.
+9c. **A signal is a failure with a record.** The Script traps `TERM`, `INT`
+   and `HUP` from the moment its cleanup trap is armed. The kills that reach
+   it are real and routine — a peer taking over a stale lock TERMs the whole
+   process group (requirement 1), an operator stops a container, a `--once`
+   run is interrupted at the terminal — and before this requirement any of
+   them ended bash between one statement and the next: no `attempt-failed`,
+   no claim release, no `cycle-end`, and the in-flight stage's own process
+   group (detached from the Script's by design, so the timeout can kill it
+   whole) left running a model for a cycle that was already dead. The
+   handler, in an order that is itself the requirement:
+   1. kills the in-flight stage's process group, if any, with KILL — the
+      signaller's patience is unknown and may be two seconds, and a stage
+      whose cycle is dead has nothing left to negotiate;
+   2. logs `attempt-failed` against the selected repo+item where one exists
+      (so requirement 34's blocked extract sees the death), with detail
+      `<stage> terminated by SIG<name>` naming the stage that was in flight
+      — or `cycle` when none was — and carrying `pr_url` when the
+      requirement-23 breadcrumb identifies one (read before the clone is
+      deleted, since the breadcrumb dies with it);
+   3. releases the claim (`have-pr` when a PR is known, `no-pr` otherwise),
+      time-bounded to 8 seconds — releasing now beats waiting out the gc's
+      `claim_ttl_hours`, but not at the price of the exit record — and
+   4. exits `128+n` through the ordinary `exit`, so the EXIT trap still
+      writes `cycle-end` with a truthful code, releases the lock and pushes
+      state, and `maybe_run_enabler`'s cycle_rc guard skips the Enabler
+      without being asked.
+   A stage that had already ended cleanly is never blamed: the stage
+   pid/name pair is advertised only while a stage is in flight. A signal
+   landing during cleanup itself must not re-enter the handler.
+   `review-cycle.sh` carries the same discipline as R7a of its own spec.
 10. **Usage-limit detection.** Whenever any `claude` invocation's transcript
     matches the shared pattern in `lib/limit-detect.sh` (`LIMIT_PHRASE_REGEX`
     — the generic `hit your .* limit` stem plus the legacy `usage limit` /
@@ -3853,6 +3889,17 @@ pull request, run the ones the change touches and any it could regress.
    because it collides with an unrelated local process) is taken over
    immediately with a logged warning, and that local process is left
    running.
+4a. **A signal leaves a record, a released claim, and no orphaned model
+   (requirement 9c).** `test/signal-exit.test.sh` passes: with the signal
+   machinery lifted from `agent-cycle.sh` (and from `review-cycle.sh`), a
+   TERM delivered mid-stage kills the stub stage's own process group, logs
+   an `attempt-failed` whose detail is `<stage> terminated by SIGTERM`,
+   releases the claim — `have-pr` when a breadcrumb names a PR, `no-pr`
+   otherwise — and exits 143 through the EXIT trap; a stage that had
+   already ended cleanly is not blamed (the event says `cycle`); and the
+   requirement-1 takeover grace TERMs a live stale holder, proceeds as soon
+   as the holder exits rather than sleeping out the full grace, and still
+   takes the lock over.
 5. An injected `limit-hit` event with a future `resume_at` and
    `reset_known: true` causes a stand-down with no probe launched; an expired
    one does not stand down. With `reset_known: false`, the cycle launches
