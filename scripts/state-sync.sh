@@ -33,6 +33,8 @@ CONFIG_FILE="$SCRIPT_DIR/config.json"
 . "$SCRIPT_DIR/lib/version.sh"
 # shellcheck source=lib/compose-drift.sh
 . "$SCRIPT_DIR/lib/compose-drift.sh"
+# shellcheck source=lib/image-drift.sh
+. "$SCRIPT_DIR/lib/image-drift.sh"
 
 usage() {
   cat <<'EOF'
@@ -115,6 +117,10 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #                   machinery. Each node republishes its own page from the
 #                   union it fetches; copying the pixels would be copying a
 #                   derivative of what we are already copying.
+#   the image-drift `.image-drift-cache.json` is this node's own last read of
+#   cache            the registry (lib/image-drift.sh) — a peer's copy of it
+#                   would answer for a registry query nobody there ran, not
+#                   for that peer.
 #   .git            the mirror's own repository, which lives at the same root.
 #
 # Everything else — log.jsonl, review-log.jsonl, cycles/, reviews/,
@@ -130,6 +136,7 @@ EXCLUDES=(
   --exclude=state-sync.log
   --exclude=.dashboard-github.json
   --exclude=.dashboard-claims.json
+  --exclude=.image-drift-cache.json
   --exclude=/dashboard/
 )
 
@@ -244,18 +251,29 @@ do_push() {
   # where no image roll can update it and nothing but that node can read it
   # (issue #131). The node is the only party that can say whether its own
   # deployment file has fallen behind, so it says so here.
-  local last_cycle
+  #
+  # And the image-drift verdict (lib/image-drift.sh), for the gap #155
+  # writes up: a fleet that is uniformly stale looks identical to a healthy
+  # one when nodes are only ever compared with each other, so the verdict
+  # against the registry — the one party that actually knows what "newest"
+  # means — travels here too. Its cache file lives beside the state this
+  # push already reads and is excluded above like the other local caches;
+  # sharing it with scripts/publish-dashboard.sh's own reads means the two
+  # never pay for the same registry query twice inside its TTL.
+  local last_cycle version_json
   last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
     | sort -r | head -n 1)"
+  version_json="$(agent_ops_version "$SCRIPT_DIR")"
   jq -nc \
     --arg node "$node_name" \
     --arg role "${AGENT_OPS_ROLE:-standby}" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg lc "${last_cycle:-}" \
-    --argjson version "$(agent_ops_version "$SCRIPT_DIR")" \
+    --argjson version "$version_json" \
     --argjson compose "$(compose_drift_status)" \
+    --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose}' > "$mirror/heartbeat.json"
+      compose: $compose, image: $image}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

@@ -261,6 +261,18 @@ services:
       DOCKER_API_VERSION: ${DOCKER_API_VERSION:-1.40}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+    # Pinned rather than left at the `json-file` default, whose rotation
+    # under Docker Desktop/WSL2 turned out not to be trustworthy at all: on
+    # this laptop a full read and a `--tail 1` read of this very container's
+    # log disagreed about the newest line by three days (issue #155). This
+    # is the one container nothing ever rolls, so it is also the one whose
+    # own history has to be readable on its own terms — a bounded, explicit
+    # rotation rather than whatever the runtime happens to do.
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
 
 networks:
   default:

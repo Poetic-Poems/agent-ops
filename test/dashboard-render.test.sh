@@ -92,7 +92,7 @@ assert_contains "the running node's card is tagged as this node" \
 assert_contains "and the idle peer is tagged by name too" \
   "poetic-2" "$out"
 assert_contains "the header summarises how many of the fleet are running" \
-  "1 of 2 nodes running" "$out"
+  "1 of 4 nodes running" "$out"
 # The log tail's Node / Repo / Actor cell. Three fixed slots read positionally,
 # so what each one is claiming does not depend on how many of them the event
 # happened to carry — the case that used to make the old "Where" column
@@ -105,6 +105,23 @@ assert_contains "an event whose actor is named in 'by' rather than 'stage' still
   "poetic-2 / poetic-fiddle / enabler" "$out"
 assert_contains "and a missing node keeps its slot rather than shifting the repo into it" \
   "— / agent-ops / —" "$out"
+
+# --- Image-drift badges on the fleet strip (#155) ---------------------------
+# poetic-1 (self) is current and gets no badge; poetic-2 predates the check
+# (null, like an old version/compose verdict) and gets no badge either;
+# poetic-3 is behind an image published longer ago than
+# image_behind_grace_hours, past the mid-roll tolerance; poetic-4's registry
+# check failed outright.
+assert_contains "a node behind an image older than the grace window is flagged" \
+  "image behind" "$out"
+assert_contains "carrying the registry's commit, abbreviated for reading" \
+  "abc1234" "$out"
+assert_contains "a node whose registry check failed reads unverified, not silently current" \
+  "image unverified" "$out"
+assert_contains "poetic-3 is named on the strip" \
+  "poetic-3" "$out"
+assert_contains "poetic-4 is named on the strip" \
+  "poetic-4" "$out"
 
 # --- finished.json: ended cycles (ready, failed) + one cycle a fleet-less --------
 # data.js (no `fleet` key at all) would have carried before the strip existed.
