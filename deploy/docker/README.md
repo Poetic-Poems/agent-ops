@@ -386,18 +386,24 @@ worth dealing the minutes out by hand:
 - Put `60 / N` minutes between consecutive cycles — with four nodes, one every
   quarter hour.
 - Then walk that ring **alternating hosts**, so the nodes sharing a machine end
-  up as far apart as the ring allows. Two nodes on one host at `:05` and `:35`
-  leave it a clear half hour between cycle starts; the same two at `:05` and
-  `:20` leave it fifteen minutes and then forty-five idle.
+  up as far apart as the ring allows. Two nodes on one host at `:06` and `:36`
+  leave it a clear half hour between cycle starts; the same two at `:06` and
+  `:21` leave it fifteen minutes and then forty-five idle.
+- Finally, nudge the whole ring off the five-minute marks. The heartbeat and
+  `state-sync push` lines both run `*/5`, so a cycle starting at `:05` starts
+  on top of two of its own node's other jobs; one minute later it does not.
+  They are light and the mirror lock arbitrates when they do coincide, so this
+  is a refinement rather than a fix — but it is free. Minute `:19` is the log
+  rotation, and minute `0` is excluded outright.
 
 The four-node, two-host fleet this repo runs is therefore:
 
 | Minute | Host | Node | `.env` |
 | - | - | - | - |
-| `:05` | WSL laptop | `ockham-container` | `~/poetic-node-1/.env` |
-| `:20` | Hetzner VM | `poetic-2` | `/opt/poetic-node-2/.env` |
-| `:35` | WSL laptop | `ockham-2` | `~/poetic-node-2/.env` |
-| `:50` | Hetzner VM | `poetic-1` | `/opt/poetic-node/.env` |
+| `:06` | WSL laptop | `ockham-container` | `~/poetic-node-1/.env` |
+| `:21` | Hetzner VM | `poetic-2` | `/opt/poetic-node-2/.env` |
+| `:36` | WSL laptop | `ockham-2` | `~/poetic-node-2/.env` |
+| `:51` | Hetzner VM | `poetic-1` | `/opt/poetic-node/.env` |
 
 What the spacing buys is a lower *peak*, not less total work: each start burst
 — a fresh clone, a `claude` process, the first stage's tokens — lands on a host
@@ -410,13 +416,16 @@ have collided with pass by.
 One overlap the spacing cannot remove, worth knowing rather than chasing:
 `review_offset_minutes` is fleet-wide, so on a host whose two nodes sit exactly
 30 minutes apart, one node's review tick lands one minute before the other
-node's cycle (`03:04` and `03:05` here, `03:34` and `03:35` again). It is
+node's cycle (`03:05` and `03:06` here, `03:35` and `03:36` again). It is
 cheap on almost every day, because a review exits early unless
 `review.min_days_between_reviews` has passed for the repo it would review. The
 fleet-wide fix, if it ever stops being cheap, is `review_offset_minutes: 15` in
 `config.json`, which on this four-node ring interleaves reviews exactly between
 cycles on both hosts — at the cost of halving the gap between a node's own two
-pipelines.
+pipelines. Note also that an offset of 29 lands the reviews *on* the
+five-minute marks the cycles were nudged off (29 past `:06` is `:35`). That is
+the same light contention, once a day, on a tick that most days does nothing —
+worth knowing, not worth solving.
 
 ### Taking a node out of service
 
