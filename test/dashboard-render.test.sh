@@ -199,6 +199,55 @@ assert_contains "void items are listed separately, with their own count" \
 assert_contains "and the evidence for why there is no work" \
   "removed in #144" "$out"
 
+# --- work-sources.json: the per-repo `nice` badge --------------------------------
+# The rendering half of the pipeline spec's requirement 3. What makes this
+# worth a test rather than a look is that both of its silences are load-bearing
+# and neither shows up on the page that has them: a repo at 0 (or with no key)
+# must render exactly what it rendered before the badge existed, and the note
+# must say whose ordering this is — the page's one per-repo surface sits under
+# a heading reading "what the Co-Ordinator sees", and a `nice` is precisely
+# what the Co-Ordinator is not shown.
+out="$(render work-sources.json)" || { printf 'FAIL - work-sources.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "a negative nice renders its badge on that repo" \
+  "nice -5" "$out"
+assert_contains "coloured as a promotion rather than a warning" \
+  'class="badge b-blue"' "$out"
+assert_contains "and names the weighting it actually buys" \
+  "staleness age ×3.05" "$out"
+assert_contains "in the direction a negative value means" \
+  "so it gets earlier attention" "$out"
+assert_contains "a positive nice renders its own badge" \
+  "nice 3" "$out"
+assert_contains "muted rather than promoted" \
+  'class="badge b-grey"' "$out"
+assert_contains "with the reciprocal weighting" \
+  "staleness age ×0.51" "$out"
+assert_contains "and the opposite direction" \
+  "so it gets later attention" "$out"
+assert_contains "the badge disclaims starvation, which is the first thing an operator will ask" \
+  "never starves a repo" "$out"
+assert_contains "the panel note names the Script as what acts on a nice" \
+  "the Script weights its staleness age" "$out"
+assert_contains "and says plainly that the Co-Ordinator is not told" \
+  "The Co-Ordinator is never told these values" "$out"
+# The first repo in the fixture carries no `nice` key at all and must be
+# indistinguishable from one configured before the feature existed.
+assert_not_contains "a repo with no nice key renders no badge for it" \
+  "nice 0" "$out"
+
+# --- work-sources-neutral.json: every repo at 0 or absent ------------------------
+# The whole-page form of the same silence, and the one that matters to a fleet
+# that has set no `nice` anywhere: no badge and no note — the page this file
+# rendered before the feature shipped, which is the same omit-never-empty
+# contract lib/repo-order.sh keeps for the fingerprint, for the same reason.
+out="$(render work-sources-neutral.json)" || { printf 'FAIL - work-sources-neutral.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_not_contains "an explicit 0 renders no badge, and no repo's absence renders a note" \
+  "nice" "$out"
+assert_contains "while the work-source panel it sits in renders as it always did" \
+  "Poetic-Poems/agent-ops" "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
