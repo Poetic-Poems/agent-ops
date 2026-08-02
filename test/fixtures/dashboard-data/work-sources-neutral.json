@@ -1,0 +1,50 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "repos": [
+      {
+        "slug": "Poetic-Poems/poetic",
+        "sources": ["security", "tech-debt"]
+      },
+      {
+        "slug": "Poetic-Poems/agent-ops",
+        "sources": ["security", "tech-debt"],
+        "nice": 0
+      }
+    ]
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {},
+    "inputs": {
+      "Poetic-Poems/poetic": {
+        "issues": [], "failed_runs": [], "tech_debt": [], "findings": []
+      },
+      "Poetic-Poems/agent-ops": {
+        "issues": [], "failed_runs": [], "tech_debt": [], "findings": []
+      }
+    }
+  },
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}
