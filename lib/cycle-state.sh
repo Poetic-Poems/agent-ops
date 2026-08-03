@@ -52,6 +52,13 @@
 # (so there's nothing to grep or parse): a stranded attempt can still be found
 # and flagged instead of going silent.
 #
+# Not the last fallback, and not a reliable one: writing this file is a step in
+# the Implementor's own procedure, so a stage that skipped its final message
+# may equally have skipped this — and on 2026-08-03 three did. What requirement
+# 9 falls back to when this comes up empty is `pr_url_for_branch`
+# (lib/handoff.sh), which asks GitHub about the branch the *Script* pushed and
+# so needs nothing from the stage that failed.
+#
 # Always succeeds. The callers are `[[ -z "$url" ]] && url="$(read_pr_url_breadcrumb …)"`,
 # whose status is this function's, so returning non-zero here aborts the whole
 # cycle under `set -e` — before the failure it was about to report is logged.

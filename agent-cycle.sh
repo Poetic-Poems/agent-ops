@@ -526,6 +526,12 @@ fi
 # failed on, and the same item is free to be re-selected next cycle.
 selected_repo=""
 selected_item=""
+# The branch this cycle claimed, alongside them because it answers a question
+# the other two cannot: *which pull request is this*. The Script computed it
+# and pushed it before any stage ran (requirement 17a), so it is the one handle
+# on a stranded attempt that survives a stage contributing nothing — which is
+# what requirement 9's last fallback is built on.
+selected_branch=""
 
 log_attempt_failed() {
   local stage="$1" detail="$2" extra="${3:-{\}}"
@@ -1210,6 +1216,14 @@ on_signal() {  # on_signal NAME NUM
   # reporting it; the breadcrumb is the same fallback requirement 9 gives the
   # ordinary failure path, and it must be read before the EXIT trap deletes
   # the clone it lives in.
+  #
+  # The breadcrumb and nothing else: `pr_url_for_branch`, requirement 9's more
+  # reliable fallback, is a network call, and this handler runs on borrowed
+  # time — the peer that TERMed us KILLs what has not exited within its grace,
+  # which may be two seconds. The event below is the thing that must survive,
+  # and a stalled API call ahead of it would trade the record for the URL. A
+  # local file read cannot stall; that is the whole reason this line is the
+  # one that stayed.
   if [[ -n "$clone_dir" ]]; then
     pr_url="$(read_pr_url_breadcrumb "$clone_dir")"
   fi
@@ -2633,6 +2647,7 @@ fi
 work_order_json="$claimed_json"
 selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
 selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
+selected_branch="$(jq -r '.branch // ""' <<<"$work_order_json")"
 log_event "selection" "$(jq -c '{repo, item, source, model, title, branch}' <<<"$work_order_json")"
 
 # --- 6. Workspace ---
@@ -2672,9 +2687,24 @@ log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_
 
 impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
 impl_status_json="$(extract_json_result "$impl_result" 2>/dev/null || true)"
+# Requirement 9's fallback chain, cheapest first and least dependent on the
+# stage last. The first three all read something the Implementor had to do:
+# report the URL, print it where it could be grepped, write the breadcrumb.
+# That is fine for the failures they were written for and useless for the one
+# that matters most — a stage that emitted no parseable final message is a
+# stage that may have skipped every step after opening the PR — so the chain
+# ends by asking GitHub about the branch the Script itself pushed, which needs
+# nothing from the model at all. Not free (one API call), so it runs last and
+# only when the item is otherwise unnameable.
+#
+# This one variable is the whole downstream supply: `pr-raised`, the Reviewer
+# stage, the Reviewer's hand-back, the `blocked`/`void` verdict paths and both
+# `handle_stage_failure` calls read it, so the fallback belongs here rather
+# than in any of them (requirement 34a).
 impl_pr_url="$(jq -r '.pr_url // empty' <<<"$impl_status_json" 2>/dev/null || true)"
 [[ -z "$impl_pr_url" ]] && impl_pr_url="$(extract_pr_url "$impl_out")"
 [[ -z "$impl_pr_url" ]] && impl_pr_url="$(read_pr_url_breadcrumb "$clone_dir")"
+[[ -z "$impl_pr_url" ]] && impl_pr_url="$(pr_url_for_branch "$selected_repo" "$selected_branch")"
 
 impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || true)"
 
