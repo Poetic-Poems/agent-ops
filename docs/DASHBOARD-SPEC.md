@@ -156,8 +156,10 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   those are precisely the questions an operator has next.
 - **`cycles/<cycle-id>/<stage>.out`** — the `claude --output-format json`
   envelope (requirement 11). Fields used: `result` (final message → parsed
-  into the work order / status object via the same straight-parse-else-last-
-  fenced-```json``` block that `agent-cycle.sh` uses), `total_cost_usd`,
+  into the work order / status object via the same algorithm `agent-cycle.sh`
+  uses — straight parse, else the last fenced ```json``` block, else the
+  earliest brace-opening line whose suffix parses as one JSON value;
+  `test/extract-json-result.test.sh` holds the ports to it), `total_cost_usd`,
   `duration_ms`, `num_turns`, `is_error`, `terminal_reason`/`stop_reason`,
   `modelUsage` (→ model id). `<stage>.out.stderr` is shown for debugging.
   `docs/METERING-SCHEMA.md` is the formal contract for these fields — types,

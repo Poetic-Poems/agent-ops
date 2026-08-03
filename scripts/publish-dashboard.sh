@@ -253,9 +253,13 @@ def limit_info($out_full; $err_full):
     };
 
 # Port of extract_status_json(): try the stage's result text as JSON
-# outright, else the last fenced ```json block within it (the same
-# straight-parse-else-last-fenced-block algorithm as agent-cycle.sh's
-# extract_json_result, per DASHBOARD-SPEC.md). An empty-or-whitespace result
+# outright, else the last fenced ```json block within it, else the earliest
+# brace-opening line whose suffix parses as JSON (the same algorithm as
+# agent-cycle.sh's extract_json_result, per DASHBOARD-SPEC.md — the design
+# note on the third step, and the 2026-08-03 Enabler engagement it would
+# have saved, live on that function; the dashboard must parse the same
+# verdicts the cycle accepted, or a rescued engagement renders here as a
+# stage that said nothing). An empty-or-whitespace result
 # is a stage that ran and said nothing parseable, exactly like any other
 # unparseable text (TD26072802): `ok:true` with a null status, so it renders
 # in its own cycle's row instead of the whole cycle vanishing. (The pre-jq
@@ -281,7 +285,19 @@ def extract_status($text):
               else . end)).last as $block
         | if $block != null and ($block | length) > 0 and (try_json($block) != null) then
             {ok:true, value: try_json($block)}
-          else {ok:true, value:null}
+          else
+            # The bare-object salvage: the earliest line opening a brace whose
+            # text from there to the end parses. `fromjson` (via try_json) is
+            # already single-value-strict, matching the bash side's
+            # `jq -es 'length == 1'`.
+            {ok:true,
+             value: (first(
+                       range(0; $lines | length) as $i
+                       | select($lines[$i] | test("^\\s*\\{"))
+                       | (try_json($lines[$i:] | join("\n"))) as $v
+                       | select($v != null)
+                       | $v
+                     ) // null)}
           end
       end
   end;
