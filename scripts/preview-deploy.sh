@@ -73,11 +73,12 @@ pr=""
 sha=""
 path="/"
 wait_seconds=0
+repo_explicit=0
 
 while (( $# > 0 )); do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    --repo) slug="${2:-}"; shift 2 ;;
+    --repo) slug="${2:-}"; repo_explicit=1; shift 2 ;;
     --pr)   pr="${2:-}";   shift 2 ;;
     --sha)  sha="${2:-}";  shift 2 ;;
     --path) path="${2:-}"; shift 2 ;;
@@ -111,11 +112,37 @@ if [[ -z "$slug" ]]; then
 fi
 
 if [[ -z "$sha" ]]; then
+  # `gh pr view` infers "the PR for the current branch" from the ambient
+  # repository context, but passing --repo overrides that context — and gh
+  # then refuses to combine --repo with no PR number, URL or branch ("argument
+  # required when using the --repo flag"). So --repo is only ever added to the
+  # query below once a PR number is already in hand. An explicit --repo with
+  # no --pr has to resolve the number itself first, through a call that names
+  # the branch instead of relying on inference; slug filled in automatically
+  # above (the common case, no --repo passed) already matches the working
+  # directory's own repository, so inference alone is enough there.
+  if [[ -z "$pr" ]] && (( repo_explicit )); then
+    if ! branch="$(git branch --show-current 2>"$tmp_dir/err")" || [[ -z "$branch" ]]; then
+      echo "preview-deploy: cannot tell which branch is checked out" >&2
+      echo "  $(cat "$tmp_dir/err")" >&2
+      exit 2
+    fi
+    if ! pr="$(gh pr list --head "$branch" --repo "$slug" --json number \
+        --jq '.[0].number // empty' 2>"$tmp_dir/err")" || [[ -z "$pr" ]]; then
+      echo "preview-deploy: no pull request for branch $branch in $slug" >&2
+      [[ -s "$tmp_dir/err" ]] && echo "  $(cat "$tmp_dir/err")" >&2
+      echo "  pass --pr <n> or --sha <sha>" >&2
+      exit 2
+    fi
+  fi
+
   # The field list is quoted so the comma reads as part of one argument rather
   # than as an array separator — to shellcheck (SC2054) as much as to a reader.
   pr_query=( gh pr view --json "headRefOid,number" --jq '.headRefOid + " " + (.number|tostring)' )
-  [[ -n "$pr" ]] && pr_query+=( "$pr" )
-  [[ -n "$slug" ]] && pr_query+=( --repo "$slug" )
+  if [[ -n "$pr" ]]; then
+    pr_query+=( "$pr" )
+    [[ -n "$slug" ]] && pr_query+=( --repo "$slug" )
+  fi
   if ! pr_answer="$("${pr_query[@]}" 2>"$tmp_dir/err")"; then
     echo "preview-deploy: no pull request to ask about" >&2
     echo "  $(cat "$tmp_dir/err")" >&2
