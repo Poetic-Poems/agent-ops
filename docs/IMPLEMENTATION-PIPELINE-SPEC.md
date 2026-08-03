@@ -3048,24 +3048,44 @@ runs unattended.
       a file read every cycle. Deciding whether to reconcile only after deciding
       whether to run is the cycle-late failure 34f and 34g are placed here to
       avoid, and two reads is a small price beside the Enabler engagements that
-      item is already earning.
+      item is already earning;
+    - **a project-review recommendation** (`review-<date>-R-NN`) — a *merged*
+      pull request on the default branch names that ref, read by
+      `scripts/gather-review-status.sh` for the blocked refs and no others,
+      against the repo's 100 most-recently-closed pull requests. This is the
+      same test requirement 16 already applies when deciding whether to offer
+      the recommendation as a candidate at all — the review folder is a
+      point-in-time record no stage ever edits to say a recommendation is
+      done (requirement 25), so the merged PR's own text naming the ref, put
+      there by the Implementor that closed the recommendation out, is the one
+      fact anywhere that answers "is this done?", and this reads it instead of
+      asking a Co-Ordinator to notice it went stale;
+    - **an implementation-plan task** (e.g. `W10-breach-handling`) — the
+      task's own checkbox, in the repo's `implementation_plan_path` document
+      on the default branch, is checked (`- [x]`), read by
+      `scripts/gather-plan-status.sh` for the blocked ids and no others. This
+      is certain only when exactly one task-list line in the document names
+      the id as a whole word; two such lines, or none, decide nothing.
 
     Three properties make this safe enough to run unattended:
 
     - **Unknown is never gone.** A repo missing from the digest, a digest
       carrying `ok: false`, an id no register file claims by `id` or
-      `legacy-id`, or one that two files claim, all decide nothing and leave the
-      item blocked. The failure is a delayed clearance, which costs a cycle; the
-      other direction clears a block out from under work that is still real,
-      which costs a cycle an hour until someone notices.
+      `legacy-id`, a review ref no merged pull request's title or body names, a
+      plan id no task-list line names (or that two of them do), all decide
+      nothing and leave the item blocked. The failure is a delayed clearance,
+      which costs a cycle; the other direction clears a block out from under
+      work that is still real, which costs a cycle an hour until someone
+      notices.
     - **The findings sources are excluded, and that is not an oversight.**
       `gather-findings.sh` degrades to `[]` on an API error by design
       (requirement 3), because a Co-Ordinator that sees no findings declines and
       the two agree. Read as a clearing signal the same `[]` says "every alert
-      is fixed", so one 403 would clear every alert block on the fleet. The
-      file-backed sources (`project-review`, `implementation-plan`) are excluded
-      for the plainer reason that the Script holds nothing to compare their ids
-      against. All of them remain the Enabler's, exactly as before.
+      is fixed", so one 403 would clear every alert block on the fleet. A
+      register-hygiene item (`register-hygiene-<hash>`) is excluded for the
+      plainer reason that it has no completion signal to read at all — the
+      register *is* the item, and its file shape is what `register-hygiene`
+      itself repairs. Both remain the Enabler's, exactly as before.
     - **It clears, it never voids.** The event is `unblocked`, which requirement
       34 calls the safe direction — a wrongly cleared item becomes a candidate
       again, is offered by no source, and nothing happens. A void is terminal
@@ -3074,7 +3094,8 @@ runs unattended.
 
     The rule has one implementation, `work_gone_clearances` in
     `lib/work-gone.sh`, which is pure: it decides from the blocked set, the
-    digests and the register statuses it is handed, and reads nothing itself.
+    digests and the three side-channel status maps (register, review, plan) it
+    is handed, and reads nothing itself.
 
 ### The Enabler
 
@@ -3483,6 +3504,24 @@ What exists, and the requirements each part answers to:
    repo that has blocked register items and not at all otherwise, so it is
    bounded by the backlog rather than by the register. Fails safe to `{}` (exit
    0); regression-tested in `test/work-gone.test.sh`; must pass `shellcheck`.
+3o. `scripts/gather-review-status.sh` implementing requirement 34i's
+   project-review half: given a repo slug, default branch and recommendation
+   refs, prints a JSON object mapping each ref a merged pull request's title
+   or body names to `"merged"`, searched over the repo's 100
+   most-recently-closed pull requests targeting that branch. Called once per
+   repo that has blocked project-review items and not at all otherwise. Fails
+   safe to `{}` (exit 0); regression-tested in `test/work-gone.test.sh`; must
+   pass `shellcheck`.
+3p. `scripts/gather-plan-status.sh` implementing requirement 34i's
+   implementation-plan half: given a repo slug, default branch,
+   `implementation_plan_path` and task ids, prints a JSON object mapping each
+   id to `"done"` or `"open"`, read off that task's own checkbox
+   (`- [ ]`/`- [x]`) in the document. An id resolves only when exactly one
+   task-list line names it as a whole word; two such lines, or none, are
+   absent from the output. Called once per repo that has blocked plan-task
+   items and an `implementation_plan_path` configured, and not at all
+   otherwise. Fails safe to `{}` (exit 0); regression-tested in
+   `test/work-gone.test.sh`; must pass `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -3529,11 +3568,13 @@ What exists, and the requirements each part answers to:
    Unit-tested (`test/needs-refinement.test.sh`); must pass `shellcheck`.
 3m. `lib/work-gone.sh` implementing requirement 34i's decision:
    `work_gone_clearances`, which given the open blocked set, the cycle's
-   source-state digests and the register statuses prints one entry per block
-   whose work no longer exists, and `work_gone_register_ids`, which names the
-   blocked ids that are register ids so the read above is asked for those and no
-   others. Pure — it reads nothing itself — and every unknown resolves to no
-   clearance. Unit-tested (`test/work-gone.test.sh`); must pass `shellcheck`.
+   source-state digests and the register, review and plan status maps prints
+   one entry per block whose work no longer exists, and
+   `work_gone_register_ids`, `work_gone_review_refs` and `work_gone_plan_ids`,
+   which each name the blocked ids shaped like their class so the matching read
+   above is asked for those and no others. Pure — it reads nothing itself — and
+   every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
+   must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
    prints one JSON action object per orphan handled (`recovered`, `released`,
@@ -4368,20 +4409,24 @@ pull request, run the ones the change touches and any it could regress.
    `test/work-gone.test.sh` passes, and every assertion in it is made in both
    directions, because the two ways this can be wrong are not alike. Too eager
    clears a block out from under real work and costs a full cycle an hour until
-   somebody notices: so a closed issue, a merged pull request and a `resolved`
-   or `not-debt` register item each clear their block, while an **open** issue,
-   an **open** pull request and an **open** register item each do not, and every
-   unreadable shape — a repo missing from the digest, a digest carrying
-   `ok: false`, an id no item file claims by `id` or `legacy-id`, an id two of
-   them claim, a register read that failed — clears nothing at all. Too shy is
+   somebody notices: so a closed issue, a merged pull request, a `resolved` or
+   `not-debt` register item, a project-review recommendation named by a merged
+   pull request, and an implementation-plan task checked off in its document
+   each clear their block, while an **open** issue, an **open** pull request, an
+   **open** register item, a recommendation no merged pull request names, and an
+   **unchecked** (or ambiguous) plan task each do not, and every unreadable
+   shape — a repo missing from the digest, a digest carrying `ok: false`, an id
+   no item file claims by `id` or `legacy-id`, an id two of them claim, a
+   register/review/plan read that failed — clears nothing at all. Too shy is
    the silent failure this requirement exists to end: so assert the legacy id
    (`TD26072401`) resolving through the renamed file that carries it, and assert
-   that the classes left to the Enabler stay blocked — a review recommendation,
-   an implementation-plan item, and above all a `dependabot-alert-N`, whose
-   source degrades to `[]` on an API error and would otherwise read as "every
-   alert is fixed". `scripts/gather-register-status.sh` runs for real against a
-   stubbed contents API in that file, so what is asserted is the shipped script
-   rather than a copy of its logic.
+   that the classes still left to the Enabler stay blocked — above all a
+   `dependabot-alert-N`, whose source degrades to `[]` on an API error and would
+   otherwise read as "every alert is fixed", and a `register-hygiene-<hash>`
+   item, which has no completion signal at all. `scripts/gather-register-status.sh`,
+   `scripts/gather-review-status.sh` and `scripts/gather-plan-status.sh` each run
+   for real against a stubbed `gh` in that file, so what is asserted is the
+   shipped scripts rather than a copy of their logic.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

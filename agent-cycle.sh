@@ -1031,6 +1031,41 @@ gather_register_status() {
   fi
 }
 
+# What a merged pull request says about specific blocked project-review refs
+# (requirement 34i). Same shape and same reason as gather_register_status
+# above: called only for a repo with blocked project-review items, at no cost
+# otherwise.
+gather_review_status() {
+  local slug="$1" branch="$2" out safe
+  shift 2
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-review-status.sh" "$slug" "$branch" "$@" \
+        2>"$cycle_dir/review-status-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/review-status-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '{}'
+  fi
+}
+
+# What the implementation-plan document's own checkboxes say about specific
+# blocked plan-task ids (requirement 34i). Same shape and same reason as
+# gather_register_status above.
+gather_plan_status() {
+  local slug="$1" branch="$2" path="$3" out safe
+  shift 3
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-plan-status.sh" "$slug" "$branch" "$path" "$@" \
+        2>"$cycle_dir/plan-status-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/plan-status-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '{}'
+  fi
+}
+
 # Stage prompts require the final message to be pure JSON, but a model will
 # sometimes prepend analysis prose anyway and put the real object in a
 # trailing fenced ```json block. Try a straight parse first; fall back to the
@@ -2269,7 +2304,42 @@ while IFS=$'\t' read -r reg_slug reg_ids; do
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
          <<<"$(work_gone_register_ids "$open_blocked_now")" 2>/dev/null || true)
 
-work_gone_json="$(work_gone_clearances "$open_blocked_now" "$source_states_json" "$register_status_json")"
+# The project-review read, for the repos that have blocked project-review
+# items and no others — same cost shape as the register read above.
+review_status_json='{}'
+while IFS=$'\t' read -r rev_slug rev_refs; do
+  [[ -n "$rev_slug" && -n "$rev_refs" ]] || continue
+  rev_branch="$(jq -r --arg s "$rev_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+    <<<"$ordered_repos_json" 2>/dev/null || true)"
+  [[ -n "$rev_branch" ]] || continue
+  # shellcheck disable=SC2086  # $rev_refs is a deliberate word-split ref list.
+  rev_map="$(gather_review_status "$rev_slug" "$rev_branch" $rev_refs)"
+  review_status_json="$(jq -c --arg s "$rev_slug" --argjson m "$rev_map" '. + {($s): $m}' \
+    <<<"$review_status_json" 2>/dev/null || printf '%s' "$review_status_json")"
+done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+         <<<"$(work_gone_review_refs "$open_blocked_now")" 2>/dev/null || true)
+
+# The plan read, for the repos that have blocked plan-task items *and* an
+# `implementation_plan_path` configured — a repo without one has nowhere for
+# this to read, so it is asked nothing (the same "unknown decides nothing" as
+# every other class here).
+plan_status_json='{}'
+while IFS=$'\t' read -r plan_slug plan_ids; do
+  [[ -n "$plan_slug" && -n "$plan_ids" ]] || continue
+  plan_entry="$(jq -c --arg s "$plan_slug" 'map(select(.slug == $s)) | .[0] // {}' \
+    <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
+  plan_branch="$(jq -r '.default_branch // ""' <<<"$plan_entry" 2>/dev/null || true)"
+  plan_path="$(jq -r '.implementation_plan_path // ""' <<<"$plan_entry" 2>/dev/null || true)"
+  [[ -n "$plan_branch" && -n "$plan_path" ]] || continue
+  # shellcheck disable=SC2086  # $plan_ids is a deliberate word-split id list.
+  plan_map="$(gather_plan_status "$plan_slug" "$plan_branch" "$plan_path" $plan_ids)"
+  plan_status_json="$(jq -c --arg s "$plan_slug" --argjson m "$plan_map" '. + {($s): $m}' \
+    <<<"$plan_status_json" 2>/dev/null || printf '%s' "$plan_status_json")"
+done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+         <<<"$(work_gone_plan_ids "$open_blocked_now")" 2>/dev/null || true)
+
+work_gone_json="$(work_gone_clearances "$open_blocked_now" "$source_states_json" "$register_status_json" \
+                   "$review_status_json" "$plan_status_json")"
 if [[ "$(jq 'length' <<<"$work_gone_json" 2>/dev/null || echo 0)" != "0" ]]; then
   log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
   while IFS= read -r clearance; do
