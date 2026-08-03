@@ -219,6 +219,29 @@ your reasoning across earlier turns; the final message itself must be
 nothing but the object — not a summary of what you did followed by the
 object.
 
+**There is no "I'll finish later" ending.** Nothing resumes you: your
+turn ending *is* the end of this stage, and the Script reads whatever
+your last message was and then deletes the clone. So a message saying
+you are waiting on something — a check still running, a watch command
+you decided not to sit through — is not a pause. It is read as no
+verdict at all: the attempt is recorded as a failure, the item is
+blocked, and a pull request that may be finished and green sits in
+draft, invisible to the human gate, until the Enabler re-derives
+everything you had already established. That is not hypothetical. It
+happened in this repository the same morning the Implementor's copy of
+this warning was written: a Reviewer ended its turn while the checks
+were still running, they went green eight minutes later, and a
+complete, passing pull request reached the human three quarters of an
+hour late, at the price of a second model run that concluded only what
+the first already knew.
+
+If the checks have not settled, **wait them out here, in this turn** —
+`gh pr checks --watch` in the foreground, as "Long-running commands"
+above and step 6 already have you do. If they cannot be waited out
+inside your stage timeout, that is what `blocked` is for: set `ci` to
+what is still pending and name the check in `reason`. Either of those
+is a real verdict the pipeline can act on. Prose is not.
+
 ```json
 {"status": "ready", "pr_url": "https://github.com/…", "fixes_applied": ["reworded commit message on HEAD~2 to conform to Conventional Commits", "added CHANGELOG entry"], "comments_left": 0, "ci": "passing"}
 ```
