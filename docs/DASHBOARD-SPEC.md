@@ -784,7 +784,10 @@ number's twins elsewhere on the page.
   (shortened) window and while another publish holds the lock; a cold window
   fetches from GitHub exactly once, a window following a fresh fetch not at
   all, and an aged stamp is refetched on the next tick; the batched cost scan
-  matches the per-file semantics (day cut-off, torn-file tolerance) and the
+  matches the per-file semantics (day cut-off, torn-file tolerance, each row's
+  own instant carried through as `ts` — `null` for a directory name that
+  doesn't parse as one, which still counts toward the totals but drops out of
+  `recent_costs` rather than guessing) and the
   whole publish stays within its process budget on a long history; a stage
   whose envelope parses but whose `result` is empty or whitespace-only still
   renders its cycle, with that stage's status `null`, while a stage whose
@@ -861,7 +864,14 @@ number's twins elsewhere on the page.
   `answered_404` (a repo with no tech-debt register) still renders an
   ordinary zero, and a fixture carrying no `state` field at all — every
   repo's data from before this field existed — renders exactly as it always
-  did. The void list's two caps are asserted from a twelve-row fixture whose
+  did. The spend-today card's persisted GMT/local/24h choice (#186) is
+  asserted by seeding the harness's `localStorage` stub rather than
+  simulating the click: with no stored choice the card reads "today (GMT)"
+  against `spend_today_usd`, and a stored `24h` relabels it "last 24h" and
+  sums only the `recent_costs` rows within a rolling 24 hours; a stored
+  `local` is asserted for its label only, since which rows fall on the
+  reader's own calendar date depends on the moment the suite runs. The void
+  list's two caps are asserted from a twelve-row fixture whose
   two oldest rows sit *first* in the data, because the cap is only meaningful
   once the list is sorted: the heading counts twelve, the ten newest render
   (the tenth-newest last), neither old row appears until asked for, the
