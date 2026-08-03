@@ -682,12 +682,27 @@ done
 # rather than left to read as a second Reviewer. Any other stem passes through
 # verbatim: an actor added upstream should show up unlabelled rather than
 # vanish into the totals.
+# Each row also carries `ts` — the cycle/review id's own timestamp
+# (`YYYYMMDDTHHMMSSZ-…`, always UTC) reformatted to a plain ISO 8601 instant —
+# alongside the coarser `day` bucket the charts already group by. `day` alone
+# can only ever answer "which GMT calendar day", which is exactly what issue
+# #186 found not obvious: a reader in any other zone sees a "today" that
+# doesn't match their own clock. `ts` is null for a row whose directory name
+# doesn't match the expected shape (a hand-placed or future format change)
+# rather than a guess, so a malformed name drops out of `recent_costs` below
+# without corrupting the totals that never depended on it.
 # shellcheck disable=SC2016  # `$p` below is a jq binding, not a shell variable
 find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
   | xargs -0 -r -n 25 jq -c '
       (input_filename | split("/")) as $p
+      | ($p[-2] // "") as $cid
       | {
-          day: ($p[-2] | .[0:8]),
+          day: ($cid[0:8]),
+          ts: (if ($cid | test("^[0-9]{8}T[0-9]{6}Z"))
+               then ($cid[0:16]
+                     | capture("(?<Y>[0-9]{4})(?<Mo>[0-9]{2})(?<D>[0-9]{2})T(?<H>[0-9]{2})(?<Mi>[0-9]{2})(?<S>[0-9]{2})Z")
+                     | .Y+"-"+.Mo+"-"+.D+"T"+.H+":"+.Mi+":"+.S+"Z")
+               else null end),
           cost: (.total_cost_usd // 0),
           model: ((.modelUsage // {}) | keys | (.[0] // "unknown")),
           actor: (if ($p[-3] // "") == "reviews" then "project-reviewer"
@@ -698,7 +713,17 @@ find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
 jq -e 'type == "array"' "$costs_file" >/dev/null 2>&1 || printf '[]' > "$costs_file"
 
 today="$(date -u +%Y%m%d)"
-counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$costs_file" --arg today "$today" '
+# `recent_costs` backs the "today (local)" and "last 24h" readings of the
+# spend-today card (#186): both need each row's own instant, not just its GMT
+# day, and which instants count as "today" depends on the *reader's* zone, so
+# the Publisher can't resolve that server-side. Three days back is generous
+# padding either side of any real interpretation — the widest timezone offset
+# is +14 (Kiribati), so "today" there can start 14h before UTC midnight, and
+# "last 24h" only ever reaches 24h back — while staying a rounding error next
+# to the 60-day `by_day` window it rides alongside.
+recent_cut="$(date -u -d "-3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")"
+counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$costs_file" \
+  --arg today "$today" --arg recent_cut "$recent_cut" '
   ($cyc[0]) as $cycles
   | ($cost_rows[0]) as $costs
   | {
@@ -711,7 +736,8 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$cost
     by_model: ($costs | group_by(.model) | map({model: .[0].model, usd: (map(.cost)|add), n: length})
                       | map(select(.model != "unknown" or .usd > 0)) | sort_by(-.usd)),
     by_actor: ($costs | group_by(.actor) | map({actor: .[0].actor, usd: (map(.cost)|add), n: length})
-                      | sort_by(-.usd))
+                      | sort_by(-.usd)),
+    recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost}))
   }')"
 
 # --- Blocked and void items (requirements 34, 34c, 34h) ----------------------

@@ -63,8 +63,8 @@ assert_not_contains() {
   fi
 }
 
-render() {  # render <fixture>
-  node "$HARNESS" "$FIXTURES_DIR/$1"
+render() {  # render <fixture> [localStorage-json]
+  node "$HARNESS" "$FIXTURES_DIR/$1" "${2:-}"
 }
 
 # --- running.json: a cycle live in the Co-Ordinator stage, before selection ---
@@ -158,6 +158,36 @@ assert_contains "spend-by-model renders a bar per model" \
   "opus-5" "$out"
 assert_contains "spend-by-actor renders a bar per actor" \
   "implementor" "$out"
+
+# --- #186: the spend-today card's persisted GMT/local/24h toggle -----------------
+# `render`'s optional second argument seeds the harness's localStorage stub, so
+# each mode is exercised as a fresh page load would read it back — not by
+# simulating the click (out of the harness's tree-building scope; see its own
+# header comment), but by asserting what a reload with that choice already
+# stored renders. "local" only asserts the label, not the amount: which rows
+# fall on today's *local* calendar date depends on the wall-clock moment this
+# suite happens to run, so a dollar assertion there would be flaky exactly at
+# the reader's local midnight — the deterministic "24h" case below already
+# covers the same `recent_costs` arithmetic on a rolling window instead.
+assert_contains "with no persisted choice the card defaults to GMT" \
+  "today (GMT)" "$out"
+# shellcheck disable=SC2016
+assert_contains "and shows the Publisher's own GMT-day figure" \
+  '$2.15' "$out"
+
+out_24h="$(render finished.json '{"dashboard.spendMode":"24h"}')" || \
+  { printf 'FAIL - finished.json (24h spend mode) did not render:\n%s\n' "$out_24h"; exit 1; }
+assert_contains "a persisted '24h' choice survives the reload and relabels the card" \
+  "last 24h" "$out_24h"
+# shellcheck disable=SC2016
+assert_contains "and sums only the recent_costs rows within the last 24 hours" \
+  '$0.6000' "$out_24h"
+
+out_local="$(render finished.json '{"dashboard.spendMode":"local"}')" || \
+  { printf 'FAIL - finished.json (local spend mode) did not render:\n%s\n' "$out_local"; exit 1; }
+assert_contains "a persisted 'local' choice relabels the card too" \
+  "today (local)" "$out_local"
+
 assert_contains "the review pipeline's single agent is named as the Project Reviewer" \
   "ockham-container / poetic / project-reviewer" "$out"
 assert_contains "a pr-ready names the actor that took the PR out of draft" \

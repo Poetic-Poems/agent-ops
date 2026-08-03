@@ -19,6 +19,10 @@
   "counts": {
     "spend_today_usd": 2.15, "spend_total_usd": 9.4,
     "failures_shown": 1, "cycles_shown": 2, "prs_reached_ready": 1,
+    "recent_costs": [
+      {"ts": "@ago:2h", "cost": 0.6},
+      {"ts": "@ago:30h", "cost": 5.0}
+    ],
     "by_day": [
       {"day": "20260731", "usd": 6.1, "n": 4},
       {"day": "20260801", "usd": 3.3, "n": 2}
