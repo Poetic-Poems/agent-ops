@@ -61,6 +61,11 @@
   .cards.fleet { grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
   .card .k { font-size: 12px; color: var(--muted); text-transform: uppercase; letter-spacing: .4px; }
+  .card .k button.spendmode { font: inherit; text-transform: inherit; letter-spacing: inherit;
+    border: 0; background: none; padding: 0; margin: 0; color: var(--accent); cursor: pointer;
+    text-decoration: underline dotted; text-underline-offset: 2px; }
+  .card .k button.spendmode:hover { text-decoration-style: solid; }
+  .card .k button.spendmode:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   .card .v { font-size: 22px; font-weight: 650; margin-top: 2px; }
   .card .v small { font-size: 13px; font-weight: 500; color: var(--muted); }
   .card.clickable { cursor: pointer; }
@@ -270,6 +275,36 @@
   }
   function usd(n) { return n == null ? "—" : "$" + Number(n).toFixed(Number(n) < 1 ? 4 : 2); }
   function esc(s) { return String(s == null ? "" : s); }
+
+  // ---------- spend-mode: which "today" the token-cost card shows (#186) ----
+  // `spend_today_usd` is always the Publisher's own GMT calendar day — correct
+  // but silently GMT, which is exactly what #186 asked to make visible. The
+  // other two readings can only be computed here, against the reader's own
+  // clock: `recent_costs` (three days of {ts, cost} rows, UTC instants) is
+  // what the Publisher ships for that purpose alongside the coarser day-level
+  // aggregates the charts already use.
+  var SPEND_MODES = ["gmt", "local", "24h"];
+  function spendModeLabel(mode) {
+    return mode === "local" ? "today (local)" : mode === "24h" ? "last 24h" : "today (GMT)";
+  }
+  function spendForMode(mode, c) {
+    if (mode === "gmt") return c.spend_today_usd || 0;
+    var rows = c.recent_costs || [];
+    var now = new Date();
+    if (mode === "24h") {
+      var cutoff = now.getTime() - 24 * 60 * 60 * 1000;
+      return rows.reduce(function (sum, r) {
+        var t = r.ts ? new Date(r.ts).getTime() : NaN;
+        return !isNaN(t) && t >= cutoff ? sum + (r.cost || 0) : sum;
+      }, 0);
+    }
+    return rows.reduce(function (sum, r) {
+      var d = r.ts ? new Date(r.ts) : null;
+      if (!d || isNaN(d)) return sum;
+      return (d.getFullYear() === now.getFullYear() && d.getMonth() === now.getMonth() && d.getDate() === now.getDate())
+        ? sum + (r.cost || 0) : sum;
+    }, 0);
+  }
 
   // ---------- how old the GitHub half of the page is ----------
   // Every GitHub-sourced panel — PRs, checks, issues, work sources, claims —
@@ -641,6 +676,22 @@
   var hideRefinement = false;             // true while needs-refinement blocks are hidden from the blocked list
   var voidShowAll = false;                // true while the void list shows past its first VOID_ROWS rows
   var voidOpen = Object.create(null);     // "repo/item/row" -> true while that void row shows its full text
+
+  // Unlike the state above, this one is meant to survive a real page reload,
+  // not just an in-place refresh — the whole point of #186 is a reader
+  // picking their own reading of "today" once and having it stick, so it
+  // round-trips through localStorage rather than living only in this module.
+  var SPEND_MODE_KEY = "dashboard.spendMode";
+  function loadSpendMode() {
+    try {
+      var v = window.localStorage.getItem(SPEND_MODE_KEY);
+      return SPEND_MODES.indexOf(v) >= 0 ? v : SPEND_MODES[0];
+    } catch (e) { return SPEND_MODES[0]; }
+  }
+  function saveSpendMode(mode) {
+    try { window.localStorage.setItem(SPEND_MODE_KEY, mode); } catch (e) { /* private-mode storage, etc. */ }
+  }
+  var spendMode = loadSpendMode();
 
   // ---------- fleet helpers ----------
   function fleetNodes()  { return (D.fleet && D.fleet.nodes)  || []; }
@@ -1823,12 +1874,23 @@
     var cards = el("div", {class:"cards"});
     function card(k, v, sub) {
       cards.appendChild(el("div", {class:"card"}, [
-        el("div", {class:"k", text:k}),
+        el("div", {class:"k"}, [ typeof k === "string" ? document.createTextNode(k) : k ]),
         el("div", {class:"v"}, [ typeof v === "string" ? document.createTextNode(v) : v,
           sub ? el("small", {text: " " + sub}) : null ])
       ]));
     }
-    card("Est. token cost today", usd(c.spend_today_usd));
+    // The word "today" is itself the control (#186): click it to cycle
+    // "today (GMT)" -> "today (local)" -> "last 24h" -> "today (GMT)" ...,
+    // recomputing the figure beside it from `c` each time rather than waiting
+    // for the next refresh, so the click feels immediate.
+    var spendBtn = el("button", {class:"spendmode", type:"button", text: spendModeLabel(spendMode),
+      title: "Click to cycle: today (GMT) → today (local) → last 24h",
+      onclick: function () {
+        spendMode = SPEND_MODES[(SPEND_MODES.indexOf(spendMode) + 1) % SPEND_MODES.length];
+        saveSpendMode(spendMode);
+        renderBody();
+      }});
+    card(el("span", {}, [document.createTextNode("Est. token cost "), spendBtn]), usd(spendForMode(spendMode, c)));
     card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
     card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
     card("Reached ready", String(c.prs_reached_ready || 0));

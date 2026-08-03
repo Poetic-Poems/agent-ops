@@ -3,7 +3,7 @@
 // serialised dump of the rendered DOM so test/dashboard-render.test.sh can
 // grep it. Part of TD-PPagop-26072606.
 //
-// Usage: node test/dashboard-render-harness.js <fixture.json>
+// Usage: node test/dashboard-render-harness.js <fixture.json> [localStorage-json]
 //
 // The DOM stub below is deliberately the tree-building subset only
 // (createElement/createTextNode/appendChild + a serialiser, per the record):
@@ -94,10 +94,23 @@ var documentStub = {
   addEventListener: function () {},
   removeEventListener: function () {}
 };
+// A real (in-memory only) localStorage, seeded from an optional third CLI
+// argument — a JSON object of key/value strings — so a fixture can exercise
+// the spend-mode toggle's persisted-choice reading (#186) without this stub
+// growing into the click/event simulation the module comment above disclaims.
+var localStorageSeed = process.argv[3] ? JSON.parse(process.argv[3]) : {};
+var localStorageStore = Object.assign(Object.create(null), localStorageSeed);
+var localStorageStub = {
+  getItem: function (k) { return Object.prototype.hasOwnProperty.call(localStorageStore, k) ? localStorageStore[k] : null; },
+  setItem: function (k, v) { localStorageStore[k] = String(v); },
+  removeItem: function (k) { delete localStorageStore[k]; }
+};
+
 var windowStub = {
   document: documentStub, DASHBOARD_DATA: data, scrollY: 0,
   scrollTo: function () {}, pageXOffset: 0, pageYOffset: 0, innerHeight: 900,
-  setInterval: function () { return 0; }, clearInterval: function () {}
+  setInterval: function () { return 0; }, clearInterval: function () {},
+  localStorage: localStorageStub
 };
 
 // ---------- serialiser: enough structure for a grep-based assertion ----------

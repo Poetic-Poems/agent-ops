@@ -192,10 +192,34 @@ assert_eq "a cycle surfaces the node that produced it" "nodeA-test" \
 assert_eq "a torn envelope still drops its whole cycle" "0" \
   "$(jq -r --arg d "$today_day" '[.cycles[] | select(.id == ($d + "T235959Z-99"))] | length' <<<"$data")"
 
+# recent_costs backs the dashboard's "today (local)"/"last 24h" toggle (#186):
+# each row needs the cycle's own instant, not just its GMT day.
+assert_eq "recent_costs carries one row per today cycle" \
+  "3" "$(jq -r '.counts.recent_costs | length' <<<"$data")"
+assert_eq "recent_costs sums to the same total as the GMT day it came from" \
+  "1" "$(jq -r '[.counts.recent_costs[].cost] | add' <<<"$data")"
+assert_eq "every recent_costs row carries a real ISO instant" "3" \
+  "$(jq -r '[.counts.recent_costs[].ts | select(test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))] | length' <<<"$data")"
+assert_eq "the cycle far outside COST_SCAN_DAYS is excluded from recent_costs too" \
+  "0" "$(jq -r '[.counts.recent_costs[].ts | select(startswith("2020"))] | length' <<<"$data")"
+
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
 assert_lacks "no raw token survives"        "ghp_0123456789abcdefXYZ0123" "$raw"
 assert_lacks "no /home path survives"       "/home/fixtureuser" "$raw"
+
+# A cycle directory that doesn't parse as a `YYYYMMDDTHHMMSSZ-…` id (a
+# hand-placed or future-format one) must not corrupt or invent a timestamp —
+# it still counts toward the totals `day` already covered, and drops out of
+# `recent_costs` on `ts == null` rather than a guess.
+j="$(new_home nodeJ)"
+make_cycle "$j" "manual-import-1" 0.3 model-a
+run_publish "$j"
+jdata="$(data_of "$j")"
+assert_eq "a non-timestamp cycle directory still counts toward the total" \
+  "0.3" "$(jq -r '.counts.spend_total_usd' <<<"$jdata")"
+assert_eq "but is excluded from recent_costs rather than guessed at" \
+  "0" "$(jq -r '.counts.recent_costs | length' <<<"$jdata")"
 
 # --- The transcript cap is bytes, not codepoints ----------------------------------
 # TRANSCRIPT_CAP (40000) is a byte budget. 20000 repeats of a 3-byte codepoint

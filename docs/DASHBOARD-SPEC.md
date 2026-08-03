@@ -328,8 +328,11 @@ It is `set -uo pipefail` (not `-e`) because most reads are best-effort, and
 ends `exit 0`. It sets its own `PATH` for cron and is `shellcheck`-clean.
 It stays inside the heartbeat's 5-second budget as history accumulates: the
 transcript cost scan reads envelopes in batches (one `jq` per 25 files, the
-cycle's day derived from `input_filename`; a torn mid-write envelope costs at
-most the rest of its batch for one tick), the detail window (the `MAX_CYCLES`
+cycle's day and instant both derived from `input_filename` — the cycle/review
+id's own `YYYYMMDDTHHMMSSZ-…` prefix reformatted to a plain ISO 8601 `ts`,
+`null` for a directory name that doesn't match it rather than a guessed one;
+a torn mid-write envelope costs at most the rest of its batch for one tick),
+the detail window (the `MAX_CYCLES`
 cycles shown with transcripts) is assembled in a single `jq` program over
 every stage file the window touches — handed in via `--rawfile`, so jq opens
 each one itself rather than a fork per cycle re-reading and re-parsing it —
@@ -375,7 +378,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              limit:{active,note}, switch:{…} },
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
-             by_day[], by_model[], by_actor[] },   // both pipelines' actors
+             by_day[], by_model[], by_actor[],   // both pipelines' actors
+             recent_costs[] },     // {ts, cost} per row, last 3 days, for the
+                                    //   spend-today card's GMT/local/24h toggle
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
                stages:{ coordinator|implementor|reviewer:
@@ -534,7 +539,16 @@ the body re-renders, because its cards carry running clocks ("since 18m ago")
 and the body deliberately sits still while the data is unchanged.
 Then metric cards (spend today/total — fleet-wide, one shared account —
 failures, reached-ready, back-pressure gauge
-vs `max_open_agent_prs`); open PRs; recent cycles (outcome and work source at
+vs `max_open_agent_prs`). The spend-today card's own word "today" is a button:
+clicking it cycles the card's label and figure through **today (GMT)** (the
+Publisher's own `spend_today_usd`), **today (local)** and **last 24h** (both
+computed here, from `counts.recent_costs`, against the reader's own clock and
+zone — the one thing about "today" the Publisher itself cannot know). The
+choice is written to `localStorage` (`dashboard.spendMode`) as it is made and
+read back on every load, so it survives a real reload and not just the
+in-place refresh the rest of this section describes — the first state on this
+page to do so — and an unset or unrecognised stored value reads as the GMT
+default rather than an error; open PRs; recent cycles (outcome and work source at
 a glance — a cycle that has not logged `cycle-end` shows the state it is in
 rather than an outcome it has not reached: **in progress** while a node claims
 it as its live cycle (greyed when that node's own report has gone stale,
@@ -770,7 +784,10 @@ number's twins elsewhere on the page.
   (shortened) window and while another publish holds the lock; a cold window
   fetches from GitHub exactly once, a window following a fresh fetch not at
   all, and an aged stamp is refetched on the next tick; the batched cost scan
-  matches the per-file semantics (day cut-off, torn-file tolerance) and the
+  matches the per-file semantics (day cut-off, torn-file tolerance, each row's
+  own instant carried through as `ts` — `null` for a directory name that
+  doesn't parse as one, which still counts toward the totals but drops out of
+  `recent_costs` rather than guessing) and the
   whole publish stays within its process budget on a long history; a stage
   whose envelope parses but whose `result` is empty or whitespace-only still
   renders its cycle, with that stage's status `null`, while a stage whose
@@ -847,7 +864,14 @@ number's twins elsewhere on the page.
   `answered_404` (a repo with no tech-debt register) still renders an
   ordinary zero, and a fixture carrying no `state` field at all — every
   repo's data from before this field existed — renders exactly as it always
-  did. The void list's two caps are asserted from a twelve-row fixture whose
+  did. The spend-today card's persisted GMT/local/24h choice (#186) is
+  asserted by seeding the harness's `localStorage` stub rather than
+  simulating the click: with no stored choice the card reads "today (GMT)"
+  against `spend_today_usd`, and a stored `24h` relabels it "last 24h" and
+  sums only the `recent_costs` rows within a rolling 24 hours; a stored
+  `local` is asserted for its label only, since which rows fall on the
+  reader's own calendar date depends on the moment the suite runs. The void
+  list's two caps are asserted from a twelve-row fixture whose
   two oldest rows sit *first* in the data, because the cap is only meaningful
   once the list is sorted: the heading counts twelve, the ten newest render
   (the tenth-newest last), neither old row appears until asked for, the
@@ -1142,6 +1166,20 @@ number's twins elsewhere on the page.
   other two charts, and all of it was already on disk: the actor is the
   transcript's own filename, so this cut needed no new field, no new log event
   and no extra API call.
+- **"Today" defaulted to GMT with no way to say so, until #186.** The card's
+  figure was always `spend_today_usd`, computed against `date -u`, and nothing
+  on the page told a reader in another zone that "today" wasn't theirs. Fixing
+  that needed two things the Publisher alone can't decide: which reading the
+  reader wants, and which calendar day a given cost fell on *for them*. Neither
+  is knowable server-side — a dashboard has no fixed reader, let alone a fixed
+  zone — so `recent_costs` ships raw `{ts, cost}` rows (three days back, ample
+  padding either side of any real zone or of a `last 24h` window) and the
+  arithmetic for "local" and "24h" runs client-side, against `new Date()`. The
+  chosen mode is `localStorage`, not a query param or a server-side setting: a
+  dashboard has no accounts and no URL a reader necessarily bookmarks, and a
+  choice that reset on every visit would answer #186 no better than not asking
+  at all. `spend_today_usd` itself is untouched — GMT stays the default and the
+  cheap path when a reader never touches the toggle.
 
   Adding it exposed that the roll-ups were **not totals**. The scan read
   `cycles/` and not `reviews/`, so the weekly Project Reviewer — the most
