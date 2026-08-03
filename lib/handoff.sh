@@ -43,6 +43,12 @@
 # name a stranded pull request, all three of which depend on the stage that has
 # just failed (see requirement 9).
 #
+# `confirm_review_requested` is the same promise for the round *after* the
+# first. A draft flip is the handoff exactly once per pull request; every
+# later round begins with a PR that is already ready, so `gh pr ready` is a
+# no-op and there is nothing left that puts the PR back in front of the human.
+# See its own comment for what that cost.
+#
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail` and a library that re-sets options silently
 # changes its caller.
@@ -163,4 +169,181 @@ confirm_pr_ready() {
 
   printf 'failed'
   return 1
+}
+
+# _handoff_pr_parts PR_URL
+# Print `owner/repo<TAB>number` for a pull request URL, or return non-zero.
+#
+# `confirm_pr_ready` gets by with `gh pr view <url>`, which resolves the URL
+# itself. Requesting a review has no `gh` porcelain, so it goes through
+# `gh api repos/<slug>/pulls/<n>/…` and the parts have to be named. Taking them
+# from the URL rather than from the work order is deliberate: `pr_number` on the
+# work order is a field the Co-Ordinator filled in (requirement 4), and the URL
+# is the one identifier every caller already holds and requirement 9 has four
+# ways to recover.
+_handoff_pr_parts() {
+  local url="${1:-}"
+  [[ "$url" =~ ^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+) ]] || return 1
+  printf '%s/%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
+}
+
+# _handoff_blocking_reviewers SLUG NUMBER
+# Print, one per line, the logins of the humans whose review currently blocks
+# the pull request. Returns non-zero, printing nothing, when GitHub could not be
+# asked — the same rule as `_handoff_draft_flag`, for the same reason.
+#
+# "Currently blocks" is computed the way GitHub computes `reviewDecision`, not
+# by taking the newest review: only APPROVED and CHANGES_REQUESTED count, and
+# the last of those *per reviewer* is that reviewer's standing position. A
+# COMMENTED review does not change anyone's decision, so a human who requested
+# changes and then added a comment is still blocking — and reading their newest
+# review would have concluded otherwise and asked nobody for anything.
+#
+# Bots are excluded. This org runs Copilot code review on every PR, and a bot
+# can be re-requested exactly like a person: doing so would spend money and
+# noise on the one reviewer that is not the human this exists to reach.
+#
+# The PR's author needs no exclusion — GitHub forbids requesting changes on
+# your own pull request, so an author can never appear in this set. That is
+# also what makes the set safe to POST verbatim: requesting a review from the
+# author is a 422, and it is unreachable here.
+_handoff_blocking_reviewers() {
+  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" lines
+  # One JSON object per line rather than an array: `--paginate` concatenates a
+  # separate document per page, so an aggregate written inside `--jq` would be
+  # computed per page and silently disagree with itself past thirty reviews.
+  # The aggregation happens below, over every page at once.
+  lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
+            --jq '.[] | select(.submitted_at != null)
+                      | {login: .user.login,
+                         bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
+                         state: .state}' 2>/dev/null)" || return 1
+  jq -s -r '
+    [.[] | select(.bot | not)
+         | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+    | group_by(.login) | map(last)
+    | map(select(.state == "CHANGES_REQUESTED") | .login)
+    | unique | .[]' <<<"$lines" 2>/dev/null || return 1
+}
+
+# confirm_review_requested PR_URL
+# Ensure the humans who asked for changes have been asked to look again, and
+# say what that took.
+#
+# Prints `<word>`, or `<word><TAB><comma-separated logins>` where there are
+# logins to name:
+#   none       nobody's review blocks this PR — the ordinary path, and the
+#              answer for every first-round pull request. One API call.
+#   already    a re-review is pending from every blocking reviewer; whoever did
+#              it (normally the Implementor, requirement 26b) got there first.
+#   requested  this call asked, and GitHub now shows the request pending.
+#   failed     the request could not be made, or did not take.
+#
+# Exit status is 0 for `none`, `already` and `requested`, 1 for `failed`.
+#
+# ## Why this exists
+#
+# A human asks for changes; the Implementor answers them and pushes; the
+# Reviewer confirms CI is green and reports `ready`. Every actor has done its
+# job, and the pull request is now in a state no one is watching: its
+# `reviewDecision` is still `CHANGES_REQUESTED` — the author cannot clear that,
+# by design — and *no review is requested of anyone*, because the reviewer's
+# request was consumed the moment they submitted the review that asked for the
+# changes. It is not in their review queue. It is not in anyone's. It sits at
+# whatever position in the PR list its last update earned it, indefinitely,
+# looking to every dashboard like a handed-off success.
+#
+# That is exactly what happened to poetic-fiddle #200: reviewed 10:18, answered
+# and pushed 21:33, a comment posted at 21:44 saying the point was addressed —
+# and it reached the human only because they went looking. The draft flip
+# (requirement 31a) cannot cover this: the PR never went back to draft, so
+# `confirm_pr_ready` correctly answers `already` and correctly logs a completed
+# handoff. The handoff was completed. It just did not reach anybody.
+#
+# ## Why the Script and not the prompt
+#
+# The Implementor prompt has told it to re-request review since the
+# review-feedback source existed, and #200 is what that instruction is worth on
+# its own: best-effort prose, unverified, and the one round it was skipped is
+# the round nobody could see had gone wrong. This is requirement 31a's lesson in
+# a second clothing — the report is not the deed — so the answer is the same
+# one: the model may still do it, the Script asks GitHub whether it happened,
+# and where it did not the Script does it. The judgement ("these changes answer
+# the review") stays with the models; requesting a review is mechanism.
+#
+# ## What it does not do
+#
+# It does not clear the block, and must not appear to. Re-requesting review
+# leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state` at
+# `blocked` — verified against GitHub on #200, before and after — so the human
+# gate holds exactly as "The Human Gate" describes it, and the PR still needs an
+# approving review from a code owner that this system cannot give itself. All
+# this does is put the PR back in the queue the human actually reads.
+#
+# Nor does it fail the handoff when it fails. The PR is finished, green and
+# visible; what is missing is a notification, and the Implementor's own reply
+# comment (requirement 26b) mentions the reviewer, which notifies them too.
+# Recording an `attempt-failed` here would put a certified pull request in front
+# of the Enabler as a problem — the outcome requirement 31a exists to avoid — to
+# repair a secondary alerting path. So the failure is a `warning` and a field on
+# the `pr-ready` event: visible on the dashboard, and never a false failure.
+confirm_review_requested() {
+  local url="${1:-}" gh_bin="${HANDOFF_GH:-gh}"
+  local parts slug number blocking pending targets joined
+  local -a args=()
+
+  if [[ -z "$url" ]] || ! parts="$(_handoff_pr_parts "$url")"; then
+    printf 'failed'
+    return 1
+  fi
+  IFS=$'\t' read -r slug number <<<"$parts"
+
+  if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ -z "$blocking" ]]; then
+    printf 'none'
+    return 0
+  fi
+
+  # Who is already on the hook. A reviewer who submits a review is removed from
+  # this list by GitHub, which is the whole defect; a reviewer who is on it has
+  # been asked and has not answered, and asking twice is a no-op that would
+  # nonetheless report `requested` and read in the log as work done.
+  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
+                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+    printf 'failed'
+    return 1
+  fi
+
+  targets="$(comm -23 <(sort -u <<<"$blocking") <(sort -u <<<"$pending"))"
+  joined="$(paste -sd, <<<"$blocking")"
+  if [[ -z "$targets" ]]; then
+    printf 'already\t%s' "$joined"
+    return 0
+  fi
+
+  while IFS= read -r login; do
+    [[ -n "$login" ]] && args+=(-f "reviewers[]=$login")
+  done <<<"$targets"
+
+  # As with `gh pr ready`, the POST's own exit status is not the answer: a 422
+  # for one login in a batch fails the whole request, and a request that lands
+  # can still be raced away. Re-reading the pending list is the answer.
+  "$gh_bin" api -X POST "repos/$slug/pulls/$number/requested_reviewers" \
+    "${args[@]}" >/dev/null 2>&1 || true
+
+  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
+                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ -n "$(comm -23 <(sort -u <<<"$blocking") <(sort -u <<<"$pending"))" ]]; then
+    printf 'failed\t%s' "$joined"
+    return 1
+  fi
+
+  printf 'requested\t%s' "$joined"
+  return 0
 }

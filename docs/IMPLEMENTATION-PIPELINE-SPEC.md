@@ -2525,8 +2525,9 @@ runs unattended.
     label in either direction — the label endures for later finishing rounds
     (requirement 8a) and for the human.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
-    marks it ready for review (`gh pr ready`). It never approves and never
-    merges.
+    marks it ready for review (`gh pr ready`), and where a human's review is
+    what blocks it, requests a fresh one from them (requirement 31b). It never
+    approves and never merges.
 31a. **The handoff is verified, not reported.** Requirement 31 is the pipeline's
     only irreversible outward act, and requirement 32 has the Reviewer *describe*
     it — two different things. Before recording `pr-ready` the Script asks GitHub
@@ -2557,6 +2558,61 @@ runs unattended.
     work — which it would have gone on doing hourly, each round looking
     productive. No component could have noticed: the Reviewer believed it had
     handed off, the Script believed the Reviewer, and only GitHub disagreed.
+31b. **The second half of the handoff: the re-request.** Requirement 31a's flip
+    is the whole handoff exactly once per pull request. Every round after the
+    first begins with a PR that is already ready — a review round the Implementor
+    has just answered, above all — so `gh pr ready` is truthfully a no-op, and
+    nothing is left that puts the pull request in front of the human. Their
+    review request was consumed the moment they submitted the review that asked
+    for the changes; the author cannot clear `CHANGES_REQUESTED` (requirement
+    26b); and so the PR sits with changes requested, no review requested of
+    anyone, and a completed handoff in the log.
+
+    So on the `ready` path, after the draft flip, the Script asks GitHub the
+    second question too: **does a human's review block this pull request, and
+    has a fresh review been requested of them?** The blocking set is computed
+    the way GitHub computes `reviewDecision` — the last APPROVED or
+    CHANGES_REQUESTED review *per reviewer*, bots excluded — so a human who
+    requested changes and later added a `COMMENTED` review is still blocking,
+    and one who later approved is not. Then:
+    - nobody blocking — nothing to do. The answer on every first-round pull
+      request, at the cost of one API read, and the reason the check is
+      unconditional rather than gated on `source == "review-feedback"`: the
+      question is answerable from the pull request itself, and gating it on the
+      Co-Ordinator's classification would make a mislabelled source an
+      unnotified human;
+    - blocking, and a re-review already pending from each — `already`. Whoever
+      got there first (normally the Implementor, requirement 26b) did it;
+    - blocking, none pending — `POST …/pulls/<n>/requested_reviewers` for the
+      ones not yet asked, then **re-read the pending list**: as with
+      `gh pr ready`, the call's exit status is not the answer. `pr-ready` then
+      carries `review_requested` and the `reviewers` named;
+    - it did not take, or GitHub could not be asked — a `warning` naming the PR
+      and the reviewers, and `review_requested: "failed"` on the `pr-ready`
+      event. **Not** an `attempt-failed`: the pull request is finished, green and
+      visible, and only a notification is missing — the Implementor's own reply
+      comment mentions the reviewer, which notifies them too. Recording a
+      handback here would put a certified PR in front of the Enabler as a
+      problem, which is what requirement 31a exists to avoid.
+
+    **This does not clear the block, and must not appear to.** Re-requesting
+    review leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state`
+    at `blocked` — verified against GitHub on poetic-fiddle #200, before and
+    after — so "The Human Gate" holds unchanged: the PR still needs an approving
+    review from a code owner that this system cannot give itself. All the
+    re-request does is return the PR to the queue the human actually reads.
+
+    The defect this exists to prevent shipped, and is why requirement 31a's
+    lesson needed a second telling. poetic-fiddle #200 was reviewed at 10:18
+    with one requested change, answered and pushed at 21:33, and replied to at
+    21:44 with a comment saying so. Every actor did its job; the Implementor
+    prompt has carried "then re-request review from the reviewer" since the
+    review-feedback source existed, as best-effort prose that nothing verified.
+    It was skipped, the log recorded a clean `pr-ready`, and the human found the
+    pull request only by going to look for it. The report is not the deed — so
+    the model may still do it, the Script asks GitHub whether it happened, and
+    where it did not the Script does it. One definition, in `lib/handoff.sh`
+    (requirement 34a).
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
@@ -2600,6 +2656,12 @@ runs unattended.
     Enabler also files the escalation issue. A `complete_handoff` on an item with
     no `pr_url` is ignored — there is nothing to hand off.
 
+    Requirement 31b runs on this path too, and it is not decoration here: an
+    `already` is exactly what a stalled review round answers, because that PR was
+    never a draft. Completing only the flip would clear the block, log a handoff,
+    and leave the human as unasked as before. Both handoff paths run both halves,
+    or the one that recovers a failure is the one that recovers it incompletely.
+
 ### Logging and state
 
 33. The shared log is a single JSON Lines file, `state_dir/log.jsonl`,
@@ -2617,6 +2679,10 @@ runs unattended.
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
     the event means the pull request is not a draft, not that somebody said so.
+    Where a human's review blocked it, `pr-ready` also carries
+    `review_requested` — `already`, `requested` or `failed` — and the
+    `reviewers` it names (requirement 31b); all three are omitted where nobody
+    was blocking, which is the ordinary first-round case.
     An `attempt-failed` carries `pr_url` when the failing stage was working on
     one (requirement 32a), and — for the refinement class of requirement 34e —
     `kind: "needs-refinement"`, the `unblock_condition` taken from the report's
@@ -3588,9 +3654,11 @@ What exists, and the requirements each part answers to:
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
-   requirement 32b, and requirement 9's `pr_url_for_branch`, which names the
-   pull request on a claimed branch when the stage that opened it named
-   nothing; `HANDOFF_GH` substitutes a stub for tests) and
+   requirement 32b; requirement 31b's `confirm_review_requested`, the same
+   promise for the round after the first; and requirement 9's
+   `pr_url_for_branch`, which names the pull request on a claimed branch when
+   the stage that opened it named nothing; `HANDOFF_GH` substitutes a stub for
+   tests) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -4343,6 +4411,22 @@ pull request, run the ones the change touches and any it could regress.
    log `pr-ready` with `handoff: "script"`. Assert against GitHub, not against
    the log — the whole defect was a log that agreed with a Reviewer nobody had
    checked.
+8d-i. **A handed-off pull request is in somebody's review queue (requirement
+   31b).** `test/handoff.test.sh` passes for `confirm_review_requested`: a PR
+   nobody is blocking reports `none` and asks for nothing; a blocking reviewer
+   with no request pending is re-requested and reported `requested`; one already
+   pending reports `already` without posting again; a reviewer whose
+   changes-requested is followed by a `COMMENTED` review is still asked, and one
+   whose is followed by an `APPROVED` is not; a bot is never asked; a POST that
+   exits 0 and changes nothing reports `failed`; and an API that will not answer
+   reports `failed` rather than an assumed `none`. Then drive a cycle on a
+   `review-feedback` item end to end: the `pr-ready` event must carry
+   `review_requested` and the reviewer's login, and GitHub — not the log — must
+   show the review pending. Assert the negative too, because it is the whole
+   point of the requirement's bound: `reviewDecision` must still read
+   `CHANGES_REQUESTED` and the PR must still be un-mergeable afterwards. A
+   re-request that cleared the block would have moved the human gate, not
+   rung it.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
