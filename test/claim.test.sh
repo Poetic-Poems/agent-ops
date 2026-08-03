@@ -109,6 +109,14 @@ case "$method $path" in
   "DELETE "*/contents/*)
     p="$d/contents/${path#*/contents/}"
     rm -f "$p"; exit 0 ;;
+  "GET "*/git/matching-refs/heads/*)
+    slug="${path#repos/}"; slug="${slug%%/git/*}"
+    prefix="${path#*/git/matching-refs/heads/}"
+    out="$(cd "$d/refs/$slug" 2>/dev/null \
+      && find . -type f 2>/dev/null | sed 's|^\./||' | grep "^${prefix}" \
+      | jq -R '{ref: ("refs/heads/" + .)}' | jq -sc '.')"
+    [[ -n "$out" ]] || out='[]'
+    emit "$out"; exit 0 ;;
 esac
 exit 1
 STUB
@@ -207,6 +215,30 @@ run_claim node-a claim branch Poetic-Poems/poetic td/TD95 main
 env CLAIM_GH="$stub_bin/gh" "$CLAIM" gc >/dev/null 2>&1
 assert_eq "gc leaves a fresh claim alone" "1" \
   "$(test -f "$reg_dir/Poetic-Poems__poetic/td__TD95.json" && echo 1 || echo 0)"
+
+# --- claims: registry entries younger than claim_ttl_hours (issue #175) -------------
+CLAIM_ITEM_OVERRIDE="TD-CLAIMS-1" run_claim node-a claim branch Poetic-Poems/poetic td/TD-CLAIMS-1 main
+claims_out="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" claims Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "claims lists a fresh branch claim's item" "1" \
+  "$(jq '[.[] | select(.item == "TD-CLAIMS-1")] | length' <<<"$claims_out")"
+assert_eq "claims tags it as a branch claim" "branch" \
+  "$(jq -r '.[] | select(.item == "TD-CLAIMS-1") | .kind' <<<"$claims_out")"
+
+old_ts="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s' "$(jq -nc --arg ts "$old_ts" \
+  '{node:"dead",cycle:"c",repo:"Poetic-Poems/poetic",key:"td/TD-OLD",kind:"branch",branch:"td/TD-OLD",sha:"basesha000",item:"TD-OLD",source:"tech-debt",ts:$ts}' \
+  | base64 -w0)" > "$reg_dir/Poetic-Poems__poetic/td__TD-OLD.json"
+printf 'oldsha' > "$GH_STUB_DIR/refs/Poetic-Poems/poetic/td/TD-OLD"
+claims_out="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" claims Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "claims excludes an entry older than claim_ttl_hours (the staleness escape)" "0" \
+  "$(jq '[.[] | select(.item == "TD-OLD")] | length' <<<"$claims_out")"
+
+# --- branches: live td/*, <branch_prefix>* refs on the target repo (issue #175) ------
+branches_out="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" branches Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "branches lists the live td/ claim branch, registry entry or not" "1" \
+  "$(jq '[.[] | select(. == "td/TD-CLAIMS-1")] | length' <<<"$branches_out")"
+assert_eq "branches is not TTL-filtered — the ref alone is the signal" "1" \
+  "$(jq '[.[] | select(. == "td/TD-OLD")] | length' <<<"$branches_out")"
 
 # ------------------------------------------------------------------------------------
 printf '\n%s\n' "----------------------------------------"

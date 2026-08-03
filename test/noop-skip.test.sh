@@ -203,6 +203,18 @@ assert_ne "a newly blocked item changes the fingerprint" \
 # The same id in a different repo is a different item (requirement 34).
 assert_ne "the same item id blocked in a different repo changes the fingerprint" \
   "$(fp_with '.blocked[0].repo = "o/two"')"
+# Requirement 3o: a peer node's claim moves no commit, issue, alert, or (until
+# its PR exists) the open_prs digest — the same gap abandoned_drafts and
+# merge_conflicts close for their own transitions. Issue #175's whole point
+# was that a claim appearing or ageing out must be visible without a
+# Co-Ordinator run doing the live check.
+assert_ne "a fresh peer claim changes the fingerprint" \
+  "$(fp_with '.claimed += [{"repo": "o/two", "item": "TD26071701", "age_hours": 1}]')"
+claimed_fp="$(base_input | jq -c '.claimed = [{"repo": "o/two", "item": "TD26071701", "age_hours": 1}]' | noop_fingerprint)"
+cleared_fp="$(base_input | jq -c '.claimed = []' | noop_fingerprint)"
+assert_eq "an empty claimed array canonicalises the same as an absent one" "$base_fp" "$cleared_fp"
+assert_eq "a claim ageing out of the array changes the fingerprint" "1" \
+  "$([[ "$claimed_fp" != "$cleared_fp" ]] && echo 1 || echo 0)"
 # review-feedback. The candidate only exists while it is the agent's turn (see
 # gather-review-feedback.sh), so its arrival and its disappearance are both
 # fingerprint events. Digesting the PR's reviewDecision instead would be stably

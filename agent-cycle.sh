@@ -576,6 +576,45 @@ claim_branch_for() {  # <source> <item>
   esac
 }
 
+# Requirement 3o: the fleet's active claims for one repo, deterministic claim
+# visibility for the Co-Ordinator's own exclusion (issue #175) instead of a
+# per-candidate live check the model performs unevenly. Two independent
+# sources, unioned and deduped by item: `lib/claim.sh claims`, the registry
+# already age-filtered to `claim_ttl_hours` — the only source for a file claim,
+# since the three finishing sources have no branch — and `lib/claim.sh
+# branches`, a live scan that still catches a claim the registry missed
+# (`state_repo` unset, or a failed best-effort write). By the time this runs,
+# step 2.1a's claim GC has already swept anything past the TTL, so a live
+# branch found here is either still fresh or has real work pushed to it, and
+# either way belongs in the list — no separate TTL check is needed for it.
+#
+# A branch-derived item is recovered by stripping `td/` or `branch_prefix`
+# from the branch name, the exact inverse of claim_branch_for above. That
+# recovery is exact for every item this system ever mints such a branch for —
+# an issue number, an alert ref, a register-hygiene or project-review ref —
+# none of which contain a character claim_branch_for's sanitiser would have
+# touched, so there is nothing lossy to recover from in practice.
+gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours}
+  local slug="$1" safe registry_out branches_out
+  safe="${slug//\//_}"
+  registry_out="$("$SCRIPT_DIR/lib/claim.sh" claims "$slug" 2>"$cycle_dir/claims-$safe.err" || true)"
+  jq -e 'type == "array"' <<<"$registry_out" >/dev/null 2>&1 || registry_out='[]'
+  branches_out="$("$SCRIPT_DIR/lib/claim.sh" branches "$slug" 2>"$cycle_dir/claim-branches-$safe.err" || true)"
+  jq -e 'type == "array"' <<<"$branches_out" >/dev/null 2>&1 || branches_out='[]'
+  jq -c -n --arg tp 'td/' --arg ap "$branch_prefix" --argjson reg "$registry_out" --argjson br "$branches_out" '
+    ( [ $reg[] | {item, age_hours} ] ) as $from_registry
+    | ( [ $br[]
+          | (if startswith($tp) then .[($tp | length):]
+             elif ($ap != "" and startswith($ap)) then .[($ap | length):]
+             else empty end)
+          | select(. != "")
+          | {item: ., age_hours: null} ] ) as $from_branches
+    | ($from_registry + $from_branches)
+    | group_by(.item)
+    | map({item: .[0].item, age_hours: (([.[].age_hours | select(. != null)] | first) // null)})
+  ' 2>/dev/null || echo '[]'
+}
+
 # Requirement 34c: an item whose premise is false is void, not blocked. It goes
 # to a different event with a different clearing rule, because the Co-Ordinator
 # is told to clear blockers that have gone away — and "the work is already done"
@@ -2017,6 +2056,7 @@ ordered_repos_json="[]"
 source_states_json="[]"
 unvoid_requests_json="[]"
 hand_flagged_refinements_json="[]"
+claimed_json="[]"
 repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
@@ -2091,6 +2131,12 @@ while IFS=$'\t' read -r _ slug default_branch; do
     hand_flagged_refinements_json="$(jq -c --argjson r "$(gather_hand_flagged_refinements "$slug")" '. + $r' \
       <<<"$hand_flagged_refinements_json")"
   fi
+  # Requirement 3o, gathered here for the repo loop's one pass but a top-level
+  # array in the Co-Ordinator's input (like `blocked` and `void`), never
+  # folded into `entry`: unconditional, regardless of `sources`, because any
+  # starting source's item can be claimed.
+  claimed_json="$(jq -c --arg r "$slug" --argjson items "$(gather_claimed "$slug")" \
+    '. + ($items | map({repo: $r} + .))' <<<"$claimed_json")"
 done < <(repo_order_by_effective_age "$repo_order_now" "$repos_json" < "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
@@ -2380,6 +2426,7 @@ noop_input="$(jq -nc \
   --argjson blocked "$blocked_json" \
   --argjson void "$void_json" \
   --argjson refinements "$refinements_json" \
+  --argjson claimed "$claimed_json" \
   --argjson eligible "$enabler_eligible_json" \
   --argjson sc "$selection_config_json" \
   --argjson ec "$enabler_config_json" \
@@ -2392,6 +2439,7 @@ noop_input="$(jq -nc \
      blocked: $blocked,
      void: $void,
      refinements: $refinements,
+     claimed: $claimed,
      enabler_eligible: $eligible,
      selection_config: $sc,
      coordinator_prompt_sha: $psha,
@@ -2420,10 +2468,11 @@ coordinator_input="$(jq -nc \
   --argjson blocked "$blocked_json" \
   --argjson void "$void_json" \
   --argjson refinements "$refinements_json" \
+  --argjson claimed "$claimed_json" \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
-  '{repos: $repos, blocked: $blocked, void: $void, refinements: $refinements,
+  '{repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
     models: {default: $model_default, trivial: $model_trivial},
     candidates_max: $cmax}')"
 
