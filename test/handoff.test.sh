@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 #
-# test/handoff.test.sh — regression test for lib/handoff.sh (requirement 31a).
+# test/handoff.test.sh — regression test for lib/handoff.sh (requirements 31a
+# and 9).
+#
+# Two functions, two halves of one promise: that a pull request this pipeline
+# opened reaches a human. `confirm_pr_ready` covers the half where the PR is
+# known and the handoff was claimed but not performed; `pr_url_for_branch`
+# covers the half below it, where the stage died without ever saying which pull
+# request it had opened — at which point nothing above can run at all.
 #
 # The defect: a Reviewer answered `{"status": "ready", "ci": "passing"}` for a
 # pull request whose work was complete and whose checks were green, never ran
@@ -158,12 +165,82 @@ assert_eq "  ... and exits 1" "1" "$rc"
 (
   set -euo pipefail
   . "$SCRIPT_DIR/lib/handoff.sh"
+  # shellcheck disable=SC2030  # Not leaking is the point: the stub outside this
+  # subshell must go on answering for the assertions that follow it.
   HANDOFF_GH="/nonexistent/gh"
   x="$(confirm_pr_ready "$URL")" || true
   [[ "$x" == "failed" ]] || exit 9
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shape survives set -e" "0" "$?"
+
+# --- pr_url_for_branch: naming the PR a failed stage never named (req. 9) -------
+# The other end of the same story. `confirm_pr_ready` above cannot run at all on
+# a pull request nobody can name, and on 2026-08-03 three finished items were
+# blocked for exactly that reason: the Implementor exited 0 with prose instead
+# of a JSON object, so no `pr_url` was reported, none was printable from the
+# stage output, and no `.git/agent-ops-pr-url` breadcrumb had been written —
+# every fallback that depends on the stage failed together with the stage. The
+# claimed branch does not depend on it: the Script computed and pushed it before
+# the stage began, which is what makes it the fallback worth having.
+cat >"$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+[[ -f "$d/api-down" ]] && exit 1
+printf '%s\n' "$*" >>"$d/list-calls"
+branch=""
+while (( $# )); do
+  [[ "$1" == "--head" ]] && { branch="${2:-}"; shift; }
+  shift
+done
+case "$branch" in
+  agent/172) printf '  https://github.com/Poetic-Poems/agent-ops/pull/180  \n' ;;
+  *)         printf '' ;;
+esac
+STUB
+chmod +x "$tmp_dir/gh"
+rm -f "$tmp_dir/api-down"; : >"$tmp_dir/list-calls"
+list_calls() { wc -l <"$tmp_dir/list-calls" | tr -d ' '; }
+
+# Trimmed like the breadcrumb's own reader is, because this URL is pasted into
+# a `gh pr comment` target and a log field, and stray whitespace breaks both.
+assert_eq "an open PR on the claimed branch is found by the branch alone" \
+  "https://github.com/Poetic-Poems/agent-ops/pull/180" \
+  "$(pr_url_for_branch Poetic-Poems/agent-ops agent/172)"
+
+assert_eq "a branch with no open PR yields nothing" "" \
+  "$(pr_url_for_branch Poetic-Poems/agent-ops agent/999)"
+
+# The silent direction, and the reason this returns 0 whatever happens: every
+# call site is on a failure path already in progress under `errexit`, so a
+# non-zero here kills the cycle before it logs the failure it is describing.
+printf 'x' >"$tmp_dir/api-down"
+out="$(pr_url_for_branch Poetic-Poems/agent-ops agent/172)"; rc=$?
+assert_eq "an unreachable API yields nothing" "" "$out"
+assert_eq "  ... and still exits 0" "0" "$rc"
+rm -f "$tmp_dir/api-down"
+
+# Neither is knowable before the claim loop has run — a Co-Ordinator that failed
+# to select pins no repo and no branch — and `gh pr list -R ''` is a usage
+# error, not a lookup that comes up empty.
+: >"$tmp_dir/list-calls"
+assert_eq "no repo asks GitHub nothing" "" "$(pr_url_for_branch "" agent/172)"
+assert_eq "no branch asks GitHub nothing" "" "$(pr_url_for_branch Poetic-Poems/agent-ops "")"
+assert_eq "  ... and neither reached the API" "0" "$(list_calls)"
+
+# The call-site shape as agent-cycle.sh writes it: a bare
+# `[[ -z "$url" ]] && url="$(pr_url_for_branch …)"`, the same shape
+# `read_pr_url_breadcrumb`'s own comment records the cost of getting wrong.
+(
+  set -euo pipefail
+  . "$SCRIPT_DIR/lib/handoff.sh"
+  HANDOFF_GH="/nonexistent/gh"
+  url=""
+  [[ -z "$url" ]] && url="$(pr_url_for_branch o/r agent/1)"
+  [[ -z "$url" ]] || exit 9
+  exit 0
+) >/dev/null 2>&1
+assert_eq "pr_url_for_branch's call-site shape survives set -e" "0" "$?"
 
 printf '\n'
 if (( failures == 0 )); then

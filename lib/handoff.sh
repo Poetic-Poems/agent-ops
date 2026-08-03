@@ -36,12 +36,63 @@
 # Reviewer has certified in front of a human as a problem, which is the outcome
 # requirement 32a exists to avoid.
 #
+# `pr_url_for_branch` below is the same principle applied one step earlier, and
+# it is here rather than beside the other requirement 9 fallbacks for that
+# reason: those read what an actor left behind, and this asks GitHub. Nothing
+# can be handed off that cannot be named, and the pipeline had three ways to
+# name a stranded pull request, all three of which depend on the stage that has
+# just failed (see requirement 9).
+#
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail` and a library that re-sets options silently
 # changes its caller.
 #
 # Environment:
 #   HANDOFF_GH  override `gh` (tests stub it).
+
+# pr_url_for_branch TARGET_SLUG BRANCH
+# Print the URL of the open pull request whose head is BRANCH in TARGET_SLUG,
+# or nothing at all.
+#
+# The last of requirement 9's fallbacks for a stage that died without saying
+# what it had opened, and the only one that does not depend on that stage. The
+# other three — the final message's `pr_url`, a URL grepped out of the stage
+# output, the `.git/agent-ops-pr-url` breadcrumb (requirement 23) — are all
+# things the Implementor must have done something to produce, and an
+# Implementor that failed to emit a parseable final message is precisely an
+# Implementor that may have skipped them. All three came up empty on three
+# items in one hour on 2026-08-03 (agent-ops #172, #173, #175), each with
+# finished, pushed, CI-green work in a draft pull request the Script could no
+# longer name: no stage-failure comment landed on any of them, and the
+# Enabler's one lever for a stalled handoff — `complete_handoff`, gated on a
+# non-empty `pr_url` from the block (requirement 32b) — was unavailable for
+# exactly the failure it exists to recover. A human finished all three by
+# hand.
+#
+# The branch needs nothing from the model: the Script computed it itself
+# (`claim_branch_for`, requirement 17a) and pushed it before the stage began.
+# So this is the fallback that holds when the stage contributed nothing at
+# all, which is the case worth having one for.
+#
+# `--state open` is the question actually being asked: a pull request to
+# comment on and hand off. `.[0]` because a head branch can in principle carry
+# more than one open pull request (differing bases); `gh` lists newest first,
+# which is the one this cycle pushed.
+#
+# Always succeeds, printing nothing when there is no such PR or the API cannot
+# be reached — the two are not distinguished, deliberately. Every caller is a
+# `[[ -z "$url" ]] && url="$(pr_url_for_branch …)"` on a failure path already
+# in progress, under `errexit`, where a non-zero return would kill the cycle
+# before it logs the failure this is trying to enrich (the same trap
+# `read_pr_url_breadcrumb` documents). Coming up empty costs what the pipeline
+# had before this existed; failing loudly costs the record.
+pr_url_for_branch() {
+  local slug="${1:-}" branch="${2:-}" gh_bin="${HANDOFF_GH:-gh}" url
+  [[ -n "$slug" && -n "$branch" ]] || return 0
+  url="$("$gh_bin" pr list -R "$slug" --head "$branch" --state open \
+          --json url --jq '.[0].url // empty' 2>/dev/null)" || return 0
+  printf '%s' "${url//[[:space:]]/}"
+}
 
 # _handoff_draft_flag PR_URL
 # Print `true` or `false` — GitHub's own answer to whether the PR is a draft.
