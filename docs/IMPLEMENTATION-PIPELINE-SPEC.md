@@ -1333,6 +1333,43 @@ runs unattended.
    Void items are excluded: a refined specification of work that does not exist
    would arrive in the Co-Ordinator's input arguing, in the pipeline's own voice
    and in detail, for an item requirement 34c says must never be selected again.
+3o. **Claim visibility (issue #175).** The Co-Ordinator's runtime input carries
+   a `claimed` array — `{repo, item, age_hours}` — alongside `blocked`, `void`
+   and `refinements`, gathered fresh by the Script for every repo it is about
+   to walk, immediately before the Co-Ordinator launches. It is the union of
+   two independent sources, deduped by repo+item:
+
+   - every claim-registry entry younger than `claim_ttl_hours` for that repo
+     (`lib/claim.sh claims`) — the only source for a *file* claim, since
+     `review-feedback`, `merge-conflicts` and `abandoned-drafts` finish an
+     existing PR and mint no branch; `age_hours` is the entry's exact age; and
+   - every live `td/*`/`<branch_prefix>*` branch on the target repository
+     itself (`lib/claim.sh branches`), which still catches a claim the
+     registry missed — `state_repo` unset, or a best-effort registry write
+     that failed — with `age_hours` reported as `null` when no registry entry
+     backs it. This runs after the claim gc (2.1a) has already swept anything
+     past the TTL that was left untouched, so a live branch found here is
+     either still fresh or has real work pushed to it — either way it
+     belongs in the list, and needs no separate TTL check of its own.
+
+   Before this existed, exclusion 3's second half (a live claim branch is a
+   claim, even before its draft PR appears) was a live check the Co-Ordinator
+   itself had to perform — nominally `git ls-remote` per repo, in practice a
+   step routinely skipped by the smaller model this stage runs on, and one that
+   the three finishing sources' file claims (invisible as branches) could never
+   have covered even performed perfectly. `claimed` replaces it: exclusion 16's
+   second bullet is now a lookup against pre-fetched data, not a live query, and
+   it is complete over both claim shapes. A candidate whose repo+item is not in
+   `claimed` genuinely has no fresh claim on it — the array is not a hint to go
+   verify, it is the answer.
+
+   Item refs recovered from a branch name are the exact inverse of
+   `claim_branch_for` (requirement 17a): `td/<ID>` strips to `<ID>`,
+   `<branch_prefix><ref>` strips to `<ref>`. That recovery is exact in
+   practice for every item type this system ever mints such a branch for — an
+   issue number, an alert ref, a register-hygiene or project-review ref — none
+   of which contain a character `claim_branch_for`'s sanitiser would have
+   touched, so there is nothing lossy to recover from.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -1384,7 +1421,12 @@ runs unattended.
      the digest when a real issue moves); a
      workflows digest for failed-runs; an open-PR digest, because a PR is a
      claim (16.3) and closing one creates a candidate while touching no commit,
-     issue or alert; the `blocked`/`void` extracts projected to `repo|item`, so
+     issue or alert; the `claimed` array of requirement 3o, projected to
+     `repo|item` like `blocked`/`void` below, for the same class of gap
+     `abandoned_drafts` and `merge_conflicts` close — a peer's claim, or that
+     claim ageing past `claim_ttl_hours`, moves no commit, issue, alert, or
+     (until its PR exists) the open-PR digest above; the `blocked`/`void`
+     extracts projected to `repo|item`, so
      a human's hand-appended `unblocked` takes effect; the `refinements` map of
      requirement 3h projected to `repo|item|ts`, listed in its own right rather
      than left to the `unblocked` that always accompanies it, because "covered
@@ -1901,11 +1943,15 @@ runs unattended.
     - a tech-debt item whose status is `in-progress` (its item file's
       `status:` frontmatter);
     - already referenced by any open PR or draft (a claim, per the repos'
-      claiming workflow), or already held by a live **claim branch** on the
-      target repository (`td/<ID>` or `agent/<item-ref>` existing on origin —
-      a peer node's claim that has not yet surfaced as a draft PR; the
-      Script's own atomic claim in requirement 17a is the hard gate, this
-      exclusion merely avoids proposing work that will lose the race) — for
+      claiming workflow), or its repo+item appears in the pre-fetched
+      `claimed` array (requirement 3o) — a peer node's claim, by either shape,
+      even one that has not yet surfaced as a draft PR; the Script's own
+      atomic claim in requirement 17a is the hard gate, this exclusion merely
+      avoids proposing work that will lose the race. Unlike the open-PR half,
+      there is nothing to check live here: `claimed` is exhaustive over both a
+      registry entry and a live `td/<ID>`/`agent/<item-ref>` branch, already
+      age-filtered to `claim_ttl_hours`, so an entry present excludes and an
+      entry absent (or aged out) does not — for
       a `security`/`code-quality` finding, that means
       an open PR whose branch or body already references the same alert
       (`ref`, alert URL, or the affected package/rule); for a `project-review`
@@ -2042,9 +2088,18 @@ runs unattended.
       most the TTL plus one cycle interval.
     - Claims **fail closed** per candidate: any outcome other than a won
       claim (a lost race, or GitHub unreachable) moves to the next
-      candidate, and a cycle whose every candidate is lost stands down with
-      reason "every candidate is already claimed elsewhere". A node that
-      cannot reach GitHub to claim could not have pushed the work either.
+      candidate. Each miss logs `claim-lost` with a `cause` — `held` for
+      `lib/claim.sh`'s rc 3 (a peer genuinely holds the item: healthy
+      contention, the work is being done, just not by this node) or
+      `unreachable` for its rc 1 (GitHub could not be reached at all,
+      fail-closed: no work is being done by anyone), any other rc verbatim.
+      A cycle whose every candidate is lost stands down with reason "every
+      candidate is already claimed elsewhere" — unless every miss was
+      `unreachable`, in which case the reason instead names the outage
+      ("GitHub could not be reached for any candidate — this is an outage,
+      not contention"), so a GitHub or token outage does not read as a fleet
+      politely yielding to itself. A node that cannot reach GitHub to claim
+      could not have pushed the work either.
     - When `state_repo` is unset (a single-node operation), file claims are
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
@@ -2535,8 +2590,10 @@ runs unattended.
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `escalated`, `limit-hit`, `disabled`, `enabled`,
-    `warning`, `cycle-end`. A `claim-lost` names the repo,
-    item and branch a peer node won (requirement 17a); `selection` carries the
+    `warning`, `cycle-end`. A `claim-lost` names the repo, item and branch of
+    the candidate the Script failed to claim, plus a `cause` — `held` when a
+    peer node won it, `unreachable` when GitHub could not be reached, or the
+    raw exit code otherwise (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
     the event means the pull request is not a draft, not that somebody said so.
@@ -3433,11 +3490,15 @@ What exists, and the requirements each part answers to:
    `shellcheck`.
 3e. `lib/claim.sh` implementing requirement 17a: `claim` (kinds `branch` and
    `file`), `release`, `count` and `gc`, exit codes 0 won/done, 3 lost, 1
-   error. Called by `agent-cycle.sh` (the claim loop after selection, the
-   release hooks on every no-PR ending, the `count` inside back-pressure).
-   `CLAIM_GH` substitutes a stub for tests, following `STATE_SYNC_GH`.
-   Unit-tested with concurrent-claim races against a filesystem-CAS stub
-   (`test/claim.test.sh`); must pass `shellcheck`.
+   error; and requirement 3o's `claims` and `branches` — read-only listings
+   that always print a JSON array (empty on any read failure) and exit 0,
+   since a claim-visibility gather must never fail a cycle over one listing
+   coming up short. Called by `agent-cycle.sh` (the claim loop after
+   selection, the release hooks on every no-PR ending, the `count` inside
+   back-pressure, and `claims`/`branches` once per repo ahead of the
+   Co-Ordinator). `CLAIM_GH` substitutes a stub for tests, following
+   `STATE_SYNC_GH`. Unit-tested with concurrent-claim races against a
+   filesystem-CAS stub (`test/claim.test.sh`); must pass `shellcheck`.
 3h. `lib/refinement.sh` implementing the refinement class: requirement 16a's
    well-formedness bar for a `needs_refinement` entry, requirement 34e's block
    fields and label projection (`REFINEMENT_GH` substitutes a stub for tests,
@@ -4153,6 +4214,19 @@ pull request, run the ones the change touches and any it could regress.
    loudly; and a backlog past the per-run cap acts on the cap's worth and
    reports the remainder (`deferred`) rather than flooding or staying
    silent.
+7c. **Claim visibility is deterministic, both shapes and both directions
+   (requirement 3o, issue #175).** `test/claim.test.sh`'s `claims`/`branches`
+   section passes: a fresh branch claim's registry entry appears in `claims`'
+   output tagged `kind: "branch"` with its item; an entry older than
+   `claim_ttl_hours` does not (the staleness escape survives); and `branches`
+   lists a live `td/*` ref regardless of its age, including one whose
+   registry entry has already aged out — proving the two sources are
+   independent, not one gated on the other. `test/noop-skip.test.sh` covers
+   the fingerprint half: a fresh entry added to `claimed` changes the
+   fingerprint, and an empty `claimed` array canonicalises identically to an
+   absent key, so a claim ageing back out of the array changes it too — the
+   same silent-stall shape `abandoned_drafts` and `merge_conflicts` close for
+   their own transitions.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
@@ -4643,6 +4717,19 @@ requirements above, which state only what is.
   same pattern already used to feed it the ordered repo list and blocked
   extract. It fails safe to `[]` so a repo without the feature (or without
   token scope) costs nothing and breaks nothing.
+- **Claim visibility is pre-fetched by the Script, not left to a per-candidate
+  live check by the model** (requirement 3o, issue #175). Exclusion 3 used to
+  ask the Co-Ordinator to discover a peer's claim itself — nominally one
+  `git ls-remote` per repo, but a check the fleet's smaller Co-Ordinator model
+  routinely skipped, and one the three finishing sources' file claims could
+  never have shown up in even performed faithfully, since they mint no
+  branch. The log's cost was concrete: item `78` logged nineteen `claim-lost`
+  events across four nodes in one day, item `155` seven in one — each a paid
+  Co-Ordinator run whose selection was doomed before it started, and often a
+  stand-down where other work existed. The fix is the same pattern as
+  findings, above: a deterministic bash+`gh`+`jq` gather (`lib/claim.sh
+  claims`/`branches`) replaces a live judgement call with a lookup against
+  pre-fetched data, complete over both claim shapes and immune to model size.
 - **Tech-debt handling uses the repos' own claiming workflow directly**
   (both repos today keep identical per-item `tech-debt/` machinery and a
   `/td` skill, but the Implementor follows the documented workflow rather
