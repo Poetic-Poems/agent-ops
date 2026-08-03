@@ -4059,10 +4059,17 @@ pull request, run the ones the change touches and any it could regress.
    application's own redirect is followed rather than mistaken for the login
    flow; no deployment at all, a SHA deployed only to Production, and a
    deployment still building are each exit 2; and `--wait` re-asks rather than
-   answering from its first look. Against the real API and a real protected
-   preview, `scripts/preview-deploy.sh --repo Poetic-Poems/poetic-fiddle --pr
-   <n>` from a shell with no bypass secret set reports that the deployment
-   built and that the page could not be checked.
+   answering from its first look. With no `--repo` and no `--pr` it resolves
+   the checked-out branch's own pull request without combining `--repo` with
+   an unidentified pull request — a shape the real `gh` CLI refuses, since
+   `--repo` overrides the ambient-repository inference `gh pr view` otherwise
+   uses to find the current branch's PR — and an explicit `--repo` with no
+   `--pr` resolves the number first through `gh pr list --head <branch>`
+   rather than combining the two; that refusal is pinned directly against the
+   installed `gh` binary, not assumed by the stub. Against the real API and a
+   real protected preview, `scripts/preview-deploy.sh --repo
+   Poetic-Poems/poetic-fiddle --pr <n>` from a shell with no bypass secret set
+   reports that the deployment built and that the page could not be checked.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning. A simulated foreign lock (fake lock file
