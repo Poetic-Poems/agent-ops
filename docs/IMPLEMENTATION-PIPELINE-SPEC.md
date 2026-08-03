@@ -1659,14 +1659,31 @@ runs unattended.
    `attempt-failed` with enough detail for a future cycle to know the item
    is blocked and what would unblock it, and — if a draft PR was already
    opened — comment on it that the agent has abandoned it and why, leaving
-   the PR and branch for the human to keep or discard. Because a stranded
-   Implementor may never emit a parseable final message (and so never
-   report its own `pr_url`), the Script also checks the clone for the
-   `.git/agent-ops-pr-url` breadcrumb (requirement 23) before concluding no
-   PR was ever opened. That breadcrumb lookup finding nothing is the *normal*
-   case — no PR was opened — so it must not be an error: under `errexit` a
-   non-zero there kills the cycle before it logs the very failure this
-   requirement is about (see Gotchas).
+   the PR and branch for the human to keep or discard.
+
+   Naming that pull request is the Script's job, not the failed stage's, and
+   it tries four things in order, each less dependent on the stage than the
+   last: the `pr_url` of a parseable final message; a pull-request URL
+   grepped from the stage's output; the `.git/agent-ops-pr-url` breadcrumb in
+   the clone (requirement 23); and finally an open pull request whose head is
+   the branch this cycle claimed (requirement 17a), asked of GitHub directly.
+   **The last of those is the one that must exist**, because the first three
+   are all things the Implementor had to remember to do, and a stage that
+   emitted no parseable final message is exactly a stage that may have
+   remembered none of them — whereas the branch was computed and pushed by
+   the Script before the stage began. Each lookup coming up empty is an
+   ordinary outcome, not an error: under `errexit` a non-zero from any of
+   them kills the cycle before it logs the very failure this requirement is
+   about (see Gotchas).
+
+   The consequences of failing to name it are not confined to this
+   requirement, which is why the fourth lookup is required rather than
+   merely sensible: no stage-failure comment reaches the pull request
+   (above), no `pr_url` travels on the `attempt-failed` event (requirement
+   32a), and so the Enabler's one power to clear this kind of block by act
+   rather than by verdict — `complete_handoff`, gated on that field
+   (requirement 32b) — is unavailable for precisely the failure it exists to
+   recover.
 9a. **A reported verdict is not a failure.** A stage that runs to completion
    and ends with `{"status": "blocked", …}` or `{"status": "void", …}`
    (requirement 27) has not failed: it has spent a full model run
@@ -2337,7 +2354,10 @@ runs unattended.
     approach. Immediately records the PR's URL at `.git/agent-ops-pr-url` in
     the clone — `.git/` is never part of the tracked tree, so this can't
     leak into a commit — so the Script can still identify the PR even if
-    this stage never reaches a parseable final message (requirement 9). For
+    this stage never reaches a parseable final message (requirement 9). That
+    breadcrumb is a courtesy, not the guarantee: it is one more step in this
+    stage's procedure, and requirement 9's fourth lookup is what covers the
+    stage that performed none of them. For
     tech-debt items this follows the repo's claiming workflow exactly —
     flipping the record's `status:` frontmatter to `in-progress` as the
     first commit. For issues, it
@@ -3525,7 +3545,11 @@ What exists, and the requirements each part answers to:
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
-   `crash_loop_escalated_since`, both pure readers of the union stream) and
+   `crash_loop_escalated_since`, both pure readers of the union stream),
+   `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
+   requirement 32b, and requirement 9's `pr_url_for_branch`, which names the
+   pull request on a claimed branch when the stage that opened it named
+   nothing; `HANDOFF_GH` substitutes a stub for tests) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -4283,6 +4307,20 @@ pull request, run the ones the change touches and any it could regress.
    Enabler `unblocked` verdict carrying `complete_handoff: true` takes the PR out
    of draft and logs `pr-ready` with `handoff: "enabler"`, while the same verdict
    on an item with no `pr_url` is ignored without error.
+8e-i. **A stage that says nothing still names its pull request (requirement
+   9).** `test/handoff.test.sh` passes its `pr_url_for_branch` assertions: an
+   open PR on the claimed branch is found and its URL returned; a branch with
+   no open PR yields nothing; an unreachable API yields nothing rather than a
+   non-zero return, which under `errexit` would kill the cycle ahead of the
+   failure it is describing; and an empty repo or branch asks GitHub nothing at
+   all. Then drive an Implementor that exits 0 having pushed a draft PR,
+   written no `.git/agent-ops-pr-url` breadcrumb, printed no URL and ended with
+   prose instead of a JSON object: the `attempt-failed` must still carry that
+   PR's `pr_url`, the PR must still receive the stage-failure comment, and the
+   claim must be released as `have-pr` rather than `no-pr`. Assert the URL came
+   from the branch and not from the stage — that is the whole point, and a test
+   whose Implementor helpfully left a breadcrumb passes without exercising
+   anything.
 8f. **A human can reopen a void from where they actually are (requirement
    34f).** `test/unvoid-label.test.sh` passes: a request clears a void recorded
    before the label; a void recorded after it, or at the same instant, stands; a
