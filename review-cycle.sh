@@ -188,10 +188,14 @@ read_pr_url_breadcrumb() {
   [[ -f "$f" ]] && head -n1 "$f" | tr -d '[:space:]'
 }
 
-# Straight-parse the final message, else fall back to the last fenced ```json```
-# block (identical to agent-cycle.sh's parser: a model sometimes prepends prose).
+# Straight-parse the final message, else the last fenced ```json``` block, else
+# the earliest brace-opening line whose suffix parses as exactly one JSON value
+# (identical to agent-cycle.sh's parser, where the full design note lives: a
+# model sometimes prepends prose, and the object it then leaves bare at the end
+# must not be the one fatal shape). test/extract-json-result.test.sh holds the
+# two copies and scripts/publish-dashboard.sh's jq port to the same algorithm.
 extract_json_result() {
-  local text="$1" block
+  local text="$1" block line_no suffix
   if jq empty <<<"$text" >/dev/null 2>&1; then
     jq -c '.' <<<"$text"
     return 0
@@ -206,6 +210,13 @@ extract_json_result() {
     jq -c '.' <<<"$block"
     return 0
   fi
+  while IFS=: read -r line_no _; do
+    suffix="$(tail -n "+$line_no" <<<"$text")"
+    if jq -es 'length == 1' <<<"$suffix" >/dev/null 2>&1; then
+      jq -c '.' <<<"$suffix"
+      return 0
+    fi
+  done < <(grep -n '^[[:space:]]*{' <<<"$text" || true)
   return 1
 }
 

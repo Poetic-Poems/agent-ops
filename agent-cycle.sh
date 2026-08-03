@@ -1068,8 +1068,34 @@ gather_plan_status() {
 
 # Stage prompts require the final message to be pure JSON, but a model will
 # sometimes prepend analysis prose anyway and put the real object in a
-# trailing fenced ```json block. Try a straight parse first; fall back to the
-# last such fenced block before giving up.
+# trailing fenced ```json block — or leave it bare after the prose. Try a
+# straight parse first; then the last fenced block; then the earliest line
+# opening a brace whose text from there to the end of the message parses as
+# exactly one JSON value.
+#
+# The third salvage earns its place by what its absence cost. On 2026-08-03
+# an Enabler engagement examined three refinement items, reached a correct
+# `escalate` verdict on each and drafted every escalation issue — then ended
+# with a summary paragraph, a blank line, and the verdict object, bare. The
+# fence fallback could not touch it (the prompts *forbid* the fence, so the
+# one deviation this function could rescue was the one the prompts rule
+# out), the engagement was discarded whole under requirement 37, and the
+# items sat behind its never-released claims for the rest of claim_ttl_hours
+# — six further hours — waiting for a retry that could only re-derive what
+# the discarded message already said. Prose-then-bare-object is the shape
+# models actually produce when they slip; it must not be the one fatal case.
+#
+# It is deliberately a *suffix* parse: only an object that runs to the end
+# of the message is taken, and an object with trailing prose still fails,
+# because "which of these is the verdict" is not a question this function
+# should answer. `jq -es 'length == 1'` is the single-value check — `jq
+# empty` accepts a stream of several values, and a salvage should never be
+# looser than the straight parse it backs up.
+#
+# scripts/publish-dashboard.sh's `extract_status` is a jq port of this
+# algorithm and review-cycle.sh carries a bash copy; the three move together
+# (docs/DASHBOARD-SPEC.md), and test/extract-json-result.test.sh holds them
+# to it.
 #
 # An empty-or-whitespace-only $text is checked explicitly and fails outright
 # (TD26072802, for symmetry with publish-dashboard.sh's extract_status,
@@ -1080,7 +1106,7 @@ gather_plan_status() {
 # this changes no observable behaviour; it just stops the exit code lying
 # about what happened.
 extract_json_result() {
-  local text="$1" block
+  local text="$1" block line_no suffix
   [[ "$text" =~ ^[[:space:]]*$ ]] && return 1
   if jq empty <<<"$text" >/dev/null 2>&1; then
     jq -c '.' <<<"$text"
@@ -1096,6 +1122,13 @@ extract_json_result() {
     jq -c '.' <<<"$block"
     return 0
   fi
+  while IFS=: read -r line_no _; do
+    suffix="$(tail -n "+$line_no" <<<"$text")"
+    if jq -es 'length == 1' <<<"$suffix" >/dev/null 2>&1; then
+      jq -c '.' <<<"$suffix"
+      return 0
+    fi
+  done < <(grep -n '^[[:space:]]*{' <<<"$text" || true)
   return 1
 }
 
