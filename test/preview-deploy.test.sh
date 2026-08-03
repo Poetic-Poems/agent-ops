@@ -75,6 +75,14 @@ mkdir -p "$stub_bin"
 # Two endpoints, each driven by a STUB_* variable. STUB_DEPLOYMENTS_2, when
 # set, is what the *second* and later calls return — which is how the --wait
 # case below has a deployment appear while the script is polling.
+#
+# `pr view` and `pr list` are what resolves the pull request when no --sha is
+# given (the "real gh CLI" section below tests directly, this is what the rest
+# of the suite relies on to reach the same code without a network call). Its
+# `pr view` case mirrors one real rule rather than accepting anything: gh
+# refuses to combine --repo with no PR number, URL or branch. Getting that rule
+# wrong here is exactly how the previous version of this stub missed the bug
+# TD-PPagop-26080301 files — it accepted the shape the real binary refuses.
 cat > "$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -92,10 +100,52 @@ case "$1" in
         fi ;;
       *) exit 1 ;;
     esac ;;
+  repo)
+    case "$2" in
+      view) printf '%s\n' "${STUB_REPO_SLUG:-}" ;;
+      *) exit 1 ;;
+    esac ;;
+  pr)
+    case "$2" in
+      view)
+        shift 2
+        has_repo=0
+        ident=""
+        while (( $# > 0 )); do
+          case "$1" in
+            --repo) has_repo=1; shift 2 ;;
+            --json|--jq) shift 2 ;;
+            -*) shift ;;
+            *) ident="$1"; shift ;;
+          esac
+        done
+        if (( has_repo )) && [[ -z "$ident" ]]; then
+          echo "argument required when using the --repo flag" >&2
+          exit 1
+        fi
+        printf '%s\n' "${STUB_PR_ANSWER:-}" ;;
+      list) printf '%s\n' "${STUB_PR_LIST_NUMBER:-}" ;;
+      *) exit 1 ;;
+    esac ;;
   *) exit 1 ;;
 esac
 STUB
 chmod +x "$stub_bin/gh"
+
+# git is stubbed too, only for `branch --show-current` — the one call the
+# --repo-with-no---pr path below makes. Real git would work in a developer's
+# checkout, but this suite also runs inside the node image, which
+# .dockerignore excludes .git from entirely, so nothing here can depend on
+# actually being inside a git repository.
+cat > "$stub_bin/git" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "branch" && "$2" == "--show-current" ]]; then
+  printf '%s\n' "${STUB_BRANCH-td/TD-PPagop-26080301}"
+else
+  exit 1
+fi
+STUB
+chmod +x "$stub_bin/git"
 
 # --- The stubbed curl ---------------------------------------------------------
 # It plays two different servers. api.vercel.com returns the build-log events
@@ -184,6 +234,28 @@ run_check() {  # run_check [VAR=value…] [-- extra args to the script]
   rc=$?
 }
 
+# Like run_check, but without the hardcoded --repo/--sha — for the pull
+# request resolution scenarios below, which are the point of this file's
+# existence: they exercise the code that decides *how* to ask gh, not just
+# what to do once a SHA is already in hand.
+run_check_raw() {  # run_check_raw [VAR=value…] -- <script args>
+  local env_pairs=() script_args=()
+  while (( $# > 0 )); do
+    if [[ "$1" == "--" ]]; then shift; script_args=( "$@" ); break; fi
+    env_pairs+=( "$1" ); shift
+  done
+  rm -f "$tmp_dir/calls" "$tmp_dir/http-calls"
+  out="$(env PATH="$stub_bin:$PATH" \
+    STUB_CALLS="$tmp_dir/calls" STUB_HTTP_CALLS="$tmp_dir/http-calls" \
+    STUB_DEPLOYMENTS="$deployment_preview" STUB_STATUSES="$status_success" \
+    STUB_GOOD_SECRET="$secret" \
+    VERCEL_AUTOMATION_BYPASS_SECRET="$secret" \
+    VERCEL_TOKEN="" \
+    "${env_pairs[@]}" \
+    "$CHECK" "${script_args[@]}" 2>&1)"
+  rc=$?
+}
+
 # --- A preview that built and answers -----------------------------------------
 
 run_check
@@ -248,6 +320,58 @@ run_check STUB_DEPLOYMENTS='[]' STUB_DEPLOYMENTS_2="$deployment_preview" \
   -- --wait 60
 assert_eq "--wait polls until the deployment appears" "0" "$rc"
 assert_contains "having said it was waiting" "waiting" "$out"
+
+# --- Resolving the pull request without --sha (TD-PPagop-26080301) ------------
+# The default invocation — no arguments at all — is how both prompts/
+# implementor.md and prompts/reviewer.md run this script, from their own
+# workspace clone. It used to always exit 2: with no --repo and no --pr, the
+# script filled slug from `gh repo view` and then unconditionally passed
+# --repo to `gh pr view` even with no PR number, URL or branch given — a
+# combination the real gh CLI refuses outright (see the real-CLI pin below).
+# The three cases here are the three shapes the fixed code can produce.
+
+run_check_raw STUB_REPO_SLUG="Poetic-Poems/poetic-fiddle" \
+  STUB_PR_ANSWER="deadbeefcafe 7" -- --wait 0
+assert_eq "the default invocation resolves the branch's own PR (no --repo, no --pr)" \
+  "0" "$rc"
+assert_contains "and says so" "deployed and serving" "$out"
+
+run_check_raw STUB_PR_LIST_NUMBER="7" STUB_PR_ANSWER="deadbeefcafe 7" \
+  -- --repo Poetic-Poems/poetic-fiddle
+assert_eq "an explicit --repo with no --pr resolves the number first, then asks by number" \
+  "0" "$rc"
+
+run_check_raw STUB_PR_ANSWER="deadbeefcafe 7" \
+  -- --repo Poetic-Poems/poetic-fiddle --pr 7
+assert_eq "an explicit --repo and --pr together still work" "0" "$rc"
+
+run_check_raw STUB_BRANCH="" STUB_PR_LIST_NUMBER="7" \
+  -- --repo Poetic-Poems/poetic-fiddle
+assert_eq "no checked-out branch to resolve --repo against is 'could not check'" "2" "$rc"
+
+run_check_raw STUB_PR_LIST_NUMBER="" -- --repo Poetic-Poems/poetic-fiddle
+assert_eq "--repo with no PR for the branch is 'could not check'" "2" "$rc"
+
+# --- The real gh CLI's own argument validation (not a mock) --------------------
+# TD-PPagop-26080301 existed because the previous version of the stub above
+# always accepted `gh pr view --repo X` with no PR number, URL or branch,
+# where the real CLI refuses it — so this pins that refusal against the
+# actual installed `gh` binary rather than trusting the stub to have modelled
+# it correctly, which is exactly the assumption that went stale unnoticed
+# last time.
+#
+# No GitHub credentials or network are needed: gh's argument parser rejects
+# this combination before it tries to authenticate — any non-empty GH_TOKEN
+# is enough to get past the "please log in" check that would otherwise
+# produce a different message and mask what is under test here.
+if command -v gh >/dev/null 2>&1; then
+  real_gh_out="$(GH_TOKEN=dummy-token-for-argument-validation-only \
+    gh pr view --json headRefOid,number --repo Poetic-Poems/agent-ops 2>&1)"
+  assert_contains "real gh refuses --repo with no PR number, URL or branch" \
+    "argument required when using the --repo flag" "$real_gh_out"
+else
+  printf 'skip - gh not on PATH, cannot pin the real CLI argument validation\n'
+fi
 
 # --- The path the prompts use -------------------------------------------------
 # A stage's working directory is its own clone, so the prompts can only name
