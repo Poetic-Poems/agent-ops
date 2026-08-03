@@ -1173,13 +1173,14 @@
       if (g.terminal_reason) kv("ended", g.terminal_reason);
       if (g.limit_hit) head.appendChild(el("span", {class:"badge b-amber", text:"usage limit"}));
       box.appendChild(head);
-      if (g.status) box.appendChild(el("pre", {class:"tx", text: JSON.stringify(g.status, null, 2)}));
+      if (g.status) box.appendChild(el("pre", {class:"tx",
+        "data-scroll-key": cy.id + "/" + s + "/status", text: JSON.stringify(g.status, null, 2)}));
       if (g.result) box.appendChild(trackedDetails(cy.id + "/" + s + "/result",
         "final message (" + g.result.length + " chars)",
-        el("pre", {class:"tx", text: g.result})));
+        el("pre", {class:"tx", "data-scroll-key": cy.id + "/" + s + "/result", text: g.result})));
       if (g.stderr) box.appendChild(trackedDetails(cy.id + "/" + s + "/stderr",
         "stderr",
-        el("pre", {class:"tx err", text: g.stderr})));
+        el("pre", {class:"tx err", "data-scroll-key": cy.id + "/" + s + "/stderr", text: g.stderr})));
       w.appendChild(box);
     });
     return w;
@@ -1650,7 +1651,7 @@
   function cronPanel() {
     var lines = D.cron_tail || [];
     if (!lines.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"cron.log is empty or absent."}));
-    return el("div", {class:"panel"}, el("pre", {class:"tx", text: lines.join("\n")}));
+    return el("div", {class:"panel"}, el("pre", {class:"tx", "data-scroll-key":"cron", text: lines.join("\n")}));
   }
 
   // ---------- table helper ----------
@@ -1660,6 +1661,42 @@
     return el("div", {class:"panel scroll"}, el("table", {}, [thead, tbody]));
   }
 
+  // ---------- inner-scroll positions preserved across in-place re-renders ----------
+  // `pre.tx` (stage transcripts, the cron.log tail) scrolls independently of
+  // the page — it is a fixed-height box with its own `overflow: auto` — and
+  // rebuilding #app destroys it along with its scrollTop. That is invisible on
+  // a quiet page but exactly wrong on a busy one: it is the transcript of a
+  // cycle still updating every few seconds that a reader is most likely to be
+  // mid-scroll through when the next refresh lands. Every such element carries
+  // a `data-scroll-key` stable across rebuilds (cycle/stage/kind, or "cron"),
+  // captured here right before the old DOM goes and restored once the new DOM
+  // exists — the same trick `renderBody` already plays with `window.scrollY`.
+  //
+  // Walked by hand via `.children` rather than `querySelectorAll`: the render
+  // test harness's DOM stub (test/dashboard-render-harness.js) only builds
+  // trees, and a manual walk is all this needs.
+  function forEachScrollKeyEl(root, fn) {
+    var kids = root.children || [];
+    for (var i = 0; i < kids.length; i++) {
+      var c = kids[i];
+      if (c.getAttribute && c.getAttribute("data-scroll-key") != null) fn(c);
+      forEachScrollKeyEl(c, fn);
+    }
+  }
+  function captureScrollPositions() {
+    var saved = Object.create(null);
+    forEachScrollKeyEl(app, function (e) {
+      if (e.scrollTop) saved[e.getAttribute("data-scroll-key")] = e.scrollTop;
+    });
+    return saved;
+  }
+  function restoreScrollPositions(saved) {
+    forEachScrollKeyEl(app, function (e) {
+      var v = saved[e.getAttribute("data-scroll-key")];
+      if (v) e.scrollTop = v;
+    });
+  }
+
   // ---------- body render ----------
   // Rebuilds everything under <main> from the current D. Called on first paint
   // and whenever a refresh brings genuinely new data. Scroll position is saved
@@ -1667,6 +1704,7 @@
   // the browser would otherwise clamp the scroll to the top on every refresh.
   function renderBody() {
     var y = window.scrollY;
+    var savedScroll = captureScrollPositions();
     // The card is anchored to an element that is about to be destroyed, so it
     // is closed here and reopened against the rebuilt one at the foot of this
     // function — left as it was, it would hang over the page attached to
@@ -1846,6 +1884,7 @@
     app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
 
     window.scrollTo(0, y);
+    restoreScrollPositions(savedScroll);
     prCardReanchor(reopenPr, reopenPinned);
   }
 
