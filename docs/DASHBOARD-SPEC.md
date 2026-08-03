@@ -485,7 +485,11 @@ configurable interval (`config.json`'s `dashboard_refresh_seconds`, default
 and re-renders the body **only when the data actually changed** (a signature
 compare that ignores the always-moving `generated_at`). Expanded cycle rows,
 opened void rows and a void list showing past its cap, open transcript panels
-and scroll position survive the re-render; the header's
+and scroll position survive the re-render — both the page's own scroll
+position and, independently, the position scrolled to within any transcript
+box (a stage's status/result/stderr, or the cron.log tail): each such box
+carries a stable key across rebuilds so a reader mid-scroll through a long
+transcript is not dropped back to its top by the next refresh; the header's
 staleness clock ticks every interval and warns if the heartbeat looks stopped.
 
 The header carries **two** clocks, because the page has two ages: `data <age>`
