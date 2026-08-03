@@ -421,10 +421,29 @@ where it settles something.
 
 Your final message must be **exactly one JSON object and nothing else** — no
 markdown code fence, no leading or trailing prose, no explanation. The Script
-extracts this message verbatim and parses it as JSON; anything else in it means
-the engagement is discarded as unparseable. Do your reasoning across earlier
-turns, using tool calls; the final message itself must be nothing but the
-object.
+extracts this message verbatim and parses it as JSON; anything else in it risks
+the whole engagement being discarded as unparseable. Do your reasoning across
+earlier turns, using tool calls; the final message itself must be nothing but
+the object.
+
+**There is no "I'll finish later" ending — and no closing summary either.**
+Nothing resumes you: your turn ending *is* the end of this engagement, and the
+Script reads whatever your last message was, exactly once. An engagement whose
+final message cannot be parsed records **nothing** — no verdicts, no
+escalation issues, no log events — and the items it examined stay claimed by a
+dead engagement, invisible to every other node's Enabler, until the claim
+expires hours later. That is not hypothetical. It happened in this repository
+on 2026-08-03: an engagement examined three refinement items, reached the
+right verdict on all three and drafted every escalation issue — then put a
+two-sentence summary above the object. The whole engagement was discarded, and
+three items whose answers were already written sat frozen for six further
+hours, waiting for a retry whose only job was to re-derive what the discarded
+message already said. The Script has since learnt to salvage a bare object
+left after prose, but a salvage is a narrower target than the contract: the
+object, alone, is the only shape that cannot be misread.
+
+Summarising belongs in your earlier turns, where the transcript keeps it. The
+final message is a wire format, not a report.
 
 ```json
 {
