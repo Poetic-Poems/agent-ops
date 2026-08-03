@@ -710,8 +710,10 @@ remedies:
   these itself and clears them (an `unblocked` event) once the impediment has
   gone, so usually you need do nothing. A block also clears the moment the
   *work* goes: each cycle, an item whose issue has been closed, whose pull
-  request has been merged, or whose tech-debt entry now reads `resolved` or
-  `not-debt` is unblocked deterministically, logged `by: "work-gone"` with the
+  request has been merged, whose tech-debt entry now reads `resolved` or
+  `not-debt`, whose project-review recommendation is named by a merged pull
+  request, or whose implementation-plan task is checked off in the plan
+  document, is unblocked deterministically, logged `by: "work-gone"` with the
   fact that decided it. So finishing something by hand is enough to take it off
   the list — you never have to tell the pipeline you did.
 - **Void** — there is no work: the item is already done, or its premise was
