@@ -191,7 +191,7 @@ your review:
 
 The PR already existed and was already ready; a human asked for changes and the
 Implementor has just answered them. Steps 1–5 apply unchanged — review what the
-Implementor pushed, as always — but two things differ, and taking them at face
+Implementor pushed, as always — but three things differ, and taking them at face
 value would strand the PR:
 
 - **`mergeable` will be false and `mergeStateStatus` `BLOCKED`, permanently, and
@@ -204,6 +204,25 @@ value would strand the PR:
   as a failure.
 - **`gh pr ready` is a no-op here**; the PR never left ready. Do not put it back
   to draft.
+- **The handoff is the re-request instead**, and it is the difference between a
+  finished pull request and an invisible one. Because the flip is a no-op,
+  nothing else returns this PR to the human's attention: their review request
+  was consumed the moment they submitted the review that asked for the changes,
+  so the PR is now in nobody's queue — not theirs, not anyone's. Once CI is
+  green and every point is answered, ask them again:
+
+  ```
+  gh api -X POST repos/<slug>/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'
+  ```
+
+  `<login>` is whoever's review blocks it — the account that submitted
+  `CHANGES_REQUESTED`, which on this project is often not the account that wrote
+  the substance. The Implementor may have done it already; asking again is
+  harmless. This does **not** clear the block and is not an attempt to:
+  `reviewDecision` stays `CHANGES_REQUESTED` and the PR stays un-mergeable. It
+  only puts the PR back in the queue the human reads. If it fails, say so in a
+  PR comment and carry on — the Script checks this after you and completes it
+  where you did not, so a failed notification is never a failed review.
 
 The thing worth your attention instead is whether the review was actually
 *answered*: read the reviewer's own words in the work order's `context` and

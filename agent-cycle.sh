@@ -1662,8 +1662,24 @@ $(jq . <<<"$input")
             e_handoff="$(confirm_pr_ready "$e_pr_url")" || true
             case "$e_handoff" in
               already|flipped)
+                # Requirement 31b on the recovery path too. `already` is the
+                # answer for a review round that stalled at the Reviewer and the
+                # Enabler has now cleared: the PR never was a draft, so the flip
+                # settles nothing and the human is still not being asked. Both
+                # handoff paths run both halves, or they drift (requirement 34a).
+                e_rereview="$(confirm_review_requested "$e_pr_url")" || true
+                e_rereview_state=""; e_rereview_who=""
+                IFS=$'\t' read -r e_rereview_state e_rereview_who <<<"$e_rereview" || true
+                if [[ "$e_rereview_state" == "failed" ]]; then
+                  log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
+                    --arg d "enabler completed the handoff on $e_pr_url, but review could not be re-requested from ${e_rereview_who:-the reviewer} — they will not see it in their review queue" \
+                    '{detail: $d, pr_url: $u}')"
+                fi
                 log_event "pr-ready" "$(jq -nc --arg u "$e_pr_url" --arg h "$e_handoff" \
-                  '{pr_url: $u, handoff: "enabler", state: $h}')"
+                  --arg rr "$e_rereview_state" --arg w "$e_rereview_who" \
+                  '{pr_url: $u, handoff: "enabler", state: $h}
+                   + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
+                   + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
                 ;;
               *)
                 log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
@@ -2931,13 +2947,13 @@ if [[ "$rev_status" == "ready" ]]; then
   handoff_result="$(confirm_pr_ready "$impl_pr_url")" || true
   case "$handoff_result" in
     already)
-      log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u, handoff: "reviewer"}')"
+      handoff_by="reviewer"
       ;;
     flipped)
+      handoff_by="script"
       log_event "warning" "$(jq -nc --arg u "$impl_pr_url" \
         --arg d "reviewer reported ready but left $impl_pr_url a draft; the Script completed the handoff" \
         '{detail: $d, pr_url: $u}')"
-      log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u, handoff: "script"}')"
       ;;
     *)
       log_reviewer_handback \
@@ -2946,6 +2962,41 @@ if [[ "$rev_status" == "ready" ]]; then
       exit 0
       ;;
   esac
+
+  # Requirement 31b: the draft flip above is the whole handoff exactly once per
+  # pull request. On every later round — a review the Implementor has just
+  # answered, most of all — the PR never left ready, `confirm_pr_ready`
+  # truthfully answers `already`, and nothing has put the PR back in front of
+  # the human: their review request was consumed when they submitted the review,
+  # and the author cannot clear `CHANGES_REQUESTED`. So the second half of the
+  # handoff is asked of GitHub too, on the same terms and for the same reason
+  # requirement 31a asks about the draft flag.
+  #
+  # Unconditional, not gated on `source == "review-feedback"`: the question
+  # ("does a human's review block this PR, and have they been asked to look
+  # again?") is answerable from the PR itself, costs one API call to answer `no`
+  # on a first-round PR, and gating it on the Co-Ordinator's classification
+  # would make a mislabelled source a silently unnotified human.
+  #
+  # Both `|| true`s are the shape every `confirm_*` call site carries: this runs
+  # under `errexit` at the point the cycle reports its outcome, and a non-zero
+  # return escaping from either the check or the `read` that splits its answer
+  # would abort the cycle exactly where it is recording what it did.
+  rereview_result="$(confirm_review_requested "$impl_pr_url")" || true
+  rereview_state=""; rereview_who=""
+  IFS=$'\t' read -r rereview_state rereview_who <<<"$rereview_result" || true
+  if [[ "$rereview_state" == "failed" ]]; then
+    # A warning, never a handback: the pull request is finished, green and
+    # visible, and only the notification is missing (see lib/handoff.sh).
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg w "$rereview_who" \
+      --arg d "changes requested on $impl_pr_url are answered, but review could not be re-requested from ${rereview_who:-the reviewer} — they will not see it in their review queue" \
+      '{detail: $d, pr_url: $u} + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
+  fi
+  log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" --arg h "$handoff_by" \
+    --arg rr "$rereview_state" --arg w "$rereview_who" \
+    '{pr_url: $u, handoff: $h}
+     + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
+     + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —

@@ -234,6 +234,8 @@ assert_eq "  ... and neither reached the API" "0" "$(list_calls)"
 (
   set -euo pipefail
   . "$SCRIPT_DIR/lib/handoff.sh"
+  # shellcheck disable=SC2030  # As above: the stub outside this subshell must
+  # go on answering for the confirm_review_requested assertions that follow it.
   HANDOFF_GH="/nonexistent/gh"
   url=""
   [[ -z "$url" ]] && url="$(pr_url_for_branch o/r agent/1)"
@@ -241,6 +243,199 @@ assert_eq "  ... and neither reached the API" "0" "$(list_calls)"
   exit 0
 ) >/dev/null 2>&1
 assert_eq "pr_url_for_branch's call-site shape survives set -e" "0" "$?"
+
+# --- confirm_review_requested: the round after the first (requirement 31b) ------
+# `confirm_pr_ready` above answers `already` for every one of these, truthfully,
+# and that is the hole: the pull request never went back to draft, so the flip
+# is a no-op and nothing else puts it in front of the human. Their review
+# request was consumed the moment they submitted the review that asked for the
+# changes, and the author cannot clear `CHANGES_REQUESTED`. poetic-fiddle #200
+# sat like that — reviewed, answered, pushed, commented — until a human went
+# looking for it.
+#
+# The stub answers the three REST calls the function makes. State:
+#   $tmp_dir/reviews   the reviews array, verbatim JSON
+#   $tmp_dir/pending   the requested_reviewers logins, one per line
+#   $tmp_dir/post      "works" | "silent" — whether the POST changes `pending`
+#   $tmp_dir/api-fail  the path fragment whose GET should fail, if any
+#   $tmp_dir/posts     one line per POST, recording its arguments
+cat >"$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+fail="$(cat "$d/api-fail" 2>/dev/null || true)"
+if [[ "$1 $2" == "api -X" ]]; then
+  printf '%s\n' "$*" >>"$d/posts"
+  [[ "$(cat "$d/post")" == "works" ]] && cat "$d/blocking" >"$d/pending"
+  exit 0
+fi
+path="$2"
+[[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
+if [[ "$path" == *"/reviews" ]]; then
+  jq -c '.[] | select(.submitted_at != null)
+             | {login: .user.login,
+                bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
+                state: .state}' "$d/reviews"
+else
+  # The PR object; only `requested_reviewers` is read from it.
+  while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\n' "$l"; done <"$d/pending"
+fi
+STUB
+chmod +x "$tmp_dir/gh"
+
+review() {  # <login> <state> [type]
+  printf '{"user":{"login":"%s","type":"%s"},"state":"%s","submitted_at":"2026-08-03T10:%02d:00Z"}' \
+    "$1" "${3:-User}" "$2" "$(( ++review_n ))"
+}
+set_reviews() {  # <json review>...
+  review_n=0
+  local IFS=,
+  printf '[%s]' "$*" >"$tmp_dir/reviews"
+}
+reset_review_stub() {  # <post-behaviour>
+  : >"$tmp_dir/pending"; : >"$tmp_dir/posts"; : >"$tmp_dir/blocking"
+  printf '%s' "$1" >"$tmp_dir/post"; : >"$tmp_dir/api-fail"
+}
+posts() { wc -l <"$tmp_dir/posts" | tr -d ' '; }
+
+# The ordinary first-round PR: nobody has asked for changes, so there is nothing
+# to re-request and the call must cost one API read and stop. This is the answer
+# on the overwhelming majority of cycles, which is what makes it safe to run the
+# check unconditionally rather than trusting the work order's `source`.
+review_n=0
+reset_review_stub works
+set_reviews "$(review octocat APPROVED)"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "an unblocked PR has nobody to re-request" "none" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... without asking GitHub to request anything" "0" "$(posts)"
+
+# The defect, and the fix: changes requested, nothing pending. #200 exactly.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+printf 'Warwick-Allen\n' >"$tmp_dir/blocking"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "a blocking reviewer with no pending request is re-requested" \
+  "$(printf 'requested\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... having posted once" "1" "$(posts)"
+assert_eq "  ... naming the reviewer" "1" \
+  "$(grep -c -- '-f reviewers\[\]=Warwick-Allen' "$tmp_dir/posts")"
+
+# A COMMENTED review is not a decision. GitHub does not let one clear
+# `CHANGES_REQUESTED`, so neither may this: reading each reviewer's *newest*
+# review rather than their newest *decision* would conclude nobody is blocking
+# and ask nobody for anything — silently, on the PRs that need it most.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen COMMENTED)"
+printf 'Warwick-Allen\n' >"$tmp_dir/blocking"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "a later comment does not withdraw a request for changes" \
+  "$(printf 'requested\tWarwick-Allen')" "$out"
+
+# A later approval does. The reviewer is satisfied; asking again would be noise.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen APPROVED)"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "a later approval does withdraw it" "none" "$out"
+assert_eq "  ... and asks for nothing" "0" "$(posts)"
+
+# Bots are not the human this exists to reach. This org runs Copilot code review
+# on every pull request, and a bot can be re-requested exactly like a person —
+# which would spend money and noise on the one reviewer who is not waiting.
+review_n=0
+reset_review_stub works
+set_reviews "$(review 'copilot-pull-request-reviewer[bot]' CHANGES_REQUESTED Bot)"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "a bot's changes-requested is not a human to notify" "none" "$out"
+assert_eq "  ... and asks for nothing" "0" "$(posts)"
+
+# Already pending: the Implementor got there first (requirement 26b). Asking
+# again is a no-op that would nonetheless report `requested` and read in the log
+# as work this cycle did.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "a request already pending is reported, not repeated" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... without posting" "0" "$(posts)"
+
+# Two humans blocking, one already asked: the other still must be.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review octocat CHANGES_REQUESTED)"
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+printf 'Warwick-Allen\noctocat\n' >"$tmp_dir/blocking"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "the reviewer not yet asked is asked" \
+  "$(printf 'requested\tWarwick-Allen,octocat')" "$out"
+assert_eq "  ... and only that one is named in the request" "0" \
+  "$(grep -c -- '-f reviewers\[\]=Warwick-Allen' "$tmp_dir/posts")"
+assert_eq "  ... which does name them" "1" \
+  "$(grep -c -- '-f reviewers\[\]=octocat' "$tmp_dir/posts")"
+
+# The POST that reports success and changes nothing — `gh pr ready`'s failure
+# mode one function over, and the reason the confirming read exists here too.
+review_n=0
+reset_review_stub silent
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "a request that does not take is a failure" \
+  "$(printf 'failed\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+# The silent direction, both halves. "Could not ask" must never resolve to
+# "nobody was waiting" — that is this whole file's rule, and here it would leave
+# a finished pull request in nobody's queue while the log recorded a clean
+# handoff.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+printf '/reviews' >"$tmp_dir/api-fail"
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "unreadable reviews are a failure, never an assumed none" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "  ... without posting blind" "0" "$(posts)"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+printf 'Warwick-Allen\n' >"$tmp_dir/blocking"
+printf 'pulls/111' >"$tmp_dir/api-fail"   # the PR object; `…/pulls/111/reviews` still answers
+out="$(confirm_review_requested "$URL")"; rc=$?
+assert_eq "an unreadable pending list is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "  ... without posting into the dark" "0" "$(posts)"
+
+# No URL, and a URL that is not a pull request's. `gh api repos//pulls//reviews`
+# is a usage error dressed as a lookup; neither may reach the API at all.
+reset_review_stub works
+out="$(confirm_review_requested "")"; rc=$?
+assert_eq "an empty PR url is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+out="$(confirm_review_requested "https://github.com/Poetic-Poems/poetic-fiddle/issues/200")"; rc=$?
+assert_eq "a non-PR url is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "  ... and neither reached the API" "0" "$(posts)"
+
+# The call-site shape agent-cycle.sh uses, under the options it uses.
+(
+  set -euo pipefail
+  . "$SCRIPT_DIR/lib/handoff.sh"
+  HANDOFF_GH="/nonexistent/gh"
+  x="$(confirm_review_requested "$URL")" || true
+  [[ "$x" == "failed" ]] || exit 9
+  state=""; who=""
+  IFS=$'\t' read -r state who <<<"$x" || true
+  [[ "$state" == "failed" && "$who" == "" ]] || exit 9
+  exit 0
+) >/dev/null 2>&1
+assert_eq "confirm_review_requested's call-site shape survives set -e" "0" "$?"
 
 printf '\n'
 if (( failures == 0 )); then

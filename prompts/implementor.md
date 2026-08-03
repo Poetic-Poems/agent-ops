@@ -73,10 +73,19 @@ fields, and `branch` names the existing branch.
   outcome that wastes their next review too.
 - **Answer the review before you finish.** Post one PR comment summarising what
   you changed for each point raised, and what you did not change and why. Then
-  re-request review from the reviewer
-  (`gh api -X POST repos/<slug>/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'`,
-  best-effort — if it fails, say so in the comment instead and carry on; a
-  failed notification must not fail the work).
+  re-request review from the reviewer:
+
+  ```
+  gh api -X POST repos/<slug>/pulls/<n>/requested_reviewers -f 'reviewers[]=<login>'
+  ```
+
+  `<login>` is whoever's review blocks the PR — the account that submitted
+  `CHANGES_REQUESTED`, which is often not the account that wrote the substance.
+  This is not a courtesy: because the PR never went back to draft, it is the
+  only thing that returns it to the human's queue, which their original review
+  request left the moment they submitted it. Best-effort — if it fails, say so
+  in the comment instead and carry on; a failed notification must not fail the
+  work, and the Script checks and completes this after the Reviewer either way.
 - **You cannot clear the block, by design.** GitHub does not let a PR's author
   dismiss or approve a review on their own PR, and this system raises PRs as
   the same account it runs as. The `CHANGES_REQUESTED` decision therefore stays

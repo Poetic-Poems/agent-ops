@@ -32,13 +32,23 @@ there.
 This sits second in priority, above everything but security: you're the only
 consumer this system has, so answering you beats starting something new.
 
-Three things to know:
+Four things to know:
 
+- **You'll get the PR back in your review queue.** The re-request is the whole
+  handoff on a second round — the PR never went back to draft, so nothing else
+  would put it in front of you, and your original review request stopped being
+  pending the moment you submitted the review. The pipeline asks GitHub whether
+  the re-request actually happened and makes it happen if it didn't, the same
+  way it verifies the draft flip on a first round; neither is left to a model's
+  good intentions. This is what poetic-fiddle #200 was missing: reviewed,
+  answered, pushed, replied to — and then sitting in nobody's queue.
 - **The agent can't clear your `CHANGES_REQUESTED`, ever.** GitHub won't let a
   PR's author dismiss a review on their own PR, and the agent raises PRs as
   you (`warwickallen`). So the PR stays `BLOCKED` and un-mergeable until *you*
-  re-review. That's not a bug to route around — it's the human gate, enforced
-  by GitHub rather than by good intentions.
+  re-review — re-requesting your review doesn't change that, and isn't meant
+  to; it rings the bell without moving the gate. That's not a bug to route
+  around — it's the human gate, enforced by GitHub rather than by good
+  intentions.
 - **It answers each round exactly once.** Whose turn it is comes from comparing
   your latest review against the branch's head commit: review newer means the
   agent owes you a reply; commit newer means it has replied and is waiting on
