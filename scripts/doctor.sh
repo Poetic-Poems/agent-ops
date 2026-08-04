@@ -42,6 +42,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/model-id.sh
 source "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/labels.sh
+source "$SCRIPT_DIR/lib/labels.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -320,35 +322,43 @@ else
 fi
 
 if ((gh_ready)); then
-  # The labels every repository the implementation pipeline works should carry.
+  # What each repository should carry comes from lib/labels.sh's catalogue —
+  # the same list the cycle creates from — so this cannot report a different
+  # set from the one the pipeline actually maintains (requirement 6a).
   # Fetched once per repository rather than once per label: the pipeline wants
   # several, and a repository is either reachable or it is not.
-  mapfile -t wanted_labels < <(cfg '[.pr_label,
-                                     .enabler_escalation_label // "enabler-escalation",
-                                     .needs_refinement_label // "needs-refinement",
-                                     .unvoid_label // "unvoided"]
-                                    | map(select(. != null and . != "")) | unique | .[]')
+  #
+  # A missing label is a warning rather than a failure because the next cycle
+  # to work that repository creates it. What is worth saying is that it has not
+  # happened yet: on a fresh installation that is simply "no cycle has run
+  # here", and on an established one it means the token cannot create labels,
+  # which nothing else would tell you.
+  check_repo_labels() {
+    local slug="$1" role="$2" repo_labels label
+    if ! repo_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
+      return 1
+    fi
+    while IFS=$'\t' read -r label _ _; do
+      [[ -n "$label" ]] || continue
+      grep -qixF -- "$label" <<<"$repo_labels" \
+        || warn "$slug has no \"$label\" label — the next cycle that works this repo creates it (lib/labels.sh); if it is still absent after one has run, this token may not create labels"
+    done < <(labels_catalogue "$config_file" "$role")
+    return 0
+  }
+
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
-    if ! repo_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
+    if check_repo_labels "$slug" target; then
+      ok "$slug is readable"
+    else
       fail "$slug is unreachable with this token — a repository the pipeline cannot read is a work source that silently reports no work"
-      continue
     fi
-    ok "$slug is readable"
-    for label in "${wanted_labels[@]}"; do
-      grep -qxF "$label" <<<"$repo_labels" \
-        || warn "$slug has no \"$label\" label — the pipeline still acts, the label just never appears (gh label create '$label' -R $slug)"
-    done
   done < <(cfg '.repos[]?.slug // empty')
 
-  review_label="$(cfg '.review.pr_label // ""')"
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
-    if ! review_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
-      fail "review.repos names $slug, which is unreachable with this token"
-    elif [[ -n "$review_label" ]] && ! grep -qxF "$review_label" <<<"$review_labels"; then
-      warn "$slug has no \"$review_label\" label for review pull requests (gh label create '$review_label' -R $slug)"
-    fi
+    check_repo_labels "$slug" review \
+      || fail "review.repos names $slug, which is unreachable with this token"
   done < <(cfg '.review.repos[]? // empty')
 
   state_repo="$(cfg '.state_repo // ""')"

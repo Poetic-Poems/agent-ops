@@ -74,6 +74,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/repo-order.sh"
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/labels.sh
+. "$SCRIPT_DIR/lib/labels.sh"
 
 usage() {
   cat <<'EOF'
@@ -1441,6 +1443,13 @@ create_escalation_issue() {
     printf '%s' "$existing"
     return 0
   fi
+  # Only on the path that actually creates: an escalation repo is often not one
+  # the cycle otherwise touches (`crash_loop_repo` by construction is not), so
+  # its label has nowhere else to be ensured. Costs nothing on the duplicate
+  # path above, which is the common one. The retry-without-label below stays
+  # regardless — this makes the label likely, not certain, and an escalation
+  # must be raised either way.
+  labels_ensure_role "$CONFIG_FILE" "$repo" escalation >/dev/null 2>&1 || true
   raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
            --assignee "$enabler_assignee" --label "$label" \
            2>>"$cycle_dir/enabler-issue.err" || true)"
@@ -2782,6 +2791,26 @@ if ! gh repo clone "$repo_slug" "$clone_dir" -- --quiet 2>"$cycle_dir/clone.err"
   release_claim no-pr
   exit 0
 fi
+
+# --- 6a. Labels (requirement 6a) ---
+# Here, rather than at startup for every configured repo: the cycle works one
+# repository, so this is one listing and — after the first cycle against a
+# repository — no writes at all. It precedes the Implementor because that stage
+# is what raises the pull request `pr_label` has to exist for; `gh pr create
+# --label` on a label that is not there fails the create outright, which would
+# cost the whole cycle's work.
+ensure_labels_for() {
+  local slug="$1" role="$2" report
+  report="$(labels_ensure_role "$CONFIG_FILE" "$slug" "$role" 2>/dev/null || true)"
+  [[ -n "$report" ]] || return 0
+  log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg role "$role" \
+    --arg report "$report" '
+    {repo: $repo, role: $role}
+    + ($report | split("\n") | map(select(length > 0) | split("\t"))
+       | {created: [.[] | select(.[0] == "created") | .[1]],
+          failed:  [.[] | select(.[0] == "failed")  | .[1]]})')"
+}
+ensure_labels_for "$repo_slug" target
 
 # --- 7. Implementor stage ---
 implementor_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementor "$prompt_overrides_json")

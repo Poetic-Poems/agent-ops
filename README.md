@@ -212,9 +212,9 @@ Keys:
 | `enabler_after_coordinator_cycles` | 3 | How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not "waited". |
 | `refinement_after_coordinator_cycles` | *(same as `enabler_after_coordinator_cycles`)* | The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower. |
 | `enabler_recheck_hours` | 72 | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
-| `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. Create it in each target repo (`gh label create enabler-escalation -R Poetic-Poems/<repo>`); without it the issue is still raised, just unlabelled. |
-| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. Create it in each target repo (`gh label create needs-refinement -R Poetic-Poems/<repo>`); without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list — and a label you apply yourself does nothing. Leave it empty to switch the labelling off in both directions. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
-| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. Create it in each target repo (`gh label create unvoided -R Poetic-Poems/<repo>`); `scripts/doctor.sh` warns when a repo has not got it. Do not set it to `blocked`. |
+| `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the issue is still raised, just unlabelled. |
+| `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list — and a label you apply yourself does nothing. Leave it empty to switch the labelling off in both directions. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
+| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked`. |
 | `refinement_max_per_engagement` | 3 | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
@@ -453,19 +453,15 @@ is a container: Docker and the `.env` above are the whole of it.
 
    *Alternative (Windows Task Scheduler):* Create a task running `wsl.exe -u wallen -e $HOME/Code/Poetic-Poems/agent-ops/agent-cycle.sh` hourly.
 
-4. **Create the PR label in both repos:**
-   ```bash
-   gh api -X POST repos/Poetic-Poems/poetic/labels \
-     -f name='autonomous-agent' \
-     -f color='ededed' \
-     -f description='PR raised by the autonomous agent system'
+4. **Labels: nothing to do.** The pipeline creates the labels it uses — the PR
+   label, the Enabler's escalation label, `needs-refinement`, `unvoided`, the
+   `complexity:*` grades, and `blocked` — in each repository the first time it
+   works it, and puts back any you later delete. It only ever *creates*: a
+   label you have recoloured or re-described keeps your version.
 
-   gh api -X POST repos/Poetic-Poems/poetic-fiddle/labels \
-     -f name='autonomous-agent' \
-     -f color='ededed' \
-     -f description='PR raised by the autonomous agent system'
-   ```
-   If your `gh` version already supports `gh label create`, that form also works; the API form above is the most compatible fallback.
+   All the token needs is permission to create them. If one is still missing
+   after a cycle has run against that repository, that permission is what to
+   check — `./scripts/doctor.sh` names each absent label and says so.
 
 5. **Enable the security work sources on both repos.** The `security` and `code-quality` sources read GitHub's own Dependabot alerts and code-scanning (CodeQL) alerts, so those features must be turned on for the alerts to exist:
    - In each repo's **Settings → Code security**, enable **Dependabot alerts** and **Code scanning** (a default CodeQL setup is fine). Free for public repos; private repos need GitHub Advanced Security.
