@@ -23,8 +23,9 @@ customer.
 
 ## Settled decisions
 
-Decided July 2026; these shape every phase below. Reopen them only
-deliberately, by editing this table in a PR that says why.
+Decided July 2026 unless a row says otherwise; these shape every phase
+below. Reopen them only deliberately, by editing this table in a PR that
+says why.
 
 | # | Decision | Choice |
 |---|---|---|
@@ -41,6 +42,7 @@ deliberately, by editing this table in a PR that says why.
 | D11 | Go-to-market | **A parallel lightweight workstream from Phase 1**: the name is chosen early (it gates the repo split), design partners are recruited during untethering, and pricing is tested before anything launches. |
 | D12 | Model providers | **Not limited to the Claude family.** Customers choose the model for each actor from any supported provider. Claude is the first-supported and reference provider; how non-Claude providers are executed (the substrate question) is parked in Open questions with a decide-by gate. |
 | D13 | Product name | **Pullwright.** Decided July 2026, ahead of its Phase 1 gate; the GitHub organisation ([github.com/Pullwright](https://github.com/Pullwright)) is created and the namespace secured. |
+| D14 | Efficiency | **Per-container efficiency is an explicit product goal from the start.** Decided August 2026. Every container is held to budgets for CPU load, memory footprint, disk usage, and bandwidth, alongside — never at the expense of — quality and speed of delivery. Where these pull against each other, the trade-off is a calculated decision recorded in the change that makes it, never an accident discovered on a bill. Kubernetes requests and limits (Phase 2) become one enforcement mechanism, but the budgets exist whatever the control plane. |
 
 ## End state
 
@@ -54,6 +56,9 @@ chooses:
 - Zero manual per-container steps: provisioning, credentials, and retirement
   are all non-interactive.
 - Non-intrusive updates: a rollout never destroys in-progress work.
+- Frugal by design: every container runs within stated CPU, memory, disk,
+  and bandwidth budgets (D14), and components a node does not need — the
+  dashboard first among them — are simply not deployed there.
 - Deeply customisable: per-actor model selection (Co-Ordinator, Implementor
   at both tiers, Reviewer at both tiers, Enabler) from any supported
   provider — not only the Claude family — plus schedules, work sources,
@@ -79,6 +84,10 @@ chooses:
    generic enough — that is a product bug, not a Poetic quirk.
 5. **Specs stay as-built.** The existing spec discipline continues
    unchanged through every phase; the roadmap never substitutes for it.
+6. **Calculated-trade-off rule (D14).** Resource cost — CPU, memory, disk,
+   bandwidth — is a tracked property of every container, not an emergent
+   one. Work may spend resources to buy quality or speed of delivery, but
+   the trade is made knowingly and stated in the change that makes it.
 
 ## Phase 1 — Untether
 
@@ -156,7 +165,8 @@ Pullwright organisation and carries its licence.
 ## Phase 2 — Zero-touch fleet
 
 **Goal:** nodes are provisioned, updated, and retired with no manual steps;
-updates are non-intrusive; Kubernetes is a supported target.
+updates are non-intrusive; Kubernetes is a supported target; every
+container has a stated resource budget it demonstrably runs within (D14).
 
 **Entry:** Phase 1 exit gate passed.
 
@@ -164,7 +174,9 @@ updates are non-intrusive; Kubernetes is a supported target.
 interactive steps; a rollout during a cycle results in a drained, completed,
 or cleanly handed-off cycle — never a killed one; the suite runs on a
 Kubernetes cluster from published manifests/chart; scale-to-zero is
-demonstrated (no idle compute cost between ticks).
+demonstrated (no idle compute cost between ticks); per-container CPU,
+memory, disk, and bandwidth budgets are stated and the metrics export
+reports actuals against them.
 
 - [ ] Graceful drain: a shutting-down node finishes or hands off its
       in-flight cycle before exiting. The auto-update case is already
@@ -177,6 +189,21 @@ demonstrated (no idle compute cost between ticks).
       container. *[fleet]*
 - [ ] Health, readiness, and liveness endpoints plus structured metrics
       export. *[fleet]*
+- [ ] Per-container resource budgets (D14): measure each container's
+      baseline CPU, memory, disk, and bandwidth; set budgets from the
+      measurements; and surface actuals-against-budget through the metrics
+      export above, so an efficiency regression is as visible as a failed
+      cycle. Kubernetes requests and limits then enforce what the budgets
+      state — but the budgets, and the measurement, exist on Compose too.
+      *[fleet]*
+- [ ] Split the dashboard into its own container, deployed only where it is
+      wanted: agent containers ship raw data — metering, heartbeats, cycle
+      results — and the dashboard container assembles and serves the page.
+      Today the Publisher runs on every node's cron whether or not anyone
+      is looking; a node without the dashboard container stops paying that
+      CPU and GitHub traffic. The suite stays whole (D7) — the dashboard
+      just becomes separately deployable (D14) — and the raw-data feed
+      never leaves the installation's private boundary. *[interactive]*
 - [ ] Kubernetes deployment: manifests or a Helm chart, with the scheduler
       as a CronJob so scale-to-zero falls out naturally; Compose remains a
       supported option. *[interactive]*
@@ -191,7 +218,11 @@ demonstrated (no idle compute cost between ticks).
       *[interactive]*
 - [ ] Extract a state-store interface so the git-branch state-sync stays
       the default but alternatives (object store, database) can arrive
-      later without re-architecture. *[interactive]*
+      later without re-architecture. A git repository (`agent-ops-state`)
+      is an expensive way to replicate small, frequently-changing state —
+      every sync is a fetch/push round-trip and the history only grows — so
+      candidate replacements are weighed on measured bandwidth and disk
+      cost (D14) as well as on scale. *[interactive]*
 
 ## Phase 3 — First external users
 
@@ -268,7 +299,7 @@ Parked deliberately, each with a decide-by gate:
 | Exact source-available licence (BSL 1.1 / FSL / Elastic 2.0) | Phase 1 exit |
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
-| State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale demands |
+| State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale or measured resource cost (D14) demands |
 | Multi-forge support (GitLab, Bitbucket, Gitea) | Revisit on design-partner demand, Phase 3 |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
 
