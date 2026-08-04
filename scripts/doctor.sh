@@ -130,7 +130,7 @@ esac
 
 enabler_model="$(cfg '.enabler_model // ""')"
 enabler_assignee="$(cfg '.enabler_assignee // ""')"
-if [[ -n "$enabler_model" && -z "$enabler_assignee" ]]; then
+if ! config_enabler_assignee_ok "$enabler_model" "$enabler_assignee"; then
   fail "enabler_model is set but enabler_assignee is not — agent-cycle.sh refuses to start rather than raise an escalation that, being unassigned, the pipeline could then select as its own work"
 elif [[ -n "$enabler_model" ]]; then
   ok "the Enabler is enabled; its escalations are assigned to @$enabler_assignee"
@@ -138,9 +138,7 @@ else
   ok "the Enabler is disabled (enabler_model is empty)"
 fi
 
-missing_plan_path="$(cfg_json '.repos // []' | jq -r \
-  '[.[] | select((.sources // []) | any(. == "implementation-plan"))
-        | select((.implementation_plan_path // "") == "") | .slug] | join(", ")')"
+missing_plan_path="$(config_missing_plan_path_repos "$(cfg_json '.repos // []')")"
 if [[ -n "$missing_plan_path" ]]; then
   fail "repo(s) [$missing_plan_path] list the implementation-plan source with no implementation_plan_path — agent-cycle.sh refuses to start, since that source has no path of its own outside the config"
 else
