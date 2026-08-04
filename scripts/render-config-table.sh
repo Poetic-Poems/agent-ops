@@ -156,10 +156,14 @@ replace_region() {
 }
 
 first_differing_key() {
-  # $1 old content file, $2 new content file
-  diff -u "$1" "$2" 2>/dev/null \
+  # $1 old content file, $2 new content file. diff's own exit status (1 for
+  # "files differ", which is exactly why we are here) must not be mistaken
+  # for a pipeline failure under `set -o pipefail`, hence the `|| true`.
+  local key
+  key="$( { { diff -u "$1" "$2" 2>/dev/null || true; } \
     | grep -m1 -E '^[+-]\| `' \
-    | sed -E 's/^.\| `([^`]+)`.*/\1/'
+    | sed -E 's/^.\| `([^`]+)`.*/\1/'; } || true )"
+  printf '%s' "${key:-(unknown)}"
 }
 
 stale=0
