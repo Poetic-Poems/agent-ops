@@ -205,6 +205,27 @@ assert_contains "review.repos names a repo the token cannot push to" \
   "[fail] $slug is readable but not writable with this token" "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
+# state_repo shares check_repo_access with repos[] and review.repos — this is
+# what catches the two verdicts drifting apart, the way a hand-rolled
+# state_repo check once folded an absent `.permissions` into `fail` rather
+# than `skip` (it cannot be asked, which is not evidence it cannot push).
+state_repo_config="$tmp/state-repo-config.json"
+jq --arg slug "$slug" '.repos = [] | .review.repos = [] | .state_repo = $slug' "$base_config" > "$state_repo_config"
+out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"archived":false}' \
+  bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
+assert_contains "state_repo with no visible .permissions is a skip, not a fail" \
+  "[skip] $slug's write permission is not visible to this token" "$out"
+
+out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
+  bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
+assert_contains "state_repo writable is reported with its own wording" \
+  "[ ok ] $slug is readable and writable — the fleet's shared state can replicate" "$out"
+
+out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
+  bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
+assert_contains "state_repo unwritable is reported with its own wording" \
+  "[fail] $slug is readable but not writable with this token" "$out"
+
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'

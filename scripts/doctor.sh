@@ -399,10 +399,19 @@ if ((gh_ready)); then
   # `gh` makes as an authenticated user, so an absent field is a fact about
   # what the API told this token, not evidence the token lacks push access —
   # hence `skip`, never `fail`, when it is missing.
+  #
+  # One helper for every repository's write-access verdict — target, review
+  # and state_repo alike — so the three call sites cannot drift apart on what
+  # counts as ok/fail/skip, the way a hand-rolled state_repo check once did:
+  # its own `push == false || push == null` collapsed both into `fail`,
+  # reporting a token that merely can't be asked as one that can't push.
   check_repo_access() {
-    local slug="$1" json push archived
+    local slug="$1" ok_msg="${2:-is writable — the token can push claim branches}" \
+          fail_msg="${3:-is readable but not writable with this token — a cycle would claim work here and lose it at push}" \
+          unreachable_msg="${4:-is unreachable with this token — cannot confirm write access}" \
+          json push archived
     if ! json="$(gh api "repos/$slug" --jq '{push: .permissions.push, archived: (.archived // false)}' 2>/dev/null)"; then
-      fail "$slug is unreachable with this token — cannot confirm write access"
+      fail "$slug $unreachable_msg"
       return
     fi
     archived="$(jq -r '.archived' <<<"$json" 2>/dev/null)"
@@ -410,9 +419,9 @@ if ((gh_ready)); then
     if [[ "$archived" == "true" ]]; then
       fail "$slug is archived — no branch can be pushed to it, whatever the token's permissions"
     elif [[ "$push" == "true" ]]; then
-      ok "$slug is writable — the token can push claim branches"
+      ok "$slug $ok_msg"
     elif [[ "$push" == "false" ]]; then
-      fail "$slug is readable but not writable with this token — a cycle would claim this repo's work and lose it at push"
+      fail "$slug $fail_msg"
     else
       skip "$slug's write permission is not visible to this token (no .permissions field) — cannot confirm push access"
     fi
@@ -438,12 +447,11 @@ if ((gh_ready)); then
   state_repo="$(cfg '.state_repo // ""')"
   if [[ -z "$state_repo" || "$state_repo" == "null" ]]; then
     ok "no state_repo configured — single-node operation, every state-sync mode is a no-op"
-  elif ! state_repo_push="$(gh api "repos/$state_repo" --jq '.permissions.push' 2>/dev/null)"; then
-    fail "state_repo $state_repo is unreachable with this token — claims, fleet flags and the shared log would not replicate"
-  elif [[ "$state_repo_push" == "true" ]]; then
-    ok "$state_repo is readable and writable — the fleet's shared state can replicate"
   else
-    fail "$state_repo is readable but not writable with this token — this node could fetch fleet state and never publish its own"
+    check_repo_access "$state_repo" \
+      "is readable and writable — the fleet's shared state can replicate" \
+      "is readable but not writable with this token — this node could fetch fleet state and never publish its own" \
+      "is unreachable with this token — claims, fleet flags and the shared log would not replicate"
   fi
 
   if [[ -n "$enabler_assignee" ]]; then
@@ -463,9 +471,9 @@ if ((offline)); then
   skip "Claude credentials (--offline)"
 elif ! command -v claude >/dev/null 2>&1; then
   skip "Claude credentials (claude is not installed)"
-elif ! claude_auth_json="$(claude auth status --json 2>/dev/null)"; then
-  # An older CLI with no `auth` subcommand, or one that hangs and gets killed
-  # by neither of us, exits non-zero here rather than printing anything this
+elif ! claude_auth_json="$(timeout 15 claude auth status --json 2>/dev/null)"; then
+  # An older CLI with no `auth` subcommand, or one that hangs and hits the
+  # timeout above, exits non-zero here rather than printing anything this
   # can trust — a version gap, not a finding about this token.
   skip "claude auth status did not succeed — cannot verify credentials"
 elif ! logged_in="$(jq -r '.loggedIn' <<<"$claude_auth_json" 2>/dev/null)"; then
