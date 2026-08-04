@@ -689,7 +689,13 @@ runs unattended.
    five-key typo into one cycle to fix, not five. `scripts/doctor.sh`
    (component 14) is what an operator runs ahead of time, against the same
    library function, so its verdict and the Script's own refusal can never
-   disagree.
+   disagree. The schema is also the single source for the three prose
+   configuration tables — this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s
+   and the README's — each leaf key's `x-docs` fields carrying the prose,
+   `scripts/render-config-table.sh` (component 16) rendering it into the
+   documents' marked regions and gating it in CI, so a key can no longer be
+   added to the schema and forgotten in a prose copy the way `unvoid_label`
+   and `state_local_cycles_retained` both once were.
 
    The schema being a gate retires the two startup guards it wholly
    subsumes: `nice`'s range (requirement 3) and `prompt_overrides`' shape
@@ -3953,6 +3959,28 @@ What exists, and the requirements each part answers to:
     `review-cycle.sh` and `scripts/doctor.sh`; regression-tested against a
     stubbed `gh` that records every invocation
     (`test/labels.test.sh`); must pass `shellcheck`.
+16. `scripts/render-config-table.sh` implementing requirement 1b's generated-
+    table property: renders the Markdown table body rows of the three prose
+    configuration tables (this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s,
+    and the two in `README.md`) from `config.schema.json`'s leaf keys, in the
+    schema's own property order — `schedule` and `review` flatten one level
+    into dotted keys (`schedule.review_hour`, `review.model`) in the parent's
+    position; every other object- or array-valued key (`repos`,
+    `prompt_overrides`) renders as a single row. Each key's value cell is,
+    in order, its `x-docs.value` verbatim, else its schema `default` as
+    compact JSON in backticks, else `*(required)*`; its notes cell is
+    `x-docs.readme` for the README's two tables and `x-docs.spec` for the two
+    specs' — a string or an array of strings joined with a space — falling
+    back to `description` when the key carries no `x-docs` for that audience.
+    Rewrites four marked regions (`<!-- config-table:start id=main -->` /
+    `id=review` … `<!-- config-table:end -->`) in place with no arguments;
+    `--check` renders to a temporary file instead and exits non-zero, naming
+    the file, the region and the first differing key, the moment any region
+    is stale — what `.github/workflows/config-table.yml` runs on every pull
+    request, modelled on `.github/workflows/tech-debt-register.yml`.
+    Regression-tested end to end, against the shipped script copied into a
+    scratch fixture repository rather than a reimplementation of its logic,
+    in `test/render-config-table.test.sh`; must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -4752,6 +4780,24 @@ pull request, run the ones the change touches and any it could regress.
     configuration, run against the shipped scripts, so what is asserted is
     the product rather than a restatement of it. `--offline` throughout: no
     assertion here needs the network.
+1d. **The prose configuration tables are generated from the schema, and
+    regenerating them is gated (requirement 1b, component 16).**
+    `scripts/render-config-table.sh` with no arguments run against this
+    repository's own `config.schema.json`, `README.md`,
+    `docs/IMPLEMENTATION-PIPELINE-SPEC.md` and `docs/REVIEW-PIPELINE-SPEC.md`
+    leaves every file byte-identical to what is committed — regenerating a
+    clean tree is a no-op — and `--check` exits 0 against it; `git diff`
+    confirms nothing moved. `test/render-config-table.test.sh` passes: a key
+    present in a fixture schema and absent from a region is added, a
+    hand-edited row is restored, `--check` exits non-zero naming the file,
+    the region and the first differing key on a stale region and zero on a
+    fresh one, a `|` inside prose survives escaped, four distinct
+    `x-docs.value` rows render verbatim, and a key carrying no `x-docs` for
+    an audience falls back to `description`. `.github/workflows/config-table.yml`
+    runs `--check` on every pull request, so a schema edit landing without a
+    matching doc regeneration (or the reverse) fails CI rather than drifting
+    the way `unvoid_label` and `state_local_cycles_retained` both did before
+    this requirement existed.
 6h. **The pipeline creates the labels it applies, and touches no others
     (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
     that records every invocation and refuses a duplicate the way GitHub
