@@ -125,8 +125,15 @@ if ! jq -e . "$config_file" >/dev/null 2>&1; then
   exit 2
 fi
 
-cfg() { jq -r "$1" "$config_file"; }
-cfg_json() { jq -c "$1" "$config_file"; }
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below. It performs no validation of its own — a config that fails the
+# schema gate below still merges cleanly, which is what lets every check past
+# that point keep running against something (requirement: "a config that
+# failed validation above still reaches here").
+DEFAULTED_CONFIG="$(config_defaults "$config_file" "$schema_file")"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
+cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 schema_errors="$(config_schema_errors "$config_file" "$schema_file")"
 case "$?" in
@@ -140,8 +147,8 @@ esac
 # in agent-cycle.sh — the cycle would refuse to run; a `warn` is a combination
 # that works and then surprises someone.
 
-enabler_model="$(cfg '.enabler_model // ""')"
-enabler_assignee="$(cfg '.enabler_assignee // ""')"
+enabler_model="$(cfg '.enabler_model')"
+enabler_assignee="$(cfg '.enabler_assignee')"
 if ! config_enabler_assignee_ok "$enabler_model" "$enabler_assignee"; then
   fail "enabler_model is set but enabler_assignee is not — agent-cycle.sh refuses to start rather than raise an escalation that, being unassigned, the pipeline could then select as its own work"
 elif [[ -n "$enabler_model" ]]; then
@@ -161,12 +168,12 @@ fi
 # item would leave that item permanently unselectable — the one value these
 # label keys must never take.
 for key in enabler_escalation_label needs_refinement_label unvoid_label; do
-  if [[ "$(cfg ".$key // \"\"")" == "blocked" ]]; then
+  if [[ "$(cfg ".$key")" == "blocked" ]]; then
     fail "$key is \"blocked\", which excludes an issue from the issues source — an item carrying it could never be selected again"
   fi
 done
 
-excluded_count="$(cfg_json '.schedule.excluded_minutes // []' \
+excluded_count="$(cfg_json '.schedule.excluded_minutes' \
   | jq 'map(select(type == "number" and . >= 0 and . <= 59)) | unique | length')"
 if ((excluded_count >= 60)); then
   fail "schedule.excluded_minutes excludes every minute of the hour — deploy/docker/render-crontab.sh has no minute left to choose"
@@ -178,14 +185,18 @@ if [[ "$(cfg '.review.pr_label // ""')" == "$(cfg '.pr_label // ""')" ]]; then
   warn "review.pr_label equals pr_label — review pull requests would count against max_open_agent_prs and be indistinguishable from implementation ones"
 fi
 
+# cycles_retained and state_local_cycles_retained both carry real schema
+# defaults (200, 1000); the `0` here is pure arithmetic safety against a
+# config that failed validation above and reached here with a non-numeric
+# value, not a restatement of either default.
 read -r cycles_retained local_retained < <(jq -r '
-  def num($v; $default): if ($v | type) == "number" then ($v | floor) else $default end;
-  [num(.cycles_retained; 200), num(.state_local_cycles_retained; 1000)] | @tsv' "$config_file")
+  def num($v): if ($v | type) == "number" then ($v | floor) else 0 end;
+  [num(.cycles_retained), num(.state_local_cycles_retained)] | @tsv' <<<"$DEFAULTED_CONFIG")
 if ((local_retained < cycles_retained)); then
   warn "state_local_cycles_retained ($local_retained) is below cycles_retained ($cycles_retained) — the replicated mirror would hold a longer history than the node that writes it"
 fi
 
-if [[ "$(cfg '.crash_loop_after // 0')" != "0" && -z "$(cfg '.crash_loop_repo // ""')" ]]; then
+if [[ "$(cfg '.crash_loop_after')" != "0" && -z "$(cfg '.crash_loop_repo')" ]]; then
   warn "crash_loop_after is set but crash_loop_repo is empty, which disables the check anyway — a fleet-wide Co-Ordinator crash loop would surface nowhere"
 fi
 
@@ -241,7 +252,7 @@ while IFS=$'\t' read -r stage mode path; do
   else
     warn "prompt_overrides.$stage.$mode names $resolved_path, which is not readable — the $stage stage runs on the shipped prompt and says nothing about it"
   fi
-done < <(cfg_json '.prompt_overrides // {}' | jq -r '
+done < <(cfg_json '.prompt_overrides' | jq -r '
   to_entries[]
   | .key as $stage
   | ((.value.extend // [])[] | [$stage, "extend", .] | @tsv),
@@ -438,7 +449,7 @@ if ((gh_ready)); then
       [[ -n "$label" ]] || continue
       grep -qixF -- "$label" <<<"$repo_labels" \
         || warn "$slug has no \"$label\" label — the next cycle that works this repo creates it (lib/labels.sh); if it is still absent after one has run, this token may not create labels"
-    done < <(labels_catalogue "$config_file" "$role")
+    done < <(labels_catalogue "$config_file" "$schema_file" "$role")
     return 0
   }
 
@@ -495,8 +506,8 @@ if ((gh_ready)); then
     check_repo_access "$slug"
   done < <(cfg '.review.repos[]? // empty')
 
-  state_repo="$(cfg '.state_repo // ""')"
-  if [[ -z "$state_repo" || "$state_repo" == "null" ]]; then
+  state_repo="$(cfg '.state_repo')"
+  if [[ -z "$state_repo" ]]; then
     ok "no state_repo configured — single-node operation, every state-sync mode is a no-op"
   else
     check_repo_access "$state_repo" \

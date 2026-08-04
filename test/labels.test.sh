@@ -33,8 +33,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/labels.sh
 . "$SCRIPT_DIR/lib/labels.sh"
+
+SCHEMA="$SCRIPT_DIR/config.schema.json"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -99,38 +103,38 @@ config() { jq "${1:-.}" "$SCRIPT_DIR/config.json" > "$tmp/config.json"; }
 config
 assert_eq "the target role wants every label the pipeline applies" \
   "autonomous-agent enabler-escalation needs-refinement unvoided blocked complexity:low complexity:medium complexity:high" \
-  "$(labels_catalogue "$tmp/config.json" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "the review role wants only the review pull request's label" \
   "project-review" \
-  "$(labels_catalogue "$tmp/config.json" review | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" review | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "the escalation role wants only the escalation label" \
   "enabler-escalation" \
-  "$(labels_catalogue "$tmp/config.json" escalation | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" escalation | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "an unknown role wants nothing" "" \
-  "$(labels_catalogue "$tmp/config.json" nonsense)"
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" nonsense)"
 
 config '.pr_label = "house-agent" | .unvoid_label = "reopen-please"'
 assert_eq "a renamed label is created under the name the config gives it" \
   "house-agent reopen-please" \
-  "$(labels_catalogue "$tmp/config.json" target | cut -f1 | grep -E 'house-agent|reopen-please' | tr '\n' ' ' | sed 's/ $//')"
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | grep -E 'house-agent|reopen-please' | tr '\n' ' ' | sed 's/ $//')"
 
 # An empty label is the documented way to switch a projection off. Creating one
 # anyway would put a label in the repository that nothing will ever apply.
 config '.needs_refinement_label = "" | .unvoid_label = ""'
 assert_eq "a label switched off by an empty value is not created" \
   "autonomous-agent enabler-escalation blocked complexity:low complexity:medium complexity:high" \
-  "$(labels_catalogue "$tmp/config.json" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 
 # Every catalogue entry must be complete: a create with an empty colour is
 # rejected by GitHub, and one with an empty description is merely useless.
 config
-incomplete="$(labels_catalogue "$tmp/config.json" target | awk -F'\t' 'NF != 3 || $2 == "" || $3 == "" {print $1}')"
+incomplete="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | awk -F'\t' 'NF != 3 || $2 == "" || $3 == "" {print $1}')"
 assert_eq "every catalogue entry carries a colour and a description" "" "$incomplete"
 
 # --- Ensuring: create what is absent, touch nothing else. ---
 config
 reset_stub
-out="$(labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo")"
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "an empty repository gets every label, each reported created" \
   "autonomous-agent enabler-escalation needs-refinement unvoided blocked complexity:low complexity:medium complexity:high" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
@@ -138,11 +142,11 @@ assert_eq "and every line reports a creation" "" \
   "$(grep -v '^created' <<<"$out")"
 
 # The steady state, which is every cycle after the first: nothing to say.
-out="$(labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo")"
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "a second pass over the same repository reports nothing" "" "$out"
 
 reset_stub autonomous-agent blocked complexity:low complexity:medium complexity:high
-out="$(labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo")"
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "a partly-labelled repository gets only what it is missing" \
   "enabler-escalation needs-refinement unvoided" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
@@ -151,13 +155,13 @@ assert_eq "a partly-labelled repository gets only what it is missing" \
 # is the same label; trying to create it would be refused as a duplicate and
 # reported as a failure that is really a success.
 reset_stub Autonomous-Agent BLOCKED
-out="$(labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo")"
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "a label that differs only in case is treated as present" "" \
   "$(cut -f2 <<<"$out" | grep -ixE 'autonomous-agent|blocked')"
 
 # --- The property that protects an operator's own work. ---
 reset_stub autonomous-agent
-labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo" >/dev/null
+labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo" >/dev/null
 assert_eq "an existing label is never modified — no PATCH, PUT or DELETE is issued" "" \
   "$(grep -E '(^|[[:space:]])-X[[:space:]]+(PATCH|PUT|DELETE)' "$tmp/log" || true)"
 assert_eq "and the only requests made are listings and creates" "" \
@@ -166,7 +170,7 @@ assert_eq "and the only requests made are listings and creates" "" \
 # --- Failure: reported, never fatal. ---
 reset_stub
 export GH_REFUSE_CREATE="unvoided"
-out="$(labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo")"
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 rc=$?
 assert_eq "a label the token may not create is reported failed" \
   "failed	unvoided" "$(grep '^failed' <<<"$out")"
@@ -177,7 +181,7 @@ assert_eq "and one refused create does not fail the pass" "0" "$rc"
 
 reset_stub
 export GH_LIST_FAILS=1
-out="$(labels_catalogue "$tmp/config.json" target | labels_ensure "Owner/repo")"
+out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 rc=$?
 assert_eq "a repository whose labels cannot be listed returns 1" "1" "$rc"
 assert_eq "and says nothing rather than claiming failures it did not observe" "" "$out"
@@ -189,9 +193,10 @@ unset GH_LIST_FAILS
 # guard is what makes it safe rather than luck.
 reset_stub
 probe="$(GH_LIST_FAILS=1 bash -euo pipefail -c '
+  source "'"$SCRIPT_DIR"'/lib/config-schema.sh"
   source "'"$SCRIPT_DIR"'/lib/labels.sh"
   echo before
-  labels_ensure_role "'"$tmp"'/config.json" "Owner/repo" target >/dev/null 2>&1 || true
+  labels_ensure_role "'"$tmp"'/config.json" "'"$SCHEMA"'" "Owner/repo" target >/dev/null 2>&1 || true
   echo after
 ' 2>/dev/null || true)"
 assert_eq "a guarded call survives a total failure under set -e" \

@@ -43,14 +43,20 @@
 # exclusion. Creating it is how an installation gets the control at all — a
 # repository without the label offers the human no way to say "not this one".
 
-# labels_catalogue CONFIG_FILE ROLE
+# labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE
 # Print the labels a repository in ROLE needs, one per line, as
 # `name<TAB>colour<TAB>description`. ROLE is one of:
 #   target      — a repository the implementation pipeline works
 #   review      — a repository the project-review pipeline reviews
 #   escalation  — where escalation issues are filed (crash_loop_repo)
+#
+# Reads config_defaults's merge rather than CONFIG_FILE directly (issue #197),
+# so the three label names below take config.schema.json's `default` without
+# repeating it here; config_defaults is assumed sourced by the caller, as
+# every caller of this file already sources lib/config-schema.sh.
 labels_catalogue() {
-  local config_file="$1" role="$2"
+  local config_file="$1" schema_file="$2" role="$3" defaulted
+  defaulted="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)" || return 0
   jq -r --arg role "$role" '
     def entry($name; $colour; $description):
       if ($name // "") == "" then empty
@@ -59,11 +65,11 @@ labels_catalogue() {
     (if $role == "target" then
        [ entry(.pr_label; "1d76db";
                "Raised by the autonomous implementation pipeline"),
-         entry(.enabler_escalation_label // "enabler-escalation"; "b60205";
+         entry(.enabler_escalation_label; "b60205";
                "Raised by the Enabler: a blocked item that needs a human"),
-         entry(.needs_refinement_label // "needs-refinement"; "fbca04";
+         entry(.needs_refinement_label; "fbca04";
                "Too under-specified to work on; say what done looks like"),
-         entry(.unvoid_label // "unvoided"; "0e8a16";
+         entry(.unvoid_label; "0e8a16";
                "Apply to ask the pipeline to reconsider an item it voided"),
          entry("blocked"; "d93f0b";
                "Apply to keep the pipeline from selecting this issue"),
@@ -77,11 +83,11 @@ labels_catalogue() {
        [ entry(.review.pr_label; "5319e7";
                "Raised by the project-review pipeline") ]
      elif $role == "escalation" then
-       [ entry(.enabler_escalation_label // "enabler-escalation"; "b60205";
+       [ entry(.enabler_escalation_label; "b60205";
                "Raised by the Enabler: a blocked item that needs a human") ]
      else [] end)
     | .[] | @tsv
-  ' "$config_file" 2>/dev/null || true
+  ' <<<"$defaulted" 2>/dev/null || true
 }
 
 # labels_ensure REPO < CATALOGUE
@@ -127,9 +133,9 @@ labels_ensure() {
   return 0
 }
 
-# labels_ensure_role CONFIG_FILE REPO ROLE
+# labels_ensure_role CONFIG_FILE SCHEMA_FILE REPO ROLE
 # The two above, together: what a repository in ROLE needs, ensured in REPO.
 labels_ensure_role() {
-  local config_file="$1" repo="$2" role="$3"
-  labels_catalogue "$config_file" "$role" | labels_ensure "$repo"
+  local config_file="$1" schema_file="$2" repo="$3" role="$4"
+  labels_catalogue "$config_file" "$schema_file" "$role" | labels_ensure "$repo"
 }
