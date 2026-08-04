@@ -377,7 +377,7 @@
       "default": 6,
       "x-docs": {
         "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle.",
-        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (120 min Implementor + 45 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
+        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
       }
     },
     "abandoned_draft_after_hours": {
@@ -386,8 +386,12 @@
       "exclusiveMinimum": 0,
       "default": 3,
       "x-docs": {
-        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies.",
-        "spec": "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day."
+        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses.",
+        "spec": "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.",
+        "value": {
+          "readme": "`4`",
+          "spec": "4 h"
+        }
       }
     },
     "crash_loop_after": {
@@ -441,10 +445,10 @@
       "description": "Per-stage wall-clock timeout for the Reviewer, in minutes.",
       "x-docs": {
         "readme": "Minutes.",
-        "spec": "Raised from 30 as an interim measure (#203): at 30, 24% of `agent-ops` reviews were killed mid-flight while still making progress, which discards the Implementor's work and lets the pull request reach the human with no pipeline review at all. Adaptive, liveness-based timeouts supersede this.",
+        "spec": "Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different populations. Adaptive, liveness-based timeouts supersede this.",
         "value": {
-          "readme": "`45`",
-          "spec": "45 min"
+          "readme": "`60`",
+          "spec": "60 min"
         }
       }
     },
@@ -465,8 +469,8 @@
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
-        "readme": "Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 120 + 45 + 30 minutes).",
-        "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 120 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35).",
+        "readme": "Hours. Stale lock is killed and warning is logged. Beyond the sum of the stage timeouts (15 + 120 + 60 + 30 minutes), though the interim raises of #203 have narrowed that margin to 15 minutes.",
+        "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 120 + 60 + 30 minutes once the Enabler can run inside the lock (requirement 35). The interim raises of #203 have left only 15 minutes of that slack; #203 replaces the check with a derivation.",
         "value": {
           "readme": "`4`",
           "spec": "4 h"
