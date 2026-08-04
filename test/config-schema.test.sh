@@ -221,6 +221,17 @@ assert_rejected "a zero lock_stale_after is rejected" \
   '.lock_stale_after = 0' 'config.lock_stale_after: 0 must be greater than 0'
 assert_rejected "an empty branch_prefix is rejected" \
   '.branch_prefix = ""' 'config.branch_prefix: must not be empty'
+# `gh pr list --label ''` matches every open pull request, so an empty label
+# here does not disable anything — it hands the pipeline other people's work
+# as its own, in every repository it is configured for at once.
+assert_rejected "an empty pr_label is rejected" \
+  '.pr_label = ""' 'config.pr_label: must not be empty'
+assert_rejected "an empty review.pr_label is rejected" \
+  '.review.pr_label = ""' 'config.review.pr_label: must not be empty'
+# The labels that *do* switch a projection off when empty must keep doing so:
+# tightening the two above must not tighten these by association.
+assert_valid "the optional labels may still be empty (each switches its projection off)" \
+  '.needs_refinement_label = "" | .unvoid_label = "" | .enabler_escalation_label = ""'
 assert_rejected "an empty repos list is rejected" \
   '.repos = []' 'config.repos: needs at least 1 item(s)'
 
