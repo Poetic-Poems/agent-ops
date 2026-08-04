@@ -205,7 +205,8 @@
 
     "pr_label": {
       "$ref": "#/$defs/label",
-      "description": "Applied to every pull request the implementation pipeline raises, and the label its back-pressure limit counts."
+      "description": "Applied to every pull request the implementation pipeline raises, and the label by which every gatherer, and the back-pressure limit, finds them again. It must not be empty: `gh pr list --label ''` matches every open pull request, so an empty value would hand the pipeline other people's work as its own.",
+      "minLength": 1
     },
     "branch_prefix": {
       "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans — the Human Gate reads this to tell ours from theirs, so it must not be empty.",
@@ -396,7 +397,8 @@
         },
         "pr_label": {
           "$ref": "#/$defs/label",
-          "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`."
+          "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`. It must not be empty, for the reason given there.",
+          "minLength": 1
         },
         "branch_prefix": {
           "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
