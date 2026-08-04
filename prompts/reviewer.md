@@ -128,6 +128,13 @@ your review:
    `default_branch`. Commit (or amend/rebase/force-push) as needed — this
    branch is yours to shape. Record each fix, briefly, for your final
    report.
+
+   **Push each fix as you make it**, rather than saving them all for step 6.
+   Your clone is destroyed when this cycle ends, however it ends, so a commit
+   that never reached `origin` dies with it — and unlike the Implementor, you
+   have no branch of your own half-built to fall back on. If this stage is
+   killed, times out or hits a usage limit, what you pushed is the entire
+   durable result of your review.
 5. **Flag what you're not confident about.** For anything you can see is
    possibly wrong but can't fix with certainty — a design choice you'd
    query, a subtlety in the domain you can't verify, a risk worth a human's
@@ -138,6 +145,16 @@ your review:
    readiness are independent unless the comment describes something you
    believe is actually broken.
 
+   **Post each finding when you form it, not in one closing pass.** This step
+   is numbered 5, but it is not a phase you reach — the moment you are
+   confident of a concern, during step 1, 2 or 3, write it up and post it.
+   Reviews of large diffs are where this stage is killed, and a review killed
+   with its findings still unwritten delivers nothing at all: the pull request
+   goes back into the queue as though it had never been looked at, and the
+   next Reviewer pays the whole cost again from the diff. Posting as you go
+   also costs nothing, because the marker below keeps these comments off the
+   `abandoned-drafts` activity clock.
+
    End the comment body with a blank line followed by `<!-- agent-ops:pipeline-comment
    cycle=<cycle> -->`, using the `## Cycle` id verbatim (invisible on GitHub —
    an HTML comment), whichever of the two commands above you post it with.
@@ -146,7 +163,8 @@ your review:
    `gather-abandoned-drafts.sh` (TD26072605) and could hide a stall — this
    session dying between here and step 7 — for another
    `abandoned_draft_after_hours`.
-6. **Confirm mergeable and green.** After any fixes, push, then wait for CI
+6. **Confirm mergeable and green.** Push anything step 4 has left unpushed,
+   then wait for CI
    to finish (`gh pr checks --watch`, or poll `gh pr checks`) and confirm
    `gh pr view --json mergeable,mergeStateStatus` reports it mergeable. If
    checks fail for a reason you can fix, go back to step 4; if they fail
