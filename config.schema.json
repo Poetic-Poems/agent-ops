@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Poetic-Poems/agent-ops/config.schema.json",
   "title": "agent-ops installation configuration",
-  "description": "The shape of config.json: every key an installation may set, its type, its constraints, and — where the code has one — the value used when the key is absent. This file is the machine-readable half of the configuration tables in docs/IMPLEMENTATION-PIPELINE-SPEC.md, docs/REVIEW-PIPELINE-SPEC.md and README.md, which remain the prose authority on what each key means. `default` here records what the code actually falls back to; a key listed in `required` has no fallback anywhere and must be set. Values in this file are the product's, not this installation's: Poetic's own choices live in config.json.",
+  "description": "The shape of config.json: every key an installation may set, its type, its constraints, and \u2014 where the code has one \u2014 the value used when the key is absent. This file is the machine-readable half of the configuration tables in docs/IMPLEMENTATION-PIPELINE-SPEC.md, docs/REVIEW-PIPELINE-SPEC.md and README.md, which remain the prose authority on what each key means. `default` here records what the code actually falls back to; a key listed in `required` has no fallback anywhere and must be set. Values in this file are the product's, not this installation's: Poetic's own choices live in config.json.",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -30,7 +30,10 @@
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["slug", "sources"],
+        "required": [
+          "slug",
+          "sources"
+        ],
         "properties": {
           "slug": {
             "description": "The repository, as `owner/name`.",
@@ -62,7 +65,7 @@
             }
           },
           "implementation_plan_path": {
-            "description": "Path, relative to this repository's root, of its implementation-plan document. Required whenever `sources` lists `implementation-plan` — that source has no path of its own outside this config, and agent-cycle.sh refuses to start without it.",
+            "description": "Path, relative to this repository's root, of its implementation-plan document. Required whenever `sources` lists `implementation-plan` \u2014 that source has no path of its own outside this config, and agent-cycle.sh refuses to start without it.",
             "type": "string",
             "minLength": 1
           },
@@ -74,234 +77,463 @@
             "default": 0
           }
         }
+      },
+      "x-docs": {
+        "readme": [
+          "Array of `{\"slug\": \"...\", \"sources\": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`).",
+          "`security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk \u2014 finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason \u2014 a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly; `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes fifth for the same reason \u2014 finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings); `register-hygiene` (the repo's tech-debt register failing its own consistency check \u2014 an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway.",
+          "The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field \u2014 see \"Issue priority\" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.",
+          "At runtime, repos are ordered most-overdue first \u2014 each repo's default-branch staleness age scaled by `1.25^(-nice)` \u2014 ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.",
+          "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key.",
+          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
+          "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged."
+        ],
+        "spec": [
+          "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
+          "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
+          "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
+          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range."
+        ],
+        "value": {
+          "readme": "see `config.json`",
+          "spec": "`[\"Poetic-Poems/poetic\", \"Poetic-Poems/poetic-fiddle\"]`"
+        }
       }
     },
-
     "state_dir": {
       "description": "Where the lock, the shared log and every per-cycle stage transcript live. A leading `~/` is expanded.",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "x-docs": {
+        "readme": "Lock, shared log, stage transcripts.",
+        "spec": "Lock, shared log, per-cycle stage transcripts.",
+        "value": "`~/.local/state/poetic-agents`"
+      }
     },
     "workspace_root": {
       "description": "Where ephemeral clones live and die, including the state repository's mirror. A leading `~/` is expanded.",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "x-docs": {
+        "readme": "Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here.",
+        "spec": "Ephemeral clones live and die here, including the state repository's mirror.",
+        "value": "`~/.cache/poetic-agents/workspaces`"
+      }
     },
     "state_repo": {
       "description": "Private repository through which `state_dir` replicates between nodes, as `owner/name`. Empty or absent means single-node operation: every mode of scripts/state-sync.sh becomes a no-op and the fleet-flag reads and writes quietly do nothing.",
       "type": "string",
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
-      "default": ""
+      "default": "",
+      "x-docs": {
+        "readme": "Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs \u2014 a single-node install behaves exactly as before.",
+        "spec": "The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing.",
+        "value": "`Poetic-Poems/agent-ops-state`"
+      }
     },
-
     "cycles_retained": {
       "description": "Cycle directories kept in the replicated mirror. Bounds a repository that is force-pushed after every cycle.",
       "type": "integer",
       "minimum": 1,
-      "default": 200
+      "default": 200,
+      "x-docs": {
+        "readme": "Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned.",
+        "spec": "Cycle directories kept in the replicated mirror \u2014 about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead."
+      }
     },
     "state_local_cycles_retained": {
       "description": "Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record.",
       "type": "integer",
       "minimum": 1,
-      "default": 1000
+      "default": 1000,
+      "x-docs": {
+        "spec": "Cycle and review directories the node's *own* `state_dir` keeps \u2014 about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests."
+      }
     },
     "log_retained_bytes": {
       "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, cron.log and review-cron.log. log.jsonl and review-log.jsonl are never rotated regardless of size.",
       "type": "integer",
       "minimum": 1,
-      "default": 2000000
+      "default": 2000000,
+      "x-docs": {
+        "readme": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated.",
+        "spec": "Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests."
+      }
     },
     "log_generations": {
-      "description": "Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`).",
+      "description": "Rotated generations of each log kept beside the live file (`<name>.1` \u2026 `<name>.<log_generations>`).",
       "type": "integer",
       "minimum": 1,
-      "default": 3
+      "default": 3,
+      "x-docs": {
+        "readme": "Rotated generations kept beside each live log (`<name>.1` \u2026 `<name>.<log_generations>`).",
+        "spec": "Rotated generations of each log kept beside the live file (`<name>.1` \u2026 `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests."
+      }
     },
-
     "coordinator_model": {
       "$ref": "#/$defs/modelId",
-      "description": "The Co-Ordinator's model. Selection is cheap triage."
+      "description": "The Co-Ordinator's model. Selection is cheap triage.",
+      "x-docs": {
+        "readme": "Selection is cheap triage.",
+        "spec": "Selection is cheap triage.",
+        "value": "`claude-haiku-4-5-20251001`"
+      }
     },
     "implementor_model_default": {
       "$ref": "#/$defs/modelId",
-      "description": "The Implementor's model for any change that affects runtime behaviour."
+      "description": "The Implementor's model for any change that affects runtime behaviour.",
+      "x-docs": {
+        "readme": "For code changes.",
+        "spec": "Any change that affects runtime behaviour.",
+        "value": "`claude-sonnet-5`"
+      }
     },
     "implementor_model_trivial": {
       "$ref": "#/$defs/modelId",
-      "description": "The Implementor's model for docs-, comment- or register-only items."
+      "description": "The Implementor's model for docs-, comment- or register-only items.",
+      "x-docs": {
+        "readme": "For docs, comments, register entries only.",
+        "spec": "Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order.",
+        "value": "`claude-haiku-4-5-20251001`"
+      }
     },
     "reviewer_model_default": {
       "$ref": "#/$defs/modelId",
-      "description": "The Reviewer's model for work graded `complexity:low` or `complexity:medium`."
+      "description": "The Reviewer's model for work graded `complexity:low` or `complexity:medium`.",
+      "x-docs": {
+        "readme": "Quality gate before human review, for work the Implementor graded `complexity:low` or `complexity:medium`.",
+        "spec": "Reviews of `low`- and `medium`-complexity work (requirement 8a).",
+        "value": "`claude-sonnet-5`"
+      }
     },
     "reviewer_model_complex": {
       "$ref": "#/$defs/modelIdOrEmpty",
       "description": "The Reviewer's model for work graded `complexity:high`. Empty falls back to `reviewer_model_default`, which switches the escalation off.",
-      "default": ""
+      "default": "",
+      "x-docs": {
+        "readme": "The same gate for work graded `complexity:high` \u2014 the Implementor grades each PR ex post and labels it; the higher of that grade and the PR's existing label picks the tier. Leave it empty to review everything on `reviewer_model_default`.",
+        "spec": "Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off.",
+        "value": "`claude-opus-5`"
+      }
     },
     "enabler_model": {
       "$ref": "#/$defs/modelIdOrEmpty",
-      "description": "The Enabler's model — the highest tier this system runs, affordable only because the eligibility rule engages it rarely. Empty disables the stage.",
-      "default": ""
+      "description": "The Enabler's model \u2014 the highest tier this system runs, affordable only because the eligibility rule engages it rarely. Empty disables the stage.",
+      "default": "",
+      "x-docs": {
+        "readme": "The Enabler: re-examines long-blocked items and escalates the ones needing you. The most expensive model here, engaged rarely \u2014 see [Blocked items and the Enabler](#blocked-items-and-the-enabler). Leave it empty to switch the stage off.",
+        "spec": "The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage.",
+        "value": "`claude-opus-5`"
+      }
     },
-
     "enabler_assignee": {
       "description": "GitHub login assigned to every escalation issue the Enabler raises. Required whenever `enabler_model` is set: agent-cycle.sh exits at startup rather than raise an unassigned escalation, since the assignment is what stops the pipeline selecting its own SOS as work.",
       "type": "string",
-      "default": ""
+      "default": "",
+      "x-docs": {
+        "readme": "GitHub login every Enabler escalation is assigned to. Required whenever `enabler_model` is set \u2014 the Script refuses to start a cycle rather than raise an unassigned escalation, since the assignment is what excludes the issue from the pipeline's own `issues` source (see [Issue priority](#issue-priority) and requirement 16.4 in the spec).",
+        "spec": "GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself.",
+        "value": "`warwickallen`"
+      }
     },
     "enabler_after_coordinator_cycles": {
       "description": "How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible. Counted in cycles rather than hours because a fleet stood down on a usage limit has not 'had a chance' at anything.",
       "type": "integer",
       "minimum": 0,
-      "default": 3
+      "default": 3,
+      "x-docs": {
+        "readme": "How many cycles that actually ran a Co-Ordinator must pass, after an item is blocked, before the Enabler looks at it. Counting cycles rather than hours means a fleet that spent the night stood down on a usage limit has not \"waited\".",
+        "spec": "How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not \"had a chance\" at anything."
+      }
     },
     "refinement_after_coordinator_cycles": {
       "description": "The same threshold for a block whose kind is `needs-refinement`. Absent, it inherits `enabler_after_coordinator_cycles`.",
       "type": "integer",
-      "minimum": 0
+      "minimum": 0,
+      "x-docs": {
+        "readme": "The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower.",
+        "spec": "The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart.",
+        "value": {
+          "readme": "*(same as `enabler_after_coordinator_cycles`)*",
+          "spec": "*(`enabler_after_coordinator_cycles`)*"
+        }
+      }
     },
     "enabler_recheck_hours": {
       "description": "How long after an examination the Enabler may examine the same item again. 0 disables re-examination.",
       "type": "number",
       "minimum": 0,
-      "default": 72
+      "default": 72,
+      "x-docs": {
+        "readme": "Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence \u2014 a diagnosis posted into the very thread whose absence blocked the item \u2014 can sit unread. `0` switches re-examination off.",
+        "spec": "How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded \u2014 a GitHub issue gaining evidence after it was blocked \u2014 same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination."
+      }
     },
     "enabler_escalation_label": {
       "$ref": "#/$defs/label",
       "description": "Applied to every issue the Enabler raises, for the human's filter and for its own duplicate guard. Must not be `blocked`, which excludes an issue from the `issues` source.",
-      "default": "enabler-escalation"
+      "default": "enabler-escalation",
+      "x-docs": {
+        "readme": "Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the issue is still raised, just unlabelled.",
+        "spec": "Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment."
+      }
     },
     "needs_refinement_label": {
       "$ref": "#/$defs/label",
       "description": "Projected onto an issue-type item while its refinement block is open, and the label a human applies by hand to flag one themselves. Empty disables both directions. Must not be `blocked`.",
-      "default": "needs-refinement"
+      "default": "needs-refinement",
+      "x-docs": {
+        "readme": "Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears \u2014 see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list \u2014 and a label you apply yourself does nothing. Leave it empty to switch the labelling off in both directions. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source.",
+        "spec": "The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) \u2014 removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` \u2014 that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`."
+      }
     },
     "refinement_max_per_engagement": {
       "description": "How many refinement-class items one Enabler engagement takes on; ordinary blocked items are uncapped and are never displaced by them. 0 removes the class from engagements while still recording the blocks.",
       "type": "integer",
       "minimum": 0,
-      "default": 3
+      "default": 3,
+      "x-docs": {
+        "readme": "How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it.",
+        "spec": "How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely \u2014 blocks are still recorded, and the items wait."
+      }
     },
     "unvoid_label": {
       "$ref": "#/$defs/label",
       "description": "The label a human applies on GitHub to ask for a void to be reopened. No stage ever applies it, so 'only a human may clear a void' is unchanged; what it gives them is a way to say so from where they are.",
-      "default": "unvoided"
+      "default": "unvoided",
+      "x-docs": {
+        "readme": "The label you apply on GitHub to ask for a voided item to be reopened \u2014 see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so \"only a human may clear a void\" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked`.",
+        "spec": "The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's \"only a human may clear a void\" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`."
+      }
     },
-
     "prompt_overrides": {
       "description": "Per-installation prompt extension or replacement, so house rules survive an update instead of forking prompts/. A relative path resolves against `state_dir`. Absent, or a stage absent from it, reproduces the shipped prompt byte for byte.",
       "type": "object",
       "additionalProperties": false,
       "default": {},
       "properties": {
-        "coordinator": { "$ref": "#/$defs/promptOverride" },
-        "implementor": { "$ref": "#/$defs/promptOverride" },
-        "reviewer": { "$ref": "#/$defs/promptOverride" },
-        "enabler": { "$ref": "#/$defs/promptOverride" }
+        "coordinator": {
+          "$ref": "#/$defs/promptOverride"
+        },
+        "implementor": {
+          "$ref": "#/$defs/promptOverride"
+        },
+        "reviewer": {
+          "$ref": "#/$defs/promptOverride"
+        },
+        "enabler": {
+          "$ref": "#/$defs/promptOverride"
+        }
+      },
+      "x-docs": {
+        "readme": "Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides).",
+        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage."
       }
     },
-
     "pr_label": {
       "$ref": "#/$defs/label",
       "description": "Applied to every pull request the implementation pipeline raises, and the label by which every gatherer, and the back-pressure limit, finds them again. It must not be empty: `gh pr list --label ''` matches every open pull request, so an empty value would hand the pipeline other people's work as its own.",
-      "minLength": 1
+      "minLength": 1,
+      "x-docs": {
+        "readme": "Applied to every PR this system raises.",
+        "spec": "Applied to every PR this system raises.",
+        "value": "`autonomous-agent`"
+      }
     },
     "branch_prefix": {
-      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans — the Human Gate reads this to tell ours from theirs, so it must not be empty.",
+      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans \u2014 the Human Gate reads this to tell ours from theirs, so it must not be empty.",
       "type": "string",
-      "minLength": 1
+      "minLength": 1,
+      "x-docs": {
+        "readme": "Branch naming: `agent/<item-slug>`.",
+        "spec": "Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`.",
+        "value": "`agent/`"
+      }
     },
     "max_open_agent_prs": {
       "description": "Back-pressure: total open pull requests (draft or ready) carrying `pr_label` across all repositories, plus live claim-registry entries.",
       "type": "integer",
-      "minimum": 1
+      "minimum": 1,
+      "x-docs": {
+        "readme": "Back-pressure limit: total open agent PRs (draft or ready) across both repos.",
+        "spec": "Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2).",
+        "value": "`8`"
+      }
     },
     "candidates_max": {
       "description": "How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle.",
       "type": "integer",
       "minimum": 1,
-      "default": 3
+      "default": 3,
+      "x-docs": {
+        "readme": "How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle.",
+        "spec": "How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle."
+      }
     },
     "claim_ttl_hours": {
       "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 6
+      "default": 6,
+      "x-docs": {
+        "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle.",
+        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (90 min Implementor + 45 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
+      }
     },
     "abandoned_draft_after_hours": {
       "description": "How long a draft pull request this system raised may sit without real activity before it counts as abandoned and finishing it becomes selectable work. Beyond a whole cycle, so a draft merely being worked never qualifies.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 3
+      "default": 3,
+      "x-docs": {
+        "readme": "Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies.",
+        "spec": "How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day."
+      }
     },
-
     "crash_loop_after": {
       "description": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue. 0 disables the check.",
       "type": "integer",
       "minimum": 0,
-      "default": 0
+      "default": 0,
+      "x-docs": {
+        "readme": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure \u2014 the dashboard shows a healthy idle fleet. `0` (or absent) disables the check.",
+        "spec": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check.",
+        "value": "`4`"
+      }
     },
     "crash_loop_repo": {
-      "description": "Where the crash-loop escalation issue is filed, as `owner/name` — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check.",
+      "description": "Where the crash-loop escalation issue is filed, as `owner/name` \u2014 the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check.",
       "type": "string",
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
-      "default": ""
+      "default": "",
+      "x-docs": {
+        "readme": "Where the crash-loop escalation issue is filed \u2014 the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check.",
+        "spec": "Where requirement 2.7's escalation issue is filed \u2014 the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check.",
+        "value": "`Poetic-Poems/agent-ops`"
+      }
     },
-
     "timeout_coordinator": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Co-Ordinator, in minutes."
+      "description": "Per-stage wall-clock timeout for the Co-Ordinator, in minutes.",
+      "x-docs": {
+        "readme": "Minutes.",
+        "spec": "Per-stage wall-clock timeouts, enforced by the Script.",
+        "value": {
+          "readme": "`15`",
+          "spec": "15 min"
+        }
+      }
     },
     "timeout_implementor": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Implementor, in minutes."
+      "description": "Per-stage wall-clock timeout for the Implementor, in minutes.",
+      "x-docs": {
+        "readme": "Minutes.",
+        "value": {
+          "readme": "`90`",
+          "spec": "90 min"
+        }
+      }
     },
     "timeout_reviewer": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Reviewer, in minutes."
+      "description": "Per-stage wall-clock timeout for the Reviewer, in minutes.",
+      "x-docs": {
+        "readme": "Minutes.",
+        "spec": "Raised from 30 as an interim measure (#203): at 30, 24% of `agent-ops` reviews were killed mid-flight while still making progress, which discards the Implementor's work and lets the pull request reach the human with no pipeline review at all. Adaptive, liveness-based timeouts supersede this.",
+        "value": {
+          "readme": "`45`",
+          "spec": "45 min"
+        }
+      }
     },
     "timeout_enabler": {
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Per-stage wall-clock timeout for the Enabler, in minutes.",
-      "default": 30
+      "default": 30,
+      "x-docs": {
+        "readme": "Minutes.",
+        "spec": "Per-stage wall-clock timeout for the Enabler, enforced like the others.",
+        "value": {
+          "spec": "30 min"
+        }
+      }
     },
     "lock_stale_after": {
       "description": "Hours after which a held cycle lock is treated as stale, killed, and warned about. Must exceed the sum of the stage timeouts plus slack.",
       "type": "number",
-      "exclusiveMinimum": 0
+      "exclusiveMinimum": 0,
+      "x-docs": {
+        "readme": "Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 90 + 45 + 30 minutes).",
+        "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 90 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35).",
+        "value": {
+          "readme": "`4`",
+          "spec": "4 h"
+        }
+      }
     },
     "limit_cooldown_default": {
       "description": "Hours to stand down after an ordinary usage-limit error whose reset time cannot be parsed.",
       "type": "number",
-      "exclusiveMinimum": 0
+      "exclusiveMinimum": 0,
+      "x-docs": {
+        "readme": "Hours. Stand-down after a usage-limit error.",
+        "spec": "Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) \u2014 not this key.",
+        "value": {
+          "readme": "`3`",
+          "spec": "3 h"
+        }
+      }
     },
     "disable_default_ttl": {
       "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 4
+      "default": 4,
+      "x-docs": {
+        "readme": "Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines).",
+        "spec": "How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
+        "value": {
+          "spec": "4 h"
+        }
+      }
     },
     "none_selected_recheck_hours": {
-      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve — don't.",
+      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve \u2014 don't.",
       "type": "number",
       "minimum": 0,
-      "default": 24
+      "default": 24,
+      "x-docs": {
+        "readme": "Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely \u2014 not recommended.",
+        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve \u2014 don't.",
+        "value": {
+          "spec": "24 h"
+        }
+      }
     },
     "image_behind_grace_hours": {
       "description": "How long a node may sit behind the registry's newest image before the dashboard badge turns amber and scripts/check-node-image.sh fails. A roll defers while a cycle is in flight, so being behind a more recent image than this is the ordinary mid-roll state, not a fault.",
       "type": "number",
       "minimum": 0,
-      "default": 3
+      "default": 3,
+      "x-docs": {
+        "readme": "Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image).",
+        "spec": "The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault.",
+        "value": {
+          "spec": "3 h"
+        }
+      }
     },
     "dashboard_refresh_seconds": {
       "description": "How often an open dashboard tab reloads to pick up freshly-written data. Match it to the heartbeat cadence.",
       "type": "number",
       "exclusiveMinimum": 0,
-      "default": 5
+      "default": 5,
+      "x-docs": {
+        "readme": "Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading.",
+        "spec": "How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on."
+      }
     },
-
     "schedule": {
       "description": "The cadence of every cron line a containerised node installs, rendered by deploy/docker/render-crontab.sh. Absent, every field below takes its default.",
       "type": "object",
@@ -311,64 +543,108 @@
           "description": "The hour field of the implementation cycle's crontab line; `*` is every hour.",
           "type": "string",
           "minLength": 1,
-          "default": "*"
+          "default": "*",
+          "x-docs": {
+            "readme": "The hour field of the containerised node's implementation-cycle crontab line (`deploy/docker/render-crontab.sh`); `*` means every hour.",
+            "spec": "The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour."
+          }
         },
         "excluded_minutes": {
           "description": "Minutes the per-node cycle minute (env or hash) may never land on. A deployment with no conflicting workload ships []. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on.",
           "type": "array",
           "uniqueItems": true,
           "default": [],
-          "items": { "type": "integer", "minimum": 0, "maximum": 59 }
+          "items": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 59
+          },
+          "x-docs": {
+            "readme": "Minutes the per-node `CYCLE_MINUTE` (env or hash) may never land on. This repo's own config excludes `0` because poetic's hourly sync workflow owns the top of the hour; a fresh install with no such conflict should ship `[]`.",
+            "spec": "Minutes `CYCLE_MINUTE` (env or the per-node hash) may never land on, rendered from `deploy/docker/crontab.tmpl`. Poetic's own value excludes `0` because its hourly sync workflow owns the top of the hour; a deployment with no such conflict ships `[]`. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on.",
+            "value": "`[0]`"
+          }
         },
         "excluded_minutes_reason": {
           "description": "Free text recording why `excluded_minutes` excludes what it does. Read by nothing; kept for the next reader.",
-          "type": "string"
+          "type": "string",
+          "x-docs": {
+            "readme": "Free-text note on *why* `excluded_minutes` excludes what it does \u2014 documentation only, read by nobody.",
+            "spec": "Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader.",
+            "value": {
+              "readme": "see `config.json`",
+              "spec": "`\"poetic's hourly sync workflow owns the top of the hour\"`"
+            }
+          }
         },
         "review_hour": {
           "description": "The hour the review tick fires.",
           "type": "integer",
           "minimum": 0,
           "maximum": 23,
-          "default": 3
+          "default": 3,
+          "x-docs": {
+            "readme": "The hour the containerised node's review tick fires.",
+            "spec": "The hour the review tick fires."
+          }
         },
         "review_offset_minutes": {
           "description": "Minutes past the node's cycle minute (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
-          "default": 29
+          "default": 29,
+          "x-docs": {
+            "readme": "Minutes past `CYCLE_MINUTE` (mod 60) the review tick's minute is set to, so the node's two heavy pipelines land apart within the hour.",
+            "spec": "Minutes past `CYCLE_MINUTE` (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour."
+          }
         },
         "heartbeat_minutes": {
           "description": "Interval, in minutes, of the dashboard heartbeat cron line.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
-          "default": 5
+          "default": 5,
+          "x-docs": {
+            "readme": "Interval, in minutes, of the containerised node's dashboard-heartbeat cron line.",
+            "spec": "Interval, in minutes, of the dashboard heartbeat cron line (`publish-dashboard-launcher.sh`)."
+          }
         },
         "state_sync_push_minutes": {
           "description": "Interval, in minutes, of `state-sync.sh push`.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
-          "default": 5
+          "default": 5,
+          "x-docs": {
+            "readme": "Interval, in minutes, of the containerised node's `state-sync.sh push` line.",
+            "spec": "Interval, in minutes, of `state-sync.sh push` (requirement 2.5)."
+          }
         },
         "state_sync_fetch_minutes": {
           "description": "Interval, in minutes, of `state-sync.sh fetch`.",
           "type": "integer",
           "minimum": 1,
           "maximum": 59,
-          "default": 7
+          "default": 7,
+          "x-docs": {
+            "readme": "Interval, in minutes, of the containerised node's `state-sync.sh fetch` line.",
+            "spec": "Interval, in minutes, of `state-sync.sh fetch` (requirement 2.5)."
+          }
         },
         "log_rotation_minute": {
           "description": "The minute past every hour scripts/rotate-logs.sh runs.",
           "type": "integer",
           "minimum": 0,
           "maximum": 59,
-          "default": 19
+          "default": 19,
+          "x-docs": {
+            "readme": "The minute past every hour the containerised node's `rotate-logs.sh` line runs.",
+            "spec": "The minute past every hour `rotate-logs.sh` runs (requirement 2.6)."
+          }
         }
       }
     },
-
     "review": {
       "description": "The project-review pipeline's tunables. Absent, the implementation pipeline runs exactly as it does now and review-cycle.sh has nothing to run.",
       "type": "object",
@@ -384,50 +660,89 @@
       ],
       "properties": {
         "repos": {
-          "description": "The repositories to review — a plain list of slugs, since a review has no per-repo work-source structure.",
+          "description": "The repositories to review \u2014 a plain list of slugs, since a review has no per-repo work-source structure.",
           "type": "array",
           "items": {
             "type": "string",
             "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+          },
+          "x-docs": {
+            "readme": "Repositories to review. A plain list of slugs.",
+            "spec": "The repositories to review. A plain list of slugs \u2014 a review has no per-repo work-source structure. Adding a repo is a config-only change.",
+            "value": "`[\"Poetic-Poems/poetic\", \"Poetic-Poems/poetic-fiddle\"]`"
           }
         },
         "model": {
           "$ref": "#/$defs/modelId",
-          "description": "The Reviewer-Agent's model — the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own."
+          "description": "The Reviewer-Agent's model \u2014 the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own.",
+          "x-docs": {
+            "readme": "The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id \u2014 see [Configuration](#configuration).",
+            "spec": "The Reviewer-Agent's model \u2014 the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes.",
+            "value": "`claude-sonnet-5`"
+          }
         },
         "pr_label": {
           "$ref": "#/$defs/label",
           "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`. It must not be empty, for the reason given there.",
-          "minLength": 1
+          "minLength": 1,
+          "x-docs": {
+            "readme": "Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`.",
+            "spec": "Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable.",
+            "value": "`project-review`"
+          }
         },
         "branch_prefix": {
           "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
           "type": "string",
-          "minLength": 1
+          "minLength": 1,
+          "x-docs": {
+            "readme": "Branch name `review/<date>`.",
+            "spec": "Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed.",
+            "value": "`review/`"
+          }
         },
         "timeout_review": {
           "$ref": "#/$defs/timeoutMinutes",
-          "description": "Per-repo wall-clock timeout for the Reviewer-Agent, in minutes. A full review is long; be generous."
+          "description": "Per-repo wall-clock timeout for the Reviewer-Agent, in minutes. A full review is long; be generous.",
+          "x-docs": {
+            "readme": "Minutes. Per-repo wall-clock timeout.",
+            "spec": "Minutes. Per-repo wall-clock timeout for the Reviewer-Agent, enforced by the Script. A full review is long; this is generous.",
+            "value": "`120`"
+          }
         },
         "lock_stale_after": {
           "description": "Hours after which a held review lock is treated as stale. Larger than the implementation pipeline's, because two full reviews back-to-back can exceed it.",
           "type": "number",
-          "exclusiveMinimum": 0
+          "exclusiveMinimum": 0,
+          "x-docs": {
+            "readme": "Hours. Larger than the hourly pipeline's 3 h \u2014 a full review is long.",
+            "spec": "Hours. Larger than the implementation pipeline's 3 h, because two full reviews back-to-back can exceed it.",
+            "value": "`6`"
+          }
         },
         "min_days_between_reviews": {
           "description": "The skip-guard threshold: a repository reviewed within this many days is skipped. Leave a day of slack against the intended cadence, so a review that lands late one week is not pushed a full extra week the next.",
           "type": "number",
-          "minimum": 0
+          "minimum": 0,
+          "x-docs": {
+            "readme": "Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as \"about once a week\" and stay robust to a sleeping machine.",
+            "spec": "The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next.",
+            "value": "`6`"
+          }
         },
         "not_before": {
-          "description": "Optional timestamp before which no review may start — every repository, not one. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
+          "description": "Optional timestamp before which no review may start \u2014 every repository, not one. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
           "type": "string",
-          "default": ""
+          "default": "",
+          "x-docs": {
+            "readme": "Optional. Hold **all** reviews until this timestamp \u2014 e.g. `2026-07-30T16:00:00Z` \u2014 while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it.",
+            "spec": "Optional. A timestamp before which no review may start (R3.3) \u2014 every repo, not one. Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
+            "value": "*(unset)*"
+          }
         }
       }
     }
   },
-
   "$defs": {
     "modelId": {
       "description": "A model identifier: either bare (`claude-sonnet-5`) or provider-qualified (`anthropic/claude-sonnet-5`). Anthropic is the only executable provider today, so the two forms are the same value; a qualifier naming any other provider is rejected at cycle start.",
@@ -457,9 +772,15 @@
       "properties": {
         "extend": {
           "type": "array",
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
-        "replace": { "type": "string", "minLength": 1 }
+        "replace": {
+          "type": "string",
+          "minLength": 1
+        }
       }
     }
   }

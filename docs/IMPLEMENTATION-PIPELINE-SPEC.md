@@ -544,14 +544,15 @@ and the schema must carry every one of them.
 
 | Key | Value | Notes |
 |---|---|---|
+<!-- config-table:start id=main -->
 | `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
-| `cycles_retained` | 200 | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
-| `state_local_cycles_retained` | 1000 | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
-| `log_retained_bytes` | 2000000 | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
-| `log_generations` | 3 | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
+| `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
+| `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
+| `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
+| `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
 | `implementor_model_default` | `claude-sonnet-5` | Any change that affects runtime behaviour. |
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
@@ -564,10 +565,8 @@ and the schema must carry every one of them.
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
-| `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
-| `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
-| `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
+| `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
@@ -575,16 +574,18 @@ and the schema must carry every one of them.
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (90 min Implementor + 45 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | `3` | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. |
-| `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
-| `timeout_implementor` | 90 min | |
-| `timeout_reviewer` | 45 min | Raised from 30 as an interim measure (#203): at 30, 24% of `agent-ops` reviews were killed mid-flight while still making progress, which discards the Implementor's work and lets the pull request reach the human with no pipeline review at all. Adaptive, liveness-based timeouts supersede this. |
-| `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 90 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35). |
-| `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
-| `crash_loop_after` | 4 | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
+| `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
+| `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
+| `timeout_implementor` | 90 min | Per-stage wall-clock timeout for the Implementor, in minutes. |
+| `timeout_reviewer` | 45 min | Raised from 30 as an interim measure (#203): at 30, 24% of `agent-ops` reviews were killed mid-flight while still making progress, which discards the Implementor's work and lets the pull request reach the human with no pipeline review at all. Adaptive, liveness-based timeouts supersede this. |
+| `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
+| `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 90 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35). |
+| `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
-| `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
+| `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
+| `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
 | `schedule.excluded_minutes` | `[0]` | Minutes `CYCLE_MINUTE` (env or the per-node hash) may never land on, rendered from `deploy/docker/crontab.tmpl`. Poetic's own value excludes `0` because its hourly sync workflow owns the top of the hour; a deployment with no such conflict ships `[]`. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on. |
 | `schedule.excluded_minutes_reason` | `"poetic's hourly sync workflow owns the top of the hour"` | Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader. |
@@ -594,6 +595,7 @@ and the schema must carry every one of them.
 | `schedule.state_sync_push_minutes` | `5` | Interval, in minutes, of `state-sync.sh push` (requirement 2.5). |
 | `schedule.state_sync_fetch_minutes` | `7` | Interval, in minutes, of `state-sync.sh fetch` (requirement 2.5). |
 | `schedule.log_rotation_minute` | `19` | The minute past every hour `rotate-logs.sh` runs (requirement 2.6). |
+<!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch commands.
@@ -687,7 +689,13 @@ runs unattended.
    five-key typo into one cycle to fix, not five. `scripts/doctor.sh`
    (component 14) is what an operator runs ahead of time, against the same
    library function, so its verdict and the Script's own refusal can never
-   disagree.
+   disagree. The schema is also the single source for the three prose
+   configuration tables — this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s
+   and the README's — each leaf key's `x-docs` fields carrying the prose,
+   `scripts/render-config-table.sh` (component 16) rendering it into the
+   documents' marked regions and gating it in CI, so a key can no longer be
+   added to the schema and forgotten in a prose copy the way `unvoid_label`
+   and `state_local_cycles_retained` both once were.
 
    The schema being a gate retires the two startup guards it wholly
    subsumes: `nice`'s range (requirement 3) and `prompt_overrides`' shape
@@ -3951,6 +3959,37 @@ What exists, and the requirements each part answers to:
     `review-cycle.sh` and `scripts/doctor.sh`; regression-tested against a
     stubbed `gh` that records every invocation
     (`test/labels.test.sh`); must pass `shellcheck`.
+16. `scripts/render-config-table.sh` implementing requirement 1b's generated-
+    table property: renders the Markdown table body rows of the three prose
+    configuration tables (this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s,
+    and the two in `README.md`) from `config.schema.json`'s leaf keys, in the
+    schema's own property order — `schedule` and `review` flatten one level
+    into dotted keys (`schedule.review_hour`, `review.model`) in the parent's
+    position; every other object- or array-valued key (`repos`,
+    `prompt_overrides`) renders as a single row. Each key's value cell is,
+    in order, its `x-docs.value` verbatim — one string for both documents,
+    or an object keyed `readme`/`spec` for the keys whose two tables say
+    different things there, the spec's `Value` column carrying the unit
+    (`4 h`, `15 min`) the README's `Default` column leaves to the key's name
+    — else its schema `default`, a non-empty string bare in backticks and
+    anything else as compact JSON in backticks, else `*(required)*`; its
+    notes cell is
+    `x-docs.readme` for the README's two tables and `x-docs.spec` for the two
+    specs' — a string or an array of strings joined with a space — falling
+    back to `description` when the key carries no `x-docs` for that audience.
+    Rewrites four marked regions (`<!-- config-table:start id=main -->` /
+    `id=review` … `<!-- config-table:end -->`) in place with no arguments,
+    refusing either mode on a region whose header line and `|---|---|---|`
+    delimiter are not left outside the markers, since a region that
+    swallowed its delimiter row still renders every generated row correctly
+    in a diff while ceasing to be a table at all on GitHub;
+    `--check` renders to a temporary file instead and exits non-zero, naming
+    the file, the region and the first differing key, the moment any region
+    is stale — what `.github/workflows/config-table.yml` runs on every pull
+    request, modelled on `.github/workflows/tech-debt-register.yml`.
+    Regression-tested end to end, against the shipped script copied into a
+    scratch fixture repository rather than a reimplementation of its logic,
+    in `test/render-config-table.test.sh`; must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -4750,6 +4789,29 @@ pull request, run the ones the change touches and any it could regress.
     configuration, run against the shipped scripts, so what is asserted is
     the product rather than a restatement of it. `--offline` throughout: no
     assertion here needs the network.
+1d. **The prose configuration tables are generated from the schema, and
+    regenerating them is gated (requirement 1b, component 16).**
+    `scripts/render-config-table.sh` with no arguments run against this
+    repository's own `config.schema.json`, `README.md`,
+    `docs/IMPLEMENTATION-PIPELINE-SPEC.md` and `docs/REVIEW-PIPELINE-SPEC.md`
+    leaves every file byte-identical to what is committed — regenerating a
+    clean tree is a no-op — and `--check` exits 0 against it; `git diff`
+    confirms nothing moved. `test/render-config-table.test.sh` passes: a key
+    present in a fixture schema and absent from a region is added, a
+    hand-edited row is restored, `--check` exits non-zero naming the file,
+    the region and the first differing key on a stale region and zero on a
+    fresh one, a `|` inside prose survives escaped, four distinct
+    `x-docs.value` rows render verbatim, an `x-docs.value` keyed per
+    audience gives each document its own value cell and falls through to the
+    schema `default` for an audience it does not name, a key carrying no
+    `x-docs` for an audience falls back to `description`, and a region whose
+    delimiter row has been swallowed by its start marker is refused rather
+    than rendered.
+    `.github/workflows/config-table.yml`
+    runs `--check` on every pull request, so a schema edit landing without a
+    matching doc regeneration (or the reverse) fails CI rather than drifting
+    the way `unvoid_label` and `state_local_cycles_retained` both did before
+    this requirement existed.
 6h. **The pipeline creates the labels it applies, and touches no others
     (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
     that records every invocation and refuses a duplicate the way GitHub
