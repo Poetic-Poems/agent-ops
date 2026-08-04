@@ -146,6 +146,7 @@ leaves it out.
 
 | Key | Value | Notes |
 |---|---|---|
+<!-- config-table:start id=review -->
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | The repositories to review. A plain list of slugs — a review has no per-repo work-source structure. Adding a repo is a config-only change. |
 | `review.model` | `claude-sonnet-5` | The Reviewer-Agent's model — the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes. |
 | `review.pr_label` | `project-review` | Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. |
@@ -154,6 +155,7 @@ leaves it out.
 | `review.lock_stale_after` | `6` | Hours. Larger than the implementation pipeline's 3 h, because two full reviews back-to-back can exceed it. |
 | `review.min_days_between_reviews` | `6` | The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next. |
 | `review.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3) — every repo, not one. Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. |
+<!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch command.
