@@ -160,6 +160,7 @@ first_differing_key() {
   # "files differ", which is exactly why we are here) must not be mistaken
   # for a pipeline failure under `set -o pipefail`, hence the `|| true`.
   local key
+  # shellcheck disable=SC2016  # the backtick in the grep/sed patterns is a literal Markdown backtick, not a shell one.
   key="$( { { diff -u "$1" "$2" 2>/dev/null || true; } \
     | grep -m1 -E '^[+-]\| `' \
     | sed -E 's/^.\| `([^`]+)`.*/\1/'; } || true )"

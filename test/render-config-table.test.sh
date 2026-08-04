@@ -181,9 +181,12 @@ assert_eq "rewriting in place exits 0" "0" "$rewrite_rc"
 main_region="$(awk '/<!-- config-table:start id=main -->/{f=1;next} /<!-- config-table:end -->/{f=0} f' "$tmp/README.md")"
 
 # --- A key present in the schema and absent from the region is added ---
+# shellcheck disable=SC2016
 assert_contains "a missing key (beta) is added" "$main_region" '| `beta` |'
 
 # --- A hand-edited row is restored ---
+# The backticks below are literal Markdown, not shell command substitution.
+# shellcheck disable=SC2016
 assert_contains "a hand-edited row (gamma) is restored" "$main_region" '| `gamma` | `gamma-value` | Gamma readme prose. |'
 if [[ "$main_region" == *"hand-edited"* ]]; then
   fail "the hand-edited gamma row's stale text is gone"
@@ -193,18 +196,25 @@ fi
 
 # --- A key with no x-docs falls back to description (alpha has no default
 #     either, so its value cell is the required marker) ---
+# shellcheck disable=SC2016
 assert_contains "alpha (no x-docs) falls back to description" "$main_region" '| `alpha` | *(required)* | Alpha description fallback. |'
 
 # --- A default with no x-docs.value renders the schema default ---
+# shellcheck disable=SC2016
 assert_contains "beta's default renders as compact JSON in backticks" "$main_region" '| `beta` | `"b-default"` |'
 
 # --- The four x-docs.value rows render verbatim ---
+# shellcheck disable=SC2016
 assert_contains "gamma's x-docs.value renders verbatim" "$main_region" '| `gamma` | `gamma-value` |'
+# shellcheck disable=SC2016
 assert_contains "delta's x-docs.value renders verbatim" "$main_region" '| `delta` | *(delta-required)* |'
+# shellcheck disable=SC2016
 assert_contains "zeta's x-docs.value renders verbatim" "$main_region" '| `zeta` | see `config.json` |'
+# shellcheck disable=SC2016
 assert_contains "eta's x-docs.value renders verbatim" "$main_region" '| `eta` | *(eta-value)* |'
 
 # --- A `|` inside prose survives (escaped, so the table stays well-formed) ---
+# shellcheck disable=SC2016
 epsilon_line="$(grep '`epsilon`' "$tmp/README.md")"
 assert_contains "a pipe in prose is escaped" "$epsilon_line" 'left \| right'
 total_pipes="$(grep -o '|' <<<"$epsilon_line" | wc -l)"
@@ -212,9 +222,11 @@ escaped_pipes="$(grep -o -F '\|' <<<"$epsilon_line" | wc -l)"
 assert_eq "the epsilon row still has exactly 4 unescaped pipes (3 columns)" "4" "$(( total_pipes - escaped_pipes ))"
 
 # --- Nesting renders as dotted keys in the parent's position ---
+# shellcheck disable=SC2016
 assert_contains "schedule.nested_key renders dotted, in the main region" "$main_region" '| `schedule.nested_key` | `"nested-default"` | Nested key description. |'
 
 review_region_readme="$(awk '/<!-- config-table:start id=review -->/{f=1;next} /<!-- config-table:end -->/{f=0} f' "$tmp/README.md")"
+# shellcheck disable=SC2016
 assert_contains "review.sub_key renders dotted, in its own region" "$review_region_readme" '| `review.sub_key` | `sub-value` | Sub key description. |'
 if [[ "$main_region" == *"review.sub_key"* ]]; then
   fail "review.sub_key does not leak into the main region"
@@ -232,6 +244,7 @@ else
 fi
 
 review_spec_content="$(cat "$tmp/docs/REVIEW-PIPELINE-SPEC.md")"
+# shellcheck disable=SC2016
 assert_contains "the review spec renders review.sub_key" "$review_spec_content" '| `review.sub_key` |'
 
 # --- Sentinels outside the markers are untouched ---

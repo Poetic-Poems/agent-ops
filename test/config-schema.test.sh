@@ -145,15 +145,21 @@ items
 default
 KEYWORDS
 )"
+# `x-docs` (and any child of it, and any other `x-`-prefixed key) is a
+# vendor extension outside JSON Schema's keyword space (#198) — it is never
+# read by lib/config-schema.sh, by design, so it is excluded from this
+# check the same way an actual property name under "properties"/"$defs" is.
 used="$(jq -r '[paths(scalars != null) + paths(type == "object" or type == "array")]
   | map(map(select(type == "string")))
   | [ .[]
       | . as $p
       | range($p | length) as $i
       | select($i == 0
-               or ($p[$i - 1] != "properties" and $p[$i - 1] != "$defs"))
+               or ($p[$i - 1] != "properties" and $p[$i - 1] != "$defs" and $p[$i - 1] != "x-docs"))
       | $p[$i] ]
-  | unique | .[]' "$SCHEMA" 2>/dev/null | sort -u)"
+  | unique
+  | map(select(startswith("x-") | not))
+  | .[]' "$SCHEMA" 2>/dev/null | sort -u)"
 unsupported="$(comm -23 <(printf '%s\n' "$used") <(printf '%s\n' "$supported"))"
 if [[ -z "$unsupported" ]]; then
   pass "the schema uses only keywords the validator implements"
