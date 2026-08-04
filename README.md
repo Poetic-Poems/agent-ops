@@ -184,7 +184,11 @@ described in `config.schema.json` too, and the doctor validates your file
 against it. The schema is the enforceable statement of this table: it knows
 each key's type, its range, and whether it may be left out, and it rejects a
 key it has never heard of, so a misspelling is caught the moment you check
-rather than silently running on a default you did not choose.
+rather than silently running on a default you did not choose. Both
+`agent-cycle.sh` and `review-cycle.sh` validate against the same schema at
+startup and refuse to run at all on a config that fails it, so `doctor.sh` is
+how you catch a misconfiguration before it costs you a cycle, not the only
+thing standing between you and one.
 
 Keys:
 
