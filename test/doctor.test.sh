@@ -192,6 +192,19 @@ assert_contains "an archived repo fails even though the token could otherwise pu
   "[fail] $slug is archived" "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
+# review.repos gets the same write-access check as repos[] — the Reviewer
+# stage pushes a branch and opens a PR against them exactly as an Implementor
+# does against a target repo, so a review repo the token can read but not
+# push to loses the review the same way a target repo loses an item.
+review_config="$tmp/review-config.json"
+jq --arg slug "$slug" '.repos = [] | .review.repos = [$slug]' "$base_config" > "$review_config"
+out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
+  bash "$DOCTOR" --config "$review_config" 2>&1)"
+rc=$?
+assert_contains "review.repos names a repo the token cannot push to" \
+  "[fail] $slug is readable but not writable with this token" "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'

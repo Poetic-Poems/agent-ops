@@ -432,6 +432,7 @@ if ((gh_ready)); then
     [[ -n "$slug" ]] || continue
     check_repo_labels "$slug" review \
       || fail "review.repos names $slug, which is unreachable with this token"
+    check_repo_access "$slug"
   done < <(cfg '.review.repos[]? // empty')
 
   state_repo="$(cfg '.state_repo // ""')"
