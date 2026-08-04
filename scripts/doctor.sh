@@ -129,9 +129,12 @@ fi
 # key config.schema.json declares a `default` for reads as fully populated
 # below. It performs no validation of its own — a config that fails the
 # schema gate below still merges cleanly, which is what lets every check past
-# that point keep running against something (requirement: "a config that
-# failed validation above still reaches here").
-DEFAULTED_CONFIG="$(config_defaults "$config_file" "$schema_file")"
+# that point keep running against something rather than stopping at the first
+# fault. Its stderr is discarded because the one thing that silences it is an
+# unreadable schema, and that is the very condition the schema check below
+# reports as a `warn` in this command's own vocabulary; letting jq's raw
+# diagnostic out here would print it ahead of the report and outside it.
+DEFAULTED_CONFIG="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)"
 cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
 cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
