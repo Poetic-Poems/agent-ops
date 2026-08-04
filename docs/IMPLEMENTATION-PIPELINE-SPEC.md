@@ -533,8 +533,14 @@ Conventions shared by both repos (agents must honour all of these):
 
 ## Configuration
 
-One `config.json` at the root of `agent-ops`, holding every tunable. The
-values below are the confirmed defaults; the README must document each key.
+One `config.json` at the root of `agent-ops`, holding every tunable, and one
+`config.schema.json` beside it stating that file's shape in a form a machine
+can check (requirement 1b). The two are different documents for different
+readers: this table and the README's are the prose — what a key is *for*, and
+what choosing it wrong costs — and the schema is the enforceable part, which
+is why `scripts/doctor.sh` reads the schema rather than either table. The
+values below are the confirmed defaults; the README must document each key,
+and the schema must carry every one of them.
 
 | Key | Value | Notes |
 |---|---|---|
@@ -558,6 +564,8 @@ values below are the confirmed defaults; the README must document each key.
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
+| `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
+| `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
@@ -654,6 +662,28 @@ runs unattended.
    (`docs/REVIEW-PIPELINE-SPEC.md`). Both scripts share one implementation,
    `lib/model-id.sh`'s `resolve_model_id`, so the two pipelines can never
    drift on what counts as a supported provider.
+1b. **The configuration has a machine-readable schema, and an installation
+   can be checked against it.** `config.schema.json` states the shape of
+   `config.json` — every key an installation may set, its type, its
+   constraints, and the value the code falls back to when it is absent. It
+   covers both pipelines' keys, including the `review` object of
+   `docs/REVIEW-PIPELINE-SPEC.md`, because there is one configuration file
+   and a schema that described half of it would licence the other half to
+   drift. Every object in it is closed (`additionalProperties: false`), which
+   is the point: an unread key is a default nobody chose, so a misspelling is
+   otherwise indistinguishable from a deliberate omission for as many cycles
+   as it takes a human to notice. `lib/config-schema.sh` validates a config
+   against it, implementing the subset of JSON Schema the file uses and no
+   more; the schema may use only keywords that library implements, which
+   `test/config-schema.test.sh` asserts by reading the keywords back out of
+   the schema — a validator that silently ignores a keyword is worse than no
+   validator, because it reports the configuration sound. `scripts/doctor.sh`
+   (component 14) is what an operator runs. This is a check, not a gate: the
+   Script's own startup guards — the Enabler's assignee (requirement 35), the
+   implementation-plan path (requirement 3k), `nice` (requirement 3), and
+   `prompt_overrides`' shape (requirement 4a) — are unchanged and remain what
+   refuses to start a misconfigured cycle, so a schema that is wrong can
+   inconvenience an operator but can never stop a fleet.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -3823,6 +3853,27 @@ What exists, and the requirements each part answers to:
     without it a failure names the deployment's inspector URL instead. Its
     verdicts are regression-tested against a stubbed `gh` and `curl`
     (`test/preview-deploy.test.sh`); must pass `shellcheck`.
+14. `config.schema.json`, `lib/config-schema.sh` and `scripts/doctor.sh`
+    implementing requirement 1b. The schema states the shape of `config.json`;
+    the library validates a config against it (the JSON Schema subset the
+    schema uses: `type`, `enum`, `const`, `minimum`, `maximum`,
+    `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `pattern`,
+    `minItems`, `uniqueItems`, `properties`, `required`,
+    `additionalProperties: false`, `items`, and local `$ref`s into `$defs`),
+    returning 0 valid, 1 invalid with one message per offending path, and 2
+    when a file is missing or will not parse — a config that is not there is
+    not the same finding as one that is wrong. `doctor.sh` is the operator's
+    command: it runs the schema check, then the cross-key rules the schema
+    cannot state (each mirroring a startup guard or a silent-breach
+    requirement), then the model ids through `resolve_model_id`, the shipped
+    and overridden prompts, the toolchain, the state and workspace
+    directories, and — unless `--offline` — the GitHub access, which is where
+    a token's missing scope stops looking like a repository with no work in
+    it. Every verdict is `ok`, `warn`, `fail` or `skip`; exit 0 clean, 1 at
+    least one failure, 2 arguments or a config it could not read. Read-only
+    but for the configured directories it creates to prove they can be, and
+    every GitHub call a GET, so it is safe against a live node mid-cycle.
+    `test/config-schema.test.sh` covers both; must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -4599,6 +4650,20 @@ pull request, run the ones the change touches and any it could regress.
     `lib/metering.sh` and merge its output into every `stage-end` /
     `review-stage-end` event they log, so this one function's correctness is
     what "both pipelines emit conforming records" reduces to.
+1c. **The configuration matches its schema, and the schema is enforceable
+    (requirement 1b).** `test/config-schema.test.sh` passes: this
+    repository's own `config.json` validates, so a key added to the config
+    without a schema entry fails immediately; every keyword the schema uses
+    is one `lib/config-schema.sh` implements, asserted by reading the
+    keywords back out of the schema rather than from a list maintained
+    beside it; each keyword class is exercised with a value that must be
+    rejected, naming the path that is wrong; and `scripts/doctor.sh`
+    reproduces each of the Script's own startup refusals as a `fail`, its
+    silent-breach combinations as a `warn`, and a config that will not parse
+    as exit 2 with nothing downstream attempted. Every case is a mutation of
+    the shipped configuration, run against the shipped scripts, so what is
+    asserted is the product rather than a restatement of it. `--offline`
+    throughout: no assertion here needs the network.
 
 ## Host provisioning (human steps)
 

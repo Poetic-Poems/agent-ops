@@ -96,6 +96,12 @@ Pullwright organisation and carries its licence.
 - [ ] Audit and sweep the Poetic-specifics out of scripts, prompts, and
       config: hardcoded repo slugs, the owner's username, label names,
       branch conventions, and the poetic-fiddle implementation-plan source.
+      Four are swept (the Enabler's assignee, the entrypoint's git identity,
+      the implementation-plan path, the Co-Ordinator's repo/source table);
+      the audit that would say what is left has not been done, and
+      `config.schema.json` is now the place to do it from — writing it
+      surfaced that the specs' configuration tables state *Poetic's* values
+      where they say "default", `crash_loop_repo` among them.
       *[fleet — one item per specific]*
 - [x] Parameterise the operating prompts so an installation can extend or
       override them without forking the product (`prompt_overrides` in
@@ -107,22 +113,33 @@ Pullwright organisation and carries its licence.
       so a per-repo selection prompt needs that invocation split first; the
       Implementor and Reviewer stages already run against a single known repo
       and could take a per-repo override without it. *[fleet]*
-- [ ] Config schema with validation, defaults, and a `doctor` command that
-      checks an installation end to end. *[interactive skeleton, fleet
-      completion]*
-- [ ] Make schedules configuration-driven (per-pipeline cadence in config,
-      not a baked crontab) — and retire the cadence from each pipeline's
-      identity: "hourly" (and "weekly") must disappear from spec titles,
-      documentation, prompts, and code, and every timing derived from the
-      period today (lock staleness, retention counts, stand-down probing)
-      must follow the configured value instead of assuming an hour.
-      *[fleet]*
+- [x] Config schema with validation and a `doctor` command that checks an
+      installation end to end — the skeleton: `config.schema.json` (every key,
+      its type, its constraints, and the value the code falls back to),
+      `lib/config-schema.sh`, and `scripts/doctor.sh` over config, cross-key
+      rules, models, prompts, toolchain, directories and GitHub access
+      (requirement 1b). *[interactive]*
+- [ ] Complete it: make the schema the *only* source of truth rather than a
+      third one beside the two prose tables. The startup guards should be the
+      schema check, the code's `// default` literals should come from the
+      schema's `default`s, and the README and spec tables should be generated
+      from its descriptions — until then a key can still be added in three
+      places and forgotten in two. *[fleet — one item per leg]*
+- [x] Make schedules configuration-driven (per-pipeline cadence in config,
+      not a baked crontab) — the `schedule` block, rendered by
+      `deploy/docker/render-crontab.sh`. *[fleet]*
+- [ ] Retire the cadence from each pipeline's identity: "hourly" (and
+      "weekly") must disappear from spec titles, documentation, prompts, and
+      code, and every timing derived from the period today (lock staleness,
+      retention counts, stand-down probing) must follow the configured value
+      instead of assuming an hour. The cadence is configurable; the product
+      still calls itself the hourly pipeline. *[fleet]*
 - [ ] First-class non-interactive auth: Anthropic API key, Bedrock, and
       Vertex as the primary path; subscription OAuth documented as the
       supported self-hosted alternative (D4). *[interactive]*
-- [ ] Formalise the metering schema: per-cycle, per-stage token and cost
-      accounting as a stable, documented format (largely exists in the logs
-      today; make it a contract). *[fleet]*
+- [x] Formalise the metering schema: per-cycle, per-stage token and cost
+      accounting as a stable, documented format — `docs/METERING-SCHEMA.md`,
+      the contract both pipelines and the dashboard are held to. *[fleet]*
 - [x] Provider-qualified model identifiers in the config schema, so models
       from other providers can arrive later without a breaking change
       (D12). *[fleet]*

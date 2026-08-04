@@ -1,0 +1,464 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Poetic-Poems/agent-ops/config.schema.json",
+  "title": "agent-ops installation configuration",
+  "description": "The shape of config.json: every key an installation may set, its type, its constraints, and — where the code has one — the value used when the key is absent. This file is the machine-readable half of the configuration tables in docs/IMPLEMENTATION-PIPELINE-SPEC.md, docs/REVIEW-PIPELINE-SPEC.md and README.md, which remain the prose authority on what each key means. `default` here records what the code actually falls back to; a key listed in `required` has no fallback anywhere and must be set. Values in this file are the product's, not this installation's: Poetic's own choices live in config.json.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "repos",
+    "state_dir",
+    "workspace_root",
+    "coordinator_model",
+    "implementor_model_default",
+    "implementor_model_trivial",
+    "reviewer_model_default",
+    "pr_label",
+    "branch_prefix",
+    "max_open_agent_prs",
+    "timeout_coordinator",
+    "timeout_implementor",
+    "timeout_reviewer",
+    "lock_stale_after",
+    "limit_cooldown_default"
+  ],
+  "properties": {
+    "repos": {
+      "description": "The repositories the implementation pipeline works, each with its own ordered work sources. Adding a repository or a source is a config-only change.",
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["slug", "sources"],
+        "properties": {
+          "slug": {
+            "description": "The repository, as `owner/name`.",
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+          },
+          "sources": {
+            "description": "This repository's work sources, in priority order. The four `issues:<band>` tokens are the same source at four ranks, banded by each issue's Priority field; listing none of them turns issues off for the repository.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "security",
+                "issues:urgent",
+                "review-feedback",
+                "merge-conflicts",
+                "abandoned-drafts",
+                "failed-runs",
+                "issues:high",
+                "tech-debt",
+                "issues:medium",
+                "implementation-plan",
+                "project-review",
+                "issues:low",
+                "code-quality",
+                "register-hygiene"
+              ]
+            }
+          },
+          "implementation_plan_path": {
+            "description": "Path, relative to this repository's root, of its implementation-plan document. Required whenever `sources` lists `implementation-plan` — that source has no path of its own outside this config, and agent-cycle.sh refuses to start without it.",
+            "type": "string",
+            "minLength": 1
+          },
+          "nice": {
+            "description": "Attention bias for the repo walk, after Linux nice: staleness age is multiplied by 1.25^(-nice), so a negative value buys earlier attention and a positive one later. It biases the walk but never starves a repository.",
+            "type": "integer",
+            "minimum": -19,
+            "maximum": 19,
+            "default": 0
+          }
+        }
+      }
+    },
+
+    "state_dir": {
+      "description": "Where the lock, the shared log and every per-cycle stage transcript live. A leading `~/` is expanded.",
+      "type": "string",
+      "minLength": 1
+    },
+    "workspace_root": {
+      "description": "Where ephemeral clones live and die, including the state repository's mirror. A leading `~/` is expanded.",
+      "type": "string",
+      "minLength": 1
+    },
+    "state_repo": {
+      "description": "Private repository through which `state_dir` replicates between nodes, as `owner/name`. Empty or absent means single-node operation: every mode of scripts/state-sync.sh becomes a no-op and the fleet-flag reads and writes quietly do nothing.",
+      "type": "string",
+      "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+      "default": ""
+    },
+
+    "cycles_retained": {
+      "description": "Cycle directories kept in the replicated mirror. Bounds a repository that is force-pushed after every cycle.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 200
+    },
+    "state_local_cycles_retained": {
+      "description": "Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 1000
+    },
+    "log_retained_bytes": {
+      "description": "Size at which scripts/rotate-logs.sh rotates dashboard.log, state-sync.log, cron.log and review-cron.log. log.jsonl and review-log.jsonl are never rotated regardless of size.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 2000000
+    },
+    "log_generations": {
+      "description": "Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`).",
+      "type": "integer",
+      "minimum": 1,
+      "default": 3
+    },
+
+    "coordinator_model": {
+      "$ref": "#/$defs/modelId",
+      "description": "The Co-Ordinator's model. Selection is cheap triage."
+    },
+    "implementor_model_default": {
+      "$ref": "#/$defs/modelId",
+      "description": "The Implementor's model for any change that affects runtime behaviour."
+    },
+    "implementor_model_trivial": {
+      "$ref": "#/$defs/modelId",
+      "description": "The Implementor's model for docs-, comment- or register-only items."
+    },
+    "reviewer_model_default": {
+      "$ref": "#/$defs/modelId",
+      "description": "The Reviewer's model for work graded `complexity:low` or `complexity:medium`."
+    },
+    "reviewer_model_complex": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Reviewer's model for work graded `complexity:high`. Empty falls back to `reviewer_model_default`, which switches the escalation off.",
+      "default": ""
+    },
+    "enabler_model": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Enabler's model — the highest tier this system runs, affordable only because the eligibility rule engages it rarely. Empty disables the stage.",
+      "default": ""
+    },
+
+    "enabler_assignee": {
+      "description": "GitHub login assigned to every escalation issue the Enabler raises. Required whenever `enabler_model` is set: agent-cycle.sh exits at startup rather than raise an unassigned escalation, since the assignment is what stops the pipeline selecting its own SOS as work.",
+      "type": "string",
+      "default": ""
+    },
+    "enabler_after_coordinator_cycles": {
+      "description": "How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible. Counted in cycles rather than hours because a fleet stood down on a usage limit has not 'had a chance' at anything.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 3
+    },
+    "refinement_after_coordinator_cycles": {
+      "description": "The same threshold for a block whose kind is `needs-refinement`. Absent, it inherits `enabler_after_coordinator_cycles`.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "enabler_recheck_hours": {
+      "description": "How long after an examination the Enabler may examine the same item again. 0 disables re-examination.",
+      "type": "number",
+      "minimum": 0,
+      "default": 72
+    },
+    "enabler_escalation_label": {
+      "$ref": "#/$defs/label",
+      "description": "Applied to every issue the Enabler raises, for the human's filter and for its own duplicate guard. Must not be `blocked`, which excludes an issue from the `issues` source.",
+      "default": "enabler-escalation"
+    },
+    "needs_refinement_label": {
+      "$ref": "#/$defs/label",
+      "description": "Projected onto an issue-type item while its refinement block is open, and the label a human applies by hand to flag one themselves. Empty disables both directions. Must not be `blocked`.",
+      "default": "needs-refinement"
+    },
+    "refinement_max_per_engagement": {
+      "description": "How many refinement-class items one Enabler engagement takes on; ordinary blocked items are uncapped and are never displaced by them. 0 removes the class from engagements while still recording the blocks.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 3
+    },
+    "unvoid_label": {
+      "$ref": "#/$defs/label",
+      "description": "The label a human applies on GitHub to ask for a void to be reopened. No stage ever applies it, so 'only a human may clear a void' is unchanged; what it gives them is a way to say so from where they are.",
+      "default": "unvoided"
+    },
+
+    "prompt_overrides": {
+      "description": "Per-installation prompt extension or replacement, so house rules survive an update instead of forking prompts/. A relative path resolves against `state_dir`. Absent, or a stage absent from it, reproduces the shipped prompt byte for byte.",
+      "type": "object",
+      "additionalProperties": false,
+      "default": {},
+      "properties": {
+        "coordinator": { "$ref": "#/$defs/promptOverride" },
+        "implementor": { "$ref": "#/$defs/promptOverride" },
+        "reviewer": { "$ref": "#/$defs/promptOverride" },
+        "enabler": { "$ref": "#/$defs/promptOverride" }
+      }
+    },
+
+    "pr_label": {
+      "$ref": "#/$defs/label",
+      "description": "Applied to every pull request the implementation pipeline raises, and the label its back-pressure limit counts."
+    },
+    "branch_prefix": {
+      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans — the Human Gate reads this to tell ours from theirs, so it must not be empty.",
+      "type": "string",
+      "minLength": 1
+    },
+    "max_open_agent_prs": {
+      "description": "Back-pressure: total open pull requests (draft or ready) carrying `pr_label` across all repositories, plus live claim-registry entries.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "candidates_max": {
+      "description": "How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 3
+    },
+    "claim_ttl_hours": {
+      "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 6
+    },
+    "abandoned_draft_after_hours": {
+      "description": "How long a draft pull request this system raised may sit without real activity before it counts as abandoned and finishing it becomes selectable work. Beyond a whole cycle, so a draft merely being worked never qualifies.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 3
+    },
+
+    "crash_loop_after": {
+      "description": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue. 0 disables the check.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 0
+    },
+    "crash_loop_repo": {
+      "description": "Where the crash-loop escalation issue is filed, as `owner/name` — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check.",
+      "type": "string",
+      "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
+      "default": ""
+    },
+
+    "timeout_coordinator": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Per-stage wall-clock timeout for the Co-Ordinator, in minutes."
+    },
+    "timeout_implementor": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Per-stage wall-clock timeout for the Implementor, in minutes."
+    },
+    "timeout_reviewer": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Per-stage wall-clock timeout for the Reviewer, in minutes."
+    },
+    "timeout_enabler": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Per-stage wall-clock timeout for the Enabler, in minutes.",
+      "default": 30
+    },
+    "lock_stale_after": {
+      "description": "Hours after which a held cycle lock is treated as stale, killed, and warned about. Must exceed the sum of the stage timeouts plus slack.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "limit_cooldown_default": {
+      "description": "Hours to stand down after an ordinary usage-limit error whose reset time cannot be parsed.",
+      "type": "number",
+      "exclusiveMinimum": 0
+    },
+    "disable_default_ttl": {
+      "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 4
+    },
+    "none_selected_recheck_hours": {
+      "description": "The no-op short-circuit's safety valve: the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. 0 disables the valve — don't.",
+      "type": "number",
+      "minimum": 0,
+      "default": 24
+    },
+    "image_behind_grace_hours": {
+      "description": "How long a node may sit behind the registry's newest image before the dashboard badge turns amber and scripts/check-node-image.sh fails. A roll defers while a cycle is in flight, so being behind a more recent image than this is the ordinary mid-roll state, not a fault.",
+      "type": "number",
+      "minimum": 0,
+      "default": 3
+    },
+    "dashboard_refresh_seconds": {
+      "description": "How often an open dashboard tab reloads to pick up freshly-written data. Match it to the heartbeat cadence.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 5
+    },
+
+    "schedule": {
+      "description": "The cadence of every cron line a containerised node installs, rendered by deploy/docker/render-crontab.sh. Absent, every field below takes its default.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cycle_hours": {
+          "description": "The hour field of the implementation cycle's crontab line; `*` is every hour.",
+          "type": "string",
+          "minLength": 1,
+          "default": "*"
+        },
+        "excluded_minutes": {
+          "description": "Minutes the per-node cycle minute (env or hash) may never land on. A deployment with no conflicting workload ships []. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on.",
+          "type": "array",
+          "uniqueItems": true,
+          "default": [],
+          "items": { "type": "integer", "minimum": 0, "maximum": 59 }
+        },
+        "excluded_minutes_reason": {
+          "description": "Free text recording why `excluded_minutes` excludes what it does. Read by nothing; kept for the next reader.",
+          "type": "string"
+        },
+        "review_hour": {
+          "description": "The hour the review tick fires.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 23,
+          "default": 3
+        },
+        "review_offset_minutes": {
+          "description": "Minutes past the node's cycle minute (mod 60) the review tick's minute is set to, keeping one node's two heavy pipelines apart within the hour.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 29
+        },
+        "heartbeat_minutes": {
+          "description": "Interval, in minutes, of the dashboard heartbeat cron line.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59,
+          "default": 5
+        },
+        "state_sync_push_minutes": {
+          "description": "Interval, in minutes, of `state-sync.sh push`.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59,
+          "default": 5
+        },
+        "state_sync_fetch_minutes": {
+          "description": "Interval, in minutes, of `state-sync.sh fetch`.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 59,
+          "default": 7
+        },
+        "log_rotation_minute": {
+          "description": "The minute past every hour scripts/rotate-logs.sh runs.",
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 59,
+          "default": 19
+        }
+      }
+    },
+
+    "review": {
+      "description": "The project-review pipeline's tunables. Absent, the implementation pipeline runs exactly as it does now and review-cycle.sh has nothing to run.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repos",
+        "model",
+        "pr_label",
+        "branch_prefix",
+        "timeout_review",
+        "lock_stale_after",
+        "min_days_between_reviews"
+      ],
+      "properties": {
+        "repos": {
+          "description": "The repositories to review — a plain list of slugs, since a review has no per-repo work-source structure.",
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+          }
+        },
+        "model": {
+          "$ref": "#/$defs/modelId",
+          "description": "The Reviewer-Agent's model — the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own."
+        },
+        "pr_label": {
+          "$ref": "#/$defs/label",
+          "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`."
+        },
+        "branch_prefix": {
+          "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
+          "type": "string",
+          "minLength": 1
+        },
+        "timeout_review": {
+          "$ref": "#/$defs/timeoutMinutes",
+          "description": "Per-repo wall-clock timeout for the Reviewer-Agent, in minutes. A full review is long; be generous."
+        },
+        "lock_stale_after": {
+          "description": "Hours after which a held review lock is treated as stale. Larger than the implementation pipeline's, because two full reviews back-to-back can exceed it.",
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "min_days_between_reviews": {
+          "description": "The skip-guard threshold: a repository reviewed within this many days is skipped. Leave a day of slack against the intended cadence, so a review that lands late one week is not pushed a full extra week the next.",
+          "type": "number",
+          "minimum": 0
+        },
+        "not_before": {
+          "description": "Optional timestamp before which no review may start — every repository, not one. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
+          "type": "string",
+          "default": ""
+        }
+      }
+    }
+  },
+
+  "$defs": {
+    "modelId": {
+      "description": "A model identifier: either bare (`claude-sonnet-5`) or provider-qualified (`anthropic/claude-sonnet-5`). Anthropic is the only executable provider today, so the two forms are the same value; a qualifier naming any other provider is rejected at cycle start.",
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(anthropic/)?[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "modelIdOrEmpty": {
+      "description": "A model identifier as in `modelId`, or empty to switch the stage that reads it off.",
+      "type": "string",
+      "pattern": "^$|^(anthropic/)?[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "label": {
+      "description": "A GitHub label name. Empty, where a key allows it, switches that labelling off.",
+      "type": "string",
+      "pattern": "^[^,]*$"
+    },
+    "timeoutMinutes": {
+      "description": "A per-stage wall-clock timeout, in whole minutes.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "promptOverride": {
+      "description": "One stage's override. `extend` appends fragments to the shipped prompt in the order listed; `replace` substitutes a file for prompts/<stage>.md itself, which stops that stage receiving this product's future updates.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "extend": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "replace": { "type": "string", "minLength": 1 }
+      }
+    }
+  }
+}
