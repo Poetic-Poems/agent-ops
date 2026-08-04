@@ -507,7 +507,9 @@ Checks the whole installation in one pass and says what is wrong before a
 cycle finds out the expensive way: your `config.json` against
 `config.schema.json`, the rules that hold *between* config keys, the model
 ids, the shipped and overridden prompts, the toolchain, the directories the
-pipelines write to, and the GitHub access your token actually has.
+pipelines write to, the rendered crontab, the GitHub access your token
+actually has — including whether it can *push*, not just read — and whether
+`claude` is logged in.
 
 Four verdicts:
 
@@ -518,21 +520,35 @@ Four verdicts:
   stage quietly runs on the shipped prompt), a `lock_stale_after` shorter than
   the stage timeouts it has to outlast.
 - **`fail`** — the pipeline will not run, or will run on something other than
-  what you configured. Exit status 1.
+  what you configured. Exit status 1. This is what a repository your token
+  can read but not push to gets, and what an archived repository gets
+  regardless of permissions — both cost a cycle its work at the push, after
+  it has already claimed and implemented the item.
 - **`skip`** — the check needed something it could not reach, and is neither
-  passed nor failed.
+  passed nor failed. `claude auth status` not answering with the expected
+  shape — an older CLI with no `auth` subcommand, say — is a `skip`, not a
+  `fail`: a probe that cannot answer is not evidence of a fault.
+
+It also renders a trial crontab — `deploy/docker/render-crontab.sh` into a
+`mktemp -d` it removes afterwards — against the config being checked, so a
+broken template or an impossible `schedule` (every minute of the hour
+excluded, say) shows up here rather than on the node's own cron; and it lists
+any repository whose `nice` biases the walk away from 0, naming the
+multiplier that applies to its effective age.
 
 ```bash
-./scripts/doctor.sh --offline          # config and toolchain only, no network
+./scripts/doctor.sh --offline          # config, toolchain and crontab only, no network
 ./scripts/doctor.sh --quiet            # warnings and failures only
 ./scripts/doctor.sh --config /tmp/new.json   # a config you have not deployed yet
 ```
 
 Run it after editing `config.json`, on a new node before its first cycle, and
 whenever a cycle does something the configuration does not explain. It is
-read-only bar the state and workspace directories your config names, which it
-creates in order to prove it can, and every GitHub call it makes is a read —
-so it is safe to run against a live node, including mid-cycle.
+read-only bar two things it declares: the state and workspace directories
+your config names, which it creates in order to prove it can, and the trial
+crontab above, rendered into a `mktemp -d` it removes when done. Every GitHub
+call it makes is a read (a GET, even the one that asks about *write*
+access) — so it is safe to run against a live node, including mid-cycle.
 
 Inside a container node, run it there rather than on the host, since that is
 where the toolchain and the credentials are:

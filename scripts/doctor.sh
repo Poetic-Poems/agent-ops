@@ -12,9 +12,11 @@
 # below are chosen for that: each one is a failure that otherwise costs a
 # cycle, or a night, to notice.
 #
-# Read-only, with one exception it declares: it creates the state and workspace
-# directories the configuration already names, because being able to create
-# them is the thing being checked. Every GitHub call is a GET. Safe to run
+# Read-only, with two exceptions it declares: it creates the state and
+# workspace directories the configuration already names, because being able to
+# create them is the thing being checked, and it renders a trial crontab into
+# a `mktemp -d` it removes afterwards, to prove the template and the schedule
+# in the config actually produce one. Every GitHub call is a GET. Safe to run
 # against a live node at any time, including while a cycle holds the lock.
 #
 # Three verdicts, and a fourth for what it could not reach:
@@ -23,13 +25,14 @@
 #          what the configuration says. Exit status 1.
 #   warn — it will work, but something here will surprise the operator later.
 #   skip — the check needs something unavailable right now (the network, an
-#          authenticated `gh`), so it is neither passed nor failed.
+#          authenticated `gh`, a usable `claude` credential), so it is
+#          neither passed nor failed.
 #
 # Run it after editing config.json, on a new node before its first cycle, and
 # whenever a cycle does something the configuration does not explain:
 #
 #   scripts/doctor.sh                 # this installation
-#   scripts/doctor.sh --offline       # config and toolchain only, no network
+#   scripts/doctor.sh --offline       # everything but GitHub access and Claude credentials
 #   scripts/doctor.sh --config PATH   # a config not yet deployed
 #
 # Exit: 0 clean (warnings and skips included) · 1 at least one failure ·
@@ -51,10 +54,12 @@ usage: doctor.sh [--config PATH] [--offline] [--quiet]
 
 Check this installation end to end: the configuration against
 config.schema.json, the toolchain the pipelines need, the directories they
-write to, and the GitHub access they are granted.
+write to, the rendered crontab, the GitHub access they are granted, and the
+Claude credentials the stages run as.
 
   --config PATH  Check this file instead of the repository's config.json.
-  --offline      Skip every check that needs the network; report them skipped.
+  --offline      Skip every check that needs the network (GitHub access,
+                 Claude credentials); report them skipped.
   --quiet        Print only warnings, failures and the summary.
 
 Exit 0 clean, 1 at least one failure, 2 unusable arguments or config.
@@ -303,6 +308,48 @@ for entry in "state_dir=$state_dir" "workspace_root=$workspace_root"; do
   fi
 done
 
+# --- Crontab ---
+
+section "Crontab"
+
+render_script="$SCRIPT_DIR/deploy/docker/render-crontab.sh"
+tmpl_file="$SCRIPT_DIR/deploy/docker/crontab.tmpl"
+if [[ ! -r "$tmpl_file" ]]; then
+  skip "deploy/docker/crontab.tmpl is missing — cannot render the schedule"
+else
+  crontab_tmp_dir="$(mktemp -d)"
+  node_name="${NODE_NAME:-$(hostname 2>/dev/null || echo node)}"
+  if render_out="$(NODE_NAME="$node_name" "$render_script" "$tmpl_file" "$crontab_tmp_dir/crontab" "$config_file" 2>&1)"; then
+    heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes // 5')"
+    ok "${render_out#*: } — heartbeat every ${heartbeat_minutes} min"
+  else
+    fail "deploy/docker/render-crontab.sh failed against $config_file: ${render_out:-no output}"
+  fi
+  rm -rf "$crontab_tmp_dir"
+fi
+
+# --- Repository priority ---
+
+section "Repository priority"
+
+# Silent when every repo sits at nice 0 — this is a report of what the config
+# already asks for (lib/repo-order.sh's `effective_age = age × 1.25^(-nice)`),
+# not a check with a right answer, so there is nothing to warn or fail on.
+while IFS=$'\t' read -r slug nice weight; do
+  [[ -n "$slug" ]] || continue
+  if [[ "$nice" == -* ]]; then
+    ok "$slug: nice $nice — effective age ×$weight, earlier attention"
+  else
+    ok "$slug: nice $nice — effective age ×$weight, later attention"
+  fi
+done < <(jq -r '
+  (.repos // [])[]
+  | select((.nice // 0) != 0)
+  | (.nice // 0) as $n
+  | [.slug, ($n | tostring), (pow(1.25; -$n) * 100 | round / 100 | tostring)]
+  | @tsv
+' "$config_file")
+
 # --- GitHub ---
 
 section "GitHub"
@@ -344,6 +391,33 @@ if ((gh_ready)); then
     return 0
   }
 
+  # Write access is a separate call from the label read above: a token can
+  # list a repository's labels while unable to push to it (fine-grained PATs
+  # commonly split read and write this way), and that gap is exactly what
+  # costs a cycle its work — it claims an item, implements it, and only then
+  # discovers the push fails. `.permissions` is present only on requests
+  # `gh` makes as an authenticated user, so an absent field is a fact about
+  # what the API told this token, not evidence the token lacks push access —
+  # hence `skip`, never `fail`, when it is missing.
+  check_repo_access() {
+    local slug="$1" json push archived
+    if ! json="$(gh api "repos/$slug" --jq '{push: .permissions.push, archived: (.archived // false)}' 2>/dev/null)"; then
+      fail "$slug is unreachable with this token — cannot confirm write access"
+      return
+    fi
+    archived="$(jq -r '.archived' <<<"$json" 2>/dev/null)"
+    push="$(jq -r '.push' <<<"$json" 2>/dev/null)"
+    if [[ "$archived" == "true" ]]; then
+      fail "$slug is archived — no branch can be pushed to it, whatever the token's permissions"
+    elif [[ "$push" == "true" ]]; then
+      ok "$slug is writable — the token can push claim branches"
+    elif [[ "$push" == "false" ]]; then
+      fail "$slug is readable but not writable with this token — a cycle would claim this repo's work and lose it at push"
+    else
+      skip "$slug's write permission is not visible to this token (no .permissions field) — cannot confirm push access"
+    fi
+  }
+
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
     if check_repo_labels "$slug" target; then
@@ -351,6 +425,7 @@ if ((gh_ready)); then
     else
       fail "$slug is unreachable with this token — a repository the pipeline cannot read is a work source that silently reports no work"
     fi
+    check_repo_access "$slug"
   done < <(cfg '.repos[]?.slug // empty')
 
   while IFS= read -r slug; do
@@ -377,6 +452,30 @@ if ((gh_ready)); then
       fail "enabler_assignee @$enabler_assignee is not a GitHub account — its escalations would be raised unassigned, and the pipeline could then select them as work"
     fi
   fi
+fi
+
+# --- Claude ---
+
+section "Claude"
+
+if ((offline)); then
+  skip "Claude credentials (--offline)"
+elif ! command -v claude >/dev/null 2>&1; then
+  skip "Claude credentials (claude is not installed)"
+elif ! claude_auth_json="$(claude auth status --json 2>/dev/null)"; then
+  # An older CLI with no `auth` subcommand, or one that hangs and gets killed
+  # by neither of us, exits non-zero here rather than printing anything this
+  # can trust — a version gap, not a finding about this token.
+  skip "claude auth status did not succeed — cannot verify credentials"
+elif ! logged_in="$(jq -r '.loggedIn' <<<"$claude_auth_json" 2>/dev/null)"; then
+  # -r without -e: `false` is a legitimate answer this check must tell apart
+  # from a parse failure, and -e would treat both alike (its exit status
+  # reflects the output *value*, not whether parsing succeeded).
+  skip "claude auth status printed something other than the expected JSON — cannot verify credentials"
+elif [[ "$logged_in" == "true" ]]; then
+  ok "claude is authenticated ($(jq -r '.authMethod // "method unknown"' <<<"$claude_auth_json"), $(jq -r '.subscriptionType // .apiProvider // "provider unknown"' <<<"$claude_auth_json"))"
+else
+  fail "claude is not authenticated — every stage launches through it and would fail at the first invocation"
 fi
 
 # --- Summary ---
