@@ -377,7 +377,7 @@
       "default": 6,
       "x-docs": {
         "readme": "Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle.",
-        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (90 min Implementor + 45 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
+        "spec": "Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry \u2014 far beyond a whole cycle (120 min Implementor + 45 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less."
       }
     },
     "abandoned_draft_after_hours": {
@@ -429,9 +429,10 @@
       "description": "Per-stage wall-clock timeout for the Implementor, in minutes.",
       "x-docs": {
         "readme": "Minutes.",
+        "spec": "Raised from 90 as an interim measure (#203): the longest recorded Implementor run finished 7 seconds inside the 90-minute cap, after 327 turns and $30.83 of work that a kill would have discarded, and this repository's Implementor p95 is 64 minutes. Adaptive, liveness-based timeouts supersede this.",
         "value": {
-          "readme": "`90`",
-          "spec": "90 min"
+          "readme": "`120`",
+          "spec": "120 min"
         }
       }
     },
@@ -464,8 +465,8 @@
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
-        "readme": "Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 90 + 45 + 30 minutes).",
-        "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 90 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35).",
+        "readme": "Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 120 + 45 + 30 minutes).",
+        "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 120 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35).",
         "value": {
           "readme": "`4`",
           "spec": "4 h"

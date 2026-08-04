@@ -21,7 +21,7 @@
 #                              skew between two machines into the arithmetic,
 #                              where measuring one node against its own two
 #                              timestamps has none
-#   per-stage timeouts         an Implementor gets 90 minutes and a Co-Ordinator
+#   per-stage timeouts         an Implementor gets 120 minutes and a Co-Ordinator
 #                              15; one shared threshold would either miss the
 #                              Co-Ordinator case entirely or condemn every
 #                              healthy Implementor
