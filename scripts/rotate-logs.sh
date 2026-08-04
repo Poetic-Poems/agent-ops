@@ -42,6 +42,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
+
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
 usage() {
   cat <<'EOF'
@@ -70,11 +74,15 @@ expand_home() {
   [[ "$p" == "~"* ]] && p="$HOME${p:1}"
   printf '%s\n' "$p"
 }
-cfg() { jq -r "$1" "$CONFIG_FILE"; }
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below, with no `// literal` of its own to drift from the schema's.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
-retained_bytes="${ROTATE_LOGS_RETAINED_BYTES:-$(cfg '.log_retained_bytes // 2000000')}"
-generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations // 3')}"
+retained_bytes="${ROTATE_LOGS_RETAINED_BYTES:-$(cfg '.log_retained_bytes')}"
+generations="${ROTATE_LOGS_GENERATIONS:-$(cfg '.log_generations')}"
 (( generations >= 1 )) || generations=1
 
 # The logs this script owns. log.jsonl and review-log.jsonl are deliberately

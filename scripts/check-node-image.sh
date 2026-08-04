@@ -79,8 +79,9 @@ info() { printf 'info - %s\n' "$1"; }
 result="$("${compose[@]}" exec -T scheduler bash <<'INNER' 2>/dev/null
 . /app/lib/version.sh
 . /app/lib/image-drift.sh
+. /app/lib/config-schema.sh
 v="$(image_drift_status "$(agent_ops_version /app)" "")"
-g="$(jq -r '.image_behind_grace_hours // 3' /app/config.json 2>/dev/null)"
+g="$(config_defaults /app/config.json /app/config.schema.json 2>/dev/null | jq -r '.image_behind_grace_hours')"
 jq -nc --argjson v "$v" --arg g "$g" '{verdict: $v, grace_hours: ($g | tonumber? // 3)}'
 INNER
 )"

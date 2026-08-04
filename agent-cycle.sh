@@ -456,7 +456,7 @@ fi
 # well-formed entry whose file is unreadable this cycle stays tolerated in the
 # lib, since files legitimately come and go, and an unreadable one still
 # moves the fingerprint, where a structural typo would not have.
-prompt_overrides_json="$(cfg_json '.prompt_overrides // {}')"
+prompt_overrides_json="$(cfg_json '.prompt_overrides')"
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
 log_file="$state_dir/log.jsonl"
