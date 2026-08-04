@@ -123,7 +123,13 @@ Two decisions are deliberate:
 
 One `review` object in the existing `config.json` (one config file — never a
 second one) holds every tunable for this pipeline. The values below are the
-confirmed defaults; the README documents each key.
+confirmed defaults; the README documents each key, and `config.schema.json`
+carries them alongside the implementation pipeline's
+(`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1b) — one file, one
+schema, so `scripts/doctor.sh` checks both pipelines' configuration in one
+pass and neither half can drift while the other is checked. The object as a
+whole is optional there: an installation that does not run reviews simply
+leaves it out.
 
 ```json
 "review": {

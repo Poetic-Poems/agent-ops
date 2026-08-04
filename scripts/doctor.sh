@@ -1,0 +1,382 @@
+#!/usr/bin/env bash
+#
+# doctor.sh — check an installation end to end, before it runs a cycle.
+#
+# Everything this system needs to work sits in three places: the
+# configuration, the toolchain around it, and the GitHub access it is granted.
+# Each fails differently and none of them fails clearly. A misconfigured key is
+# silent by construction — an unread key is a default nobody chose; a missing
+# tool surfaces an hour later as a stage that died mid-cycle, after the work
+# was already claimed; a token missing a scope shows up as an empty work
+# source, which looks exactly like a repository with no work in it. The checks
+# below are chosen for that: each one is a failure that otherwise costs a
+# cycle, or a night, to notice.
+#
+# Read-only, with one exception it declares: it creates the state and workspace
+# directories the configuration already names, because being able to create
+# them is the thing being checked. Every GitHub call is a GET. Safe to run
+# against a live node at any time, including while a cycle holds the lock.
+#
+# Three verdicts, and a fourth for what it could not reach:
+#
+#   fail — the pipeline will not work, or will work on something other than
+#          what the configuration says. Exit status 1.
+#   warn — it will work, but something here will surprise the operator later.
+#   skip — the check needs something unavailable right now (the network, an
+#          authenticated `gh`), so it is neither passed nor failed.
+#
+# Run it after editing config.json, on a new node before its first cycle, and
+# whenever a cycle does something the configuration does not explain:
+#
+#   scripts/doctor.sh                 # this installation
+#   scripts/doctor.sh --offline       # config and toolchain only, no network
+#   scripts/doctor.sh --config PATH   # a config not yet deployed
+#
+# Exit: 0 clean (warnings and skips included) · 1 at least one failure ·
+#       2 the arguments or the config file itself were unusable.
+
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/config-schema.sh
+source "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/model-id.sh
+source "$SCRIPT_DIR/lib/model-id.sh"
+
+usage() {
+  cat >&2 <<'USAGE'
+usage: doctor.sh [--config PATH] [--offline] [--quiet]
+
+Check this installation end to end: the configuration against
+config.schema.json, the toolchain the pipelines need, the directories they
+write to, and the GitHub access they are granted.
+
+  --config PATH  Check this file instead of the repository's config.json.
+  --offline      Skip every check that needs the network; report them skipped.
+  --quiet        Print only warnings, failures and the summary.
+
+Exit 0 clean, 1 at least one failure, 2 unusable arguments or config.
+USAGE
+}
+
+config_file="$SCRIPT_DIR/config.json"
+schema_file="$SCRIPT_DIR/config.schema.json"
+offline=0
+quiet=0
+while (($#)); do
+  case "$1" in
+    -h|--help) usage; exit 0 ;;
+    --config)
+      [[ $# -ge 2 ]] || { echo "doctor: --config needs a path" >&2; exit 2; }
+      config_file="$2"; shift 2 ;;
+    --offline) offline=1; shift ;;
+    --quiet) quiet=1; shift ;;
+    *) echo "doctor: unknown argument: $1" >&2; usage; exit 2 ;;
+  esac
+done
+
+fails=0
+warns=0
+skips=0
+pending_section=""
+
+# A section heading is held back until something under it prints, so --quiet
+# never leaves a heading with nothing beneath it.
+section() { pending_section="$1"; }
+show_section() {
+  [[ -n "$pending_section" ]] || return 0
+  printf '\n%s\n' "$pending_section"
+  pending_section=""
+}
+ok()   { ((quiet)) || { show_section; printf '  [ ok ] %s\n' "$1"; }; }
+warn() { warns=$((warns + 1)); show_section; printf '  [warn] %s\n' "$1"; }
+fail() { fails=$((fails + 1)); show_section; printf '  [fail] %s\n' "$1"; }
+skip() { skips=$((skips + 1)); ((quiet)) || { show_section; printf '  [skip] %s\n' "$1"; }; }
+
+# --- Configuration ---
+
+section "Configuration ($config_file)"
+
+if [[ ! -r "$config_file" ]]; then
+  show_section
+  printf '  [fail] cannot read %s\n' "$config_file"
+  printf '\nUnusable configuration — nothing further can be checked.\n'
+  exit 2
+fi
+if ! jq -e . "$config_file" >/dev/null 2>&1; then
+  show_section
+  printf '  [fail] %s is not valid JSON\n' "$config_file"
+  jq . "$config_file" 2>&1 | sed 's/^/         /'
+  printf '\nUnusable configuration — nothing further can be checked.\n'
+  exit 2
+fi
+
+cfg() { jq -r "$1" "$config_file"; }
+cfg_json() { jq -c "$1" "$config_file"; }
+
+schema_errors="$(config_schema_errors "$config_file" "$schema_file")"
+case "$?" in
+  0) ok "matches config.schema.json" ;;
+  1) while IFS= read -r line; do fail "$line"; done <<<"$schema_errors" ;;
+  *) warn "$schema_errors — the schema check did not run" ;;
+esac
+
+# The rules below are the ones the schema cannot state, because each holds
+# between two keys rather than about one. A `fail` here mirrors a startup guard
+# in agent-cycle.sh — the cycle would refuse to run; a `warn` is a combination
+# that works and then surprises someone.
+
+enabler_model="$(cfg '.enabler_model // ""')"
+enabler_assignee="$(cfg '.enabler_assignee // ""')"
+if [[ -n "$enabler_model" && -z "$enabler_assignee" ]]; then
+  fail "enabler_model is set but enabler_assignee is not — agent-cycle.sh refuses to start rather than raise an escalation that, being unassigned, the pipeline could then select as its own work"
+elif [[ -n "$enabler_model" ]]; then
+  ok "the Enabler is enabled; its escalations are assigned to @$enabler_assignee"
+else
+  ok "the Enabler is disabled (enabler_model is empty)"
+fi
+
+missing_plan_path="$(cfg_json '.repos // []' | jq -r \
+  '[.[] | select((.sources // []) | any(. == "implementation-plan"))
+        | select((.implementation_plan_path // "") == "") | .slug] | join(", ")')"
+if [[ -n "$missing_plan_path" ]]; then
+  fail "repo(s) [$missing_plan_path] list the implementation-plan source with no implementation_plan_path — agent-cycle.sh refuses to start, since that source has no path of its own outside the config"
+else
+  ok "every repo listing implementation-plan names its plan document"
+fi
+
+# `blocked` excludes an issue from the issues source, so projecting it onto an
+# item would leave that item permanently unselectable — the one value these
+# label keys must never take.
+for key in enabler_escalation_label needs_refinement_label unvoid_label; do
+  if [[ "$(cfg ".$key // \"\"")" == "blocked" ]]; then
+    fail "$key is \"blocked\", which excludes an issue from the issues source — an item carrying it could never be selected again"
+  fi
+done
+
+excluded_count="$(cfg_json '.schedule.excluded_minutes // []' \
+  | jq 'map(select(type == "number" and . >= 0 and . <= 59)) | unique | length')"
+if ((excluded_count >= 60)); then
+  fail "schedule.excluded_minutes excludes every minute of the hour — deploy/docker/render-crontab.sh has no minute left to choose"
+elif ((excluded_count > 0)); then
+  ok "schedule.excluded_minutes leaves $((60 - excluded_count)) minute(s) for this node's cycle"
+fi
+
+# Arithmetic in jq rather than the shell: a config that failed validation above
+# still reaches here, and `$(( ))` on a value that is not a number is a bash
+# error, not a finding.
+read -r lock_stale_minutes stage_minutes < <(jq -r '
+  def num($v; $default): if ($v | type) == "number" then $v else $default end;
+  [ (num(.lock_stale_after; 0) * 60 | floor),
+    (num(.timeout_coordinator; 0) + num(.timeout_implementor; 0)
+     + num(.timeout_reviewer; 0) + num(.timeout_enabler; 30) | floor)
+  ] | @tsv' "$config_file")
+if ((lock_stale_minutes <= stage_minutes)); then
+  warn "lock_stale_after is ${lock_stale_minutes} min but the stage timeouts sum to ${stage_minutes} min — a cycle running to its limits would have its own lock swept as stale"
+else
+  ok "lock_stale_after (${lock_stale_minutes} min) clears the summed stage timeouts (${stage_minutes} min)"
+fi
+
+if [[ "$(cfg '.review.pr_label // ""')" == "$(cfg '.pr_label // ""')" ]]; then
+  warn "review.pr_label equals pr_label — review pull requests would count against max_open_agent_prs and be indistinguishable from implementation ones"
+fi
+
+read -r cycles_retained local_retained < <(jq -r '
+  def num($v; $default): if ($v | type) == "number" then ($v | floor) else $default end;
+  [num(.cycles_retained; 200), num(.state_local_cycles_retained; 1000)] | @tsv' "$config_file")
+if ((local_retained < cycles_retained)); then
+  warn "state_local_cycles_retained ($local_retained) is below cycles_retained ($cycles_retained) — the replicated mirror would hold a longer history than the node that writes it"
+fi
+
+if [[ "$(cfg '.crash_loop_after // 0')" != "0" && -z "$(cfg '.crash_loop_repo // ""')" ]]; then
+  warn "crash_loop_after is set but crash_loop_repo is empty, which disables the check anyway — a fleet-wide Co-Ordinator crash loop would surface nowhere"
+fi
+
+# --- Models ---
+
+section "Models"
+
+while IFS=$'\t' read -r key value; do
+  [[ -n "$key" ]] || continue
+  if resolved="$(resolve_model_id "$key" "$value" 2>&1)"; then
+    ok "$key → $resolved"
+  else
+    fail "$resolved"
+  fi
+done < <(jq -r '
+  [ {k: "coordinator_model",          v: .coordinator_model},
+    {k: "implementor_model_default",  v: .implementor_model_default},
+    {k: "implementor_model_trivial",  v: .implementor_model_trivial},
+    {k: "reviewer_model_default",     v: .reviewer_model_default},
+    {k: "reviewer_model_complex",     v: .reviewer_model_complex},
+    {k: "enabler_model",              v: .enabler_model},
+    {k: "review.model",               v: .review.model}
+  ] | .[] | select((.v // "") != "") | [.k, .v] | @tsv' "$config_file")
+
+# --- Prompts ---
+
+section "Prompts"
+
+state_dir="$(cfg '.state_dir')"
+[[ "$state_dir" == "~"* ]] && state_dir="$HOME${state_dir:1}"
+
+missing_prompt=0
+for prompt in coordinator implementor reviewer enabler project-reviewer; do
+  if [[ ! -r "$SCRIPT_DIR/prompts/$prompt.md" ]]; then
+    fail "prompts/$prompt.md is missing or unreadable"
+    missing_prompt=1
+  fi
+done
+((missing_prompt)) || ok "every shipped prompt is present"
+
+# A configured override path that does not resolve is tolerated at runtime —
+# files legitimately come and go — which is exactly why it is worth naming
+# here: the stage quietly runs on the shipped prompt instead.
+while IFS=$'\t' read -r stage mode path; do
+  [[ -n "$path" ]] || continue
+  case "$path" in
+    "~"*) resolved_path="$HOME${path:1}" ;;
+    /*) resolved_path="$path" ;;
+    *) resolved_path="$state_dir/$path" ;;
+  esac
+  if [[ -r "$resolved_path" ]]; then
+    ok "prompt_overrides.$stage.$mode → $resolved_path"
+  else
+    warn "prompt_overrides.$stage.$mode names $resolved_path, which is not readable — the $stage stage runs on the shipped prompt and says nothing about it"
+  fi
+done < <(cfg_json '.prompt_overrides // {}' | jq -r '
+  to_entries[]
+  | .key as $stage
+  | ((.value.extend // [])[] | [$stage, "extend", .] | @tsv),
+    (select((.value.replace // "") != "") | [$stage, "replace", .value.replace] | @tsv)')
+
+# --- Toolchain ---
+
+section "Toolchain"
+
+# The pipelines' hard requirements, as deploy/docker/Dockerfile installs them.
+# Without any one of these a cycle dies part-way through, having already
+# claimed its work — which is the expensive way to discover it.
+for tool in bash jq git curl perl python3 rsync flock timeout; do
+  if command -v "$tool" >/dev/null 2>&1; then
+    ok "$tool — $(command -v "$tool")"
+  else
+    fail "$tool is not on PATH; the pipelines need it"
+  fi
+done
+if command -v gh >/dev/null 2>&1; then
+  ok "gh — $(gh --version 2>/dev/null | head -1)"
+else
+  fail "gh is not on PATH; every work source and every pull request goes through it"
+fi
+if command -v claude >/dev/null 2>&1; then
+  ok "claude — $(claude --version 2>/dev/null | head -1)"
+else
+  fail "claude is not on PATH; it is the execution substrate for every stage"
+fi
+if command -v shellcheck >/dev/null 2>&1; then
+  ok "shellcheck — $(shellcheck --version 2>/dev/null | awk '/^version:/ {print $2}')"
+else
+  warn "shellcheck is not on PATH — an Implementor working on shell cannot lint before it pushes"
+fi
+
+# --- Directories ---
+
+section "Directories"
+
+workspace_root="$(cfg '.workspace_root')"
+[[ "$workspace_root" == "~"* ]] && workspace_root="$HOME${workspace_root:1}"
+for entry in "state_dir=$state_dir" "workspace_root=$workspace_root"; do
+  key="${entry%%=*}"
+  dir="${entry#*=}"
+  if [[ -z "$dir" || "$dir" == "null" ]]; then
+    fail "$key is not set"
+  elif mkdir -p "$dir" 2>/dev/null && [[ -w "$dir" ]]; then
+    avail_kb="$(df -Pk "$dir" 2>/dev/null | awk 'NR == 2 {print $4}')"
+    if [[ "$avail_kb" =~ ^[0-9]+$ ]] && ((avail_kb < 2 * 1024 * 1024)); then
+      warn "$key ($dir) is writable but has only $((avail_kb / 1024)) MiB free — a cycle clones every repository it touches"
+    else
+      ok "$key ($dir) is writable"
+    fi
+  else
+    fail "$key ($dir) cannot be created or is not writable"
+  fi
+done
+
+# --- GitHub ---
+
+section "GitHub"
+
+gh_ready=0
+if ((offline)); then
+  skip "every GitHub check (--offline)"
+elif ! command -v gh >/dev/null 2>&1; then
+  skip "every GitHub check (gh is not installed)"
+elif ! gh auth status >/dev/null 2>&1; then
+  fail "gh is not authenticated — run 'gh auth login' or set GH_TOKEN; every work source reads through it"
+else
+  gh_ready=1
+  ok "gh is authenticated as $(gh api user --jq .login 2>/dev/null || echo '(login unavailable)')"
+fi
+
+if ((gh_ready)); then
+  # The labels every repository the implementation pipeline works should carry.
+  # Fetched once per repository rather than once per label: the pipeline wants
+  # several, and a repository is either reachable or it is not.
+  mapfile -t wanted_labels < <(cfg '[.pr_label,
+                                     .enabler_escalation_label // "enabler-escalation",
+                                     .needs_refinement_label // "needs-refinement",
+                                     .unvoid_label // "unvoided"]
+                                    | map(select(. != null and . != "")) | unique | .[]')
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    if ! repo_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
+      fail "$slug is unreachable with this token — a repository the pipeline cannot read is a work source that silently reports no work"
+      continue
+    fi
+    ok "$slug is readable"
+    for label in "${wanted_labels[@]}"; do
+      grep -qxF "$label" <<<"$repo_labels" \
+        || warn "$slug has no \"$label\" label — the pipeline still acts, the label just never appears (gh label create '$label' -R $slug)"
+    done
+  done < <(cfg '.repos[]?.slug // empty')
+
+  review_label="$(cfg '.review.pr_label // ""')"
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    if ! review_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
+      fail "review.repos names $slug, which is unreachable with this token"
+    elif [[ -n "$review_label" ]] && ! grep -qxF "$review_label" <<<"$review_labels"; then
+      warn "$slug has no \"$review_label\" label for review pull requests (gh label create '$review_label' -R $slug)"
+    fi
+  done < <(cfg '.review.repos[]? // empty')
+
+  state_repo="$(cfg '.state_repo // ""')"
+  if [[ -z "$state_repo" || "$state_repo" == "null" ]]; then
+    ok "no state_repo configured — single-node operation, every state-sync mode is a no-op"
+  elif ! state_repo_push="$(gh api "repos/$state_repo" --jq '.permissions.push' 2>/dev/null)"; then
+    fail "state_repo $state_repo is unreachable with this token — claims, fleet flags and the shared log would not replicate"
+  elif [[ "$state_repo_push" == "true" ]]; then
+    ok "$state_repo is readable and writable — the fleet's shared state can replicate"
+  else
+    fail "$state_repo is readable but not writable with this token — this node could fetch fleet state and never publish its own"
+  fi
+
+  if [[ -n "$enabler_assignee" ]]; then
+    if gh api "users/$enabler_assignee" --jq .login >/dev/null 2>&1; then
+      ok "enabler_assignee @$enabler_assignee is a GitHub account"
+    else
+      fail "enabler_assignee @$enabler_assignee is not a GitHub account — its escalations would be raised unassigned, and the pipeline could then select them as work"
+    fi
+  fi
+fi
+
+# --- Summary ---
+
+printf '\n'
+if ((fails)); then
+  printf '%d failure(s), %d warning(s), %d skipped.\n' "$fails" "$warns" "$skips"
+  exit 1
+fi
+printf 'No failures. %d warning(s), %d skipped.\n' "$warns" "$skips"
+exit 0

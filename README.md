@@ -178,7 +178,15 @@ Two things to know:
 
 ## Configuration
 
-Edit `config.json` before first run. Keys:
+Edit `config.json` before first run, then check it with
+[`scripts/doctor.sh`](#checking-an-installation) — every key below is
+described in `config.schema.json` too, and the doctor validates your file
+against it. The schema is the enforceable statement of this table: it knows
+each key's type, its range, and whether it may be left out, and it rejects a
+key it has never heard of, so a misspelling is caught the moment you check
+rather than silently running on a default you did not choose.
+
+Keys:
 
 | Key | Default | Notes |
 |---|---|---|
@@ -206,6 +214,7 @@ Edit `config.json` before first run. Keys:
 | `enabler_recheck_hours` | 72 | Hours before the Enabler re-examines an item it has already examined. This is the bound on how long new evidence — a diagnosis posted into the very thread whose absence blocked the item — can sit unread. `0` switches re-examination off. |
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. Create it in each target repo (`gh label create enabler-escalation -R Poetic-Poems/<repo>`); without it the issue is still raised, just unlabelled. |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. Create it in each target repo (`gh label create needs-refinement -R Poetic-Poems/<repo>`); without it the item is still recorded and still reaches the Enabler, you just do not see it in the issue list — and a label you apply yourself does nothing. Leave it empty to switch the labelling off in both directions. Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source. |
+| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. Create it in each target repo (`gh label create unvoided -R Poetic-Poems/<repo>`); `scripts/doctor.sh` warns when a repo has not got it. Do not set it to `blocked`. |
 | `refinement_max_per_engagement` | 3 | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
@@ -484,6 +493,50 @@ is a container: Docker and the `.env` above are the whole of it.
    env -i HOME="$HOME" PATH="$HOME/.local/bin:$HOME/.claude/local:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" /bin/bash -lc 'command -v claude && claude -V'
    ```
    If this still fails, fix the PATH in the crontab (or install a symlink in `~/.local/bin`) before relying on scheduled runs.
+
+## Checking an installation
+
+```bash
+./scripts/doctor.sh
+```
+
+Checks the whole installation in one pass and says what is wrong before a
+cycle finds out the expensive way: your `config.json` against
+`config.schema.json`, the rules that hold *between* config keys, the model
+ids, the shipped and overridden prompts, the toolchain, the directories the
+pipelines write to, and the GitHub access your token actually has.
+
+Four verdicts:
+
+- **`ok`** — checked and sound.
+- **`warn`** — it will run, but something here will surprise you later: a
+  label that does not exist in a repo (so the pipeline acts and you never see
+  the label), a prompt override pointing at a file that is not there (so that
+  stage quietly runs on the shipped prompt), a `lock_stale_after` shorter than
+  the stage timeouts it has to outlast.
+- **`fail`** — the pipeline will not run, or will run on something other than
+  what you configured. Exit status 1.
+- **`skip`** — the check needed something it could not reach, and is neither
+  passed nor failed.
+
+```bash
+./scripts/doctor.sh --offline          # config and toolchain only, no network
+./scripts/doctor.sh --quiet            # warnings and failures only
+./scripts/doctor.sh --config /tmp/new.json   # a config you have not deployed yet
+```
+
+Run it after editing `config.json`, on a new node before its first cycle, and
+whenever a cycle does something the configuration does not explain. It is
+read-only bar the state and workspace directories your config names, which it
+creates in order to prove it can, and every GitHub call it makes is a read —
+so it is safe to run against a live node, including mid-cycle.
+
+Inside a container node, run it there rather than on the host, since that is
+where the toolchain and the credentials are:
+
+```bash
+docker compose exec scheduler /app/scripts/doctor.sh
+```
 
 ## Operation
 
