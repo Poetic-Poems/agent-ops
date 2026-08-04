@@ -76,9 +76,13 @@
 #         told it may use either (`prompts/reviewer.md` step 5), so both are
 #         matched against the marker. A human's review — an approval, a
 #         change request, an inline note — carries no marker either way.
-#     The default threshold is `abandoned_draft_after_hours` (3 h), comfortably
-#     beyond a whole cycle (90 min Implementor + 30 min Reviewer) so a draft that
-#     is merely being worked never qualifies.
+#     The default threshold is `abandoned_draft_after_hours` (3 h), beyond a
+#     whole cycle (120 min Implementor + 45 min Reviewer) so a draft that is
+#     merely being worked never qualifies. That margin is only 15 minutes wide
+#     since the Implementor's cap rose to 120 (#203), which costs nothing:
+#     candidacy is not selection, and a draft another node is genuinely working
+#     is claimed, so a false candidate loses the claim race (requirement 17a)
+#     rather than duplicating the work.
 #
 # ## Why the clock is "last real activity", not GitHub's `updatedAt`
 #

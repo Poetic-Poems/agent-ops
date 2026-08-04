@@ -227,10 +227,10 @@ Keys:
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issue is filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check. |
 | `timeout_coordinator` | `15` | Minutes. |
-| `timeout_implementor` | `90` | Minutes. |
+| `timeout_implementor` | `120` | Minutes. |
 | `timeout_reviewer` | `45` | Minutes. |
 | `timeout_enabler` | `30` | Minutes. |
-| `lock_stale_after` | `4` | Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 90 + 45 + 30 minutes). |
+| `lock_stale_after` | `4` | Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 120 + 45 + 30 minutes). |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
 | `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
