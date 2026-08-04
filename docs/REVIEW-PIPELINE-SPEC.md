@@ -354,6 +354,15 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       actionable message rather than falling back to any identity. The claim's
       own lost/error skips, and every stand-down before it, commit nothing and
       are never gated on this.
+   0b. *Labels.* At the same point, and for the same reason it is that point —
+      this repo is now certainly going to be worked — ensure `review.pr_label`
+      exists in it, creating it only if absent (`lib/labels.sh`;
+      `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 6a). `gh pr create
+      --label` on a label that does not exist fails the create outright, and
+      here that would discard a review costing up to `review.timeout_review`
+      minutes. Never fatal: a repository whose labels cannot be listed, or a
+      token that may not create them, logs `labels-ensured` with what failed
+      and the review proceeds.
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
       clone the repo fresh from GitHub — the multi-agent ways-of-working rule
       shared by all Poetic repositories: every agent works in its own
@@ -522,7 +531,10 @@ R16. **Streams.** Review *operational* events go to the review pipeline's own
    the `log_event` shape (requirement 33). Events: `review-start`,
    `review-skipped`, `review-stand-down`, `review-stage-start`,
    `review-stage-end`, `review-pr-raised`, `review-attempt-failed`,
-   `review-end`, and `warning`. Common fields: ISO-8601 `ts`, a `review` id
+   `review-end`, `labels-ensured` (R5.0b — the same event name and shape the
+   implementation pipeline writes, since it is the same mechanism reporting
+   the same thing about the same repositories), and `warning`. Common fields:
+   ISO-8601 `ts`, a `review` id
    (`<UTC-timestamp>-<node>-<pid>`, pid last, exactly as requirement 33 shapes
    the cycle id), `node`, an `event`, and where applicable `repo`, `pr_url`,
    `model`, `detail`. `review-stage-end` additionally carries the metering

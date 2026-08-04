@@ -1657,6 +1657,38 @@ runs unattended.
    workspace; the Script must refuse (assert) to launch a stage whose
    working directory is outside `workspace_root`. The user's own clones
    under `~/Code` are never touched.
+6a. **The pipeline creates its own labels.** Before launching the Implementor,
+   the Script ensures every label this system applies exists in the selected
+   repository, creating only those that are absent: `pr_label`,
+   `enabler_escalation_label`, `needs_refinement_label`, `unvoid_label`,
+   `complexity:low|medium|high`, and `blocked` — the last being the human's own
+   exclusion control (requirement 16.4), which a repository without the label
+   does not offer them at all. `review-cycle.sh` does the same for
+   `review.pr_label` in each repository it is about to review, and
+   `create_escalation_issue` for `enabler_escalation_label` in the repository
+   an escalation is filed in, which is often one no cycle otherwise touches.
+   A label whose configured name is empty is switched off and is not created.
+
+   Three properties are load-bearing. It **only ever creates**: an existing
+   label keeps whatever colour and description it has, because operators
+   recolour labels and a pipeline that reasserted its own idea of them every
+   cycle would undo that work on a schedule. It is **never fatal**: a
+   repository whose labels cannot be listed, or a token that may not create
+   them, is reported and nothing more — the tolerances the callers already
+   carry (`refinement_label_add`'s swallowed error, requirement 36a's retry
+   without the label) stay exactly where they are, so this makes the common
+   case work without becoming a new way to lose a cycle. And it is **per
+   worked repository, not per configured repository**: a cycle works one repo,
+   so the steady state is a single listing and no writes at all.
+
+   Why it exists: every one of these labels was previously something a human
+   had to create by hand in every target repository, and nothing said so when
+   they had not — the projection simply did not happen and the item was
+   handled anyway, so the signal the label exists to give was silently absent.
+   That is a product bug rather than an installation's own problem (the
+   customer-zero rule, `docs/ROADMAP.md`): a new installation must not need a
+   checklist of `gh label create` commands, and a label a human deletes must
+   come back on its own.
 7. **Implementor stage.** Launch the Implementor in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
    the implementor prompt plus the work order.
@@ -2701,8 +2733,13 @@ runs unattended.
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
-    `enabler-examined`, `escalated`, `limit-hit`, `disabled`, `enabled`,
-    `warning`, `cycle-end`. A `claim-lost` names the repo, item and branch of
+    `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
+    `disabled`, `enabled`,
+    `warning`, `cycle-end`. A `labels-ensured` carries the `repo`, its `role`,
+    and the labels `created` and `failed` (requirement 6a) — it is written
+    only when there was something to report, so it appears on a repository's
+    first cycle and then not again unless a label is deleted or the token
+    cannot create one. A `claim-lost` names the repo, item and branch of
     the candidate the Script failed to claim, plus a `cause` — `held` when a
     peer node won it, `unreachable` when GitHub could not be reached, or the
     raw exit code otherwise (requirement 17a); `selection` carries the
@@ -3872,8 +3909,21 @@ What exists, and the requirements each part answers to:
     it. Every verdict is `ok`, `warn`, `fail` or `skip`; exit 0 clean, 1 at
     least one failure, 2 arguments or a config it could not read. Read-only
     but for the configured directories it creates to prove they can be, and
-    every GitHub call a GET, so it is safe against a live node mid-cycle.
-    `test/config-schema.test.sh` covers both; must pass `shellcheck`.
+    every GitHub call a GET, so it is safe against a live node mid-cycle. Its
+    per-repository label check reads `lib/labels.sh`'s catalogue rather than a
+    list of its own, so it can never report a different set from the one the
+    cycle maintains. `test/config-schema.test.sh` covers both; must pass
+    `shellcheck`.
+15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
+    repository in a given role — `target`, `review`, `escalation` — needs, as
+    `name`/`colour`/`description`, with the names taken from config and an
+    empty name yielding nothing) and `labels_ensure` (create what is absent in
+    one repository, reporting `created` or `failed` per label and nothing at
+    all for those already there, so the steady state is silent). `LABELS_GH`
+    overrides the `gh` binary for tests. Sourced by `agent-cycle.sh`,
+    `review-cycle.sh` and `scripts/doctor.sh`; regression-tested against a
+    stubbed `gh` that records every invocation
+    (`test/labels.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -4664,6 +4714,22 @@ pull request, run the ones the change touches and any it could regress.
     the shipped configuration, run against the shipped scripts, so what is
     asserted is the product rather than a restatement of it. `--offline`
     throughout: no assertion here needs the network.
+6h. **The pipeline creates the labels it applies, and touches no others
+    (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
+    that records every invocation and refuses a duplicate the way GitHub
+    does: an empty repository receives every label of its role and each is
+    reported created; a second pass over the same repository reports nothing;
+    a partly-labelled one receives only what it lacks; a name differing only
+    in case counts as present, since GitHub's uniqueness is case-insensitive;
+    a label switched off by an empty configured name is not created; a
+    renamed label is created under the configured name. The two safety
+    properties are asserted from the request log rather than from the return
+    value — **no `PATCH`, `PUT` or `DELETE` is ever issued**, and the only
+    requests made at all are listings and creates — and the failure paths
+    are asserted not to escalate: one refused create still creates the rest
+    and returns 0, an unlistable repository returns 1 having created nothing
+    and claimed no failures it did not observe, and a guarded call survives a
+    total failure under `set -e`.
 
 ## Host provisioning (human steps)
 

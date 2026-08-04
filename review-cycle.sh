@@ -58,6 +58,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/git-identity.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/labels.sh
+. "$SCRIPT_DIR/lib/labels.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -669,6 +671,23 @@ review_one() {
   # nothing and must not be blocked on an identity it never uses. See
   # lib/git-identity.sh.
   require_git_identity review-cycle
+
+  # The review pull request carries `review.pr_label`, and `gh pr create
+  # --label` on a label that is not there fails the create — after a review
+  # that costs up to `timeout_review` minutes. Ensured here, at the same point
+  # as the identity above and for the same reason: this repo is now certainly
+  # going to be worked (R4's skip-guard and the claim are both behind us), so
+  # nothing is spent on a repo this cycle will not touch.
+  # See lib/labels.sh; never fatal.
+  local labels_report
+  labels_report="$(labels_ensure_role "$CONFIG_FILE" "$slug" review 2>/dev/null || true)"
+  if [[ -n "$labels_report" ]]; then
+    log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg report "$labels_report" '
+      {repo: $repo, role: "review"}
+      + ($report | split("\n") | map(select(length > 0) | split("\t"))
+         | {created: [.[] | select(.[0] == "created") | .[1]],
+            failed:  [.[] | select(.[0] == "failed")  | .[1]]})')"
+  fi
 
   clone_dir="$workspace_root/${review_id}-${safe}"
   assert_in_workspace "$clone_dir"
