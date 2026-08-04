@@ -50,8 +50,10 @@ chmod +x "$tmp/scripts/render-config-table.sh"
 
 # --- Fixture schema. Covers: no x-docs (falls back to description); a
 #     default with no x-docs.value; four distinct x-docs.value rows that must
-#     render verbatim; a `|` inside prose; one level of nesting under
-#     "schedule" (the "main" region) and under "review" (its own region). ---
+#     render verbatim; an x-docs.value keyed per audience, both with and
+#     without an entry for the audience being rendered; an empty-string
+#     default; a `|` inside prose; one level of nesting under "schedule" (the
+#     "main" region) and under "review" (its own region). ---
 cat > "$tmp/config.schema.json" <<'JSON'
 {
   "properties": {
@@ -83,6 +85,19 @@ cat > "$tmp/config.schema.json" <<'JSON'
     "eta": {
       "description": "Eta description fallback.",
       "x-docs": { "value": "*(eta-value)*" }
+    },
+    "theta": {
+      "description": "Theta description.",
+      "default": 4,
+      "x-docs": { "readme": "Theta readme prose.", "spec": "Theta spec prose.", "value": { "spec": "4 h" } }
+    },
+    "iota": {
+      "description": "Iota description.",
+      "x-docs": { "value": { "readme": "see `config.json`", "spec": "`[\"a\", \"b\"]`" } }
+    },
+    "kappa": {
+      "description": "Kappa description.",
+      "default": ""
     },
     "schedule": {
       "properties": {
@@ -199,9 +214,15 @@ fi
 # shellcheck disable=SC2016
 assert_contains "alpha (no x-docs) falls back to description" "$main_region" '| `alpha` | *(required)* | Alpha description fallback. |'
 
-# --- A default with no x-docs.value renders the schema default ---
+# --- A default with no x-docs.value renders the schema default: a non-empty
+#     string bare (so a label does not read `"b-default"` beside the rows
+#     whose value comes from x-docs.value), anything else as compact JSON ---
 # shellcheck disable=SC2016
-assert_contains "beta's default renders as compact JSON in backticks" "$main_region" '| `beta` | `"b-default"` |'
+assert_contains "beta's string default renders bare in backticks" "$main_region" '| `beta` | `b-default` |'
+# shellcheck disable=SC2016
+assert_contains "epsilon's numeric default renders as compact JSON in backticks" "$main_region" '| `epsilon` | `5` |'
+# shellcheck disable=SC2016
+assert_contains "kappa's empty-string default stays visible as compact JSON" "$main_region" '| `kappa` | `""` | Kappa description. |'
 
 # --- The four x-docs.value rows render verbatim ---
 # shellcheck disable=SC2016
@@ -213,6 +234,14 @@ assert_contains "zeta's x-docs.value renders verbatim" "$main_region" '| `zeta` 
 # shellcheck disable=SC2016
 assert_contains "eta's x-docs.value renders verbatim" "$main_region" '| `eta` | *(eta-value)* |'
 
+# --- A per-audience x-docs.value gives each document its own value cell:
+#     iota has one for both, theta only for the spec (so the README falls
+#     through to theta's schema default) ---
+# shellcheck disable=SC2016
+assert_contains "iota's per-audience value renders the README's" "$main_region" '| `iota` | see `config.json` |'
+# shellcheck disable=SC2016
+assert_contains "theta falls through to its default for the README" "$main_region" '| `theta` | `4` | Theta readme prose. |'
+
 # --- A `|` inside prose survives (escaped, so the table stays well-formed) ---
 # shellcheck disable=SC2016
 epsilon_line="$(grep '`epsilon`' "$tmp/README.md")"
@@ -223,7 +252,7 @@ assert_eq "the epsilon row still has exactly 4 unescaped pipes (3 columns)" "4" 
 
 # --- Nesting renders as dotted keys in the parent's position ---
 # shellcheck disable=SC2016
-assert_contains "schedule.nested_key renders dotted, in the main region" "$main_region" '| `schedule.nested_key` | `"nested-default"` | Nested key description. |'
+assert_contains "schedule.nested_key renders dotted, in the main region" "$main_region" '| `schedule.nested_key` | `nested-default` | Nested key description. |'
 
 review_region_readme="$(awk '/<!-- config-table:start id=review -->/{f=1;next} /<!-- config-table:end -->/{f=0} f' "$tmp/README.md")"
 # shellcheck disable=SC2016
@@ -237,6 +266,10 @@ fi
 # --- The two specs use the "spec" audience, not "readme" ---
 impl_spec_content="$(cat "$tmp/docs/IMPLEMENTATION-PIPELINE-SPEC.md")"
 assert_contains "the impl spec renders x-docs.spec prose" "$impl_spec_content" 'Gamma spec prose.'
+# shellcheck disable=SC2016
+assert_contains "the impl spec renders theta's own value cell" "$impl_spec_content" '| `theta` | 4 h | Theta spec prose. |'
+# shellcheck disable=SC2016
+assert_contains "the impl spec renders iota's own value cell" "$impl_spec_content" '| `iota` | `["a", "b"]` |'
 if [[ "$impl_spec_content" == *"Gamma readme prose."* ]]; then
   fail "the impl spec does not render the README's prose"
 else
@@ -261,6 +294,25 @@ assert_eq "--check exits zero on a fresh tree" "0" "$fresh_check_rc"
 run_script >/dev/null
 after_hash="$(cat "$tmp/README.md" "$tmp"/docs/*.md | sha256sum)"
 assert_eq "regenerating a fresh tree is a no-op" "$before_hash" "$after_hash"
+
+# --- A region whose delimiter row was swallowed by the start marker is
+#     refused rather than rendered into something GitHub shows as prose ---
+awk '
+  /^<!-- config-table:start id=review -->$/ { held = "" }
+  held != "" { print held }
+  { held = $0 }
+  END { if (held != "") print held }
+' "$tmp/README.md" > "$tmp/README.nodelim" && mv "$tmp/README.nodelim" "$tmp/README.md"
+delim_out="$(run_script --check 2>&1)"
+delim_rc=$?
+if (( delim_rc != 0 )); then
+  pass "a region with no delimiter row above it is refused"
+else
+  fail "a region with no delimiter row above it is refused (got rc=0)"
+fi
+assert_contains "the delimiter-row error names the region" "$delim_out" "id=review"
+write_fixture_readme
+run_script >/dev/null
 
 echo
 if (( failures == 0 )); then

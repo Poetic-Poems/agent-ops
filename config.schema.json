@@ -79,14 +79,25 @@
         }
       },
       "x-docs": {
-        "readme": "Array of `{\"slug\": \"...\", \"sources\": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk \u2014 finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason \u2014 a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly; `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes fifth for the same reason \u2014 finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings); `register-hygiene` (the repo's tech-debt register failing its own consistency check \u2014 an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway. The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field \u2014 see \"Issue priority\" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change. At runtime, repos are ordered most-overdue first \u2014 each repo's default-branch staleness age scaled by `1.25^(-nice)` \u2014 ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before. A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key. A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys earlier attention and a positive one later. It biases the walk but never starves a repository. The Script refuses to start a cycle if `nice` is not an integer in that range. A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
+        "readme": [
+          "Array of `{\"slug\": \"...\", \"sources\": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`).",
+          "`security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work; `issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert; `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk \u2014 finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever; `merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason \u2014 a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly; `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes fifth for the same reason \u2014 finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge; `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings); `register-hygiene` (the repo's tech-debt register failing its own consistency check \u2014 an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway.",
+          "The four `issues:<band>` tokens are the *same* source at four ranks, banded by each issue's `Priority` field \u2014 see \"Issue priority\" below; list a subset to have the pipeline see only those bands, or none to turn issues off for that repo. Adding a repo or source is a config-only change.",
+          "At runtime, repos are ordered most-overdue first \u2014 each repo's default-branch staleness age scaled by `1.25^(-nice)` \u2014 ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.",
+          "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key.",
+          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
+          "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged."
+        ],
         "spec": [
           "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
           "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
           "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range."
         ],
-        "value": "see `config.json`"
+        "value": {
+          "readme": "see `config.json`",
+          "spec": "`[\"Poetic-Poems/poetic\", \"Poetic-Poems/poetic-fiddle\"]`"
+        }
       }
     },
     "state_dir": {
@@ -242,7 +253,10 @@
       "x-docs": {
         "readme": "The same wait, but for an item the pipeline recorded as too under-specified to work on (an issue picks up the `needs-refinement` label) rather than one blocked by something in the world. Left unset it waits exactly as long as any other block; set it separately once fleet behaviour tells you refinement items should age faster or slower.",
         "spec": "The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart.",
-        "value": "*(same as `enabler_after_coordinator_cycles`)*"
+        "value": {
+          "readme": "*(same as `enabler_after_coordinator_cycles`)*",
+          "spec": "*(`enabler_after_coordinator_cycles`)*"
+        }
       }
     },
     "enabler_recheck_hours": {
@@ -404,7 +418,10 @@
       "x-docs": {
         "readme": "Minutes.",
         "spec": "Per-stage wall-clock timeouts, enforced by the Script.",
-        "value": "`15`"
+        "value": {
+          "readme": "`15`",
+          "spec": "15 min"
+        }
       }
     },
     "timeout_implementor": {
@@ -412,7 +429,10 @@
       "description": "Per-stage wall-clock timeout for the Implementor, in minutes.",
       "x-docs": {
         "readme": "Minutes.",
-        "value": "`90`"
+        "value": {
+          "readme": "`90`",
+          "spec": "90 min"
+        }
       }
     },
     "timeout_reviewer": {
@@ -421,7 +441,10 @@
       "x-docs": {
         "readme": "Minutes.",
         "spec": "Raised from 30 as an interim measure (#203): at 30, 24% of `agent-ops` reviews were killed mid-flight while still making progress, which discards the Implementor's work and lets the pull request reach the human with no pipeline review at all. Adaptive, liveness-based timeouts supersede this.",
-        "value": "`45`"
+        "value": {
+          "readme": "`45`",
+          "spec": "45 min"
+        }
       }
     },
     "timeout_enabler": {
@@ -430,7 +453,10 @@
       "default": 30,
       "x-docs": {
         "readme": "Minutes.",
-        "spec": "Per-stage wall-clock timeout for the Enabler, enforced like the others."
+        "spec": "Per-stage wall-clock timeout for the Enabler, enforced like the others.",
+        "value": {
+          "spec": "30 min"
+        }
       }
     },
     "lock_stale_after": {
@@ -440,7 +466,10 @@
       "x-docs": {
         "readme": "Hours. Stale lock is killed and warning is logged. Comfortably beyond the sum of the stage timeouts (15 + 90 + 45 + 30 minutes).",
         "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 90 + 45 + 30 minutes once the Enabler can run inside the lock (requirement 35).",
-        "value": "`4`"
+        "value": {
+          "readme": "`4`",
+          "spec": "4 h"
+        }
       }
     },
     "limit_cooldown_default": {
@@ -450,7 +479,10 @@
       "x-docs": {
         "readme": "Hours. Stand-down after a usage-limit error.",
         "spec": "Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) \u2014 not this key.",
-        "value": "`3`"
+        "value": {
+          "readme": "`3`",
+          "spec": "3 h"
+        }
       }
     },
     "disable_default_ttl": {
@@ -460,7 +492,10 @@
       "default": 4,
       "x-docs": {
         "readme": "Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines).",
-        "spec": "How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one."
+        "spec": "How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
+        "value": {
+          "spec": "4 h"
+        }
       }
     },
     "none_selected_recheck_hours": {
@@ -470,7 +505,10 @@
       "default": 24,
       "x-docs": {
         "readme": "Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely \u2014 not recommended.",
-        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve \u2014 don't."
+        "spec": "The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve \u2014 don't.",
+        "value": {
+          "spec": "24 h"
+        }
       }
     },
     "image_behind_grace_hours": {
@@ -480,7 +518,10 @@
       "default": 3,
       "x-docs": {
         "readme": "Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image).",
-        "spec": "The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault."
+        "spec": "The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault.",
+        "value": {
+          "spec": "3 h"
+        }
       }
     },
     "dashboard_refresh_seconds": {
@@ -530,7 +571,10 @@
           "x-docs": {
             "readme": "Free-text note on *why* `excluded_minutes` excludes what it does \u2014 documentation only, read by nobody.",
             "spec": "Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader.",
-            "value": "see `config.json`"
+            "value": {
+              "readme": "see `config.json`",
+              "spec": "`\"poetic's hourly sync workflow owns the top of the hour\"`"
+            }
           }
         },
         "review_hour": {

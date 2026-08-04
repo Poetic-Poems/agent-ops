@@ -12,9 +12,17 @@
 # interchangeable — the spec's cites requirement numbers and test-only env
 # overrides, the README's cites README anchors and is addressed to someone
 # installing), and `x-docs.value` — when present — is the verbatim value
-# cell; a key with no `x-docs.value` renders its schema `default` as compact
-# JSON in backticks, and a key with neither renders `*(required)*`. A key
-# entirely absent from `x-docs` falls back to its plain `description`.
+# cell. `x-docs.value` is either one string for both documents, or an object
+# keyed `readme`/`spec` for the keys whose two tables say different things
+# there (the spec's `Value` column carries the unit — `4 h`, `15 min` — that
+# the README's `Default` column leaves to the key's name and its notes), and
+# an audience absent from that object falls through as if the key had no
+# `x-docs.value` at all. Falling through renders the schema `default` — a
+# non-empty string bare in backticks, so a label reads `unvoided` rather than
+# `"unvoided"` beside the two dozen rows whose value comes from
+# `x-docs.value`; anything else as compact JSON in backticks — and a key with
+# no `default` either renders `*(required)*`. A key entirely absent from
+# `x-docs` falls back to its plain `description`.
 #
 # Row order is the schema's own property order (`jq`'s `keys_unsorted`), so
 # reordering a table means reordering the schema. `schedule` and `review` are
@@ -23,9 +31,10 @@
 # `review.model`) in the parent's position — everything else (`repos`,
 # `prompt_overrides`) renders as a single row.
 #
-# Four marked regions hold the generated body rows — header and separator
+# Four marked regions hold the generated body rows — header and delimiter
 # lines stay outside the markers, which is what lets the README say `Default`
-# and the specs say `Value` without this script knowing either:
+# and the specs say `Value` without this script knowing either, and both
+# modes refuse a region that has swallowed its delimiter row:
 #
 #   README.md                              id=main, id=review
 #   docs/IMPLEMENTATION-PIPELINE-SPEC.md   id=main
@@ -100,15 +109,19 @@ def notes_for($audience):
    elif ($d | type) == "array" then ($d | join(" "))
    else $d end);
 
-def value_for:
+def value_for($audience):
   (.node["x-docs"].value?) as $v |
-  (if $v != null then $v
-   elif (.node.default? != null) then ("`" + (.node.default | tojson) + "`")
+  (if ($v | type) == "object" then $v[$audience] else $v end) as $value |
+  (if $value != null then $value
+   elif (.node.default? != null) then
+     (.node.default as $d |
+      if ($d | type) == "string" and $d != "" then ("`" + $d + "`")
+      else ("`" + ($d | tojson) + "`") end)
    else "*(required)*" end);
 
 [ flatten_region($region) ]
 | map(
-    "| `" + .key + "` | " + (. | value_for) + " | "
+    "| `" + .key + "` | " + (. | value_for($audience)) + " | "
     + (({node: .node} | notes_for($audience)) | esc_pipes) + " |"
   )
 | .[]
@@ -132,6 +145,22 @@ extract_region() {
     found && $0 == end { printed=1; exit }
     found { print }
     END { exit(printed ? 0 : 1) }
+  ' "$file"
+}
+
+# True when the line immediately above the start-id marker is a Markdown
+# table delimiter row. Each document keeps its own header and `|---|---|---|`
+# *outside* the markers — that is what lets the README say `Default` where
+# the specs say `Value` without this script knowing either — and a region
+# whose delimiter row was swallowed by the marker stops being a table at all
+# on GitHub, silently, since every generated row still looks right in the
+# diff. Cheap to assert, so assert it.
+delimiter_above() {
+  local file="$1" id="$2"
+  awk -v start="$(start_marker "$id")" '
+    $0 == start { found=1; ok = (prev ~ /^\|[-| :]+\|$/); exit }
+    { prev = $0 }
+    END { exit((found && ok) ? 0 : 1) }
   ' "$file"
 }
 
@@ -176,15 +205,22 @@ for spec in "${regions[@]}"; do
     exit 1
   fi
 
+  old_content="$(mktemp)"
+  if ! extract_region "$file" "$id" > "$old_content"; then
+    echo "render-config-table: $file has no config-table region id=$id" >&2
+    rm -f "$old_content"
+    exit 1
+  fi
+  if ! delimiter_above "$file" "$id"; then
+    echo "render-config-table: $file region id=$id is not preceded by a table delimiter row (\`|---|---|---|\`), so the table does not render" >&2
+    rm -f "$old_content"
+    exit 1
+  fi
+
   new_content="$(mktemp)"
   render_region "$id" "$audience" > "$new_content"
 
   if (( check_mode )); then
-    old_content="$(mktemp)"
-    if ! extract_region "$file" "$id" > "$old_content"; then
-      echo "render-config-table: $file has no config-table region id=$id" >&2
-      exit 1
-    fi
     if ! diff -q "$old_content" "$new_content" >/dev/null; then
       key="$(first_differing_key "$old_content" "$new_content")"
       echo "render-config-table: $file region id=$id is stale (first differing key: \`$key\`) — regenerated rows in $new_content" >&2
@@ -192,15 +228,11 @@ for spec in "${regions[@]}"; do
     else
       rm -f "$new_content"
     fi
-    rm -f "$old_content"
   else
-    if ! extract_region "$file" "$id" >/dev/null; then
-      echo "render-config-table: $file has no config-table region id=$id" >&2
-      exit 1
-    fi
     replace_region "$file" "$id" "$new_content"
     rm -f "$new_content"
   fi
+  rm -f "$old_content"
 done
 
 if (( check_mode )); then

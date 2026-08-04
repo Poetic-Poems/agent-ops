@@ -131,6 +131,12 @@ pass and neither half can drift while the other is checked. The object as a
 whole is optional there: an installation that does not run reviews simply
 leaves it out.
 
+The body rows of the table below are generated from that schema — each key's
+`x-docs.spec` prose and `x-docs.value` cell — by
+`scripts/render-config-table.sh` (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+component 16), between the `config-table` markers, and CI fails a pull
+request that leaves them stale. Edit the schema, not the rows.
+
 ```json
 "review": {
   "repos": ["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"],

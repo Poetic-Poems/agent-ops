@@ -145,20 +145,23 @@ items
 default
 KEYWORDS
 )"
-# `x-docs` (and any child of it, and any other `x-`-prefixed key) is a
-# vendor extension outside JSON Schema's keyword space (#198) — it is never
-# read by lib/config-schema.sh, by design, so it is excluded from this
-# check the same way an actual property name under "properties"/"$defs" is.
+# `x-docs`, and everything at any depth beneath it, is a vendor extension
+# outside JSON Schema's keyword space (#198) — never read by
+# lib/config-schema.sh, by design — so any path through an `x-`-prefixed key
+# is dropped whole before the keyword comparison, the same way an actual
+# property name under "properties"/"$defs" is. At any depth, because
+# `x-docs.value` is itself keyed by audience for the keys whose two tables
+# render different value cells.
 used="$(jq -r '[paths(scalars != null) + paths(type == "object" or type == "array")]
   | map(map(select(type == "string")))
+  | map(select(any(.[]; startswith("x-")) | not))
   | [ .[]
       | . as $p
       | range($p | length) as $i
       | select($i == 0
-               or ($p[$i - 1] != "properties" and $p[$i - 1] != "$defs" and $p[$i - 1] != "x-docs"))
+               or ($p[$i - 1] != "properties" and $p[$i - 1] != "$defs"))
       | $p[$i] ]
   | unique
-  | map(select(startswith("x-") | not))
   | .[]' "$SCHEMA" 2>/dev/null | sort -u)"
 unsupported="$(comm -23 <(printf '%s\n' "$used") <(printf '%s\n' "$supported"))"
 if [[ -z "$unsupported" ]]; then
