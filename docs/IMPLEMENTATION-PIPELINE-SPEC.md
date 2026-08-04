@@ -2612,6 +2612,25 @@ runs unattended.
     diff, the Reviewer is better placed than the author, and corrects the
     label in either direction — the label endures for later finishing rounds
     (requirement 8a) and for the human.
+30a. **Emits as it goes, not only at the end.** Requirement 23a's counterpart
+    for the Reviewer, and it binds harder here: an Implementor that is killed
+    at least leaves the branch it has been building, whereas a review exists
+    only as commits and comments that have reached GitHub. Everything else is
+    in an ephemeral clone and in a stage that may not finish. So each fix under
+    requirement 30 is pushed when it is made rather than held for requirement
+    31's confirmation push, and each finding is posted when it is formed rather
+    than batched into a closing pass. Comments carry `lib/pipeline-marker.sh`'s
+    invisible marker, so requirement 3e's activity clock already discounts them
+    (TD26072605) and there is no cost to posting more of them. This is what
+    lets an interrupted review's successor start from what has already been
+    established rather than from the diff — and, where nothing supersedes them,
+    lets the findings a killed stage did reach still travel to the human.
+
+    The failure it closes is total, not partial. On agent-ops#205 a Reviewer ran
+    for the whole of its 45-minute cap and was killed; it left no commit, no
+    review and no comment, so 45 minutes of Opus review produced nothing that
+    outlived the clone. A stage cannot be stopped from dying mid-review, but it
+    can be stopped from dying with everything still inside it.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never
