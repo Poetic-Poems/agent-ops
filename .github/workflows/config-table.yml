@@ -1,0 +1,29 @@
+name: Config table check
+
+# Gates the generated configuration tables: README.md's two tables and each
+# spec's own must be exactly what scripts/render-config-table.sh renders from
+# config.schema.json, or a key can drift out of one prose copy again the way
+# `unvoid_label` and `state_local_cycles_retained` did before #198 (see the
+# script's own header). Modelled on tech-debt-register.yml.
+#
+# Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
+# runs with write-scoped secrets, and ungated by `paths:` — a schema edit
+# without a matching doc edit, or a doc edit without a matching schema edit,
+# both need catching, and either can touch files outside a narrow path filter.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  config-table:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check generated configuration tables are fresh
+        run: scripts/render-config-table.sh --check
