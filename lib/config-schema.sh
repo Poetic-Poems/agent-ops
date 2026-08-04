@@ -19,8 +19,15 @@
 # uniqueItems, properties, required, additionalProperties (false only), items,
 # and local `$ref`s into `#/$defs`.
 #
-# Sourced by scripts/doctor.sh. jq 1.6 compatible: nodes carry 1.7, but a host
-# running doctor.sh before installing anything may well have 1.6.
+# Also holds the two cross-key rules the schema itself cannot state — each
+# holds *between* two keys rather than about one, which is outside what
+# `additionalProperties`/`required`/etc. on a single object can express.
+# `agent-cycle.sh` calls these to refuse to start; `scripts/doctor.sh` calls
+# the same functions so the two can never drift on what counts as a fault.
+#
+# Sourced by agent-cycle.sh and scripts/doctor.sh. jq 1.6 compatible: nodes
+# carry 1.7, but a host running doctor.sh before installing anything may well
+# have 1.6.
 
 # config_schema_errors CONFIG_FILE SCHEMA_FILE
 # Prints one human-readable error per line, each naming the path in the config
@@ -137,4 +144,28 @@ config_schema_errors() {
     return 1
   fi
   return 0
+}
+
+# config_enabler_assignee_ok ENABLER_MODEL ENABLER_ASSIGNEE
+# True (exit 0) unless ENABLER_MODEL is set and ENABLER_ASSIGNEE is not — the
+# one combination agent-cycle.sh refuses to start with, because an escalation
+# raised unassigned would be excluded from no repo's `issues` source and the
+# pipeline could go on to select it as its own work. Takes the two values
+# rather than a file, since every caller has already read and null-normalised
+# them for its own purposes.
+config_enabler_assignee_ok() {
+  local enabler_model="$1" enabler_assignee="$2"
+  [[ -z "$enabler_model" || -n "$enabler_assignee" ]]
+}
+
+# config_missing_plan_path_repos REPOS_JSON
+# Given config.json's `repos` array (as JSON text), prints the comma-joined
+# slugs that list the `implementation-plan` source without an
+# `implementation_plan_path` — the one place that source's path is read from.
+# Empty when every repo using the source configures one.
+config_missing_plan_path_repos() {
+  local repos_json="$1"
+  jq -r '[.[] | select((.sources // []) | any(. == "implementation-plan"))
+              | select((.implementation_plan_path // "") == "") | .slug]
+         | join(", ")' <<<"$repos_json"
 }

@@ -48,6 +48,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/toggle.sh
@@ -102,6 +104,20 @@ expand_home() {
 }
 cfg() { jq -r "$1" "$CONFIG_FILE"; }
 cfg_json() { jq -c "$1" "$CONFIG_FILE"; }
+
+# The schema gate (requirement 1b), shared with agent-cycle.sh: config.json is
+# validated against config.schema.json before any individual key is read from
+# it, and before the lock — a config-shape fault is refused here rather than
+# reaching a stage on a default nobody chose.
+schema_errors="$(config_schema_errors "$CONFIG_FILE" "$SCRIPT_DIR/config.schema.json")" && schema_status=0 || schema_status=$?
+if ((schema_status == 2)); then
+  echo "review-cycle: $schema_errors" >&2
+  exit 1
+elif ((schema_status == 1)); then
+  echo "review-cycle: config.json does not match config.schema.json:" >&2
+  while IFS= read -r line; do echo "review-cycle:   $line" >&2; done <<<"$schema_errors"
+  exit 1
+fi
 
 if [[ "$(cfg 'has("review")')" != "true" ]]; then
   echo "review-cycle: config.json has no .review block (see docs/REVIEW-PIPELINE-SPEC.md)" >&2

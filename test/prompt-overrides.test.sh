@@ -14,10 +14,10 @@
 # must not — and holds still for every change that `stage_prompt_text` would
 # not reflect: the digest is content-addressed, so relocating the
 # installation without changing a byte of served content computes the same
-# fingerprint (it is compared fleet-wide across the shared log). Last,
-# `prompt_overrides_config_error`'s shape verdicts: silence for a valid
-# config, one line for each class of structural typo the assembly functions
-# would otherwise swallow.
+# fingerprint (it is compared fleet-wide across the shared log). The
+# structural shape of `prompt_overrides` itself — an unknown stage key, a
+# non-object stage value, a non-array `extend` — is config.schema.json's
+# concern, not this file's; test/config-schema.test.sh covers it.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -217,29 +217,6 @@ case "$(stage_prompt_text "$prompts_dir" "$state_dir" coordinator "$overrides_ab
     printf 'FAIL - an absolute extend path was not honoured\n'
     failures=$(( failures + 1 )) ;;
 esac
-
-# --- Structural validation (prompt_overrides_config_error): silence for a
-#     valid shape, one line for each class of structural typo. Every fault
-#     below is one the assembly functions above silently tolerate — which is
-#     exactly why startup must not. ---
-assert_eq "config check: {} is valid" "" \
-  "$(prompt_overrides_config_error '{}')"
-assert_eq "config check: a full well-formed config is valid" "" \
-  "$(prompt_overrides_config_error '{"coordinator":{"extend":["a.md"],"replace":"b.md"},"enabler":{}}')"
-assert_ne "config check: a non-object is reported" "" \
-  "$(prompt_overrides_config_error '[]')"
-assert_ne "config check: a misspelled stage key is reported" "" \
-  "$(prompt_overrides_config_error '{"coordintor":{"extend":["a.md"]}}')"
-assert_ne "config check: a non-object stage value is reported" "" \
-  "$(prompt_overrides_config_error '{"coordinator":"a.md"}')"
-assert_ne "config check: an unknown key inside a stage is reported" "" \
-  "$(prompt_overrides_config_error '{"coordinator":{"extned":["a.md"]}}')"
-assert_ne "config check: a string where extend's array is meant is reported" "" \
-  "$(prompt_overrides_config_error '{"coordinator":{"extend":"a.md"}}')"
-assert_ne "config check: a non-string extend entry is reported" "" \
-  "$(prompt_overrides_config_error '{"coordinator":{"extend":[1]}}')"
-assert_ne "config check: a non-string replace is reported" "" \
-  "$(prompt_overrides_config_error '{"coordinator":{"replace":["a.md"]}}')"
 
 echo
 if (( failures == 0 )); then

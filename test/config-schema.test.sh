@@ -179,6 +179,25 @@ assert_rejected "a misspelt prompt-override mode is rejected" \
 assert_rejected "a misspelt prompt-override stage is rejected" \
   '.prompt_overrides = {coordinater: {extend: ["x.md"]}}' \
   'config.prompt_overrides: unknown key "coordinater"'
+# lib/prompt-overrides.sh's own assembly functions tolerate a malformed
+# prompt_overrides silently (they read it with jq's `?`/`// empty`), so its
+# structural shape — an object at every stage, `extend` an array of
+# non-empty strings, `replace` a non-empty string — is entirely the schema's
+# job now (requirement 1b); these four mirror the cases
+# test/prompt-overrides.test.sh used to assert directly against the retired
+# `prompt_overrides_config_error`.
+assert_rejected "a non-object prompt-override stage value is rejected" \
+  '.prompt_overrides = {coordinator: "a.md"}' \
+  'config.prompt_overrides.coordinator: expected object, got string'
+assert_rejected "a non-array prompt-override extend is rejected" \
+  '.prompt_overrides = {coordinator: {extend: "a.md"}}' \
+  'config.prompt_overrides.coordinator.extend: expected array, got string'
+assert_rejected "a non-string prompt-override extend entry is rejected" \
+  '.prompt_overrides = {coordinator: {extend: [1]}}' \
+  'config.prompt_overrides.coordinator.extend[0]: expected string, got number'
+assert_rejected "a non-string prompt-override replace is rejected" \
+  '.prompt_overrides = {coordinator: {replace: ["a.md"]}}' \
+  'config.prompt_overrides.coordinator.replace: expected string, got array'
 
 # --- A key with no fallback anywhere in the code is required: absent, the
 #     `jq -r` that reads it yields the string "null", and the pipeline runs on
@@ -286,6 +305,130 @@ assert_doctor "doctor reports a schema violation as a failure, naming the path" 
   '.pr_labell = "x"' 1 'config: unknown key "pr_labell"'
 assert_doctor "doctor passes the shipped configuration" \
   '.' 0 'No failures'
+
+# --- The gate is a startup refusal in the real entry points, not merely in
+#     the library function above (requirement 1b): agent-cycle.sh and
+#     review-cycle.sh each validate config.json against the schema before any
+#     individual key is read from it — the same fail-fast position
+#     requirement 1a's model-id resolution occupies — and well before the
+#     lock. Exercised here by driving the real scripts end to end, with
+#     claude/gh stubbed the way test/role.test.sh stubs them, so reaching
+#     either stub would itself mean the gate had failed to stop the cycle.
+#
+#     agent-cycle.sh's CONFIG_FILE is `$SCRIPT_DIR/config.json`, derived from
+#     the running script's own directory, so a doctored config can only be
+#     tried against a throwaway copy of the whole app tree — this
+#     repository's real config.json must stay untouched. review-cycle.sh
+#     instead honours AGENT_OPS_CONFIG (built for tests; see its own
+#     comment), so it is pointed at a mutated file in place, no copy needed. ---
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+assert_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:   %s\n' "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+assert_not_contains() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" != *"$needle"* ]]; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     expected NOT to contain: %s\n     actual:   %s\n' "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+guard_app="$tmp/guard-app"
+mkdir -p "$guard_app"
+cp "$SCRIPT_DIR/agent-cycle.sh" "$SCHEMA" "$guard_app/"
+cp -r "$SCRIPT_DIR/lib" "$SCRIPT_DIR/prompts" "$SCRIPT_DIR/scripts" "$guard_app/"
+
+guard_home="$tmp/guard-home"
+mkdir -p "$guard_home/.local/bin"
+# Reaching either stub would mean the gate let a cycle through to real work —
+# which would otherwise spend real money or hit the real network before the
+# gate has anything to say about it. Every case below asserts its exit came
+# from the gate's own message, which fires before any claude or gh call.
+for stub in claude gh; do
+  printf '#!/bin/sh\necho "%s stub: the schema gate should have prevented this" >&2\nexit 1\n' "$stub" \
+    > "$guard_home/.local/bin/$stub"
+  chmod +x "$guard_home/.local/bin/$stub"
+done
+
+# run_cycle_guard CONFIG_JSON — writes CONFIG_JSON as the copied app's
+# config.json and runs the copied agent-cycle.sh against it: AGENT_OPS_ROLE
+# active so the role guard (which runs first) does not short-circuit before
+# the schema gate does, and a throwaway HOME so nothing here can touch this
+# machine's real state_dir. Sets $guard_out and $guard_rc.
+run_cycle_guard() {
+  printf '%s' "$1" > "$guard_app/config.json"
+  guard_out="$(env AGENT_OPS_ROLE=active HOME="$guard_home" "$guard_app/agent-cycle.sh" 2>&1)"
+  guard_rc=$?
+}
+
+# run_review_guard CONFIG_JSON — same, but against the real review-cycle.sh
+# in place (via AGENT_OPS_CONFIG), since that script already resolves its
+# config from the environment rather than its own directory.
+run_review_guard() {
+  printf '%s' "$1" > "$tmp/review-guard-config.json"
+  guard_out="$(env AGENT_OPS_ROLE=active HOME="$guard_home" \
+    AGENT_OPS_CONFIG="$tmp/review-guard-config.json" \
+    "$SCRIPT_DIR/review-cycle.sh" 2>&1)"
+  guard_rc=$?
+}
+
+run_cycle_guard "$(jq -c '.pr_labell = "x"' "$CONFIG")"
+assert_eq "agent-cycle.sh exits 1 on a config that fails the schema" "1" "$guard_rc"
+assert_contains "agent-cycle.sh's refusal names the schema" \
+  "does not match config.schema.json" "$guard_out"
+assert_contains "agent-cycle.sh's refusal names the offending path" \
+  'unknown key "pr_labell"' "$guard_out"
+
+run_review_guard "$(jq -c '.pr_labell = "x"' "$CONFIG")"
+assert_eq "review-cycle.sh exits 1 on a config that fails the schema" "1" "$guard_rc"
+assert_contains "review-cycle.sh's refusal names the schema" \
+  "does not match config.schema.json" "$guard_out"
+assert_contains "review-cycle.sh's refusal names the offending path" \
+  'unknown key "pr_labell"' "$guard_out"
+
+# --- The two hand-written startup guards the schema now subsumes: a bad
+#     `nice` and a malformed `prompt_overrides` are refused by the schema
+#     gate itself, in its own wording — the retired guards' own messages
+#     ("invalid nice", "config.json prompt_overrides:") appear nowhere. ---
+run_cycle_guard "$(jq -c '.repos[0].nice = 20' "$CONFIG")"
+assert_eq "a nice above 19 exits 1 via the schema gate" "1" "$guard_rc"
+assert_contains "the schema names the offending path" \
+  "config.repos[0].nice: 20 is above the maximum 19" "$guard_out"
+assert_not_contains "the retired nice guard's own wording is gone" \
+  "invalid nice" "$guard_out"
+
+run_cycle_guard "$(jq -c '.prompt_overrides = {coordinator: {extned: ["x.md"]}}' "$CONFIG")"
+assert_eq "a malformed prompt_overrides exits 1 via the schema gate" "1" "$guard_rc"
+assert_contains "the schema names the offending path" \
+  'config.prompt_overrides.coordinator: unknown key "extned"' "$guard_out"
+assert_not_contains "the retired prompt_overrides guard's own wording is gone" \
+  "see README.md" "$guard_out"
+
+# --- A config the schema accepts must still clear agent-cycle.sh's two
+#     surviving cross-key guards — the schema gate passing is not the whole
+#     of requirement 1b. ---
+run_cycle_guard "$(jq -c '.enabler_assignee = ""' "$CONFIG")"
+assert_eq "an unassigned enabled Enabler still exits 1, past the schema gate" "1" "$guard_rc"
+assert_contains "the enabler_assignee guard still fires, shared with doctor.sh" \
+  "enabler_model is set but enabler_assignee is not configured" "$guard_out"
+assert_not_contains "a config the schema accepts is not reported as a schema failure" \
+  "does not match config.schema.json" "$guard_out"
 
 # --- A config that will not parse is a different conversation from one that
 #     parses and is wrong: exit 2, and nothing downstream is even attempted. ---

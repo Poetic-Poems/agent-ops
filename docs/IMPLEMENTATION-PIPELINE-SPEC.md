@@ -662,8 +662,8 @@ runs unattended.
    (`docs/REVIEW-PIPELINE-SPEC.md`). Both scripts share one implementation,
    `lib/model-id.sh`'s `resolve_model_id`, so the two pipelines can never
    drift on what counts as a supported provider.
-1b. **The configuration has a machine-readable schema, and an installation
-   can be checked against it.** `config.schema.json` states the shape of
+1b. **The configuration has a machine-readable schema, and it is the startup
+   gate both pipelines run on.** `config.schema.json` states the shape of
    `config.json` — every key an installation may set, its type, its
    constraints, and the value the code falls back to when it is absent. It
    covers both pipelines' keys, including the `review` object of
@@ -677,13 +677,32 @@ runs unattended.
    more; the schema may use only keywords that library implements, which
    `test/config-schema.test.sh` asserts by reading the keywords back out of
    the schema — a validator that silently ignores a keyword is worse than no
-   validator, because it reports the configuration sound. `scripts/doctor.sh`
-   (component 14) is what an operator runs. This is a check, not a gate: the
-   Script's own startup guards — the Enabler's assignee (requirement 35), the
-   implementation-plan path (requirement 3k), `nice` (requirement 3), and
-   `prompt_overrides`' shape (requirement 4a) — are unchanged and remain what
-   refuses to start a misconfigured cycle, so a schema that is wrong can
-   inconvenience an operator but can never stop a fleet.
+   validator, because it reports the configuration sound. Both
+   `agent-cycle.sh` and `review-cycle.sh` call it at startup, immediately
+   after `CONFIG_FILE` is known and before any individual key is read from it
+   — the same fail-fast position requirement 1a's model-id resolution
+   occupies, and well before the lock. A validation failure is fatal and
+   names every offending path at once, the way the retired `nice` guard
+   already named every offending slug at once: one error per run turns a
+   five-key typo into one cycle to fix, not five. `scripts/doctor.sh`
+   (component 14) is what an operator runs ahead of time, against the same
+   library function, so its verdict and the Script's own refusal can never
+   disagree.
+
+   The schema being a gate retires the two startup guards it wholly
+   subsumes: `nice`'s range (requirement 3) and `prompt_overrides`' shape
+   (requirement 4a) are both fully expressible as `type`/`minimum`/
+   `maximum`/`additionalProperties` on a single object, so neither has a
+   hand-written check left in `agent-cycle.sh` or
+   `lib/prompt-overrides.sh`. Two guards stay in code rather than moving into
+   the schema, because each holds *between* two keys, which
+   `additionalProperties`/`required`/etc. on one object cannot state: the
+   Enabler's assignee (requirement 35) and the implementation-plan path
+   (requirement 3k). Both are shared, not duplicated, between
+   `agent-cycle.sh` and `scripts/doctor.sh` — `lib/config-schema.sh`'s
+   `config_enabler_assignee_ok` and `config_missing_plan_path_repos` are the
+   one implementation each script calls, so the Script's refusal and
+   `doctor.sh`'s `fail` can never drift on what counts as a fault.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
@@ -1556,15 +1575,14 @@ runs unattended.
    each stage an object holding only `extend` (an array of file-path strings)
    and/or `replace` (a file-path string); any other shape — an unknown stage
    key, a non-object stage value, an unknown key within a stage, a wrong
-   type — is a fatal misconfiguration at startup
-   (`prompt_overrides_config_error`), the same as a missing
-   `implementation_plan_path` (requirement 3k). The two faults differ in
-   kind: a configured file can legitimately be absent this cycle and its
-   absence still moves the fingerprint, but a structural typo is a static
-   authoring error that would otherwise be swallowed by the assembly
-   functions' own tolerance and serve the unmodified shipped prompt every
-   cycle — with, for a misspelled stage key, no fingerprint movement to
-   betray it.
+   type — is a fatal misconfiguration at startup, caught by the schema gate
+   (requirement 1b), the same as a missing `implementation_plan_path`
+   (requirement 3k). The two faults differ in kind: a configured file can
+   legitimately be absent this cycle and its absence still moves the
+   fingerprint, but a structural typo is a static authoring error that would
+   otherwise be swallowed by the assembly functions' own tolerance and serve
+   the unmodified shipped prompt every cycle — with, for a misspelled stage
+   key, no fingerprint movement to betray it.
 
    The Co-Ordinator's and Enabler's assembled prompts also feed the no-op
    fingerprint (requirement 3b, 35b): `coordinator_prompt_sha` and
@@ -3899,18 +3917,27 @@ What exists, and the requirements each part answers to:
     `additionalProperties: false`, `items`, and local `$ref`s into `$defs`),
     returning 0 valid, 1 invalid with one message per offending path, and 2
     when a file is missing or will not parse — a config that is not there is
-    not the same finding as one that is wrong. `doctor.sh` is the operator's
-    command: it runs the schema check, then the cross-key rules the schema
-    cannot state (each mirroring a startup guard or a silent-breach
-    requirement), then the model ids through `resolve_model_id`, the shipped
-    and overridden prompts, the toolchain, the state and workspace
-    directories, and — unless `--offline` — the GitHub access, which is where
-    a token's missing scope stops looking like a repository with no work in
-    it. Every verdict is `ok`, `warn`, `fail` or `skip`; exit 0 clean, 1 at
-    least one failure, 2 arguments or a config it could not read. Read-only
-    but for the configured directories it creates to prove they can be, and
-    every GitHub call a GET, so it is safe against a live node mid-cycle. Its
-    per-repository label check reads `lib/labels.sh`'s catalogue rather than a
+    not the same finding as one that is wrong. `agent-cycle.sh` and
+    `review-cycle.sh` call this same function as their startup gate, so it is
+    the one implementation both the Script's refusal and `doctor.sh`'s
+    `fail` read from. The library also holds `config_enabler_assignee_ok` and
+    `config_missing_plan_path_repos`, the two cross-key rules the schema
+    itself cannot state — each holds *between* two keys — shared the same
+    way, so `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can
+    never drift on either. `doctor.sh` is the operator's command: it runs the
+    schema check, then those two cross-key rules, then the combinations that
+    work but would silently surprise an operator later (a `warn`, not a
+    `fail`: the stage timeouts outrunning `lock_stale_after`, `review.pr_label`
+    colliding with `pr_label`, and the rest), then the model ids through
+    `resolve_model_id`, the shipped and overridden prompts, the toolchain,
+    the state and workspace directories, and — unless `--offline` — the
+    GitHub access, which is where a token's missing scope stops looking like
+    a repository with no work in it. Every verdict is `ok`, `warn`, `fail` or
+    `skip`; exit 0 clean, 1 at least one failure, 2 arguments or a config it
+    could not read. Read-only but for the configured directories it creates
+    to prove they can be, and every GitHub call a GET, so it is safe against
+    a live node mid-cycle. Its per-repository label check reads
+    `lib/labels.sh`'s catalogue rather than a
     list of its own, so it can never report a different set from the one the
     cycle maintains. `test/config-schema.test.sh` covers both; must pass
     `shellcheck`.
@@ -4151,12 +4178,12 @@ pull request, run the ones the change touches and any it could regress.
    directory, `$HOME`) with identical config and content computes the
    identical fingerprint, and a `replace` file whose content equals the
    shipped prompt's computes the no-override fingerprint, because it serves
-   the same bytes. `prompt_overrides_config_error` prints nothing for a
-   valid shape and one line for each class of structural fault — a
-   non-object, an unknown stage key, a non-object stage value, an unknown
-   key within a stage, a non-array `extend`, a non-string `extend` entry or
-   `replace` — and any such fault makes `agent-cycle.sh` exit non-zero at
-   startup, before any stage runs.
+   the same bytes. `prompt_overrides`'s own structural shape — a non-object,
+   an unknown stage key, a non-object stage value, an unknown key within a
+   stage, a non-array `extend`, a non-string `extend` entry or `replace` — is
+   config.schema.json's concern rather than this library's (requirement 1b);
+   test/config-schema.test.sh asserts one rejection per class, naming the
+   offending path.
 1j. **The Co-Ordinator's repo/work-sources table is config-driven, and names
    no consumer repo in `prompts/coordinator.md` (requirement 4b).**
    `test/coordinator-brief.test.sh` passes: `coordinator_work_sources_table`
@@ -4700,20 +4727,29 @@ pull request, run the ones the change touches and any it could regress.
     `lib/metering.sh` and merge its output into every `stage-end` /
     `review-stage-end` event they log, so this one function's correctness is
     what "both pipelines emit conforming records" reduces to.
-1c. **The configuration matches its schema, and the schema is enforceable
-    (requirement 1b).** `test/config-schema.test.sh` passes: this
-    repository's own `config.json` validates, so a key added to the config
-    without a schema entry fails immediately; every keyword the schema uses
-    is one `lib/config-schema.sh` implements, asserted by reading the
-    keywords back out of the schema rather than from a list maintained
-    beside it; each keyword class is exercised with a value that must be
-    rejected, naming the path that is wrong; and `scripts/doctor.sh`
-    reproduces each of the Script's own startup refusals as a `fail`, its
-    silent-breach combinations as a `warn`, and a config that will not parse
-    as exit 2 with nothing downstream attempted. Every case is a mutation of
-    the shipped configuration, run against the shipped scripts, so what is
-    asserted is the product rather than a restatement of it. `--offline`
-    throughout: no assertion here needs the network.
+1c. **The configuration matches its schema, and the schema is an enforced
+    startup gate, not merely a checkable one (requirement 1b).**
+    `test/config-schema.test.sh` passes: this repository's own `config.json`
+    validates, so a key added to the config without a schema entry fails
+    immediately; every keyword the schema uses is one `lib/config-schema.sh`
+    implements, asserted by reading the keywords back out of the schema
+    rather than from a list maintained beside it; each keyword class is
+    exercised with a value that must be rejected, naming the path that is
+    wrong; and `scripts/doctor.sh` reproduces the two surviving cross-key
+    guards (the Enabler's assignee, the implementation-plan path) as a
+    `fail`, its silent-breach combinations as a `warn`, and a config that
+    will not parse as exit 2 with nothing downstream attempted. Beyond the
+    library level, `agent-cycle.sh` and `review-cycle.sh` themselves are
+    driven end to end against a schema-violating config — with `claude` and
+    `gh` stubbed so reaching either would itself mean the gate had failed —
+    and asserted to exit non-zero naming `config.schema.json`, before either
+    stub is ever reached; the retired `nice` and `prompt_overrides` guards'
+    own wording is asserted gone in favour of the schema's, and the
+    surviving Enabler-assignee guard is asserted to still fire on a config
+    the schema itself accepts. Every case is a mutation of the shipped
+    configuration, run against the shipped scripts, so what is asserted is
+    the product rather than a restatement of it. `--offline` throughout: no
+    assertion here needs the network.
 6h. **The pipeline creates the labels it applies, and touches no others
     (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
     that records every invocation and refuses a duplicate the way GitHub

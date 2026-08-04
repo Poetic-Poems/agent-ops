@@ -81,7 +81,7 @@ make_node() {  # make_node <name> <jq-filter> -> prints its directory
   local dir="$tmp_dir/$name"
   mkdir -p "$dir" "$dir/home"
   local item
-  for item in lib prompts scripts .claude review-cycle.sh agent-cycle.sh; do
+  for item in lib prompts scripts .claude review-cycle.sh agent-cycle.sh config.schema.json; do
     [[ -e "$SCRIPT_DIR/$item" ]] && ln -s "$SCRIPT_DIR/$item" "$dir/$item"
   done
   jq "$filter" "$SCRIPT_DIR/config.json" > "$dir/config.json"

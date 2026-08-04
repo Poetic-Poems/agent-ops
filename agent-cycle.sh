@@ -39,6 +39,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/cycle-state.sh
@@ -204,6 +206,22 @@ expand_home() {
 cfg() { jq -r "$1" "$CONFIG_FILE"; }
 cfg_json() { jq -c "$1" "$CONFIG_FILE"; }
 
+# The schema gate (requirement 1b): config.schema.json is the single
+# statement of config.json's shape, validated here, before any individual key
+# is read from it — the same fail-fast position requirement 1a's model-id
+# resolution occupies below, and well before the lock. One error per run
+# names every offending path at once, so a five-key typo costs one cycle to
+# fix, not five.
+schema_errors="$(config_schema_errors "$CONFIG_FILE" "$SCRIPT_DIR/config.schema.json")" && schema_status=0 || schema_status=$?
+if ((schema_status == 2)); then
+  echo "agent-cycle: $schema_errors" >&2
+  exit 1
+elif ((schema_status == 1)); then
+  echo "agent-cycle: config.json does not match config.schema.json:" >&2
+  while IFS= read -r line; do echo "agent-cycle:   $line" >&2; done <<<"$schema_errors"
+  exit 1
+fi
+
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 coordinator_model="$(resolve_model_id coordinator_model "$(cfg '.coordinator_model')")"
@@ -253,7 +271,7 @@ crash_loop_after="$(cfg '.crash_loop_after // 0')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
 crash_loop_repo="$(cfg '.crash_loop_repo // ""')"
 [[ "$crash_loop_repo" == "null" ]] && crash_loop_repo=""
-if [[ -n "$enabler_model" && -z "$enabler_assignee" ]]; then
+if ! config_enabler_assignee_ok "$enabler_model" "$enabler_assignee"; then
   echo "agent-cycle: enabler_model is set but enabler_assignee is not configured — refusing to run with an unassigned escalation target; set enabler_assignee in config.json or clear enabler_model to disable the Enabler" >&2
   exit 1
 fi
@@ -299,54 +317,25 @@ all_repos_json="$(cfg_json '.repos')"
 # lives. A repo that lists the source without configuring the path is a fatal
 # misconfiguration, not a silent fallback — the Co-Ordinator would have
 # nothing to read — so this fails the same way the enabler_assignee guard
-# above does: at startup, before any stage runs.
-missing_plan_path="$(jq -r \
-  '[.[] | select((.sources // []) | any(. == "implementation-plan")) | select((.implementation_plan_path // "") == "") | .slug] | join(", ")' \
-  <<<"$all_repos_json")"
+# above does: at startup, before any stage runs. This rule holds *between*
+# `sources` and `implementation_plan_path`, which is outside what the schema
+# gate above can state about either key alone, so it stays here — shared with
+# `scripts/doctor.sh` via `config_missing_plan_path_repos` (requirement 1b).
+missing_plan_path="$(config_missing_plan_path_repos "$all_repos_json")"
 if [[ -n "$missing_plan_path" ]]; then
   echo "agent-cycle: repo(s) [$missing_plan_path] list the implementation-plan source but have no implementation_plan_path configured — set it in config.json's repos entry or drop the source" >&2
-  exit 1
-fi
-
-# The walk order below (section 3) is derived from each repo's `nice`
-# (requirement 3, lib/repo-order.sh) — an optional integer, -19..19, absent
-# or null meaning 0. jq's `// 0` fallback the ordering function uses to treat
-# an absent key as neutral would just as happily coerce a string or an
-# out-of-range number into 0, or into whatever `pow(1.25; -N)` makes of it,
-# and hand back an order the operator never asked for with nothing to show it
-# happened. That is the same silent misconfiguration the guards above refuse
-# to let through, so this one fails the same way: at startup, before any repo
-# is touched, naming every offending slug at once.
-bad_nice="$(jq -r \
-  '[.[] | select(.nice != null)
-        | select(((.nice | type) != "number") or ((.nice | floor) != .nice)
-                 or (.nice < -19) or (.nice > 19))
-        | .slug] | join(", ")' \
-  <<<"$all_repos_json")"
-if [[ -n "$bad_nice" ]]; then
-  echo "agent-cycle: repo(s) [$bad_nice] carry an invalid nice — it must be an integer from -19 to 19 (absent means 0) — fix the repos entry in config.json" >&2
   exit 1
 fi
 
 # Per-installation prompt overrides (requirement 4a, lib/prompt-overrides.sh):
 # config-pointed files, outside prompts/*.md, appended to (or, for `replace`,
 # substituted for) a stage's shipped prompt. Absent entirely, every stage
-# assembles byte-identical to today. Validated here, at startup, like every
-# other config shape above — and to full depth, not merely "is an object": a
-# misspelled stage key, a string where `extend`'s array is meant, or a
-# misspelled `extend`/`replace` would each be swallowed by the jq `?`
-# tolerance in lib/prompt-overrides.sh and silently serve the shipped bytes
-# every cycle — exactly the failure failing loudly here exists to prevent.
-# Runtime faults (a well-formed entry whose file is unreadable this cycle)
-# stay tolerated in the lib: files legitimately come and go, and an
-# unreadable one still moves the fingerprint, where a structural typo moves
-# nothing.
+# assembles byte-identical to today. Its shape is enforced by the schema gate
+# above; what remains tolerated here is a *runtime* fault only — a
+# well-formed entry whose file is unreadable this cycle stays tolerated in the
+# lib, since files legitimately come and go, and an unreadable one still
+# moves the fingerprint, where a structural typo would not have.
 prompt_overrides_json="$(cfg_json '.prompt_overrides // {}')"
-prompt_overrides_shape_error="$(prompt_overrides_config_error "$prompt_overrides_json")"
-if [[ -n "$prompt_overrides_shape_error" ]]; then
-  echo "agent-cycle: config.json prompt_overrides: $prompt_overrides_shape_error — see README.md" >&2
-  exit 1
-fi
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
 log_file="$state_dir/log.jsonl"

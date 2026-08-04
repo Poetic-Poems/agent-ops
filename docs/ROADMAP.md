@@ -119,12 +119,17 @@ Pullwright organisation and carries its licence.
       `lib/config-schema.sh`, and `scripts/doctor.sh` over config, cross-key
       rules, models, prompts, toolchain, directories and GitHub access
       (requirement 1b). *[interactive]*
-- [ ] Complete it: make the schema the *only* source of truth rather than a
-      third one beside the two prose tables. The startup guards should be the
-      schema check, the code's `// default` literals should come from the
-      schema's `default`s, and the README and spec tables should be generated
-      from its descriptions — until then a key can still be added in three
-      places and forgotten in two. *[fleet — one item per leg]*
+- [x] Make the schema the startup gate: `agent-cycle.sh` and
+      `review-cycle.sh` validate `config.json` against it before any
+      individual key is read, and the two guards it wholly subsumed
+      (`nice`'s range, `prompt_overrides`' shape) are retired in favour of it
+      (requirement 1b, `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). *[fleet]*
+- [ ] Finish making the schema the *only* source of truth rather than a third
+      one beside the two prose tables: the code's `// default` literals
+      should come from the schema's `default`s, and the README and spec
+      tables should be generated from its descriptions — until then a key
+      can still be added in three places and forgotten in two. *[fleet — one
+      item per leg]*
 - [x] Make schedules configuration-driven (per-pipeline cadence in config,
       not a baked crontab) — the `schedule` block, rendered by
       `deploy/docker/render-crontab.sh`. *[fleet]*

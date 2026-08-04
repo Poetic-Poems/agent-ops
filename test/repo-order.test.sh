@@ -217,146 +217,22 @@ assert_eq "producer: only the non-zero entries are carried" \
   '{"repo_nice":{"org/a":-5,"org/c":19}}' \
   "$(repo_nice_selection_config '[{"slug":"org/a","nice":-5},{"slug":"org/b"},{"slug":"org/c","nice":19}]')"
 
-# An integer-valued float spelling is admitted by the startup guard below
-# (floor == self), so the producer floor-normalises it: `5.0` and `5` in
-# config must fingerprint byte-identically on every jq version.
+# An integer-valued float spelling is admitted by the schema gate
+# (config.schema.json's `nice` is an integer -19..19, and `5.0 == floor(5.0)`
+# satisfies jq's own integer test), so the producer floor-normalises it: `5.0`
+# and `5` in config must fingerprint byte-identically on every jq version.
 assert_eq "producer: an integer-valued float (5.0) is emitted as 5" \
   '{"repo_nice":{"org/x":5}}' \
   "$(repo_nice_selection_config '[{"slug":"org/x","nice":5.0}]')"
 
-# --- 12. Startup guard: an invalid `nice` fails fast, before any repo is
-#         touched ---
-#
-# The pure functions above are only part of requirement 3: config.json's
-# `repos[].nice` also has to survive being *authored* — and a string, a
-# fraction or a value outside -19..19 would otherwise be silently coerced by
-# the ordering function's own `// 0` fallback into an order nobody asked for,
-# with nothing on the page to say so. agent-cycle.sh guards against that at
-# startup, the same way it already guards enabler_assignee and
-# implementation_plan_path: fail loudly, name every offending slug, before
-# the first `gh` call.
-#
-# That guard lives in agent-cycle.sh, not lib/repo-order.sh, so exercising it
-# means driving the real entry point rather than a sourced function — with a
-# stubbed `claude`/`gh` standing in for "never reached", exactly as
-# test/role.test.sh drives agent-cycle.sh end to end. The one complication is
-# CONFIG_FILE: it is `$SCRIPT_DIR/config.json`, derived from the running
-# script's own directory (agent-cycle.sh:28), and this repository's real
-# config.json must stay untouched — so a doctored `nice` can only be tested
-# against a throwaway copy of the whole app tree. No `gh` call happens before
-# the guard either way, so all of this stays fully offline.
-
-guard_tmp="$(mktemp -d)"
-trap 'rm -rf "$guard_tmp"' EXIT
-guard_app="$guard_tmp/app"
-mkdir -p "$guard_app"
-cp "$SCRIPT_DIR/agent-cycle.sh" "$guard_app/"
-cp -r "$SCRIPT_DIR/lib" "$SCRIPT_DIR/prompts" "$SCRIPT_DIR/scripts" "$guard_app/"
-
-guard_home="$guard_tmp/home"
-mkdir -p "$guard_home/.local/bin"
-# Reaching either stub would mean the guard let a cycle through — which would
-# otherwise spend real money or hit the real network before the guard has
-# anything to say about it. $HOME/.local/bin is on agent-cycle.sh's own PATH
-# construction (its "cron's environment is minimal" preamble) *after* the
-# system directories, so on a machine with a real claude/gh installed the
-# stub does not shadow them — it exists for the bare CI container, where
-# nothing else satisfies the script's required-binary preflight. The real
-# protection is that every case below asserts its exit came from a startup
-# guard's message, all of which fire before any claude or gh invocation.
-for stub in claude gh; do
-  printf '#!/bin/sh\necho "%s stub: the nice guard should have prevented this" >&2\nexit 1\n' "$stub" \
-    > "$guard_home/.local/bin/$stub"
-  chmod +x "$guard_home/.local/bin/$stub"
-done
-
-assert_contains() {
-  local desc="$1" needle="$2" haystack="$3"
-  if [[ "$haystack" == *"$needle"* ]]; then
-    printf 'ok   - %s\n' "$desc"
-  else
-    printf 'FAIL - %s\n     expected to contain: %s\n     actual:   %s\n' "$desc" "$needle" "$haystack"
-    failures=$(( failures + 1 ))
-  fi
-}
-
-assert_not_contains() {
-  local desc="$1" needle="$2" haystack="$3"
-  if [[ "$haystack" != *"$needle"* ]]; then
-    printf 'ok   - %s\n' "$desc"
-  else
-    printf 'FAIL - %s\n     expected NOT to contain: %s\n     actual:   %s\n' "$desc" "$needle" "$haystack"
-    failures=$(( failures + 1 ))
-  fi
-}
-
-# run_guard CONFIG_JSON — writes CONFIG_JSON as the doctored app's
-# config.json and runs the copied agent-cycle.sh against it: AGENT_OPS_ROLE
-# active so the role guard (which runs first) does not short-circuit before
-# ours does, and a throwaway HOME so nothing here can touch this machine's
-# real state_dir. Sets $guard_out (combined stdout+stderr) and $guard_rc.
-run_guard() {
-  printf '%s' "$1" > "$guard_app/config.json"
-  guard_out="$(env AGENT_OPS_ROLE=active HOME="$guard_home" "$guard_app/agent-cycle.sh" 2>&1)"
-  guard_rc=$?
-}
-
-# --- Failure: one invalid shape at a time ---
-
-run_guard '{"repos": [{"slug": "o/frac", "nice": 2.5}]}'
-assert_eq "a non-integer nice exits 1" "1" "$guard_rc"
-assert_contains "a non-integer nice names the fault" "invalid nice" "$guard_out"
-assert_contains "a non-integer nice names the slug" "o/frac" "$guard_out"
-
-run_guard '{"repos": [{"slug": "o/str", "nice": "3"}]}'
-assert_eq "a string nice exits 1" "1" "$guard_rc"
-assert_contains "a string nice names the fault" "invalid nice" "$guard_out"
-assert_contains "a string nice names the slug" "o/str" "$guard_out"
-
-run_guard '{"repos": [{"slug": "o/toolow", "nice": -20}]}'
-assert_eq "nice below -19 exits 1" "1" "$guard_rc"
-assert_contains "nice below -19 names the fault" "invalid nice" "$guard_out"
-assert_contains "nice below -19 names the slug" "o/toolow" "$guard_out"
-
-run_guard '{"repos": [{"slug": "o/toohigh", "nice": 20}]}'
-assert_eq "nice above 19 exits 1" "1" "$guard_rc"
-assert_contains "nice above 19 names the fault" "invalid nice" "$guard_out"
-assert_contains "nice above 19 names the slug" "o/toohigh" "$guard_out"
-
-# Two bad repos in one config: both must be named in the one failure, not
-# just the first — an operator fixing one and re-running should not
-# discover the second only by hitting the guard a second time.
-run_guard '{"repos": [{"slug": "o/bad1", "nice": 2.5}, {"slug": "o/bad2", "nice": -20}]}'
-assert_eq "two bad repos in one config exits 1" "1" "$guard_rc"
-assert_contains "two bad repos: the first slug is named" "o/bad1" "$guard_out"
-assert_contains "two bad repos: the second slug is named" "o/bad2" "$guard_out"
-
-# --- Boundary and pass: -19, 19, absent and null all clear the guard ---
-#
-# A deliberately malformed `prompt_overrides` rides along in the same
-# config. That guard sits immediately after this one in agent-cycle.sh, so a
-# config built entirely of valid `nice` values still has to fail — for that
-# *other* reason — proving this guard did not itself misfire on values it
-# must accept, rather than merely proving it stayed quiet.
-pass_config='{
-  "repos": [
-    {"slug": "o/lo", "nice": -19},
-    {"slug": "o/hi", "nice": 19},
-    {"slug": "o/absent"},
-    {"slug": "o/null", "nice": null}
-  ],
-  "prompt_overrides": {"coordinator": "x"}
-}'
-run_guard "$pass_config"
-assert_eq "boundary, absent and null nice values still exit 1 (a later guard, not this one)" \
-  "1" "$guard_rc"
-assert_contains "the failure is the prompt_overrides shape error, not the nice guard" \
-  "prompt_overrides" "$guard_out"
-assert_not_contains "valid nice values never trip the invalid-nice message" \
-  "invalid nice" "$guard_out"
-
-rm -rf "$guard_tmp"
-trap - EXIT
+# A `nice` outside -19..19, non-integer or otherwise malformed is now caught
+# by the schema gate (config.schema.json, docs/IMPLEMENTATION-PIPELINE-SPEC.md
+# requirement 1b) before agent-cycle.sh reads a single repos[] entry, rather
+# than by a hand-written startup guard in this script — so the end-to-end
+# "agent-cycle.sh actually refuses to start" case lives in
+# test/config-schema.test.sh alongside the schema's own unit cases (10 above
+# already pins the boundary values -19/19/absent/null against the pure
+# ordering functions).
 
 printf '\n'
 if (( failures > 0 )); then
