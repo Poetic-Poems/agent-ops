@@ -150,9 +150,9 @@ request that leaves them stale. Edit the schema, not the rows.
 }
 ```
 
+<!-- config-table:start id=review -->
 | Key | Value | Notes |
 |---|---|---|
-<!-- config-table:start id=review -->
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | The repositories to review. A plain list of slugs — a review has no per-repo work-source structure. Adding a repo is a config-only change. |
 | `review.model` | `claude-sonnet-5` | The Reviewer-Agent's model — the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes. |
 | `review.pr_label` | `project-review` | Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. |
