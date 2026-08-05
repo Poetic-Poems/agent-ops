@@ -542,9 +542,9 @@ is why `scripts/doctor.sh` reads the schema rather than either table. The
 values below are the confirmed defaults; the README must document each key,
 and the schema must carry every one of them.
 
+<!-- config-table:start id=main -->
 | Key | Value | Notes |
 |---|---|---|
-<!-- config-table:start id=main -->
 | `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range. |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
@@ -3997,11 +3997,19 @@ What exists, and the requirements each part answers to:
     specs' — a string or an array of strings joined with a space — falling
     back to `description` when the key carries no `x-docs` for that audience.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
-    `id=review` … `<!-- config-table:end -->`) in place with no arguments,
-    refusing either mode on a region whose header line and `|---|---|---|`
-    delimiter are not left outside the markers, since a region that
-    swallowed its delimiter row still renders every generated row correctly
-    in a diff while ceasing to be a table at all on GitHub;
+    `id=review` … `<!-- config-table:end -->`) in place with no arguments.
+    Each region's first two lines, immediately after the start marker, are a
+    header row and a `|---|---|---|` delimiter row, carried verbatim rather
+    than generated — passed through untouched on every rewrite, which is
+    what lets the README say `Default` where the specs say `Value` without
+    this script knowing either; the generated rows follow directly beneath
+    them, with no line in between. Both modes refuse a region whose first two
+    lines are not a header row and a delimiter row, since a bare marker
+    comment between the delimiter row and the first data row has no pipe in
+    it, so it does not look like a table row and GitHub's Markdown parser
+    ends the table right there — the row still looks right in a diff while
+    the rendered page shows an empty table body followed by literal piped
+    text.
     `--check` renders to a temporary file instead and exits non-zero, naming
     the file, the region and the first differing key, the moment any region
     is stale — what `.github/workflows/config-table.yml` runs on every pull
@@ -4824,8 +4832,8 @@ pull request, run the ones the change touches and any it could regress.
     audience gives each document its own value cell and falls through to the
     schema `default` for an audience it does not name, a key carrying no
     `x-docs` for an audience falls back to `description`, and a region whose
-    delimiter row has been swallowed by its start marker is refused rather
-    than rendered.
+    first two lines are not a header row and a delimiter row is refused
+    rather than rendered.
     `.github/workflows/config-table.yml`
     runs `--check` on every pull request, so a schema edit landing without a
     matching doc regeneration (or the reverse) fails CI rather than drifting

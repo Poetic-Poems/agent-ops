@@ -129,18 +129,18 @@ write_fixture_readme() {
 
 Sentinel before.
 
+<!-- config-table:start id=main -->
 | Key | Default | Notes |
 |---|---|---|
-<!-- config-table:start id=main -->
 | `alpha` | `"stale"` | stale notes |
 | `gamma` | `hand-edited-value` | hand-edited notes |
 <!-- config-table:end -->
 
 Sentinel between.
 
+<!-- config-table:start id=review -->
 | Key | Default | Notes |
 |---|---|---|
-<!-- config-table:start id=review -->
 <!-- config-table:end -->
 
 Sentinel after.
@@ -151,9 +151,9 @@ write_fixture_impl_spec() {
   cat > "$tmp/docs/IMPLEMENTATION-PIPELINE-SPEC.md" <<'MD'
 # Fixture spec
 
+<!-- config-table:start id=main -->
 | Key | Value | Notes |
 |---|---|---|
-<!-- config-table:start id=main -->
 <!-- config-table:end -->
 MD
 }
@@ -162,9 +162,9 @@ write_fixture_review_spec() {
   cat > "$tmp/docs/REVIEW-PIPELINE-SPEC.md" <<'MD'
 # Fixture review spec
 
+<!-- config-table:start id=review -->
 | Key | Value | Notes |
 |---|---|---|
-<!-- config-table:start id=review -->
 <!-- config-table:end -->
 MD
 }
@@ -295,20 +295,20 @@ run_script >/dev/null
 after_hash="$(cat "$tmp/README.md" "$tmp"/docs/*.md | sha256sum)"
 assert_eq "regenerating a fresh tree is a no-op" "$before_hash" "$after_hash"
 
-# --- A region whose delimiter row was swallowed by the start marker is
+# --- A region whose delimiter row is missing from its first two lines is
 #     refused rather than rendered into something GitHub shows as prose ---
 awk '
-  /^<!-- config-table:start id=review -->$/ { held = "" }
-  held != "" { print held }
-  { held = $0 }
-  END { if (held != "") print held }
+  /^<!-- config-table:start id=review -->$/ { print; c = 1; next }
+  c == 1 { print; c = 2; next }   # header row - keep
+  c == 2 { c = 3; next }          # delimiter row - drop
+  { print }
 ' "$tmp/README.md" > "$tmp/README.nodelim" && mv "$tmp/README.nodelim" "$tmp/README.md"
 delim_out="$(run_script --check 2>&1)"
 delim_rc=$?
 if (( delim_rc != 0 )); then
-  pass "a region with no delimiter row above it is refused"
+  pass "a region with no delimiter row in its first two lines is refused"
 else
-  fail "a region with no delimiter row above it is refused (got rc=0)"
+  fail "a region with no delimiter row in its first two lines is refused (got rc=0)"
 fi
 assert_contains "the delimiter-row error names the region" "$delim_out" "id=review"
 write_fixture_readme

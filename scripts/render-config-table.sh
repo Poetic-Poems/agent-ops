@@ -31,18 +31,34 @@
 # `review.model`) in the parent's position — everything else (`repos`,
 # `prompt_overrides`) renders as a single row.
 #
-# Four marked regions hold the generated body rows — header and delimiter
-# lines stay outside the markers, which is what lets the README say `Default`
-# and the specs say `Value` without this script knowing either, and both
-# modes refuse a region that has swallowed its delimiter row:
+# Four marked regions hold the whole table — header row, `|---|---|---|`
+# delimiter row, then the generated body rows:
 #
 #   README.md                              id=main, id=review
 #   docs/IMPLEMENTATION-PIPELINE-SPEC.md   id=main
 #   docs/REVIEW-PIPELINE-SPEC.md           id=review
 #
 #   <!-- config-table:start id=main -->
+#   | Key | Default | Notes |
+#   |---|---|---|
 #   ...generated rows...
 #   <!-- config-table:end -->
+#
+# The header and delimiter — the region's first two lines — are preserved
+# verbatim rather than generated, which is what lets the README say `Default`
+# and the specs say `Value` without this script knowing either. They live
+# *inside* the markers rather than above the start marker: a bare HTML
+# comment line between the delimiter row and the first data row has no pipe
+# in it, so it does not look like a table row, and GitHub's Markdown parser
+# ends the table right there — the delimiter row renders with an empty body
+# and every generated row below it falls through as literal piped text. That
+# is not hypothetical; it is what this file's own `id=main` region did until
+# the marker moved. Wrapping the header and delimiter in the markers keeps
+# every line of the table contiguous, which is what a table requires, while
+# the marker comments themselves sit safely outside the contiguous run — one
+# line before the header, one line after the last generated row. Both modes
+# refuse a region whose first two lines are not a header row and a
+# `|---|---|---|` delimiter row.
 #
 # With no arguments, every region is rewritten in place. `--check` renders
 # each region to a temporary file instead and exits non-zero — naming the
@@ -135,51 +151,67 @@ render_region() {
 start_marker() { printf '<!-- config-table:start id=%s -->' "$1"; }
 end_marker() { printf '<!-- config-table:end -->'; }
 
-# Prints the lines strictly between the start-id marker and the next end
-# marker (exclusive of both), or nothing (and a non-zero return) if either
-# marker is missing.
-extract_region() {
+# Prints the region's generated body rows — the lines strictly between the
+# start-id marker and the next end marker, minus the header and delimiter
+# rows that occupy the first two of them — or nothing (and a non-zero
+# return) if either marker is missing.
+extract_body() {
   local file="$1" id="$2"
   awk -v start="$(start_marker "$id")" -v end="$(end_marker)" '
-    $0 == start { found=1; next }
+    $0 == start { found=1; n=0; next }
     found && $0 == end { printed=1; exit }
-    found { print }
+    found {
+      n++
+      if (n <= 2) next
+      print
+    }
     END { exit(printed ? 0 : 1) }
   ' "$file"
 }
 
-# True when the line immediately above the start-id marker is a Markdown
-# table delimiter row. Each document keeps its own header and `|---|---|---|`
-# *outside* the markers — that is what lets the README say `Default` where
-# the specs say `Value` without this script knowing either — and a region
-# whose delimiter row was swallowed by the marker stops being a table at all
-# on GitHub, silently, since every generated row still looks right in the
-# diff. Cheap to assert, so assert it.
-delimiter_above() {
+# True when the region's first two lines, immediately after the start-id
+# marker, are a Markdown table header row and a `|---|---|---|` delimiter
+# row. A region whose header or delimiter row is missing — or was pushed
+# below the start marker so a bare comment line sits between the delimiter
+# and the first data row — stops being a table at all on GitHub, silently,
+# since every generated row still looks right in the diff. Cheap to assert,
+# so assert it.
+header_delimiter_ok() {
   local file="$1" id="$2"
   awk -v start="$(start_marker "$id")" '
-    $0 == start { found=1; ok = (prev ~ /^\|[-| :]+\|$/); exit }
-    { prev = $0 }
-    END { exit((found && ok) ? 0 : 1) }
+    $0 == start { found=1; n=0; next }
+    found {
+      n++
+      if (n == 1) { header_ok = ($0 ~ /\|/) }
+      else if (n == 2) { delim_ok = ($0 ~ /^\|[-| :]+\|$/); exit }
+    }
+    END { exit((n >= 2 && header_ok && delim_ok) ? 0 : 1) }
   ' "$file"
 }
 
-# Replaces the lines strictly between the start-id marker and the next end
-# marker with the content of $content_file, in place.
-replace_region() {
+# Replaces the generated body rows — the lines strictly between the region's
+# header/delimiter and the end marker — with the content of $content_file,
+# in place. The header and delimiter rows themselves (the first two lines
+# after the start-id marker) pass through untouched.
+replace_body() {
   local file="$1" id="$2" content_file="$3"
   local tmp
   tmp="$(mktemp "${file}.XXXXXX")"
   awk -v start="$(start_marker "$id")" -v end="$(end_marker)" -v contentfile="$content_file" '
-    $0 == start {
-      print
+    $0 == start { print; inregion=1; n=0; next }
+    inregion && $0 == end {
       while ((getline line < contentfile) > 0) print line
       close(contentfile)
-      found=1
+      inregion=0
+      print
       next
     }
-    found && $0 == end { found=0 }
-    !found || $0 == end { print }
+    inregion {
+      n++
+      if (n <= 2) { print; next }
+      next
+    }
+    { print }
   ' "$file" > "$tmp"
   mv "$tmp" "$file"
 }
@@ -206,13 +238,13 @@ for spec in "${regions[@]}"; do
   fi
 
   old_content="$(mktemp)"
-  if ! extract_region "$file" "$id" > "$old_content"; then
+  if ! extract_body "$file" "$id" > "$old_content"; then
     echo "render-config-table: $file has no config-table region id=$id" >&2
     rm -f "$old_content"
     exit 1
   fi
-  if ! delimiter_above "$file" "$id"; then
-    echo "render-config-table: $file region id=$id is not preceded by a table delimiter row (\`|---|---|---|\`), so the table does not render" >&2
+  if ! header_delimiter_ok "$file" "$id"; then
+    echo "render-config-table: $file region id=$id does not open with a header row and a \`|---|---|---|\` delimiter row, so the table does not render" >&2
     rm -f "$old_content"
     exit 1
   fi
@@ -229,7 +261,7 @@ for spec in "${regions[@]}"; do
       rm -f "$new_content"
     fi
   else
-    replace_region "$file" "$id" "$new_content"
+    replace_body "$file" "$id" "$new_content"
     rm -f "$new_content"
   fi
   rm -f "$old_content"
