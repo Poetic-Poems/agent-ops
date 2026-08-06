@@ -496,8 +496,8 @@
       "exclusiveMinimum": 0,
       "default": 4,
       "x-docs": {
-        "readme": "Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines).",
-        "spec": "How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
+        "readme": "Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines).",
+        "spec": "How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
         "value": {
           "spec": "4 h"
         }
