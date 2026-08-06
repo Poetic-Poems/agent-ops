@@ -101,6 +101,85 @@ toggle_parse_ttl() {
   date -u -d "@$(( $(_toggle_now) + secs ))" +%Y-%m-%dT%H:%M:%SZ
 }
 
+# toggle_parse_until SPEC
+# Print the ISO-8601 instant named by SPEC, a GNU `date`-compatible absolute
+# timestamp (anything `date -d` accepts, e.g. '2026-08-10 18:00', 'tomorrow
+# noon', '2026-08-10T18:00:00Z') — the --until counterpart to
+# toggle_parse_ttl's relative SPEC.
+#
+# Returns 64 on an unparseable SPEC, or on one that names an instant that has
+# already passed: an unparseable --until must be an error rather than a
+# guess, for the same reason toggle_parse_ttl's typo case is (see its
+# comment above), and a --until already in the past would read to whoever
+# set it as having taken effect while actually disabling nothing.
+toggle_parse_until() {
+  local spec="${1:-}" epoch now
+  epoch="$(date -d "$spec" +%s 2>/dev/null)"
+  if [[ -z "$epoch" ]]; then
+    echo "toggle: unparseable timestamp '$spec' (want anything GNU date -d accepts, e.g. '2026-08-10 18:00', 'tomorrow noon')" >&2
+    return 64
+  fi
+  now="$(_toggle_now)"
+  if (( epoch <= now )); then
+    echo "toggle: --until '$spec' names an instant that has already passed" >&2
+    return 64
+  fi
+  date -u -d "@$epoch" +%Y-%m-%dT%H:%M:%SZ
+}
+
+# toggle_resolve_disable_spec FOR_SPEC UNTIL_SPEC DEFAULT_HOURS
+# Reconcile --for and --until into a single TTL_SPEC in toggle_parse_ttl's
+# own vocabulary, so a caller that already speaks that vocabulary
+# (toggle_disable) needs not learn a second one. UNTIL_SPEC is an absolute
+# timestamp (toggle_parse_until's vocabulary); FOR_SPEC is a relative
+# duration (toggle_parse_ttl's).
+#
+# With only one supplied, it passes through unchanged (FOR_SPEC verbatim;
+# UNTIL_SPEC converted to the equivalent "<n>s" offset from now, so the
+# instant it names survives the round trip through toggle_parse_ttl even
+# though _toggle_now may have ticked on by the time that runs). With both,
+# whichever resolves to the LATER instant wins — `forever` always beats any
+# UNTIL_SPEC, since indefinite outlasts every timestamp — and a warning
+# naming both goes to stderr: a human who gave two deadlines is entitled to
+# know which one bound. With neither, prints nothing, so toggle_parse_ttl's
+# own DEFAULT_HOURS fallback still applies.
+#
+# Returns 64 if either supplied spec is unparseable, printing nothing —
+# the same failure contract the two parse functions this composes share.
+toggle_resolve_disable_spec() {
+  local for_spec="$1" until_spec="$2" default_hours="$3"
+  local until_exp until_epoch for_exp for_epoch now
+
+  [[ -n "$until_spec" ]] || { printf '%s' "$for_spec"; return 0; }
+
+  until_exp="$(toggle_parse_until "$until_spec")" || return $?
+  now="$(_toggle_now)"
+  until_epoch="$(date -d "$until_exp" +%s)"
+
+  if [[ -z "$for_spec" ]]; then
+    printf '%ds' "$(( until_epoch - now ))"
+    return 0
+  fi
+
+  for_exp="$(toggle_parse_ttl "$for_spec" "$default_hours")" || return $?
+
+  if [[ -z "$for_exp" ]]; then
+    echo "toggle: both --for and --until given; --for forever is the later deadline, using it (--until $until_spec resolves to $until_exp)" >&2
+    printf 'forever'
+    return 0
+  fi
+
+  for_epoch="$(date -d "$for_exp" +%s)"
+  if (( for_epoch >= until_epoch )); then
+    echo "toggle: both --for and --until given; using --for $for_spec ($for_exp), the later deadline (--until $until_spec resolves to $until_exp)" >&2
+    printf '%s' "$for_spec"
+  else
+    echo "toggle: both --for and --until given; using --until $until_spec ($until_exp), the later deadline (--for $for_spec resolves to $for_exp)" >&2
+    printf '%ds' "$(( until_epoch - now ))"
+  fi
+  return 0
+}
+
 # toggle_state STATE_DIR
 # Print one JSON object describing the switch:
 #

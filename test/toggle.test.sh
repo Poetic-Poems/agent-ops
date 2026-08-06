@@ -94,6 +94,55 @@ assert_eq "an unparseable duration is an error, not a default" "64" "$?"
 toggle_parse_ttl "0" 4 >/dev/null 2>&1
 assert_eq "a zero duration is an error, not an indefinite disable" "64" "$?"
 
+# --- toggle_parse_until ---
+
+assert_eq "an absolute timestamp in the future" \
+  "2026-07-17T16:00:00Z" "$(toggle_parse_until "2026-07-17T16:00:00Z")"
+assert_eq "a GNU date -d string, not just ISO-8601" \
+  "2026-07-17T16:00:00Z" "$(toggle_parse_until "2026-07-17 16:00:00 UTC")"
+
+toggle_parse_until "not a date" >/dev/null 2>&1
+assert_eq "an unparseable --until is an error, not a guess" "64" "$?"
+
+toggle_parse_until "2026-07-17T10:00:00Z" >/dev/null 2>&1
+assert_eq "a --until already in the past is an error" "64" "$?"
+
+# --- toggle_resolve_disable_spec ---
+
+assert_eq "only --for given passes through unchanged" \
+  "2h" "$(toggle_resolve_disable_spec "2h" "" 4)"
+
+# Only --until given: the resulting spec must still resolve, through
+# toggle_parse_ttl, to the instant --until named.
+assert_eq "only --until given resolves to that instant via toggle_parse_ttl" \
+  "2026-07-17T16:00:00Z" \
+  "$(toggle_parse_ttl "$(toggle_resolve_disable_spec "" "2026-07-17T16:00:00Z" 4)" 4)"
+
+# Both given, --for later (20:00 vs 16:00): --for's own spec wins outright.
+assert_eq "both given, --for is the later deadline: --for wins" \
+  "8h" "$(toggle_resolve_disable_spec "8h" "2026-07-17T16:00:00Z" 4 2>/dev/null)"
+resolve_stderr="$(toggle_resolve_disable_spec "8h" "2026-07-17T16:00:00Z" 4 2>&1 >/dev/null)"
+assert_eq "picking --for over --until is announced on stderr" \
+  "1" "$(grep -c 'both --for and --until' <<<"$resolve_stderr")"
+
+# Both given, --until later (20:00 vs 14:00): resolves to --until's instant.
+assert_eq "both given, --until is the later deadline: --until wins" \
+  "2026-07-17T20:00:00Z" \
+  "$(toggle_parse_ttl "$(toggle_resolve_disable_spec "2h" "2026-07-17T20:00:00Z" 4 2>/dev/null)" 4)"
+resolve_stderr="$(toggle_resolve_disable_spec "2h" "2026-07-17T20:00:00Z" 4 2>&1 >/dev/null)"
+assert_eq "picking --until over --for is announced on stderr" \
+  "1" "$(grep -c 'both --for and --until' <<<"$resolve_stderr")"
+
+# Both given, --for forever: indefinite always outlasts a named instant.
+assert_eq "both given, --for forever always wins" \
+  "forever" "$(toggle_resolve_disable_spec "forever" "2026-08-01T00:00:00Z" 4 2>/dev/null)"
+
+toggle_resolve_disable_spec "2h" "not a date" 4 >/dev/null 2>&1
+assert_eq "both given, an unparseable --until fails" "64" "$?"
+
+toggle_resolve_disable_spec "4hours" "2026-07-17T20:00:00Z" 4 >/dev/null 2>&1
+assert_eq "both given, an unparseable --for fails" "64" "$?"
+
 # --- Setting and reading the switch ---
 
 record="$(toggle_disable "$state_dir" "editing lib/toggle.sh" "2h" 4 "tester pid 1")"

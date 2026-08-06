@@ -232,7 +232,7 @@ Keys:
 | `timeout_enabler` | `30` | Minutes. |
 | `lock_stale_after` | `4` | Hours. Stale lock is killed and warning is logged. Beyond the sum of the stage timeouts (15 + 120 + 60 + 30 minutes), though the interim raises of #203 have narrowed that margin to 15 minutes. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
-| `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when `--for` doesn't say. See [Pausing the pipelines](#pausing-the-pipelines). |
+| `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
 | `dashboard_refresh_seconds` | `5` | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
@@ -606,6 +606,7 @@ so everywhere at once. On a container node you drive it through the scheduler:
 ```bash
 docker compose exec scheduler /app/agent-cycle.sh --disable "rolling out PR #NN"  # expires after disable_default_ttl (4 h)
 docker compose exec scheduler /app/agent-cycle.sh --disable "big refactor" --for 8h  # or 90m, 2d, or `forever`
+docker compose exec scheduler /app/agent-cycle.sh --disable "code freeze" --until "2026-08-10 18:00"  # or any GNU date -d string
 docker compose exec scheduler /app/agent-cycle.sh --status   # what's set, and is anything running?
 docker compose exec scheduler /app/agent-cycle.sh --enable   # resume
 ```
@@ -634,7 +635,9 @@ Three things worth knowing:
   disables the pipeline and then dies would otherwise stop every future cycle
   silently — "no PRs" looks exactly like a quiet week. The TTL turns a
   forgotten switch into a few lost cycles. Use `--for forever` when you mean
-  it, and `--enable` when you're done.
+  it, and `--enable` when you're done. `--until <timestamp>` is an absolute
+  alternative to `--for`'s relative duration — give both and the later
+  deadline wins, with a warning saying which.
 - **A reason is required**, because the next person wondering why nothing has
   happened is entitled to one. It shows up in `--status`, in the log, and on
   the dashboard banner.

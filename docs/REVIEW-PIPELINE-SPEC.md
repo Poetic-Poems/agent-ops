@@ -453,10 +453,10 @@ R7a. **A signal is a failure with a record.** The Script traps `TERM`, `INT`
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one
    verbose run in the foreground), `--repo <slug>` (restrict to one repo, for
-   testing). `--disable`, `--enable`, `--status` and `--for` are recognised
-   only to reject them with a pointer to `agent-cycle.sh` (R2a) — an unknown-
-   argument error would read as "this pipeline ignores the switch", which is
-   the opposite of true.
+   testing). `--disable`, `--enable`, `--status`, `--for` and `--until` are
+   recognised only to reject them with a pointer to `agent-cycle.sh` (R2a) —
+   an unknown-argument error would read as "this pipeline ignores the
+   switch", which is the opposite of true.
 
 ### The Reviewer-Agent (`prompts/project-reviewer.md`)
 
