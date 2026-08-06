@@ -4030,10 +4030,33 @@ What exists, and the requirements each part answers to:
     ends the table right there — the row still looks right in a diff while
     the rendered page shows an empty table body followed by literal piped
     text.
-    `--check` renders to a temporary file instead and exits non-zero, naming
-    the file, the region and the first differing key, the moment any region
-    is stale — what `.github/workflows/config-table.yml` runs on every pull
-    request, modelled on `.github/workflows/tech-debt-register.yml`.
+    Each region's Notes cell is additionally capped at 500 characters
+    (`NOTES_CAP`): a cell at or under the cap renders the note verbatim, `|`
+    escaped, as before; a longer one renders a prefix — at most 480
+    characters, tokenised into Markdown atoms (a code span, a link, an
+    emphasis run, a whitespace run or a plain word, matched in that order so
+    a code span is claimed before its contents are mistaken for a link's or
+    an emphasis run's own syntax) and cut at the last atom boundary that
+    fits, so a cut never lands inside one of those constructs — followed by
+    `...[continued below](#extended-notes-<slug>)`. The note's full text is
+    repeated, unescaped, under a generated `Extended notes: `<key>`` heading
+    in that document's own `config-table:notes id=<region>` … `notes-end`
+    region, one per `config-table:start` region and required even where
+    nothing in it currently overflows; a region with nothing to say renders
+    empty. The heading's level is derived, not hard-coded — the nearest ATX
+    heading strictly above the notes-start marker, plus one, clamped at 6 —
+    and its own placement, unlike the table region's, is up to whoever wrote
+    the surrounding prose: the script rewrites whatever sits between the
+    markers and never moves them. The anchor is GitHub's own heading slug
+    (lower-cased, stripped to `[a-z0-9_-]` and space, spaces to `-`); two
+    headings in one document slugging the same, or a notes marker with no
+    heading above it, are both hard failures rather than silently
+    mis-rendered output.
+    `--check` renders each region — table and notes alike — to a temporary
+    file instead and exits non-zero, naming the file, the region and the
+    first differing key, the moment any region is stale — what
+    `.github/workflows/config-table.yml` runs on every pull request,
+    modelled on `.github/workflows/tech-debt-register.yml`.
     Regression-tested end to end, against the shipped script copied into a
     scratch fixture repository rather than a reimplementation of its logic,
     in `test/render-config-table.test.sh`; must pass `shellcheck`.
@@ -4853,7 +4876,13 @@ pull request, run the ones the change touches and any it could regress.
     schema `default` for an audience it does not name, a key carrying no
     `x-docs` for an audience falls back to `description`, and a region whose
     first two lines are not a header row and a delimiter row is refused
-    rather than rendered.
+    rather than rendered. A note over 500 characters is truncated at a word
+    boundary — never inside a code span or a link, each covered by its own
+    fixture note — with its full text reproduced in the matching Extended
+    notes subsection, including for a dotted (`schedule.*`-style) key; a
+    document with two Extended notes headings that would slug the same is
+    refused, and so is a document missing either half of a
+    `config-table:notes` marker pair.
     `.github/workflows/config-table.yml`
     runs `--check` on every pull request, so a schema edit landing without a
     matching doc regeneration (or the reverse) fails CI rather than drifting

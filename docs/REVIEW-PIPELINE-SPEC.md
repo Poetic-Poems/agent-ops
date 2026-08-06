@@ -135,7 +135,10 @@ The body rows of the table below are generated from that schema — each key's
 `x-docs.spec` prose and `x-docs.value` cell — by
 `scripts/render-config-table.sh` (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`
 component 16), between the `config-table` markers, and CI fails a pull
-request that leaves them stale. Edit the schema, not the rows.
+request that leaves them stale. Edit the schema, not the rows. A Notes cell
+over 500 characters would be capped, with its full text deferred to this
+document's `config-table:notes id=review` region below the table; no
+`review.*` note is long enough for that today, so the region renders empty.
 
 ```json
 "review": {
