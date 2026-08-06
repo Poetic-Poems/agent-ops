@@ -174,6 +174,9 @@ executable provider (D12, `docs/ROADMAP.md`); a qualifier naming any other
 provider is a fail-fast config error at cycle start, not a value passed to
 `claude --model`.
 
+<!-- config-table:notes id=review -->
+<!-- config-table:notes-end -->
+
 ## The Human Gate and the loop it closes
 
 The review pipeline raises **one pull request per repository, ready for
