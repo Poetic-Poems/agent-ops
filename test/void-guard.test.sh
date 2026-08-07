@@ -475,6 +475,25 @@ printf '{"body": "see line 1224 for details", "head": {"ref": "agent/9224x"}}' >
 out="$(void_pr_matches_item "Poetic-Poems/poetic" "60" "224")"; rc=$?
 assert_eq "a number embedded in a longer number does not match" "1" "$rc"
 
+# A finishing-source item is a pull request, and its id says which one. PR
+# #205's body and branch will never spell `pr-205-abandoned-<head-sha>`, so
+# without reading the id itself the guard would refuse the one citation these
+# items can honestly make — their own pull request, the very PR
+# `void_candidate_prs` then reads the diff of.
+printf '{"body": "Draft implementing the widget.", "head": {"ref": "agent/widget"}}' \
+  >"$tmp_dir/pr-205.json"
+for shape in "pr-205-abandoned-1a2b3c4d5e6f" "pr-205-review-2071883842" "pr-205-conflict-1a2b3c4d5e6f"; do
+  assert_eq "a finishing-source item citing its own PR matches ($shape)" \
+    "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "205" "$shape"; echo $?)"
+done
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "pr-205-abandoned-1a2b3c4d5e6f")"; rc=$?
+assert_eq "  ... but citing a different PR is still refused" "1" "$rc"
+assert_contains "  ... as a fabrication" "fabricated citation" "$out"
+# `pr-2050-…` is a different item from `pr-205-…`: the trailing dash of the
+# id's own shape is what keeps one from reading as the other.
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "205" "pr-2050-abandoned-1a2b3c4d5e6f")"; rc=$?
+assert_eq "  ... and a longer PR number is not this PR" "1" "$rc"
+
 # --- void_commit_matches_item ---------------------------------------------------
 printf 'main' >"$tmp_dir/repo-Poetic-Poems_poetic"
 
@@ -546,6 +565,14 @@ assert_eq "void_guard_reason works with repos omitted entirely" \
   "0" "$(void_guard_reason "$entry_224_good"; echo $?)"
 out="$(void_guard_reason "$entry_224_bad")"; rc=$?
 assert_eq "  ... and still refuses the fabrication" "1" "$rc"
+
+# And the finishing sources end to end: an abandoned-draft void whose evidence
+# cites the draft's own pull request is the ordinary, correct shape of that
+# verdict, so the citation test must not turn it into a refusal.
+assert_eq "an abandoned-draft void citing its own PR survives the guard" \
+  "0" "$(void_guard_reason '{"item": "pr-205-abandoned-1a2b3c4d5e6f",
+    "repo": "Poetic-Poems/poetic", "reason": "the draft is finished",
+    "evidence": "PR #205 has an empty diff against its base; nothing remains"}' '[]'; echo $?)"
 
 printf '\n'
 if (( failures == 0 )); then

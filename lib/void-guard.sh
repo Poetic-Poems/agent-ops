@@ -344,9 +344,25 @@ void_evidence_cited_commit_shas() {
 # first place. Prints nothing and returns 0 on a match; prints a one-line
 # reason and returns 1 otherwise, including when the PR cannot be read at all
 # — an unreadable citation corroborates nothing.
+#
+# One item shape needs no fetch at all: a finishing-source item *is* a pull
+# request. The gatherers mint its id from the PR's own number —
+# `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
+# `pr-<n>-conflict-<head-sha>` (scripts/gather-abandoned-drafts.sh,
+# gather-review-feedback.sh, gather-merge-conflicts.sh) — so citing that very
+# pull request is not a loose association, it is the item's own definition.
+# Nothing will ever write `pr-205-abandoned-1a2b3c4d5e6f` in PR #205's body or
+# branch name, so the body/branch test below would refuse the most natural
+# evidence these items can carry — the same pull request `void_candidate_prs`
+# then reads the diff of. That refusal would fall precisely on the sources the
+# guard corroborates best, so the id is read for what it already says.
 void_pr_matches_item() {
   local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
   local pr_json body head_ref
+
+  if grep -qiE "^pr-$num-" <<<"$item" 2>/dev/null; then
+    return 0
+  fi
 
   pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
   if [[ -z "$pr_json" ]]; then

@@ -3570,11 +3570,20 @@ runs unattended.
       (`repos/<slug>/compare/<sha>...<default_branch>`, `status` `identical`
       or `ahead`), and either its own message or a pull request GitHub
       associates with it (`repos/<slug>/commits/<sha>/pulls`) must name the
-      item the same way a cited PR does. Evidence citing neither a PR nor a
-      commit is untouched by this test — the three tests above are what govern
-      free prose. This is what a citation that merely *exists* was missing:
-      the shipped defect that motivated it (below) cited a PR that was real,
-      open, and entirely unrelated to the item being voided.
+      item the same way a cited PR does. One item shape is decided by its id
+      alone, with no fetch: a finishing-source item **is** a pull request —
+      requirements 3e, 3g and 23 mint its id as `pr-<n>-abandoned-<head-sha>`,
+      `pr-<n>-review-<review-id>` or `pr-<n>-conflict-<head-sha>` — so a
+      citation of pull request `<n>` corroborates item `pr-<n>-…` by the id's
+      own construction, while any other pull request is tested as usual.
+      Nothing writes that synthetic id into the pull request's body or branch,
+      so without this the test would refuse the one citation these items can
+      honestly make, on exactly the sources the candidate test below
+      corroborates best. Evidence citing neither a PR nor a commit is
+      untouched by this test — the two tests above are what govern free prose.
+      This is what a citation that merely *exists* was missing: the shipped
+      defect that motivated it (below) cited a PR that was real, open, and
+      entirely unrelated to the item being voided.
     - **This cycle's own candidates must not refute it (Co-Ordinator only).**
       Where the voided repo+item matches a gathered candidate carrying a
       `pr_number`, the guard reads that PR's changed files: a non-empty diff
@@ -5882,10 +5891,11 @@ pull request, run the ones the change touches and any it could regress.
    the same shape holds for a cited commit — refused when it is not an
    ancestor of the default branch, or when it is but neither its message nor
    any pull request associated with it names the item, and allowed when one of
-   those does. Assert it runs with `repos: []` exactly as the Enabler's and the
-   Implementor's calls do, and — where the Enabler's own `void` verdict is
-   refused — that the resulting `enabler-examined` event carries outcome
-   `void-refused`, not `escalation-failed`. Then drive it end to end: a
+   those does. Assert the finishing sources are not caught by it: an item
+   `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
+   request `<n>` is allowed on the id alone, while the same item citing a
+   different pull request is refused. Assert it runs with `repos: []` exactly
+   as the Enabler's and the Implementor's calls do. Then drive it end to end: a
    Co-Ordinator returning a `voided` entry the guard refuses must produce an
    `attempt-failed` for that item and **no** `item-void`, and the next cycle
    must list the item as blocked rather than void. The negative matters as
