@@ -326,7 +326,15 @@ stage_budget_table() {
                   p95_duration_min: $st.p95_duration_min,
                   backstop_kills: $st.backstop_kills,
                   backstop_min: (prior_of($a; "backstop") | floor),
-                  inactivity_min: (([pooled_inactivity($a; $by_actor), prior_of($a; "inactivity")] | max) | ceil),
+                  # Clamped to the backstop here as it is per cell, and for
+                  # the same reason: a watchdog allowed past the outer bound
+                  # could never fire. It bites here more easily than there,
+                  # because the pooled backstop is the shipped prior while the
+                  # pooled threshold has every repository behind it.
+                  inactivity_min: (
+                    (prior_of($a; "backstop") | floor) as $b
+                    | (([pooled_inactivity($a; $by_actor), prior_of($a; "inactivity")] | max) | ceil) as $i
+                    | if $i > $b then $b else $i end),
                   basis: (if $st.n > 0 then "pooled" else "prior" end)
                 }
               })
