@@ -98,6 +98,21 @@ case "${STUB_MODE:-prompt}" in
     printf '%s\n' '{"type":"system","subtype":"init"}'
     sleep "${STUB_HOLD:-60}"
     ;;
+  rejected)
+    printf '%s\n' '{"type":"system","subtype":"init"}'
+    printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1786086000,"rateLimitType":"five_hour"}}'
+    sleep "${STUB_HOLD:-60}"
+    ;;
+  warned)
+    printf '%s\n' '{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","utilization":0.9,"rateLimitType":"five_hour"}}'
+    sleep 1
+    ;;
+  quoted)
+    # The string, but inside a tool result rather than as an event of its own:
+    # an Implementor working on limit detection reads fixtures like this.
+    printf '%s\n' '{"type":"user","message":{"content":[{"type":"tool_result","content":"expected {\"status\":\"rejected\"} here"}]}}'
+    sleep 1
+    ;;
   busy)
     i=0
     while (( i < ${STUB_HOLD:-10} )); do
@@ -183,7 +198,38 @@ run_case disabled silent 8 20 0
 assert_eq "with the watchdog off, a silent stage runs to completion" "0" "$rc"
 assert_eq "and nothing is attributed to a watchdog that did not run" "" "$stage_kill_reason"
 
-# --- 5. An ordinary stage reports no kill at all ------------------------------------
+# --- 5. A refused account stops the stage at once -----------------------------------
+# Limit detection has always run on the transcript after the stage ended, so a
+# stage that hit a limit early burned the rest of its cap first. The stream
+# says so as it happens. Backstop 120s, watchdog 60s — neither can be
+# responsible for a kill inside a couple of seconds.
+run_case refused rejected 60 120 60
+assert_eq "a stage whose account is refused is stopped at once" "124" "$rc"
+assert_eq "and the stop is attributed to the limit, not to a cap" \
+  "rate-limit" "$stage_kill_reason"
+assert_eq "the runner's own record is carried out for the stand-down" \
+  "rejected" "$(jq -r '.status' <<<"$stage_rate_limit_json" 2>/dev/null)"
+assert_eq "…including the reset time a prose parse would have had to guess at" \
+  "1786086000" "$(jq -r '.resetsAt' <<<"$stage_rate_limit_json" 2>/dev/null)"
+assert_eq "no watchdog warning: the stage was not wedged, it was refused" \
+  "" "$(stage_watchdog_warning refused || true)"
+
+# `allowed_warning` is "you are close", not "no". A stage must be allowed to
+# run through it — aborting there would throw away work for a limit that had
+# not been reached.
+run_case warned warned 0 60 30
+assert_eq "a rate-limit warning does not stop the stage" "0" "$rc"
+assert_eq "and nothing is recorded against it" "" "$stage_kill_reason"
+
+# The same string inside a tool result is content, not an event. An
+# Implementor working on limit detection reads fixtures shaped exactly like
+# this, and must not abort itself for doing so.
+run_case quoted quoted 0 60 30
+assert_eq "the status string inside a tool result is content, not a refusal" \
+  "0" "$rc"
+assert_eq "so the stage runs to completion" "" "$stage_kill_reason"
+
+# --- 6. An ordinary stage reports no kill at all ------------------------------------
 run_case clean prompt 0 60 30
 assert_eq "a stage that ends on its own exits with its own status" "0" "$rc"
 assert_eq "and carries no kill reason for the event to record" "" "$stage_kill_reason"

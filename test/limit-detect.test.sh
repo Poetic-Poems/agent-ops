@@ -268,6 +268,38 @@ assert_eq "a failed envelope with no limit phrase is inconclusive" \
 assert_eq "a clean envelope with an empty result is inconclusive" \
   "inconclusive" "$(limit_probe_verdict '{"is_error":false,"result":""}')"
 
+# --- limit_decide_structured: the runner's own record, not its prose -------
+# The better source wherever it exists, for a reason worth pinning down: a
+# stated `resetsAt` makes the stand-down a fact rather than an estimate, and
+# an estimated stand-down costs the fleet a usage probe every cycle until it
+# clears. So `reset_known` must come back `true` here where the prose path
+# would usually have to guess.
+assert_eq "a structured record with a reset time yields that exact time, known" \
+  "$(date -u -d @1786086000 +%Y-%m-%dT%H:%M:%SZ)	other	true" \
+  "$(limit_decide_structured '{"status":"rejected","resetsAt":1786086000,"rateLimitType":"five_hour"}' 3)"
+
+# The class exists only to choose a fallback cooldown, so it follows what that
+# fallback is for — the long weekly kind — not what the limit is called.
+assert_eq "a seven-day limit is the weekly class" "weekly" \
+  "$(limit_decide_structured '{"status":"rejected","rateLimitType":"seven_day_opus"}' 3 | cut -f2)"
+assert_eq "…and with no stated reset falls back to the long cooldown, unknown" \
+  "false" \
+  "$(limit_decide_structured '{"status":"rejected","rateLimitType":"seven_day_opus"}' 3 | cut -f3)"
+assert_eq "a five-hour limit is not the weekly class" "other" \
+  "$(limit_decide_structured '{"status":"rejected","rateLimitType":"five_hour"}' 3 | cut -f2)"
+
+# Nothing usable must be a refusal to answer, not a fabricated stand-down: the
+# caller falls back to the phrase matcher, which is what has always handled
+# this.
+for junk in '' 'not json at all' '[]' 'null'; do
+  if limit_decide_structured "$junk" 3 >/dev/null 2>&1; then
+    printf 'FAIL - limit_decide_structured answered for unusable input: %s\n' "${junk:-<empty>}"
+    failures=$(( failures + 1 ))
+  else
+    printf 'ok   - unusable input (%s) is declined rather than guessed at\n' "${junk:-<empty>}"
+  fi
+done
+
 # --- Regression guard: must not abort under `set -e -o pipefail` ----------
 # agent-cycle.sh runs with `set -euo pipefail`. Several helpers above build a
 # result via `grep ... | head -n1` inside a plain assignment; under
@@ -284,6 +316,8 @@ strict_probe="$(bash -euo pipefail -c '
   limit_class_of "no timestamp, no weekly or monthly word here" >/dev/null
   limit_parse_human_reset "no reset clause in this text at all" 2>/dev/null || true
   limit_decide "no timestamp, no reset clause, no weekly or monthly word" 3 >/dev/null
+  limit_decide_structured "{}" 3 >/dev/null
+  limit_decide_structured "not json at all" 3 >/dev/null || true
   limit_probe_verdict "" "" >/dev/null
   echo STRICT_MODE_SURVIVED
 ' 2>&1)"

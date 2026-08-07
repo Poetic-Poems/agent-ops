@@ -1773,12 +1773,40 @@ runs unattended.
    succeeded. Nor is such a kill merely a delay — a killed Reviewer records no
    verdict, so the pull request reaches the human with no pipeline review at
    all and nothing in the merge record says the gate never ran.
-   **`kill_reason`** distinguishes the two on the `stage-end` /
-   `review-stage-end` event: `inactivity` or `backstop`, and absent when the
-   stage ended on its own. `exit_code: 124` cannot carry it, and the two imply
-   opposite corrections — a backstop kill argues the cap is too tight for work
-   that was progressing, an inactivity kill argues the stage stopped. The
-   `attempt-failed` detail says which in words, for the Enabler and for
+   A third thing stops a stage, and it is not a cap at all: **the account
+   saying no**. The stream carries the runner's own `rate_limit_event`, and a
+   `rate_limit_info.status` of `rejected` means nothing the stage does from
+   here can succeed. It is stopped on the spot. Limit detection (requirement
+   10) has always run on the transcript *after* a stage ended, so a stage that
+   hit a limit early went on holding the node for the rest of its cap while
+   every call it made was refused.
+   Only `rejected` stops a stage. The runner's vocabulary for that field is
+   `allowed`, `allowed_warning` and `rejected`; `allowed_warning` means "you
+   are close", which a stage must be allowed to run through, and any value not
+   recognised is likewise left alone to fall through to the phrase matcher
+   that has always handled this. The asymmetry is deliberate and is §3.2's:
+   failing to abort early costs the rest of a wall-clock cap, while aborting a
+   healthy stage throws away everything it had done. The check is made only on
+   an event of the runner's own — a top-level `rate_limit_event`, never a
+   string inside a tool result, since an Implementor working on limit
+   detection reads fixtures shaped exactly like one.
+   The `rate_limit_info` that stopped the stage becomes the stand-down's
+   evidence, and is better evidence than the prose path can produce: it states
+   `resetsAt` as an epoch, so `reset_known` is `true` and the fleet is spared
+   the usage probe requirement 1b spends on every cycle of an *estimated*
+   stand-down. It is also the only source available on this path at all — a
+   stage stopped at the refusal never writes a final message for the phrase
+   matcher to read. `lib/limit-detect.sh`'s `limit_decide_structured` maps it
+   to the same `resume_at`/`class`/`reset_known` triple the prose path
+   produces, so the two cannot yield differently-shaped stand-downs, and
+   declines rather than guessing when the record says nothing usable.
+   **`kill_reason`** distinguishes all three on the `stage-end` /
+   `review-stage-end` event: `inactivity`, `backstop` or `rate-limit`, and
+   absent when the stage ended on its own. `exit_code: 124` cannot carry it,
+   and they imply different corrections — a backstop kill argues the cap is
+   too tight for work that was progressing, an inactivity kill argues the
+   stage stopped, and a rate-limit stop argues nothing about the caps at all.
+   The `attempt-failed` detail says which in words, for the Enabler and for
    whoever asks why the item is blocked.
    A watchdog kill also logs a **`warning`**. Its kill path had fired zero
    times in the whole recorded history when it was built, so the first firing
@@ -1971,12 +1999,22 @@ runs unattended.
    pid/name pair is advertised only while a stage is in flight. A signal
    landing during cleanup itself must not re-enter the handler.
    `review-cycle.sh` carries the same discipline as R7a of its own spec.
-10. **Usage-limit detection.** Whenever any `claude` invocation's transcript
+10. **Usage-limit detection.** Two sources, and the structured one is
+    preferred wherever it exists. When a stage was stopped because its stream
+    reported the account `rejected` (requirement 4e), the `limit-hit` is
+    derived from that `rate_limit_info` by `limit_decide_structured`: it
+    states `resetsAt` as an epoch, so the stand-down is a fact rather than an
+    estimate, and it is the only source available on that path at all, since a
+    stage stopped at the refusal writes no final message for a phrase matcher
+    to read. Otherwise — and whenever any `claude` invocation's transcript
     matches the shared pattern in `lib/limit-detect.sh` (`LIMIT_PHRASE_REGEX`
     — the generic `hit your .* limit` stem plus the legacy `usage limit` /
     `rate limit` / `usage cap` / `quota exceeded` terms; sourced by both the
-    Script and `scripts/publish-dashboard.sh` so the two can't drift apart),
-    write a `limit-hit` event with `resume_at`, `class`, and `reset_known`:
+    Script and `scripts/publish-dashboard.sh` so the two can't drift apart) —
+    it is parsed out of the prose. Either way the event is a `limit-hit`
+    carrying the same three fields, because no reader downstream should have
+    to know which source produced it: `resume_at`, `class`, and
+    `reset_known`:
     - `resume_at` is parsed from an ISO-8601 timestamp in the message if
       present, else from a human-readable weekly reset clause (e.g. "resets
       Jul 17, 4am (Pacific/Auckland)" — the named zone is applied via `TZ`,
@@ -2925,10 +2963,10 @@ runs unattended.
     `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
     `disabled`, `enabled`,
     `warning`, `cycle-end`. A `stage-end` carries `kill_reason` —
-    `inactivity` or `backstop` — when and only when one of requirement 4e's
-    two caps ended the stage; its absence means the stage ended on its own,
+    `inactivity`, `backstop` or `rate-limit` — when and only when requirement
+    4e stopped the stage; its absence means the stage ended on its own,
     well or badly. `exit_code` is 124 for both kills and so cannot tell them
-    apart, and they are opposite findings. A `labels-ensured` carries the `repo`, its `role`,
+    apart, and they are different findings. A `labels-ensured` carries the `repo`, its `role`,
     and the labels `created` and `failed` (requirement 6a) — it is written
     only when there was something to report, so it appears on a repository's
     first cycle and then not again unless a label is deleted or the token
@@ -3940,7 +3978,8 @@ What exists, and the requirements each part answers to:
    launcher both pipelines call, with `stage_stream_file` and
    `stage_result_line` naming and reading the stream it writes, and
    `stage_gap_stats` summarising the inter-event gaps it measures from that
-   stream for requirement 33a) and
+   stream for requirement 33a, and `stage_rejected_rate_limit` reading the
+   refusal that stops a stage on the spot) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -4572,6 +4611,17 @@ pull request, run the ones the change touches and any it could regress.
    dead rather than orphaned; and the stream written before the kill survives
    it, which is what makes the forensics of requirement 4d worth having. The
    `warning` body is produced for an inactivity kill and for nothing else.
+   The same file covers requirement 4e's third stop: a stream reporting the
+   account `rejected` stops the stage at once, attributes it to `rate-limit`
+   rather than to either cap, and carries the runner's own record — reset time
+   included — out for the stand-down; an `allowed_warning` does *not* stop it,
+   nor does the same status string appearing inside a tool result, which is
+   what an Implementor working on limit detection would be reading.
+   `test/limit-detect.test.sh` passes: `limit_decide_structured` returns the
+   stated reset as a known one, maps a seven-day limit to the weekly class and
+   a five-hour one to `other`, falls back exactly as the prose path does when
+   no reset is stated, and declines rather than guessing on an empty,
+   unparseable or non-object record.
    `test/doctor.test.sh` passes: `--offline` reports the stream-flushing
    probe skipped rather than running it, so the suite never spends.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,

@@ -837,14 +837,28 @@ log_voided_items() {
 
 detect_and_log_limit_hit() {
   local out_file="$1" text resume_at class reset_known
-  limit_phrase_in "$out_file" "$out_file.stderr" || return 1
-  # Remembered for the rest of the cycle, because the Enabler runs from the exit
-  # trap — after this point on every path — and engaging the fleet's most
-  # expensive model moments after any stage hit a limit would simply re-hit it
-  # (requirement 35's guards).
-  limit_hit_this_cycle=1
-  text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
-  IFS=$'\t' read -r resume_at class reset_known < <(limit_decide "$text" "$limit_cooldown_default_hours")
+  # Two sources, and the structured one comes first because it is better
+  # evidence, not merely earlier: the stream's own `rate_limit_info` carries
+  # an epoch reset time, so the stand-down is a fact rather than the estimate
+  # a prose parse has to settle for — and an estimated stand-down costs the
+  # fleet a probe every cycle until it clears (requirement 2.1b). It also
+  # exists on a path the prose parse cannot reach at all: a stage stopped the
+  # moment the account refused never wrote a final message for the phrase
+  # matcher to read.
+  if [[ -n "${stage_rate_limit_json:-}" ]] \
+     && IFS=$'\t' read -r resume_at class reset_known \
+          < <(limit_decide_structured "$stage_rate_limit_json" "$limit_cooldown_default_hours"); then
+    limit_hit_this_cycle=1
+  else
+    limit_phrase_in "$out_file" "$out_file.stderr" || return 1
+    # Remembered for the rest of the cycle, because the Enabler runs from the exit
+    # trap — after this point on every path — and engaging the fleet's most
+    # expensive model moments after any stage hit a limit would simply re-hit it
+    # (requirement 35's guards).
+    limit_hit_this_cycle=1
+    text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
+    IFS=$'\t' read -r resume_at class reset_known < <(limit_decide "$text" "$limit_cooldown_default_hours")
+  fi
   log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson k "$reset_known" \
     '{resume_at: $r, class: $c, reset_known: $k}')"
   # Tell the fleet now, not a fetch interval from now: publish the stand-down
@@ -1174,6 +1188,8 @@ handle_stage_failure() {
   # code that cannot carry it.
   if [[ "$rc" == "124" && "$stage_kill_reason" == "inactivity" ]]; then
     detail="$stage produced no output at all for its inactivity threshold and was stopped as wedged"
+  elif [[ "$rc" == "124" && "$stage_kill_reason" == "rate-limit" ]]; then
+    detail="$stage was stopped the moment the account reported a usage limit — nothing it did after that could have succeeded"
   elif [[ "$rc" == "124" ]]; then
     detail="$stage timed out"
   else
