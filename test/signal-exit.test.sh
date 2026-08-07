@@ -310,8 +310,11 @@ else
     # acquire_lock, which shellcheck cannot see into.
     # shellcheck disable=SC2034
     lock_file="$capture/lock.json"
+    # Since requirement 4f this is a derived figure in seconds, computed from
+    # the backstops in force before the lock is taken, rather than a config
+    # key in hours. Four hours, as it was.
     # shellcheck disable=SC2034
-    lock_stale_after_hours=4
+    lock_stale_after_sec=14400
     lock_acquired=0
     # shellcheck disable=SC2317
     log_event() { printf 'event %s %s\n' "$1" "$2" >> "$capture/calls.log"; }

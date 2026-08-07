@@ -54,6 +54,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/stage-run.sh
 . "$SCRIPT_DIR/lib/stage-run.sh"
+# shellcheck source=lib/stage-budget.sh
+. "$SCRIPT_DIR/lib/stage-budget.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/role.sh
@@ -133,12 +135,25 @@ workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 review_model="$(resolve_model_id review.model "$(cfg '.review.model')")"
 pr_label="$(cfg '.review.pr_label')"
 branch_prefix="$(cfg '.review.branch_prefix')"
-timeout_review_min="$(cfg '.review.timeout_review')"
-# The liveness watchdog (requirement 4e / R7b). Prior in code, not config: a
-# customer never has to choose it. Absent means the prior; 0 disables.
-INACTIVITY_PRIOR_MIN=10
-inactivity_review_min="$(cfg ".review.inactivity_review // $INACTIVITY_PRIOR_MIN")"
-lock_stale_after_hours="$(cfg '.review.lock_stale_after')"
+# Both of this stage's caps are derived per (actor, repository, model) from
+# the fleet's own record of itself (requirement 4f, shared with the
+# implementation pipeline through lib/stage-budget.sh). What is read here is
+# only what this installation has explicitly overridden — absent, the
+# derivation answers, and with no history the shipped prior does.
+timeout_review_override="$(cfg '.review.timeout_review // ""')"
+inactivity_review_override="$(cfg '.review.inactivity_review // ""')"
+lock_stale_configured_hours="$(cfg '.review.lock_stale_after // 0')"
+# Initialised before anything can exit through a trap, for the reason
+# agent-cycle.sh gives at its copy: an unset variable read under `set -u` from
+# inside a trap abandons the trap part-way. An empty table resolves to the
+# shipped priors.
+stage_budget_json='{"cells":{},"actors":{}}'
+# Likewise: `acquire_lock` reads this, and is called immediately after the
+# derivation sets it, but a function that reads an unset global under `set -u`
+# fails at the reader rather than at the writer. Four hours, the value this
+# used to be configured to, until the derivation replaces it.
+lock_stale_after_sec=14400
+review_budget_overrides='{}'
 min_days_between_reviews="$(cfg '.review.min_days_between_reviews')"
 # A stand-down with a date on it (R3.3). Empty or absent means none in force.
 review_not_before="$(cfg '.review.not_before // ""')"
@@ -449,7 +464,7 @@ acquire_lock() {
         log_event "warning" "$(jq -nc --arg d "foreign review lock from pid $pid on host $host (age ${age_sec}s) taken over" '{detail: $d}')"
       else
         local stale_after_sec
-        stale_after_sec=$(( lock_stale_after_hours * 3600 ))
+        stale_after_sec="$lock_stale_after_sec"
         if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
           log_event "review-skipped" "$(jq -nc --arg d "review lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
           exit 0
@@ -484,17 +499,45 @@ acquire_lock() {
     '{pid: $pid, started_at: $started_at, host: $host}' > "$lock_file"
   lock_acquired=1
 }
-acquire_lock
-
 # --- The fleet's memory (R2c) ---
 # No lease: per-item claims (IMPLEMENTATION-PIPELINE-SPEC requirement 17a)
 # keep nodes off each other's work. What the review shares with the fleet is
 # the event stream — the union of every node's shared log, snapshotted once
 # here so the usage-limit checks below see a limit *any* node hit (they all
 # spend one Claude account).
+#
+# Taken before the lock, as agent-cycle.sh does and for the same reason: this
+# pipeline's lock threshold is derived from the stage budgets, which are
+# derived from this stream (requirement 4f).
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$review_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+
+# What the Reviewer-Agent is allowed this run (requirement 4f), and — derived
+# from it — how long this pipeline's own lock may be held. The review lock has
+# always been the longer of the two, because a full review is long; now it is
+# longer *by derivation* rather than by a number someone chose.
+stage_budget_settings_json="$(stage_budget_settings "$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')")"
+stage_budget_json="$(stage_budget_table \
+  "$(stage_budget_observations < "$union_log")" "$stage_budget_settings_json")"
+review_budget_overrides="$(jq -nc \
+  --arg b "$timeout_review_override" --arg i "$inactivity_review_override" \
+  '{backstop: ($b | if test("^[0-9]+$") then tonumber else null end),
+    inactivity: ($i | if test("^[0-9]+$") then tonumber else null end)}')"
+lock_stale_after_sec="$(jq -nr --argjson t "$stage_budget_json" \
+  --argjson o "$review_budget_overrides" --argjson priors "$STAGE_BUDGET_PRIORS" \
+  --argjson configured "$lock_stale_configured_hours" '
+    ([ ($priors["project-reviewer"].backstop // 0),
+       ($o.backstop // empty),
+       ((($t.cells // {}) | to_entries[]
+         | select(.value.actor == "project-reviewer") | .value.backstop_min) // empty) ]
+     | map(select(type == "number")) | max) as $cap
+    # Two repositories can be reviewed back to back inside one lock, which is
+    # why this doubles the widest single cap rather than taking it as given.
+    | ((($cap * 2) + 30) * 60) as $derived
+    | ([$derived, ($configured * 3600)] | max | ceil)' 2>/dev/null || printf 21600)"
+
+acquire_lock
 
 # --- Stand-down checks (R3) ---
 # 3.1 Usage-limit cooldown, exactly as agent-cycle.sh 2.1: the log union (as
@@ -717,8 +760,24 @@ $(jq . <<<"$reviewer_input")
 "
   out_file="$review_dir/reviewer-$safe.out"
 
-  log_event "review-stage-start" "$(jq -nc --arg r "$slug" --arg m "$review_model" '{repo: $r, model: $m}')"
-  if run_claude_stage reviewer "$(( timeout_review_min * 60 ))" "$review_model" "$reviewer_prompt" "$out_file" "$clone_dir" "$(( inactivity_review_min * 60 ))"; then
+  local review_budget review_backstop_min review_inactivity_min
+  review_budget="$(stage_budget_resolve "$stage_budget_json" project-reviewer "$slug" \
+    "$review_model" "$review_budget_overrides")"
+  review_backstop_min="$(jq -r '.backstop_min' <<<"$review_budget" 2>/dev/null || printf '')"
+  review_inactivity_min="$(jq -r '.inactivity_min' <<<"$review_budget" 2>/dev/null || printf '')"
+  [[ "$review_backstop_min" =~ ^[0-9]+$ ]] \
+    || review_backstop_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" '$p["project-reviewer"].backstop')"
+  [[ "$review_inactivity_min" =~ ^[0-9]+$ ]] \
+    || review_inactivity_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" '$p["project-reviewer"].inactivity')"
+  # Announced on the event, not merely applied: a self-tuning number that
+  # cannot be traced is a mystery number (requirement 4f).
+  log_event "review-stage-start" "$(jq -nc --arg r "$slug" --arg m "$review_model" \
+    --argjson b "$review_budget" \
+    --argjson bs "$review_backstop_min" --argjson is "$review_inactivity_min" \
+    '{repo: $r, model: $m}
+     + (if ($b | type) == "object" then $b else {} end)
+     + {backstop_min: $bs, inactivity_min: $is}')"
+  if run_claude_stage reviewer "$(( review_backstop_min * 60 ))" "$review_model" "$reviewer_prompt" "$out_file" "$clone_dir" "$(( review_inactivity_min * 60 ))"; then
     rc=0
   else
     rc=$?

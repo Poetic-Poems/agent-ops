@@ -577,15 +577,16 @@ and the schema must carry every one of them.
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
-| `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
-| `timeout_implementor` | 120 min | Raised from 90 as an interim measure (#203): the longest recorded Implementor run finished 7 seconds inside the 90-minute cap, after 327 turns and $30.83 of work that a kill would have discarded, and this repository's Implementor p95 is 64 minutes. Adaptive, liveness-based timeouts supersede this. |
-| `timeout_reviewer` | 60 min | Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different...[continued below](#extended-notes-timeout_reviewer) |
-| `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
-| `inactivity_coordinator` | 10 min | Minutes of total silence before the liveness watchdog of requirement 4e stops the stage. Absent means the shipped prior, which is where this value is meant to come from — a configured one is an override, not the normal case. `0` disables the watchdog for that actor. |
-| `inactivity_implementor` | 10 min | As `inactivity_coordinator`, for the Implementor. The one stage with a plausible long-silence case of its own — a single Bash tool call running a full test suite — which is why the prior sits far above anything yet measured rather than close to it. |
-| `inactivity_reviewer` | 10 min | As `inactivity_coordinator`, for the Reviewer. |
-| `inactivity_enabler` | 10 min | As `inactivity_coordinator`, for the Enabler. |
-| `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 120 + 60 + 30 minutes once the Enabler can run inside the lock (requirement 35). The interim raises of #203 have left only 15 minutes of that slack; #203 replaces the check with a derivation. |
+| `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
+| `timeout_implementor` | *(unset)* | As `timeout_coordinator`, for the Implementor. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
+| `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
+| `timeout_enabler` | *(unset)* | As `timeout_coordinator`, for the Enabler — which, spanning repositories, has a single `(enabler, *, model)` cell. |
+| `inactivity_coordinator` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
+| `inactivity_implementor` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
+| `inactivity_reviewer` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
+| `inactivity_enabler` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap. |
+| `lock_stale_after` | *(unset)* | A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the four actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point — an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on. |
+| `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
@@ -638,10 +639,6 @@ It must not be `blocked` — that label is an exclusion criterion for the `issue
 How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.
 
 Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
-
-### Extended notes: `timeout_reviewer`
-
-Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different populations. Adaptive, liveness-based timeouts supersede this.
 
 <!-- config-table:notes-end -->
 
@@ -1823,10 +1820,11 @@ runs unattended.
    something a stage legitimately does — which would be this mechanism
    reintroducing, from the other side, the failure it exists to end. The rate
    is the thing to watch, and a rate nobody is told about is not watched.
-   **The threshold's default lives in the code, not in `config.json`.** An
-   installation that names no `inactivity_<actor>` gets the shipped prior, ten
-   minutes — roughly three and a half times the longest run-average gap ever
-   recorded, and far above anything a healthy stage has been seen to do. A key
+   **Neither cap is a configured constant.** Both are derived per
+   (actor, repository, model) by requirement 4f, from a shipped prior when
+   there is no history to derive from — the watchdog's prior being ten
+   minutes, roughly three and a half times the longest run-average gap ever
+   recorded and far above anything a healthy stage has been seen to do. A key
    present in the configuration is an override and wins; `0` disables the
    watchdog for that actor and leaves the backstop as the only cap. Erring
    generous is deliberate, because the loss function is asymmetric: too
@@ -1842,6 +1840,109 @@ runs unattended.
    naming the `inactivity_*` escape hatch, if the output arrived only at the
    end. It is the one check there that spends, for the reason requirement 1b's
    usage-limit probe spends: some questions can only be answered by asking.
+4f. **Both caps are derived, per (actor, repository, model), from the
+   pipeline's own record of itself.** Requirement 4e gives every stage a
+   backstop and a watchdog; this decides what those two numbers are.
+   `lib/stage-budget.sh` folds the fleet log union — the same stream the
+   blocked extract, the void extract and the no-op fingerprint read — into one
+   table per cycle. Nothing is stored: a derived value is a pure function of
+   events every node already shares, so four nodes agree with nothing to
+   replicate and no controller state to reconcile.
+   **The cell is `(actor, repository, model)`.** Not the actor alone —
+   reviewing this repository costs three to four times what reviewing the
+   others does, because every diff is checked against a five-thousand-line
+   specification, and that cost rises with every edit to it. Not
+   `(actor, repository)` either: the strongest single predictor of how long a
+   stage runs is the model it ran under, and a cell pooling two of them has a
+   bimodal duration distribution that no single moment or quantile describes.
+   Complex-model reviews here run about twice as long at every quantile as
+   default-model ones and were killed roughly six times as often; a controller
+   given their average holds a cap far too tight for one and needlessly loose
+   for the other, and converges for neither. Node is deliberately *not* a
+   dimension, though nodes differ in speed: it would cut the largest cell to
+   about eleven runs and the interesting one to about five, and no estimator
+   recovers a distribution's tail from five observations — while the tail is
+   the entire quantity of interest. The Co-Ordinator and the Enabler are keyed
+   `(actor, *, model)`: the first runs before selection and the second spans
+   repositories, so neither has one.
+   **The watchdog threshold is estimated; the backstop is controlled.** They
+   are different quantities and deserve different instruments, and splitting
+   them is also what removes any wait for data. The threshold's sample is
+   inter-event gaps (requirement 33a), so a single long stage yields
+   observations of the thing being measured and a new repository has a usable
+   distribution within a few cycles. A run duration is one observation per
+   stage per cycle, which is genuinely slow — so the backstop is not fitted at
+   all.
+   *The threshold* is `k x max(gap)` over the window, k defaulting to four,
+   shrunk towards the pooled estimate and floored at the shipped prior. The
+   maximum rather than a mean plus so many standard deviations is the
+   load-bearing choice: a run killed for inactivity at threshold `T` records a
+   maximum gap of `T`, so the next threshold computed from it is `k x T` and
+   the estimator *widens* under censoring. A mean-plus-sigma rule takes the
+   same censored observation in below its true value, pulls the estimate down,
+   tightens the threshold and censors more — a spiral that, simulated over the
+   real distributions, never converges and never recovers the tail. It also
+   assumes nothing about the distribution, which matters because gaps are
+   heavy-tailed. It never narrows below the prior whatever the data say, and
+   never exceeds the backstop above it.
+   *The backstop* is a multiplicative-increase, additive-decrease controller,
+   folded over the cell's runs in time order. It is the mirror image of the
+   congestion control the shape is borrowed from, and deliberately: there the
+   danger is a window grown too large, so it backs off hard and recovers
+   slowly; here the danger is a cap set too small — that is what destroys a
+   stage — so the sharp move is upward and the cautious one downward. A
+   backstop kill multiplies the cap, being the only unambiguous evidence it is
+   too tight and precisely the censored observation that broke the estimator
+   approach. A step down needs three things at once: a run of clean stages, an
+   observed kill rate inside the objective, and a 95th percentile of
+   *completed* runs still well clear of the reduced cap. A killed run
+   contributes no duration at all — its recorded length is its cap, not its
+   length. Floors and ceilings bound the fold: never below the prior, never
+   below twice that percentile, never above a fixed multiple of the prior, and
+   when floor and ceiling disagree the floor wins, because throughput is a
+   preference and discarding a finished stage is not.
+   **Cold start is hierarchical shrinkage, not a threshold.** A cell's
+   estimate is `(n·own + n₀·prior) / (n + n₀)`, with the prior the pooled
+   value one level up — the same actor and model across every repository,
+   falling back to the same actor across every model, and the shipped prior at
+   the root. There is no run count at which a cell switches on; it slides.
+   That is what makes the model dimension affordable: a model used twice in a
+   repository contributes almost nothing of its own and sits essentially at
+   the pooled estimate, rather than producing the wild cell a hard split would
+   give. An installation with no history at all runs on the shipped priors,
+   which is the whole requirement — a customer must never be asked to choose a
+   timeout, and must get sensible behaviour on cycle one.
+   **Precedence, most specific first:** a `stage_timeouts` /
+   `stage_inactivity` entry on the repository being worked; the plain
+   `timeout_<actor>` / `inactivity_<actor>` key; the adaptive value for the
+   cell; the shrunk pooled value for the actor; the shipped prior.
+   Configuration outranks the derivation deliberately — an installation that
+   has said what it wants is not to be argued with — and, just as
+   deliberately, **the pipeline never writes to `config.json`**: a customer's
+   configuration stays theirs, and a self-tuning value can never become
+   pull-request churn in somebody else's repository. The corollary is that a
+   configured cap pins itself permanently, which `scripts/doctor.sh` warns
+   about, because a number set once and forgotten looks exactly like a system
+   still adapting.
+   **Every value is announced.** The `stage-start` /
+   `review-stage-start` event carries `backstop_min`, `inactivity_min`,
+   `source` (`config`, `cell`, `pooled` or `prior`) and `basis` (`own`,
+   `shrunk` or `prior`), so a reader looking at a stage finds the numbers it
+   was given and where each came from; `scripts/doctor.sh` reports the whole
+   table; and the dashboard holds a live stage against the cap that stage was
+   actually given rather than against a shared constant. A self-tuning number
+   that cannot be traced is a mystery number.
+   **`lock_stale_after` is derived, not asserted.** It was a constant checked
+   against other constants, and that check had to be re-derived by hand every
+   time any of them moved — three times in the two days before this was
+   written, each raise forcing a knock-on recalculation somewhere else. The
+   threshold is now the sum, over the four actors, of the widest backstop each
+   could draw this cycle, plus slack; a configured `lock_stale_after` is a
+   floor under it rather than the value. Erring long is close to free, because
+   a dead holder is taken over on its pid rather than on its age, so this
+   bounds only how long a live but hung cycle may hold on. The review
+   pipeline derives its own the same way, doubling the widest Reviewer-Agent
+   backstop because one lock can span two repositories reviewed back to back.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -3004,7 +3105,10 @@ runs unattended.
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
     `disabled`, `enabled`,
-    `warning`, `cycle-end`. A `stage-end` carries `kill_reason` —
+    `warning`, `cycle-end`. A `stage-start` carries the two caps that stage
+    was given and where each came from — `backstop_min`, `inactivity_min`,
+    `source` and `basis` (requirement 4f) — because a self-tuning number that
+    cannot be traced is a mystery number. A `stage-end` carries `kill_reason` —
     `inactivity`, `backstop` or `rate-limit` — when and only when requirement
     4e stopped the stage; its absence means the stage ended on its own,
     well or badly. `exit_code` is 124 for both kills and so cannot tell them
@@ -4027,7 +4131,14 @@ What exists, and the requirements each part answers to:
    `stage_result_line` naming and reading the stream it writes, and
    `stage_gap_stats` summarising the inter-event gaps it measures from that
    stream for requirement 33a, and `stage_rejected_rate_limit` reading the
-   refusal that stops a stage on the spot) and
+   refusal that stops a stage on the spot),
+   `lib/stage-budget.sh` (requirement 4f's derivation:
+   `stage_budget_observations` over the log union, `stage_budget_table`
+   holding the estimator, the controller and the shrinkage,
+   `stage_budget_resolve` applying the precedence, and
+   `stage_budget_lock_seconds` deriving the lock; sourced by both cycle
+   scripts, by `scripts/doctor.sh` and by the dashboard publisher, all four of
+   which must agree about what a stage is allowed) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -4672,6 +4783,31 @@ pull request, run the ones the change touches and any it could regress.
    unparseable or non-object record.
    `test/doctor.test.sh` passes: `--offline` reports the stream-flushing
    probe skipped rather than running it, so the suite never spends.
+1k4. **Both stage caps derive themselves, and in the safe direction
+   (requirement 4f).** `test/stage-budget.test.sh` passes against fixture
+   logs with absolute dates: a stage is keyed to the repository its cycle
+   selected and to the model it ran, two repositories are two cells, and the
+   Co-Ordinator has no repository axis; an unseen cell answers from the
+   shipped prior, as does an empty table, so a first cycle needs no
+   configuration; one backstop kill multiplies the cap and repeated kills are
+   bounded by the ceiling, while three clean runs move it not at all; a killed
+   run is counted as a run and contributes no duration, so the percentile is
+   over completed runs only; a long silence widens the watchdog threshold and
+   consistently short ones never narrow it below the prior, and it never
+   exceeds the backstop; one run leaves a cell marked `shrunk` and carries
+   only a fraction of its own estimate; configuration outranks the derivation
+   and says so on the event; the derived lock clears the summed worst-case
+   backstops plus slack, treats a configured value as a floor, and still
+   derives from the priors alone against an empty table; and a malformed log,
+   a `stage-end` predating `kill_reason`, one predating the gap statistics and
+   a malformed `stage_budget` object each yield a usable answer rather than
+   none. `test/stage-overrun.test.sh` passes: the dashboard holds a live stage
+   against the cap announced on its own `stage-start`, falling back to the
+   fleet-wide widest for that actor and then to the shipped prior, and makes
+   no claim at all about a stage none of those names.
+   `test/config-schema.test.sh` passes: `scripts/doctor.sh` reports the
+   derived lock rather than checking a configured one, and warns that a
+   configured cap pins itself.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to
