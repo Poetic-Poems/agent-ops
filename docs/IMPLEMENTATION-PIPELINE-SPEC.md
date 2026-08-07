@@ -582,7 +582,7 @@ and the schema must carry every one of them.
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 120 + 60 + 30 minutes once the Enabler can run inside the lock (requirement 35). The interim raises of #203 have left only 15 minutes of that slack; #203 replaces the check with a derivation. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
-| `disable_default_ttl` | 4 h | How long `--disable` lasts when `--for` doesn't say (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
+| `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
 | `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
@@ -866,8 +866,11 @@ runs unattended.
    `review-cycle.sh` (`docs/REVIEW-PIPELINE-SPEC.md`, R2a) through one shared
    implementation (requirement 34a), with `agent-cycle.sh` the only writer.
    Managed by three flags that manage the switch and run no cycle:
-   `--disable [<reason>] [--for <90m|4h|2d|forever>]`, `--enable`, `--status`.
-   Transitions are logged (`disabled`, `enabled`).
+   `--disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>]`,
+   `--enable`, `--status`. `--until` takes a GNU `date`-compatible absolute
+   timestamp, an alternative to `--for`'s relative duration; with both given,
+   the later of the two deadlines wins and a warning names which. Transitions
+   are logged (`disabled`, `enabled`).
 
    **Why it exists.** Both cron pipelines execute code out of the agent-ops
    working tree. An agent editing `agent-cycle.sh`, `lib/` or `prompts/` is
@@ -891,10 +894,11 @@ runs unattended.
      or one whose `expires_at` won't parse, keeps the pipeline down. The file
      exists because something meant to stop the pipeline; recovering "enabled"
      from a truncated write runs the cycle the switch was set to prevent.
-   - **A reason is required, and an unparseable `--for` is an error.** The next
-     person to wonder why nothing is happening is entitled to a reason, and a
-     typo'd duration must not be guessed in either direction — one resumes the
-     pipeline mid-edit, the other never resumes it.
+   - **A reason is required, and an unparseable `--for` or `--until` is an
+     error.** The next person to wonder why nothing is happening is entitled
+     to a reason, and a typo'd duration or timestamp — or a `--until` that
+     names an instant already past — must not be guessed in either direction
+     — one resumes the pipeline mid-edit, the other never resumes it.
    - **The switch stops the next cycle, not the one already running.** Say so
      when it is set while a lock is held, in `--status` and in `--disable`'s own
      output. An agent that disables the pipeline, assumes the coast is clear and
@@ -1898,9 +1902,15 @@ runs unattended.
     debugging.
 12. **Flags.** `--dry-run` (run through step 5 then stop: prints the work
     order, launches no Implementor), `--once` (one verbose cycle in the
-    foreground), `--repo <slug>` (restrict selection, for testing), plus the
-    switch's `--disable [<reason>] [--for <duration>]`, `--enable` and
-    `--status` (requirement 2.3), which manage the switch and run no cycle.
+    foreground), `--repo <slug>` (restrict selection, for testing),
+    `-h`/`--help` (print the usage text and exit), plus the
+    switch's `--disable [<reason>] [--for <duration>] [--until <timestamp>]`,
+    `--enable` and `--status` (requirement 2.3), which manage the switch and
+    run no cycle.
+
+    The usage text describes every flag the Script accepts, `--help`
+    included: a flag the parser honours but the usage omits is one an
+    operator can only find by reading the source.
 
     `--clear-limit [<reason>]` lifts a usage-limit stand-down (2.1) and runs
     no cycle either. It is deliberately not `--enable`: the switch and the

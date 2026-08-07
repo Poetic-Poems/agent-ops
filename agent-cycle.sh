@@ -82,7 +82,7 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 usage() {
   cat <<'EOF'
 usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
-       agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>]
+       agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>]
        agent-cycle.sh --enable
        agent-cycle.sh --clear-limit [<reason>]
        agent-cycle.sh --status
@@ -96,8 +96,12 @@ stops cycles from starting (shared with review-cycle.sh).
   --disable [reason] Stop future cycles starting. A reason is required — the
                      next person to wonder why nothing is happening is entitled
                      to one. Expires after `disable_default_ttl` unless --for
-                     says otherwise.
+                     or --until says otherwise.
   --for <duration>   How long --disable lasts: 90m, 4h, 2d, or `forever`.
+  --until <timestamp> When --disable lasts until: a GNU `date`-compatible
+                     absolute timestamp (e.g. '2026-08-10 18:00', 'tomorrow
+                     12:00'), an alternative to --for. With both given, the
+                     later of the two deadlines wins and a warning is issued.
   --enable           Clear the switch and let cycles run again.
   --clear-limit      Lift a usage-limit stand-down across the fleet (2.1). Use
                      it once the limit is actually gone — you raised the cap,
@@ -106,6 +110,7 @@ stops cycles from starting (shared with review-cycle.sh).
                      `limit-cleared` event that supersedes the cooldown.
   --status           Report the switch, any usage-limit stand-down, and whether
                      either pipeline is running.
+  --help             Display this help and exit.
 
 --dry-run and --once bypass the no-op short-circuit (requirement 3b): a human
 asking for a cycle wants the Co-Ordinator's answer, not a cached verdict. They
@@ -132,6 +137,7 @@ REPO_FILTER=""
 MANAGE_ACTION=""
 DISABLE_REASON=""
 DISABLE_FOR=""
+DISABLE_UNTIL=""
 CLEAR_LIMIT_REASON=""
 set_manage_action() {
   if [[ -n "$MANAGE_ACTION" ]]; then
@@ -160,6 +166,7 @@ while [[ $# -gt 0 ]]; do
       ;;
     --status) set_manage_action status; shift ;;
     --for) DISABLE_FOR="${2:-}"; shift 2 ;;
+    --until) DISABLE_UNTIL="${2:-}"; shift 2 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "agent-cycle: unknown argument: $1" >&2; usage >&2; exit 64 ;;
   esac
@@ -170,8 +177,8 @@ if [[ -n "$MANAGE_ACTION" ]]; then
     echo "agent-cycle: --disable/--enable/--clear-limit/--status manage stand-down state; they do not run a cycle" >&2
     exit 64
   fi
-  if [[ "$MANAGE_ACTION" != "disable" && -n "$DISABLE_FOR" ]]; then
-    echo "agent-cycle: --for only applies to --disable" >&2
+  if [[ "$MANAGE_ACTION" != "disable" ]] && [[ -n "$DISABLE_FOR" || -n "$DISABLE_UNTIL" ]]; then
+    echo "agent-cycle: --for and --until only apply to --disable" >&2
     exit 64
   fi
   if [[ "$MANAGE_ACTION" == "disable" && -z "$DISABLE_REASON" ]]; then
@@ -418,7 +425,11 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       ;;
     disable)
       by="${USER:-unknown}@$(hostname 2>/dev/null || echo '?') pid $$"
-      if ! record="$(toggle_disable "$state_dir" "$DISABLE_REASON" "$DISABLE_FOR" \
+      if ! disable_spec="$(toggle_resolve_disable_spec "$DISABLE_FOR" "$DISABLE_UNTIL" \
+                             "$disable_default_ttl_hours")"; then
+        exit 64
+      fi
+      if ! record="$(toggle_disable "$state_dir" "$DISABLE_REASON" "$disable_spec" \
                        "$disable_default_ttl_hours" "$by")"; then
         exit 64
       fi
