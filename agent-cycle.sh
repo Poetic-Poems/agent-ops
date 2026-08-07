@@ -327,6 +327,19 @@ lock_stale_configured_hours="$(cfg '.lock_stale_after // 0')"
 # its age, so this bounds only how long a live but hung cycle may hold on.
 LOCK_SLACK_MIN=30
 
+# Initialised here, not at the derivation below, because the EXIT trap is armed
+# long before that: a cycle that stands down or finds the lock held still runs
+# `cleanup`, and an unset variable read from inside a trap under `set -u` would
+# abandon the trap part-way — costing the cycle its `cycle-end` event, its lock
+# release and its state-sync push. An empty table is a valid answer that
+# resolves to the shipped priors.
+stage_budget_json='{"cells":{},"actors":{}}'
+# Likewise: `acquire_lock` reads this, and is called immediately after the
+# derivation sets it, but a function that reads an unset global under `set -u`
+# fails at the reader rather than at the writer. Four hours, the value this
+# used to be configured to, until the derivation replaces it.
+lock_stale_after_sec=14400
+
 # stage_budget_overrides ACTOR [REPO]
 # What the configuration says about this actor, as `{backstop, inactivity}` —
 # either a number or null. The first two levels of requirement 4f's

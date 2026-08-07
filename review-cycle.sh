@@ -143,6 +143,17 @@ branch_prefix="$(cfg '.review.branch_prefix')"
 timeout_review_override="$(cfg '.review.timeout_review // ""')"
 inactivity_review_override="$(cfg '.review.inactivity_review // ""')"
 lock_stale_configured_hours="$(cfg '.review.lock_stale_after // 0')"
+# Initialised before anything can exit through a trap, for the reason
+# agent-cycle.sh gives at its copy: an unset variable read under `set -u` from
+# inside a trap abandons the trap part-way. An empty table resolves to the
+# shipped priors.
+stage_budget_json='{"cells":{},"actors":{}}'
+# Likewise: `acquire_lock` reads this, and is called immediately after the
+# derivation sets it, but a function that reads an unset global under `set -u`
+# fails at the reader rather than at the writer. Four hours, the value this
+# used to be configured to, until the derivation replaces it.
+lock_stale_after_sec=14400
+review_budget_overrides='{}'
 min_days_between_reviews="$(cfg '.review.min_days_between_reviews')"
 # A stand-down with a date on it (R3.3). Empty or absent means none in force.
 review_not_before="$(cfg '.review.not_before // ""')"
