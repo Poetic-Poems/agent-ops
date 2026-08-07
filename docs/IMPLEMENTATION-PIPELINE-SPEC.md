@@ -2022,7 +2022,8 @@ runs unattended.
    then a blank line, then the comment's own prose. The Actor is whichever
    stage **wrote** the comment, not the one it is about — the Script's own
    stage-failure note carries `**Script**`, with the stage that failed named in
-   the prose (`The Implementor stopped on this PR: …`), and no other preamble.
+   the prose (`The Implementor stopped on this PR: …`), spelled from the same
+   token→display map below, and no other preamble.
    This exists because requirement 3e's own text already states the reason no
    other signal can: every pipeline write lands under `warwickallen`, the same
    GitHub account a human also comments as, so the author field cannot tell a

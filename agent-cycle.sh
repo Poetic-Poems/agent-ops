@@ -1204,7 +1204,7 @@ handle_stage_failure() {
   if [[ -n "$pr_url" ]]; then
     gh pr comment "$pr_url" --body "$(pipeline_comment_header script "$node_name")
 
-The ${stage^} stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+The $(pipeline_actor_label "$stage") stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
 
 $(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
     release_claim have-pr
