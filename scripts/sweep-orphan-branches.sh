@@ -53,7 +53,11 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="${AGENT_OPS_CONFIG:-$SCRIPT_DIR/config.json}"
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 GH="${SWEEP_GH:-gh}"
+
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
 slug="${1:-}"
 if [[ -z "$slug" ]]; then
@@ -61,13 +65,18 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
-cfg() { jq -r "$1" "$CONFIG_FILE" 2>/dev/null; }
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below, with no `// literal` of its own to drift from the schema's. Only
+# ever invoked downstream of agent-cycle.sh's own schema gate, so a required
+# key with no schema default (branch_prefix, pr_label) is guaranteed present.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
 
-branch_prefix="$(cfg '.branch_prefix // "agent/"')"
-pr_label="$(cfg '.pr_label // ""')"
-stale_hours="$(cfg '.abandoned_draft_after_hours // 3')"
-state_repo="$(cfg '.state_repo // ""')"
-[[ "$state_repo" == "null" ]] && state_repo=""
+branch_prefix="$(cfg '.branch_prefix')"
+pr_label="$(cfg '.pr_label')"
+stale_hours="$(cfg '.abandoned_draft_after_hours')"
+state_repo="$(cfg '.state_repo')"
 [[ "$stale_hours" =~ ^[0-9]+$ ]] || stale_hours=3
 
 # The per-run action cap. Deliberate and small: an orphan has already waited

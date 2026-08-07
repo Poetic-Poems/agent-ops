@@ -220,6 +220,47 @@ assert_valid "the whole review block may be dropped (the review pipeline is opti
 assert_valid "an optional key may be absent" \
   'del(.state_repo, .schedule, .crash_loop_after)'
 
+# --- config_defaults: the schema's `default` is the only place a default is
+#     written (issue #197), so this is what every reader now relies on
+#     instead of its own `// literal`. ---
+assert_defaults() {
+  local desc="$1" mutation="$2" jq_check="$3" out
+  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+  if ! out="$(config_defaults "$tmp/c.json" "$SCHEMA")"; then
+    printf 'FAIL - %s\n     config_defaults itself failed\n' "$desc"
+    failures=$(( failures + 1 ))
+    return
+  fi
+  if jq -e "$jq_check" <<<"$out" >/dev/null 2>&1; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     check: %s\n     against: %s\n' "$desc" "$jq_check" "$out"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_defaults "an absent key with a schema default is filled in" \
+  'del(.state_repo)' '.state_repo == ""'
+assert_defaults "an explicit null is treated the same as absent" \
+  '.state_repo = null' '.state_repo == ""'
+assert_defaults "a key the config already sets is left exactly as written" \
+  '.crash_loop_after = 4' '.crash_loop_after == 4'
+assert_defaults "a nested object absent as a whole is synthesised from its own leaves' defaults" \
+  'del(.schedule)' \
+  '.schedule == {cycle_hours: "*", excluded_minutes: [], review_hour: 3, review_offset_minutes: 29, heartbeat_minutes: 5, state_sync_push_minutes: 5, state_sync_fetch_minutes: 7, log_rotation_minute: 19}'
+assert_defaults "one leaf missing from a present nested object is filled without disturbing its siblings" \
+  '.schedule = {review_hour: 9}' \
+  '.schedule.review_hour == 9 and .schedule.cycle_hours == "*" and .schedule.log_rotation_minute == 19'
+assert_defaults "an array item's own default is filled per item" \
+  '.repos[0].nice = 7 | del(.repos[1].nice)' \
+  '.repos[0].nice == 7 and .repos[1].nice == 0'
+assert_defaults "a required key with no schema default anywhere passes through untouched" \
+  '.review.model = "custom-model"' '.review.model == "custom-model"'
+assert_defaults "a nested object's non-defaultable properties are not fabricated when absent" \
+  'del(.review)' '(.review | has("repos")) | not'
+assert_defaults "config_defaults performs no schema validation of its own" \
+  '.pr_labell = "x"' '.pr_labell == "x"'
+
 # --- Types. The failure this catches is a number written as a string, which
 #     jq reads back without complaint and bash then compares as text. ---
 assert_rejected "a number written as a string is rejected" \

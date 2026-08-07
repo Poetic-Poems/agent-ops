@@ -71,16 +71,23 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 
 GH="${CLAIM_GH:-gh}"
 
-cfg() { jq -r "$1" "$CONFIG_FILE" 2>/dev/null; }
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 
-state_repo="$(cfg '.state_repo // ""')"
-[[ "$state_repo" == "null" ]] && state_repo=""
-claim_ttl_hours="$(cfg '.claim_ttl_hours // 6')"
-branch_prefix="$(cfg '.branch_prefix // "agent/"')"
-[[ "$branch_prefix" == "null" || -z "$branch_prefix" ]] && branch_prefix="agent/"
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below. Only ever invoked downstream of agent-cycle.sh's own schema gate, so
+# a required key with no schema default (branch_prefix) is guaranteed present.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
+
+state_repo="$(cfg '.state_repo')"
+claim_ttl_hours="$(cfg '.claim_ttl_hours')"
+branch_prefix="$(cfg '.branch_prefix')"
 
 say() { printf 'claim: %s\n' "$*"; }
 

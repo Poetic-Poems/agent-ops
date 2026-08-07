@@ -986,10 +986,9 @@
       }
     },
     "inactivityMinutes": {
-      "description": "A liveness-watchdog threshold, in whole minutes; 0 disables the watchdog for that actor.",
+      "description": "A liveness-watchdog threshold, in whole minutes; 0 disables the watchdog for that actor. Deliberately carries no `default`: the shipped prior for this value lives in code (`STAGE_BUDGET_PRIORS` in lib/stage-budget.sh), and a `default` here would be injected by `config_defaults` and read as a configured override, which wins permanently — turning absence into a hard setting and leaving requirement 4f's derivation unreachable.",
       "type": "integer",
-      "minimum": 0,
-      "default": 10
+      "minimum": 0
     }
   }
 }

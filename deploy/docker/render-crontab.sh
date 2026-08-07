@@ -32,6 +32,14 @@ set -uo pipefail
 
 say() { printf 'render-crontab: %s\n' "$*" >&2; }
 
+# The repository root, however this script is invoked — needed to find
+# lib/config-schema.sh and config.schema.json regardless of which config the
+# caller names (a test may point `config` at a throwaway fixture with no
+# schema file of its own beside it).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
+
 tmpl="${1:-/app/deploy/docker/crontab.tmpl}"
 out="${2:-/app/deploy/docker/crontab}"
 config="${3:-/app/config.json}"
@@ -43,17 +51,27 @@ if [[ ! -f "$config" ]]; then
   exit 1
 fi
 
-cfg() { jq -r "$1" "$config" 2>/dev/null; }
-cfg_json() { jq -c "$1" "$config" 2>/dev/null; }
+# config_defaults fills in every schedule.* default (requirement/issue #197),
+# so a deployment that ships no `schedule` block at all — "absent, every
+# field below takes its default" — renders identically to one that spells
+# every field out.
+defaulted="$(config_defaults "$config" "$SCRIPT_DIR/config.schema.json" 2>/dev/null)"
+if [[ -z "$defaulted" ]]; then
+  say "ERROR: config $config is not valid JSON — the baked schedule stays"
+  exit 1
+fi
 
-excluded_minutes="$(cfg_json '.schedule.excluded_minutes // []')"
-review_hour="$(cfg '.schedule.review_hour // 3')"
-review_offset="$(cfg '.schedule.review_offset_minutes // 29')"
-cycle_hours="$(cfg '.schedule.cycle_hours // "*"')"
-heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes // 5')"
-push_minutes="$(cfg '.schedule.state_sync_push_minutes // 5')"
-fetch_minutes="$(cfg '.schedule.state_sync_fetch_minutes // 7')"
-rotation_minute="$(cfg '.schedule.log_rotation_minute // 19')"
+cfg() { jq -r "$1" <<<"$defaulted" 2>/dev/null; }
+cfg_json() { jq -c "$1" <<<"$defaulted" 2>/dev/null; }
+
+excluded_minutes="$(cfg_json '.schedule.excluded_minutes')"
+review_hour="$(cfg '.schedule.review_hour')"
+review_offset="$(cfg '.schedule.review_offset_minutes')"
+cycle_hours="$(cfg '.schedule.cycle_hours')"
+heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes')"
+push_minutes="$(cfg '.schedule.state_sync_push_minutes')"
+fetch_minutes="$(cfg '.schedule.state_sync_fetch_minutes')"
+rotation_minute="$(cfg '.schedule.log_rotation_minute')"
 
 if ! jq -e 'type == "array" and all(.[]; type == "number")' <<<"$excluded_minutes" >/dev/null 2>&1; then
   say "ERROR: $config's schedule.excluded_minutes is not an array of numbers — the baked schedule stays"

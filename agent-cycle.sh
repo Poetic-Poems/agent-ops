@@ -26,6 +26,7 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
 # Exported, and the only variable here that is: a stage's working directory is
 # its own ephemeral clone, so a prompt that wants to name a tool this repository
@@ -214,16 +215,13 @@ expand_home() {
   [[ "$p" == "~"* ]] && p="$HOME${p:1}"
   printf '%s\n' "$p"
 }
-cfg() { jq -r "$1" "$CONFIG_FILE"; }
-cfg_json() { jq -c "$1" "$CONFIG_FILE"; }
-
 # The schema gate (requirement 1b): config.schema.json is the single
 # statement of config.json's shape, validated here, before any individual key
 # is read from it — the same fail-fast position requirement 1a's model-id
 # resolution occupies below, and well before the lock. One error per run
 # names every offending path at once, so a five-key typo costs one cycle to
 # fix, not five.
-schema_errors="$(config_schema_errors "$CONFIG_FILE" "$SCRIPT_DIR/config.schema.json")" && schema_status=0 || schema_status=$?
+schema_errors="$(config_schema_errors "$CONFIG_FILE" "$SCHEMA_FILE")" && schema_status=0 || schema_status=$?
 if ((schema_status == 2)); then
   echo "agent-cycle: $schema_errors" >&2
   exit 1
@@ -232,6 +230,13 @@ elif ((schema_status == 1)); then
   while IFS= read -r line; do echo "agent-cycle:   $line" >&2; done <<<"$schema_errors"
   exit 1
 fi
+
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below, with no `// literal` of its own to drift from the schema's.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
+cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
@@ -242,27 +247,28 @@ reviewer_model_default="$(resolve_model_id reviewer_model_default "$(cfg '.revie
 # The complexity escalation (requirement 8a): a PR graded `complexity:high` is
 # reviewed on this tier. Empty falls back to the default tier, which switches
 # the escalation off.
-reviewer_model_complex="$(cfg '.reviewer_model_complex // ""')"
-[[ "$reviewer_model_complex" == "null" || -z "$reviewer_model_complex" ]] && reviewer_model_complex="$reviewer_model_default"
+reviewer_model_complex="$(cfg '.reviewer_model_complex')"
+[[ -n "$reviewer_model_complex" ]] || reviewer_model_complex="$reviewer_model_default"
 reviewer_model_complex="$(resolve_model_id reviewer_model_complex "$reviewer_model_complex")"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
-enabler_model="$(cfg '.enabler_model // ""')"
-[[ "$enabler_model" == "null" ]] && enabler_model=""
-enabler_model="$(resolve_model_id enabler_model "$enabler_model")"
-enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
+enabler_model="$(resolve_model_id enabler_model "$(cfg '.enabler_model')")"
+enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles')"
 # A refinement block (requirements 34e, 35a) ages on its own threshold,
 # because unlike an ordinary block it waits on the Enabler and nothing else —
 # a human refining the item first, or the Co-Ordinator's cheap re-check
 # noticing the condition already cleared. Left unconfigured it inherits
 # enabler_after_coordinator_cycles' value, which preserves the shared
 # threshold this class had before the two were split apart (TD-PPagop-26072604).
-refinement_after_coordinator_cycles="$(cfg '.refinement_after_coordinator_cycles // ""')"
+# This inheritance is cross-key, not a schema default (config.schema.json has
+# none for this key), so it stays a runtime fallback rather than moving into
+# config_defaults.
+refinement_after_coordinator_cycles="$(cfg '.refinement_after_coordinator_cycles')"
 [[ -n "$refinement_after_coordinator_cycles" && "$refinement_after_coordinator_cycles" != "null" ]] \
   || refinement_after_coordinator_cycles="$enabler_after_coordinator_cycles"
-enabler_recheck_hours="$(cfg '.enabler_recheck_hours // 72')"
-enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalation"')"
+enabler_recheck_hours="$(cfg '.enabler_recheck_hours')"
+enabler_escalation_label="$(cfg '.enabler_escalation_label')"
 # The assignment is what does the work — it both puts the issue in front of the
 # human configured to receive them and excludes it from the `issues` source
 # (requirement 16.4), so an escalation can never be selected as work by the
@@ -270,17 +276,15 @@ enabler_escalation_label="$(cfg '.enabler_escalation_label // "enabler-escalatio
 # actually being set, so an enabled Enabler with no assignee configured is a
 # fatal misconfiguration, not a silent skip: an unassigned escalation is one
 # the pipeline could go on to pick up as its own work.
-enabler_assignee="$(cfg '.enabler_assignee // ""')"
-[[ "$enabler_assignee" == "null" ]] && enabler_assignee=""
+enabler_assignee="$(cfg '.enabler_assignee')"
 # Crash-loop escalation (requirement 2.7). `crash_loop_after` is the
 # consecutive-failure threshold; 0 or absent turns the check off, so an
 # older config runs exactly as before. `crash_loop_repo` is where the
 # escalation issue is filed — the pipeline's own repository, because a
 # Co-Ordinator that cannot run belongs to no target repo's backlog.
-crash_loop_after="$(cfg '.crash_loop_after // 0')"
+crash_loop_after="$(cfg '.crash_loop_after')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
-crash_loop_repo="$(cfg '.crash_loop_repo // ""')"
-[[ "$crash_loop_repo" == "null" ]] && crash_loop_repo=""
+crash_loop_repo="$(cfg '.crash_loop_repo')"
 if ! config_enabler_assignee_ok "$enabler_model" "$enabler_assignee"; then
   echo "agent-cycle: enabler_model is set but enabler_assignee is not configured — refusing to run with an unassigned escalation target; set enabler_assignee in config.json or clear enabler_model to disable the Enabler" >&2
   exit 1
@@ -289,16 +293,15 @@ fi
 # (requirement 34f). Only a human can apply it — no stage here ever does — so
 # requirement 34c's "only a human may clear a void" is unchanged; what this
 # gives them is a way to say it from where they actually are.
-unvoid_label="$(cfg '.unvoid_label // "unvoided"')"
+unvoid_label="$(cfg '.unvoid_label')"
 # The refinement class (requirements 34e, 35d). The label is a projection onto
 # issue-type items and nothing reads it back, so an empty value switches the
 # projection off without touching the log mechanism that actually carries the
 # state. The cap bounds how much of one engagement the day-one backlog of
 # silently-skipped items may take; `0` removes the class from engagements while
 # still recording the blocks.
-needs_refinement_label="$(cfg '.needs_refinement_label // "needs-refinement"')"
-[[ "$needs_refinement_label" == "null" ]] && needs_refinement_label=""
-refinement_max_per_engagement="$(cfg '.refinement_max_per_engagement // 3')"
+needs_refinement_label="$(cfg '.needs_refinement_label')"
+refinement_max_per_engagement="$(cfg '.refinement_max_per_engagement')"
 [[ "$refinement_max_per_engagement" =~ ^[0-9]+$ ]] || refinement_max_per_engagement=3
 pr_label="$(cfg '.pr_label')"
 # Read here (rather than left to the Co-Ordinator, which puts it in the work
@@ -421,15 +424,14 @@ stage_budget_apply() {
     '{stage: $s, model: $m} + (if ($e | type) == "object" then $e else {} end) + $b')"
 }
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
-disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
-none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours // 24')"
-candidates_max="$(cfg '.candidates_max // 3')"
+disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
+none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
+candidates_max="$(cfg '.candidates_max')"
 # How long a draft PR this system raised may sit untouched before it counts as
 # abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
 # beyond a whole cycle, so a draft merely being worked never qualifies.
-abandoned_draft_after_hours="$(cfg '.abandoned_draft_after_hours // 3')"
-state_repo="$(cfg '.state_repo // ""')"
-[[ "$state_repo" == "null" ]] && state_repo=""
+abandoned_draft_after_hours="$(cfg '.abandoned_draft_after_hours')"
+state_repo="$(cfg '.state_repo')"
 all_repos_json="$(cfg_json '.repos')"
 # The implementation-plan source has no path of its own in the prompt or the
 # code (issue #77): a repo that lists it must say where its plan document
@@ -454,7 +456,7 @@ fi
 # well-formed entry whose file is unreadable this cycle stays tolerated in the
 # lib, since files legitimately come and go, and an unreadable one still
 # moves the fingerprint, where a structural typo would not have.
-prompt_overrides_json="$(cfg_json '.prompt_overrides // {}')"
+prompt_overrides_json="$(cfg_json '.prompt_overrides')"
 
 mkdir -p "$state_dir" "$state_dir/cycles" "$workspace_root"
 log_file="$state_dir/log.jsonl"
@@ -1539,7 +1541,7 @@ create_escalation_issue() {
   # path above, which is the common one. The retry-without-label below stays
   # regardless — this makes the label likely, not certain, and an escalation
   # must be raised either way.
-  labels_ensure_role "$CONFIG_FILE" "$repo" escalation >/dev/null 2>&1 || true
+  labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$repo" escalation >/dev/null 2>&1 || true
   raw="$(gh issue create -R "$repo" --title "$title" --body-file "$body_file" \
            --assignee "$enabler_assignee" --label "$label" \
            2>>"$cycle_dir/enabler-issue.err" || true)"
@@ -2934,7 +2936,7 @@ fi
 # cost the whole cycle's work.
 ensure_labels_for() {
   local slug="$1" role="$2" report
-  report="$(labels_ensure_role "$CONFIG_FILE" "$slug" "$role" 2>/dev/null || true)"
+  report="$(labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$slug" "$role" 2>/dev/null || true)"
   [[ -n "$report" ]] || return 0
   log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg role "$role" \
     --arg report "$report" '

@@ -26,7 +26,10 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/fleet.sh
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/version.sh
@@ -85,18 +88,22 @@ expand_home() {
   [[ "$p" == "~"* ]] && p="$HOME${p:1}"
   printf '%s\n' "$p"
 }
-cfg() { jq -r "$1" "$CONFIG_FILE"; }
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below, with no `// literal` of its own to drift from the schema's.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
 
-state_repo="$(cfg '.state_repo // ""')"
+state_repo="$(cfg '.state_repo')"
 # Unconfigured is not a failure: it is a single-node operation, which is what
 # this one was until the fleet existed.
-[[ -n "$state_repo" && "$state_repo" != "null" ]] || exit 0
+[[ -n "$state_repo" ]] || exit 0
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
-cycles_retained="$(cfg '.cycles_retained // 200')"
-local_retained="${STATE_SYNC_LOCAL_RETAINED:-$(cfg '.state_local_cycles_retained // 1000')}"
-streams_retained="${STATE_SYNC_STREAMS_RETAINED:-$(cfg '.state_local_streams_retained // 50')}"
+cycles_retained="$(cfg '.cycles_retained')"
+local_retained="${STATE_SYNC_LOCAL_RETAINED:-$(cfg '.state_local_cycles_retained')}"
+streams_retained="${STATE_SYNC_STREAMS_RETAINED:-$(cfg '.state_local_streams_retained')}"
 
 node_name="${NODE_NAME:-$(hostname)}"
 node_name="${node_name//[^A-Za-z0-9._-]/-}"

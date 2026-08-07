@@ -733,6 +733,47 @@ runs unattended.
    added to the schema and forgotten in a prose copy the way `unvoid_label`
    and `state_local_cycles_retained` both once were.
 
+   The schema is likewise the single statement of the *values* a reader falls
+   back to, and not merely a description of them. `lib/config-schema.sh`'s
+   `config_defaults` merges a config with every `default` the schema declares
+   — recursively, treating an explicit `null` exactly as absent (the two cases
+   jq's own `//` treats alike), filling each item of an array such as `repos`
+   on its own, and synthesising an absent object whole from its leaves' own
+   defaults so `schedule` may be omitted entirely — and every reader of
+   `config.json` reads that merge rather than a `// literal` of its own:
+   `agent-cycle.sh`, `review-cycle.sh`, `scripts/doctor.sh`, `lib/claim.sh`,
+   `lib/labels.sh`, `scripts/state-sync.sh`, `scripts/rotate-logs.sh`,
+   `scripts/sweep-orphan-branches.sh`, `scripts/publish-dashboard.sh` and
+   `deploy/docker/render-crontab.sh`. A default therefore exists in one place,
+   and each of those scripts requires `config.schema.json` beside
+   `config.json` at runtime. The merge performs no validation of its own — a
+   config that fails the gate above still merges, defaults and all — which is
+   what lets `doctor.sh` go on diagnosing a config the Script would refuse.
+   Three kinds of fallback are deliberately not schema defaults and stay in
+   code: one that holds *between* two keys, of which
+   `refinement_after_coordinator_cycles` inheriting
+   `enabler_after_coordinator_cycles` (requirement 34e) is the case in point;
+   readers that must depend on nothing but bash, `jq` and `config.json` by
+   design, so that what they read cannot drift from what is actually
+   deployed — `deploy/docker/watchtower-pre-update.sh`, reading three keys
+   (`state_dir`, `lock_stale_after`, `review.lock_stale_after`) that carry no
+   schema `default` to take, and `scripts/check-node-image.sh`'s in-container
+   grace read, which runs inside whatever image the node is currently running
+   and so must stay correct against an image that predates `config_defaults`
+   entirely — its `image_behind_grace_hours` key does carry a schema
+   `default`, but the read stays a literal `// 3` on principle rather than on
+   necessity; and the shipped priors of the two self-tuning stage caps
+   (requirement 4f), which live in `lib/stage-budget.sh`'s
+   `STAGE_BUDGET_PRIORS`. The last is the one case where a `default` here would
+   be actively wrong rather than merely redundant: the `timeout_*`,
+   `inactivity_*` and `review.timeout_review` / `review.inactivity_review` keys
+   are *overrides*, and a reader distinguishes "configured" from "absent" only
+   by the key's absence. A `default` on `$defs/inactivityMinutes` or
+   `$defs/timeoutMinutes` would be merged in by `config_defaults`, read as an
+   explicit override, and win permanently — pinning the cap at the injected
+   value and leaving the derivation unreachable. Both `$defs` therefore carry
+   none, and the keys' documented value stays *(unset)*.
+
    The schema being a gate retires the two startup guards it wholly
    subsumes: `nice`'s range (requirement 3) and `prompt_overrides`' shape
    (requirement 4a) are both fully expressible as `type`/`minimum`/
@@ -4337,7 +4378,10 @@ What exists, and the requirements each part answers to:
     not the same finding as one that is wrong. `agent-cycle.sh` and
     `review-cycle.sh` call this same function as their startup gate, so it is
     the one implementation both the Script's refusal and `doctor.sh`'s
-    `fail` read from. The library also holds `config_enabler_assignee_ok` and
+    `fail` read from. The library also holds `config_defaults`, requirement
+    1b's merge of a config with the schema's `default`s, which is where every
+    reader of `config.json` takes its fallback values; and
+    `config_enabler_assignee_ok` and
     `config_missing_plan_path_repos`, the two cross-key rules the schema
     itself cannot state — each holds *between* two keys — shared the same
     way, so `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can
@@ -4395,7 +4439,9 @@ What exists, and the requirements each part answers to:
     ever reaches a real network. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
-    `name`/`colour`/`description`, with the names taken from config and an
+    `name`/`colour`/`description`, with the names taken from the config as
+    `config_defaults` merges it — so a label name absent from `config.json`
+    is the schema's own default rather than a literal repeated here — and an
     empty name yielding nothing) and `labels_ensure` (create what is absent in
     one repository, reporting `created` or `failed` per label and nothing at
     all for those already there, so the steady state is silent). `LABELS_GH`
