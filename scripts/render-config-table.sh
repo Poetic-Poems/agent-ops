@@ -169,15 +169,21 @@ def slug_for($key): "extended-notes-" + ($key | gh_slug);
 # a code span, a link (text and target together), an emphasis run (`**`,
 # `__`, `*` or `_`), a whitespace run, or a plain word — matched in that
 # order, since a code span must be claimed before a link or emphasis run
-# mistakes its contents for their own syntax. The link text and target
-# subpatterns each tolerate one level of nested `[...]`/`(...)` — a link
-# label carrying its own bracketed aside, a target ending in a balanced
-# `(command)` the way a Wikipedia article URL does — which covers every
-# realistic case without open-ended recursion; text or a target nested two
-# levels deep still falls back to being tokenised as plain words, which
-# remains safe (see the paragraph above) rather than wrong.
+# mistakes its contents for their own syntax. The double-backtick code span
+# is tried before the single-backtick one, mirroring CommonMark'"'"'s own rule
+# of preferring the longest matching delimiter run: a single-backtick
+# pattern tried first would treat a double-backtick span'"'"'s opening `` `` ``
+# as an empty code span of its own, then hunt for the next lone backtick —
+# which, for a span whose content itself contains a literal backtick, is
+# that escaped backtick rather than the span'"'"'s real closer. The link text
+# and target subpatterns each tolerate one level of nested `[...]`/`(...)` —
+# a link label carrying its own bracketed aside, a target ending in a
+# balanced `(command)` the way a Wikipedia article URL does — which covers
+# every realistic case without open-ended recursion; text or a target
+# nested two levels deep still falls back to being tokenised as plain
+# words, which remains safe (see the paragraph above) rather than wrong.
 def atomize:
-  [scan("`[^`]*`|\\[(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*\\]\\((?:[^()]|\\([^()]*\\))*\\)|\\*\\*[^*]+\\*\\*|__[^_]+__|\\*[^*]+\\*|_[^_]+_|\\s+|\\S+")];
+  [scan("``.*?``|`[^`]*`|\\[(?:[^\\[\\]]|\\[[^\\[\\]]*\\])*\\]\\((?:[^()]|\\([^()]*\\))*\\)|\\*\\*[^*]+\\*\\*|__[^_]+__|\\*[^*]+\\*|_[^_]+_|\\s+|\\S+")];
 
 # The longest run of leading atoms whose combined length is at most
 # PREFIX_BUDGET, with a trailing whitespace run and then one trailing

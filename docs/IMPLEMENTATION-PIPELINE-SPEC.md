@@ -4228,8 +4228,13 @@ What exists, and the requirements each part answers to:
     characters, tokenised into Markdown atoms (a code span, a link, an
     emphasis run, a whitespace run or a plain word, matched in that order so
     a code span is claimed before its contents are mistaken for a link's or
-    an emphasis run's own syntax) and cut at the last atom boundary that
-    fits, so a cut never lands inside one of those constructs — followed by
+    an emphasis run's own syntax; a double-backtick-delimited code span is
+    tried before a single-backtick one, mirroring CommonMark's own
+    preference for the longest matching delimiter run, so a span whose
+    content itself contains a literal backtick (`` ``…`…`` ``) is claimed
+    whole rather than having its opening `` `` `` read as an empty
+    single-backtick span) and cut at the last atom boundary that fits, so a
+    cut never lands inside one of those constructs — followed by
     `...[continued below](#extended-notes-<slug>)`. The note's full text is
     repeated, unescaped, under a generated `Extended notes: `<key>`` heading
     in that document's own `config-table:notes id=<region>` … `notes-end`
@@ -5129,14 +5134,16 @@ pull request, run the ones the change touches and any it could regress.
     `x-docs` for an audience falls back to `description`, and a region whose
     first two lines are not a header row and a delimiter row is refused
     rather than rendered. A note over 500 characters is truncated at a word
-    boundary — never inside a code span or a link, each covered by its own
-    fixture note — with its full text reproduced in the matching Extended
-    notes subsection, including for a dotted (`schedule.*`-style) key; a
-    document with two Extended notes headings that would slug the same is
-    refused, and so is a document missing either half of a
-    `config-table:notes` marker pair. A note that is an array of blocks
-    (#220) — two paragraph strings; a paragraph, a `list` block and a
-    paragraph; a paragraph, a `code` block and a paragraph, each over the
+    boundary — never inside a code span (single- or double-backtick
+    delimited, the latter's content free to carry a literal backtick) or a
+    link, each covered by its own fixture note — with its full text
+    reproduced in the matching Extended notes subsection, including for a
+    dotted (`schedule.*`-style) key; a document with two Extended notes
+    headings that would slug the same is refused, and so is a document
+    missing either half of a `config-table:notes` marker pair. A note that
+    is an array of blocks (#220) — two paragraph strings; a paragraph, a
+    `list` block and a paragraph; a paragraph, a `code` block and a
+    paragraph, each over the
     cap — flattens to one space-joined table-cell line (the list's items
     comma-joined, the code's newlines turned to spaces and backtick-wrapped)
     and, separately, renders as real block Markdown in the Extended notes

@@ -62,14 +62,17 @@ chmod +x "$tmp/scripts/render-config-table.sh"
 #     render verbatim; an x-docs.value keyed per audience, both with and
 #     without an entry for the audience being rendered; an empty-string
 #     default; a `|` inside prose; one level of nesting under "schedule" (the
-#     "main" region) and under "review" (its own region); and six notes-cap
+#     "main" region) and under "review" (its own region); and seven notes-cap
 #     cases — a plain note over 500 characters (`mu`), one whose naive
-#     480-character cut point lands inside a code span (`nu`) and inside a
-#     link (`xi`), one whose cut point lands inside a link whose text itself
-#     carries a nested `[...]` (`omicron`, #219) and one whose cut point
-#     lands inside a link whose target carries a balanced `(...)` the way a
-#     Wikipedia article URL does (`phi`, #219), and a dotted key that
-#     overflows (`schedule.overflow_key`) — plus one more dotted overflow in the
+#     480-character cut point lands inside a single-backtick code span (`nu`)
+#     and inside a link (`xi`), one whose cut point lands inside a link
+#     whose text itself carries a nested `[...]` (`omicron`, #219), one
+#     whose cut point lands inside a link whose target carries a balanced
+#     `(...)` the way a Wikipedia article URL does (`phi`, #219), one whose
+#     cut point lands inside a double-backtick code span whose content
+#     itself contains a literal backtick (`chi`, #218), and a dotted key
+#     that overflows (`schedule.overflow_key`) — plus one more dotted
+#     overflow in the
 #     "review" region (`review.overflow_sub`) to exercise notes-region
 #     heading derivation there too. Every overflowing note here carries only
 #     `x-docs.readme`, so the two specs' (audience "spec") regions render
@@ -147,6 +150,10 @@ cat > "$tmp/config.schema.json" <<'JSON'
     "omicron": {
       "description": "Omicron description.",
       "x-docs": { "readme": "Omicron description leading in with prose before the link, so the truncation cut lands exactly inside it here: lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem [Example [nested] link text](https://example.com/page) ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }
+    },
+    "chi": {
+      "description": "Chi description.",
+      "x-docs": { "readme": "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem ``abcdefghijklmnopqrstuvwxyz0123456789 has a literal ` backtick inside it`` ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt." }
     },
     "pi": {
       "description": "Pi description.",
@@ -472,6 +479,19 @@ phi_open="$(grep -o '(' <<<"$phi_cell" | wc -l)"
 phi_close="$(grep -o ')' <<<"$phi_cell" | wc -l)"
 assert_eq "phi's truncated cell has balanced ( and ) (no unmatched paren)" "$phi_open" "$phi_close"
 
+# --- The cut also never lands inside a double-backtick code span whose
+#     content itself contains a literal backtick (chi, #218): the
+#     atomiser must claim the whole `` ``…`…`` `` span as one atom, not
+#     mistake its opening `` `` `` for an empty single-backtick span and its
+#     escaped inner backtick for the real closer — which would leave a
+#     stray, dangling `` `` `` in the truncated cell instead of backing off
+#     before the span entirely ---
+# shellcheck disable=SC2016
+chi_line="$(grep '`chi`' "$tmp/README.md" | head -1)"
+assert_contains "chi's row carries the continuation link" "$chi_line" '...[continued below](#extended-notes-chi)'
+assert_not_contains "chi's truncated cell does not carry the span's content (backed off before it)" "$chi_line" 'has a literal'
+assert_not_contains "chi's truncated cell carries no dangling double-backtick fragment" "$chi_line" '``'
+
 # --- A dotted key's slug drops the dot rather than the whole segment ---
 # shellcheck disable=SC2016
 sched_line="$(grep '`schedule.overflow_key`' "$tmp/README.md" | head -1)"
@@ -494,12 +514,16 @@ assert_contains "the main notes region has a level-3 heading for omicron" "$main
 # shellcheck disable=SC2016
 assert_contains "the main notes region has a level-3 heading for phi" "$main_notes_region" $'\n### Extended notes: `phi`'
 # shellcheck disable=SC2016
+assert_contains "the main notes region has a level-3 heading for chi" "$main_notes_region" $'\n### Extended notes: `chi`'
+# shellcheck disable=SC2016
 assert_contains "the main notes region has a level-3 heading for schedule.overflow_key" "$main_notes_region" $'\n### Extended notes: `schedule.overflow_key`'
 # shellcheck disable=SC2016
 assert_contains "nu's full note (code span intact) appears in the notes region" "$main_notes_region" '`abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ`'
 assert_contains "xi's full note (link intact) appears in the notes region" "$main_notes_region" '(https://example.com/somewhere)'
 assert_contains "omicron's full note (nested-bracket link intact) appears in the notes region" "$main_notes_region" '[Example [nested] link text](https://example.com/page)'
 assert_contains "phi's full note (balanced-paren-target link intact) appears in the notes region" "$main_notes_region" '[the Diff article](https://en.wikipedia.org/wiki/Diff_(command))'
+# shellcheck disable=SC2016
+assert_contains "chi's full note (double-backtick span intact) appears in the notes region" "$main_notes_region" '``abcdefghijklmnopqrstuvwxyz0123456789 has a literal ` backtick inside it``'
 # shellcheck disable=SC2016
 assert_not_contains "a note that fits (beta) gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `beta`'
 
