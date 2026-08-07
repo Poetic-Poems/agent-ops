@@ -749,14 +749,24 @@ runs unattended.
    `config.schema.json` beside `config.json` at runtime. The merge performs no
    validation of its own — a config that fails the gate above still merges,
    defaults and all — which is what lets `doctor.sh` go on diagnosing a config
-   the Script would refuse. Two kinds of fallback are deliberately not schema
+   the Script would refuse. Three kinds of fallback are deliberately not schema
    defaults and stay in code: one that holds *between* two keys, of which
    `refinement_after_coordinator_cycles` inheriting
    `enabler_after_coordinator_cycles` (requirement 34e) is the case in point;
-   and `deploy/docker/watchtower-pre-update.sh`'s, which depends on nothing
+   `deploy/docker/watchtower-pre-update.sh`'s, which depends on nothing
    but bash, `jq` and `config.json` by design and reads three keys
    (`state_dir`, `lock_stale_after`, `review.lock_stale_after`) that carry no
-   schema `default` to take.
+   schema `default` to take; and the shipped priors of the two self-tuning
+   stage caps (requirement 4f), which live in `lib/stage-budget.sh`'s
+   `STAGE_BUDGET_PRIORS`. The last is the one case where a `default` here would
+   be actively wrong rather than merely redundant: the `timeout_*`,
+   `inactivity_*` and `review.timeout_review` / `review.inactivity_review` keys
+   are *overrides*, and a reader distinguishes "configured" from "absent" only
+   by the key's absence. A `default` on `$defs/inactivityMinutes` or
+   `$defs/timeoutMinutes` would be merged in by `config_defaults`, read as an
+   explicit override, and win permanently — pinning the cap at the injected
+   value and leaving the derivation unreachable. Both `$defs` therefore carry
+   none, and the keys' documented value stays *(unset)*.
 
    The schema being a gate retires the two startup guards it wholly
    subsumes: `nice`'s range (requirement 3) and `prompt_overrides`' shape
