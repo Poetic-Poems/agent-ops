@@ -23,9 +23,12 @@ contract for both:
   (`docs/DASHBOARD-SPEC.md`): a cycle's total cost, and fleet-wide spend by
   day, by model, and by actor.
 
-Both derive from the same upstream source: the JSON envelope
-`claude --output-format json` writes to `<stage>.out` (dashboard spec,
-"`cycles/<cycle-id>/<stage>.out`"). This document does not restate that
+Both derive from the same upstream source: the JSON envelope in
+`<stage>.out` (dashboard spec, "`cycles/<cycle-id>/<stage>.out`") — the
+`result` event of the stage's own stream, which `run_claude_stage` truncates
+into that file and which is byte-for-byte what `claude --output-format json`
+wrote there before the pipelines began streaming (requirement 4d). This
+document does not restate that
 envelope's own schema — that is Anthropic's contract, not this repo's, and
 only a subset of it is used here. It documents the fields **this repo depends
 on**, the shape it derives from them, and the guarantee it makes about that

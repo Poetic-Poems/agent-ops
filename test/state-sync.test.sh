@@ -94,6 +94,12 @@ printf '{"reason":"testing"}\n' > "$state/disabled.json"
 printf 'cron says hello\n' > "$state/cron.log"
 mkdir -p "$state/cycles/20260720T010000Z-1" "$state/reviews/20260720T020000Z-1"
 printf 'transcript\n' > "$state/cycles/20260720T010000Z-1/coordinator.out"
+# The stage event stream beside it (requirement 4d). It is the one thing in a
+# cycle directory that must not replicate: `.out` is one JSON object, a stream
+# is every message and every tool result, and the branch is a rolling commit
+# holding `cycles_retained` of them.
+printf '{"type":"system"}\n' > "$state/cycles/20260720T010000Z-1/coordinator.stream.jsonl"
+printf '{"type":"system"}\n' > "$state/reviews/20260720T020000Z-1/reviewer.stream.jsonl"
 # Every directory here carries a file, because git stores no empty ones: a
 # cycle that stood down before its first stage leaves an empty directory, and
 # that directory does not replicate. Its log.jsonl entry does, which is what
@@ -129,6 +135,13 @@ assert_eq "the dashboard log does not replicate" "0" "$(test -e "$pushed/dashboa
 assert_eq "the GitHub cache does not replicate" "0" "$(test -e "$pushed/.dashboard-github.json" && echo 1 || echo 0)"
 assert_eq "the image-drift cache does not replicate" "0" "$(test -e "$pushed/.image-drift-cache.json" && echo 1 || echo 0)"
 assert_eq "the generated dashboard does not replicate" "0" "$(test -e "$pushed/dashboard" && echo 1 || echo 0)"
+# Both transfers are covered: the cycle directories go through their own rsync
+# with its own filter, so an exclusion that held only for the general transfer
+# would let every cycle's stream through anyway.
+assert_eq "a cycle's stage stream does not replicate" "0" \
+  "$(test -e "$pushed/cycles/20260720T010000Z-1/coordinator.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "nor does a review's" "0" \
+  "$(test -e "$pushed/reviews/20260720T020000Z-1/reviewer.stream.jsonl" && echo 1 || echo 0)"
 
 assert_contains "the commit names the node" "state: active-node" \
   "$(git -C "$pushed" log -1 --format=%s)"
@@ -238,6 +251,59 @@ out="$(sync_as "$lr_home" active push STATE_SYNC_LOCAL_RETAINED=3)"
 assert_contains "a later push prunes a reappearing stale dir" "pruned 1 cycles record(s)" "$out"
 assert_eq "the stale directory is gone" "0" \
   "$(test -e "$lr_state/cycles/20250101T000000Z-9" && echo 1 || echo 0)"
+
+# --- Local retention of the stage streams -------------------------------------
+# A second, much tighter bound (state_local_streams_retained), on the streams
+# alone: they are megabytes where the records holding them are kilobytes, so
+# the streams go early and the records stay. What this asserts is precisely
+# that separation — the record survives its stream.
+sr_home="$(new_node stream-retention-node)"
+sr_state="$sr_home/.local/state/poetic-agents"
+# A real event rather than filler: this node's branch survives to the union
+# read below, and a line with no `ts` would sort ahead of every dated one.
+printf '{"ts":"2026-07-22T00:00:00Z","event":"cycle-start"}\n' > "$sr_state/log.jsonl"
+i=0
+while (( i < 4 )); do
+  d="$(printf '%s/cycles/20260301T%06dZ-%d' "$sr_state" "$i" "$i")"
+  mkdir -p "$d"
+  printf 'filler\n' > "$d/coordinator.out"
+  printf '{"type":"system"}\n' > "$d/coordinator.stream.jsonl"
+  r="$(printf '%s/reviews/20260301T%06dZ-%d' "$sr_state" "$i" "$i")"
+  mkdir -p "$r"
+  printf 'filler\n' > "$r/review.out"
+  printf '{"type":"system"}\n' > "$r/reviewer.stream.jsonl"
+  i=$(( i + 1 ))
+done
+out="$(sync_as "$sr_home" active push STATE_SYNC_LOCAL_RETAINED=10 STATE_SYNC_STREAMS_RETAINED=2)"
+assert_contains "a push reports the stream prune" "pruned 2 stage stream(s) from cycles" "$out"
+assert_eq "the oldest cycle's stream is deleted" "0" \
+  "$(test -e "$sr_state/cycles/20260301T000000Z-0/coordinator.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "…while the record it belonged to is untouched" "1" \
+  "$(test -f "$sr_state/cycles/20260301T000000Z-0/coordinator.out" && echo 1 || echo 0)"
+assert_eq "the newest cycles keep their streams" "1" \
+  "$(test -f "$sr_state/cycles/20260301T000003Z-3/coordinator.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "reviews are bounded the same way" "0" \
+  "$(test -e "$sr_state/reviews/20260301T000000Z-0/reviewer.stream.jsonl" && echo 1 || echo 0)"
+assert_eq "…and keep their own records too" "1" \
+  "$(test -f "$sr_state/reviews/20260301T000000Z-0/review.out" && echo 1 || echo 0)"
+assert_eq "no cycle directory is removed by the stream prune" "4" \
+  "$(find "$sr_state/cycles" -mindepth 1 -maxdepth 1 -type d | wc -l)"
+
+# A stream already in the mirror from before the exclusion existed is deleted
+# from it, not merely left behind: `--delete-excluded` is what makes the rule
+# retroactive, and without it every node's branch would keep whatever it had
+# published up to the day this landed.
+git clone --quiet --branch nodes/active-node "$remote" "$tmp_dir/legacy"
+mkdir -p "$tmp_dir/legacy/cycles/20260720T010000Z-1"
+printf '{"type":"system"}\n' > "$tmp_dir/legacy/cycles/20260720T010000Z-1/legacy.stream.jsonl"
+git -C "$tmp_dir/legacy" add -A >/dev/null 2>&1
+git -C "$tmp_dir/legacy" commit --quiet -m "state: a stream published before the exclusion" >/dev/null 2>&1
+git -C "$tmp_dir/legacy" push --quiet origin HEAD:nodes/active-node >/dev/null 2>&1
+sync_as "$active_home" active push >/dev/null
+rm -rf "$tmp_dir/pushed-again"
+git clone --quiet --branch nodes/active-node "$remote" "$tmp_dir/pushed-again"
+assert_eq "a stream already in the mirror is deleted from it" "0" \
+  "$(test -e "$tmp_dir/pushed-again/cycles/20260720T010000Z-1/legacy.stream.jsonl" && echo 1 || echo 0)"
 
 # ==============================================================================
 # fetch — peers materialised whole, pruned when gone

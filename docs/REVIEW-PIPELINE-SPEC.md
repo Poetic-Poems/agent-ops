@@ -14,7 +14,8 @@ together with the edit that keeps this document accurate (see `CLAUDE.md`,
 pipelines deliberately share their machinery — the lock discipline, the
 minimal-`PATH` bootstrap for cron, usage-limit detection (`lib/limit-detect.sh`),
 the JSON-Lines log format and `log_event` helper, the ephemeral-clone rule,
-the per-stage timeout with process-group kill (`run_claude_stage`), and the
+the stage launcher with its per-stage timeout, process-group kill and event
+stream (`lib/stage-run.sh`'s `run_claude_stage`), and the
 "straight-parse-else-last-fenced-```json```-block" result parser. This
 pipeline **reuses** those, and must not reinvent them. References of the form
 "requirement N" mean requirement N of `docs/IMPLEMENTATION-PIPELINE-SPEC.md`. The target
@@ -394,17 +395,20 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       leaves no trace in the PR. The clone already has its own `.claude/`; the
       injection sits alongside its existing skills.)
    3. *Reviewer-Agent stage.* Launch the Reviewer-Agent headless (model
-      `review.model`, `--dangerously-skip-permissions`, `--output-format json`,
+      `review.model`, `--dangerously-skip-permissions`,
       timeout `review.timeout_review`), with the clone as the working
-      directory, passing `prompts/project-reviewer.md`. Reuse `run_claude_stage`
-      so a timeout kills the whole process group. The prompt reaches the stage
+      directory, passing `prompts/project-reviewer.md`. Use `run_claude_stage`
+      (R7b) so a timeout kills the whole process group, the invocation
+      streams its events to `<stage>.stream.jsonl` as it runs, and its final
+      `result` envelope lands in `<stage>.out` for the parse below. The
+      prompt reaches the stage
       on stdin, never as a command-line argument, for the reason
       `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s requirement 4c gives: a single
       argv entry is capped at 131072 bytes, and a prompt is the one input here
       that grows without bound. This pipeline's prompt has room to spare today,
-      which is precisely why it must not diverge — the two `run_claude_stage`
-      copies are one mechanism, and the smaller prompt is the one that would
-      sit broken longest before anyone noticed.
+      which is precisely why the launcher is shared rather than copied — the
+      smaller prompt is the one that would sit broken longest before anyone
+      noticed.
    4. *Parse.* Extract the work summary from the final message with the same
       parser `agent-cycle.sh` uses. Recover the PR URL from the parsed
       `pr_url`, else by grepping the transcript, else from a
@@ -449,6 +453,18 @@ R7a. **A signal is a failure with a record.** The Script traps `TERM`, `INT`
    lock. A signal landing during cleanup itself must not re-enter the
    handler. Covered by the same `test/signal-exit.test.sh` as the
    implementation pipeline's acceptance check 4a.
+
+R7b. **One stage launcher, shared.** `run_claude_stage` is sourced from
+   `lib/stage-run.sh`, the implementation pipeline's requirement 4d — it is
+   not a copy of it. The two scripts each held their own until the streaming
+   change of #203 had to be made twice; both specs already said the copies
+   must not diverge, and a shared file is the only form of that promise a
+   reviewer does not have to check by eye. Everything requirement 4d states
+   holds here unchanged: the process group, the wall-clock cap, the
+   `<stage>.stream.jsonl` written as the run proceeds, and the final `result`
+   event truncated into `<stage>.out` for R5.3's parse. The streams are
+   local-only here too — `reviews/` replicates without them, and
+   `state_local_streams_retained` bounds what stays on the node.
 
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one

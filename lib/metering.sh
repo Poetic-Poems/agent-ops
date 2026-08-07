@@ -4,8 +4,9 @@
 # requirement 33a of docs/IMPLEMENTATION-PIPELINE-SPEC.md).
 #
 # Sourced by agent-cycle.sh and review-cycle.sh so both pipelines derive the
-# same record from a stage's own `claude --output-format json` envelope,
-# rather than each growing its own copy of the field list.
+# same record from a stage's own JSON envelope — the `result` event
+# lib/stage-run.sh leaves in `<stage>.out` — rather than each growing its own
+# copy of the field list.
 
 # metering_fields MODEL OUT_FILE
 # Prints the documented per-stage metering object: model, cost_usd,

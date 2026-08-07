@@ -154,8 +154,13 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   nothing to do — which is how it goes unnoticed until Friday. Show the reason,
   who set it, and its expiry (or that it has none and needs `--enable`), since
   those are precisely the questions an operator has next.
-- **`cycles/<cycle-id>/<stage>.out`** — the `claude --output-format json`
-  envelope (requirement 11). Fields used: `result` (final message → parsed
+- **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
+  final line of the event stream `claude --output-format stream-json` wrote,
+  truncated into this file by `run_claude_stage` and identical to what
+  `--output-format json` used to leave here (requirements 11 and 4d). The
+  stream itself, `<stage>.stream.jsonl`, is local to the node that ran it and
+  never replicates, so this Publisher never sees one on a peer and reads none
+  on its own node either. Fields used: `result` (final message → parsed
   into the work order / status object via the same algorithm `agent-cycle.sh`
   uses — straight parse, else the last fenced ```json``` block, else the
   earliest brace-opening line whose suffix parses as one JSON value;
