@@ -94,6 +94,17 @@ for prompt in implementor enabler reviewer; do
     "$(grep -qF -- "$header" "$SCRIPT_DIR/prompts/$prompt.md" && echo yes || echo no)"
 done
 
+# --- The Reviewer's completion comment is unconditional (requirement 30b) ---
+#
+# No shell test can drive a real review of a clean PR and assert a comment
+# appeared — there is no Reviewer harness, and this file does not attempt to
+# build one. What it can pin, the same way it pins the header above, is that
+# the instruction to post a completion comment on every run — not only when
+# there is a finding to report — is actually present in the prompt the stage
+# reads.
+assert_eq "prompts/reviewer.md instructs an unconditional completion comment" "yes" \
+  "$(grep -qF -- "Report completion, always." "$SCRIPT_DIR/prompts/reviewer.md" && echo yes || echo no)"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

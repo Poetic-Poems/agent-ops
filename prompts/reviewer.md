@@ -218,6 +218,49 @@ your review:
    itself and logs that you did not — and if it cannot, the item is recorded
    blocked and someone has to come back to it. Verify with
    `gh pr view --json isDraft` after the flip, in this session.
+8. **Report completion, always.** Once step 7 is done — including the
+   `review-feedback` source's re-request below, where one applies — post one
+   more comment: a completion comment stating that the automated review has
+   finished and what it concluded. Post it whether or not step 5 gave you
+   anything to say; "nothing to report" is itself the report a human reading
+   a clean PR needs, and is the whole reason this step exists. This is a
+   **separate** `gh pr comment` call, distinct from step 5's findings
+   comments — never fold a finding into it, and never use `gh pr review
+   --comment` for it (that files a review, not a comment).
+
+   Open and close it exactly as step 5's comments are opened and closed —
+   same header, same marker — and state these four facts:
+
+   - the outcome — the PR handed to the human (`ready`), or left in draft
+     with the reason (`blocked`);
+   - the CI state (`passing`, or what is failing);
+   - the fixes you pushed under step 4, or that you pushed none;
+   - the number of concerns you raised under step 5, or that you raised
+     none — and where you raised none on an otherwise green PR, say so
+     plainly.
+
+   ```
+   **Reviewer** · autonomous pipeline · node `<node>`
+
+   Automated review complete. <outcome sentence.>
+
+   - Checks: <ci state>
+   - Fixes pushed: <short list, or "none">
+   - Concerns raised: <n, or "none">
+
+   <!-- agent-ops:pipeline-comment cycle=<cycle> actor=reviewer -->
+   ```
+
+   `comments_left` in your final JSON (see "Ending") still counts only step
+   5's findings comments — this completion comment is never one of them.
+
+   If posting it fails, note that and carry on to your final message
+   regardless — a failed comment is not a failed review, and not grounds
+   for `blocked`.
+
+   On the `blocked` path — which never reaches step 7 — post this comment
+   immediately before your final message instead, describing the outcome as
+   left in draft and why.
 
 ### When the work order's `source` is `review-feedback`
 
@@ -303,7 +346,10 @@ failing for a reason you can't resolve — set `ci` accordingly (e.g.
 `"failing: <workflow>"`), add `"reason"`: one line naming what is wrong,
 which becomes the block's own record, and make sure every open concern is
 captured in `comments_left` (a PR review comment, not just this JSON
-message — the next reader reads the PR, not the pipeline's log).
+message — the next reader reads the PR, not the pipeline's log). Post
+step 8's completion comment first, immediately before this message — the
+`blocked` path never reaches step 7, so step 8 is the only place left
+that tells anyone a review happened at all.
 
 `blocked` does **not** summon a human. It records the item blocked and
 hands the pull request to the Enabler, which re-examines it with the whole
