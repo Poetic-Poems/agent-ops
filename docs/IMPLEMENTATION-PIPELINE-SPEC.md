@@ -1902,10 +1902,15 @@ runs unattended.
     debugging.
 12. **Flags.** `--dry-run` (run through step 5 then stop: prints the work
     order, launches no Implementor), `--once` (one verbose cycle in the
-    foreground), `--repo <slug>` (restrict selection, for testing), plus the
+    foreground), `--repo <slug>` (restrict selection, for testing),
+    `-h`/`--help` (print the usage text and exit), plus the
     switch's `--disable [<reason>] [--for <duration>] [--until <timestamp>]`,
     `--enable` and `--status` (requirement 2.3), which manage the switch and
     run no cycle.
+
+    The usage text describes every flag the Script accepts, `--help`
+    included: a flag the parser honours but the usage omits is one an
+    operator can only find by reading the source.
 
     `--clear-limit [<reason>]` lifts a usage-limit stand-down (2.1) and runs
     no cycle either. It is deliberately not `--enable`: the switch and the
