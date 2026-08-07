@@ -516,7 +516,11 @@ state — on a single-node page that node's own running/idle plus the stage,
 repo, work source and item it is working on; on a fleet page a **summary**:
 how many of how many nodes are running, who and in which repo while that is
 still a glance (three or fewer), and badges counting any nodes that look dead
-or whose state has gone stale) + disabled / fleet-switch / usage-limit
+or whose state has gone stale) + a static **documentation nav** (`Docs:`
+followed by six links — README, the three pipeline specs, the metering
+schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
+in a new tab; no data behind it, so it renders identically on every load) +
+disabled / fleet-switch / usage-limit
 / fleet-limit / failing-checks / gh-down / stale-peer banners (the switch
 first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
@@ -836,6 +840,10 @@ number's twins elsewhere on the page.
   unrelated repo's own legitimate 404 still reads `answered_404` in the same
   tick, proving the two are told apart from each other and not just from the
   healthy case.
+- `test/dashboard-render.test.sh` passes its plain-`grep` check, run without
+  `node` and independent of the harness below, that the header's documentation
+  nav carries all six `blob/main/<path>` links (README, the three pipeline
+  specs, the metering schema, the roadmap) verbatim in `dashboard/index.html`.
 - `test/dashboard-render.test.sh` passes: `dashboard/index.html`'s own inline
   script, run unmodified under `node` against checked-in `DASHBOARD_DATA`
   fixtures and a DOM stub that only builds trees (`createElement`/

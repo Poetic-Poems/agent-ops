@@ -24,9 +24,11 @@
 # the harness at run time, not baked in — otherwise every "3m ago" assertion
 # would rot the day it was written.
 #
-# No network. Needs node, which the image carries for the Claude CLI; absent,
-# the file skips with a note rather than failing, as the record asks for and
-# as test/render-crontab.test.sh does for supercronic.
+# No network. The rendered assertions need node, which the image carries for
+# the Claude CLI; absent, they skip with a note rather than failing, as the
+# record asks for and as test/render-crontab.test.sh does for supercronic —
+# but the plain-grep check of the header's static documentation links runs
+# either way, since it needs nothing but the file itself.
 #
 # Run directly: ./test/dashboard-render.test.sh — exit 0 iff all passed.
 
@@ -38,8 +40,36 @@ FIXTURES_DIR="$SCRIPT_DIR/test/fixtures/dashboard-data"
 
 failures=0
 
+# --- the header's documentation nav: static markup, no data behind it ------
+# A plain grep over the file, not a rendered assertion, because the six links
+# are static HTML the harness's DOM stub never touches (they sit in
+# header.top, outside the #app the script rebuilds) — and unlike the
+# assertions below, this runs whether or not node is installed here.
+INDEX_HTML="$SCRIPT_DIR/dashboard/index.html"
+for path in \
+  README.md \
+  docs/IMPLEMENTATION-PIPELINE-SPEC.md \
+  docs/REVIEW-PIPELINE-SPEC.md \
+  docs/DASHBOARD-SPEC.md \
+  docs/METERING-SCHEMA.md \
+  docs/ROADMAP.md \
+; do
+  url="https://github.com/Poetic-Poems/agent-ops/blob/main/$path"
+  if grep -qF "$url" "$INDEX_HTML"; then
+    printf 'ok   - the docs nav links %s\n' "$path"
+  else
+    printf 'FAIL - the docs nav is missing a link to %s\n     expected: %s\n' "$path" "$url"
+    failures=$(( failures + 1 ))
+  fi
+done
+
 if ! command -v node >/dev/null 2>&1; then
-  printf 'ok   - node not installed here; CI runs this suite in-image\n\nall assertions passed\n'
+  printf 'ok   - node not installed here; CI runs the node-backed assertions in-image\n'
+  if (( failures > 0 )); then
+    printf '\n%d assertion(s) failed\n' "$failures"
+    exit 1
+  fi
+  printf '\nall assertions passed\n'
   exit 0
 fi
 
