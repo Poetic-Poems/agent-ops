@@ -665,8 +665,8 @@ claim_active=0
 claim_kind=""
 claim_key=""
 # The second, PR-keyed file claim (issue #238) a finishing-source win also
-# holds — empty for every other source, and for a finishing source whose
-# candidate carried no `pr_number` to key it on. Always a `file` claim
+# holds — empty for every other source, and for a finishing source whose PR
+# number neither its candidate nor its item ref yielded. Always a `file` claim
 # (there is no PR-keyed branch), so its release never touches a ref.
 claim_pr_key=""
 
@@ -778,6 +778,28 @@ exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
   jq -c --argjson claimed "$claimed_prs" \
     '[.[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
     <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+}
+
+# Requirement 17a/issue #238: which PR a finishing-source candidate targets, for
+# the PR-keyed claim below to key on. The candidate's own `pr_number` when it
+# carries a usable one — prompts/coordinator.md requires it on all three
+# finishing sources' work orders — and otherwise the number the *item ref*
+# itself embeds, because all three gather scripts mint their refs with it in
+# them by construction (`pr-<n>-review-<id>`, `pr-<n>-conflict-<sha>`,
+# `pr-<n>-abandoned-<sha>`; requirements 3c, 3e, 3g). The fallback is the whole
+# point: this claim is the hard gate that excludes a peer fleet-wide, and a gate
+# that engages only when the model remembered to copy a field is not one — a
+# single omitted `pr_number` would silently reopen the three-nodes-on-PR-#205
+# failure this exists to close. Empty only when neither source yields a number,
+# which for these three sources cannot happen without a malformed ref.
+pr_number_for_candidate() {  # <candidate-json> <item-ref>
+  local n
+  n="$(jq -r '.pr_number // empty' <<<"$1" 2>/dev/null || true)"
+  if [[ "$n" =~ ^[0-9]+$ ]]; then
+    printf '%s' "$n"
+  elif [[ "$2" =~ ^pr-([0-9]+)- ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
 }
 
 # Requirement 34c: an item whose premise is false is void, not blocked. It goes
@@ -2958,7 +2980,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
     # would 422 against the branch already there.
     claim_kind="file"; claim_key="$c_item"
     c_branch="$(jq -r '.branch // ""' <<<"$cand")"
-    c_pr_number="$(jq -r '.pr_number // empty' <<<"$cand")"
+    c_pr_number="$(pr_number_for_candidate "$cand" "$c_item")"
     CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
       CLAIM_PR_NUMBER="$c_pr_number" \
       "$SCRIPT_DIR/lib/claim.sh" claim file "$c_repo" "$c_item" \

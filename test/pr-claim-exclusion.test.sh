@@ -60,6 +60,7 @@ extract_function() {  # extract_function <name>
 
 gather_claimed_src="$(extract_function gather_claimed)"
 exclude_claimed_prs_src="$(extract_function exclude_claimed_prs)"
+pr_number_for_candidate_src="$(extract_function pr_number_for_candidate)"
 
 if [[ "$gather_claimed_src" != *"gather_claimed()"* ]]; then
   printf 'FAIL - could not extract gather_claimed from agent-cycle.sh (renamed or moved?)\n'
@@ -69,9 +70,14 @@ if [[ "$exclude_claimed_prs_src" != *"exclude_claimed_prs()"* ]]; then
   printf 'FAIL - could not extract exclude_claimed_prs from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$pr_number_for_candidate_src" != *"pr_number_for_candidate()"* ]]; then
+  printf 'FAIL - could not extract pr_number_for_candidate from agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
 
 eval "$gather_claimed_src"
 eval "$exclude_claimed_prs_src"
+eval "$pr_number_for_candidate_src"
 
 # --- The stub gh (same filesystem CAS as test/claim.test.sh) -------------------
 stub_bin="$tmp_dir/bin"
@@ -170,6 +176,28 @@ claimed_prs="$(jq -c '[.[] | select(has("pr_number")) | .pr_number]' <<<"$claime
 end_to_end="$(exclude_claimed_prs '[{"ref": "pr-77-conflict-deadbeefcafe", "pr_number": 77}]' "$claimed_prs")"
 assert_eq "gather_claimed's pr_number is exactly what excludes a fresh candidate on the same PR" "0" \
   "$(jq 'length' <<<"$end_to_end")"
+
+# --- pr_number_for_candidate: the PR-keyed claim's key never depends on the model --
+# The claim in the selection loop is the hard gate (requirement 17a), so it must
+# key on a number the Script can always work out for itself. A Co-Ordinator that
+# forgot prompts/coordinator.md's "carry the entry's pr_url and pr_number" must
+# not be able to switch the gate off by omission.
+assert_eq "the candidate's own pr_number is used when it has one" "57" \
+  "$(pr_number_for_candidate '{"pr_number": 57}' 'pr-57-review-1')"
+assert_eq "a review-feedback ref alone yields the PR number" "57" \
+  "$(pr_number_for_candidate '{}' 'pr-57-review-4718691960')"
+assert_eq "a merge-conflicts ref alone yields the PR number" "205" \
+  "$(pr_number_for_candidate '{}' 'pr-205-conflict-305ca060016d')"
+assert_eq "an abandoned-drafts ref alone yields the PR number" "80" \
+  "$(pr_number_for_candidate '{"pr_number": null}' 'pr-80-abandoned-6319fee06dfc')"
+assert_eq "a non-numeric pr_number falls back to the ref rather than poisoning the key" "57" \
+  "$(pr_number_for_candidate '{"pr_number": "#57"}' 'pr-57-review-1')"
+assert_eq "a pr_number given as a numeric string is accepted" "57" \
+  "$(pr_number_for_candidate '{"pr_number": "57"}' 'pr-99-review-1')"
+assert_eq "an item ref of no PR shape yields nothing, and no PR claim is taken" "" \
+  "$(pr_number_for_candidate '{}' 'TD26071805')"
+assert_eq "malformed candidate JSON degrades to the ref" "57" \
+  "$(pr_number_for_candidate 'not json' 'pr-57-review-1')"
 
 # --- The Enabler stale-conflict/abandoned-draft ref filter ---------------------
 # Not a standalone function (it runs inline, between enabler_eligible_items and

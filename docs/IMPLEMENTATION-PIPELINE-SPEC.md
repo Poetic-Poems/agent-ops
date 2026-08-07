@@ -2575,10 +2575,18 @@ runs unattended.
     - **The PR-keyed claim (issue #238).** A round- or head-SHA-scoped item claim
       excludes nothing about a peer working the *same* PR under a *different*
       round's or head's ref — the mechanism that let PR #205 be worked by three
-      nodes at once. So immediately after winning a finishing-source item claim
-      whose candidate carries a `pr_number`, the Script takes a second, separate
-      file claim keyed `pr-<number>` (same repository, same create-only
-      primitive) *before* handing the work order onward. Losing it means a peer
+      nodes at once. So immediately after winning a finishing-source item claim,
+      the Script takes a second, separate file claim keyed `pr-<number>` (same
+      repository, same create-only primitive) *before* handing the work order
+      onward. The number is the candidate's own `pr_number` where it carries a
+      usable one, and otherwise the one its **item ref** embeds — all three
+      finishing sources mint refs shaped `pr-<n>-review-<id>`,
+      `pr-<n>-conflict-<sha>` and `pr-<n>-abandoned-<sha>` (requirements 3c, 3e,
+      3g), so the Script derives it deterministically rather than depending on
+      the Co-Ordinator having copied a field: a gate that engages only when the
+      model remembered would silently reopen the very failure this closes. Only
+      a ref of none of those shapes yields no number, and then no PR-keyed claim
+      is taken. Losing it means a peer
       already holds this PR — under whatever ref won there — so the item claim
       just won is released (nothing was pushed under it) and selection falls
       through to the next candidate exactly as a lost item claim would. Winning
