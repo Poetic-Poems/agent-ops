@@ -43,6 +43,8 @@
   header.top h1 { font-size: 16px; margin: 0; font-weight: 650; letter-spacing: .2px; }
   .grow { flex: 1 1 auto; }
   .freshness { font-size: 12px; color: var(--muted); }
+  .docs { font-size: 12px; color: var(--muted); }
+  .docs a { margin: 0 3px; }
   .controls { display: flex; align-items: center; gap: 10px; font-size: 12px; color: var(--muted); }
   .controls label { display: flex; align-items: center; gap: 5px; cursor: pointer; }
   button.refresh { font: inherit; font-size: 12px; padding: 4px 10px; border: 1px solid var(--line);
@@ -224,6 +226,14 @@
   <span class="grow"></span>
   <span class="freshness" id="freshness"></span>
   <span class="freshness" id="ghfreshness" title="when the GitHub-sourced panels — PRs, checks, issues, work sources, claims — were last fetched"></span>
+  <nav class="docs" aria-label="Documentation">Docs:
+    <a href="https://github.com/Poetic-Poems/agent-ops/blob/main/README.md" target="_blank" rel="noopener noreferrer">README</a> ·
+    <a href="https://github.com/Poetic-Poems/agent-ops/blob/main/docs/IMPLEMENTATION-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Pipeline spec</a> ·
+    <a href="https://github.com/Poetic-Poems/agent-ops/blob/main/docs/REVIEW-PIPELINE-SPEC.md" target="_blank" rel="noopener noreferrer">Review spec</a> ·
+    <a href="https://github.com/Poetic-Poems/agent-ops/blob/main/docs/DASHBOARD-SPEC.md" target="_blank" rel="noopener noreferrer">Dashboard spec</a> ·
+    <a href="https://github.com/Poetic-Poems/agent-ops/blob/main/docs/METERING-SCHEMA.md" target="_blank" rel="noopener noreferrer">Metering</a> ·
+    <a href="https://github.com/Poetic-Poems/agent-ops/blob/main/docs/ROADMAP.md" target="_blank" rel="noopener noreferrer">Roadmap</a>
+  </nav>
   <div class="controls">
     <label><input type="checkbox" id="autorefresh" checked> auto-refresh</label>
     <button class="refresh" id="refreshbtn">Refresh now</button>
