@@ -3928,6 +3928,16 @@ runs unattended.
     object to close, and requirement 34k does nothing with it; a register id
     is instead requirement 34l's concern, immediately below.
 
+    **Every void, not only a corroborated one.** `void_json` holds the
+    unresolved `item-void` events of all three writers, and only the
+    Co-Ordinator's passes requirement 34d's guard: the Implementor's and the
+    Enabler's are the model's own unexamined verdict. This rule acts on all
+    of them, so an uncorroborated "already done" can close a live issue and
+    comment on it. What bounds that is the one-shot rule immediately below,
+    which is recovery rather than precondition — a human's plain re-open wins
+    permanently. Corroborating the other two writers is WI-7 (#243), and when
+    it lands this rule inherits it without changing.
+
     **Acted on at most once, ever — deliberately not tied to the void
     clearing.** `void_object_closed_items` (`lib/cycle-state.sh`) is the set
     of `{repo, item}` pairs a `void-object-closed` event already names; the
@@ -5738,8 +5748,8 @@ pull request, run the ones the change touches and any it could regress.
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.
-8j. **A corroborated void closes the GitHub object it names, exactly once
-   (requirement 34k).** `test/close-void-github-items.test.sh` passes against
+8j. **A void closes the GitHub object it names, exactly once (requirement
+   34k).** `test/close-void-github-items.test.sh` passes against
    a stubbed `gh`: an open issue or an open, obsolete pull request named by a
    void is closed with a comment carrying the void's own evidence; an object
    already closed is reported (`closed_by: "already"`) rather than touched
