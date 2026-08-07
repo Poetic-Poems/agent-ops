@@ -2326,6 +2326,34 @@ if ! (( DRY_RUN )); then
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
+# 2.1c Post-merge closing-keyword sweep (requirement 17c) — the backstop for
+# requirement 25a's CI check: a merged, `pr_label`-labelled pull request that
+# named an issue (the `agent-ops:closes-issue` marker, requirement 23b) but
+# never carried a real closing keyword leaves that issue open forever, to be
+# re-selected and re-voided by every cycle that reaches it (issue #240; PR
+# #206's "Implements #198" kept #198 open three days after its own fix
+# merged). Cheap and bounded — scripts/sweep-closed-issues.sh examines only
+# the most recently updated merged PRs per repo — and idempotent by
+# construction: it only ever acts on an issue GitHub itself still reports
+# open. Fleet-wide like 2.1a/2.1b, regardless of --repo. Skipped on
+# --dry-run: the sweep closes issues.
+if ! (( DRY_RUN )); then
+  while IFS= read -r sweep_slug; do
+    [[ -n "$sweep_slug" ]] || continue
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        closed) log_event "issue-closed-post-merge" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        deferred|warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
+          '{detail: ("closed-issue sweep (" + $r + "): " + (del(.repo) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-closed-issues.sh" "$sweep_slug" "$node_name" "$cycle_id" \
+               2>>"$cycle_dir/closed-issue-sweep.err" || true)
+  done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+fi
+
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
 #
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-

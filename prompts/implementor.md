@@ -320,7 +320,10 @@ matching "When `source` is …" section above.)*
      that workflow: flip `tech-debt/<ID>.md`'s `status:` frontmatter to
      `in-progress` as your first commit, then open the draft PR.
    - **Issues:** comment on the issue linking the draft PR, instead of (or
-     in addition to) a register status flip.
+     in addition to) a register status flip. Stamp the PR body with
+     `<!-- agent-ops:closes-issue item=<item> -->` — CI checks this marker
+     against a real closing keyword (step 5 below), so add it now rather
+     than risk forgetting it later.
    - **Security / code-quality findings** (`source` of `security` or
      `code-quality`; a Dependabot or code-scanning alert): name the alert in
      the PR body — its `ref` (e.g. `dependabot-alert-42`) and its `url` from
@@ -398,8 +401,11 @@ matching "When `source` is …" section above.)*
      (today's date), `ref:` (the PR) — leaving the body in place; never
      delete or rename the file. `perl scripts/td-check.pl` must exit 0
      before you push.
-   - Issue: reference it with a closing keyword (`Closes #123`) in the PR
-     body.
+   - Issue: reference it with a real GitHub closing keyword (`Closes #123`
+     — `Fixes`/`Resolves` also count) in the PR body, naming the exact
+     issue the `<!-- agent-ops:closes-issue item=123 -->` marker from step 2
+     names. "Implements #123" or any other prose does not close the issue on
+     merge and fails `.github/workflows/closing-keyword.yml`.
    - Implementation-plan task: mark it done where the plan tracks that
      (e.g. a checklist or status line).
    - Security / code-quality finding: there is no ledger to flip — GitHub

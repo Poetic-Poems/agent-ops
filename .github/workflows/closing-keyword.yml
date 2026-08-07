@@ -1,0 +1,35 @@
+name: Closing keyword check
+
+# Gates requirement 25a: an agent PR that names an issue it closes
+# (`<!-- agent-ops:closes-issue item=N -->`, stamped by the Implementor,
+# `prompts/implementor.md`) must also carry a real GitHub closing keyword for
+# that same issue, so the issue actually closes when the PR merges. Prompt
+# instruction alone was already asked for this and silently skipped (PR #206
+# said "Implements #198" instead of "Closes #198", and #198 stayed open for
+# three days after its own fix merged) — see issue #240.
+#
+# A PR without the marker — everything that is not issue-sourced — passes
+# trivially; scripts/check-closing-keyword.sh only ever fails on a marker
+# with no matching keyword.
+#
+# Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
+# runs with write-scoped secrets, and ungated by `paths:` — the body can be
+# edited without touching any file.
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  closing-keyword:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - name: Check closing keyword
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: scripts/check-closing-keyword.sh "$PR_BODY"

@@ -2690,6 +2690,28 @@ runs unattended.
     identical to the empty orphan, so its ref can be deleted mid-run — the
     Implementor's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
+17c. **The post-merge closing-keyword sweep.** Requirement 25a's CI check
+    stops a *new* pull request from merging without a real closing keyword;
+    this is the backstop for what already got through — a PR merged before
+    that check existed, or one that merged some other way — and for the
+    ordinary lag between a fix landing and the issue it was meant to close
+    actually closing. After the orphan-branch sweep (17b), every cycle runs
+    `scripts/sweep-closed-issues.sh` over each configured repo: for every
+    merged, `pr_label`-labelled pull request carrying the
+    `<!-- agent-ops:closes-issue item=N -->` marker (requirement 23b) whose
+    issue `N` GitHub still reports open, it closes that issue with a comment
+    citing the merge as evidence (the PR number, its merge commit) instead of
+    leaving the tombstone that keeps a finished item selectable forever
+    (issue #240; PR #206's "Implements #198" left #198 open for three days
+    after its own fix merged, selected and voided twice in the meantime).
+    Bounded to the most recently updated merged pull requests per repo, and
+    idempotent by construction — it only ever acts on an issue GitHub itself
+    still reports open, so re-running it costs nothing once the backlog is
+    cleared. Actions are capped per run (three per repo per cycle, the
+    overflow reported, never silent), logged as `issue-closed-post-merge`
+    events, and every node may sweep concurrently: GitHub's own issue-close
+    is idempotent, so the worst race outcome is two nodes both finding
+    nothing left to do. Skipped on `--dry-run`.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -2911,6 +2933,16 @@ runs unattended.
     the claim (and, once merged, the completion) is visible to any other cycle
     scanning PRs — there is no register entry and the review folder is not
     modified.
+23b. **Stamps an issue-sourced draft PR with a machine-readable marker naming
+    the issue it claims to close.** `<!-- agent-ops:closes-issue item=N -->`
+    (`lib/pipeline-marker.sh`'s convention extended to this one new purpose:
+    an invisible, greppable fact in the PR body), where `N` is the work
+    order's `item`. This is what requirement 25a's deterministic check and
+    requirement 17c's post-merge sweep both key on — neither reads prose, so
+    "Implements #N" is invisible to both, which is exactly the shape of the
+    defect requirement 25a exists to close (issue #240; PR #206 wrote
+    "Implements #198" and #198 stayed open three days after its own fix
+    merged).
 23a. **Pushes at checkpoints, not only at the claim and at the end.** Once the
     draft PR exists, the Implementor commits and pushes again at each
     meaningful checkpoint — a passing test, a completed file, a finished
@@ -2962,8 +2994,9 @@ runs unattended.
 25. Updates the originating record: the tech-debt record marked `resolved` —
     its `status:` frontmatter flipped (with `resolved:` and `ref:` filled in)
     and its body left in place, the file never deleted or renamed; issues
-    linked with a closing keyword in the PR body; implementation-plan task
-    marked done.
+    linked with a real GitHub closing keyword (`Closes`/`Fixes`/`Resolves
+    #N`) naming the same `N` as requirement 23b's marker; implementation-plan
+    task marked done.
     For `security`/`code-quality` findings, no register flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
@@ -3002,6 +3035,19 @@ runs unattended.
     nothing else — and argless `perl scripts/td-check.pl` exits 0 before the
     item is complete, the same check the target repo's own CI will run on
     the PR.
+25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
+    trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
+    `scripts/check-closing-keyword.sh` against the PR body on every
+    `pull_request` event: it extracts every `<!-- agent-ops:closes-issue
+    item=N -->` marker (requirement 23b) and fails, naming the missing
+    number, unless the body also carries a real closing keyword for that
+    same `N`. A PR with no marker — every non-issue source — passes
+    trivially; the check has nothing to say about a PR with nothing to
+    close. This is what makes requirement 25's "Implements #198" failure
+    (issue #240) structurally impossible to repeat unnoticed: the pull
+    request itself goes red, in front of the human who reviews it, rather
+    than depending on a model that has already been asked once and skipped
+    it.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -4740,6 +4786,26 @@ What exists, and the requirements each part answers to:
     Regression-tested end to end, against the shipped script copied into a
     scratch fixture repository rather than a reimplementation of its logic,
     in `test/render-config-table.test.sh`; must pass `shellcheck`.
+17. `scripts/check-closing-keyword.sh` and `.github/workflows/closing-keyword.yml`
+    implementing requirement 25a: given a pull request body, extracts every
+    `<!-- agent-ops:closes-issue item=N -->` marker (requirement 23b) and
+    exits non-zero, naming the missing number, for any that has no matching
+    GitHub closing keyword (`close(s|d)`, `fix(es|ed)`, `resolve(s|d)`,
+    case-insensitive, immediately followed by `#N`) in the same body. A body
+    with no marker passes trivially. The workflow runs on every
+    `pull_request` event, passing the body through `env:` rather than
+    interpolating it into the step directly, so an attacker-controlled title
+    or body from a fork PR cannot inject shell. Must pass `shellcheck`.
+18. `scripts/sweep-closed-issues.sh` implementing requirement 17c's sweep:
+    given a repo slug, a node name and a cycle id, lists that repo's merged
+    `pr_label`-labelled pull requests (bounded to the most recently updated),
+    and for each carrying an `agent-ops:closes-issue` marker whose named
+    issue is still open, closes it with a `pipeline_comment_header`/
+    `pipeline_comment_marker`-wrapped comment citing the merge as evidence,
+    printing one JSON action per outcome (`closed`, `deferred`, `warning`)
+    for the Script to log. Capped at three actions per repo per call, the
+    overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
+    Unit-tested (`test/sweep-closed-issues.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
