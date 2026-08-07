@@ -2962,6 +2962,23 @@ runs unattended.
     `stage` and `exit_code` — the fields requirement 33 above and requirement
     34 below key on — and the metering of a stage must never be able to do
     that.
+    The record additionally carries `gaps` — `{n, p50, p95, p99, max}` in
+    seconds, or `null` — the run's own **inter-event gap statistics**: how
+    long the invocation went between one piece of output and the next. This is
+    the one field not read from the envelope, because it cannot be: the
+    envelope records that the run did things, never when. `lib/stage-run.sh`
+    measures it by `stat`-ing the stage's event stream inside the poll loop
+    that already runs every two seconds while a stage is in flight, so the
+    unit of observation is bytes arriving rather than events parsed — the
+    contract is "the runner streams progress to a file; liveness is monotonic
+    growth of that file", which is a statement about running a stage rather
+    than about one CLI's output format. The stage emits nothing for this,
+    agrees no cadence, and can fake nothing. The first gap is the wait for the
+    run's first byte and the last is the silence from the final output to the
+    end of the stage — that one included deliberately, because a stage that
+    fell quiet and was killed has its longest silence at the end, and a sample
+    that dropped it would omit exactly the runs the measurement exists to
+    describe.
     `docs/METERING-SCHEMA.md` is the field-by-field contract: types, units,
     the per-cycle aggregation rule, and what future change is additive versus
     breaking.
@@ -3858,7 +3875,9 @@ What exists, and the requirements each part answers to:
    tests),
    `lib/stage-run.sh` (requirement 4d's `run_claude_stage`, the one stage
    launcher both pipelines call, with `stage_stream_file` and
-   `stage_result_line` naming and reading the stream it writes) and
+   `stage_result_line` naming and reading the stream it writes, and
+   `stage_gap_stats` summarising the inter-event gaps it measures from that
+   stream for requirement 33a) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -4454,6 +4473,23 @@ pull request, run the ones the change touches and any it could regress.
    `state_local_streams_retained` removes the streams of older cycle and
    review directories while leaving those directories and every other file
    in them in place.
+1k2. **A stage's inter-event gaps are measured while it runs (requirement
+   33a).** `test/stage-gaps.test.sh` passes: `stage_gap_stats` summarises a
+   known sample at the nearest rank — checked at the ranks where definitions
+   differ, not only in the middle — leaves one long silence among short ones
+   visible as `max` without moving `p50`, skips an unreadable observation
+   rather than failing the record, and reports `null` only for a sample with
+   nothing readable in it. Against a stub emitting with controlled pauses:
+   an eight-second silence is measured rather than averaged away, gaps are
+   counted per observed growth of the stream, the silence after the final
+   event is counted even though no event closed it, a stage that emitted
+   nothing at all still reports the one gap that was all of it, and the
+   stage's own envelope and exit status are unaffected by being measured.
+   Timing assertions bound from below, never exactly: a loaded machine makes
+   a silence look longer, never shorter. `test/metering.test.sh` passes:
+   `gaps` is carried through as given, is `null` when the caller supplies
+   none, and degrades to `null` — rather than failing the whole record —
+   when the caller supplies something unparseable.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to

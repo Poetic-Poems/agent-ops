@@ -41,7 +41,7 @@ field() {
 }
 
 # --- A well-formed single-model envelope: every field is pulled straight
-#     from the claude --output-format json envelope, and tokens sums the
+#     from the stage's own result envelope, and tokens sums the
 #     one modelUsage entry. ---
 single="$work_dir/single.out"
 cat > "$single" <<'JSON'
@@ -114,7 +114,7 @@ printf 'not json at all' > "$malformed"
 
 # `model` is the argument, never read from the envelope, so it is the one
 # field still populated when everything else degrades.
-all_null='{"model":"claude-sonnet-5","cost_usd":null,"duration_ms":null,"num_turns":null,"is_error":null,"tokens":null}'
+all_null='{"model":"claude-sonnet-5","cost_usd":null,"duration_ms":null,"num_turns":null,"is_error":null,"tokens":null,"gaps":null}'
 
 assert_eq "a missing out-file degrades to nulls, keeping the passed-in model" \
   "$all_null" "$(metering_fields claude-sonnet-5 "$missing" | jq -c .)"
@@ -144,6 +144,23 @@ assert_eq "a mix of usable and unusable entries sums the usable ones" \
 
 assert_eq "every envelope shape yields a parseable object, never empty output" \
   "object" "$(metering_fields claude-opus-5 "$scalar_usage" | jq -r 'type')"
+
+# --- gaps: the one field that is not read from the envelope --------------------
+# It is measured by the Script while the stage runs (lib/stage-run.sh) and
+# handed in, so what belongs here is only that it is carried faithfully and
+# that a caller which cannot supply it — or supplies rubbish — still gets a
+# conforming record rather than a failed jq.
+gaps='{"n":4,"p50":6,"p95":40,"p99":40,"max":40}'
+assert_eq "gaps are carried through exactly as given" \
+  "$gaps" "$(metering_fields claude-sonnet-5 "$single" "$gaps" | jq -c '.gaps')"
+assert_eq "an omitted gaps argument is null, not a missing key" \
+  "true" "$(metering_fields claude-sonnet-5 "$single" | jq -c 'has("gaps") and .gaps == null')"
+assert_eq "an explicit null is null" \
+  "null" "$(metering_fields claude-sonnet-5 "$single" null | jq -c '.gaps')"
+assert_eq "an unparseable gaps argument degrades to null rather than failing the record" \
+  "null" "$(metering_fields claude-sonnet-5 "$single" 'not json' | jq -c '.gaps')"
+assert_eq "…and the rest of that record is intact" \
+  "0.1234" "$(metering_fields claude-sonnet-5 "$single" 'not json' | jq -c '.cost_usd')"
 
 echo
 if (( failures == 0 )); then

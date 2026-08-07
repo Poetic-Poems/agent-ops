@@ -708,7 +708,7 @@ $(jq . <<<"$reviewer_input")
     rc=$?
   fi
   log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" \
-    --argjson m "$(metering_fields "$review_model" "$out_file")" '{repo: $r, exit_code: $rc} + $m')"
+    --argjson m "$(metering_fields "$review_model" "$out_file" "$stage_gaps_json")" '{repo: $r, exit_code: $rc} + $m')"
   (( ONCE )) && dump_stage_output "$out_file"
 
   detect_and_log_limit_hit "$out_file" || true

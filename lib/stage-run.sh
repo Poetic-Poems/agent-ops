@@ -23,6 +23,19 @@
 #                         is unchanged by the switch to streaming.
 #   <stage>.out.stderr    the invocation's diagnostics, kept apart from the
 #                         envelope for the reason given at the redirect.
+#
+# And one thing it leaves in a variable rather than a file:
+#
+#   stage_gaps_json       the run's inter-event gap statistics (requirement
+#                         33a), measured by watching the stream grow. See
+#                         `stage_gap_stats`, and the note in the poll loop on
+#                         why growth — not a beat, not a timestamp inside the
+#                         events — is what is measured.
+
+# The gap statistics of the most recent run, for the caller's `stage-end`
+# event. A stage that has not run yet, or that produced no output at all,
+# reports `null`.
+stage_gaps_json="null"
 
 # stage_stream_file OUT_FILE
 # The progress stream that accompanies a stage's `.out`. Derived rather than
@@ -58,6 +71,37 @@ stage_result_line() {
   printf '%s\n' "$line"
 }
 
+# stage_gap_stats SECONDS...
+# Summarise a run's inter-event gaps as the object requirement 33a documents:
+# `{n, p50, p95, p99, max}`, seconds. Prints `null` given no readable
+# observation at all — which no real run produces, since `run_claude_stage`
+# always records the silence that ended it, so `null` on a stage-end event
+# means the record was not measured rather than that the run was never quiet.
+#
+# Nearest-rank percentiles over the sorted sample: the p-th percentile is the
+# `ceil(p·n)`-th smallest value. No interpolation, so every figure printed is
+# an observation that really happened — which matters because these numbers
+# exist to size a threshold against real silences, and an interpolated p99
+# between 40 s and 900 s describes neither.
+stage_gap_stats() {
+  local gaps
+  # `try … catch empty` per line, not around the program: a single unreadable
+  # observation must cost that observation and nothing else. This is metering,
+  # and requirement 33a is explicit that a metering failure may never take the
+  # `stage` and `exit_code` of the event it is merged into down with it.
+  gaps="$(printf '%s\n' "$@" \
+    | jq -Rc 'select(length > 0) | (try tonumber catch empty)' 2>/dev/null \
+    | jq -sc '.' 2>/dev/null)" || gaps="[]"
+  [[ -n "$gaps" ]] || gaps="[]"
+  jq -nc --argjson g "$gaps" '
+    ($g | sort) as $s
+    | ($s | length) as $n
+    | def pct($q): $s[ ((($n * $q) | ceil) - 1) | if . < 0 then 0 else . end ];
+      if $n == 0 then null
+      else {n: $n, p50: pct(0.5), p95: pct(0.95), p99: pct(0.99), max: $s[$n - 1]}
+      end' 2>/dev/null || printf 'null'
+}
+
 # --- Run a headless claude invocation with a wall-clock timeout, killing its
 #     whole process group on timeout. `set -m` gives the backgrounded job its
 #     own process group so `kill -TERM -$pid` reaches every descendant. ---
@@ -69,7 +113,9 @@ stage_result_line() {
 run_claude_stage() {
   local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
   local pid waited=0 rc stream_file
+  local seen_bytes=0 now size last_growth gaps=()
   stream_file="$(stage_stream_file "$out_file")"
+  stage_gaps_json="null"
 
   # stdout (the event stream) and stderr (diagnostics) are kept in separate
   # files — merging them would let stray stderr output break the JSON parse
@@ -111,6 +157,16 @@ run_claude_stage() {
   stage_pid="$pid"
   stage_name="$stage"
 
+  # The gap clock starts at the launch, so the first gap recorded is the wait
+  # for the run's very first byte — model start-up, which is a real silence
+  # and one of the longer ones. Wall-clock rather than the poll counter
+  # below: `waited` advances two per iteration regardless of what the
+  # iteration cost, so under contention — precisely when gaps stretch — it
+  # would under-report the silence it is there to measure. The counter still
+  # drives the timeout, unchanged, so nothing about when a stage is killed
+  # moves with this.
+  last_growth="${EPOCHSECONDS:-$(date +%s)}"
+
   rc=0
   while kill -0 "$pid" 2>/dev/null; do
     if (( waited >= timeout_sec )); then
@@ -123,7 +179,32 @@ run_claude_stage() {
     fi
     sleep 2
     waited=$(( waited + 2 ))
+    # Liveness is monotonic growth of the stream file, not a beat count and
+    # not anything the stage cooperates in: the actor emits nothing for this,
+    # cannot fake it, and needs no cadence to keep. `stat` on a file the
+    # kernel already has open is as cheap as this loop's own `kill -0`.
+    size="$(stat -c %s "$stream_file" 2>/dev/null || printf '0')"
+    if (( size > seen_bytes )); then
+      now="${EPOCHSECONDS:-$(date +%s)}"
+      gaps+=( "$(( now - last_growth ))" )
+      seen_bytes="$size"
+      last_growth="$now"
+    fi
   done
+
+  # The interval since the last growth is a gap too, and on a stage that was
+  # killed it is the one that matters most — a run that fell silent and was
+  # cut off has its longest silence at the end, unterminated by any event.
+  # Dropping it would leave exactly the population this measurement exists to
+  # find missing from the sample.
+  #
+  # Recorded unconditionally, even when it is zero, so that every run that
+  # happened has at least one observation and `null` means one thing only:
+  # this record was not measured. A stage that emitted nothing whatever is
+  # then a run with a single gap spanning the whole of it, which is both true
+  # and the case a liveness threshold most needs in its sample.
+  now="${EPOCHSECONDS:-$(date +%s)}"
+  gaps+=( "$(( now - last_growth ))" )
 
   if (( rc != 124 )); then
     wait "$pid"
@@ -136,6 +217,11 @@ run_claude_stage() {
   stage_pid=""
   # shellcheck disable=SC2034
   stage_name=""
+
+  # Read by each pipeline's `stage-end` site, which shellcheck cannot see from
+  # inside this library.
+  # shellcheck disable=SC2034
+  stage_gaps_json="$(stage_gap_stats "${gaps[@]+"${gaps[@]}"}")"
 
   # `.out` is written on every path, including the killed one, so a reader
   # never has to distinguish "no envelope" from "no file": the callers'
