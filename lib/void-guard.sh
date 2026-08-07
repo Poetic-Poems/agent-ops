@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# lib/void-guard.sh — what a Co-Ordinator must produce before one of its
+# lib/void-guard.sh — what any stage must produce before one of its `void`
 # verdicts is allowed to be permanent (requirement 34d).
 #
 # `void` is the only terminal state in the system. Requirement 34c makes that
@@ -48,16 +48,22 @@
 #
 # ## Why the guard lives here and not in the prompt
 #
-# The obvious repair is to tell the Co-Ordinator to be more careful. That is
-# not a repair: "be certain" is already in prompts/coordinator.md, twice, and
-# the model that voided #92 was certain. The Co-Ordinator is also the one void
-# author that structurally cannot check — the Implementor reads the tree
-# (requirement 27b), the Enabler reads the issue and the PR (requirement 35),
-# and the Co-Ordinator reads a JSON digest of candidates and nothing else. An
-# assertion about the default branch, made by the one actor that never looks at
-# the default branch, is the assertion to corroborate.
+# The obvious repair is to tell the model to be more careful. That is not a
+# repair: "be certain" is already in prompts/coordinator.md, twice, and the
+# model that voided #92 was certain. Nor is it enough to point at which stage
+# can see the most — the Co-Ordinator reads a JSON digest of candidates and
+# nothing else, but the Implementor (requirement 27b) and the Enabler
+# (requirement 35) read the tree, the issue and the PR directly, and issue #243
+# is what a Co-Ordinator void looked like anyway: it voided #224 citing "PR
+# #232 implemented all five rewrites" — a real, mergeable PR, just one that
+# belonged to #221. Every mechanical test that already existed passed, because
+# none of them had ever asked whether the cited PR was *about this item*.
+# Reading more context does not stop a model from citing the wrong artifact
+# inside it; only checking the citation does.
 #
-# So the guard is mechanical, and it runs on the Script's side of the boundary:
+# So the guard is mechanical, and it runs on the Script's side of the boundary
+# — for every stage that can write `item-void` (the Co-Ordinator, the Enabler,
+# the Implementor), through the one shared entry point, `void_guard_reason`:
 #
 #   1. **Evidence must exist.** Requirement 34c has always said an `item-void`
 #      carries `reason` *and* `evidence` — "the SHAs, paths, or commands proving
@@ -71,7 +77,15 @@
 #      request among the candidates this very cycle gathered, that assertion is
 #      testable for the price of one API call: a PR whose diff against its base
 #      is non-empty is a PR whose changes are, by definition, not on the base.
-#      No amount of model confidence survives that.
+#      No amount of model confidence survives that. (Co-Ordinator only — it is
+#      the only stage with a gathered candidate list to test against.)
+#   3. **A cited PR or commit must actually be about this item** (issue #243).
+#      Evidence naming "PR #N" or a commit SHA is fetched live and checked for
+#      the item id in the PR's body/branch, or the commit's message/associated
+#      PRs — see `void_citation_reason` below. This is what requirement 34d was
+#      missing before #243: a citation that merely *exists* is not
+#      corroboration, and it is checked the same way for every stage, since it
+#      needs nothing but the API and the citation itself.
 #
 # ## What a refused void becomes
 #
@@ -270,8 +284,205 @@ void_candidate_prs() {
     | .[]' <<<"$repos" 2>/dev/null || true
 }
 
+# void_item_regex ITEM
+# ITEM, escaped so it can be dropped into a `grep -E` pattern literally. Item
+# ids are ordinarily alnum/dash (`TD26051201`, `review-2026-07-20-R03`,
+# `dependabot-alert-42`, a bare issue number), but nothing enforces that on
+# the way in, and a stray regex metacharacter must not turn a corroboration
+# check into a crash or a false match.
+void_item_regex() {
+  printf '%s' "$1" | sed -E 's/[][\.^$*+?(){}|]/\\&/g'
+}
+
+# void_text_names_item TEXT ITEM
+# True when ITEM appears in TEXT as a whole token — `\b…\b`, the same
+# word-boundary discipline the gatherers already apply when they recover an
+# item id from a branch name or PR body (`grep -oiE '\b(TD[0-9]{8}|…)\b'` in
+# scripts/gather-*.sh). Plain substring matching would let a bare issue number
+# like `224` match `1224` or `22456`; a word boundary will not.
+void_text_names_item() {
+  local text="$1" item="$2"
+  [[ -n "$item" ]] || return 1
+  grep -qiE "\\b$(void_item_regex "$item")\\b" <<<"$text" 2>/dev/null
+}
+
+# void_evidence_cited_pr_numbers EVIDENCE_TEXT
+# Print, one per line, every PR number the free-text evidence names as "PR
+# #123" or "pull request #123" (case-insensitive). This is deliberately
+# narrower than "any `#N` in the text" — an evidence sentence citing an issue
+# ("confirmed via #123 that…") is not a claim about a pull request, and
+# treating it as one would refuse legitimate voids on a coincidence. Prints
+# nothing when the text cites none.
+void_evidence_cited_pr_numbers() {
+  local text="$1" matches
+  matches="$(grep -oiE '(pr|pull request)[[:space:]]*#[0-9]+' <<<"$text" 2>/dev/null || true)"
+  grep -oE '[0-9]+' <<<"$matches" 2>/dev/null | sort -un || true
+}
+
+# void_evidence_cited_commit_shas EVIDENCE_TEXT
+# Print, one per line, every commit-like hex string the free-text evidence
+# cites as "commit <sha>" or "<ref>@<sha>" (the shape this repository's own
+# void evidence already uses — see the `main@aad1405` example above). Requires
+# 7-40 lowercase hex characters including at least one digit, so an ordinary
+# hex-looking word ("cafebabe", "deadbeef") with no digit in it is not
+# mistaken for a SHA.
+void_evidence_cited_commit_shas() {
+  local text="$1" by_word by_at
+  by_word="$(grep -oiE 'commit[[:space:]]+[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null \
+    | grep -oE '[0-9a-f]{7,40}$' 2>/dev/null || true)"
+  by_at="$(grep -oE '@[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null \
+    | grep -oE '[0-9a-f]{7,40}$' 2>/dev/null || true)"
+  printf '%s\n%s\n' "$by_word" "$by_at" | grep -E '[0-9]' 2>/dev/null | sort -u || true
+}
+
+# void_pr_matches_item SLUG NUM ITEM
+# Test one cited PR against the item it is supposed to corroborate: fetched
+# live from the API — never from a gathered candidate list, so this works
+# identically for a stage that has no such list (the Enabler, the
+# Implementor) — and checked for ITEM in its body or its head branch, the same
+# two places `scripts/gather-*.sh` reads to associate a PR with an item in the
+# first place. Prints nothing and returns 0 on a match; prints a one-line
+# reason and returns 1 otherwise, including when the PR cannot be read at all
+# — an unreadable citation corroborates nothing.
+void_pr_matches_item() {
+  local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
+  local pr_json body head_ref
+
+  pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
+  if [[ -z "$pr_json" ]]; then
+    printf 'PR #%s in %s, cited as evidence, could not be read' "$num" "$slug"
+    return 1
+  fi
+  body="$(jq -r '.body // ""' <<<"$pr_json" 2>/dev/null || true)"
+  head_ref="$(jq -r '.head.ref // ""' <<<"$pr_json" 2>/dev/null || true)"
+  if void_text_names_item "$body
+$head_ref" "$item"; then
+    return 0
+  fi
+  printf 'fabricated citation: PR #%s in %s (branch %s) references neither its body nor its branch name with item %s' \
+    "$num" "$slug" "${head_ref:-?}" "$item"
+  return 1
+}
+
+# void_commit_matches_item SLUG SHA ITEM
+# Test one cited commit against the item it is supposed to corroborate. Two
+# facts must both hold:
+#
+#   1. SHA is an ancestor of the repository's default branch — via the
+#      compare API rather than a local clone, since this guard runs from
+#      wherever the writing stage runs, not necessarily inside a checkout of
+#      SLUG. `compare/SHA...default_branch` reports `identical` or `ahead`
+#      exactly when default_branch contains everything SHA does — the
+#      definition of "SHA has already landed".
+#   2. Something ties SHA to ITEM: its own commit message names it, or a pull
+#      request GitHub associates with it does (checked the same way a cited PR
+#      is — `void_pr_matches_item`). A squash-merge commit's message is the
+#      PR title, which does not reliably repeat an item id, so the associated-
+#      PR fallback is not optional polish; without it almost every genuine
+#      commit citation would be refused.
+#
+# Prints nothing and returns 0 when both hold; prints a one-line reason and
+# returns 1 otherwise.
+void_commit_matches_item() {
+  local slug="$1" sha="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
+  local default_branch cmp_json status commit_json message num
+
+  default_branch="$("$gh_bin" api "repos/$slug" --jq '.default_branch' 2>/dev/null)"
+  [[ -n "$default_branch" ]] || default_branch="main"
+
+  cmp_json="$("$gh_bin" api "repos/$slug/compare/$sha...$default_branch" 2>/dev/null)" || cmp_json=""
+  if [[ -z "$cmp_json" ]]; then
+    printf 'commit %s in %s, cited as evidence, could not be compared against %s' \
+      "$sha" "$slug" "$default_branch"
+    return 1
+  fi
+  status="$(jq -r '.status // ""' <<<"$cmp_json" 2>/dev/null || true)"
+  if [[ "$status" != "identical" && "$status" != "ahead" ]]; then
+    printf 'commit %s in %s is not an ancestor of %s (compare status: %s)' \
+      "$sha" "$slug" "$default_branch" "${status:-unreadable}"
+    return 1
+  fi
+
+  commit_json="$("$gh_bin" api "repos/$slug/commits/$sha" 2>/dev/null)" || commit_json=""
+  message="$(jq -r '.commit.message // ""' <<<"$commit_json" 2>/dev/null || true)"
+  if void_text_names_item "$message" "$item"; then
+    return 0
+  fi
+
+  while IFS= read -r num; do
+    [[ -n "$num" ]] || continue
+    if void_pr_matches_item "$slug" "$num" "$item" >/dev/null; then
+      return 0
+    fi
+  done < <("$gh_bin" api "repos/$slug/commits/$sha/pulls" --jq '.[].number' 2>/dev/null || true)
+
+  printf 'commit %s in %s is on %s, but neither its message nor any pull request associated with it references item %s' \
+    "$sha" "$slug" "$default_branch" "$item"
+  return 1
+}
+
+# void_citation_reason ENTRY_JSON REPO_SLUG
+# The corroboration requirement 34d's window exposed: evidence existing, and
+# even resolving, is not the same as evidence *connecting to this item*. The
+# Co-Ordinator once voided an item citing "PR #232 implemented all five
+# rewrites" — #232 was a real, mergeable PR, so every check that had ever run
+# against it (evidence non-empty, PR diff empty) passed. It belonged to a
+# different item entirely. Nothing had ever asked whether the PR it cited was
+# about *this* item.
+#
+# This asks exactly that, and it is what makes the guard usable by the
+# Enabler and the Implementor as well as the Co-Ordinator: unlike
+# `void_candidate_prs`, it needs no cycle-gathered candidate list — every
+# citation is resolved live against the API — so a stage that never gathered
+# candidates in the first place gets the same check.
+#
+# Prints nothing and returns 0 when the evidence cites no PR or commit at all
+# (nothing to corroborate this way; the presence/resolvable rules above are
+# what govern free prose), or when every citation it does make checks out.
+# Prints a one-line reason and returns 1 the moment one citation does not —
+# a partly-fabricated citation is a fabricated citation.
+void_citation_reason() {
+  local entry="$1" repo="$2" item evidence_text num sha reason
+
+  item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+  evidence_text="$(void_entry_evidence "$entry")"
+  [[ -n "$item" && -n "$evidence_text" ]] || return 0
+
+  while IFS= read -r num; do
+    [[ -n "$num" ]] || continue
+    if [[ -z "$repo" ]]; then
+      printf 'evidence cites PR #%s to corroborate against, but the entry names no repo' "$num"
+      return 1
+    fi
+    if ! reason="$(void_pr_matches_item "$repo" "$num" "$item")"; then
+      printf '%s' "$reason"
+      return 1
+    fi
+  done < <(void_evidence_cited_pr_numbers "$evidence_text")
+
+  while IFS= read -r sha; do
+    [[ -n "$sha" ]] || continue
+    if [[ -z "$repo" ]]; then
+      printf 'evidence cites commit %s to corroborate against, but the entry names no repo' "$sha"
+      return 1
+    fi
+    if ! reason="$(void_commit_matches_item "$repo" "$sha" "$item")"; then
+      printf '%s' "$reason"
+      return 1
+    fi
+  done < <(void_evidence_cited_commit_shas "$evidence_text")
+
+  return 0
+}
+
 # void_guard_reason ENTRY_JSON REPOS_JSON
-# Decide whether this Co-Ordinator void may be recorded as terminal.
+# Decide whether a void may be recorded as terminal. Shared by all three
+# stages that write `item-void` (requirement 34d, extended by issue #243 from
+# "the Co-Ordinator" to "every stage"): the Co-Ordinator passes REPOS_JSON, its
+# gathered candidates, so `void_candidate_prs` below can also weigh in;
+# the Enabler and the Implementor have no such list and call this with `[]`,
+# which simply skips that one extra check — `void_citation_reason` above needs
+# nothing from it, since it resolves every citation live.
 #
 # Prints nothing and returns 0 when it may. Prints a one-line reason and
 # returns 1 when it may not — the line is written to be readable in a log event
@@ -282,16 +493,17 @@ void_candidate_prs() {
 # will look at; accepting costs an item nothing will ever look at again.
 void_guard_reason() {
   local entry="$1" repos="${2:-[]}" gh_bin="${VOID_GUARD_GH:-gh}"
-  local ref slug num files resolvable repo_slug resolve_reason
+  local ref slug num files resolvable repo_slug resolve_reason citation_refusal
 
   if [[ -z "$(void_entry_evidence "$entry")" ]]; then
     printf 'no evidence recorded, and requirement 34c makes evidence what a terminal verdict is'
     return 1
   fi
 
+  repo_slug="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+
   resolvable="$(void_entry_resolvable_evidence "$entry")"
   if [[ -n "$resolvable" ]]; then
-    repo_slug="$(jq -r '.repo // ""' <<<"$entry")"
     if [[ -z "$repo_slug" ]]; then
       printf 'evidence names %s to resolve against, but the entry names no repo' \
         "$(jq -r '.path' <<<"$resolvable")"
@@ -301,6 +513,11 @@ void_guard_reason() {
       printf 'unresolved: %s' "$resolve_reason"
       return 1
     fi
+  fi
+
+  if ! citation_refusal="$(void_citation_reason "$entry" "$repo_slug")"; then
+    printf 'not corroborated: %s' "$citation_refusal"
+    return 1
   fi
 
   while IFS= read -r ref; do

@@ -103,9 +103,52 @@ if [[ "$2" == */contents/* ]]; then
   cat "$f"
   exit 0
 fi
-n="${2##*/pulls/}"; n="${n%%/*}"
-[[ -f "$d/files-$n" ]] || exit 1
-cat "$d/files-$n"
+if [[ "$2" == */pulls/*/files ]]; then
+  n="${2%/files}"; n="${n##*/pulls/}"
+  [[ -f "$d/files-$n" ]] || exit 1
+  cat "$d/files-$n"
+  exit 0
+fi
+# A bare `repos/<slug>/pulls/<n>` — the citation guard's own fetch of a cited
+# PR's body and branch, distinct from the `/files` count above.
+if [[ "$2" == */pulls/* ]]; then
+  n="${2##*/pulls/}"
+  f="$d/pr-$n.json"
+  [[ -f "$f" ]] || exit 1
+  cat "$f"
+  exit 0
+fi
+# `repos/<slug>/compare/<sha>...<default_branch>` — ancestry for a cited commit.
+if [[ "$2" == */compare/* ]]; then
+  rest="${2##*/compare/}"
+  key="${rest//.../_TO_}"
+  f="$d/compare-$key.json"
+  [[ -f "$f" ]] || exit 1
+  cat "$f"
+  exit 0
+fi
+# `repos/<slug>/commits/<sha>/pulls` — PRs GitHub associates with a commit. A
+# missing fixture is an empty list (a real, ordinary answer), not a failure.
+if [[ "$2" == */commits/*/pulls ]]; then
+  sha="${2%/pulls}"; sha="${sha##*/commits/}"
+  f="$d/commit-$sha-pulls"
+  [[ -f "$f" ]] && cat "$f"
+  exit 0
+fi
+if [[ "$2" == */commits/* ]]; then
+  sha="${2##*/commits/}"
+  f="$d/commit-$sha.json"
+  [[ -f "$f" ]] || exit 1
+  cat "$f"
+  exit 0
+fi
+# A bare `repos/<slug>` — the citation guard's own default-branch lookup for a
+# cited commit. `--jq '.default_branch'` is what the caller asks for, so the
+# fixture holds the already-projected raw value, exactly like `files-<n>` above.
+slug="${2#repos/}"
+f="$d/repo-${slug//\//_}"
+[[ -f "$f" ]] || exit 1
+cat "$f"
 STUB
 chmod +x "$tmp_dir/gh"
 export VOID_GUARD_GH="$tmp_dir/gh"
@@ -371,6 +414,138 @@ printf '3' >"$tmp_dir/files-92"
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shape survives set -e and bad input" "0" "$?"
+
+# --- Citation corroboration (issue #243) ---------------------------------------
+# void_guard_reason is now shared by every stage that writes `item-void`, not
+# only the Co-Ordinator — the Enabler and the Implementor call it with no
+# gathered candidate list (`repos` = `[]`), so every assertion below passes
+# `'[]'` rather than $REPOS, exactly as those two call sites do.
+
+# --- void_evidence_cited_pr_numbers / void_evidence_cited_commit_shas ---------
+assert_eq "a PR citation is extracted" \
+  "232" "$(void_evidence_cited_pr_numbers "PR #232 implemented all five rewrites")"
+assert_eq "a 'pull request' citation is extracted" \
+  "235" "$(void_evidence_cited_pr_numbers "pull request #235 landed it")"
+assert_eq "a bare issue reference is not a PR citation" \
+  "" "$(void_evidence_cited_pr_numbers "confirmed via #123 that nothing remains")"
+assert_eq "multiple PR citations are deduped and sorted" \
+  "$(printf '92\n232\n')" "$(void_evidence_cited_pr_numbers "see PR #232 and pr#92, also PR #92")"
+assert_eq "no citation at all extracts nothing" \
+  "" "$(void_evidence_cited_pr_numbers "the ledger row is already marked resolved")"
+
+assert_eq "a 'commit <sha>' citation is extracted" \
+  "aad1405b" "$(void_evidence_cited_commit_shas "landed as commit aad1405b on main")"
+assert_eq "a 'ref@sha' citation is extracted" \
+  "aad1405" "$(void_evidence_cited_commit_shas "main@aad1405 has the fix")"
+assert_eq "an all-letter hex word with no digit is not a SHA citation" \
+  "" "$(void_evidence_cited_commit_shas "the commit deadbeef is a placeholder word")"
+assert_eq "no citation at all extracts nothing" \
+  "" "$(void_evidence_cited_commit_shas "the ledger row is already marked resolved")"
+
+# --- void_pr_matches_item: the exact shape of the shipped defect --------------
+# #224's Co-Ordinator voided it citing "PR #232 implemented all five rewrites".
+# #232 was real and mergeable — but it was #221's PR, not #224's; #224's actual
+# fix was #235. Fixtures reproduce exactly that.
+cat >"$tmp_dir/pr-232.json" <<'JSON'
+{"body": "Implements the five rewrites for item 221.", "head": {"ref": "agent/221"}}
+JSON
+cat >"$tmp_dir/pr-235.json" <<'JSON'
+{"body": "Closes #224 — implements the five rewrites.", "head": {"ref": "agent/224"}}
+JSON
+
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "224")"; rc=$?
+assert_eq "an unrelated-but-real PR does not match" "1" "$rc"
+assert_contains "  ... naming the fabrication" "fabricated citation" "$out"
+
+assert_eq "the genuinely implementing PR matches" \
+  "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "235" "224"; echo $?)"
+
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "999" "224")"; rc=$?
+assert_eq "an unreadable cited PR does not match" "1" "$rc"
+assert_contains "  ... saying so" "could not be read" "$out"
+
+assert_eq "matching on the branch name alone is enough" \
+  "0" "$(printf '{"body": "", "head": {"ref": "td/TD26051201"}}' >"$tmp_dir/pr-50.json"; \
+    void_pr_matches_item "Poetic-Poems/poetic" "50" "TD26051201"; echo $?)"
+
+# A bare numeric item must not match a PR merely because a *longer* number
+# containing it appears somewhere — the word-boundary discipline this whole
+# check exists to apply.
+printf '{"body": "see line 1224 for details", "head": {"ref": "agent/9224x"}}' >"$tmp_dir/pr-60.json"
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "60" "224")"; rc=$?
+assert_eq "a number embedded in a longer number does not match" "1" "$rc"
+
+# --- void_commit_matches_item ---------------------------------------------------
+printf 'main' >"$tmp_dir/repo-Poetic-Poems_poetic"
+
+printf '{"status": "ahead"}' >"$tmp_dir/compare-aad1405b_TO_main.json"
+printf '{"commit": {"message": "fix(sync): add timeouts (TD26051201)"}}' \
+  >"$tmp_dir/commit-aad1405b.json"
+assert_eq "an ancestor commit whose own message names the item matches" \
+  "0" "$(void_commit_matches_item "Poetic-Poems/poetic" "aad1405b" "TD26051201"; echo $?)"
+
+printf '{"status": "ahead"}' >"$tmp_dir/compare-bbbb111_TO_main.json"
+printf '{"commit": {"message": "fix(sync): add timeouts"}}' >"$tmp_dir/commit-bbbb111.json"
+printf '50\n' >"$tmp_dir/commit-bbbb111-pulls"
+assert_eq "an ancestor commit with no item in its own message matches via its linked PR" \
+  "0" "$(void_commit_matches_item "Poetic-Poems/poetic" "bbbb111" "TD26051201"; echo $?)"
+
+printf '{"status": "diverged"}' >"$tmp_dir/compare-ccccccc_TO_main.json"
+out="$(void_commit_matches_item "Poetic-Poems/poetic" "ccccccc" "TD26051201")"; rc=$?
+assert_eq "a commit that is not an ancestor of default_branch is refused" "1" "$rc"
+assert_contains "  ... saying so" "not an ancestor" "$out"
+
+out="$(void_commit_matches_item "Poetic-Poems/poetic" "ddddddd" "TD26051201")"; rc=$?
+assert_eq "an unreadable commit is refused" "1" "$rc"
+assert_contains "  ... saying so" "could not be compared" "$out"
+
+printf '{"status": "ahead"}' >"$tmp_dir/compare-eeeeeee_TO_main.json"
+printf '{"commit": {"message": "fix(sync): add timeouts"}}' >"$tmp_dir/commit-eeeeeee.json"
+out="$(void_commit_matches_item "Poetic-Poems/poetic" "eeeeeee" "TD26051201")"; rc=$?
+assert_eq "an ancestor commit tied to nothing is refused" "1" "$rc"
+assert_contains "  ... saying so" "neither its message nor any pull request" "$out"
+
+# --- void_citation_reason: the entry-level composition -------------------------
+entry_224_bad='{"item": "224", "repo": "Poetic-Poems/poetic",
+  "reason": "the five rewrites are already merged",
+  "evidence": "PR #232 implemented all five rewrites"}'
+out="$(void_citation_reason "$entry_224_bad" "Poetic-Poems/poetic")"; rc=$?
+assert_eq "a fabricated PR citation is refused" "1" "$rc"
+assert_contains "  ... as a fabrication" "fabricated citation" "$out"
+
+entry_224_good='{"item": "224", "repo": "Poetic-Poems/poetic",
+  "reason": "the five rewrites are already merged",
+  "evidence": "PR #235 implemented all five rewrites"}'
+assert_eq "the genuinely implementing PR citation is accepted" \
+  "0" "$(void_citation_reason "$entry_224_good" "Poetic-Poems/poetic"; echo $?)"
+
+assert_eq "evidence with no citation at all has nothing to corroborate this way" \
+  "0" "$(void_citation_reason '{"item": "224", "repo": "Poetic-Poems/poetic",
+    "evidence": "read main directly, nothing remains"}' "Poetic-Poems/poetic"; echo $?)"
+
+out="$(void_citation_reason '{"item": "224", "evidence": "PR #232 implemented it"}' "")"; rc=$?
+assert_eq "a PR citation with no repo to check it against is refused" "1" "$rc"
+assert_contains "  ... saying so" "names no repo" "$out"
+
+# --- void_guard_reason: the acceptance criteria, verbatim -----------------------
+# "a void citing an unrelated-but-real PR is rejected; a void citing the
+# genuinely implementing PR passes" — and with `repos` = `[]`, exactly the way
+# the Enabler and the Implementor call it (neither gathers candidates).
+out="$(void_guard_reason "$entry_224_bad" '[]')"; rc=$?
+assert_eq "void_guard_reason rejects a void citing an unrelated-but-real PR" "1" "$rc"
+assert_contains "  ... not corroborated" "not corroborated" "$out"
+assert_contains "  ... naming the fabrication" "fabricated citation" "$out"
+
+assert_eq "void_guard_reason accepts a void citing the genuinely implementing PR" \
+  "0" "$(void_guard_reason "$entry_224_good" '[]'; echo $?)"
+assert_eq "  ... silently" "" "$(void_guard_reason "$entry_224_good" '[]')"
+
+# The same corroboration applies with no `repos` argument at all — the exact
+# call shape the Enabler and Implementor use.
+assert_eq "void_guard_reason works with repos omitted entirely" \
+  "0" "$(void_guard_reason "$entry_224_good"; echo $?)"
+out="$(void_guard_reason "$entry_224_bad")"; rc=$?
+assert_eq "  ... and still refuses the fabrication" "1" "$rc"
 
 printf '\n'
 if (( failures == 0 )); then
