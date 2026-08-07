@@ -132,6 +132,10 @@ review_model="$(resolve_model_id review.model "$(cfg '.review.model')")"
 pr_label="$(cfg '.review.pr_label')"
 branch_prefix="$(cfg '.review.branch_prefix')"
 timeout_review_min="$(cfg '.review.timeout_review')"
+# The liveness watchdog (requirement 4e / R7b). Prior in code, not config: a
+# customer never has to choose it. Absent means the prior; 0 disables.
+INACTIVITY_PRIOR_MIN=10
+inactivity_review_min="$(cfg ".review.inactivity_review // $INACTIVITY_PRIOR_MIN")"
 lock_stale_after_hours="$(cfg '.review.lock_stale_after')"
 min_days_between_reviews="$(cfg '.review.min_days_between_reviews')"
 # A stand-down with a date on it (R3.3). Empty or absent means none in force.
@@ -702,13 +706,21 @@ $(jq . <<<"$reviewer_input")
   out_file="$review_dir/reviewer-$safe.out"
 
   log_event "review-stage-start" "$(jq -nc --arg r "$slug" --arg m "$review_model" '{repo: $r, model: $m}')"
-  if run_claude_stage reviewer "$(( timeout_review_min * 60 ))" "$review_model" "$reviewer_prompt" "$out_file" "$clone_dir"; then
+  if run_claude_stage reviewer "$(( timeout_review_min * 60 ))" "$review_model" "$reviewer_prompt" "$out_file" "$clone_dir" "$(( inactivity_review_min * 60 ))"; then
     rc=0
   else
     rc=$?
   fi
-  log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" \
-    --argjson m "$(metering_fields "$review_model" "$out_file" "$stage_gaps_json")" '{repo: $r, exit_code: $rc} + $m')"
+  log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" --arg kr "$stage_kill_reason" \
+    --argjson m "$(metering_fields "$review_model" "$out_file" "$stage_gaps_json")" '{repo: $r, exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  # `if`, not `&&`: an empty warning is the common case, and a trailing
+  # `&&` whose test fails is a non-zero status at exactly the place
+  # `set -e` acts on — the same trap that cost a --once cycle its
+  # failure handling at dump_stage_output.
+  watchdog_warning="$(stage_watchdog_warning reviewer || true)"
+  if [[ -n "$watchdog_warning" ]]; then
+    log_event "warning" "$watchdog_warning"
+  fi
   (( ONCE )) && dump_stage_output "$out_file"
 
   detect_and_log_limit_hit "$out_file" || true

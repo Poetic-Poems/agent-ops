@@ -32,7 +32,7 @@
 # whenever a cycle does something the configuration does not explain:
 #
 #   scripts/doctor.sh                 # this installation
-#   scripts/doctor.sh --offline       # everything but GitHub access and Claude credentials
+#   scripts/doctor.sh --offline       # everything but GitHub access and the two Claude checks
 #   scripts/doctor.sh --config PATH   # a config not yet deployed
 #
 # Exit: 0 clean (warnings and skips included) · 1 at least one failure ·
@@ -54,12 +54,15 @@ usage: doctor.sh [--config PATH] [--offline] [--quiet]
 
 Check this installation end to end: the configuration against
 config.schema.json, the toolchain the pipelines need, the directories they
-write to, the rendered crontab, the GitHub access they are granted, and the
-Claude credentials the stages run as.
+write to, the rendered crontab, the GitHub access they are granted, the
+Claude credentials the stages run as, and whether a stage's event stream
+really flushes as it runs on this node.
 
   --config PATH  Check this file instead of the repository's config.json.
-  --offline      Skip every check that needs the network (GitHub access,
-                 Claude credentials); report them skipped.
+  --offline      Skip every check that needs the network (GitHub access, the
+                 Claude credentials, the stream-flushing probe); report them
+                 skipped. The probe is the one check here that spends: a
+                 single call to the cheapest configured model.
   --quiet        Print only warnings, failures and the summary.
 
 Exit 0 clean, 1 at least one failure, 2 unusable arguments or config.
@@ -496,6 +499,56 @@ elif [[ "$logged_in" == "true" ]]; then
   ok "claude is authenticated ($(jq -r '.authMethod // "method unknown"' <<<"$claude_auth_json"), $(jq -r '.subscriptionType // .apiProvider // "provider unknown"' <<<"$claude_auth_json"))"
 else
   fail "claude is not authenticated — every stage launches through it and would fail at the first invocation"
+fi
+
+# --- The stream really streams, on this node -----------------------------------
+# The liveness watchdog (requirement 4e) reads one thing: whether the stage's
+# stream file has grown lately. That is only a liveness signal if the runtime
+# writes as it goes. If it buffers stdout when the destination is not a tty —
+# and the evidence for this design was gathered on one machine and one CLI
+# version, so another may differ — the file stays empty until the run ends and
+# the watchdog kills every healthy stage at its threshold. There is no partial
+# version of that failure: streaming either works on this node or the pipeline
+# stops working on this node. So it is checked here, on this node, with a real
+# invocation, rather than reasoned about.
+#
+# The cost is one call to the cheapest configured model with a one-word
+# prompt — the same spend requirement 1b's usage-limit probe makes, for the
+# same reason: some questions can only be answered by asking. `doctor.sh` is
+# operator-invoked rather than per-cycle, and `--offline` skips it.
+if ((offline)); then
+  skip "stream flushing (--offline; the check costs one minimal model call)"
+elif ! command -v claude >/dev/null 2>&1; then
+  skip "stream flushing (claude is not installed)"
+elif [[ "${logged_in:-}" != "true" ]]; then
+  skip "stream flushing (needs a working credential)"
+else
+  flush_dir="$(mktemp -d)"
+  flush_stream="$flush_dir/probe.stream.jsonl"
+  claude -p --model "$(cfg '.implementor_model_trivial // "claude-haiku-4-5-20251001"')" \
+    --dangerously-skip-permissions --output-format stream-json --verbose \
+    <<<"Reply with the single word: ok" >"$flush_stream" 2>"$flush_dir/err" &
+  flush_pid=$!
+  # Sampled while the invocation is still running, which is the only way to
+  # tell "wrote as it went" from "wrote everything at the end" — a finished
+  # run looks identical either way.
+  flush_seen=0
+  flush_waited=0
+  while kill -0 "$flush_pid" 2>/dev/null && (( flush_waited < 120 )); do
+    if [[ -s "$flush_stream" ]]; then flush_seen=1; break; fi
+    sleep 1
+    flush_waited=$(( flush_waited + 1 ))
+  done
+  wait "$flush_pid" 2>/dev/null || true
+
+  if (( flush_seen )); then
+    ok "the stage stream flushes as it runs — the liveness watchdog has a signal to read"
+  elif [[ ! -s "$flush_stream" ]]; then
+    skip "stream flushing: the probe produced nothing at all, so it proves nothing about buffering ($(head -c 160 "$flush_dir/err" 2>/dev/null | tr '\n' ' ' || true))"
+  else
+    fail "the stage stream arrived only once the invocation had ended — stdout is buffered on this node, so the liveness watchdog would see no progress and kill every healthy stage at its inactivity threshold. Set the inactivity_* keys to 0 to disable the watchdog until this is fixed."
+  fi
+  rm -rf "$flush_dir"
 fi
 
 # --- Summary ---

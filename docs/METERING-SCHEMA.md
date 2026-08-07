@@ -37,8 +37,12 @@ shape going forward.
 ## Per-stage record
 
 Carried on every `stage-end` (`agent-cycle.sh`) and `review-stage-end`
-(`review-cycle.sh`) event, alongside that event's existing `stage`/`repo` and
-`exit_code` fields (requirement 33). Produced by `lib/metering.sh`'s
+(`review-cycle.sh`) event, alongside that event's existing `stage`/`repo`,
+`exit_code` and — when one of requirement 4e's two caps ended the stage —
+`kill_reason` fields (requirement 33). Those are the event's own, not part of
+this record: `kill_reason` describes how the stage ended rather than what it
+spent, and a reader that wants to exclude killed runs from an aggregate
+selects on it rather than on anything below. Produced by `lib/metering.sh`'s
 `metering_fields` — the one implementation both pipelines call, so a stage in
 either emits the same shape.
 

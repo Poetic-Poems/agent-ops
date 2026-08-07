@@ -231,6 +231,10 @@ Keys:
 | `timeout_implementor` | `120` | Minutes. |
 | `timeout_reviewer` | `60` | Minutes. |
 | `timeout_enabler` | `30` | Minutes. |
+| `inactivity_coordinator` | `10` | Minutes of total silence before a stage is treated as wedged. Omit it and the shipped prior (10 minutes) applies; `0` turns the watchdog off and leaves the wall-clock timeout as the only cap. |
+| `inactivity_implementor` | `10` | Minutes. As above, for the Implementor. |
+| `inactivity_reviewer` | `10` | Minutes. As above, for the Reviewer. |
+| `inactivity_enabler` | `10` | Minutes. As above, for the Enabler. |
 | `lock_stale_after` | `4` | Hours. Stale lock is killed and warning is logged. Beyond the sum of the stage timeouts (15 + 120 + 60 + 30 minutes), though the interim raises of #203 have narrowed that margin to 15 minutes. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
 | `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
@@ -1043,6 +1047,27 @@ themselves. When a cycle
 pre-fetches findings, that directory also holds `findings-<owner>_<repo>.json`
 (the normalised Dependabot + code-scanning alerts the Co-Ordinator was given).
 
+### Why a stage was stopped
+A stage has two caps, and they mean different things:
+
+- **`timeout_<actor>`** — the backstop. The stage ran for that long, whatever
+  it was doing.
+- **`inactivity_<actor>`** — the liveness watchdog. The stage produced no
+  output *at all* for that long, and was treated as wedged. Ten minutes unless
+  you set the key; `0` turns it off and leaves the backstop as the only cap.
+
+Both exit `124`, so the `stage-end` event carries `kill_reason` —
+`backstop` or `inactivity` — to say which fired, and a watchdog kill also
+logs a `warning` you will see on the dashboard. The two want opposite
+responses: a backstop kill on a stage that was still emitting says the cap is
+too tight, while a watchdog kill says the stage stopped — read
+`<stage>.stream.jsonl` to see what it was doing last.
+
+`scripts/doctor.sh` checks that the stream really flushes as it runs on this
+node, because a runtime that buffered it would leave the watchdog with no
+signal and kill every healthy stage. That check makes one call to the cheapest
+configured model; `--offline` skips it.
+
 ### See the security & code-quality findings
 The Co-Ordinator's security and code-quality candidates come from a
 deterministic pre-fetch, not the model, to save credits — the Script runs
@@ -1086,6 +1111,7 @@ time (never committed to the repo under review).
 | `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. |
 | `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
 | `review.timeout_review` | `120` | Minutes. Per-repo wall-clock timeout. |
+| `review.inactivity_review` | `10` | Minutes of total silence before the review stage is treated as wedged. Omit for the shipped prior (10 minutes); `0` disables the watchdog. |
 | `review.lock_stale_after` | `6` | Hours. Larger than the hourly pipeline's 3 h — a full review is long. |
 | `review.min_days_between_reviews` | `6` | Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as "about once a week" and stay robust to a sleeping machine. |
 | `review.not_before` | *(unset)* | Optional. Hold **all** reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. |

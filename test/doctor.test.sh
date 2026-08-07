@@ -341,6 +341,11 @@ assert_contains "--offline still reports nice reordering" \
 assert_contains "--offline skips write access" "[skip] every GitHub check (--offline)" "$out"
 assert_contains "--offline skips Claude credentials" \
   "[skip] Claude credentials (--offline)" "$out"
+# The stream-flushing probe is the one check in doctor.sh that spends, so
+# --offline must skip it — and this suite must never be the thing that runs
+# it. Its being reported skipped, by name, is what says it did not.
+assert_contains "--offline skips the stream-flushing probe, the one check that spends" \
+  "[skip] stream flushing (--offline" "$out"
 
 # --- shellcheck ---
 
