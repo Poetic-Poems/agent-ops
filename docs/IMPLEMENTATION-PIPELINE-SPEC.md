@@ -1214,26 +1214,57 @@ runs unattended.
    attach the array to that repo's entry as `review_feedback`. It prints the
    PRs *waiting on us to answer a human's review*: open, non-draft, carrying
    `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
-   `CHANGES_REQUESTED`, and — the load-bearing clause — **the latest review is
-   newer than the head commit**. Each entry carries every review body and
-   inline comment in the round, verbatim.
+   `CHANGES_REQUESTED`, and — the load-bearing clause — **no GitHub
+   review-thread event has answered the blocking review**: no marked reply
+   (a review or general PR comment carrying `lib/pipeline-marker.sh`'s
+   invisible marker) and no `review_requested` timeline event, either dated
+   after the blocking review was submitted. Each entry carries every review
+   body and inline comment in the round, verbatim.
 
    - **The turn rule is the whole feature.** This system raises PRs as the
      account it runs as, and GitHub forbids approving or dismissing a review on
      your own PR. So the agent *cannot* clear `CHANGES_REQUESTED`; it stays set
      after the fix is pushed, and nothing about the PR's own state ever says
-     "answered". Comparing the latest review against the head commit is the only
-     thing that does. Without it every PR the agent fixed would stay a candidate
-     forever — selected, re-fixed, re-selected, hourly, each cycle looking like
-     a productive one and each paying a Sonnet run to redo work already pushed.
-     Same shape as requirement 15's "a later green run supersedes".
+     "answered". Deriving whose turn it is from review-thread events is the
+     only thing that does. Without it every PR the agent fixed would stay a
+     candidate forever — selected, re-fixed, re-selected, hourly, each cycle
+     looking like a productive one and each paying a Sonnet run to redo work
+     already pushed. Same shape as requirement 15's "a later green run
+     supersedes".
+   - **Events, not commit timestamps.** This used to compare the blocking
+     review's `submitted_at` against the head commit's `committedDate`. A
+     conflict-resolution force-push re-stamps every commit's date to push
+     time, which silently satisfied that comparison on PR #205 while the
+     human's `CHANGES_REQUESTED` sat unanswered — the branch had a fresh
+     commit date from a rebase that never touched a single finding in the
+     review. A marked reply and a `review_requested` timeline event are both
+     stamped by GitHub itself at the moment they happen, so neither can be
+     produced by a rebase; a round is answered only once one of them actually
+     occurs after the blocking review.
+   - **The blocking review shares `_handoff_blocking_reviewers`'
+     standing-position rule but deliberately not its bot filter**
+     (requirement 34a): each reviewer's own most recent
+     APPROVED-or-CHANGES_REQUESTED review, filtered to CHANGES_REQUESTED,
+     latest across reviewers. A COMMENTED review never changes a reviewer's
+     standing position, so a human who requested changes and later left a
+     comment is still blocking. Bots count here and not in re-request:
+     `reviewDecision` — the selection filter — counts bots, and the marked
+     reply is the only event that can answer a bot's round, since the
+     pipeline can neither dismiss a review on its own PR nor (by design)
+     re-request a bot. Bot findings are addressed; bots are never pinged.
+     Stating the difference here, in both places, is requirement 34a's
+     point — an asserted-but-false equivalence is exactly the confident
+     wrong answer it exists to prevent.
    - **Gather every review in the round, not just the blocking one.** The
      substance and the formal signal routinely live in different reviews by
      different accounts, precisely *because* an author cannot request changes on
      their own PR. Observed here: the agent's account left a 6.5 KB `COMMENTED`
      review with every actual finding, and the human's second account posted the
      `CHANGES_REQUESTED` whose body reads, in full, "Refer to <link>". Gather
-     only the blocker and the Implementor receives the words "Refer to".
+     only the blocker and the Implementor receives the words "Refer to". The
+     round's start is the most recent answer event *before* the blocking
+     review (or the PR's beginning, if none), so a COMMENTED review submitted
+     moments before the blocking one is still included.
    - **The ref is `pr-<n>-review-<review-id>`, not `pr-<n>`.** A blocked item
      (requirement 34) stays blocked until cleared, so a bare `pr-57` the
      Implementor once failed on would still be blocked when the human posted
@@ -5145,11 +5176,12 @@ pull request, run the ones the change touches and any it could regress.
    reports `CHANGES_REQUESTED`. Those two facts are true simultaneously, and
    that is the point — the agent cannot clear a review on its own PR, so
    nothing about the PR's state ever says "answered", and only the turn rule
-   (latest review vs head commit) distinguishes "our move" from "theirs". Get
-   it wrong and the PR is re-fixed hourly forever while every cycle looks
-   productive. Assert the reopen too: a *new* review after the agent's push
-   makes it a candidate again under a *new* ref, or a round that once went
-   `blocked` will swallow the human's next attempt to unstick it.
+   (a marked reply or a re-requested review since the blocking review, never a
+   commit's date — see the design note on why) distinguishes "our move" from
+   "theirs". Get it wrong and the PR is re-fixed hourly forever while every
+   cycle looks productive. Assert the reopen too: a *new* review after the
+   agent's push makes it a candidate again under a *new* ref, or a round that
+   once went `blocked` will swallow the human's next attempt to unstick it.
 6d. **Back-pressure cannot deadlock the pipeline (requirement 2.2a).** Set
    `max_open_agent_prs` to 0 with a *finishing* candidate present — a
    review-feedback round, a merge-conflicted PR *or* an abandoned draft: the cycle
@@ -5945,12 +5977,13 @@ requirements above, which state only what is.
   category that yielded any candidate.
 - **Branch names drop the repo slug** (`agent/<item-slug>`): a branch is
   already scoped to its repository.
-- **Review feedback is a work source, and the human's turn is a timestamp
-  comparison** (requirement 3c). Before it, an agent PR that received "changes
-  requested" was a dead end: the open PR claimed its own item (requirement
-  16.3), no source read `reviewDecision`, and only a human could break the
-  deadlock — by fixing it themselves or closing the PR and losing the work. The
-  system could raise PRs but never answer the one person it raises them for.
+- **Review feedback is a work source, and the human's turn is derived from
+  review-thread events** (requirement 3c). Before it, an agent PR that
+  received "changes requested" was a dead end: the open PR claimed its own
+  item (requirement 16.3), no source read `reviewDecision`, and only a human
+  could break the deadlock — by fixing it themselves or closing the PR and
+  losing the work. The system could raise PRs but never answer the one person
+  it raises them for.
 
   The mechanism turns on a constraint that looks like an obstacle and is
   actually the design: GitHub will not let a PR's author approve or dismiss a
@@ -5958,9 +5991,14 @@ requirements above, which state only what is.
   `CHANGES_REQUESTED` — which both preserves the human gate for free (there is
   no route by which an agent marks its own work accepted) and means the PR's
   own state can never tell us the feedback was answered. Whose turn it is has
-  to be derived, and the derivation is one comparison: latest review vs head
-  commit. That single clause is the difference between a source that converges
-  and one that re-fixes the same PR every hour forever while looking productive.
+  to be derived, and the derivation is events GitHub itself stamps when they
+  happen — a marked reply or a `review_requested` timeline event — never a
+  commit's date: an early version compared the blocking review against the
+  head commit's `committedDate`, and a conflict-resolution force-push
+  re-stamps that date to push time with no review of its own having occurred,
+  which silently satisfied the comparison on PR #205 (agent-ops#239). That
+  single clause is the difference between a source that converges and one
+  that re-fixes the same PR every hour forever while looking productive.
 - **The switch is one shared, expiring file** (requirement 2.3). Shared because
   the hazard is an agent editing the agent-ops tree, and *both* pipelines run
   out of that tree and source the same `lib/` — a per-pipeline switch would let
@@ -6080,7 +6118,8 @@ confident, recurring no-op.
 | A rule with two implementations | The dashboard and the Script each computed "blocked". They disagreed, and the dashboard — the very place you would look to spot this bug — showed the wrong answer confidently. | One definition, shared (requirement 34a). If a second consumer needs it, it sources the first, and the shared unit is where the test lives. |
 | Identifiers assumed globally unique | `dependabot-alert-1` exists in *every* repo; date-numbered registers collide across repos too. Keying on the id alone makes one repo's block starve another repo's unrelated work. | Key on the scope plus the id (requirement 34). Ask what an id is unique *within* before using it as a key. |
 | A contract asserted in one document and required by none | This spec's design notes state the review "writes the `R-NN` cross-reference into each mirrored tech-debt entry" — and `docs/REVIEW-PIPELINE-SPEC.md` never asked for it. Both documents were internally consistent; the system between them was not, and the dedup it justified never worked. | When one component's design depends on another's behaviour, make it a numbered requirement *in the document that builds that component*, and cite it from both sides. Prose describing what another component "does" is a wish, not an interface. |
-| A state that can never say "done", read as if it could | `reviewDecision` stays `CHANGES_REQUESTED` after the agent pushes its fix — GitHub won't let a PR's author dismiss a review on their own PR, and the agent *is* the author. So "is there unanswered feedback?" answered from the PR's own state is always yes, forever. The PR is selected, fixed, re-selected, re-fixed, hourly, at Sonnet prices, and every cycle looks like a productive one. | Ask "what would ever change this value?" before keying on it. Where the answer is "nothing we can do", the state cannot be the signal — derive whose turn it is instead (requirement 3c: latest review vs head commit, the same shape as "a later green run supersedes"). A field that can only ever hold one value is not a condition, it is a constant. |
+| A state that can never say "done", read as if it could | `reviewDecision` stays `CHANGES_REQUESTED` after the agent pushes its fix — GitHub won't let a PR's author dismiss a review on their own PR, and the agent *is* the author. So "is there unanswered feedback?" answered from the PR's own state is always yes, forever. The PR is selected, fixed, re-selected, re-fixed, hourly, at Sonnet prices, and every cycle looks like a productive one. | Ask "what would ever change this value?" before keying on it. Where the answer is "nothing we can do", the state cannot be the signal — derive whose turn it is instead (requirement 3c: an answer event — a marked reply or a re-requested review — after the blocking review, the same shape as "a later green run supersedes"). A field that can only ever hold one value is not a condition, it is a constant. |
+| A proxy signal that an unrelated action can forge | "Whose turn is it" was derived by comparing the blocking review's timestamp against the head commit's `committedDate` — a real fix that came in stayed the answer. But a conflict-resolution force-push re-stamps *every* commit's date to push time, with no review of its own having happened, so rebasing a PR to resolve a merge conflict silently read as "answered" and PR #205's unresolved `CHANGES_REQUESTED` dropped out of every selection query for hours (agent-ops#239) — the same family `lib/handoff.sh` had already fixed twice under different names. | Before trusting a timestamp as evidence an actor did X, ask what *else* moves that timestamp. Where anything unrelated can, key on an event the platform stamps only when X itself happens (a review-requested event, a marked reply) rather than a field that merely correlates with it. |
 | The formal signal and the substance in different places | The blocking `CHANGES_REQUESTED` review's body read, in full: "Refer to https://…#pullrequestreview-4718691960". All 6.5 KB of actual findings were in a *separate* `COMMENTED` review, by a *different account* — because the agent's own account raised the PR and therefore cannot request changes on it. A gatherer that read only the blocking review would have handed the Implementor the words "Refer to" and called the brief complete. | Gather the whole round, whoever wrote it, and pass it verbatim. When a platform rule (an author cannot review their own PR) forces a workflow to split across accounts, the split is structural and permanent — design for it rather than discovering it in the one review that mattered. |
 | A change-detection digest that tracks churn instead of meaning | The no-op short-circuit (requirement 3b) digested the *run id* of each workflow's latest run. `poetic` schedules `sync-framework.yml` at `0 * * * *` — hourly, the same cadence as the pipeline — so that one workflow busted the fingerprint on every single cycle. The feature was installed, tested, logged, green, and saved nothing; the only symptom was the bill it was built to reduce, unchanged. Found by reading the repo's actual cron lines, not by any test. | Digest the *fact the consumer reads*, not the record it lives in. Requirement 15 asks "is this workflow's latest run a failure" — that is the conclusion, not the id. Before digesting a field, ask what changes it and on what cadence; anything that moves on a timer moves faster than the thing you are trying to detect. Then assert the negative (a green rerun changes nothing), because every positive test still passes on the broken version. |
 | A cost-control feature that makes cost the *only* thing it protects | Skipping a stage to save money is a decision to do nothing, and doing nothing is what a healthy idle pipeline also looks like. Get the skip condition subtly wrong — a source outside the fingerprint, a failed API call digested as "empty" — and the pipeline stops picking up work while reporting perfect health, forever, because nothing that stands down ever fails. | Make the skip's claim narrow enough to be provable ("nothing changed"), never broad enough to be wrong ("there is no work"). Mark unusable samples rather than degrading them to empty. Cap the whole mechanism with a time-based valve (`none_selected_recheck_hours`) so a gap in coverage is a bounded delay rather than an outage, and pay the occasional wasted run for it — the run you skipped wrongly costs more than the one you ran needlessly. |

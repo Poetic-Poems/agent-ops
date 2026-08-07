@@ -30,7 +30,7 @@ heading, the Script gives you one JSON object:
         {"source": "code-quality", "kind": "code-scanning", "security": false, "severity": "warning", "number": 4, "ref": "code-scanning-alert-4", "rule": "js/unused-local-variable", "title": "Unused variable", "location": "src/x.js:12", "url": "https://github.com/…/security/code-scanning/4", "state": "open"}
       ],
       "review_feedback": [
-        {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "last_commit_at": "2026-07-17T01:07:22Z", "body": "…every review body and inline comment in this round, verbatim…"}
+        {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "body": "…every review body and inline comment in this round, verbatim…"}
       ],
       "issues": [
         {"source": "issues", "ref": "52", "number": 52, "url": "https://github.com/…/issues/52", "title": "…", "priority": "Medium", "labels": ["enhancement"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…the issue body, verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…every comment, verbatim, oldest first…"}]}
@@ -405,11 +405,12 @@ ledger to flip.
 **Review feedback.** The candidates are the pre-fetched `review_feedback`
 entries, one per PR that is *waiting on us*. Do not go looking for these
 yourself and do not re-query the reviews API: the Script has already applied
-the rule that decides whose turn it is (the latest review is newer than the
-head commit — so the agent has not yet responded), assembled every review body
-and inline comment in the round, and dropped any PR the agent has already
-answered. **An entry's presence in this array is the candidate test.** If the
-array is empty, this source has no candidates; there is nothing to check.
+the rule that decides whose turn it is (no marked reply and no re-requested
+review since the blocking review was submitted — so the agent has not yet
+responded), assembled every review body and inline comment in the round, and
+dropped any PR the agent has already answered. **An entry's presence in this
+array is the candidate test.** If the array is empty, this source has no
+candidates; there is nothing to check.
 
 When you select one, take the **oldest `reviewed_at` first** (the array is
 already in that order — the human has been waiting longest on it), and:
