@@ -3977,17 +3977,52 @@ What exists, and the requirements each part answers to:
     `fail`: the stage timeouts outrunning `lock_stale_after`, `review.pr_label`
     colliding with `pr_label`, and the rest), then the model ids through
     `resolve_model_id`, the shipped and overridden prompts, the toolchain,
-    the state and workspace directories, and — unless `--offline` — the
-    GitHub access, which is where a token's missing scope stops looking like
-    a repository with no work in it. Every verdict is `ok`, `warn`, `fail` or
-    `skip`; exit 0 clean, 1 at least one failure, 2 arguments or a config it
-    could not read. Read-only but for the configured directories it creates
-    to prove they can be, and every GitHub call a GET, so it is safe against
-    a live node mid-cycle. Its per-repository label check reads
+    the state and workspace directories, the rendered crontab and the
+    `nice` reordering report (both below, and both offline-safe), and —
+    unless `--offline` — the GitHub write access and Claude credentials the
+    stages need, on top of the read access above, which is where a token's
+    missing scope stops looking like a repository with no work in it.
+    Write access is one `gh api repos/<slug> --jq` call per configured
+    repository, folded into the same per-repository pass as the read/label
+    check: `.permissions.push == true` is `ok`, `== false` is `fail` (a cycle
+    would claim that repository's work and lose it at push), and an absent
+    `.permissions` — present only on an authenticated request, so its
+    absence is a fact about the request rather than the token — is `skip`,
+    never `fail`; `.archived: true` is `fail` regardless of `.permissions`,
+    since no token can push to an archived repository. Claude credentials are
+    `claude auth status --json`, treated as a probe that can answer only
+    sometimes: `loggedIn: true` is `ok`, `loggedIn: false` is `fail` —
+    distinguished from a parse failure, since `false` is a legitimate answer
+    — and anything that does not exit 0 with that shape — an older CLI with
+    no `auth` subcommand included — is `skip`, since a probe that cannot
+    answer is never evidence of a fault. The rendered crontab is
+    `deploy/docker/render-crontab.sh` run for real, into a `mktemp -d` this
+    check removes afterwards, against the config under check: a non-zero
+    exit is `fail`, a missing template is `skip`, and success is `ok`
+    reporting the cycle, review and heartbeat minutes it rendered and the
+    node name it rendered them for — the second declared exception to
+    read-only, alongside the state and workspace directories. The `nice`
+    reordering report is one `ok` line per configured repository whose
+    `nice` is non-zero, naming the value and the multiplier
+    `lib/repo-order.sh`'s `1.25^(-nice)` applies to its effective age;
+    nothing prints when every repository sits at 0, since this is a report
+    of what the config already asks for rather than a check with a right
+    answer. Every verdict is `ok`, `warn`, `fail` or `skip`; exit 0 clean, 1
+    at least one failure, 2 arguments or a config it could not read.
+    Read-only but for the two exceptions above — the configured directories
+    it creates to prove they can be, and the crontab it renders into a
+    `mktemp -d` it removes — and every GitHub call a GET, so it is safe
+    against a live node mid-cycle. Its per-repository label check reads
     `lib/labels.sh`'s catalogue rather than a
     list of its own, so it can never report a different set from the one the
-    cycle maintains. `test/config-schema.test.sh` covers both; must pass
-    `shellcheck`.
+    cycle maintains. `test/config-schema.test.sh` covers the configuration
+    half against `--offline`; `test/doctor.test.sh` covers the four checks
+    above — write access, Claude credentials, the rendered crontab and the
+    `nice` report — against a stubbed `gh` and `claude` on `PATH`, the seam
+    `doctor.sh` leaves for both since it carries no override variable for
+    either (unlike `lib/labels.sh`'s `LABELS_GH`), run without `--offline` so
+    the network-gated checks are actually exercised while nothing on `PATH`
+    ever reaches a real network. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from config and an
@@ -4888,6 +4923,33 @@ pull request, run the ones the change touches and any it could regress.
     matching doc regeneration (or the reverse) fails CI rather than drifting
     the way `unvoid_label` and `state_local_cycles_retained` both did before
     this requirement existed.
+1m. **`doctor.sh` checks write access, Claude credentials, the rendered
+    crontab and `nice` reordering, and `--offline` still runs the two that
+    need no network (requirement 1b, component 14).** `test/doctor.test.sh`
+    passes, against a stubbed `gh` and `claude` on `PATH` — the seam
+    `doctor.sh` leaves for both, carrying no override variable for either —
+    run without `--offline` so these checks are actually exercised, with
+    nothing on `PATH` able to reach a real network regardless: a
+    `.permissions.push` of `true` is `ok`, `false` is `fail`, and an absent
+    field is `skip`; `.archived: true` is `fail` even when `.permissions.push`
+    is `true`; `claude auth status --json` reporting `loggedIn: true` is `ok`,
+    `loggedIn: false` is `fail` — distinguished from a parse failure, since
+    `false` is a legitimate answer rather than evidence the JSON could not be
+    read — and a `claude` with no `auth` subcommand is `skip`; the real
+    `deploy/docker/render-crontab.sh` run against a config whose
+    `schedule.excluded_minutes` rules out every minute is `fail`, the same
+    renderer run against a trimmed copy of the repository missing
+    `crontab.tmpl` is `skip`, and a clean render is `ok` naming the node and
+    the cycle, review and heartbeat minutes the config asked for, and whether
+    the cycle minute came from an explicit, allowed `CYCLE_MINUTE` or was
+    hashed from the node's name; a second `ok` line names the background
+    timer minutes (`state_sync_push_minutes`, `state_sync_fetch_minutes`,
+    `log_rotation_minute`) the config asked for; a repository with a
+    non-zero `nice` gets its own line naming the value and
+    the multiplier, and one with every repository at `nice` 0 prints no line
+    at all; and `--offline` still renders the crontab and reports `nice`
+    reordering while reporting write access and Claude credentials as
+    `skip`. Must pass `shellcheck`.
 6h. **The pipeline creates the labels it applies, and touches no others
     (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
     that records every invocation and refuses a duplicate the way GitHub
