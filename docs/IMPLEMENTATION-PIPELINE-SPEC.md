@@ -3089,7 +3089,12 @@ runs unattended.
     depending on a model that has already been asked once and skipped it.
     The `closing-keyword` check must also be listed in the repository
     ruleset's required status checks — a repo setting, not a workflow file —
-    so red blocks the merge rather than merely reporting.
+    so red blocks the merge rather than merely reporting, and pinned there
+    to the GitHub Actions app (`integration_id` 15368), as every other
+    required context is, so no other integration can satisfy the requirement
+    by reporting a check of the same name. Acceptance check 8m is how that
+    setting is verified, it being the one piece of requirement 25a no file
+    in this repository carries.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -5991,6 +5996,27 @@ pull request, run the ones the change touches and any it could regress.
    issue GitHub reports `state_reason: "reopened"` is left alone and the
    skip reported, so a human's re-open is never undone on the hour; and the
    per-call action cap defers rather than floods.
+8m. **The closing-keyword check blocks, not just reports (requirement
+   25a).** The one piece of requirement 25a that no file in this repository
+   carries is the repo setting that makes a red check a blocked merge, so
+   it is verified against GitHub directly rather than by any test here:
+
+   ```
+   gh api repos/Poetic-Poems/agent-ops/rulesets/18857310 \
+     --jq '.rules[] | select(.type == "required_status_checks")
+           | .parameters.required_status_checks[]
+           | select(.context == "closing-keyword")'
+   ```
+
+   prints `{"context": "closing-keyword", "integration_id": 15368}` — the
+   context required by the active `default` ruleset targeting the default
+   branch, pinned to the GitHub Actions app. An entry missing entirely means
+   the check reports without blocking, which is the exact gap PR #256's
+   review caught by hand; an entry without the `integration_id` pin can be
+   satisfied by any GitHub App reporting a check of that name. Nothing in
+   this repository changes when the ruleset does, so this check is manual
+   until a deterministic reader exists (TD-PPagop-26080802 proposes a
+   warn-level `doctor.sh` check).
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
