@@ -133,12 +133,12 @@ Pullwright organisation and carries its licence.
       individual key is read, and the two guards it wholly subsumed
       (`nice`'s range, `prompt_overrides`' shape) are retired in favour of it
       (requirement 1b, `docs/IMPLEMENTATION-PIPELINE-SPEC.md`). *[fleet]*
-- [ ] Finish making the schema the *only* source of truth rather than a third
-      one beside the two prose tables: the code's `// default` literals
-      should come from the schema's `default`s, and the README and spec
-      tables should be generated from its descriptions — until then a key
-      can still be added in three places and forgotten in two. *[fleet — one
-      item per leg]*
+- [x] Make the schema the *only* source of truth rather than a third one
+      beside the two prose tables: every reader takes its defaults from
+      `config_defaults` (`lib/config-schema.sh`) instead of repeating a
+      `// literal` of its own (#197), and the README and spec tables are
+      generated from the schema's descriptions
+      (`scripts/render-config-table.sh`, #198). *[fleet]*
 - [x] Make schedules configuration-driven (per-pipeline cadence in config,
       not a baked crontab) — the `schedule` block, rendered by
       `deploy/docker/render-crontab.sh`. *[fleet]*

@@ -33,8 +33,11 @@ done
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CONFIG_FILE="$SCRIPT_DIR/config.json"
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 
+# shellcheck source=lib/config-schema.sh
+. "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
 # shellcheck source=lib/cycle-state.sh
@@ -65,8 +68,12 @@ WITH_GITHUB=1
 
 # --- Config ------------------------------------------------------------------
 expand_home() { local p="$1"; [[ "$p" == "~"* ]] && p="$HOME${p:1}"; printf '%s\n' "$p"; }
-cfg()      { jq -r "$1" "$CONFIG_FILE" 2>/dev/null; }
-cfg_json() { jq -c "$1" "$CONFIG_FILE" 2>/dev/null; }
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below, with no `// literal` of its own to drift from the schema's.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE" 2>/dev/null)"
+cfg()      { jq -r "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
+cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG" 2>/dev/null; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 # No `log_file` here: the log is read as the fleet's, through
@@ -81,8 +88,7 @@ self_node="${self_node//[^A-Za-z0-9._-]/-}"
 cycles_dir="$state_dir/cycles"
 pr_label="$(cfg '.pr_label')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
-state_repo="$(cfg '.state_repo // ""')"
-[[ "$state_repo" == "null" ]] && state_repo=""
+state_repo="$(cfg '.state_repo')"
 repos_json="$(cfg_json '.repos')"
 
 out_dir="$state_dir/dashboard"

@@ -150,6 +150,22 @@ err="$(env NODE_NAME=poetic-1 CYCLE_MINUTE=30 "$RENDER" "$TMPL" "$out" "$custom_
 assert_contains "a config-excluded minute is rejected too" "WARNING" "$err"
 assert_contains "falling back to that config's own hash" "$cm */2 * * *" "$(cycle_line "$out")"
 
+# --- No `schedule` block at all still renders every documented default
+#     (config.schema.json's `schedule.*` defaults, via config_defaults) -------
+
+no_schedule_cfg="$tmp_dir/no-schedule-config.json"
+printf '{}\n' > "$no_schedule_cfg"
+nm="$(expected_minute poetic-1 '[]')"
+nr=$(( (nm + 29) % 60 ))
+env NODE_NAME=poetic-1 "$RENDER" "$TMPL" "$out" "$no_schedule_cfg" 2>/dev/null
+assert_eq "a config with no schedule block at all still renders" "0" "$?"
+assert_contains "the cycle hour defaults to every hour" "* * * *  /app/agent-cycle.sh" "$(cycle_line "$out")"
+assert_contains "the review hour and offset default to 3 and 29" "$nr 3 * * *  /app/review-cycle.sh" "$(review_line "$out")"
+assert_contains "the heartbeat defaults to every 5 minutes" "*/5 * * * *  /app/scripts/publish-dashboard-launcher.sh" "$(heartbeat_line "$out")"
+assert_contains "state-sync push defaults to every 5 minutes" "*/5 * * * *  /app/scripts/state-sync.sh push" "$(push_line "$out")"
+assert_contains "state-sync fetch defaults to every 7 minutes" "*/7 * * * *  /app/scripts/state-sync.sh fetch" "$(fetch_line "$out")"
+assert_contains "log rotation defaults to :19" "19 * * * *  /app/scripts/rotate-logs.sh" "$(rotate_line "$out")"
+
 # --- A misconfigured excluded_minutes is an error, not a silent no-op ----------
 
 bad_cfg="$tmp_dir/bad-excluded.json"

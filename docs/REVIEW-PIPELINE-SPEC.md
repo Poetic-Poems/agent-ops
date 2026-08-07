@@ -137,7 +137,13 @@ carries them alongside the implementation pipeline's
 schema, so `scripts/doctor.sh` checks both pipelines' configuration in one
 pass and neither half can drift while the other is checked. The object as a
 whole is optional there: an installation that does not run reviews simply
-leaves it out.
+leaves it out. `review-cycle.sh` therefore tests for the block against
+`config.json` itself rather than against the merge `config_defaults` returns
+(`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1b): that merge
+synthesises a `review` object from the defaults of the leaves under it, so it
+can never report the block absent, and this one check must read absence as
+absence. Every key *within* the block is read from the merge as everywhere
+else.
 
 The body rows of the table below are generated from that schema — each key's
 `x-docs.spec` prose and `x-docs.value` cell — by

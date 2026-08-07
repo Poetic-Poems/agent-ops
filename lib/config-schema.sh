@@ -146,6 +146,60 @@ config_schema_errors() {
   return 0
 }
 
+# config_defaults CONFIG_FILE SCHEMA_FILE
+# Prints CONFIG_FILE merged with every default config.schema.json declares, so
+# a caller reads a fully-populated object and never repeats a `// literal` of
+# its own. A key already set — including inside a nested object or an array
+# item such as `repos[]` — is left exactly as the config wrote it; a key that
+# is absent *or explicitly `null`* takes the schema's `default` (the same two
+# cases jq's own `//` treats as missing, which is the operator every call site
+# this replaces used to spell out by hand). An object with no default of its
+# own but whose properties do — `schedule` is the case in point — is still
+# synthesised whole when absent, so every leaf under it reads its default too;
+# a key with no schema default anywhere on its path (a required field with
+# nothing to fall back to, `review.model` for instance) passes through
+# unchanged. This performs no validation of its own — a config invalid against
+# the schema is still merged, defaults and all, since a caller that wants the
+# gate calls config_schema_errors first.
+config_defaults() {
+  local config_file="$1" schema_file="$2"
+  jq -c --slurpfile schema "$schema_file" '
+    ($schema[0]) as $root
+
+    # Shared with config_schema_errors: a `$ref` is replaced by its target,
+    # with any sibling keywords kept and winning.
+    | def deref($s):
+        if ($s | type) == "object" and ($s | has("$ref"))
+        then ($root | getpath($s["$ref"] | ltrimstr("#/") | split("/")))
+             + ($s | del(.["$ref"]))
+        else $s end;
+
+    def fill($s0; $v):
+        deref($s0) as $s
+        | if ($s | has("properties")) then
+            (if ($v | type) == "object" then $v else {} end) as $obj
+            | reduce ($s.properties | keys_unsorted[]) as $k
+                ($obj;
+                   deref($s.properties[$k]) as $ps
+                   | ($obj[$k]) as $cur
+                   | if ($cur != null) then
+                       .[$k] = fill($s.properties[$k]; $cur)
+                     elif ($ps | has("default")) then
+                       .[$k] = $ps.default
+                     elif ($ps | has("properties")) then
+                       (fill($s.properties[$k]; {})) as $nested
+                       | if ($nested | length) > 0 then .[$k] = $nested else . end
+                     else . end)
+          elif ($s | has("items")) and (($v | type) == "array") then
+            [ $v[] | fill($s.items; .) ]
+          else
+            $v
+          end;
+
+    fill($root; .)
+  ' "$config_file"
+}
+
 # config_enabler_assignee_ok ENABLER_MODEL ENABLER_ASSIGNEE
 # True (exit 0) unless ENABLER_MODEL is set and ENABLER_ASSIGNEE is not — the
 # one combination agent-cycle.sh refuses to start with, because an escalation

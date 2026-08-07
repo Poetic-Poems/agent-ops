@@ -108,14 +108,13 @@ expand_home() {
   [[ "$p" == "~"* ]] && p="$HOME${p:1}"
   printf '%s\n' "$p"
 }
-cfg() { jq -r "$1" "$CONFIG_FILE"; }
-cfg_json() { jq -c "$1" "$CONFIG_FILE"; }
+SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 
 # The schema gate (requirement 1b), shared with agent-cycle.sh: config.json is
 # validated against config.schema.json before any individual key is read from
 # it, and before the lock — a config-shape fault is refused here rather than
 # reaching a stage on a default nobody chose.
-schema_errors="$(config_schema_errors "$CONFIG_FILE" "$SCRIPT_DIR/config.schema.json")" && schema_status=0 || schema_status=$?
+schema_errors="$(config_schema_errors "$CONFIG_FILE" "$SCHEMA_FILE")" && schema_status=0 || schema_status=$?
 if ((schema_status == 2)); then
   echo "review-cycle: $schema_errors" >&2
   exit 1
@@ -125,10 +124,22 @@ elif ((schema_status == 1)); then
   exit 1
 fi
 
-if [[ "$(cfg 'has("review")')" != "true" ]]; then
+# Read against the raw file, deliberately: config_defaults (below) would
+# synthesise a `.review` object from `not_before`'s own default even when the
+# key is entirely absent from config.json, and this is the one check that
+# must not be fooled by that (docs/REVIEW-PIPELINE-SPEC.md — the review
+# pipeline is optional, and absence must mean absence).
+if [[ "$(jq -r 'has("review")' "$CONFIG_FILE")" != "true" ]]; then
   echo "review-cycle: config.json has no .review block (see docs/REVIEW-PIPELINE-SPEC.md)" >&2
   exit 1
 fi
+
+# config_defaults (issue #197) is the only place a default is written: every
+# key config.schema.json declares a `default` for reads as fully populated
+# below, with no `// literal` of its own to drift from the schema's.
+DEFAULTED_CONFIG="$(config_defaults "$CONFIG_FILE" "$SCHEMA_FILE")"
+cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
+cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
 state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
@@ -156,12 +167,10 @@ lock_stale_after_sec=14400
 review_budget_overrides='{}'
 min_days_between_reviews="$(cfg '.review.min_days_between_reviews')"
 # A stand-down with a date on it (R3.3). Empty or absent means none in force.
-review_not_before="$(cfg '.review.not_before // ""')"
-[[ "$review_not_before" == "null" ]] && review_not_before=""
+review_not_before="$(cfg '.review.not_before')"
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 review_repos_json="$(cfg_json '.review.repos')"
-state_repo="$(cfg '.state_repo // ""')"
-[[ "$state_repo" == "null" ]] && state_repo=""
+state_repo="$(cfg '.state_repo')"
 
 mkdir -p "$state_dir" "$state_dir/reviews" "$workspace_root"
 log_file="$state_dir/log.jsonl"                 # shared stream (limit-hit lives here)
@@ -721,7 +730,7 @@ review_one() {
   # nothing is spent on a repo this cycle will not touch.
   # See lib/labels.sh; never fatal.
   local labels_report
-  labels_report="$(labels_ensure_role "$CONFIG_FILE" "$slug" review 2>/dev/null || true)"
+  labels_report="$(labels_ensure_role "$CONFIG_FILE" "$SCHEMA_FILE" "$slug" review 2>/dev/null || true)"
   if [[ -n "$labels_report" ]]; then
     log_event "labels-ensured" "$(jq -nc --arg repo "$slug" --arg report "$labels_report" '
       {repo: $repo, role: "review"}
