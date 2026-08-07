@@ -795,17 +795,20 @@ log_recheck_clean_items() {
 # issue that never had it, or leave on an issue after the key changed.
 
 # release_refinement_label ITEM [REPO]
-# Take the projected label off the issue behind ITEM, if this item's refinement
-# block put one there. Called wherever a block clears — the Co-Ordinator's own
-# re-check, an Enabler `unblocked`, and a `void` from either — because the
-# label's lifecycle mirrors the block's and nothing else would ever take it off.
+# Take the projected label, and the projected assignment (requirement 38b),
+# off the issue behind ITEM, if this item's refinement block put them there.
+# Called wherever a block clears — the Co-Ordinator's own re-check, an Enabler
+# `unblocked`, and a `void` from either — because the label's and the
+# assignment's lifecycles mirror the block's and nothing else would ever take
+# them off.
 #
 # Reads the blocked extract this cycle computed *before* the Co-Ordinator ran,
 # which is the correct one: the block being cleared is by definition one that was
-# open when the cycle started. Best-effort throughout — a stale label is a
-# cosmetic fault on an issue, and no reason to disturb a cycle recording state.
+# open when the cycle started. Best-effort throughout — a stale label or
+# assignment is a cosmetic fault on an issue, and no reason to disturb a cycle
+# recording state.
 release_refinement_label() {
-  local item="$1" repo="${2:-}" t_repo t_num t_label
+  local item="$1" repo="${2:-}" t_repo t_num t_label t_assignee
   [[ -n "$item" ]] || return 0
   # A dry run changes nothing in any repository (requirement 12). It still logs
   # the verdicts on this path, as it always has, but a label is an outward act.
@@ -819,6 +822,12 @@ release_refinement_label() {
       "$(jq -nc --arg d "could not remove the $t_label label from $t_repo#$t_num — the block is cleared regardless" \
          '{detail: $d}')"
   done < <(refinement_label_targets "${blocked_json:-[]}" "$item" "$repo")
+  while IFS=$'\t' read -r t_repo t_num t_assignee; do
+    [[ -n "$t_repo" && -n "$t_num" && -n "$t_assignee" ]] || continue
+    refinement_assignee_remove "$t_repo" "$t_num" "$t_assignee" || log_event "warning" \
+      "$(jq -nc --arg d "could not unassign $t_assignee from $t_repo#$t_num — the block is cleared regardless" \
+         '{detail: $d}')"
+  done < <(refinement_assignee_targets "${blocked_json:-[]}" "$item" "$repo")
 }
 
 # log_needs_refinement_items WORK_ORDER
@@ -840,7 +849,7 @@ release_refinement_label() {
 #     (exclusion 1 means it never re-evaluates a blocked item anyway); this is
 #     what makes the telling unnecessary.
 log_needs_refinement_items() {
-  local wo="$1" entry repo item reason problem label number
+  local wo="$1" entry repo item reason problem label assignee number
   while IFS= read -r entry; do
     if ! problem="$(refinement_entry_problem "$entry")"; then
       log_event "warning" "$(jq -nc --arg d "co-ordinator needs_refinement entry dropped — it $problem" \
@@ -860,25 +869,42 @@ log_needs_refinement_items() {
       continue
     fi
 
-    # No label on a dry run, and — because the event records what was actually
-    # applied — no label recorded either, so nothing later tries to remove one
-    # that was never there.
+    # No label or assignment on a dry run, and — because the event records
+    # what was actually applied — neither recorded either, so nothing later
+    # tries to remove something that was never there.
     label=""
-    if [[ -n "$needs_refinement_label" ]] && ! (( DRY_RUN )); then
+    assignee=""
+    if ! (( DRY_RUN )); then
       number="$(refinement_issue_number "$entry")"
       if [[ -n "$number" ]]; then
-        if refinement_label_add "$repo" "$number" "$needs_refinement_label"; then
-          label="$needs_refinement_label"
-        else
-          log_event "warning" "$(jq -nc \
-            --arg d "could not apply the $needs_refinement_label label to $repo#$number (does it exist in that repo?) — the block is recorded either way" \
-            '{detail: $d}')"
+        if [[ -n "$needs_refinement_label" ]]; then
+          if refinement_label_add "$repo" "$number" "$needs_refinement_label"; then
+            label="$needs_refinement_label"
+          else
+            log_event "warning" "$(jq -nc \
+              --arg d "could not apply the $needs_refinement_label label to $repo#$number (does it exist in that repo?) — the block is recorded either way" \
+              '{detail: $d}')"
+          fi
+        fi
+        # Requirement 38b: the same projection the label gets, so a
+        # Co-Ordinator-recorded block — "gated on a decision the human has not
+        # made" is exactly what exclusions 5 and 6 report here — reaches the
+        # human's own Assigned-to-me dashboard the moment it is recorded,
+        # rather than waiting for the Enabler's own, much later, escalation.
+        if [[ -n "$enabler_assignee" ]]; then
+          if refinement_assignee_add "$repo" "$number" "$enabler_assignee"; then
+            assignee="$enabler_assignee"
+          else
+            log_event "warning" "$(jq -nc \
+              --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
+              '{detail: $d}')"
+          fi
         fi
       fi
     fi
 
     log_event "attempt-failed" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
-      "$(refinement_block_fields "$entry" "$label")")"
+      "$(refinement_block_fields "$entry" "$label" "$assignee")")"
   done < <(jq -c '.needs_refinement[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
@@ -1893,11 +1919,27 @@ $(jq . <<<"$input")
                     --arg d "enabler completed the handoff on $e_pr_url, but review could not be re-requested from ${e_rereview_who:-the reviewer} — they will not see it in their review queue" \
                     '{detail: $d, pr_url: $u}')"
                 fi
+
+                # Requirement 38, same as the Reviewer's own handoff site
+                # above — this path exists precisely so the two cannot drift.
+                e_human_reviewer_state=""
+                if [[ "$e_rereview_state" == "none" && -n "$enabler_assignee" ]]; then
+                  e_human_reviewer_state="$(ensure_human_reviewer "$e_pr_url" "$enabler_assignee")" || true
+                  if [[ "$e_human_reviewer_state" == "failed" ]]; then
+                    log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" \
+                      --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from $enabler_assignee — it will not appear in their review queue" \
+                      '{detail: $d, pr_url: $u, reviewers: [$a]}')"
+                  fi
+                fi
+
                 log_event "pr-ready" "$(jq -nc --arg u "$e_pr_url" --arg h "$e_handoff" \
                   --arg rr "$e_rereview_state" --arg w "$e_rereview_who" \
+                  --arg hr "$e_human_reviewer_state" --arg ha "$enabler_assignee" \
                   '{pr_url: $u, handoff: "enabler", state: $h}
                    + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
-                   + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
+                   + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
+                   + (if $hr == "" or $hr == "skip" then {}
+                      else {human_review_requested: $hr, human_reviewer: $ha} end)')"
                 ;;
               *)
                 log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
@@ -3448,11 +3490,31 @@ if [[ "$rev_status" == "ready" ]]; then
       --arg d "changes requested on $impl_pr_url are answered, but review could not be re-requested from ${rereview_who:-the reviewer} — they will not see it in their review queue" \
       '{detail: $d, pr_url: $u} + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
   fi
+
+  # Requirement 38: nothing's `CHANGES_REQUESTED` above means there is no
+  # blocking reviewer to re-request from — but the pull request may still be
+  # exactly where a human needs to look (a first review, or an approval
+  # nobody has acted on). `ensure_human_reviewer` asks GitHub the same way
+  # `confirm_review_requested` did, targeted at `enabler_assignee` instead of
+  # a blocking reviewer set.
+  human_reviewer_state=""
+  if [[ "$rereview_state" == "none" && -n "$enabler_assignee" ]]; then
+    human_reviewer_state="$(ensure_human_reviewer "$impl_pr_url" "$enabler_assignee")" || true
+    if [[ "$human_reviewer_state" == "failed" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" \
+        --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from $enabler_assignee — it will not appear in their review queue" \
+        '{detail: $d, pr_url: $u, reviewers: [$a]}')"
+    fi
+  fi
+
   log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" --arg h "$handoff_by" \
     --arg rr "$rereview_state" --arg w "$rereview_who" \
+    --arg hr "$human_reviewer_state" --arg ha "$enabler_assignee" \
     '{pr_url: $u, handoff: $h}
      + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
-     + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
+     + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
+     + (if $hr == "" or $hr == "skip" then {}
+        else {human_review_requested: $hr, human_reviewer: $ha} end)')"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —

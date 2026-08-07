@@ -36,6 +36,7 @@
   "candidates_max": 3,
   "claim_ttl_hours": 6,
   "abandoned_draft_after_hours": 4,
+  "human_nudge_idle_hours": 24,
   "enabler_after_coordinator_cycles": 3,
   "enabler_recheck_hours": 72,
   "enabler_escalation_label": "enabler-escalation",
