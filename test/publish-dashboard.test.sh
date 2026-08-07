@@ -589,13 +589,22 @@ assert_eq "our own row is dated by its live stage too" "2026-01-01T05:00:04Z" \
   "$(node_live nodeF-self stage_since)"
 assert_eq "and the lock's own reading of it agrees" "2026-01-01T05:00:04Z" \
   "$(jq -r '.status.current.stage_since' <<<"$fdata")"
-# The stage timeouts the page measures against have to reach it, or the rule
-# is inert however good the timestamps are. `timeout_enabler` is the one that
-# was missing while the other three were already exposed.
-for k in timeout_coordinator timeout_implementor timeout_reviewer timeout_enabler; do
-  assert_eq "config carries $k for the stage-timeout rule" "true" \
-    "$(jq --arg k "$k" -r '(.config[$k] // 0) > 0' <<<"$fdata")"
-done
+# The cap the page measures a live stage against has to reach it, or the rule
+# is inert however good the timestamps are. Since requirement 4f every stage
+# has its own, announced on its `stage-start`, so what must arrive is that
+# number on the live row — and, for a row whose event predates the
+# announcement, the fleet-wide fallback beside it.
+assert_eq "the live row carries the cap its stage was actually given" "true" \
+  "$(jq -r '(.status.current | has("stage_backstop_min"))' <<<"$fdata")"
+assert_eq "a peer row carries it too, which is the only clock its card has" "true" \
+  "$(jq -r '[.fleet.nodes[] | select(.live != null) | (.live | has("stage_backstop_min"))] | all' <<<"$fdata")"
+assert_eq "and the fleet-wide fallback per actor reaches the page" "object" \
+  "$(jq -r '.config.stage_backstops | type' <<<"$fdata")"
+# `lock_stale_after` is no longer a configured constant but a derivation over
+# the backstops in force; the page still reads it under that name, so it has
+# to arrive as a number whether or not the configuration mentions it.
+assert_eq "the derived lock threshold reaches the page" "true" \
+  "$(jq -r '(.config.lock_stale_after // 0) > 0' <<<"$fdata")"
 assert_eq "and the work is the one the lock's cycle selected" "TD26072004" \
   "$(node_live nodeF-self item)"
 assert_eq "the fleet's newest cycle names the node that ran it" "nodeF-self" \

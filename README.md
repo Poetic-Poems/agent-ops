@@ -233,15 +233,16 @@ Keys:
 | `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issue is filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check. |
-| `timeout_coordinator` | `15` | Minutes. |
-| `timeout_implementor` | `120` | Minutes. |
-| `timeout_reviewer` | `60` | Minutes. |
-| `timeout_enabler` | `30` | Minutes. |
-| `inactivity_coordinator` | `10` | Minutes of total silence before a stage is treated as wedged. Omit it and the shipped prior (10 minutes) applies; `0` turns the watchdog off and leaves the wall-clock timeout as the only cap. |
-| `inactivity_implementor` | `10` | Minutes. As above, for the Implementor. |
-| `inactivity_reviewer` | `10` | Minutes. As above, for the Reviewer. |
-| `inactivity_enabler` | `10` | Minutes. As above, for the Enabler. |
-| `lock_stale_after` | `4` | Hours. Stale lock is killed and warning is logged. Beyond the sum of the stage timeouts (15 + 120 + 60 + 30 minutes), though the interim raises of #203 have narrowed that margin to 15 minutes. |
+| `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. |
+| `timeout_implementor` | *(unset)* | Minutes, and an override. As above. |
+| `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
+| `timeout_enabler` | *(unset)* | Minutes, and an override. As above. |
+| `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_implementor` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_reviewer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_enabler` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `lock_stale_after` | *(unset)* | Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer. |
+| `stage_budget` | *(unset)* | Tuning for how the stage budgets derive themselves. Every key has a default in the code and none of them is a timeout; you almost certainly want none of it. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
 | `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
@@ -564,8 +565,9 @@ Four verdicts:
 - **`warn`** — it will run, but something here will surprise you later: a
   label that does not exist in a repo (so the pipeline acts and you never see
   the label), a prompt override pointing at a file that is not there (so that
-  stage quietly runs on the shipped prompt), a `lock_stale_after` shorter than
-  the stage timeouts it has to outlast.
+  stage quietly runs on the shipped prompt), a `timeout_*` or `inactivity_*`
+  key set once and forgotten, which pins that cap and turns off its
+  self-tuning for good.
 - **`fail`** — the pipeline will not run, or will run on something other than
   what you configured. Exit status 1. This is what a repository your token
   can read but not push to gets, and what an archived repository gets
@@ -1056,11 +1058,22 @@ pre-fetches findings, that directory also holds `findings-<owner>_<repo>.json`
 ### Why a stage was stopped
 A stage has two caps, and they mean different things:
 
-- **`timeout_<actor>`** — the backstop. The stage ran for that long, whatever
-  it was doing.
-- **`inactivity_<actor>`** — the liveness watchdog. The stage produced no
-  output *at all* for that long, and was treated as wedged. Ten minutes unless
-  you set the key; `0` turns it off and leaves the backstop as the only cap.
+- **the backstop** — the stage ran for that long, whatever it was doing.
+- **the liveness watchdog** — the stage produced no output *at all* for that
+  long, and was treated as wedged. `0` turns it off and leaves the backstop as
+  the only cap.
+
+**Neither is a number you set.** Both are worked out per
+(actor, repository, model) from the pipeline's own history, once per cycle,
+and announced on the stage's `stage-start` event with where each came from.
+A repository nobody has run before gets a shipped prior, so nothing has to be
+chosen for it. `scripts/doctor.sh` prints the current table under **Stage
+budgets**.
+
+The `timeout_<actor>` and `inactivity_<actor>` keys are overrides, and they
+win permanently — set one and that cap stops adapting, which is why doctor
+warns about it. `lock_stale_after` is a floor under a threshold derived from
+the backstops in force, not a value to keep in step with them by hand.
 
 A third thing stops a stage and is not a cap at all: the account saying no.
 When the stream reports a usage limit, the stage is stopped there and then,
@@ -1123,9 +1136,9 @@ time (never committed to the repo under review).
 | `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
 | `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. |
 | `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
-| `review.timeout_review` | `120` | Minutes. Per-repo wall-clock timeout. |
-| `review.inactivity_review` | `10` | Minutes of total silence before the review stage is treated as wedged. Omit for the shipped prior (10 minutes); `0` disables the watchdog. |
-| `review.lock_stale_after` | `6` | Hours. Larger than the hourly pipeline's 3 h — a full review is long. |
+| `review.timeout_review` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself. |
+| `review.inactivity_review` | *(unset)* | Minutes of total silence before the review stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `review.lock_stale_after` | *(unset)* | Hours, and a floor. Derived from the review backstop, doubled because two repositories can be reviewed back to back inside one lock. |
 | `review.min_days_between_reviews` | `6` | Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as "about once a week" and stay robust to a sleeping machine. |
 | `review.not_before` | *(unset)* | Optional. Hold **all** reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. |
 <!-- config-table:end -->

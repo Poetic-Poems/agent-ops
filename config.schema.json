@@ -16,10 +16,6 @@
     "pr_label",
     "branch_prefix",
     "max_open_agent_prs",
-    "timeout_coordinator",
-    "timeout_implementor",
-    "timeout_reviewer",
-    "lock_stale_after",
     "limit_cooldown_default"
   ],
   "properties": {
@@ -75,6 +71,52 @@
             "minimum": -19,
             "maximum": 19,
             "default": 0
+          },
+          "stage_timeouts": {
+            "description": "Per-actor wall-clock backstop overrides, in minutes, for this repository only. The most specific level of the precedence; omit it and the backstop is derived.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "coordinator": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "implementor": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reviewer": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "enabler": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          },
+          "stage_inactivity": {
+            "description": "Per-actor liveness-watchdog overrides, in minutes, for this repository only. The most specific level of the precedence; omit it and the threshold is derived. 0 disables the watchdog for that actor here.",
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "coordinator": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "implementor": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "reviewer": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "enabler": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
           }
         }
       },
@@ -451,111 +493,178 @@
     },
     "timeout_coordinator": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Co-Ordinator, in minutes.",
+      "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
-        "readme": "Minutes.",
-        "spec": "Per-stage wall-clock timeouts, enforced by the Script.",
+        "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself, and a key set here outranks the derivation for as long as it is there.",
+        "spec": "An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor.",
         "value": {
-          "readme": "`15`",
-          "spec": "15 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "timeout_implementor": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Implementor, in minutes.",
+      "description": "Override for the Implementor's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
-        "readme": "Minutes.",
-        "spec": "Raised from 90 as an interim measure (#203): the longest recorded Implementor run finished 7 seconds inside the 90-minute cap, after 327 turns and $30.83 of work that a kill would have discarded, and this repository's Implementor p95 is 64 minutes. Adaptive, liveness-based timeouts supersede this.",
+        "readme": "Minutes, and an override. As above.",
+        "spec": "As `timeout_coordinator`, for the Implementor. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there.",
         "value": {
-          "readme": "`120`",
-          "spec": "120 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "timeout_reviewer": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Reviewer, in minutes.",
+      "description": "Override for the Reviewer's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
-        "readme": "Minutes.",
-        "spec": "Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different populations. Adaptive, liveness-based timeouts supersede this.",
+        "readme": "Minutes, and an override. As above.",
+        "spec": "As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 \u2192 45 \u2192 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations \u2014 which is why the derivation keys on the model.",
         "value": {
-          "readme": "`60`",
-          "spec": "60 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "timeout_enabler": {
       "$ref": "#/$defs/timeoutMinutes",
-      "description": "Per-stage wall-clock timeout for the Enabler, in minutes.",
-      "default": 30,
+      "description": "Override for the Enabler's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
-        "readme": "Minutes.",
-        "spec": "Per-stage wall-clock timeout for the Enabler, enforced like the others.",
+        "readme": "Minutes, and an override. As above.",
+        "spec": "As `timeout_coordinator`, for the Enabler \u2014 which, spanning repositories, has a single `(enabler, *, model)` cell.",
         "value": {
-          "spec": "30 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "inactivity_coordinator": {
       "$ref": "#/$defs/inactivityMinutes",
-      "description": "Minutes the Co-Ordinator may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "description": "Override for the Co-Ordinator's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes of total silence before a stage is treated as wedged. Omit it and the shipped prior (10 minutes) applies; `0` turns the watchdog off and leaves the wall-clock timeout as the only cap.",
-        "spec": "Minutes of total silence before the liveness watchdog of requirement 4e stops the stage. Absent means the shipped prior, which is where this value is meant to come from \u2014 a configured one is an override, not the normal case. `0` disables the watchdog for that actor.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
-          "readme": "`10`",
-          "spec": "10 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "inactivity_implementor": {
       "$ref": "#/$defs/inactivityMinutes",
-      "description": "Minutes the Implementor may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "description": "Override for the Implementor's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes. As above, for the Implementor.",
-        "spec": "As `inactivity_coordinator`, for the Implementor. The one stage with a plausible long-silence case of its own \u2014 a single Bash tool call running a full test suite \u2014 which is why the prior sits far above anything yet measured rather than close to it.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
-          "readme": "`10`",
-          "spec": "10 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "inactivity_reviewer": {
       "$ref": "#/$defs/inactivityMinutes",
-      "description": "Minutes the Reviewer may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "description": "Override for the Reviewer's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes. As above, for the Reviewer.",
-        "spec": "As `inactivity_coordinator`, for the Reviewer.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
-          "readme": "`10`",
-          "spec": "10 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "inactivity_enabler": {
       "$ref": "#/$defs/inactivityMinutes",
-      "description": "Minutes the Enabler may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "description": "Override for the Enabler's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes. As above, for the Enabler.",
-        "spec": "As `inactivity_coordinator`, for the Enabler.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
-          "readme": "`10`",
-          "spec": "10 min"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
     "lock_stale_after": {
-      "description": "Hours after which a held cycle lock is treated as stale, killed, and warned about. Must exceed the sum of the stage timeouts plus slack.",
+      "description": "A floor, in hours, under the derived staleness threshold for a held cycle lock. Omit it: the threshold is derived from the backstops in force plus slack.",
       "type": "number",
       "exclusiveMinimum": 0,
       "x-docs": {
-        "readme": "Hours. Stale lock is killed and warning is logged. Beyond the sum of the stage timeouts (15 + 120 + 60 + 30 minutes), though the interim raises of #203 have narrowed that margin to 15 minutes.",
-        "spec": "Greater than the sum of the stage timeouts plus slack \u2014 15 + 120 + 60 + 30 minutes once the Enabler can run inside the lock (requirement 35). The interim raises of #203 have left only 15 minutes of that slack; #203 replaces the check with a derivation.",
+        "readme": "Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer.",
+        "spec": "A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the four actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point \u2014 an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on.",
         "value": {
-          "readme": "`4`",
-          "spec": "4 h"
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
+      }
+    },
+    "stage_budget": {
+      "description": "Tuning for the stage-budget derivation. Every key has a defensible default in the code; set one only to change how the derivation behaves, never to set a timeout.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "gap_multiplier": {
+          "description": "How many times the largest observed silence the watchdog threshold sits at.",
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 4
+        },
+        "shrinkage_runs": {
+          "description": "Weight, in run-equivalents, that the pooled estimate carries against a cell's own data; at this many runs the two are equal.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 20
+        },
+        "window_days": {
+          "description": "How far back the derivation looks.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 30
+        },
+        "window_runs": {
+          "description": "How many runs per cell the derivation looks at, whatever the window holds.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 200
+        },
+        "increase_factor": {
+          "description": "Multiplier applied to a backstop each time one of its runs is killed by it.",
+          "type": "number",
+          "exclusiveMinimum": 1,
+          "default": 1.5
+        },
+        "decrease_after_runs": {
+          "description": "Consecutive un-killed runs before a backstop may step down.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 20
+        },
+        "decrease_step_min": {
+          "description": "Minutes a backstop steps down by when it does.",
+          "type": "integer",
+          "minimum": 1,
+          "default": 5
+        },
+        "kill_rate_slo": {
+          "description": "Backstop-kill rate per cell the controller targets; it will not step down while the observed rate is above this.",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1,
+          "default": 0.005
+        },
+        "ceiling_multiple": {
+          "description": "How many times its shipped prior a backstop may grow to.",
+          "type": "number",
+          "exclusiveMinimum": 1,
+          "default": 2
+        }
+      },
+      "x-docs": {
+        "readme": "Tuning for how the stage budgets derive themselves. Every key has a default in the code and none of them is a timeout; you almost certainly want none of it.",
+        "spec": "Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly.",
+        "value": "*(unset)*"
       }
     },
     "limit_cooldown_default": {
@@ -740,8 +849,6 @@
         "model",
         "pr_label",
         "branch_prefix",
-        "timeout_review",
-        "lock_stale_after",
         "min_days_between_reviews"
       ],
       "properties": {
@@ -789,30 +896,30 @@
         },
         "timeout_review": {
           "$ref": "#/$defs/timeoutMinutes",
-          "description": "Per-repo wall-clock timeout for the Reviewer-Agent, in minutes. A full review is long; be generous.",
+          "description": "Override for the Reviewer-Agent's wall-clock backstop, in minutes. Omit it: the backstop is derived like every other stage's.",
           "x-docs": {
-            "readme": "Minutes. Per-repo wall-clock timeout.",
-            "spec": "Minutes. Per-repo wall-clock timeout for the Reviewer-Agent, enforced by the Script. A full review is long; this is generous.",
-            "value": "`120`"
+            "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself.",
+            "spec": "An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case.",
+            "value": "*(unset)*"
           }
         },
         "inactivity_review": {
           "$ref": "#/$defs/inactivityMinutes",
-          "description": "Minutes the Reviewer-Agent may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+          "description": "Override for the Reviewer-Agent's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
           "x-docs": {
-            "readme": "Minutes of total silence before the review stage is treated as wedged. Omit for the shipped prior (10 minutes); `0` disables the watchdog.",
-            "spec": "Minutes of total silence before the liveness watchdog stops the Reviewer-Agent — the review pipeline's half of requirement 4e, on the same shared launcher (R7b). Absent means the shipped prior; `0` disables the watchdog and leaves `timeout_review` as the only cap.",
-            "value": "`10`"
+            "readme": "Minutes of total silence before the review stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+            "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap.",
+            "value": "*(unset)*"
           }
         },
         "lock_stale_after": {
-          "description": "Hours after which a held review lock is treated as stale. Larger than the implementation pipeline's, because two full reviews back-to-back can exceed it.",
+          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop.",
           "type": "number",
           "exclusiveMinimum": 0,
           "x-docs": {
-            "readme": "Hours. Larger than the hourly pipeline's 3 h \u2014 a full review is long.",
-            "spec": "Hours. Larger than the implementation pipeline's 3 h, because two full reviews back-to-back can exceed it.",
-            "value": "`6`"
+            "readme": "Hours, and a floor. Derived from the review backstop, doubled because two repositories can be reviewed back to back inside one lock.",
+            "spec": "A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation doubles the widest Reviewer-Agent backstop, because one lock can span two repositories reviewed back to back, and adds the same slack.",
+            "value": "*(unset)*"
           }
         },
         "min_days_between_reviews": {

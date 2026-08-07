@@ -51,6 +51,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/compose-drift.sh"
 # shellcheck source=lib/image-drift.sh
 . "$SCRIPT_DIR/lib/image-drift.sh"
+# shellcheck source=lib/stage-budget.sh
+. "$SCRIPT_DIR/lib/stage-budget.sh"
 
 MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
@@ -635,7 +637,7 @@ status_json="$(jq -n \
       current: (
         ($running // []) | if length == 0 then null else
         ((reduce (.[] | select((.event=="stage-start" or .event=="stage-end") and .stage)) as $x
-            ({}; .[$x.stage] = {event: $x.event, ts: $x.ts}))
+            ({}; .[$x.stage] = {event: $x.event, ts: $x.ts, backstop: $x.backstop_min}))
          | to_entries | map(select(.value.event=="stage-start")) | last) as $live_stage
         | {
           stage: ($live_stage.key // null),
@@ -645,6 +647,12 @@ status_json="$(jq -n \
           # own timeout and say, in minutes rather than in hours, that a stage
           # still shown as running has in fact been killed.
           stage_since: ($live_stage.value.ts // null),
+          # The cap this stage was actually given (requirement 4f announces it
+          # on stage-start). Carried rather than re-derived, because it is the
+          # number that will kill this stage and no other; every stage now has
+          # its own, so a shared config key could only ever be an approximation
+          # of it.
+          stage_backstop_min: ($live_stage.value.backstop // null),
           repo:   ([ .[] | select(.event=="selection") | .repo ]   | last),
           item:   ([ .[] | select(.event=="selection") | .item ]   | last),
           source: ([ .[] | select(.event=="selection") | .source ] | last),
@@ -842,7 +850,7 @@ node_live_json="$(jq -c '
         | [ $evs[] | select(.cycle == $cid) ] as $c
         | ([ $c[] | select(.event == "cycle-end") ] | last) as $done
         | ((reduce ($c[] | select((.event == "stage-start" or .event == "stage-end") and .stage))
-              as $x ({}; .[$x.stage] = {event: $x.event, ts: $x.ts}))
+              as $x ({}; .[$x.stage] = {event: $x.event, ts: $x.ts, backstop: $x.backstop_min}))
            | to_entries | map(select(.value.event == "stage-start")) | last) as $live_stage
         | { cycle: $cid,
             since: $start.ts,
@@ -854,6 +862,8 @@ node_live_json="$(jq -c '
             # the only clock its card has for the stage it is showing.
             # (No apostrophes in here — see the note in that program.)
             stage_since: ($live_stage.value.ts // null),
+            # The cap that stage was given, as in `status.current` above.
+            stage_backstop_min: ($live_stage.value.backstop // null),
             repo:   ([ $c[] | select(.event == "selection") | .repo ]   | last),
             item:   ([ $c[] | select(.event == "selection") | .item ]   | last),
             source: ([ $c[] | select(.event == "selection") | .source ] | last),
@@ -883,6 +893,9 @@ self_live_json="$(jq -nc \
       running: true, ended_at: null,
       stage:  ($st.current.stage  // null),
       stage_since: ($st.current.stage_since // null),
+      # The cap this stage was given, carried through from `status.current`
+      # so our own row is judged on exactly what a peer row would be.
+      stage_backstop_min: ($st.current.stage_backstop_min // null),
       repo:   ($st.current.repo   // null),
       item:   ($st.current.item   // null),
       source: ($st.current.source // null),
@@ -1395,6 +1408,32 @@ else
 fi
 
 # --- Assemble ----------------------------------------------------------------
+# --- The stage budgets, as the page needs them (requirement 4f) -----------------
+# Two things the page cannot work out for itself. `lock_stale_after` is no
+# longer a configured constant but a derivation over the backstops in force,
+# and the page uses it to decide when a peer that stopped publishing should
+# stop being believed; and the per-actor backstops let a row whose event
+# predates the announcement still be judged against something real. Both are
+# computed from the same union the rest of this script reads.
+stage_budget_json="$(stage_budget_table \
+  "$(printf '%s\n' "$ALL_EVENTS" | stage_budget_observations 2>/dev/null || printf '[]')" \
+  "$(stage_budget_settings "$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')")" 2>/dev/null \
+  || printf '{"cells":{},"actors":{}}')"
+lock_stale_derived_hours="$(jq -nr --argjson sec \
+  "$(stage_budget_lock_seconds "$stage_budget_json" '{}' 30 \
+     "$(jq -r '.lock_stale_after // 0' "$CONFIG_FILE" 2>/dev/null || printf 0)")" \
+  '(($sec / 3600) * 100 | round) / 100' 2>/dev/null || printf 4)"
+config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stale_derived_hours" \
+  '{repos, coordinator_model, implementor_model_default, implementor_model_trivial,
+    reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix,
+    max_open_agent_prs, limit_cooldown_default, dashboard_refresh_seconds,
+    image_behind_grace_hours}
+   + {lock_stale_after: $lock,
+      stage_backstops: (($t.cells // {}) | to_entries
+        | reduce .[] as $e ({};
+            .[$e.value.actor] = ([ (.[$e.value.actor] // 0), $e.value.backstop_min ] | max)))}' \
+  "$CONFIG_FILE")"
+
 # cycles/github/log_tail can each be large; hand them to jq via files.
 # fleet.claims rides in github (fetched on the tick, carried by gh_cache
 # between ticks); it is surfaced under fleet because that is what it is.
@@ -1403,7 +1442,7 @@ printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
   --arg self_node "$self_node" \
-  --argjson config "$(jq -c '{repos, coordinator_model, implementor_model_default, implementor_model_trivial, reviewer_model_default, reviewer_model_complex, pr_label, branch_prefix, max_open_agent_prs, timeout_coordinator, timeout_implementor, timeout_reviewer, timeout_enabler, lock_stale_after, limit_cooldown_default, dashboard_refresh_seconds, image_behind_grace_hours}' "$CONFIG_FILE")" \
+  --argjson config "$config_json" \
   --argjson status "$status_json" \
   --argjson counts "$counts_json" \
   --slurpfile cyc "$cycles_file" \

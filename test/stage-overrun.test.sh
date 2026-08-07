@@ -82,25 +82,25 @@ assert_contains() {
 # the rule itself, from the timeout map through the node-row wrapper.
 helper="$(grep '^  function parseTs' "$PAGE")"
 rule="$(awk '
-  /var STAGE_TIMEOUT_KEY = \{/ { on = 1 }
-  on                           { print }
-  /function nodeStageOverrun/  { seen = 1 }
-  seen && /^  \}$/             { exit }
+  /var STAGE_BACKSTOP_PRIOR = \{/ { on = 1 }
+  on                              { print }
+  /function nodeStageOverrun/     { seen = 1 }
+  seen && /^  \}$/                { exit }
 ' "$PAGE")"
 
 if [[ -z "$helper" || -z "$rule" ]]; then
   printf 'FAIL - the rule could not be found in %s (renamed or moved?)\n' "${PAGE#"$SCRIPT_DIR"/}"
   exit 1
 fi
-assert_contains "the extracted rule carries the timeout map" "timeout_coordinator" "$rule"
+assert_contains "the extracted rule carries the fallback priors" "STAGE_BACKSTOP_PRIOR" "$rule"
 assert_contains "and both entry points" "function nodeStageOverrun" "$rule"
 
 # --- The cases -------------------------------------------------------------------
 # Config mirrors the shipped config.json. Timestamps are absolute so the verdicts
 # do not move with the wall clock — which is itself the point of case `heartbeat`.
 verdicts="$(node -e '
-  var D = {config: {timeout_coordinator: 15, timeout_implementor: 90,
-                    timeout_reviewer: 30, timeout_enabler: 30},
+  var D = {config: {stage_backstops: {coordinator: 15, implementor: 90,
+                                      reviewer: 30, enabler: 30}},
            generated_at: "2026-01-01T04:40:00Z"};
 '"$helper"'
 '"$rule"'
@@ -116,8 +116,15 @@ verdicts="$(node -e '
     implementor:  stageOverrun("implementor", T(0), T(40)),
     unknown:      stageOverrun("project-reviewer", T(0), T(600)),
     no_timestamp: stageOverrun("coordinator", null, T(40)),
+    announced:    stageOverrun("coordinator", T(0), T(40), 60),
+    announced_hit: stageOverrun("coordinator", T(0), T(70), 60),
+    announced_unknown_stage: stageOverrun("project-reviewer", T(0), T(200), 120),
+    prior_only:   stageOverrun("reviewer", T(0), T(200)),
     row_running:  nodeStageOverrun({heartbeat_ts: T(40), self: false,
                                     live: {running: true, stage: "coordinator", stage_since: T(0)}}),
+    row_announced: nodeStageOverrun({heartbeat_ts: T(40), self: false,
+                                    live: {running: true, stage: "coordinator", stage_since: T(0),
+                                           stage_backstop_min: 60}}),
     row_self:     nodeStageOverrun({heartbeat_ts: T(40), self: true,
                                     live: {running: true, stage: "coordinator", stage_since: T(0)}}),
     row_idle:     nodeStageOverrun({heartbeat_ts: T(40), self: false,
@@ -128,8 +135,8 @@ verdicts="$(node -e '
 
 v() { jq -r --arg k "$1" '.[$k] // "null"' <<<"$verdicts"; }
 
-assert_contains "a Co-Ordinator 40m into a 15m timeout is flagged" \
-  "coordinator has been live 40m against its own 15m timeout" "$(v overrun)"
+assert_contains "a Co-Ordinator 40m into a 15m backstop is flagged" \
+  "coordinator has been live 40m against its own 15m backstop" "$(v overrun)"
 assert_contains "and the message says what that means for the cycle" \
   "this cycle is over" "$(v overrun)"
 assert_eq "a Co-Ordinator well inside its timeout is not" "null" "$(v well_within)"
@@ -143,11 +150,24 @@ assert_eq "a stage judged only to the heartbeat is not flagged for the gap after
 
 assert_eq "each stage is held against its own timeout, not a shared one" \
   "null" "$(v implementor)"
-assert_eq "a stage with no configured timeout gets no verdict at all" \
+assert_eq "a stage with no cap known to the page gets no verdict at all" \
   "null" "$(v unknown)"
 assert_eq "and neither does one the log never dated" "null" "$(v no_timestamp)"
 
+# The cap a stage was actually given outranks anything the page knows about
+# actors in general — every stage now has its own, and the announced one is
+# the number that will kill this stage and no other.
+assert_eq "the announced cap outranks the fleet-wide one, and 40m inside 60m is not an overrun" \
+  "null" "$(v announced)"
+assert_contains "…while 70m past it is" \
+  "against its own 60m backstop" "$(v announced_hit)"
+assert_contains "an announced cap lets even an unnamed stage be judged" \
+  "project-reviewer has been live" "$(v announced_unknown_stage)"
+assert_contains "a stage with no announcement and no fleet figure falls back to the shipped prior" \
+  "against its own 30m backstop" "$(v prior_only)"
+
 assert_contains "a running row is judged" "coordinator" "$(v row_running)"
+assert_eq "a row carrying its own cap is judged against that" "null" "$(v row_announced)"
 # Our own row is exempt from the liveness rule because a live pid settles it.
 # It is not exempt from this one: a pid proves the cycle script is alive, and a
 # live script would have ended the stage itself.

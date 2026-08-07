@@ -45,6 +45,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/metering.sh"
 # shellcheck source=lib/stage-run.sh
 . "$SCRIPT_DIR/lib/stage-run.sh"
+# shellcheck source=lib/stage-budget.sh
+. "$SCRIPT_DIR/lib/stage-budget.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
@@ -249,7 +251,6 @@ reviewer_model_complex="$(resolve_model_id reviewer_model_complex "$reviewer_mod
 enabler_model="$(cfg '.enabler_model // ""')"
 [[ "$enabler_model" == "null" ]] && enabler_model=""
 enabler_model="$(resolve_model_id enabler_model "$enabler_model")"
-timeout_enabler_min="$(cfg '.timeout_enabler // 30')"
 enabler_after_coordinator_cycles="$(cfg '.enabler_after_coordinator_cycles // 3')"
 # A refinement block (requirements 34e, 35a) ages on its own threshold,
 # because unlike an ordinary block it waits on the Enabler and nothing else —
@@ -306,26 +307,106 @@ pr_label="$(cfg '.pr_label')"
 # branches outside it belong to humans.
 branch_prefix="$(cfg '.branch_prefix')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
-timeout_coordinator_min="$(cfg '.timeout_coordinator')"
-timeout_implementor_min="$(cfg '.timeout_implementor')"
-timeout_reviewer_min="$(cfg '.timeout_reviewer')"
-# The liveness watchdog's thresholds (requirement 4e). These read their
-# default from *here*, not from config.json, and that is the point: they are
-# meant to be a shipped prior an installation never has to think about, so a
-# customer gets sensible behaviour on its first cycle with no number chosen.
-# A key present in config.json is an override and wins.
+# Every stage cap — the wall-clock backstop and the liveness watchdog alike —
+# is now derived per (actor, repository, model) from the fleet's own record of
+# itself (requirement 4f, lib/stage-budget.sh). What is read from the
+# configuration here is only what an installation has explicitly overridden;
+# absent, the derivation answers, and with no history at all the shipped prior
+# does. Nothing in this file carries a default for them any more, which is the
+# point: a self-tuning value that a config key silently outranks would never
+# tune at all.
 #
-# `INACTIVITY_PRIOR_MIN` is deliberately generous — around three and a half
-# times the longest run-average gap ever recorded here, against a population
-# in which no genuinely hung actor has yet been observed at all. A watchdog
-# set too tight would reintroduce, from the other side, exactly the failure
-# this whole mechanism exists to end: killing a stage that was working.
-INACTIVITY_PRIOR_MIN=10
-inactivity_coordinator_min="$(cfg ".inactivity_coordinator // $INACTIVITY_PRIOR_MIN")"
-inactivity_implementor_min="$(cfg ".inactivity_implementor // $INACTIVITY_PRIOR_MIN")"
-inactivity_reviewer_min="$(cfg ".inactivity_reviewer // $INACTIVITY_PRIOR_MIN")"
-inactivity_enabler_min="$(cfg ".inactivity_enabler // $INACTIVITY_PRIOR_MIN")"
-lock_stale_after_hours="$(cfg '.lock_stale_after')"
+# `lock_stale_after` becomes a *floor* on a derived value rather than an
+# assertion checked against fixed caps (requirement 4f). Absent is normal.
+lock_stale_configured_hours="$(cfg '.lock_stale_after // 0')"
+
+# How much room the derived lock leaves beyond the summed backstops. Half an
+# hour covers everything a cycle does outside its stages — the pre-fetches,
+# the claim traffic, the clone and its deletion — with margin, and erring long
+# here is close to free: a dead holder is taken over on its pid rather than on
+# its age, so this bounds only how long a live but hung cycle may hold on.
+LOCK_SLACK_MIN=30
+
+# stage_budget_overrides ACTOR [REPO]
+# What the configuration says about this actor, as `{backstop, inactivity}` —
+# either a number or null. The first two levels of requirement 4f's
+# precedence, most specific first: a `stage_timeouts`/`stage_inactivity` entry
+# on the repository being worked, then the plain `timeout_<actor>` /
+# `inactivity_<actor>` key. Null means the configuration is silent and the
+# derivation answers.
+#
+# Read here rather than in lib/stage-budget.sh because the configuration is
+# this script's to know; the library stays a pure function of the log.
+stage_budget_overrides() {
+  local actor="$1" repo="${2:-}"
+  jq -nc --slurpfile c "$CONFIG_FILE" --arg a "$actor" --arg r "$repo" '
+    ($c[0] // {}) as $cfg
+    | (($cfg.repos // []) | map(select(.slug == $r)) | first // {}) as $repo_cfg
+    | {
+        backstop: (($repo_cfg.stage_timeouts // {})[$a] // $cfg["timeout_" + $a] // null),
+        inactivity: (($repo_cfg.stage_inactivity // {})[$a] // $cfg["inactivity_" + $a] // null)
+      }' 2>/dev/null || printf '{}'
+}
+
+# stage_budget_all_overrides
+# The same, for every implementation actor at once, taking the *largest*
+# configured value for each — the lock derivation has to cover whichever
+# repository this cycle lands on, and a per-repository override may be wider
+# than the plain key.
+stage_budget_all_overrides() {
+  jq -nc --slurpfile c "$CONFIG_FILE" '
+    ($c[0] // {}) as $cfg
+    | ["coordinator", "implementor", "reviewer", "enabler"]
+    | map(. as $a
+          | {
+              key: $a,
+              value: {
+                backstop: ([ $cfg["timeout_" + $a],
+                             (($cfg.repos // [])[] | (.stage_timeouts // {})[$a]) ]
+                           | map(select(type == "number"))
+                           | if length == 0 then null else max end),
+                inactivity: ([ $cfg["inactivity_" + $a],
+                               (($cfg.repos // [])[] | (.stage_inactivity // {})[$a]) ]
+                             | map(select(type == "number"))
+                             | if length == 0 then null else max end)
+              }
+            })
+    | from_entries' 2>/dev/null || printf '{}'
+}
+
+# stage_budget_apply ACTOR REPO MODEL
+# Resolve this launch's two caps, announce them on the stage-start event, and
+# leave them in `stage_backstop_min` / `stage_inactivity_min` for the launch.
+#
+# Announced rather than merely used: a self-tuning number that cannot be
+# traced is a mystery number, and `stage-start` is where a reader looking at
+# this stage will already be. The event carries where the value came from
+# (`config`, `cell`, `pooled` or `prior`) and, when it came from the
+# derivation, whether the cell had enough of its own evidence to speak for
+# itself or is still sitting on the pooled estimate.
+stage_budget_apply() {
+  local actor="$1" repo="${2:-*}" model="${3:-*}" extra="${4:-{\}}" budget
+  budget="$(stage_budget_resolve "$stage_budget_json" "$actor" "$repo" "$model" \
+    "$(stage_budget_overrides "$actor" "$repo")")"
+  stage_backstop_min="$(jq -r '.backstop_min' <<<"$budget" 2>/dev/null || printf '')"
+  stage_inactivity_min="$(jq -r '.inactivity_min' <<<"$budget" 2>/dev/null || printf '')"
+  # A derivation that produced nothing readable must not stop a cycle: fall
+  # back to the shipped prior for this actor, which is what a fresh
+  # installation runs on anyway.
+  [[ "$stage_backstop_min" =~ ^[0-9]+$ ]] \
+    || stage_backstop_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" --arg a "$actor" \
+         '($p[$a] // $p.implementor).backstop')"
+  [[ "$stage_inactivity_min" =~ ^[0-9]+$ ]] \
+    || stage_inactivity_min="$(jq -nr --argjson p "$STAGE_BUDGET_PRIORS" --arg a "$actor" \
+         '($p[$a] // $p.implementor).inactivity')"
+  log_event "stage-start" "$(jq -nc --arg s "$actor" --arg m "$model" \
+    --argjson e "$extra" \
+    --argjson b "$(jq -nc --argjson x "$budget" \
+      --argjson bs "$stage_backstop_min" --argjson is "$stage_inactivity_min" \
+      'if ($x | type) == "object" then $x else {} end
+       + {backstop_min: $bs, inactivity_min: $is}')" \
+    '{stage: $s, model: $m} + (if ($e | type) == "object" then $e else {} end) + $b')"
+}
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours // 24')"
@@ -1487,7 +1568,6 @@ maybe_run_enabler() {
   [[ "$cycle_rc" == "0" ]] || return 0
   (( limit_hit_this_cycle )) && return 0
   [[ -n "$enabler_model" ]] || return 0
-  [[ "$timeout_enabler_min" =~ ^[0-9]+$ ]] || return 0
   [[ -f "$PROMPTS_DIR/enabler.md" ]] || return 0
 
   # Requirement 35d: the refinement class is capped per engagement, ordinary
@@ -1557,8 +1637,10 @@ $(jq . <<<"$input")
 \`\`\`
 "
   out="$cycle_dir/enabler.out"
-  log_event "stage-start" '{"stage": "enabler"}'
-  if run_claude_stage enabler "$(( timeout_enabler_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir" "$(( inactivity_enabler_min * 60 ))"; then
+  # The Enabler spans repositories by construction, so its cell is keyed `*`
+  # (requirement 4f) — there is no repository this engagement belongs to.
+  stage_budget_apply enabler "*" "$enabler_model"
+  if run_claude_stage enabler "$(( stage_backstop_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
     rc=0
   else
     rc=$?
@@ -1852,7 +1934,7 @@ acquire_lock() {
         log_event "warning" "$(jq -nc --arg d "foreign lock from pid $pid on host $host (age ${age_sec}s) taken over" '{detail: $d}')"
       else
         local stale_after_sec
-        stale_after_sec=$(( lock_stale_after_hours * 3600 ))
+        stale_after_sec="$lock_stale_after_sec"
         if kill -0 "$pid" 2>/dev/null && (( age_sec < stale_after_sec )); then
           log_event "cycle-skipped" "$(jq -nc --arg d "lock held by pid $pid, age ${age_sec}s" '{detail: $d}')"
           exit 0
@@ -1889,8 +1971,6 @@ acquire_lock() {
     '{pid: $pid, started_at: $started_at, host: $host}' > "$lock_file"
   lock_acquired=1
 }
-acquire_lock
-
 # --- 1a. The fleet's memory (requirement 2.5) ---
 # `lock.json` keeps two cycles apart on one node; per-item claims (requirement
 # 17a) keep two *nodes* off the same work. Nothing arbitrates "the" active
@@ -1899,9 +1979,35 @@ acquire_lock
 # directory. Snapshotted here, once, so every reader below (the usage-limit
 # cooldown, the blocked and void extractions, the no-op fingerprint) sees one
 # consistent stream — a lesson any node learned spares the whole fleet.
+#
+# Taken before the lock rather than after it, which it was until the stage
+# budgets came to be derived from it (requirement 4f): `lock_stale_after` is
+# now one of the things derived, and `acquire_lock` needs it. A snapshot taken
+# a few milliseconds earlier is the same snapshot — peers change only when
+# `state-sync.sh fetch` runs — and the cost to a cycle that then finds the
+# lock held is one read of a file it would have read anyway.
 peers_dir="$(fleet_peers_dir "$workspace_root")"
 union_log="$cycle_dir/.fleet-log.jsonl"
 fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
+
+# --- 1a1. What each stage is allowed this cycle (requirement 4f) ---
+# Derived, not stored and not configured: one fold over the union above gives
+# every node the same two numbers per (actor, repository, model) with nothing
+# to synchronise. See lib/stage-budget.sh for why the watchdog threshold is
+# estimated and the backstop controlled, and why each moves the way it does.
+stage_budget_config="$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')"
+stage_budget_settings_json="$(stage_budget_settings "$stage_budget_config")"
+stage_budget_json="$(stage_budget_table \
+  "$(stage_budget_observations < "$union_log")" "$stage_budget_settings_json")"
+
+# The cycle lock has to outlast a cycle that runs every stage to its limits,
+# and those limits now move — so it is derived from them plus slack rather
+# than asserted against them by hand (requirement 4f). A configured
+# `lock_stale_after` is a floor, never a ceiling.
+lock_stale_after_sec="$(stage_budget_lock_seconds "$stage_budget_json" \
+  "$(stage_budget_all_overrides)" "$LOCK_SLACK_MIN" "$lock_stale_configured_hours")"
+
+acquire_lock
 
 # --- 1b. Crash-loop escalation (requirement 2.7) ---
 # A Co-Ordinator failure pins no repo/item — nothing is blocked, so the whole
@@ -2638,8 +2744,10 @@ $(jq . <<<"$coordinator_input")
 "
 coordinator_out="$cycle_dir/coordinator.out"
 
-log_event "stage-start" '{"stage": "coordinator"}'
-if run_claude_stage coordinator "$(( timeout_coordinator_min * 60 ))" "$coordinator_model" "$coordinator_prompt" "$coordinator_out" "$cycle_dir" "$(( inactivity_coordinator_min * 60 ))"; then
+# The Co-Ordinator runs *before* selection, so it has no repository either
+# and is keyed `*` for the same reason as the Enabler (requirement 4f).
+stage_budget_apply coordinator "*" "$coordinator_model"
+if run_claude_stage coordinator "$(( stage_backstop_min * 60 ))" "$coordinator_model" "$coordinator_prompt" "$coordinator_out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
   coord_rc=0
 else
   coord_rc=$?
@@ -2843,8 +2951,8 @@ $node_name
 "
 impl_out="$cycle_dir/implementor.out"
 
-log_event "stage-start" '{"stage": "implementor"}'
-if run_claude_stage implementor "$(( timeout_implementor_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir" "$(( inactivity_implementor_min * 60 ))"; then
+stage_budget_apply implementor "$selected_repo" "$impl_model"
+if run_claude_stage implementor "$(( stage_backstop_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
   impl_rc=0
 else
   impl_rc=$?
@@ -2982,9 +3090,9 @@ $node_name
 "
 rev_out="$cycle_dir/reviewer.out"
 
-log_event "stage-start" "$(jq -nc --arg c "$rev_complexity" --arg m "$rev_model" \
-  '{stage: "reviewer", complexity: $c, model: $m}')"
-if run_claude_stage reviewer "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir" "$(( inactivity_reviewer_min * 60 ))"; then
+stage_budget_apply reviewer "$selected_repo" "$rev_model" \
+  "$(jq -nc --arg c "$rev_complexity" '{complexity: $c}')"
+if run_claude_stage reviewer "$(( stage_backstop_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
   rev_rc=0
 else
   rev_rc=$?

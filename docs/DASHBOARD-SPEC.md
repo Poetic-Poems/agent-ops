@@ -118,21 +118,28 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   flight — so the page bounds the claim rather than the Publisher overstating
   it: a stale heartbeat renders as "state unknown", and a cycle running past
   `lock_stale_after` (the pipeline's own bound, past which it would take such a
-  lock over) is flagged as possibly dead. A second, far earlier bound catches
-  the case that actually happens. Every stage is capped by its own `timeout_*`,
-  which `run_claude_stage` enforces by killing the process group and logging
+  lock over — a derived figure since requirement 4f, which the Publisher
+  computes and passes under that name) is flagged as possibly dead. A second,
+  far earlier bound catches the case that actually happens. Every stage is
+  capped by its own backstop, which `run_claude_stage` enforces by killing the
+  process group and logging
   `stage-end` after — so a live stage older than its cap is not a slow stage but
   one whose process is already gone, and the page says so in minutes where
-  `lock_stale_after` takes hours. A Co-Ordinator is capped at 15 minutes against
-  that rule's 4, which is the whole of the gap: a node rolled mid-cycle read as
+  `lock_stale_after` takes hours. A Co-Ordinator capped at twenty minutes
+  against that rule's several hours is the whole of the gap: a node rolled
+  mid-cycle read as
   "coordinator choosing work" for most of the way to its next cycle. Both bounds
   are measured to the node's own heartbeat rather than to the reader's clock —
   what is known is what that node had published, and both timestamps are stamped
   by its clock, so the difference carries no skew between machines.
-  `live.stage_since` is what makes this answerable, and `timeout_coordinator` /
-  `_implementor` / `_reviewer` / `_enabler` reach the page in `config` for it. A
-  stage with no configured timeout (the review pipeline's) is one the rule makes
-  no claim about.
+  `live.stage_since` is what makes this answerable, and `live.stage_backstop_min`
+  — the cap that stage was actually given, announced on its own `stage-start`
+  and carried through unchanged — is what it is held against. Every stage now
+  has its own, so a shared configuration key could only ever approximate it;
+  `config.stage_backstops`, the fleet-wide widest per actor, is the fallback for
+  a row whose event predates the announcement, and a shipped prior the fallback
+  after that. A stage none of those names (the review pipeline's) is one the
+  rule makes no claim about.
 - **`fleet-cache/{disabled,limit}.json`** — the fleet flags' cached copies
   (requirement 2.3a), maintained by `lib/toggle.sh` and refreshed by this
   Publisher's own GitHub tick. Read as plain files, so a `--no-github` tick and
@@ -1441,11 +1448,13 @@ number's twins elsewhere on the page.
   absorb.
 
   A fourth reaches the same verdict far sooner, and is the one that fires in
-  practice. A stage still live past its own `timeout_*` has outlived the timer
+  practice. A stage still live past its own backstop has outlived the timer
   that would have killed it, so the cycle is over whatever the log says; a
-  Co-Ordinator is bounded at 15 minutes where `lock_stale_after` is 4 hours,
-  and a node rolled mid-cycle sat in that gap reading "coordinator choosing
-  work". Judged against the node's own heartbeat, never the reader's clock, so
+  Co-Ordinator is bounded in tens of minutes where `lock_stale_after` is
+  several hours, and a node rolled mid-cycle sat in that gap reading
+  "coordinator choosing work". The cap it is held against is the one that
+  stage was given, announced on its own `stage-start` (requirement 4f), so the
+  rule follows a backstop that moves without needing to be told. Judged against the node's own heartbeat, never the reader's clock, so
   the verdict is about what that node published and not about how long ago it
   published it. Our own row is **not** exempt from this one, unlike the three
   above: a live pid proves the cycle script is alive, not that the stage it

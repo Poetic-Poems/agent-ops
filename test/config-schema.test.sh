@@ -302,8 +302,17 @@ assert_doctor "doctor fails a label set to blocked, which would make its item un
   '.unvoid_label = "blocked"' 1 'unvoid_label is "blocked"'
 assert_doctor "doctor fails an excluded_minutes that leaves the renderer no minute" \
   '.schedule.excluded_minutes = [range(60)]' 1 'excludes every minute of the hour'
-assert_doctor "doctor warns when the stage timeouts outrun lock_stale_after" \
-  '.lock_stale_after = 1' 0 'would have its own lock swept as stale'
+# The stale-lock assertion this used to make is gone, and deliberately: the
+# lock threshold is now derived from the backstops in force rather than
+# checked against them (requirement 4f), so it cannot be outrun and there is
+# nothing left to warn about. What replaces it is the other half of that
+# bargain — a configured cap is an override that turns the self-tuning off,
+# and doctor says so rather than letting a value set once and forgotten look
+# like the system still adapting.
+assert_doctor "doctor reports the derived lock rather than checking a configured one" \
+  '.lock_stale_after = 1' 0 'the cycle lock is derived at'
+assert_doctor "doctor warns that a configured cap pins itself" \
+  '.timeout_reviewer = 60' 0 'turns off its self-tuning'
 assert_doctor "doctor warns when the review label collides with the implementation one" \
   '.review.pr_label = .pr_label' 0 'review.pr_label equals pr_label'
 assert_doctor "doctor warns when the mirror would outlive the node that writes it" \

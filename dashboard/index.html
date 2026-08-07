@@ -779,12 +779,27 @@
   // doubt it — most of the way to its next cycle, and long past when an
   // operator wants to know.
   //
-  // A stage the map does not name (the review pipeline's, or one added since)
-  // has no timeout to be held against, and gets no claim made about it.
-  var STAGE_TIMEOUT_KEY = {
-    coordinator: "timeout_coordinator", implementor: "timeout_implementor",
-    reviewer:    "timeout_reviewer",    enabler:     "timeout_enabler"
+  // Every stage now carries its own cap, derived per (actor, repository,
+  // model) and announced on its `stage-start`, so the number to hold a live
+  // stage against is the one that stage was actually given — `stage_backstop_min`
+  // on the live row. What follows is only the fallback for a row whose event
+  // predates the announcement, or a page reading a peer that has not rolled
+  // yet: the fleet-wide widest backstop currently in force for that actor,
+  // published as `config.stage_backstops`, and failing that the shipped prior.
+  //
+  // A stage none of those names (the review pipeline's, or one added since)
+  // has no cap to be held against, and gets no claim made about it. Erring
+  // towards the widest is deliberate: an over-wide limit delays the verdict,
+  // while an under-wide one would assert that a healthy stage is dead.
+  var STAGE_BACKSTOP_PRIOR = {
+    coordinator: 20, implementor: 150, reviewer: 90, enabler: 30
   };
+  function stageBackstopMin(stage, announced) {
+    if (+announced > 0) return +announced;
+    var fleet = ((D.config || {}).stage_backstops || {})[stage];
+    if (+fleet > 0) return +fleet;
+    return STAGE_BACKSTOP_PRIOR[stage] || 0;
+  }
   // run_claude_stage polls every 2s, then SIGTERMs, waits 5s and SIGKILLs, and
   // the `stage-end` after that still has to reach a push. This is the room that
   // sequence needs — wide enough that nothing healthy ever trips the rule.
@@ -796,17 +811,15 @@
   // arithmetic honest across machines: `stage_since` and the heartbeat are both
   // stamped by the node being judged, so their difference carries no skew
   // between one node's clock and another's.
-  function stageOverrun(stage, stageSince, asOfIso) {
-    var key = STAGE_TIMEOUT_KEY[stage];
-    if (!key) return null;
-    var limit = +((D.config || {})[key]);
+  function stageOverrun(stage, stageSince, asOfIso, announcedBackstopMin) {
+    var limit = stageBackstopMin(stage, announcedBackstopMin);
     if (!(limit > 0)) return null;
     var started = parseTs(stageSince), asOf = parseTs(asOfIso);
     if (!started || !asOf) return null;
     var mins = (asOf.getTime() - started.getTime())/60000;
     if (mins <= limit + STAGE_OVERRUN_GRACE_MIN) return null;
     return stage + " has been live " + Math.round(mins) + "m against its own " + limit
-         + "m timeout — the pipeline would have killed it, so this cycle is over"
+         + "m backstop — the pipeline would have killed it, so this cycle is over"
          + " and its log never recorded the end";
   }
 
@@ -817,7 +830,8 @@
   // saying on any row, ours included.
   function nodeStageOverrun(n) {
     if (!n || !n.live || n.live.running !== true) return null;
-    return stageOverrun(n.live.stage, n.live.stage_since, n.heartbeat_ts || D.generated_at);
+    return stageOverrun(n.live.stage, n.live.stage_since, n.heartbeat_ts || D.generated_at,
+                        n.live.stage_backstop_min);
   }
 
   // The node currently running this cycle, if any. A cycle with no `cycle-end`

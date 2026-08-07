@@ -47,6 +47,10 @@ source "$SCRIPT_DIR/lib/config-schema.sh"
 source "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/labels.sh
 source "$SCRIPT_DIR/lib/labels.sh"
+# shellcheck source=lib/fleet.sh
+source "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/stage-budget.sh
+source "$SCRIPT_DIR/lib/stage-budget.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -168,21 +172,6 @@ if ((excluded_count >= 60)); then
   fail "schedule.excluded_minutes excludes every minute of the hour — deploy/docker/render-crontab.sh has no minute left to choose"
 elif ((excluded_count > 0)); then
   ok "schedule.excluded_minutes leaves $((60 - excluded_count)) minute(s) for this node's cycle"
-fi
-
-# Arithmetic in jq rather than the shell: a config that failed validation above
-# still reaches here, and `$(( ))` on a value that is not a number is a bash
-# error, not a finding.
-read -r lock_stale_minutes stage_minutes < <(jq -r '
-  def num($v; $default): if ($v | type) == "number" then $v else $default end;
-  [ (num(.lock_stale_after; 0) * 60 | floor),
-    (num(.timeout_coordinator; 0) + num(.timeout_implementor; 0)
-     + num(.timeout_reviewer; 0) + num(.timeout_enabler; 30) | floor)
-  ] | @tsv' "$config_file")
-if ((lock_stale_minutes <= stage_minutes)); then
-  warn "lock_stale_after is ${lock_stale_minutes} min but the stage timeouts sum to ${stage_minutes} min — a cycle running to its limits would have its own lock swept as stale"
-else
-  ok "lock_stale_after (${lock_stale_minutes} min) clears the summed stage timeouts (${stage_minutes} min)"
 fi
 
 if [[ "$(cfg '.review.pr_label // ""')" == "$(cfg '.pr_label // ""')" ]]; then
@@ -313,6 +302,54 @@ done
 
 # --- Crontab ---
 
+section "Stage budgets"
+
+# --- The stage budgets, and the lock derived from them (requirement 4f) --------
+# This check used to be an assertion — that `lock_stale_after` exceeded the sum
+# of four fixed stage timeouts — and it was warned about, adjusted by hand and
+# warned about again three times in two days while those timeouts were being
+# raised. The invariant is now inverted: the lock threshold is *derived* from
+# the backstops in force plus slack, so it cannot be outrun, and what is left
+# to report is what those numbers currently are and where each came from.
+#
+# Reported rather than merely computed, because that is the whole bargain of a
+# self-tuning value: it is allowed to move on its own precisely because it can
+# always be asked what it is and why.
+budget_table="$(stage_budget_table \
+  "$(fleet_logs "$state_dir" "$(fleet_peers_dir "$workspace_root")" log.jsonl \
+     | stage_budget_observations 2>/dev/null || printf '[]')" \
+  "$(stage_budget_settings "$(cat "$config_file" 2>/dev/null || printf '{}')")" \
+  2>/dev/null || printf '{"cells":{},"actors":{}}')"
+
+lock_stale_sec="$(stage_budget_lock_seconds "$budget_table" \
+  "$(jq -c '["coordinator","implementor","reviewer","enabler"]
+            | map(. as $a | {key: $a, value: {backstop: (.["timeout_" + $a] // null)}})
+            | from_entries' <<<"$(cat "$config_file")" 2>/dev/null || printf '{}')" \
+  30 "$(jq -r '.lock_stale_after // 0' "$config_file" 2>/dev/null || printf 0)")"
+ok "the cycle lock is derived at $(( lock_stale_sec / 60 )) min, from the backstops in force plus 30 min slack"
+
+cell_count="$(jq -r '(.cells // {}) | length' <<<"$budget_table" 2>/dev/null || printf 0)"
+if [[ "$cell_count" =~ ^[0-9]+$ ]] && (( cell_count > 0 )); then
+  while IFS=$'\t' read -r cell backstop inactivity basis n; do
+    [[ -n "$cell" ]] || continue
+    ok "$cell: backstop ${backstop} min, watchdog ${inactivity} min (${basis}, n=${n})"
+  done < <(jq -r '(.cells // {}) | to_entries | sort_by(.key)[]
+                  | [.key, (.value.backstop_min|tostring), (.value.inactivity_min|tostring),
+                     .value.basis, (.value.n|tostring)] | @tsv' <<<"$budget_table" 2>/dev/null || true)
+else
+  ok "no stage history yet — every stage runs on its shipped prior, which is what a first cycle should do"
+fi
+
+# A configured cap is an override that outranks the derivation for as long as
+# it is there, which is easy to set once and then forget about entirely.
+while IFS= read -r overridden; do
+  [[ -n "$overridden" ]] || continue
+  warn "$overridden is set, which pins that cap and turns off its self-tuning — remove it unless you mean to"
+done < <(jq -r '[ "timeout_coordinator", "timeout_implementor", "timeout_reviewer",
+                  "timeout_enabler", "inactivity_coordinator", "inactivity_implementor",
+                  "inactivity_reviewer", "inactivity_enabler" ]
+                | map(select(. as $k | ($ARGS.named.cfg[$k] | type) == "number"))[]' \
+              --argjson cfg "$(cat "$config_file")" -n 2>/dev/null || true)
 section "Crontab"
 
 render_script="$SCRIPT_DIR/deploy/docker/render-crontab.sh"
