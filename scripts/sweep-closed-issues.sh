@@ -21,6 +21,12 @@
 # number, its merge commit, and when it merged — instead of leaving the
 # tombstone that keeps a finished item selectable forever (issue #240).
 #
+# One thing it deliberately will not touch: an issue GitHub reports
+# `state_reason: "reopened"`. Somebody reopened that issue after it was
+# closed, which is the same answer requirement 34j's `void-object-closed`
+# record protects on the other sweep — a human's re-open must win, and must
+# not be undone on the hour, every hour, with a comment each time.
+#
 # Bounded, deliberately: only the `pr_search_limit` most recently updated
 # merged, labelled pull requests are examined per call. Older strays are the
 # ordinary case requirement 25a now prevents from recurring, and a fleet
@@ -105,9 +111,24 @@ while IFS=$'\t' read -r pr_number pr_url item merge_sha; do
   state="$(jq -r '.state // ""' <<<"$issue_json" 2>/dev/null)"
   [[ "$state" == "open" ]] || continue
 
+  # Open *because a human reopened it* is not the state this sweep is for.
+  # GitHub sets `state_reason: "reopened"` on an issue reopened after a close,
+  # and "still open" alone cannot tell that apart from "never closed" — so
+  # without this the sweep would close, every hour, exactly the issue somebody
+  # deliberately reopened, and comment each time. That is the failure
+  # requirement 34j's own one-shot rule (`void-object-closed`) exists to
+  # prevent on the other sweep; the same principle applies here, and this is
+  # how it is spelled with no per-item record to keep: the reopen *is* the
+  # record, and it is GitHub's, not ours.
+  state_reason="$(jq -r '.state_reason // ""' <<<"$issue_json" 2>/dev/null)"
+  if [[ "$state_reason" == "reopened" ]]; then
+    warn "issue #$item (named by PR #$pr_number) was reopened after a close — leaving it to whoever reopened it"
+    continue
+  fi
+
   evidence="pull request #$pr_number ($pr_url) carries the \
 \`agent-ops:closes-issue item=$item\` marker and is merged\
-$( [[ -n "$merge_sha" ]] && printf ' (%s)' "$merge_sha" )\
+$( [[ -n "$merge_sha" && "$merge_sha" != "-" ]] && printf ' (%s)' "$merge_sha" )\
 , but never triggered GitHub's own closing-keyword auto-close."
 
   comment_body="$(pipeline_comment_header script "$node_name")

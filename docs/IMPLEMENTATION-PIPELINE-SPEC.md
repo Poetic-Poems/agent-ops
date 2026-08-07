@@ -2704,10 +2704,19 @@ runs unattended.
     leaving the tombstone that keeps a finished item selectable forever
     (issue #240; PR #206's "Implements #198" left #198 open for three days
     after its own fix merged, selected and voided twice in the meantime).
+    An issue GitHub reports `state_reason: "reopened"` is exempt: somebody
+    reopened it after a close, and "still open" alone cannot tell that apart
+    from "never closed". Without the exemption the sweep would re-close, on
+    the hour and with a fresh comment each time, exactly the issue a human
+    deliberately put back — the same answer requirement 34j's
+    `void-object-closed` record gives on the other sweep, spelled here with
+    no record of our own to keep, because the re-open is GitHub's record of
+    it. The skip is reported as a warning, never silent.
+
     Bounded to the most recently updated merged pull requests per repo, and
     idempotent by construction — it only ever acts on an issue GitHub itself
-    still reports open, so re-running it costs nothing once the backlog is
-    cleared. Actions are capped per run (three per repo per cycle, the
+    still reports open and not reopened, so re-running it costs nothing once
+    the backlog is cleared. Actions are capped per run (three per repo per cycle, the
     overflow reported, never silent), logged as `issue-closed-post-merge`
     events, and every node may sweep concurrently: GitHub's own issue-close
     is idempotent, so the worst race outcome is two nodes both finding
@@ -4896,7 +4905,8 @@ What exists, and the requirements each part answers to:
     given a repo slug, a node name and a cycle id, lists that repo's merged
     `pr_label`-labelled pull requests (bounded to the most recently updated),
     and for each carrying an `agent-ops:closes-issue` marker whose named
-    issue is still open, closes it with a `pipeline_comment_header`/
+    issue is still open and not `state_reason: "reopened"`, closes it with a
+    `pipeline_comment_header`/
     `pipeline_comment_marker`-wrapped comment citing the merge as evidence,
     printing one JSON action per outcome (`closed`, `deferred`, `warning`)
     for the Script to log. Capped at three actions per repo per call, the
@@ -5783,8 +5793,10 @@ pull request, run the ones the change touches and any it could regress.
    `gh`: a merged, marker-carrying pull request whose issue is still open is
    closed with the merge cited as evidence; an issue GitHub already closed
    (or a PR without the marker at all) is left untouched, with no extra API
-   call made for the markerless case; and the per-call action cap defers
-   rather than floods.
+   call made for the markerless case; an issue GitHub reports
+   `state_reason: "reopened"` is left alone and the skip reported, so a
+   human's re-open is never undone on the hour; and the per-call action cap
+   defers rather than floods.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

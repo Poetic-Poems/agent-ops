@@ -125,6 +125,24 @@ assert_eq "no action for a PR without the marker" '' \
   "$(jq -c 'select(.action == "closed")' <<<"$out" 2>/dev/null || true)"
 assert_not_contains "and no issue lookup is even made" "issues/" "$calls"
 
+# --- Case 3b: an issue a human reopened after a close ------------------------------
+# "Open" alone cannot tell "never closed" from "somebody put it back"; without
+# the state_reason test the sweep would re-close this every cycle, forever,
+# commenting each time.
+c="$tmp_dir/case3b"; mkdir -p "$c"
+jq -n '[{number: 500, url: "https://github.com/x/y/pull/500",
+         body: "Implements #501.\n\n<!-- agent-ops:closes-issue item=501 -->",
+         mergeCommit: {oid: "jkl012"}}]' > "$c/prs.json"
+jq -n '{state: "open", state_reason: "reopened"}' > "$c/issue-501"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a reopened issue is not closed again" '' \
+  "$(jq -c 'select(.action == "closed")' <<<"$out" 2>/dev/null || true)"
+assert_not_contains "and no close call is made for it" "issue close 501" "$calls"
+assert_contains "the skip is reported, not silent" "reopened" \
+  "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
+
 # --- Case 4: the action cap defers the rest ---------------------------------------
 c="$tmp_dir/case4"; mkdir -p "$c"
 jq -n '[
