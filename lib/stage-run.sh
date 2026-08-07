@@ -24,18 +24,28 @@
 #   <stage>.out.stderr    the invocation's diagnostics, kept apart from the
 #                         envelope for the reason given at the redirect.
 #
-# And one thing it leaves in a variable rather than a file:
+# And two things it leaves in variables rather than files:
 #
 #   stage_gaps_json       the run's inter-event gap statistics (requirement
 #                         33a), measured by watching the stream grow. See
 #                         `stage_gap_stats`, and the note in the poll loop on
 #                         why growth — not a beat, not a timestamp inside the
 #                         events — is what is measured.
+#   stage_kill_reason     which of the two caps ended the run, if either
+#                         (requirement 4e).
 
 # The gap statistics of the most recent run, for the caller's `stage-end`
 # event. A stage that has not run yet, or that produced no output at all,
 # reports `null`.
 stage_gaps_json="null"
+
+# Which cap ended the most recent run, for the same event: `inactivity` when
+# the watchdog fired, `backstop` when the outer wall-clock cap did, and empty
+# when the stage ended on its own — including when it ended badly. The two
+# kills are indistinguishable from `exit_code` alone, which is 124 for both,
+# and they are not the same event: one says the stage stopped producing, the
+# other says it never stopped.
+stage_kill_reason=""
 
 # stage_stream_file OUT_FILE
 # The progress stream that accompanies a stage's `.out`. Derived rather than
@@ -102,20 +112,57 @@ stage_gap_stats() {
       end' 2>/dev/null || printf 'null'
 }
 
+# stage_watchdog_warning STAGE
+# The body of the `warning` event a watchdog kill earns, or nothing (returning
+# 1) when the last run ended any other way.
+#
+# A separate event from the `stage-end` that records `kill_reason`, and
+# deliberately so. The watchdog's kill path had fired zero times in the whole
+# recorded history when it was written: every stage this pipeline has ever
+# killed was emitting steadily at the moment the wall reached it. So the first
+# time it does fire, one of two things is true and both are news — either a
+# genuinely wedged actor has been caught, which is what it is for, or the
+# threshold is too tight for something a stage legitimately does, which is the
+# failure this whole mechanism exists to end arriving from the other side. The
+# rate is the thing to watch, and a rate nobody is told about is not watched.
+stage_watchdog_warning() {
+  [[ "$stage_kill_reason" == "inactivity" ]] || return 1
+  jq -nc --arg s "$1" \
+    '{detail: ($s + " was stopped by the liveness watchdog: it produced no output at all for its whole inactivity threshold. Either it was wedged, which is what the watchdog is for, or the threshold is too tight for what it was doing — check the stage stream before assuming the first.")}'
+}
+
 # --- Run a headless claude invocation with a wall-clock timeout, killing its
 #     whole process group on timeout. `set -m` gives the backgrounded job its
 #     own process group so `kill -TERM -$pid` reaches every descendant. ---
 #
-# run_claude_stage STAGE TIMEOUT_SEC MODEL PROMPT OUT_FILE CWD
-# Returns the invocation's own exit status, or 124 when the timeout fired.
+# run_claude_stage STAGE TIMEOUT_SEC MODEL PROMPT OUT_FILE CWD [INACTIVITY_SEC]
+# Returns the invocation's own exit status, or 124 when either cap fired.
 # Sets the caller-visible `stage_pid`/`stage_name` for the duration (see the
-# note at each pipeline's signal handler) and clears them on the way out.
+# note at each pipeline's signal handler) and clears them on the way out, and
+# `stage_kill_reason` to say which cap fired, if either.
+#
+# TIMEOUT_SEC is the **backstop**: the outer bound on a stage, there for the
+# one failure the watchdog cannot see — a session looping productively,
+# emitting events forever without converging. INACTIVITY_SEC is the
+# **watchdog**: how long a stage may produce nothing at all before it is
+# treated as wedged. Zero or absent disables the watchdog and leaves the
+# backstop as the only cap, which is what this function did before either
+# existed.
+#
+# The two exist because they answer different questions and are estimated
+# from wildly different amounts of evidence (requirement 4e). A wall-clock
+# cap alone conflates "this is taking a long time" with "this has stopped",
+# and the record says the pipeline only ever killed the first: across 456
+# stage runs, every killed run was emitting steadily when the wall reached
+# it, and not one genuinely hung actor was found.
 run_claude_stage() {
   local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
+  local inactivity_sec="${7:-0}"
   local pid waited=0 rc stream_file
   local seen_bytes=0 now size last_growth gaps=()
   stream_file="$(stage_stream_file "$out_file")"
   stage_gaps_json="null"
+  stage_kill_reason=""
 
   # stdout (the event stream) and stderr (diagnostics) are kept in separate
   # files — merging them would let stray stderr output break the JSON parse
@@ -170,6 +217,7 @@ run_claude_stage() {
   rc=0
   while kill -0 "$pid" 2>/dev/null; do
     if (( waited >= timeout_sec )); then
+      stage_kill_reason="backstop"
       kill -TERM "-$pid" 2>/dev/null || true
       sleep 5
       kill -KILL "-$pid" 2>/dev/null || true
@@ -184,11 +232,27 @@ run_claude_stage() {
     # cannot fake it, and needs no cadence to keep. `stat` on a file the
     # kernel already has open is as cheap as this loop's own `kill -0`.
     size="$(stat -c %s "$stream_file" 2>/dev/null || printf '0')"
+    now="${EPOCHSECONDS:-$(date +%s)}"
     if (( size > seen_bytes )); then
-      now="${EPOCHSECONDS:-$(date +%s)}"
       gaps+=( "$(( now - last_growth ))" )
       seen_bytes="$size"
       last_growth="$now"
+    elif (( inactivity_sec > 0 && now - last_growth >= inactivity_sec )); then
+      # Nothing has been written for the whole threshold. The kill is the same
+      # sequence as the backstop's — same process group, same TERM-then-KILL
+      # grace — because there is only one way to stop a stage; what differs is
+      # the reason, which the caller records so the two are told apart
+      # afterwards. `exit_code: 124` alone cannot: it conflates "hung" with
+      # "ran too long", and those imply opposite corrections. (Read by each
+      # pipeline's failure handling, which shellcheck cannot see from here.)
+      # shellcheck disable=SC2034
+      stage_kill_reason="inactivity"
+      kill -TERM "-$pid" 2>/dev/null || true
+      sleep 5
+      kill -KILL "-$pid" 2>/dev/null || true
+      wait "$pid" 2>/dev/null || true
+      rc=124
+      break
     fi
   done
 

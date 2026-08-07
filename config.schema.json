@@ -474,6 +474,54 @@
         }
       }
     },
+    "inactivity_coordinator": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Minutes the Co-Ordinator may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "x-docs": {
+        "readme": "Minutes of total silence before a stage is treated as wedged. Omit it and the shipped prior (10 minutes) applies; `0` turns the watchdog off and leaves the wall-clock timeout as the only cap.",
+        "spec": "Minutes of total silence before the liveness watchdog of requirement 4e stops the stage. Absent means the shipped prior, which is where this value is meant to come from \u2014 a configured one is an override, not the normal case. `0` disables the watchdog for that actor.",
+        "value": {
+          "readme": "`10`",
+          "spec": "10 min"
+        }
+      }
+    },
+    "inactivity_implementor": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Minutes the Implementor may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "x-docs": {
+        "readme": "Minutes. As above, for the Implementor.",
+        "spec": "As `inactivity_coordinator`, for the Implementor. The one stage with a plausible long-silence case of its own \u2014 a single Bash tool call running a full test suite \u2014 which is why the prior sits far above anything yet measured rather than close to it.",
+        "value": {
+          "readme": "`10`",
+          "spec": "10 min"
+        }
+      }
+    },
+    "inactivity_reviewer": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Minutes the Reviewer may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "x-docs": {
+        "readme": "Minutes. As above, for the Reviewer.",
+        "spec": "As `inactivity_coordinator`, for the Reviewer.",
+        "value": {
+          "readme": "`10`",
+          "spec": "10 min"
+        }
+      }
+    },
+    "inactivity_enabler": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Minutes the Enabler may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+      "x-docs": {
+        "readme": "Minutes. As above, for the Enabler.",
+        "spec": "As `inactivity_coordinator`, for the Enabler.",
+        "value": {
+          "readme": "`10`",
+          "spec": "10 min"
+        }
+      }
+    },
     "lock_stale_after": {
       "description": "Hours after which a held cycle lock is treated as stale, killed, and warned about. Must exceed the sum of the stage timeouts plus slack.",
       "type": "number",
@@ -725,6 +773,15 @@
             "value": "`120`"
           }
         },
+        "inactivity_review": {
+          "$ref": "#/$defs/inactivityMinutes",
+          "description": "Minutes the Reviewer-Agent may produce no output at all before the liveness watchdog stops it. Omit to use the shipped prior.",
+          "x-docs": {
+            "readme": "Minutes of total silence before the review stage is treated as wedged. Omit for the shipped prior (10 minutes); `0` disables the watchdog.",
+            "spec": "Minutes of total silence before the liveness watchdog stops the Reviewer-Agent — the review pipeline's half of requirement 4e, on the same shared launcher (R7b). Absent means the shipped prior; `0` disables the watchdog and leaves `timeout_review` as the only cap.",
+            "value": "`10`"
+          }
+        },
         "lock_stale_after": {
           "description": "Hours after which a held review lock is treated as stale. Larger than the implementation pipeline's, because two full reviews back-to-back can exceed it.",
           "type": "number",
@@ -797,6 +854,12 @@
           "minLength": 1
         }
       }
+    },
+    "inactivityMinutes": {
+      "description": "A liveness-watchdog threshold, in whole minutes; 0 disables the watchdog for that actor.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 10
     }
   }
 }

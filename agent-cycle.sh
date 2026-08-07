@@ -309,6 +309,22 @@ max_open_agent_prs="$(cfg '.max_open_agent_prs')"
 timeout_coordinator_min="$(cfg '.timeout_coordinator')"
 timeout_implementor_min="$(cfg '.timeout_implementor')"
 timeout_reviewer_min="$(cfg '.timeout_reviewer')"
+# The liveness watchdog's thresholds (requirement 4e). These read their
+# default from *here*, not from config.json, and that is the point: they are
+# meant to be a shipped prior an installation never has to think about, so a
+# customer gets sensible behaviour on its first cycle with no number chosen.
+# A key present in config.json is an override and wins.
+#
+# `INACTIVITY_PRIOR_MIN` is deliberately generous — around three and a half
+# times the longest run-average gap ever recorded here, against a population
+# in which no genuinely hung actor has yet been observed at all. A watchdog
+# set too tight would reintroduce, from the other side, exactly the failure
+# this whole mechanism exists to end: killing a stage that was working.
+INACTIVITY_PRIOR_MIN=10
+inactivity_coordinator_min="$(cfg ".inactivity_coordinator // $INACTIVITY_PRIOR_MIN")"
+inactivity_implementor_min="$(cfg ".inactivity_implementor // $INACTIVITY_PRIOR_MIN")"
+inactivity_reviewer_min="$(cfg ".inactivity_reviewer // $INACTIVITY_PRIOR_MIN")"
+inactivity_enabler_min="$(cfg ".inactivity_enabler // $INACTIVITY_PRIOR_MIN")"
 lock_stale_after_hours="$(cfg '.lock_stale_after')"
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl // 4')"
@@ -1150,7 +1166,15 @@ dump_stage_output() {
 
 handle_stage_failure() {
   local stage="$1" rc="$2" out_file="$3" pr_url="${4:-}" detail
-  if [[ "$rc" == "124" ]]; then
+  # 124 is now both caps, and they are not the same news to whoever reads this
+  # next — the Enabler, or a human asking why an item is blocked. "Ran to its
+  # wall-clock cap while still working" argues for a longer cap; "produced
+  # nothing at all for ten minutes" argues for looking at what it was waiting
+  # on. So the reason is stated rather than left to be inferred from an exit
+  # code that cannot carry it.
+  if [[ "$rc" == "124" && "$stage_kill_reason" == "inactivity" ]]; then
+    detail="$stage produced no output at all for its inactivity threshold and was stopped as wedged"
+  elif [[ "$rc" == "124" ]]; then
     detail="$stage timed out"
   else
     detail="$stage exited $rc"
@@ -1516,13 +1540,21 @@ $(jq . <<<"$input")
 "
   out="$cycle_dir/enabler.out"
   log_event "stage-start" '{"stage": "enabler"}'
-  if run_claude_stage enabler "$(( timeout_enabler_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir"; then
+  if run_claude_stage enabler "$(( timeout_enabler_min * 60 ))" "$enabler_model" "$prompt" "$out" "$cycle_dir" "$(( inactivity_enabler_min * 60 ))"; then
     rc=0
   else
     rc=$?
   fi
-  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
-    '{stage: "enabler", exit_code: $rc} + $m')"
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
+    '{stage: "enabler", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  # `if`, not `&&`: an empty warning is the common case, and a trailing
+  # `&&` whose test fails is a non-zero status at exactly the place
+  # `set -e` acts on — the same trap that cost a --once cycle its
+  # failure handling at dump_stage_output.
+  watchdog_warning="$(stage_watchdog_warning enabler || true)"
+  if [[ -n "$watchdog_warning" ]]; then
+    log_event "warning" "$watchdog_warning"
+  fi
   (( ONCE )) && dump_stage_output "$out"
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
@@ -2589,13 +2621,21 @@ $(jq . <<<"$coordinator_input")
 coordinator_out="$cycle_dir/coordinator.out"
 
 log_event "stage-start" '{"stage": "coordinator"}'
-if run_claude_stage coordinator "$(( timeout_coordinator_min * 60 ))" "$coordinator_model" "$coordinator_prompt" "$coordinator_out" "$cycle_dir"; then
+if run_claude_stage coordinator "$(( timeout_coordinator_min * 60 ))" "$coordinator_model" "$coordinator_prompt" "$coordinator_out" "$cycle_dir" "$(( inactivity_coordinator_min * 60 ))"; then
   coord_rc=0
 else
   coord_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out" "$stage_gaps_json")" \
-  '{stage: "coordinator", exit_code: $rc} + $m')"
+log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out" "$stage_gaps_json")" \
+  '{stage: "coordinator", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+# `if`, not `&&`: an empty warning is the common case, and a trailing
+# `&&` whose test fails is a non-zero status at exactly the place
+# `set -e` acts on — the same trap that cost a --once cycle its
+# failure handling at dump_stage_output.
+watchdog_warning="$(stage_watchdog_warning coordinator || true)"
+if [[ -n "$watchdog_warning" ]]; then
+  log_event "warning" "$watchdog_warning"
+fi
 (( ONCE )) && dump_stage_output "$coordinator_out"
 
 if (( coord_rc != 0 )); then
@@ -2778,13 +2818,21 @@ $(jq . <<<"$work_order_json")
 impl_out="$cycle_dir/implementor.out"
 
 log_event "stage-start" '{"stage": "implementor"}'
-if run_claude_stage implementor "$(( timeout_implementor_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir"; then
+if run_claude_stage implementor "$(( timeout_implementor_min * 60 ))" "$impl_model" "$implementor_prompt" "$impl_out" "$clone_dir" "$(( inactivity_implementor_min * 60 ))"; then
   impl_rc=0
 else
   impl_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
-  '{stage: "implementor", exit_code: $rc} + $m')"
+log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
+  '{stage: "implementor", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+# `if`, not `&&`: an empty warning is the common case, and a trailing
+# `&&` whose test fails is a non-zero status at exactly the place
+# `set -e` acts on — the same trap that cost a --once cycle its
+# failure handling at dump_stage_output.
+watchdog_warning="$(stage_watchdog_warning implementor || true)"
+if [[ -n "$watchdog_warning" ]]; then
+  log_event "warning" "$watchdog_warning"
+fi
 (( ONCE )) && dump_stage_output "$impl_out"
 
 impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
@@ -2904,13 +2952,21 @@ rev_out="$cycle_dir/reviewer.out"
 
 log_event "stage-start" "$(jq -nc --arg c "$rev_complexity" --arg m "$rev_model" \
   '{stage: "reviewer", complexity: $c, model: $m}')"
-if run_claude_stage reviewer "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir"; then
+if run_claude_stage reviewer "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$reviewer_prompt" "$rev_out" "$clone_dir" "$(( inactivity_reviewer_min * 60 ))"; then
   rev_rc=0
 else
   rev_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --argjson m "$(metering_fields "$rev_model" "$rev_out" "$stage_gaps_json")" \
-  '{stage: "reviewer", exit_code: $rc} + $m')"
+log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$rev_model" "$rev_out" "$stage_gaps_json")" \
+  '{stage: "reviewer", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+# `if`, not `&&`: an empty warning is the common case, and a trailing
+# `&&` whose test fails is a non-zero status at exactly the place
+# `set -e` acts on — the same trap that cost a --once cycle its
+# failure handling at dump_stage_output.
+watchdog_warning="$(stage_watchdog_warning reviewer || true)"
+if [[ -n "$watchdog_warning" ]]; then
+  log_event "warning" "$watchdog_warning"
+fi
 (( ONCE )) && dump_stage_output "$rev_out"
 
 rev_result="$(jq -r '.result // empty' "$rev_out" 2>/dev/null || true)"

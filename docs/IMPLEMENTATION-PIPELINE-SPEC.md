@@ -581,6 +581,10 @@ and the schema must carry every one of them.
 | `timeout_implementor` | 120 min | Raised from 90 as an interim measure (#203): the longest recorded Implementor run finished 7 seconds inside the 90-minute cap, after 327 turns and $30.83 of work that a kill would have discarded, and this repository's Implementor p95 is 64 minutes. Adaptive, liveness-based timeouts supersede this. |
 | `timeout_reviewer` | 60 min | Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different...[continued below](#extended-notes-timeout_reviewer) |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
+| `inactivity_coordinator` | 10 min | Minutes of total silence before the liveness watchdog of requirement 4e stops the stage. Absent means the shipped prior, which is where this value is meant to come from — a configured one is an override, not the normal case. `0` disables the watchdog for that actor. |
+| `inactivity_implementor` | 10 min | As `inactivity_coordinator`, for the Implementor. The one stage with a plausible long-silence case of its own — a single Bash tool call running a full test suite — which is why the prior sits far above anything yet measured rather than close to it. |
+| `inactivity_reviewer` | 10 min | As `inactivity_coordinator`, for the Reviewer. |
+| `inactivity_enabler` | 10 min | As `inactivity_coordinator`, for the Enabler. |
 | `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 120 + 60 + 30 minutes once the Enabler can run inside the lock (requirement 35). The interim raises of #203 have left only 15 minutes of that slack; #203 replaces the check with a derivation. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
@@ -1746,6 +1750,61 @@ runs unattended.
    every message and every tool result, and the mirror holds `cycles_retained`
    cycles per node in git history, so replicating them would trade a bounded
    repository for an unbounded one.
+4e. **Two caps on a stage, and they answer different questions.** Every stage
+   is bounded by a **backstop** — the `timeout_<actor>` wall-clock cap, which
+   `run_claude_stage` enforces by killing the process group — and by a
+   **liveness watchdog**: `inactivity_<actor>` minutes during which the stage
+   produced no output whatsoever. Whichever fires first kills the stage, by
+   the same sequence (TERM to the process group, a five-second grace, then
+   KILL) and with the same exit status, 124.
+   The watchdog reads the stage's own event stream (requirement 4d): inside
+   the poll loop that already runs every two seconds, it compares the file's
+   size against the largest size seen. Liveness is **monotonic growth of that
+   file** — not a beat count, not a timestamp inside the events, and nothing
+   the stage cooperates in. There is therefore no cadence for a loaded node to
+   miss: contention stretches every gap proportionally, and a threshold with
+   several times the observed headroom absorbs that with no load-relative
+   correction. A stage emits nothing for this and can fake nothing.
+   The two caps exist because a single wall-clock number conflates "this is
+   taking a long time" with "this has stopped", and the record says the
+   pipeline only ever killed the first. Across 456 stage runs there is not one
+   instance of a genuinely hung actor: every killed run was emitting steadily
+   when the wall reached it, at a tempo indistinguishable from runs that
+   succeeded. Nor is such a kill merely a delay — a killed Reviewer records no
+   verdict, so the pull request reaches the human with no pipeline review at
+   all and nothing in the merge record says the gate never ran.
+   **`kill_reason`** distinguishes the two on the `stage-end` /
+   `review-stage-end` event: `inactivity` or `backstop`, and absent when the
+   stage ended on its own. `exit_code: 124` cannot carry it, and the two imply
+   opposite corrections — a backstop kill argues the cap is too tight for work
+   that was progressing, an inactivity kill argues the stage stopped. The
+   `attempt-failed` detail says which in words, for the Enabler and for
+   whoever asks why the item is blocked.
+   A watchdog kill also logs a **`warning`**. Its kill path had fired zero
+   times in the whole recorded history when it was built, so the first firing
+   is news either way: a wedged actor caught, or a threshold too tight for
+   something a stage legitimately does — which would be this mechanism
+   reintroducing, from the other side, the failure it exists to end. The rate
+   is the thing to watch, and a rate nobody is told about is not watched.
+   **The threshold's default lives in the code, not in `config.json`.** An
+   installation that names no `inactivity_<actor>` gets the shipped prior, ten
+   minutes — roughly three and a half times the longest run-average gap ever
+   recorded, and far above anything a healthy stage has been seen to do. A key
+   present in the configuration is an override and wins; `0` disables the
+   watchdog for that actor and leaves the backstop as the only cap. Erring
+   generous is deliberate, because the loss function is asymmetric: too
+   generous costs the marginal minutes of a session that was going to fail
+   anyway, bounded by the backstop above it, while too tight throws away
+   everything the stage had done.
+   **`scripts/doctor.sh` proves the signal exists on this node.** The watchdog
+   is worthless if the runtime buffers stdout when the destination is not a
+   tty: the file would stay empty until the run ended, and every healthy stage
+   would be killed at its threshold. So the doctor makes one real invocation
+   of the cheapest configured model and samples the stream *while it is still
+   running* — a finished run looks identical either way — and fails loudly,
+   naming the `inactivity_*` escape hatch, if the output arrived only at the
+   end. It is the one check there that spends, for the reason requirement 1b's
+   usage-limit probe spends: some questions can only be answered by asking.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -2865,7 +2924,11 @@ runs unattended.
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
     `disabled`, `enabled`,
-    `warning`, `cycle-end`. A `labels-ensured` carries the `repo`, its `role`,
+    `warning`, `cycle-end`. A `stage-end` carries `kill_reason` —
+    `inactivity` or `backstop` — when and only when one of requirement 4e's
+    two caps ended the stage; its absence means the stage ended on its own,
+    well or badly. `exit_code` is 124 for both kills and so cannot tell them
+    apart, and they are opposite findings. A `labels-ensured` carries the `repo`, its `role`,
     and the labels `created` and `failed` (requirement 6a) — it is written
     only when there was something to report, so it appears on a repository's
     first cycle and then not again unless a label is deleted or the token
@@ -4490,6 +4553,22 @@ pull request, run the ones the change touches and any it could regress.
    `gaps` is carried through as given, is `null` when the caller supplies
    none, and degrades to `null` — rather than failing the whole record —
    when the caller supplies something unparseable.
+1k3. **A stage that stops producing is stopped, and the two kills are told
+   apart (requirement 4e).** `test/stage-watchdog.test.sh` passes, against a
+   `claude` stub whose output it controls: a stage that goes quiet for longer
+   than its inactivity threshold is killed, returns 124, and reports
+   `stage_kill_reason` `inactivity`; a stage that keeps emitting through a
+   span several times that threshold is *not* killed, which is the assertion
+   that matters most, since the whole failure being replaced was killing
+   stages that were working; a stage that emits nothing but outlives its
+   backstop reports `backstop`, not `inactivity`; a threshold of `0` disables
+   the watchdog, leaving a silent stage to run to its backstop; a stage that
+   ends on its own reports no kill reason at all; the killed process group is
+   dead rather than orphaned; and the stream written before the kill survives
+   it, which is what makes the forensics of requirement 4d worth having. The
+   `warning` body is produced for an inactivity kill and for nothing else.
+   `test/doctor.test.sh` passes: `--offline` reports the stream-flushing
+   probe skipped rather than running it, so the suite never spends.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to
