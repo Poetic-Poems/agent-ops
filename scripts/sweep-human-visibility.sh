@@ -53,7 +53,7 @@
 # re-request the handoff lost to a crash — needs requirement 3c's
 # answered-from-events predicate shared out of its script before the sweep
 # can tell it apart from an unanswered round; that deferral is
-# tech-debt/TD-PPagop-26080802.md.
+# tech-debt/TD-PPagop-26080803.md.
 #
 # Fails safe throughout: any answer this script cannot get (a listing that
 # errors, a pull request whose state cannot be read) is skipped with a
