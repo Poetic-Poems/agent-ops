@@ -24,6 +24,23 @@
 # no `default` either renders `*(required)*`. A key entirely absent from
 # `x-docs` falls back to its plain `description`.
 #
+# `x-docs.readme`/`x-docs.spec` (a key's notes, not its value) is a plain
+# string, or an array of *blocks* (#220): a plain string element is its own
+# paragraph; `{"list": [...]}` is an unordered list, each item a string; and
+# `{"code": "...", "lang": "..."}` (`lang` optional) is a fenced code example.
+# Two renderings of the same blocks exist because a table cell and a
+# generated `### Extended notes` subsection (below) can hold different
+# things: a cell is one line, so every block flattens into it — a paragraph
+# verbatim, a list's items joined `, `, code's newlines turned to spaces and
+# wrapped in a backtick span — with a single space between blocks, the same
+# join a plain array of paragraph strings always got; the Extended notes
+# subsection is ordinary document prose, so blocks render as real block
+# Markdown there instead — a blank line between paragraphs, a real `- `
+# list, a real fenced ```` ``` ```` block — one blank line between each pair
+# of blocks. A plain string (no array) is exactly a one-block array, in
+# either rendering, which is why every existing single-string and
+# single-paragraph-array note renders unchanged.
+#
 # Row order is the schema's own property order (`jq`'s `keys_unsorted`), so
 # reordering a table means reordering the schema. `schedule` and `review` are
 # the two object-valued properties whose own children are rendered instead of
@@ -185,11 +202,37 @@ def flatten_region($region):
     (.properties.review.properties | to_entries[] | {key: ("review." + .key), node: .value})
   end;
 
+# A note block flattened to the one line a table cell can hold: a paragraph
+# string verbatim, a list'"'"'s items joined `, `, code'"'"'s newlines turned to
+# spaces and wrapped in a backtick span.
+def block_flat:
+  if (type) == "string" then .
+  elif (type) == "object" and (has("list")) then (.list | join(", "))
+  elif (type) == "object" and (has("code")) then ("`" + (.code | gsub("\n"; " ")) + "`")
+  else error("render-config-table: unrecognised note block: " + (tojson))
+  end;
+
+# The same block rendered as real block Markdown, for the Extended notes
+# subsection: a paragraph string verbatim, a list as `- ` items, code as a
+# fenced block.
+def block_md:
+  if (type) == "string" then .
+  elif (type) == "object" and (has("list")) then (.list | map("- " + .) | join("\n"))
+  elif (type) == "object" and (has("code")) then ("```" + (.lang // "") + "\n" + .code + "\n```")
+  else error("render-config-table: unrecognised note block: " + (tojson))
+  end;
+
+# A plain string/object counts as a single-block array; an already-array
+# x-docs value is one block per element (#220).
+def blocks_of($d): if ($d | type) == "array" then $d else [$d] end;
+
 def notes_for($audience):
   (.node["x-docs"][$audience]?) as $d |
-  (if $d == null then .node.description
-   elif ($d | type) == "array" then ($d | join(" "))
-   else $d end);
+  (if $d == null then [.node.description] else blocks_of($d) end) as $blocks |
+  {
+    flat: ($blocks | map(block_flat) | join(" ")),
+    block: ($blocks | map(block_md) | join("\n\n"))
+  };
 
 def value_for($audience):
   (.node["x-docs"].value?) as $v |
@@ -203,21 +246,21 @@ def value_for($audience):
 
 [ flatten_region($region) ] as $entries |
 ($entries | map(. + {note: (. | notes_for($audience))})) as $with_notes |
-($with_notes | map(select((.note | length) > NOTES_CAP))) as $overlong |
+($with_notes | map(select((.note.flat | length) > NOTES_CAP))) as $overlong |
 {
   rows: ($with_notes | map(
     . as $e |
     ($e | value_for($audience)) as $val |
-    (if ($e.note | length) <= NOTES_CAP then
-       ($e.note | esc_pipes)
+    (if ($e.note.flat | length) <= NOTES_CAP then
+       ($e.note.flat | esc_pipes)
      else
-       (($e.note | truncated_prefix | esc_pipes)
+       (($e.note.flat | truncated_prefix | esc_pipes)
         + CONTINUATION_TEXT + "(#" + slug_for($e.key) + ")")
      end) as $notes_cell |
     "| `" + $e.key + "` | " + $val + " | " + $notes_cell + " |"
   )),
   notes: (
-    ($overlong | map(["#" * $level + " Extended notes: `" + .key + "`", "", .note])) as $blocks |
+    ($overlong | map(["#" * $level + " Extended notes: `" + .key + "`", "", .note.block])) as $blocks |
     if ($blocks | length) == 0 then []
     else
       [""] + (

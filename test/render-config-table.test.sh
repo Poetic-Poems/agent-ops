@@ -72,7 +72,18 @@ chmod +x "$tmp/scripts/render-config-table.sh"
 #     `x-docs.readme`, so the two specs' (audience "spec") regions render
 #     these particular rows short, falling back to `description` — deliberate,
 #     so the specs' own Extended-notes regions stay exercised as the "nothing
-#     overflows" empty case. ---
+#     overflows" empty case.
+#
+#     Block-note cases (#220): `pi` is two plain-string blocks (a paragraph
+#     break), over the cap; `rho` is a paragraph, a `{"list": [...]}` block
+#     and another paragraph, over the cap; `sigma` is the same shape with a
+#     `{"code": ..., "lang": "bash"}` block instead of a list. All three stay
+#     within `PREFIX_BUDGET` up to and including their non-paragraph block, so
+#     their truncated table cell is asserted to carry that block's flattened
+#     form intact. `tau` (a lone `list` block) and `upsilon` (a lone `code`
+#     block, no `lang`) stay under the cap entirely, to exercise the cell
+#     degrade — comma-joined, backtick-wrapped — with no Extended notes
+#     subsection generated at all. ---
 cat > "$tmp/config.schema.json" <<'JSON'
 {
   "properties": {
@@ -129,6 +140,37 @@ cat > "$tmp/config.schema.json" <<'JSON'
     "xi": {
       "description": "Xi description.",
       "x-docs": { "readme": "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem [a fairly long link label spanning well past the boundary](https://example.com/somewhere) ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt." }
+    },
+    "pi": {
+      "description": "Pi description.",
+      "x-docs": { "readme": [
+        "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem.",
+        "ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum ipsum."
+      ] }
+    },
+    "rho": {
+      "description": "Rho description.",
+      "x-docs": { "readme": [
+        "dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor dolor.",
+        { "list": ["first list item text", "second list item text", "third list item text"] },
+        "sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet sitamet."
+      ] }
+    },
+    "sigma": {
+      "description": "Sigma description.",
+      "x-docs": { "readme": [
+        "consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur consectetur.",
+        { "code": "echo step-one\necho step-two\necho step-three", "lang": "bash" },
+        "adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing adipiscing."
+      ] }
+    },
+    "tau": {
+      "description": "Tau description.",
+      "x-docs": { "readme": [ { "list": ["short alpha item", "short beta item"] } ] }
+    },
+    "upsilon": {
+      "description": "Upsilon description.",
+      "x-docs": { "readme": [ { "code": "echo hi\necho bye" } ] }
     },
     "schedule": {
       "properties": {
@@ -424,6 +466,65 @@ assert_not_contains "a note that fits (beta) gets no Extended notes subsection" 
 assert_contains "review.overflow_sub's row carries the continuation link" "$review_region_readme" '...[continued below](#extended-notes-reviewoverflow_sub)'
 # shellcheck disable=SC2016
 assert_contains "the review notes heading is clamped to exactly level 6" "$review_notes_region" $'\n###### Extended notes: `review.overflow_sub`'
+
+# ============================================================================
+# Block notes (#220): x-docs.readme/spec as an array of blocks — a plain
+# string is a paragraph, {"list": [...]} a list, {"code": ..., "lang": ...}
+# a fenced example — flatten to one line in a table cell and render as real
+# block Markdown in the Extended notes subsection.
+# ============================================================================
+
+# --- pi: two paragraph blocks, over the cap. The cell stays a single table
+#     line (no raw newline leaked from the paragraph break), space-joined
+#     exactly as a plain array of strings always was; the Extended notes
+#     subsection puts a blank line between the two paragraphs instead. ---
+# shellcheck disable=SC2016
+pi_line="$(grep '`pi`' "$tmp/README.md" | head -1)"
+assert_contains "pi's row carries the continuation link" "$pi_line" '...[continued below](#extended-notes-pi)'
+assert_eq "pi's row stays a single table line ending in |" "|" "${pi_line: -1}"
+# shellcheck disable=SC2016
+assert_contains "pi's cell space-joins the two paragraphs, no blank line" "$pi_line" 'lorem lorem. ipsum ipsum'
+assert_contains "the main notes region breaks pi's two paragraphs with a blank line" "$main_notes_region" $'lorem lorem.\n\nipsum ipsum'
+
+# --- rho: a paragraph, a list block, a paragraph, over the cap. The cell
+#     degrades the list to its items joined `, `; the Extended notes
+#     subsection renders it as a real `- ` list, blank-line-separated from
+#     the paragraphs either side. ---
+# shellcheck disable=SC2016
+rho_line="$(grep '`rho`' "$tmp/README.md" | head -1)"
+assert_contains "rho's row carries the continuation link" "$rho_line" '...[continued below](#extended-notes-rho)'
+assert_eq "rho's row stays a single table line ending in |" "|" "${rho_line: -1}"
+assert_contains "rho's cell degrades the list to items joined by a comma" "$rho_line" 'first list item text, second list item text, third list item text'
+assert_not_contains "rho's cell carries no literal list dash" "$rho_line" '- first list item text'
+assert_contains "the main notes region renders rho's list as real dashed items" "$main_notes_region" $'\n- first list item text\n- second list item text\n- third list item text\n'
+assert_contains "the main notes region blank-lines rho's list off the paragraph before it" "$main_notes_region" $'dolor dolor.\n\n- first list item text'
+assert_contains "the main notes region blank-lines rho's list off the paragraph after it" "$main_notes_region" $'- third list item text\n\nsitamet sitamet'
+
+# --- sigma: a paragraph, a code block (with lang), a paragraph, over the
+#     cap. The cell degrades the code to a single backtick-wrapped span with
+#     its newlines turned to spaces; the Extended notes subsection renders
+#     it as a real fenced ```bash block, newlines intact. ---
+# shellcheck disable=SC2016
+sigma_line="$(grep '`sigma`' "$tmp/README.md" | head -1)"
+assert_contains "sigma's row carries the continuation link" "$sigma_line" '...[continued below](#extended-notes-sigma)'
+assert_eq "sigma's row stays a single table line ending in |" "|" "${sigma_line: -1}"
+# shellcheck disable=SC2016
+assert_contains "sigma's cell degrades the code block to one backtick span, newlines to spaces" "$sigma_line" '`echo step-one echo step-two echo step-three`'
+assert_contains "the main notes region renders sigma's code as a real fenced bash block" "$main_notes_region" $'```bash\necho step-one\necho step-two\necho step-three\n```'
+assert_contains "the main notes region blank-lines sigma's fence off the paragraph before it" "$main_notes_region" $'consectetur consectetur.\n\n```bash'
+assert_contains "the main notes region blank-lines sigma's fence off the paragraph after it" "$main_notes_region" $'```\n\nadipiscing adipiscing'
+
+# --- tau (a lone list block) and upsilon (a lone code block, no lang) both
+#     stay under the cap: the cell still degrades exactly as above, but
+#     neither gets an Extended notes subsection at all. ---
+# shellcheck disable=SC2016
+assert_contains "tau's short list note degrades to comma-joined items in the cell" "$main_region" '| `tau` | *(required)* | short alpha item, short beta item |'
+# shellcheck disable=SC2016
+assert_contains "upsilon's short code note degrades to a backtick span in the cell" "$main_region" '| `upsilon` | *(required)* | `echo hi echo bye` |'
+# shellcheck disable=SC2016
+assert_not_contains "a short list note (tau) gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `tau`'
+# shellcheck disable=SC2016
+assert_not_contains "a short code note (upsilon) gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `upsilon`'
 
 # --- --check stays clean on the freshly rewritten tree, including the notes
 #     regions, and stays a no-op on a second render ---
