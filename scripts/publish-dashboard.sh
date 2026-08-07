@@ -261,13 +261,14 @@ def limit_info($out_full; $err_full):
     };
 
 # Port of extract_status_json(): try the stage's result text as JSON
-# outright, else the last fenced ```json block within it, else the earliest
-# brace-opening line whose suffix parses as JSON (the same algorithm as
-# agent-cycle.sh's extract_json_result, per DASHBOARD-SPEC.md — the design
-# note on the third step, and the 2026-08-03 Enabler engagement it would
-# have saved, live on that function; the dashboard must parse the same
-# verdicts the cycle accepted, or a rescued engagement renders here as a
-# stage that said nothing). An empty-or-whitespace result
+# outright, else the last fenced ``` block within it regardless of its info
+# string, else the earliest brace-opening line whose suffix parses as JSON
+# (the same algorithm as agent-cycle.sh's extract_json_result, per
+# DASHBOARD-SPEC.md — the design note on the third step, the 2026-08-03
+# Enabler engagement it would have saved, and issue #237's fence-tag fix,
+# live on that function; the dashboard must parse the same verdicts the
+# cycle accepted, or a rescued engagement renders here as a stage that said
+# nothing). An empty-or-whitespace result
 # is a stage that ran and said nothing parseable, exactly like any other
 # unparseable text (TD26072802): `ok:true` with a null status, so it renders
 # in its own cycle's row instead of the whole cycle vanishing. (The pre-jq
@@ -284,10 +285,10 @@ def extract_status($text):
         ($text | split("\n")) as $lines
         | (reduce $lines[] as $line
              ({in_block:false, capture:"", last:null};
-              if ($line | test("^```json[[:space:]]*$")) then
-                .in_block = true | .capture = ""
-              elif ($line | test("^```[[:space:]]*$")) then
-                if .in_block then (.last = .capture | .in_block = false) else . end
+              if ($line | test("^```[A-Za-z0-9_-]*[[:space:]]*$")) then
+                if .in_block then (.last = .capture | .in_block = false)
+                else (.in_block = true | .capture = "")
+                end
               elif .in_block then
                 .capture += ($line + "\n")
               else . end)).last as $block

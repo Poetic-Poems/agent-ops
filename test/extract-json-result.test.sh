@@ -17,6 +17,13 @@
 # the three copies to each other so the dashboard never renders as silent a
 # verdict the cycle accepted.
 #
+# Also guarded: issue #237's shape, a verdict fenced without a `json` info
+# string (or with a different one). The fence fallback used to require the
+# literal tag and so missed it — on 2026-08-07 that discarded poetic-2's
+# completed conflict resolution of PR #205, erasing pipeline memory that the
+# conflict was fixed. The fence matcher now toggles on any ``` line, tagged
+# or not, in or out of a block.
+#
 # The implementations are lifted from their scripts rather than restated
 # here, so this cannot pass against copies the scripts have since moved on
 # from; each extraction asserts it found something for the same reason. The
@@ -104,6 +111,15 @@ check "prose then fenced json block" \
 check "fenced block wins over a later bare object" \
   $'```json\n{"from": "fence"}\n```\n{"from": "suffix"}' \
   '{"from":"fence"}'
+
+# --- issue #237: a fence with no `json` info-string, or a different one ---
+check "prose then plain-fenced object, no info string (issue #237)" \
+  $'Here is my verdict.\n```\n{"verdict": "unblocked"}\n```' \
+  '{"verdict":"unblocked"}'
+
+check "prose then fenced object tagged with something other than json" \
+  $'Here is my verdict.\n```JSON\n{"verdict": "unblocked"}\n```' \
+  '{"verdict":"unblocked"}'
 
 # --- The 2026-08-03 shape: prose, a blank line, the verdict object bare ---
 check "prose then bare object suffix (the discarded-engagement shape)" \

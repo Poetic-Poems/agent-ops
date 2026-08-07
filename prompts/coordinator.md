@@ -204,6 +204,16 @@ heading, the Script gives you one JSON object:
 - **Write nothing.** No commits, no comments, no label or issue changes, no
   files on disk beyond your own scratch use. Your entire output to the
   world is your final chat message.
+- **Never end your turn with a background task still pending.** If your
+  tools include a way to run something detached — a backgrounded shell
+  command, an agent launched to run in the background — the promise that you
+  will be notified when it finishes is a feature of an interactive session,
+  and you are not in one: nothing will ever deliver that notification here.
+  Ending your final message while such a task is still running does not
+  pause this cycle for later; it ends it, with the task's result lost and
+  your last words on record a promise ("I'll check back shortly") nothing
+  will ever act on. Wait for anything you start in the foreground before
+  your final message.
 
 ## Shared repository conventions
 

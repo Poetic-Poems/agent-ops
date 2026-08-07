@@ -1803,7 +1803,10 @@ runs unattended.
    rather than a copy in each. It launches the invocation in its own process
    group (`set -m`), so the stage timeout's kill reaches every descendant
    (requirement 9c), and it runs the invocation under
-   `--output-format stream-json --verbose`. Each invocation therefore leaves
+   `--output-format stream-json --verbose`. An optional resume-session-id
+   argument passes `--resume` instead of starting a fresh conversation —
+   requirement 9e's salvage is the one caller that ever supplies it, and every
+   other caller's invocation is unaffected. Each invocation therefore leaves
    three files beside each other:
    `<stage>.stream.jsonl` — every event the run emitted, one JSON object per
    line, flushed as the run proceeds; `<stage>.out` — that stream's final
@@ -2214,6 +2217,53 @@ runs unattended.
    verbatim (`## Node` for the Implementor and Reviewer; the runtime input's
    `node` for the Enabler, which already received it). Regression-tested by
    `test/comment-identity.test.sh`.
+9e. **Salvage before discard.** Before requirement 9's failure path fires on
+   an unparseable final message — the Co-Ordinator, Implementor and Reviewer
+   stages here, and requirement 37's Enabler engagement — the Script makes
+   one bounded resume attempt, provided the failed run actually left a
+   session behind to resume: `run_claude_stage` again, `--resume`d onto the
+   `session_id` the failed run's own envelope carried, prompted with nothing
+   but "return the verdict JSON object, nothing else." A run that timed out
+   or exited non-zero has no living session behind it and is never salvaged
+   — only a process that exited 0 and still left `extract_json_result`
+   nothing to parse gets the attempt (`stage_salvage_result`,
+   `agent-cycle.sh`). The resume is capped at a fixed, conservative
+   `stage_salvage_backstop_sec`/`stage_salvage_inactivity_sec` (5 minutes /
+   90 seconds) rather than requirement 4f's adaptive per-(actor, repository,
+   model) budget — a continuation with no tool calls needs none of that
+   estimation, and a bound that could grow to a whole stage's own backstop is
+   not a bound worth having.
+
+   When the resume's own final message parses, its object is used exactly as
+   if the original run had produced it — no failure is recorded here, no
+   `attempt-failed`, no discard — and a `salvage` event with
+   `outcome: "recovered"` is logged (requirement 33). When it does not
+   (including when there was no session to resume at all), requirement 9's
+   ordinary failure path runs unchanged, `salvage` events record
+   `outcome: "attempted"` and `outcome: "failed"` for the attempt, and the
+   resume's own use of `run_claude_stage` never leaks into the *original*
+   run's kill-reason, gap or rate-limit bookkeeping — `stage_salvage_result`
+   saves and restores them around its own call, because
+   `detect_and_log_limit_hit` still reads them against the original `.out`
+   file afterwards and must see what that run actually reported, not what
+   the resume did.
+
+   The fenced-block parse this backs up is itself widened alongside it: a
+   verdict fenced without a `json` info string, or with a different one,
+   parses on the straight fallback and never needs a salvage at all — only
+   the fence's *presence*, not its tag, was ever what told a verdict apart
+   from prose (issue #237).
+
+   This exists because a model slipping the final-message contract is not
+   evidence the work itself was wrong. On 2026-08-07, poetic-2's completed
+   conflict resolution of PR #205 was correct, fenced without a `json` tag,
+   and discarded anyway — erasing the pipeline's memory that the conflict
+   was fixed and triggering a three-node duplicate-work cascade on the same
+   PR. A background task left running past the final message ("I'll check
+   back shortly") is the same shape from the runner's side: real work,
+   wrapped wrong. A discard should cost a retry only when a stage genuinely
+   produced nothing usable, not when the parser of the day could not yet see
+   what it produced.
 10. **Usage-limit detection.** Two sources, and the structured one is
     preferred wherever it exists. When a stage was stopped because its stream
     reported the account `rejected` (requirement 4e), the `limit-hit` is
@@ -3198,8 +3248,16 @@ runs unattended.
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
-    `disabled`, `enabled`,
-    `warning`, `cycle-end`. A `stage-start` carries the two caps that stage
+    `disabled`, `enabled`, `salvage`,
+    `warning`, `cycle-end`. A `salvage` event (requirement 9e) carries the
+    `stage` being rescued and an `outcome` — `attempted`, `recovered` or
+    `failed` — plus `exit_code` when the resume itself did not exit 0. It is
+    written for every resume the Script actually starts, success or not,
+    since a run of failed salvages with no `recovered` among them is itself
+    the evidence that a shape `extract_json_result` still cannot reach has
+    recurred; a failed run with no session to resume at all writes no
+    `salvage` event, because no attempt was made. A
+    `stage-start` carries the two caps that stage
     was given and where each came from — `backstop_min`, `inactivity_min`,
     `source` and `basis` (requirement 4f) — because a self-tuning number that
     cannot be traced is a mystery number. A `stage-end` carries `kill_reason` —
@@ -3858,7 +3916,14 @@ runs unattended.
     produced no examined marker at all — a timeout, a garbage final message, an
     omitted item — and `lib/claim.sh gc` sweeping it at `claim_ttl_hours` is the
     only thing that permits a retry, which bounds a failed engagement's cost at
-    one attempt per TTL. Two existing properties of `lib/claim.sh` make the
+    one attempt per TTL. `lib/claim.sh expire` (requirement 37) shortens that
+    floor for the one case the Script can actually tell apart from silence —
+    an engagement it watched fail even after requirement 9e's salvage — without
+    releasing the claim outright: it backdates the registry entry's `ts` so
+    `gc` retires it on its very next sweep instead of waiting out the full TTL,
+    which still bounds cost at "one attempt per sweep interval" rather than
+    reopening the unbounded-retry failure this requirement exists to prevent.
+    Two existing properties of `lib/claim.sh` make the
     pseudo-slug safe and are relied on here: `count` reads only the repo slugs
     `config.json` configures, so an Enabler claim can never inflate
     back-pressure (requirement 2.2) with work that raises no PR; and `gc` sweeps
@@ -4027,12 +4092,29 @@ runs unattended.
 37. **Failure containment.** The Enabler must never change a cycle's outcome.
     A timeout, a non-zero exit, or an unparseable final message produces the
     stage's `stage-end`, a `warning`, and **no state events at all**: no
-    verdict was reached, so nothing is recorded about any item, the claims of
-    35c stand, and gc is what allows the retry. The cycle's exit code is the one
+    verdict was reached, so nothing is recorded about any item, and gc is
+    what allows the retry. The cycle's exit code is the one
     it had before the engagement, and every step of the engagement — each `gh`
     call, each parse — tolerates its own failure, because this code runs inside
     the exit trap where an unguarded non-zero status would cost the cycle its
     `cycle-end` event, its lock release and its state-sync push.
+
+    An exit that leaves an unparseable final message gets requirement 9e's
+    salvage attempt first — the engagement's own session, resumed once, asked
+    for nothing but its verdicts — before this requirement's silence takes
+    over; a timeout or non-zero exit has no session to resume and goes
+    straight to it. Only once that also comes up empty does the `warning` name
+    every item that was in this engagement (`items: [{repo, item}, …]`), so a
+    human reading the log can see what was lost without cross-referencing the
+    claim registry, and each of those items' 35c tombstone is backdated with
+    `lib/claim.sh expire` rather than left to age out at the full
+    `claim_ttl_hours` — `gc` (requirement 2.1a, every cycle) retires it on its
+    very next sweep instead. This is deliberately not a release: 35c's own
+    design-decision note already explains why releasing a failed engagement's
+    claim outright would let the very next cycle re-engage the same
+    still-unchanged items at Opus prices for nothing, and `expire` keeps that
+    bound while shortening the tombstone's floor from `claim_ttl_hours` to
+    about one cycle interval.
 
     A usage-limit phrase in the transcript still goes down requirement 10's
     ordinary path (`limit-hit`, `fleet/limit.json`), because a limit belongs to
@@ -4176,13 +4258,20 @@ What exists, and the requirements each part answers to:
    `shellcheck`.
 3e. `lib/claim.sh` implementing requirement 17a: `claim` (kinds `branch` and
    `file`), `release`, `count` and `gc`, exit codes 0 won/done, 3 lost, 1
-   error; and requirement 3o's `claims` and `branches` — read-only listings
+   error; requirement 3o's `claims` and `branches` — read-only listings
    that always print a JSON array (empty on any read failure) and exit 0,
    since a claim-visibility gather must never fail a cycle over one listing
-   coming up short. Called by `agent-cycle.sh` (the claim loop after
+   coming up short; and requirement 37's `expire <target-slug> <key>` —
+   backdates a registry entry's `ts` to a fixed date long past any realistic
+   `claim_ttl_hours`, carrying every other field over unchanged, so `gc`
+   retires it on its very next sweep rather than releasing it. A silent
+   no-op when the entry cannot be read or `state_repo` is unset, on the same
+   reasoning as the read-only listings — an annotation is advisory, like the
+   registry it targets. Called by `agent-cycle.sh` (the claim loop after
    selection, the release hooks on every no-PR ending, the `count` inside
-   back-pressure, and `claims`/`branches` once per repo ahead of the
-   Co-Ordinator). `CLAIM_GH` substitutes a stub for tests, following
+   back-pressure, `claims`/`branches` once per repo ahead of the
+   Co-Ordinator, and `expire` from `maybe_run_enabler`'s discard path).
+   `CLAIM_GH` substitutes a stub for tests, following
    `STATE_SYNC_GH`. Unit-tested with concurrent-claim races against a
    filesystem-CAS stub (`test/claim.test.sh`); must pass `shellcheck`.
 3h. `lib/refinement.sh` implementing the refinement class: requirement 16a's
@@ -5220,6 +5309,21 @@ pull request, run the ones the change touches and any it could regress.
    reason — not die part-way, and not log nothing. Under `errexit` this is
    where a helper returning "not found" as a non-zero status silently kills
    the run (requirement 9).
+8e. **A stage that leaves a bare fence or a resumable session is recovered,
+   not discarded (requirement 9e).** `test/extract-json-result.test.sh`
+   passes: a verdict fenced ``` … ``` with no `json` info string, or with a
+   different one, parses on the fenced-block fallback exactly as a
+   `json`-tagged fence always did, both bash copies and the dashboard's jq
+   port agreeing. `test/stage-salvage.test.sh` passes, against a `claude`
+   stub that answers differently depending on whether `--resume` is present
+   in its argv: `stage_salvage_result` given an `.out` file whose
+   `session_id` is set and whose `result` does not parse resumes that session
+   and returns the resume's own parsed verdict when the resume's final
+   message does parse, logging `salvage` with `outcome: "recovered"`; returns
+   nothing and logs `outcome: "failed"` when the resume's message still does
+   not parse; and — given an `.out` file with no `session_id` at all —
+   attempts no resume, calls `claude` not once, and logs no `salvage` event,
+   since there was nothing to spend a resume on.
 8a. **A void survives an agent trying to clear it.** Append an `item-void` for
    an item, then an `unblocked` for the same item, then run a cycle: the item
    must still be void and absent from the Co-Ordinator's candidates. This is
@@ -5425,10 +5529,16 @@ pull request, run the ones the change touches and any it could regress.
     even when that one's label is also missing — proving the one-way rule
     requirement 34e states for that population still holds.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
-    stage that times out, exits non-zero, or returns prose instead of JSON: the
+    stage that times out, exits non-zero, or (after requirement 9e's salvage
+    resume also fails to parse) returns prose instead of JSON: the
     cycle still exits 0, logs `stage-end` and one `warning`, writes **no**
-    `unblocked`, `item-void`, `escalated` or `enabler-examined` event, and leaves
-    its claims for gc. Assert the ordering too — the engagement's events precede
+    `unblocked`, `item-void`, `escalated` or `enabler-examined` event. The
+    `warning` names every item the discarded engagement was given
+    (`items: [{repo, item}, …]`), and each of those items' 35c tombstone is
+    `expire`d rather than released — `test/claim.test.sh` passes: an expired
+    entry's registry file still exists with its `ts` backdated and every
+    other field unchanged, and a `gc` run immediately afterward retires it.
+    Assert the ordering too — the engagement's events precede
     `cycle-end` — and that a limit phrase in that transcript produces an ordinary
     `limit-hit` rather than being swallowed with the rest of the failure.
 33a. **The per-stage metering record matches `docs/METERING-SCHEMA.md`
@@ -5942,7 +6052,13 @@ requirements above, which state only what is.
   "retried once per `claim_ttl_hours`", which is a bounded cost written in a
   config file rather than an unbounded one discovered in a bill. The key carries
   the block's timestamp, so a genuinely re-blocked item is a new key and is not
-  gagged by the tombstone of the old one.
+  gagged by the tombstone of the old one. `lib/claim.sh expire` (requirement 37)
+  narrows that bound without abandoning it: it fires only for the one case the
+  Script can actually distinguish from silence — an engagement it watched fail
+  even after requirement 9e's salvage resume — and backdates the tombstone's
+  `ts` rather than deleting it, so `gc`'s very next sweep retires it instead of
+  the full TTL. A genuinely wedged item still costs at most one attempt per gc
+  interval, which is the same shape as before this existed, just a shorter one.
 - **The Script files every issue; the model only writes the words.** The
   Enabler could perfectly well run `gh issue create` itself, and it must not.
   Two reasons, both structural. The log is appended by the Script alone

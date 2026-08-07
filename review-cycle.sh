@@ -248,12 +248,13 @@ read_pr_url_breadcrumb() {
   [[ -f "$f" ]] && head -n1 "$f" | tr -d '[:space:]'
 }
 
-# Straight-parse the final message, else the last fenced ```json``` block, else
-# the earliest brace-opening line whose suffix parses as exactly one JSON value
-# (identical to agent-cycle.sh's parser, where the full design note lives: a
-# model sometimes prepends prose, and the object it then leaves bare at the end
-# must not be the one fatal shape). test/extract-json-result.test.sh holds the
-# two copies and scripts/publish-dashboard.sh's jq port to the same algorithm.
+# Straight-parse the final message, else the last fenced ``` block regardless
+# of its info string, else the earliest brace-opening line whose suffix parses
+# as exactly one JSON value (identical to agent-cycle.sh's parser, where the
+# full design note lives: a model sometimes prepends prose, and the object it
+# then leaves bare at the end — or fences without a `json` tag — must not be
+# the one fatal shape). test/extract-json-result.test.sh holds the two copies
+# and scripts/publish-dashboard.sh's jq port to the same algorithm.
 extract_json_result() {
   local text="$1" block line_no suffix
   if jq empty <<<"$text" >/dev/null 2>&1; then
@@ -261,8 +262,10 @@ extract_json_result() {
     return 0
   fi
   block="$(awk '
-    /^```json[[:space:]]*$/ { capture=""; in_block=1; next }
-    /^```[[:space:]]*$/ { if (in_block) { last=capture; in_block=0 }; next }
+    /^```[A-Za-z0-9_-]*[[:space:]]*$/ {
+      if (in_block) { last=capture; in_block=0 } else { capture=""; in_block=1 }
+      next
+    }
     in_block { capture = capture $0 "\n" }
     END { printf "%s", last }
   ' <<<"$text")"

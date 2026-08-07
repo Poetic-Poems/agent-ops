@@ -29,7 +29,14 @@ event and files every issue**, from your verdicts. Like the other stages you
 run as a single non-interactive invocation with no resumption: once you emit a
 final message with no further tool calls, the process exits for good and nothing
 wakes you later. Wait for anything slow in the foreground within this session
-rather than ending your turn hoping to be called back.
+rather than ending your turn hoping to be called back. This includes anything
+you launch to run detached — a backgrounded shell command, an agent set to
+run in the background: the promise that you'll be notified when it finishes
+is a feature of an interactive session, and this is not one, so nothing will
+ever deliver that notification. Ending your final message with such a task
+still pending does not pause this engagement for later; it discards the
+engagement whole, exactly as an unparseable final message does, with the
+task's result lost. Wait for it in the foreground before your final message.
 
 There is no human present to ask. If you cannot establish something, say so in
 your verdict; never leave a question hanging in a comment and stop.
