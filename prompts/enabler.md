@@ -153,12 +153,24 @@ verdict for **every** item you were given.
   `comments_posted` so the escalation issue can link to it. On a refinement item
   that one comment has a specific job — see "Refinement items".
 
-  End the body with a blank line followed by `<!-- agent-ops:pipeline-comment
-  cycle=<cycle> -->`, using the runtime input's `cycle` verbatim (invisible on
-  GitHub — an HTML comment). It marks the comment as this system's own write,
-  not a human's, so `gather-abandoned-drafts.sh` (TD26072605) does not mistake
-  your diagnosis for someone actively working the item and defer the very
-  recovery you just enabled by treating it as fresh activity.
+  Open the body with a leading bold line, a blank line, then the comment's own
+  prose:
+
+  ```
+  **Enabler** · autonomous pipeline · node `<node>`
+  ```
+
+  using the runtime input's `node` verbatim in place of `<node>`, so a human
+  scanning the thread can tell your comments from a human's — including their
+  own — which the author field alone cannot do, since every pipeline write
+  lands under the same GitHub account a human also comments as. End the body
+  with a blank line followed by `<!-- agent-ops:pipeline-comment cycle=<cycle>
+  actor=enabler -->`, using the runtime input's `cycle` verbatim in place of
+  `<cycle>` (invisible on GitHub — an HTML comment). It marks the comment as
+  this system's own write, not a human's, so `gather-abandoned-drafts.sh`
+  (TD26072605) does not mistake your diagnosis for someone actively working the
+  item and defer the very recovery you just enabled by treating it as fresh
+  activity.
 - **Run read-only local commands** for your own reasoning (`jq`, `git ls-remote`
   and the like). You have no clone and do not need one.
 - **Ask for a stalled handoff to be completed** — see `complete_handoff` under

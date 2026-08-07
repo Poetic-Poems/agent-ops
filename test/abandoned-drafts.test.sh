@@ -49,6 +49,7 @@ assert_eq() {
 # **last real activity** — not its raw `updatedAt` — is older than it.
 cutoff='2026-07-24T09:00:00Z'
 marker='<!-- agent-ops:pipeline-comment'
+# shellcheck disable=SC2016  # the backtick in #94's fixture body is literal Markdown, not command substitution
 prs='[
   {"number": 80, "isDraft": true,  "headRefName": "agent/td1-fix",
    "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a1"}], "reviews": [], "comments": []},
@@ -77,7 +78,11 @@ prs='[
    "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b1"}],
    "reviews": [{"submittedAt": "2026-07-28T21:00:00Z",
                 "body": "Flagging a design choice for the human reviewer. <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}],
-   "comments": []}
+   "comments": []},
+  {"number": 94, "isDraft": true,  "headRefName": "agent/marker-comment-with-actor",
+   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b6"}], "reviews": [],
+   "comments": [{"createdAt": "2026-07-28T21:00:00Z",
+                 "body": "**Implementor** · autonomous pipeline · node `poetic-1`\n\nStopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 actor=implementor -->"}]}
 ]'
 
 # gh's nested collections arrive capped at 100 items, unpaginated, and
@@ -127,7 +132,7 @@ candidate_filter() {
 }
 
 assert_eq "only open, draft, ours-by-branch, actually-stale PRs are candidates" \
-  "[80,84,85,86,89,93]" "$(candidate_filter)"
+  "[80,84,85,86,89,94,93]" "$(candidate_filter)"
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
 # - #81 ready: a ready PR is finished work waiting on the human. Finishing it is
@@ -178,6 +183,16 @@ assert_eq "a comment carrying the pipeline's own marker does not reset the clock
 assert_eq "an unmarked comment at the same timestamp as #86's marked one still resets the clock" \
   "true false" "$(is_candidate 86) $(is_candidate 87)"
 
+# #94 carries the newer marker shape — `actor=implementor` added alongside
+# `cycle=` — and #86 carries the older shape with no `actor=` field at all.
+# Detection matches on PIPELINE_COMMENT_MARKER_PREFIX alone (never the full
+# marker string), so both shapes must exclude their comment from the activity
+# clock identically: a fresh field added to the marker must not stop an
+# already-posted, older-shaped comment from being recognised as the
+# pipeline's own.
+assert_eq "the older cycle-only marker shape and the newer cycle+actor shape both keep the clock from resetting" \
+  "true true" "$(is_candidate 86) $(is_candidate 94)"
+
 # #89 is #86 posted the other way. `gh pr comment` files a note under
 # `comments`; `gh pr review --comment` files the same words under `reviews`,
 # and prompts/reviewer.md step 5 lets the Reviewer use either — so the marker
@@ -214,18 +229,19 @@ assert_eq "one under the cap, the data is complete and the draft is judged norma
 # --- One definition: the marker as every writer of it spells it ---
 #
 # `lib/pipeline-marker.sh` is the single definition (requirement 34a), and the
-# reader — and agent-cycle.sh's own comments — source it. Three places cannot:
-# the fixtures above, and the comment instructions in prompts/enabler.md and
-# prompts/reviewer.md, which a model reads and types out. Change the prefix
-# without changing those and the Enabler and Reviewer go on stamping a marker
-# the gatherer no longer recognises — the clock resets TD26072605 removed,
-# back again, with every test still green. These assertions are what makes the
-# one-definition claim hold for the three copies that must be spelled out.
+# reader — and agent-cycle.sh's and review-cycle.sh's own comments — source it.
+# Three places cannot: the fixtures above, and the comment instructions in
+# prompts/implementor.md, prompts/enabler.md and prompts/reviewer.md, which a
+# model reads and types out. Change the prefix without changing those and the
+# Implementor, Enabler and Reviewer go on stamping a marker the gatherer no
+# longer recognises — the clock resets TD26072605 removed, back again, with
+# every test still green. These assertions are what makes the one-definition
+# claim hold for the three copies that must be spelled out.
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 assert_eq "the fixtures above carry the marker prefix the library defines" \
   "$PIPELINE_COMMENT_MARKER_PREFIX" "$marker"
-for prompt in enabler reviewer; do
+for prompt in implementor enabler reviewer; do
   assert_eq "prompts/$prompt.md tells its stage to write that same prefix" "yes" \
     "$(grep -qF -- "$PIPELINE_COMMENT_MARKER_PREFIX" "$SCRIPT_DIR/prompts/$prompt.md" \
        && echo yes || echo no)"

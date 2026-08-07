@@ -35,9 +35,12 @@ direction (`gh pr edit --add-label/--remove-label`, one `complexity:*` label
 at the end). It endures: later cycles pick the review tier from it, and the
 Human Reviewer reads it as "how carefully do I need to look".
 
-You also receive a `## Cycle` id, a bare string. It has one job: stamping any
-comment you leave (see step 5) so `gather-abandoned-drafts.sh` (TD26072605)
-can tell your own write from a human's — see that step for why it matters.
+You also receive a `## Cycle` id and a `## Node` name, both bare strings. The
+cycle id stamps any comment you leave (see step 5) so
+`gather-abandoned-drafts.sh` (TD26072605) can tell your own write from a
+human's — see that step for why it matters. The node name goes into the same
+comment's visible header, so a human scanning the thread can tell which
+comments are yours — see step 5 for the exact form.
 
 ## Where you're running
 
@@ -155,10 +158,21 @@ your review:
    also costs nothing, because the marker below keeps these comments off the
    `abandoned-drafts` activity clock.
 
-   End the comment body with a blank line followed by `<!-- agent-ops:pipeline-comment
-   cycle=<cycle> -->`, using the `## Cycle` id verbatim (invisible on GitHub —
-   an HTML comment), whichever of the two commands above you post it with.
-   The PR is still a draft at this point in the procedure;
+   Open the comment body with a leading bold line, a blank line, then the
+   comment's own prose:
+
+   ```
+   **Reviewer** · autonomous pipeline · node `<node>`
+   ```
+
+   using the `## Node` value verbatim in place of `<node>`, so a human scanning
+   the thread can tell your comments from a human's — including their own —
+   which the author field alone cannot do, since every pipeline write lands
+   under the same GitHub account a human also comments as. End the comment body
+   with a blank line followed by `<!-- agent-ops:pipeline-comment cycle=<cycle>
+   actor=reviewer -->`, using the `## Cycle` id verbatim in place of `<cycle>`
+   (invisible on GitHub — an HTML comment), whichever of the two commands above
+   you post it with. The PR is still a draft at this point in the procedure;
    without the marker, this comment would read as fresh human activity to
    `gather-abandoned-drafts.sh` (TD26072605) and could hide a stall — this
    session dying between here and step 7 — for another

@@ -72,7 +72,14 @@ cron (weekly; a daily tick with a skip-guard is recommended — see R4)
    Reviewer-Agent; agents never launch the Script.
 3. The **Reviewer-Agent** — a headless Claude Code invocation that runs the
    `project-review` skill against one ephemeral clone and raises one review
-   pull request. One invocation per repository.
+   pull request. One invocation per repository. It writes no comments today, so
+   it stamps none of `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s requirement 9d
+   headers itself; `dashboard/index.html`'s `ACTOR` map and
+   `lib/pipeline-marker.sh`'s `pipeline_actor_label` both carry an entry for it
+   anyway, under the token `project-reviewer` and the display name **Project
+   Reviewer** — the name this document's own Actor entry differs from, kept
+   here as *Reviewer-Agent* since that is what the rest of this document calls
+   it throughout.
 4. The **Human Reviewer** — merges the review pull request through the ordinary
    GitHub process, and decides how to action its recommendations. Not launched
    by any part of this system.
@@ -421,7 +428,14 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       final message, or `status` other than `complete`): log
       `review-attempt-failed` with enough detail to diagnose, and — if a PR was
       already opened — comment on it that the agent abandoned it and why,
-      leaving the PR and branch for the human.
+      leaving the PR and branch for the human. That comment opens with
+      `docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s requirement 9d header,
+      `**Review Script** · autonomous pipeline · node \`<node>\``, and carries
+      that same requirement's invisible marker, stamped `actor=review-script`
+      — harmless here, since `gather-abandoned-drafts.sh` never sees a review
+      PR's `project-review` label or `review/` branch prefix, but it keeps the
+      write side of the marker to the one definition in
+      `lib/pipeline-marker.sh` that requirement's component describes.
 
 R6. **Usage-limit detection.** After every `claude` invocation, run the shared
    detector (`lib/limit-detect.sh`). On a match, write a `limit-hit` event to

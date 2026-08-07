@@ -1241,9 +1241,10 @@ runs unattended.
      activity: a **label edit** is discounted unconditionally (the label set is
      this system's own bookkeeping, never a sign of work in progress), and a
      **comment this system posted itself** — stamped by `agent-cycle.sh`'s own
-     stage-failure comments and by the Enabler's and Reviewer's comment
-     instructions (`prompts/enabler.md`, `prompts/reviewer.md`) — is discounted
-     because it carries the marker. A human's comment (or a peer node commenting
+     stage-failure comments and by the Implementor's, Enabler's and Reviewer's
+     comment instructions (`prompts/implementor.md`, `prompts/enabler.md`,
+     `prompts/reviewer.md`) — is discounted because it carries the marker. A
+     human's comment (or a peer node commenting
      on a human's behalf) carries no marker and always counts; filtering by
      author cannot make this distinction, because every pipeline write happens
      under the same GitHub account a human also comments as. A marked comment
@@ -1891,13 +1892,15 @@ runs unattended.
    come back on its own.
 7. **Implementor stage.** Launch the Implementor in the clone (model from
    the work order, `--dangerously-skip-permissions`, stage timeout), passing
-   the implementor prompt plus the work order.
+   the implementor prompt plus the work order, and this cycle's `cycle` id and
+   `node` name — because any comment the Implementor leaves must carry
+   requirement 9d's header and requirement 3e's marker, and a model cannot
+   know either on its own.
 8. **Reviewer stage.** If the Implementor reports `complete`, launch the
    Reviewer in the same workspace (model per requirement 8a, same flags,
    stage timeout), passing the reviewer prompt, the work order, the
    Implementor's summary (PR URL, branch, complexity), and this cycle's
-   `cycle` id — the last because any comment the Reviewer leaves must carry
-   requirement 3e's marker, and a model cannot know its own cycle.
+   `cycle` id and `node` name — the same reason as the Implementor's above.
 8a. **The Reviewer's model follows the item's complexity.** The Script
    resolves an effective complexity for the PR and launches the Reviewer with
    `reviewer_model_complex` when it is `high`, `reviewer_model_default`
@@ -2007,6 +2010,37 @@ runs unattended.
    pid/name pair is advertised only while a stage is in flight. A signal
    landing during cleanup itself must not re-enter the handler.
    `review-cycle.sh` carries the same discipline as R7a of its own spec.
+9d. **Visible attribution.** Every pull-request or issue comment this system
+   posts — from `agent-cycle.sh` directly, and from the Implementor, Reviewer
+   and Enabler — opens with a leading bold line naming the Actor that wrote it
+   and the node it ran on:
+
+   ```
+   **<Display>** · autonomous pipeline · node `<node>`
+   ```
+
+   then a blank line, then the comment's own prose. The Actor is whichever
+   stage **wrote** the comment, not the one it is about — the Script's own
+   stage-failure note carries `**Script**`, with the stage that failed named in
+   the prose (`The Implementor stopped on this PR: …`), spelled from the same
+   token→display map below, and no other preamble.
+   This exists because requirement 3e's own text already states the reason no
+   other signal can: every pipeline write lands under `warwickallen`, the same
+   GitHub account a human also comments as, so the author field cannot tell a
+   human's comment from the pipeline's, including which comments are a human's
+   own. `lib/pipeline-marker.sh`'s `pipeline_comment_header ACTOR NODE` prints
+   the line; `pipeline_actor_label TOKEN` is the token→display map, matching
+   this document's and `docs/REVIEW-PIPELINE-SPEC.md`'s *Actors* sections and
+   the vocabulary `dashboard/index.html`'s `ACTOR` map already uses, and it
+   fails open on an unknown token — prints it raw — so an Actor added later
+   degrades gracefully rather than vanishing from a comment. `agent-cycle.sh`
+   and `review-cycle.sh` call it directly; a model cannot source shell, so
+   `prompts/implementor.md`, `prompts/reviewer.md` and `prompts/enabler.md`
+   each spell the header's literal form out and instruct their stage to open
+   every comment with it, using the node name each receives at invocation
+   verbatim (`## Node` for the Implementor and Reviewer; the runtime input's
+   `node` for the Enabler, which already received it). Regression-tested by
+   `test/comment-identity.test.sh`.
 10. **Usage-limit detection.** Two sources, and the structured one is
     preferred wherever it exists. When a stage was stopped because its stream
     reported the account `rejected` (requirement 4e), the `limit-hit` is
@@ -3842,16 +3876,22 @@ What exists, and the requirements each part answers to:
    candidate rule is regression-tested in `test/abandoned-drafts.test.sh`. Fails
    safe to `[]` (exit 0). Must pass `shellcheck`. Sources
    `lib/pipeline-marker.sh`, which implements the write side of the same
-   requirement: `PIPELINE_COMMENT_MARKER_PREFIX`, the fixed substring this
-   script matches on, and `pipeline_comment_marker CYCLE_ID`, which every
-   pipeline-authored PR comment is stamped with — `agent-cycle.sh`'s own
-   stage-failure comments directly, and the Enabler's and Reviewer's comment
-   instructions (`prompts/enabler.md`, `prompts/reviewer.md`) via the cycle id
-   each receives at invocation. One definition (requirement 34a): the reader and
-   every writer that is a shell source this file, and the two prompts — which a
-   model reads, so they must spell the marker out — are asserted against
-   `PIPELINE_COMMENT_MARKER_PREFIX` by `test/abandoned-drafts.test.sh`, so the
-   marker cannot drift between any of them.
+   requirement and, together with it, requirement 9d's visible attribution:
+   `PIPELINE_COMMENT_MARKER_PREFIX`, the fixed substring this script matches
+   on; `pipeline_comment_marker CYCLE_ID ACTOR`, which every pipeline-authored
+   PR or issue comment is stamped with; `pipeline_actor_label TOKEN`, the Actor
+   token→display map, failing open on an unknown token; and
+   `pipeline_comment_header ACTOR NODE`, the leading visible line every such
+   comment opens with. `agent-cycle.sh`'s and `review-cycle.sh`'s own comments
+   call these directly; the Implementor's, Enabler's and Reviewer's comment
+   instructions (`prompts/implementor.md`, `prompts/enabler.md`,
+   `prompts/reviewer.md`) spell both the header and the marker out literally,
+   via the cycle id and node name each receives at invocation. One definition
+   (requirement 34a): the reader and every writer that is a shell source this
+   file, and the three prompts — which a model reads, so they must spell both
+   forms out — are asserted against `PIPELINE_COMMENT_MARKER_PREFIX` by
+   `test/abandoned-drafts.test.sh` and against the header's literal form by
+   `test/comment-identity.test.sh`, so neither can drift between any of them.
 3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g: given a
    repo slug, PR label and branch prefix, prints the JSON array of this system's
    own ready-but-conflicted PRs (open, non-draft, ours, `mergeable` definitively
@@ -4731,6 +4771,22 @@ pull request, run the ones the change touches and any it could regress.
    real protected preview, `scripts/preview-deploy.sh --repo
    Poetic-Poems/poetic-fiddle --pr <n>` from a shell with no bypass secret set
    reports that the deployment built and that the page could not be checked.
+2g. **Every pipeline comment is visibly attributed (requirement 9d).**
+   `test/comment-identity.test.sh` passes: `pipeline_actor_label` returns the
+   right display name for each of `script`, `coordinator`, `implementor`,
+   `reviewer`, `enabler`, `review-script` and `project-reviewer`, and fails
+   open — prints the token itself — for one it does not recognise;
+   `pipeline_comment_header` renders `**<Display>** · autonomous pipeline ·
+   node \`<node>\`` for a known and an unknown actor alike;
+   `pipeline_comment_marker` carries both the cycle id and the actor token,
+   still prefixed with `PIPELINE_COMMENT_MARKER_PREFIX`; and each of
+   `prompts/implementor.md`, `prompts/enabler.md` and `prompts/reviewer.md`
+   contains the literal header form `pipeline_comment_header` produces for its
+   own actor token. `test/abandoned-drafts.test.sh` separately proves an
+   older, actor-less marker and a newer, actor-carrying one both still exclude
+   a comment from the activity clock, and that all three prompts (now
+   including `prompts/implementor.md`) still carry
+   `PIPELINE_COMMENT_MARKER_PREFIX`.
 3. A second invocation while one holds the lock exits without acting.
 4. A simulated stale lock (fake lock file, old timestamp, dead PID) is taken
    over with a logged warning. A simulated foreign lock (fake lock file
