@@ -173,11 +173,18 @@ stage_watchdog_warning() {
 #     whole process group on timeout. `set -m` gives the backgrounded job its
 #     own process group so `kill -TERM -$pid` reaches every descendant. ---
 #
-# run_claude_stage STAGE TIMEOUT_SEC MODEL PROMPT OUT_FILE CWD [INACTIVITY_SEC]
+# run_claude_stage STAGE TIMEOUT_SEC MODEL PROMPT OUT_FILE CWD [INACTIVITY_SEC] [RESUME_SESSION_ID]
 # Returns the invocation's own exit status, or 124 when either cap fired.
 # Sets the caller-visible `stage_pid`/`stage_name` for the duration (see the
 # note at each pipeline's signal handler) and clears them on the way out, and
 # `stage_kill_reason` to say which cap fired, if either.
+#
+# RESUME_SESSION_ID, when given, is passed to `claude` as `--resume`: PROMPT
+# then continues that session instead of starting a fresh one. This is the one
+# mechanism a salvage attempt needs (issue #237) — the model that already did
+# the work is asked to restate its verdict, not to redo the work from nothing.
+# Every other cap, kill and metering path is identical to a fresh run; a
+# caller distinguishes a salvage's own record by the `stage` name it passes.
 #
 # TIMEOUT_SEC is the **backstop**: the outer bound on a stage, there for the
 # one failure the watchdog cannot see — a session looping productively,
@@ -195,8 +202,11 @@ stage_watchdog_warning() {
 # it, and not one genuinely hung actor was found.
 run_claude_stage() {
   local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
-  local inactivity_sec="${7:-0}"
+  local inactivity_sec="${7:-0}" resume_session_id="${8:-}"
   local pid waited=0 rc stream_file rate_limit_info
+  local -a claude_args=(-p --model "$model" --dangerously-skip-permissions \
+    --output-format stream-json --verbose)
+  [[ -n "$resume_session_id" ]] && claude_args+=(--resume "$resume_session_id")
   local seen_bytes=0 now size last_growth gaps=()
   stream_file="$(stage_stream_file "$out_file")"
   stage_gaps_json="null"
@@ -232,8 +242,7 @@ run_claude_stage() {
   # none to spare in the implementation cycle; they share this function
   # precisely so the one with room cannot quietly stop being covered.
   set -m
-  ( cd "$cwd" && claude -p --model "$model" --dangerously-skip-permissions \
-      --output-format stream-json --verbose <<<"$prompt" ) \
+  ( cd "$cwd" && claude "${claude_args[@]}" <<<"$prompt" ) \
     >"$stream_file" 2>"$out_file.stderr" &
   pid=$!
   set +m

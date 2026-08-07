@@ -30,6 +30,7 @@
 #   claim.sh claim    file   <target-slug> <key>
 #   claim.sh release  branch <target-slug> <branch>   # ref iff unmoved+PR-less, then registry
 #   claim.sh release  file   <target-slug> <key>      # registry only
+#   claim.sh expire   <target-slug> <key>             # backdate ts; gc retires it next sweep
 #   claim.sh count    <target-slug>                   # live registry entries
 #   claim.sh claims   <target-slug>                   # registry entries younger than claim_ttl_hours,
 #                                                      # as {item, kind, age_hours} (both shapes)
@@ -65,7 +66,9 @@
 # (requirement 2.2) with work that raises no PR. And `gc` sweeps whatever
 # directories it finds, which is the *only* thing that retires those claims:
 # they are deliberately never released, so a tombstone ageing out at
-# `claim_ttl_hours` is what lets a failed engagement be tried again.
+# `claim_ttl_hours` — or `expire`'s backdated `ts`, when the engagement that
+# held it was itself discarded (issue #237) — is what lets a failed
+# engagement be tried again.
 
 set -uo pipefail
 
@@ -91,7 +94,7 @@ branch_prefix="$(cfg '.branch_prefix')"
 
 say() { printf 'claim: %s\n' "$*"; }
 
-usage() { sed -n '3,46p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
@@ -210,6 +213,46 @@ do_release() {  # <kind> <target-slug> <key>
   return 0
 }
 
+# A discarded engagement whose claims are tombstones (the Enabler's — see
+# the note at the top of this file) is never released outright: doing so
+# would let the very next cycle re-engage the same unchanged items at Opus
+# prices, which is the failure the tombstone exists to bound (issue #237,
+# and requirement 35c's design-decision note). `expire` is the middle
+# ground: it rewrites the registry entry's `ts` to a fixed date long past any
+# realistic `claim_ttl_hours`, so `gc` retires it on the very next sweep
+# instead of waiting out the entry's full, unshortened life. Every other
+# field is carried over unchanged — this is a backdate, not a new claim, and
+# a reader mid-way through `claims`/`gc` must see the same node, cycle, item
+# and source it always would have.
+#
+# Silent no-op when the entry cannot be read or `state_repo` is unset — an
+# annotation is advisory, like the registry it targets, and a caller already
+# treats not-expired the same as expired-but-still-within-TTL: both just mean
+# a later gc sweep is what retires it.
+do_expire() {  # <target-slug> <key>
+  local slug="$1" key="$2" path cursha entry node cycle kind branch sha item source body payload
+  [[ -n "$state_repo" ]] || return 0
+  path="$(registry_path "$slug" "$key")"
+  cursha="$("$GH" api "repos/$state_repo/contents/$path" --jq '.sha' 2>/dev/null)" || return 0
+  entry="$(registry_get "$slug" "$key" || true)"
+  [[ -n "$entry" ]] || return 0
+  node="$(jq -r '.node // ""' <<<"$entry")"
+  cycle="$(jq -r '.cycle // ""' <<<"$entry")"
+  kind="$(jq -r '.kind // "file"' <<<"$entry")"
+  branch="$(jq -r '.branch // ""' <<<"$entry")"
+  sha="$(jq -r '.sha // ""' <<<"$entry")"
+  item="$(jq -r '.item // ""' <<<"$entry")"
+  source="$(jq -r '.source // ""' <<<"$entry")"
+  body="$(jq -nc --arg node "$node" --arg cycle "$cycle" --arg repo "$slug" --arg key "$key" \
+    --arg kind "$kind" --arg branch "$branch" --arg sha "$sha" --arg item "$item" --arg source "$source" \
+    '{node: $node, cycle: $cycle, repo: $repo, key: $key, kind: $kind,
+      branch: $branch, sha: $sha, item: $item, source: $source, ts: "1970-01-01T00:00:01Z"}')"
+  payload="$(printf '%s\n' "$body" | base64 -w0)"
+  "$GH" api -X PUT "repos/$state_repo/contents/$path" \
+    -f "message=claim expired: $key" -f "content=$payload" -f "sha=$cursha" >/dev/null 2>&1 || true
+  return 0
+}
+
 do_count() {  # <target-slug> -> number of live registry entries
   [[ -n "$state_repo" ]] || { echo 0; return 0; }
   "$GH" api "repos/$state_repo/contents/claims/$(san "$1")" \
@@ -298,6 +341,7 @@ case "$MODE" in
     KIND="${1:-}"; shift || true
     [[ ( "$KIND" == "branch" || "$KIND" == "file" ) && $# -eq 2 ]] || { usage >&2; exit 64; }
     do_release "$KIND" "$@"; exit $? ;;
+  expire)   [[ $# -eq 2 ]] || { usage >&2; exit 64; }; do_expire "$@";   exit $? ;;
   count)    [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_count "$@";    exit $? ;;
   claims)   [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_claims "$@";   exit $? ;;
   branches) [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_branches "$@"; exit $? ;;
