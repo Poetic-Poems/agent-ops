@@ -81,6 +81,19 @@ assert_eq "the issue is closed by the sweep" \
   "$(jq -c 'select(.item == "198")' <<<"$out")"
 assert_contains "the close call carries a comment" "issue close 198 -R x/y --comment" "$calls"
 
+# --- Case 1b: an empty `detail` must not swallow the evidence ---------------------
+# The three fields cross into the shell as TSV, and bash's `read` collapses
+# consecutive tabs even with IFS narrowed to one: an empty middle field would
+# shift the evidence into the reason's place and drop it from the comment.
+c="$tmp_dir/case1b"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"198","detail":"","evidence":"the fix merged in PR #206"}]')"
+calls="$(cat "$c/calls.log")"
+assert_eq "an empty reason still closes the issue" \
+  '{"action":"closed","item":"198","kind":"issue","closed_by":"sweep"}' \
+  "$(jq -c 'select(.item == "198")' <<<"$out")"
+assert_contains "and the evidence still reaches the comment" \
+  "the fix merged in PR #206" "$calls"
+
 # --- Case 2: the object is already closed (a human, or another route) -------------
 c="$tmp_dir/case2"; mkdir -p "$c"
 touch "$c/issue-198-closed"

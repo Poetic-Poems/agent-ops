@@ -69,6 +69,20 @@ assert_pass "case-insensitive keyword" "closes #198
 assert_pass "past-tense forms (fixed/closed/resolved)" "Fixed #9, closed #9 twice over.
 <!-- agent-ops:closes-issue item=9 -->"
 
+assert_pass "markdown emphasis around the keyword still passes" \
+  "**Closes #55**
+<!-- agent-ops:closes-issue item=55 -->"
+
+# --- The keyword must be a word of its own, as it is to GitHub ---------------------
+assert_fail "a word merely ending in a keyword does not close anything" \
+  "This leaves #198 unclosed #198 for now.
+<!-- agent-ops:closes-issue item=198 -->" \
+  "#198"
+assert_fail "\"discloses\" is not \"closes\"" \
+  "The report discloses #77 in full.
+<!-- agent-ops:closes-issue item=77 -->" \
+  "#77"
+
 # --- The keyword must name the SAME number the marker names -----------------------
 assert_fail "a closing keyword for the wrong number does not satisfy the marker" \
   "Closes #199.

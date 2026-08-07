@@ -4895,7 +4895,9 @@ What exists, and the requirements each part answers to:
     `<!-- agent-ops:closes-issue item=N -->` marker (requirement 23b) and
     exits non-zero, naming the missing number, for any that has no matching
     GitHub closing keyword (`close(s|d)`, `fix(es|ed)`, `resolve(s|d)`,
-    case-insensitive, immediately followed by `#N`) in the same body. A body
+    case-insensitive, a word of its own, immediately followed by `#N`) in the
+    same body — "unclosed #N" and "discloses #N" contain a keyword and close
+    nothing, exactly as they do to GitHub's own parser. A body
     with no marker passes trivially. The workflow runs on every
     `pull_request` event, passing the body through `env:` rather than
     interpolating it into the step directly, so an attacker-controlled title
@@ -5764,7 +5766,8 @@ pull request, run the ones the change touches and any it could regress.
    void is closed with a comment carrying the void's own evidence; an object
    already closed is reported (`closed_by: "already"`) rather than touched
    again; a shape naming no GitHub object (a register id) is left entirely
-   alone; and the per-call action cap defers rather than floods.
+   alone; a void carrying no reason still reaches the comment with its
+   evidence intact; and the per-call action cap defers rather than floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract
@@ -5787,9 +5790,10 @@ pull request, run the ones the change touches and any it could regress.
    closing keyword for the same number fails, naming it; a keyword for the
    *wrong* number does not satisfy a marker (`Closes #199` does not satisfy
    `item=198`); every recognised keyword form (`Closes`/`Fixes`/`Resolves`,
-   past tense, a colon, case-insensitive) passes; and multiple markers on one
-   body are checked independently — one satisfied marker never excuses
-   another. `test/sweep-closed-issues.test.sh` passes against a stubbed
+   past tense, a colon, case-insensitive, Markdown emphasis around it)
+   passes; a word merely ending in a keyword ("unclosed #198", "discloses
+   #77") does not; and multiple markers on one body are checked
+   independently — one satisfied marker never excuses another. `test/sweep-closed-issues.test.sh` passes against a stubbed
    `gh`: a merged, marker-carrying pull request whose issue is still open is
    closed with the merge cited as evidence; an issue GitHub already closed
    (or a PR without the marker at all) is left untouched, with no extra API

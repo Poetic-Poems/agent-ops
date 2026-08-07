@@ -87,6 +87,13 @@ close_comment() {  # close_comment REASON EVIDENCE
 }
 
 while IFS=$'\t' read -r item detail evidence; do
+  # bash's `read` collapses consecutive IFS-whitespace delimiters (tab
+  # included) even when IFS is narrowed to just "\t", so an empty `detail`
+  # would shift `evidence` into its place and leave the evidence section off
+  # the comment entirely. jq emits "-" for "no reason recorded" specifically
+  # to keep the three columns aligned — the same guard
+  # scripts/sweep-closed-issues.sh keeps over its own four.
+  [[ "$detail" == "-" ]] && detail=""
   [[ -n "$item" ]] || continue
 
   if (( actions >= max_actions )); then
@@ -147,7 +154,9 @@ while IFS=$'\t' read -r item detail evidence; do
   # register id, a review ref, a plan task id) — silently out of scope for
   # this script, never processed and never marked closed, so a later,
   # purpose-built reader can still act on it.
-done < <(jq -r '.[] | [.item, (.detail // ""), (.evidence // "")] | @tsv' \
+done < <(jq -r '.[] | [.item,
+                       ((.detail // "") | if . == "" then "-" else . end),
+                       (.evidence // "")] | @tsv' \
          <<<"$candidates_json" 2>/dev/null || true)
 
 if (( deferred > 0 )); then

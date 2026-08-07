@@ -44,7 +44,13 @@ for item in "${items[@]}"; do
   # GitHub's own closing-keyword list: close(s|d), fix(es|ed), resolve(s|d),
   # case-insensitive, immediately followed by "#N" (optionally ": #N") for
   # the same number the marker names.
-  if ! grep -qiE "(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+#${item}([^0-9]|\$)" <<<"$body"; then
+  #
+  # The keyword has to be a word of its own, as it is to GitHub's own parser —
+  # "unclosed #198" and "discloses #198" contain "closed" and "closes" but
+  # close nothing, and a check that accepted them would pass exactly the PR
+  # it exists to fail. Markdown emphasis, backticks and hyphens are all
+  # non-alphanumeric, so "**Closes #198**" still passes.
+  if ! grep -qiE "(^|[^[:alnum:]])(close[sd]?|fix(e[sd])?|resolve[sd]?):?[[:space:]]+#${item}([^0-9]|\$)" <<<"$body"; then
     echo "::error::PR body names issue #${item} (agent-ops:closes-issue marker) but has no closing keyword (Closes/Fixes/Resolves #${item}) for it" >&2
     status=1
   fi
