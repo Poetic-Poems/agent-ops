@@ -3024,7 +3024,8 @@ runs unattended.
     discipline, and without it a tidy-up destroys information. The problem
     labels the work order carries are BAD NAME, BAD FRONTMATTER, MISSING
     FIELD, BAD FIELD, BAD STATUS, BAD SCOPE, NO SCOPE, ID MISMATCH, DATE
-    MISMATCH, STALE FIELD or DUPLICATE ID:
+    MISMATCH, STALE FIELD or DUPLICATE ID — all `td-check.pl`'s own — and
+    VOIDED STATUS, which is not (requirement 34k):
     - Most are one-line frontmatter corrections, made to match the facts —
       the pull request its `ref:` names, the filename, the `scope:` declared
       in `TECH-DEBT.md` — never the other way round. Where the facts are not
@@ -3034,16 +3035,28 @@ runs unattended.
       following the `ref:` and confirming the fix has landed before the
       status itself is flipped to `resolved`, or the resolution fields
       cleared and the item left open.
+    - A **VOIDED STATUS** (requirement 34k: the fleet's void log records the
+      item done, the file still says `open`/`in-progress`) is judged by
+      following the void's own evidence, carried in the work order's `body`,
+      and confirming the change did land on the default branch — usually
+      under some other item's pull request, which is why the row was never
+      flipped. If it did, `status:` is flipped to `resolved` with `resolved:`
+      and `ref:` filled from that evidence; if it did not, the row is left
+      exactly as it is and the Implementor's `notes` say why.
     - An item file is **never deleted or renamed** once on the default
       branch — the directory is an append-only set and CI enforces it — and
-      nothing is touched beyond what the check flags: item files are
-      permanent records, not a place to re-word titles or tidy accepted
-      frontmatter.
+      nothing is touched beyond what the work order's problem lines flag:
+      item files are permanent records, not a place to re-word titles or
+      tidy accepted frontmatter.
 
     The pull request is pure register housekeeping — the register and
     nothing else — and argless `perl scripts/td-check.pl` exits 0 before the
     item is complete, the same check the target repo's own CI will run on
-    the PR.
+    the PR. That checker is the whole acceptance only for its own labels: it
+    reads each file against itself, its filename and the declared scope, so
+    it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
+    one, the item is complete only once that row is flipped or the
+    Implementor has said why the evidence did not hold up.
 25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
     trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
     `scripts/check-closing-keyword.sh` against the PR body on every
