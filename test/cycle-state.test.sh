@@ -297,6 +297,35 @@ EOF
 assert_eq "a malformed trailing line does not strand void items" \
   "R-02" "$(void_items "$log" | jq -r '.[].item')"
 
+# --- void_object_closed_items (requirement 34k) ---
+
+assert_eq "missing log yields no closed-void items" "[]" \
+  "$(void_object_closed_items "$tmp_dir/nonexistent.jsonl")"
+
+: > "$log"
+assert_eq "empty log yields no closed-void items" "[]" "$(void_object_closed_items "$log")"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-08-08T09:00:00Z","event":"void-object-closed","repo":"o/r","item":"198","kind":"issue","closed_by":"sweep"}
+EOF
+assert_eq "a closed void item is recorded" \
+  '[{"repo":"o/r","item":"198"}]' "$(void_object_closed_items "$log")"
+
+# Once actioned, an item stays actioned even if it recurs — there is no
+# clearing event for this fact, unlike item-void/unvoided.
+cat > "$log" <<'EOF'
+{"ts":"2026-08-08T09:00:00Z","event":"void-object-closed","repo":"o/r","item":"198","kind":"issue","closed_by":"sweep"}
+{"ts":"2026-08-08T10:00:00Z","event":"void-object-closed","repo":"o/r","item":"198","kind":"issue","closed_by":"already"}
+EOF
+assert_eq "a repeated closure still yields exactly one entry" \
+  "1" "$(void_object_closed_items "$log" | jq 'length')"
+
+# An itemless or repoless line pins nothing, exactly as for the other states.
+cat > "$log" <<'EOF'
+{"ts":"2026-08-08T09:00:00Z","event":"void-object-closed","item":"198","kind":"issue"}
+EOF
+assert_eq "a repoless closure record is dropped" "0" "$(void_object_closed_items "$log" | jq 'length')"
+
 # --- open_blocked_items (requirement 34h) ---
 # Where the two states meet, void wins. The shape is not exotic: `item-void`
 # clears no block, so every `void` verdict the Enabler reaches leaves the

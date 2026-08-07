@@ -320,7 +320,12 @@ matching "When `source` is …" section above.)*
      that workflow: flip `tech-debt/<ID>.md`'s `status:` frontmatter to
      `in-progress` as your first commit, then open the draft PR.
    - **Issues:** comment on the issue linking the draft PR, instead of (or
-     in addition to) a register status flip.
+     in addition to) a register status flip. Stamp the PR body with
+     `<!-- agent-ops:closes-issue item=<item> -->` — CI checks this marker
+     against a real closing keyword (step 5 below), and your branch name
+     (`agent/<item>`) already tells CI this PR closes that issue, so a
+     missing marker goes red just as a missing keyword does. Add it now
+     rather than fail the check later.
    - **Security / code-quality findings** (`source` of `security` or
      `code-quality`; a Dependabot or code-scanning alert): name the alert in
      the PR body — its `ref` (e.g. `dependabot-alert-42`) and its `url` from
@@ -398,8 +403,13 @@ matching "When `source` is …" section above.)*
      (today's date), `ref:` (the PR) — leaving the body in place; never
      delete or rename the file. `perl scripts/td-check.pl` must exit 0
      before you push.
-   - Issue: reference it with a closing keyword (`Closes #123`) in the PR
-     body.
+   - Issue: reference it with a real GitHub closing keyword (`Closes #123`
+     — `Fixes`/`Resolves` also count) in the PR body, naming the exact
+     issue the `<!-- agent-ops:closes-issue item=123 -->` marker from step 2
+     names. "Implements #123" or any other prose does not close the issue on
+     merge and fails `.github/workflows/closing-keyword.yml` — which reads
+     your branch name too, so leaving both marker and keyword off fails the
+     same way.
    - Implementation-plan task: mark it done where the plan tracks that
      (e.g. a checklist or status line).
    - Security / code-quality finding: there is no ledger to flip — GitHub
@@ -422,7 +432,8 @@ matching "When `source` is …" section above.)*
      a tidy-up into a loss of information. The problem labels in `context`
      (BAD NAME, BAD FRONTMATTER, MISSING FIELD, BAD FIELD, BAD STATUS,
      BAD SCOPE, NO SCOPE, ID MISMATCH, DATE MISMATCH, STALE FIELD,
-     DUPLICATE ID) are `td-check.pl`'s own:
+     DUPLICATE ID) are `td-check.pl`'s own; **VOIDED STATUS** is not, and is
+     the one label the checker will never confirm for you:
      - Most are one-line frontmatter corrections — a missing `ref:` on a
        resolved item, a status typo, a `filed:` date disagreeing with the
        ID's. Correct the frontmatter to match the facts — the pull request
@@ -437,16 +448,36 @@ matching "When `source` is …" section above.)*
        branch. If it did, the *status* is what is stale — flip it to
        `resolved`; if it did not, clear the resolution fields and leave the
        item open.
+     - **VOIDED STATUS** (the pipeline's own void log records this item as
+       done, but its file still says `open` or `in-progress`): the problem
+       line carries the item's path, its on-disk status and the void's own
+       reason, and the `body` in `context` carries the evidence under its
+       own heading. Follow that evidence and confirm the work really did
+       land on the default branch — most often under some *other* item's
+       pull request, which is why the row was never flipped. If it did, flip
+       `status:` to `resolved` and fill `resolved:` (the date it landed) and
+       `ref:` (the pull request the evidence names). If the evidence does
+       not hold up — you cannot find the change on the default branch —
+       leave the row exactly as it is and say so in your final `notes`: an
+       unconfirmed void is not a licence to close a real item.
+     - `td-check.pl` **cannot see a VOIDED STATUS problem, and exits 0 with
+       the row still open.** It checks each file against itself, its
+       filename and the declared scope; "the fleet already knows this is
+       done" is a fact from outside the register, so a green checker proves
+       nothing about this label. Do not read exit 0 as "there was nothing to
+       do here".
      - **Never delete or rename an item file** — the register is an
        append-only set and CI enforces it. An ID MISMATCH is repaired by
        fixing the `id:` field to match the filename (or, only for a file
        not yet on the default branch, renaming to the next free NN).
-     - **Touch nothing the check does not flag.** Item files are permanent
-       records; do not re-word titles, trim bodies, or tidy frontmatter the
-       checker accepts.
-     - Re-run `perl scripts/td-check.pl` until it exits 0. That is the
-       acceptance, and it is also what the repo's own CI will run on your
-       PR.
+     - **Touch nothing `context`'s problem lines do not flag.** Item files
+       are permanent records; do not re-word titles, trim bodies, or tidy
+       frontmatter no problem line names.
+     - Re-run `perl scripts/td-check.pl` until it exits 0 — that is what
+       the repo's own CI will run on your PR. It is the whole acceptance
+       only for the checker's own labels; where `context` carries a VOIDED
+       STATUS line, the acceptance is additionally that the row it names is
+       flipped (or that your `notes` say why the evidence did not hold up).
      - **The pull request must be pure register housekeeping** — the register
        and nothing else. If a stale body or field turns out to describe work
        that was never done, do not do that work here; leave the item open

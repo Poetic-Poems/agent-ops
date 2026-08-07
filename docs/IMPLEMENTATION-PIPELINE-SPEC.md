@@ -2690,6 +2690,41 @@ runs unattended.
     identical to the empty orphan, so its ref can be deleted mid-run — the
     Implementor's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
+17c. **The post-merge closing-keyword sweep.** Requirement 25a's CI check
+    stops a *new* pull request from merging without a real closing keyword;
+    this is the backstop for what already got through — a PR merged before
+    that check existed, or one that merged some other way — and for the
+    ordinary lag between a fix landing and the issue it was meant to close
+    actually closing. After the orphan-branch sweep (17b), every cycle runs
+    `scripts/sweep-closed-issues.sh` over each configured repo: for every
+    merged, `pr_label`-labelled pull request naming an issue `N` GitHub
+    still reports open, it closes that issue with a comment citing the merge
+    as evidence (the PR number, its merge commit) instead of leaving the
+    tombstone that keeps a finished item selectable forever (issue #240;
+    PR #206's "Implements #198" left #198 open for three days after its own
+    fix merged, selected and voided twice in the meantime). A merged PR
+    names its issue by the `<!-- agent-ops:closes-issue item=N -->` marker
+    (requirement 23b), or — when the marker is missing — by a head branch of
+    exactly `agent/<N>`, the same Script-minted anchor requirement 25a's CI
+    check reads, so one forgotten prompt instruction cannot blind the CI
+    check and this sweep on the same PR.
+    An issue GitHub reports `state_reason: "reopened"` is exempt: somebody
+    reopened it after a close, and "still open" alone cannot tell that apart
+    from "never closed". Without the exemption the sweep would re-close, on
+    the hour and with a fresh comment each time, exactly the issue a human
+    deliberately put back — the same answer requirement 34k's
+    `void-object-closed` record gives on the other sweep, spelled here with
+    no record of our own to keep, because the re-open is GitHub's record of
+    it. The skip is reported as a warning, never silent.
+
+    Bounded to the most recently updated merged pull requests per repo, and
+    idempotent by construction — it only ever acts on an issue GitHub itself
+    still reports open and not reopened, so re-running it costs nothing once
+    the backlog is cleared. Actions are capped per run (three per repo per cycle, the
+    overflow reported, never silent), logged as `issue-closed-post-merge`
+    events, and every node may sweep concurrently: GitHub's own issue-close
+    is idempotent, so the worst race outcome is two nodes both finding
+    nothing left to do. Skipped on `--dry-run`.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -2911,6 +2946,16 @@ runs unattended.
     the claim (and, once merged, the completion) is visible to any other cycle
     scanning PRs — there is no register entry and the review folder is not
     modified.
+23b. **Stamps an issue-sourced draft PR with a machine-readable marker naming
+    the issue it claims to close.** `<!-- agent-ops:closes-issue item=N -->`
+    (`lib/pipeline-marker.sh`'s convention extended to this one new purpose:
+    an invisible, greppable fact in the PR body), where `N` is the work
+    order's `item`. This is what requirement 25a's deterministic check and
+    requirement 17c's post-merge sweep both key on — neither reads prose, so
+    "Implements #N" is invisible to both, which is exactly the shape of the
+    defect requirement 25a exists to close (issue #240; PR #206 wrote
+    "Implements #198" and #198 stayed open three days after its own fix
+    merged).
 23a. **Pushes at checkpoints, not only at the claim and at the end.** Once the
     draft PR exists, the Implementor commits and pushes again at each
     meaningful checkpoint — a passing test, a completed file, a finished
@@ -2962,8 +3007,9 @@ runs unattended.
 25. Updates the originating record: the tech-debt record marked `resolved` —
     its `status:` frontmatter flipped (with `resolved:` and `ref:` filled in)
     and its body left in place, the file never deleted or renamed; issues
-    linked with a closing keyword in the PR body; implementation-plan task
-    marked done.
+    linked with a real GitHub closing keyword (`Closes`/`Fixes`/`Resolves
+    #N`) naming the same `N` as requirement 23b's marker; implementation-plan
+    task marked done.
     For `security`/`code-quality` findings, no register flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
@@ -2982,7 +3028,8 @@ runs unattended.
     discipline, and without it a tidy-up destroys information. The problem
     labels the work order carries are BAD NAME, BAD FRONTMATTER, MISSING
     FIELD, BAD FIELD, BAD STATUS, BAD SCOPE, NO SCOPE, ID MISMATCH, DATE
-    MISMATCH, STALE FIELD or DUPLICATE ID:
+    MISMATCH, STALE FIELD or DUPLICATE ID — all `td-check.pl`'s own — and
+    VOIDED STATUS, which is not (requirement 34l):
     - Most are one-line frontmatter corrections, made to match the facts —
       the pull request its `ref:` names, the filename, the `scope:` declared
       in `TECH-DEBT.md` — never the other way round. Where the facts are not
@@ -2992,16 +3039,56 @@ runs unattended.
       following the `ref:` and confirming the fix has landed before the
       status itself is flipped to `resolved`, or the resolution fields
       cleared and the item left open.
+    - A **VOIDED STATUS** (requirement 34l: the fleet's void log records the
+      item done, the file still says `open`/`in-progress`) is judged by
+      following the void's own evidence, carried in the work order's `body`,
+      and confirming the change did land on the default branch — usually
+      under some other item's pull request, which is why the row was never
+      flipped. If it did, `status:` is flipped to `resolved` with `resolved:`
+      and `ref:` filled from that evidence; if it did not, the row is left
+      exactly as it is and the Implementor's `notes` say why.
     - An item file is **never deleted or renamed** once on the default
       branch — the directory is an append-only set and CI enforces it — and
-      nothing is touched beyond what the check flags: item files are
-      permanent records, not a place to re-word titles or tidy accepted
-      frontmatter.
+      nothing is touched beyond what the work order's problem lines flag:
+      item files are permanent records, not a place to re-word titles or
+      tidy accepted frontmatter.
 
     The pull request is pure register housekeeping — the register and
     nothing else — and argless `perl scripts/td-check.pl` exits 0 before the
     item is complete, the same check the target repo's own CI will run on
-    the PR.
+    the PR. That checker is the whole acceptance only for its own labels: it
+    reads each file against itself, its filename and the declared scope, so
+    it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
+    one, the item is complete only once that row is flipped or the
+    Implementor has said why the evidence did not hold up.
+25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
+    trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
+    `scripts/check-closing-keyword.sh` against the PR body and head branch
+    on every `pull_request` event, and two anchors decide what the body owes:
+
+    - **The marker.** Every `<!-- agent-ops:closes-issue item=N -->` marker
+      (requirement 23b) in the body fails the check, naming the missing
+      number, unless the body also carries a real closing keyword for that
+      same `N`.
+    - **The branch.** A head branch of exactly `agent/<N>` — the name the
+      Script itself mints for an issue-sourced work order
+      (`claim_branch_for`) and for nothing else, since no other source
+      yields a purely numeric item (`lib/work-gone.sh`) — requires both the
+      marker for `N` and the closing keyword for `N` to be *present*. This
+      anchor is the one no model writes: a marker-only check passes
+      trivially on the PR whose Implementor forgot the marker, which is the
+      same silent prompt-skip that motivated issue #240, whereas the branch
+      name was fixed by the Script before the Implementor ever ran.
+
+    A PR with no marker on any other branch — every non-issue source —
+    passes; the check has nothing to say about a PR with nothing to close.
+    This is what makes requirement 25's "Implements #198" failure (issue
+    #240) structurally impossible to repeat unnoticed: the pull request
+    itself goes red, in front of the human who reviews it, rather than
+    depending on a model that has already been asked once and skipped it.
+    The `closing-keyword` check must also be listed in the repository
+    ruleset's required status checks — a repo setting, not a workflow file —
+    so red blocks the merge rather than merely reporting.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -3250,7 +3337,10 @@ runs unattended.
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
-    `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
+    `enabler-examined`, `escalated`, `crash-loop-escalated`,
+    `labels-ensured`, `limit-hit`, `limit-cleared`,
+    `orphan-branch-recovered`, `orphan-branch-released`,
+    `issue-closed-post-merge`, `void-object-closed`,
     `disabled`, `enabled`, `salvage`,
     `warning`, `cycle-end`. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
@@ -3854,6 +3944,106 @@ runs unattended.
     spending nothing new); the comment becomes part of the thread this
     convention already reads, so a human — or the Co-Ordinator, next time it
     is asked to select this item — can adopt it verbatim.
+34k. **Act on void: close the GitHub object a void names.** A void
+    (requirement 34c) already stops the item being selected again, but
+    nothing before this touched the *object* it is about — an obsolete draft
+    pull request or a superseded issue stayed open on GitHub, visible to
+    every human and to every tool that reads the repository rather than this
+    pipeline's own log, and kept being re-derived void by cycle after cycle
+    with nothing ever said to it (issue #240; poetic-fiddle #190/#214 were
+    re-derived void on 7+ separate cycles and never closed). Void tombstones
+    are private state, and the world they describe was never corrected.
+
+    So, in the same pre-extract window as 34f/34g/34i, against `void_json`
+    (the full void set — an already-void item needs no unblocking, but it
+    still names an object that may need closing), the Script asks
+    `scripts/close-void-github-items.sh` to close it, for the two id shapes
+    that name a GitHub object at all (the same shapes requirement 34i's own
+    work-gone rule reads, from the one definition in `lib/work-gone.sh`):
+
+    - **an issue** (a bare number) — closed, with a comment carrying the
+      void's own `detail` (the reason) and `evidence`, iff GitHub still
+      reports it open;
+    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
+      closed the same way, iff still open.
+
+    Every other void shape — a tech-debt register id, a project-review ref,
+    an implementation-plan task id — names something that is not a GitHub
+    object to close, and requirement 34k does nothing with it; a register id
+    is instead requirement 34l's concern, immediately below.
+
+    **Only a corroborated void, which today means the Co-Ordinator's.**
+    `void_json` holds the unresolved `item-void` events of all three
+    writers, but only the Co-Ordinator's passes requirement 34d's guard
+    before it is logged: the Implementor's and the Enabler's are the model's
+    own unexamined verdict, and issue #240 scopes this action to a void that
+    "survives corroboration (WI-7)". So each candidate carries its event's
+    `stage`, and `close-void-github-items.sh` acts only on
+    `stage == "coordinator"` — an uncorroborated "already done" must not
+    close a live issue on an unexamined claim. The gate is on corroboration,
+    not on the stage as such: when WI-7 (#243) extends 34d's guard to the
+    other two writers, their voids become eligible here by widening this one
+    gate, nothing else. An ineligible void is left exactly as a register id
+    is — unprocessed and unmarked, so nothing stops a later, corroborated
+    pass acting on it. The one-shot rule immediately below is the second,
+    independent bound — recovery rather than precondition — and a human's
+    plain re-open wins permanently.
+
+    **Acted on at most once, ever — deliberately not tied to the void
+    clearing.** `void_object_closed_items` (`lib/cycle-state.sh`) is the set
+    of `{repo, item}` pairs a `void-object-closed` event already names; the
+    Script excludes them from every future pass, regardless of what happens
+    to the object afterwards. This is not the same safety margin as 34d's
+    corroboration — it exists because closing is an action with a visible,
+    somewhat blunt side effect (a comment on someone's issue), and a human
+    who simply reopens the object, without going through the sanctioned
+    `unvoid_label` route (34f) that actually clears the void, must not have
+    it closed on them again next cycle. `unvoid_label` remains the only way
+    to make the *void* itself go away; this only ever runs once regardless.
+
+    Bounded and idempotent: three actions per repo per cycle (the overflow
+    reported, never silent, same as every other sweep here), and a `gh` read
+    before every close means the worst outcome of two nodes racing is both
+    finding nothing left to do. Skipped on `--dry-run`.
+34l. **Register rows, voided.** A void naming a tech-debt register id
+    (`lib/work-gone.sh`'s `WORK_GONE_REGISTER_RE`) names a file, not a
+    GitHub object — 34k's own close has nothing to do with it. But the same
+    defect it exists to close applies just as much here: the fleet's void
+    log already knows the item is done, most often because the fix landed
+    some way other than that item's own claim branch, and the register file
+    still says `status: open`, advertising unfinished work forever
+    (TD-PPpfid-26071901, voided in July, still `open` months later; issue
+    #240).
+
+    So, for every repo `work_gone_register_ids` names against `void_json`
+    (the same shared function requirement 34i's clearance rule already
+    calls, applied here to the void set instead of the blocked one), the
+    Script re-derives that repo's register-hygiene candidate —
+    `scripts/gather-register-hygiene.sh`, called a second time this cycle,
+    now with the void items and their evidence — and replaces the entry
+    requirement 3i's own pre-fetch loop already built for it in the
+    Co-Ordinator's runtime input. The replacement only ever happens on a
+    non-empty answer: this pass is a superset of the first by construction,
+    so an empty result means the second read failed where the first
+    succeeded, and overwriting on it would delete a candidate the cycle
+    already holds on no evidence at all. The gatherer's own `VOIDED STATUS` problem
+    class (a second, disjoint source of candidacy layered on top of
+    `td-check.pl`'s internal-consistency rules, never fed back into the
+    byte-identical upstream checker) is what makes this a candidate at all
+    when `td-check.pl` alone would find the file fine. The repair travels
+    through the ordinary register-hygiene Implementor flow (prompts/
+    implementor.md's "Register hygiene" procedure) exactly as any other
+    frontmatter drift — flipping `status:` to `resolved` with the void's own
+    evidence as `ref:`, or clearing stray resolution fields, whichever the
+    facts support — never a write this pipeline makes directly against a
+    protected default branch.
+
+    Re-fetching the register a second time per repo (rather than reordering
+    the cycle so requirement 3i's own pass already had `void_json`) costs
+    one extra tarball read, and only for a repo that actually has a void
+    register item — everywhere else, nothing. The alternative was moving
+    34f/34g/34i/34k's whole pre-extract window earlier than the ordering
+    those requirements are already deliberate about.
 
 ### The Enabler
 
@@ -4257,14 +4447,20 @@ What exists, and the requirements each part answers to:
    `CONFLICTING`), each carrying the PR's body verbatim, its base, and a
    head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
-   repo slug and default branch, prints a JSON array holding at most one
-   candidate — the repo's per-item tech-debt register, when
-   `scripts/td-check.pl` says it disagrees with itself — carrying a ref
-   scoped to the register's identity (a digest of the `tech-debt/` tree SHA
-   and the policy blob SHA), the register's URL, the `tech-debt/` tree SHA as
-   the blob SHA, the problem lines, and the checker's output verbatim. A repo
-   with no `tech-debt` tree prints `[]` silently; an API failure prints `[]`
-   with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0).
+   repo slug, default branch and (requirement 34l) an optional JSON array of
+   this repo's void register-shaped candidates, prints a JSON array holding
+   at most one candidate — the repo's per-item tech-debt register, when
+   `scripts/td-check.pl` says it disagrees with itself, or when a named void
+   candidate's file still carries `status: open`/`in-progress` (the
+   `VOIDED STATUS` problem class, this script's own, layered on top of and
+   never fed back into `td-check.pl`) — carrying a ref scoped to the
+   register's identity (a digest of the `tech-debt/` tree SHA and the policy
+   blob SHA), the register's URL, the `tech-debt/` tree SHA as the blob SHA,
+   the problem lines (both classes combined), and a body holding the
+   checker's output verbatim plus a section naming each `VOIDED STATUS`
+   item's void evidence. A repo with no `tech-debt` tree prints `[]`
+   silently; an API failure prints `[]` with `gh`'s diagnosis on stderr.
+   Fails safe to `[]` (exit 0).
    Its candidate rule is regression-tested in `test/register-hygiene.test.sh`;
    must pass `shellcheck`. `scripts/td-check.pl` is a byte-identical copy of
    the canonical script in `Poetic-Poems/poetic`, held here (as this
@@ -4740,6 +4936,42 @@ What exists, and the requirements each part answers to:
     Regression-tested end to end, against the shipped script copied into a
     scratch fixture repository rather than a reimplementation of its logic,
     in `test/render-config-table.test.sh`; must pass `shellcheck`.
+17. `scripts/check-closing-keyword.sh` and `.github/workflows/closing-keyword.yml`
+    implementing requirement 25a: given a pull request body, extracts every
+    `<!-- agent-ops:closes-issue item=N -->` marker (requirement 23b) and
+    exits non-zero, naming the missing number, for any that has no matching
+    GitHub closing keyword (`close(s|d)`, `fix(es|ed)`, `resolve(s|d)`,
+    case-insensitive, a word of its own, immediately followed by `#N`) in the
+    same body — "unclosed #N" and "discloses #N" contain a keyword and close
+    nothing, exactly as they do to GitHub's own parser. A body
+    with no marker passes trivially. The workflow runs on every
+    `pull_request` event, passing the body through `env:` rather than
+    interpolating it into the step directly, so an attacker-controlled title
+    or body from a fork PR cannot inject shell. Unit-tested
+    (`test/check-closing-keyword.test.sh`); must pass `shellcheck`.
+18. `scripts/sweep-closed-issues.sh` implementing requirement 17c's sweep:
+    given a repo slug, a node name and a cycle id, lists that repo's merged
+    `pr_label`-labelled pull requests (bounded to the most recently updated),
+    and for each carrying an `agent-ops:closes-issue` marker whose named
+    issue is still open and not `state_reason: "reopened"`, closes it with a
+    `pipeline_comment_header`/
+    `pipeline_comment_marker`-wrapped comment citing the merge as evidence,
+    printing one JSON action per outcome (`closed`, `deferred`, `warning`)
+    for the Script to log. Capped at three actions per repo per call, the
+    overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
+    Unit-tested (`test/sweep-closed-issues.test.sh`); must pass `shellcheck`.
+19. `scripts/close-void-github-items.sh` implementing requirement 34k: given
+    a repo slug, a node name, a cycle id and (on stdin) that repo's void
+    candidates already filtered to the id shapes `lib/work-gone.sh` defines
+    (a bare issue number, `pr-<n>-…`) and to what
+    `void_object_closed_items` has not already processed, closes each still-
+    open object with a comment carrying the void's `detail`/`evidence`,
+    printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
+    `"already"` — `deferred`, `warning`) for the Script to log as
+    `void-object-closed`. Any other id shape is left untouched. Capped at
+    three actions per call, the overflow reported rather than silent.
+    `SWEEP_GH` stubs `gh` for tests. Unit-tested
+    (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -5574,6 +5806,57 @@ pull request, run the ones the change touches and any it could regress.
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.
+8j. **A corroborated void closes the GitHub object it names, exactly once
+   (requirement 34k).** `test/close-void-github-items.test.sh` passes against
+   a stubbed `gh`: an open issue or an open, obsolete pull request named by a
+   Co-Ordinator void is closed with a comment carrying the void's own
+   evidence; an Implementor or Enabler void — or one carrying no `stage` at
+   all — is left entirely alone with no API call made, because those writers'
+   verdicts are uncorroborated until WI-7 (#243); an object already closed is
+   reported (`closed_by: "already"`) rather than touched again; a shape
+   naming no GitHub object (a register id) is left entirely alone; a void
+   carrying no reason still reaches the comment with its evidence intact;
+   and the per-call action cap defers rather than floods.
+   `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
+   once a `void-object-closed` event exists for an item, it is excluded from
+   every later pass — asserted by driving the same item through the extract
+   twice and confirming the second call still yields the recorded set, the
+   fact that stops the sweep re-closing an object a human has since reopened
+   by hand rather than through `unvoid_label`.
+8k. **A void'd register row becomes a candidate even when `td-check.pl` finds
+   nothing wrong (requirement 34l).** `test/register-hygiene.test.sh`'s void
+   section passes against the shipped `scripts/gather-register-hygiene.sh`
+   and a real `td-check.pl` run: a consistent register stays `[]` until a
+   void names one of its `open` items, at which point exactly one candidate
+   appears carrying a `VOIDED STATUS` problem line quoting the void's own
+   reason; a void naming an item already `resolved` adds nothing; a void
+   naming a file that does not exist adds nothing; and a genuinely drifted
+   register's own `td-check.pl` problems and a `VOIDED STATUS` problem
+   coexist in the same one candidate rather than competing.
+8l. **A closing keyword is enforced, not requested (requirements 23b, 25a,
+   17c).** `test/check-closing-keyword.test.sh` passes: a PR body with no
+   `agent-ops:closes-issue` marker and no `agent/<N>` head branch always
+   passes; a marker with no matching closing keyword for the same number
+   fails, naming it; an `agent/<N>` head branch with no marker for `N` fails
+   naming the marker, and with no keyword for `N` fails naming the number —
+   presence is demanded by the branch anchor, not requested of the prompt —
+   while a non-numeric agent branch (`agent/td…`, `agent/register-hygiene-…`)
+   and a `td/` branch demand nothing; a keyword for the *wrong* number does
+   not satisfy a marker (`Closes #199` does not satisfy `item=198`); every
+   recognised keyword form (`Closes`/`Fixes`/`Resolves`, past tense, a colon,
+   case-insensitive, Markdown emphasis around it) passes; a word merely
+   ending in a keyword ("unclosed #198", "discloses #77") does not; and
+   multiple markers on one body are checked independently — one satisfied
+   marker never excuses another. `test/sweep-closed-issues.test.sh` passes against a stubbed
+   `gh`: a merged, marker-carrying pull request whose issue is still open is
+   closed with the merge cited as evidence; a merged, markerless pull
+   request whose head branch is `agent/<N>` closes issue `N` the same way,
+   the branch cited as the anchor instead of the marker; an issue GitHub
+   already closed (or a PR with neither marker nor numeric agent branch) is
+   left untouched, with no extra API call made for the unnamed case; an
+   issue GitHub reports `state_reason: "reopened"` is left alone and the
+   skip reported, so a human's re-open is never undone on the hour; and the
+   per-call action cap defers rather than floods.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
