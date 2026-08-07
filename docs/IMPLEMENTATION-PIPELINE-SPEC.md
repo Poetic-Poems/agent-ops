@@ -3318,7 +3318,10 @@ runs unattended.
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
-    `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
+    `enabler-examined`, `escalated`, `crash-loop-escalated`,
+    `labels-ensured`, `limit-hit`, `limit-cleared`,
+    `orphan-branch-recovered`, `orphan-branch-released`,
+    `issue-closed-post-merge`, `void-object-closed`,
     `disabled`, `enabled`, `salvage`,
     `warning`, `cycle-end`. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
