@@ -545,7 +545,7 @@ and the schema must carry every one of them.
 <!-- config-table:start id=main -->
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range. |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks...[continued below](#extended-notes-repos) |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -564,7 +564,7 @@ and the schema must carry every one of them.
 | `refinement_after_coordinator_cycles` | *(`enabler_after_coordinator_cycles`)* | The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
 | `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
-| `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. |
+| `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
@@ -573,12 +573,12 @@ and the schema must carry every one of them.
 | `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
-| `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all. |
+| `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
 | `timeout_coordinator` | 15 min | Per-stage wall-clock timeouts, enforced by the Script. |
 | `timeout_implementor` | 120 min | Raised from 90 as an interim measure (#203): the longest recorded Implementor run finished 7 seconds inside the 90-minute cap, after 327 turns and $30.83 of work that a kill would have discarded, and this repository's Implementor p95 is 64 minutes. Adaptive, liveness-based timeouts supersede this. |
-| `timeout_reviewer` | 60 min | Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different populations. Adaptive, liveness-based timeouts supersede this. |
+| `timeout_reviewer` | 60 min | Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different...[continued below](#extended-notes-timeout_reviewer) |
 | `timeout_enabler` | 30 min | Per-stage wall-clock timeout for the Enabler, enforced like the others. |
 | `lock_stale_after` | 4 h | Greater than the sum of the stage timeouts plus slack — 15 + 120 + 60 + 30 minutes once the Enabler can run inside the lock (requirement 35). The interim raises of #203 have left only 15 minutes of that slack; #203 replaces the check with a derivation. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
@@ -605,6 +605,26 @@ accepts a bare id (`claude-sonnet-5`) or a provider-qualified one
 (`anthropic/claude-sonnet-5`), resolved per requirement 1a. Anthropic is the
 only executable provider (D12, `docs/ROADMAP.md`), so the two forms are the
 same value; no other qualifier is accepted.
+
+<!-- config-table:notes id=main -->
+
+### Extended notes: `repos`
+
+Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
+
+### Extended notes: `needs_refinement_label`
+
+The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`.
+
+### Extended notes: `abandoned_draft_after_hours`
+
+How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
+
+### Extended notes: `timeout_reviewer`
+
+Raised from 30 to 45 and then to 60 as interim measures (#203): a killed review discards the Implementor's work and can let the pull request reach the human with no pipeline review at all. 45 lasted six hours before an Opus review of a 16-file diff consumed all of it, which is the case this key cannot be sized for by hand — `reviewer_model_complex` runs are killed roughly six times as often as `reviewer_model_default` ones, so a single fixed number spans two quite different populations. Adaptive, liveness-based timeouts supersede this.
+
+<!-- config-table:notes-end -->
 
 ## The Human Gate
 
@@ -4045,10 +4065,33 @@ What exists, and the requirements each part answers to:
     ends the table right there — the row still looks right in a diff while
     the rendered page shows an empty table body followed by literal piped
     text.
-    `--check` renders to a temporary file instead and exits non-zero, naming
-    the file, the region and the first differing key, the moment any region
-    is stale — what `.github/workflows/config-table.yml` runs on every pull
-    request, modelled on `.github/workflows/tech-debt-register.yml`.
+    Each region's Notes cell is additionally capped at 500 characters
+    (`NOTES_CAP`): a cell at or under the cap renders the note verbatim, `|`
+    escaped, as before; a longer one renders a prefix — at most 480
+    characters, tokenised into Markdown atoms (a code span, a link, an
+    emphasis run, a whitespace run or a plain word, matched in that order so
+    a code span is claimed before its contents are mistaken for a link's or
+    an emphasis run's own syntax) and cut at the last atom boundary that
+    fits, so a cut never lands inside one of those constructs — followed by
+    `...[continued below](#extended-notes-<slug>)`. The note's full text is
+    repeated, unescaped, under a generated `Extended notes: `<key>`` heading
+    in that document's own `config-table:notes id=<region>` … `notes-end`
+    region, one per `config-table:start` region and required even where
+    nothing in it currently overflows; a region with nothing to say renders
+    empty. The heading's level is derived, not hard-coded — the nearest ATX
+    heading strictly above the notes-start marker, plus one, clamped at 6 —
+    and its own placement, unlike the table region's, is up to whoever wrote
+    the surrounding prose: the script rewrites whatever sits between the
+    markers and never moves them. The anchor is GitHub's own heading slug
+    (lower-cased, stripped to `[a-z0-9_-]` and space, spaces to `-`); two
+    headings in one document slugging the same, or a notes marker with no
+    heading above it, are both hard failures rather than silently
+    mis-rendered output.
+    `--check` renders each region — table and notes alike — to a temporary
+    file instead and exits non-zero, naming the file, the region and the
+    first differing key, the moment any region is stale — what
+    `.github/workflows/config-table.yml` runs on every pull request,
+    modelled on `.github/workflows/tech-debt-register.yml`.
     Regression-tested end to end, against the shipped script copied into a
     scratch fixture repository rather than a reimplementation of its logic,
     in `test/render-config-table.test.sh`; must pass `shellcheck`.
@@ -4868,7 +4911,13 @@ pull request, run the ones the change touches and any it could regress.
     schema `default` for an audience it does not name, a key carrying no
     `x-docs` for an audience falls back to `description`, and a region whose
     first two lines are not a header row and a delimiter row is refused
-    rather than rendered.
+    rather than rendered. A note over 500 characters is truncated at a word
+    boundary — never inside a code span or a link, each covered by its own
+    fixture note — with its full text reproduced in the matching Extended
+    notes subsection, including for a dotted (`schedule.*`-style) key; a
+    document with two Extended notes headings that would slug the same is
+    refused, and so is a document missing either half of a
+    `config-table:notes` marker pair.
     `.github/workflows/config-table.yml`
     runs `--check` on every pull request, so a schema edit landing without a
     matching doc regeneration (or the reverse) fails CI rather than drifting

@@ -60,12 +60,43 @@
 # refuse a region whose first two lines are not a header row and a
 # `|---|---|---|` delimiter row.
 #
-# With no arguments, every region is rewritten in place. `--check` renders
-# each region to a temporary file instead and exits non-zero — naming the
-# file, the region and the first differing key — the moment any region is
-# stale; this is what `.github/workflows/config-table.yml` runs on every pull
-# request, the same way `.github/workflows/tech-debt-register.yml` gates the
-# tech-debt register.
+# A Notes cell longer than 500 characters (`NOTES_CAP` in the jq program
+# below) is capped: the cell carries a truncated prefix — at most 480
+# characters, tokenised into Markdown atoms (a code span, a link, an
+# emphasis run, whitespace or a plain word) and cut at the last atom
+# boundary that fits, never inside one of those constructs — followed by
+# `...[continued below](#extended-notes-<slug>)`, and the note's full text
+# is repeated below the table in that document's `config-table:notes`
+# region, under a generated `Extended notes: `<key>`` heading. One notes
+# region sits beside each table region above, matched by `id`, and renders
+# empty when every note in that region fits:
+#
+#   <!-- config-table:notes id=main -->
+#
+#   ### Extended notes: `repos`
+#
+#   ...full note...
+#
+#   <!-- config-table:notes-end -->
+#
+# The notes markers are placed by hand, wherever the section reads best in
+# the surrounding prose — this script rewrites what sits between them and
+# never moves them — and each heading's level is derived, not hard-coded:
+# the nearest ATX heading above the start marker, plus one, clamped at 6:
+# missing that heading is a hard failure. The anchor is GitHub's own slug for
+# that heading (lower-cased, stripped to `[a-z0-9_-]`/space, spaces turned
+# to `-`); two headings in one document slugging the same is also a hard
+# failure, asserted rather than handled, since the current key sets make it
+# impossible. Pipes are not escaped in the notes region — `esc_pipes` exists
+# for table cells, where a raw `|` would end one; outside the table an
+# escaped pipe would render as a literal `\|`.
+#
+# With no arguments, every region — table and notes alike — is rewritten in
+# place. `--check` renders each region to a temporary file instead and exits
+# non-zero — naming the file, the region and the first differing key — the
+# moment any region is stale; this is what `.github/workflows/config-table.yml`
+# runs on every pull request, the same way `.github/workflows/tech-debt-register.yml`
+# gates the tech-debt register.
 
 set -euo pipefail
 
@@ -105,7 +136,42 @@ regions=(
 
 # shellcheck disable=SC2016 # backticks here are literal Markdown, not command substitution
 jq_program='
+def NOTES_CAP: 500;
+def CONTINUATION_TEXT: "...[continued below]";
+def PREFIX_BUDGET: NOTES_CAP - (CONTINUATION_TEXT | length);
+
 def esc_pipes: gsub("\\|"; "\\|");
+
+# GitHub'"'"'s own heading-anchor slug: lower-case, strip anything that is not
+# alphanumeric/underscore/hyphen/space, spaces to hyphens.
+def gh_slug: ascii_downcase | gsub("[^a-z0-9_\\- ]"; "") | gsub(" "; "-");
+
+def slug_for($key): "extended-notes-" + ($key | gh_slug);
+
+# A note tokenised into the atoms a truncation cut must never fall inside:
+# a code span, a link (text and target together), an emphasis run (`**`,
+# `__`, `*` or `_`), a whitespace run, or a plain word — matched in that
+# order, since a code span must be claimed before a link or emphasis run
+# mistakes its contents for their own syntax.
+def atomize:
+  [scan("`[^`]*`|\\[[^\\]]*\\]\\([^)]*\\)|\\*\\*[^*]+\\*\\*|__[^_]+__|\\*[^*]+\\*|_[^_]+_|\\s+|\\S+")];
+
+# The longest run of leading atoms whose combined length is at most
+# PREFIX_BUDGET, with a trailing whitespace run and then one trailing
+# `,`/`;`/`:` dropped. Falls back to the note'"'"'s very first atom when even
+# that alone exceeds the budget, so the prefix is never empty.
+def truncated_prefix:
+  . as $note
+  | atomize as $atoms
+  | (reduce $atoms[] as $a
+       ({acc: "", done: false};
+        if .done then .
+        elif (((.acc | length) + ($a | length)) > PREFIX_BUDGET) then (.done = true)
+        else (.acc += $a) end)
+    ).acc as $acc
+  | (if ($acc == "" and ($atoms | length) > 0) then $atoms[0] else $acc end)
+  | sub("[ \t]+$"; "")
+  | if test("[,;:]$") then .[0:-1] else . end;
 
 def flatten_region($region):
   if $region == "main" then
@@ -135,21 +201,44 @@ def value_for($audience):
       else ("`" + ($d | tojson) + "`") end)
    else "*(required)*" end);
 
-[ flatten_region($region) ]
-| map(
-    "| `" + .key + "` | " + (. | value_for($audience)) + " | "
-    + (({node: .node} | notes_for($audience)) | esc_pipes) + " |"
-  )
-| .[]
+[ flatten_region($region) ] as $entries |
+($entries | map(. + {note: (. | notes_for($audience))})) as $with_notes |
+($with_notes | map(select((.note | length) > NOTES_CAP))) as $overlong |
+{
+  rows: ($with_notes | map(
+    . as $e |
+    ($e | value_for($audience)) as $val |
+    (if ($e.note | length) <= NOTES_CAP then
+       ($e.note | esc_pipes)
+     else
+       (($e.note | truncated_prefix | esc_pipes)
+        + CONTINUATION_TEXT + "(#" + slug_for($e.key) + ")")
+     end) as $notes_cell |
+    "| `" + $e.key + "` | " + $val + " | " + $notes_cell + " |"
+  )),
+  notes: (
+    ($overlong | map(["#" * $level + " Extended notes: `" + .key + "`", "", .note])) as $blocks |
+    if ($blocks | length) == 0 then []
+    else
+      [""] + (
+        reduce range(0; ($blocks | length)) as $i
+          ([]; . + (if $i > 0 then [""] else [] end) + $blocks[$i])
+      ) + [""]
+    end
+  ),
+  slugs: ($overlong | map(slug_for(.key)))
+}
 '
 
-render_region() {
-  local region="$1" audience="$2"
-  jq -r --arg region "$region" --arg audience "$audience" "$jq_program" "$schema_file"
+render_region_json() {
+  local region="$1" audience="$2" level="$3"
+  jq -c --arg region "$region" --arg audience "$audience" --argjson level "$level" "$jq_program" "$schema_file"
 }
 
 start_marker() { printf '<!-- config-table:start id=%s -->' "$1"; }
 end_marker() { printf '<!-- config-table:end -->'; }
+notes_start_marker() { printf '<!-- config-table:notes id=%s -->' "$1"; }
+notes_end_marker() { printf '<!-- config-table:notes-end -->'; }
 
 # Prints the region's generated body rows — the lines strictly between the
 # start-id marker and the next end marker, minus the header and delimiter
@@ -216,6 +305,58 @@ replace_body() {
   mv "$tmp" "$file"
 }
 
+# Prints the notes region's current content — every line strictly between
+# the notes-start and notes-end markers — or nothing (and a non-zero
+# return) if either marker is missing. Unlike extract_body there is no
+# header/delimiter to skip: the whole region is generated.
+extract_notes_body() {
+  local file="$1" id="$2"
+  awk -v start="$(notes_start_marker "$id")" -v end="$(notes_end_marker)" '
+    $0 == start { found=1; next }
+    found && $0 == end { printed=1; exit }
+    found { print }
+    END { exit(printed ? 0 : 1) }
+  ' "$file"
+}
+
+# Prints the derived heading level for the notes region — the nearest ATX
+# heading strictly above the notes-start marker, plus one, clamped at 6 —
+# or nothing (and a non-zero return) if the marker is missing or no heading
+# precedes it.
+notes_heading_level() {
+  local file="$1" id="$2"
+  awk -v start="$(notes_start_marker "$id")" '
+    match($0, /^#+ /) { level = RLENGTH - 1; have_level = 1 }
+    $0 == start {
+      if (have_level) { print (level + 1 > 6 ? 6 : level + 1); found = 1 }
+      exit
+    }
+    END { exit(found ? 0 : 1) }
+  ' "$file"
+}
+
+# Replaces the whole notes region — every line strictly between the
+# notes-start and notes-end markers — with the content of $content_file,
+# in place.
+replace_notes_body() {
+  local file="$1" id="$2" content_file="$3"
+  local tmp
+  tmp="$(mktemp "${file}.XXXXXX")"
+  awk -v start="$(notes_start_marker "$id")" -v end="$(notes_end_marker)" -v contentfile="$content_file" '
+    $0 == start { print; inregion=1; next }
+    inregion && $0 == end {
+      while ((getline line < contentfile) > 0) print line
+      close(contentfile)
+      inregion=0
+      print
+      next
+    }
+    inregion { next }
+    { print }
+  ' "$file" > "$tmp"
+  mv "$tmp" "$file"
+}
+
 first_differing_key() {
   # $1 old content file, $2 new content file. diff's own exit status (1 for
   # "files differ", which is exactly why we are here) must not be mistaken
@@ -228,7 +369,18 @@ first_differing_key() {
   printf '%s' "${key:-(unknown)}"
 }
 
+first_differing_notes_key() {
+  # As first_differing_key, but for the notes region's generated headings.
+  local key
+  # shellcheck disable=SC2016  # the backtick in the grep/sed patterns is a literal Markdown backtick, not a shell one.
+  key="$( { { diff -u "$1" "$2" 2>/dev/null || true; } \
+    | grep -m1 -E '^[+-]#+ Extended notes: `' \
+    | sed -E 's/^.#+ Extended notes: `([^`]+)`.*/\1/'; } || true )"
+  printf '%s' "${key:-(unknown)}"
+}
+
 stale=0
+declare -A seen_slugs
 
 for spec in "${regions[@]}"; do
   IFS=: read -r file id audience <<<"$spec"
@@ -249,8 +401,35 @@ for spec in "${regions[@]}"; do
     exit 1
   fi
 
+  old_notes_content="$(mktemp)"
+  if ! extract_notes_body "$file" "$id" > "$old_notes_content"; then
+    echo "render-config-table: $file has no config-table:notes region id=$id" >&2
+    rm -f "$old_content" "$old_notes_content"
+    exit 1
+  fi
+  if ! level="$(notes_heading_level "$file" "$id")"; then
+    echo "render-config-table: $file region id=$id: no heading precedes the config-table:notes start marker" >&2
+    rm -f "$old_content" "$old_notes_content"
+    exit 1
+  fi
+
+  region_json="$(render_region_json "$id" "$audience" "$level")"
+
+  while IFS= read -r slug; do
+    [[ -z "$slug" ]] && continue
+    slug_key="$file:$slug"
+    if [[ -n "${seen_slugs[$slug_key]:-}" ]]; then
+      echo "render-config-table: $file: Extended notes heading for region id=$id slugs to #$slug, already used by region id=${seen_slugs[$slug_key]}" >&2
+      rm -f "$old_content" "$old_notes_content"
+      exit 1
+    fi
+    seen_slugs["$slug_key"]="$id"
+  done < <(jq -r '.slugs[]' <<<"$region_json")
+
   new_content="$(mktemp)"
-  render_region "$id" "$audience" > "$new_content"
+  jq -r '.rows[]' <<<"$region_json" > "$new_content"
+  new_notes_content="$(mktemp)"
+  jq -r '.notes[]' <<<"$region_json" > "$new_notes_content"
 
   if (( check_mode )); then
     if ! diff -q "$old_content" "$new_content" >/dev/null; then
@@ -260,11 +439,20 @@ for spec in "${regions[@]}"; do
     else
       rm -f "$new_content"
     fi
+    if ! diff -q "$old_notes_content" "$new_notes_content" >/dev/null; then
+      key="$(first_differing_notes_key "$old_notes_content" "$new_notes_content")"
+      echo "render-config-table: $file region id=$id Extended notes are stale (first differing key: \`$key\`) — regenerated notes in $new_notes_content" >&2
+      stale=1
+    else
+      rm -f "$new_notes_content"
+    fi
   else
     replace_body "$file" "$id" "$new_content"
     rm -f "$new_content"
+    replace_notes_body "$file" "$id" "$new_notes_content"
+    rm -f "$new_notes_content"
   fi
-  rm -f "$old_content"
+  rm -f "$old_content" "$old_notes_content"
 done
 
 if (( check_mode )); then
