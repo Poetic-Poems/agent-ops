@@ -2654,13 +2654,24 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # correctness gate (the Enabler still voids a stale item it does reach).
 live_pr_refs_json="$(jq -c \
   '[.[] | .slug as $s | ((.merge_conflicts // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
-  <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+  <<<"$ordered_repos_json" 2>/dev/null || true)"
+# An *empty* live set and a *failed* derivation of one are opposite facts, and
+# only the guard below keeps them apart. Empty-on-success is meaningful — no PR
+# is in either state this cycle, so every SHA-scoped ref really is superseded or
+# resolved — but a jq failure knows nothing about any PR, and feeding its result
+# in as an empty set would mark every eligible conflict/abandoned ref stale and
+# drop the lot: maximal filtering, the exact opposite of the unfiltered
+# degradation the comment above and requirement 35e both promise. Failure alone
+# yields the empty *string* (jq prints nothing to stdout on error, and prints
+# `[]` at minimum on success), so testing for it skips the filter outright.
+#
 # `as $repo`/`as $item` before piping into `$live`: `|` rebinds `.` to its
 # right-hand side for everything downstream, `$live` included, so reading
 # `.repo`/`.item` *after* `$live |` would read them off the live-refs array
 # instead of off the eligible entry — jq has no other way to hold onto the
 # outer `.` across a nested pipe.
-stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
+stale_enabler_refs_json='[]'
+[[ -z "$live_pr_refs_json" ]] || stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
   [ .[] | (.repo // "") as $repo | (.item // "") as $item
         | select(($item | test("^pr-[0-9]+-(conflict|abandoned)-[0-9a-f]+$"))
                  and (($live | index($repo + "#" + $item)) == null)) ]

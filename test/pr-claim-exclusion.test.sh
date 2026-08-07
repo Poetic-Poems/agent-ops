@@ -253,6 +253,20 @@ resolved_result="$(run_stale_ref_block "$resolved_ordered" "$eligible")"
 assert_eq "a resolved PR's now-stale ref is dropped too" "0" \
   "$(jq '[.eligible[] | select(.item == "pr-205-conflict-305ca060016d" or .item == "pr-205-conflict-6319fee06dfc")] | length' <<<"$resolved_result")"
 
+# The degradation requirement 35e promises: a jq failure deriving the live set
+# leaves the eligible set *unfiltered*. The distinction that makes this work is
+# that an empty live set means "nothing is in either state" (assert above: it
+# filters) while a failed one means nothing at all — so it must not filter, or
+# one bad `ordered_repos_json` would drop every conflict/abandoned ref the
+# Enabler was eligible to examine and log them as superseded, which they are not.
+broken_result="$(run_stale_ref_block 'not json at all' "$eligible")"
+assert_eq "a failed live-set derivation leaves the eligible set unfiltered" "3" \
+  "$(jq '.eligible | length' <<<"$broken_result")"
+assert_eq "…including the ref an empty live set would have dropped" "1" \
+  "$(jq '[.eligible[] | select(.item == "pr-205-conflict-305ca060016d")] | length' <<<"$broken_result")"
+assert_eq "…and nothing is logged as stale on that path" "false" \
+  "$(jq -r '.logged | test("enabler-stale-refs-skipped")' <<<"$broken_result")"
+
 printf '\n%s\n' "----------------------------------------"
 if (( failures == 0 )); then
   printf 'All assertions passed.\n'
