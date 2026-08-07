@@ -545,6 +545,34 @@ assert_eq "ASSIGNEE equal to the author is a skip, not a 422 attempt" "skip" "$o
 assert_eq "  ... and exits 0" "0" "$rc"
 assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
 
+# The author in the reviews list, which GitHub does permit: `APPROVE` and
+# `REQUEST_CHANGES` are closed to a pull request's author but `COMMENT` is not,
+# and the Reviewer stage may file its findings exactly that way, under the same
+# account that raised the pull request. The POST 422s as a whole when any one
+# login on it is invalid — it would add nobody at all, including the human who
+# actually approved — so the author must be struck off before anything is
+# asked.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review warwickallen COMMENTED)" "$(review Warwick-Allen APPROVED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "the author's own COMMENT review is never a request target" \
+  "$(printf 'requested\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... asking only for the reviewer who is not the author" "0" \
+  "$(grep -c -- '-f reviewers\[\]=warwickallen' "$tmp_dir/posts")"
+assert_eq "  ... in one POST" "1" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# The same, with nobody else on the list: striking the author off leaves no
+# candidate at all, and ASSIGNEE is the author too, so it is a skip — not a
+# request GitHub would refuse, and not a `failed` worth warning about.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review warwickallen COMMENTED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "an author-only reviews list leaves nobody to ask" "skip" "$out"
+assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
 # CHANGES_REQUESTED still blocking: confirm_review_requested's job, not this
 # one's — this function must stay out of the way rather than also requesting a
 # review from ASSIGNEE alongside it.

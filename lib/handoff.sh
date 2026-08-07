@@ -242,13 +242,17 @@ _handoff_blocking_reviewers() {
 #
 # This is `ensure_human_reviewer`'s answer to a fact `_handoff_blocking_
 # reviewers` never had to face: GitHub will not let a pull request's author
-# review it, so a `CHANGES_REQUESTED` reviewer can never be the author, but a
-# review target chosen from *config* can be — on this system's own pull
-# requests, they routinely are the same account (see `ensure_human_reviewer`).
-# Whoever has already reviewed this pull request, in any state, is a login
-# GitHub itself already accepted as a reviewer of it, which is proof enough
-# that it is not the author without this file ever reading CODEOWNERS or
-# knowing a second account exists behind one human's approvals.
+# approve it or request changes on it, so a `CHANGES_REQUESTED` reviewer can
+# never be the author, but a review target chosen from *config* can be — on
+# this system's own pull requests, they routinely are the same account (see
+# `ensure_human_reviewer`). Whoever has already reviewed this pull request is
+# in almost every case a login CODEOWNERS itself picked, without this file ever
+# reading CODEOWNERS or knowing a second account exists behind one human's
+# approvals.
+#
+# "Almost every": a `COMMENT` review *is* open to the author, so this list can
+# contain them, and `ensure_human_reviewer` filters them out of it rather than
+# trusting the reviews list to have done so.
 _handoff_known_reviewers() {
   local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" lines
   lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
@@ -420,10 +424,16 @@ confirm_review_requested() {
 # answer from CODEOWNERS' file and org membership would be many. ASSIGNEE is
 # the fallback for the one case that leaves nobody to read: a pull request
 # CODEOWNERS never touched at all (no matching rule, or the repo does not use
-# one) — and even there, a fallback aimed at the author is refused rather than
-# attempted, because a 422 is not a transient failure worth warning about
-# every cycle; it is a fact about the configuration that will not change
-# tomorrow.
+# one).
+#
+# Either way the author is struck off the candidates before anything is asked,
+# never asked-for-and-refused: a 422 is not a transient failure worth warning
+# about every cycle, it is a fact about the configuration that will not change
+# tomorrow, and one invalid login fails the whole POST rather than its own
+# entry. That filter is what makes `known` safe to trust — a `COMMENT` review
+# is open to a pull request's author, so the reviews list can name them (see
+# `_handoff_known_reviewers`) — and it is why ASSIGNEE equal to the author is a
+# `skip` rather than an attempt.
 #
 # Prints one of:
 #   skip       PR_URL is empty, the PR is a draft, something is already
@@ -475,18 +485,28 @@ ensure_human_reviewer() {
     printf 'failed'
     return 1
   fi
+  if ! author="$(_handoff_pr_author "$slug" "$number")"; then
+    printf 'failed'
+    return 1
+  fi
+
+  # The author is not a legal review target whichever list proposed them, so
+  # the filter is applied to both. GitHub refuses `APPROVE` and
+  # `REQUEST_CHANGES` from a pull request's own author but accepts a `COMMENT`
+  # review — and a Reviewer's findings may be filed exactly that way
+  # (`prompts/reviewer.md` offers `gh pr review --comment`), under the same
+  # account that raised the pull request. One such review would otherwise put
+  # the author into `known`, and the POST below 422s as a whole when any one
+  # login on it is invalid: it would add *nobody*, not everybody-but-the-author,
+  # switching requirement 38a's guarantee off on precisely the pull requests
+  # this system raises.
+  if [[ -n "$known" && -n "$author" ]]; then
+    known="$(grep -Fxv -e "$author" <<<"$known" || true)"
+  fi
 
   if [[ -n "$known" ]]; then
     targets="$known"
-  elif [[ -n "$assignee" ]]; then
-    if ! author="$(_handoff_pr_author "$slug" "$number")"; then
-      printf 'failed'
-      return 1
-    fi
-    if [[ "$assignee" == "$author" ]]; then
-      printf 'skip'
-      return 0
-    fi
+  elif [[ -n "$assignee" && "$assignee" != "$author" ]]; then
     targets="$assignee"
   else
     printf 'skip'

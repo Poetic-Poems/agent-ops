@@ -4423,11 +4423,19 @@ runs unattended.
     aimed at a pull request's own author with a 422. CODEOWNERS already solved
     that once, automatically, the moment the pull request went ready; reading
     who it already picked is both correct and one API call. `assignee` is the
-    fallback for a pull request CODEOWNERS never touched at all, and even
-    there a target that collides with the author is a `skip`, never an
-    attempted (and refused) request — a 422 is not a transient failure worth a
-    `warning` every cycle, it is a fact about the configuration that will not
-    change tomorrow.
+    fallback for a pull request CODEOWNERS never touched at all.
+
+    The author is struck off the candidates whichever list proposed them,
+    before anything is asked, and a request left with no candidate is a `skip`
+    rather than an attempt: a 422 is not a transient failure worth a `warning`
+    every cycle, it is a fact about the configuration that will not change
+    tomorrow, and one invalid login fails the whole POST rather than its own
+    entry — so an unfiltered author would take the real reviewer down with it.
+    The filter applies to the reviews list too, not only to `assignee`:
+    GitHub closes `APPROVE` and `REQUEST_CHANGES` to a pull request's author
+    but leaves `COMMENT` open to them, and a Reviewer's own findings may be
+    filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
+    them — under the account that raised the pull request.
 
     Called from both places `confirm_review_requested` already is — the
     Reviewer's own handoff and the Enabler's `complete_handoff` — whenever
@@ -4480,6 +4488,18 @@ runs unattended.
     detection and correction for a human to fall through. What it cannot fix —
     a listing or a read that fails — is a `warning`, never a silent skip.
     Skipped on `--dry-run`, like every sweep that writes.
+
+    The Script logs what the sweep did under the sweep's own event names —
+    `review-requested`, `human-review-requested` and `human-nudged`, each
+    carrying the `repo` swept and the `pr_url` acted on — exactly as
+    requirement 17b's sweep logs `orphan-branch-recovered` /
+    `orphan-branch-released`, and deliberately not as `pr-ready`. A sweep
+    action is not a handoff: the Publisher's outcome ladder
+    (`docs/DASHBOARD-SPEC.md`) reads a `pr-ready` anywhere in a cycle as "this
+    cycle got a pull request to ready" and ranks it above every other reading,
+    so a `pr-ready` logged for a re-request on some other repository's
+    long-since-ready pull request would rewrite the recorded outcome of a cycle
+    that stood down or selected nothing.
 
 38d. **Scope note.** Requirement 38 does not extend the same guarantee to
     every conceivable class of human-blocked work — an `escalate` verdict
@@ -6159,8 +6179,10 @@ pull request, run the ones the change touches and any it could regress.
 38. **Human-visibility (requirements 38a–38c).** `test/handoff.test.sh` passes:
     `ensure_human_reviewer` re-requests review from whoever has ever reviewed
     the pull request (any state) in preference to `assignee`; falls back to
-    `assignee` only when nobody ever has; `skip`s rather than attempts a
-    request when `assignee` equals the pull request's own author; `skip`s
+    `assignee` only when nobody ever has; strikes the pull request's own author
+    off both lists before asking, so an author's `COMMENT` review on their own
+    pull request neither becomes a request target nor 422s the request for the
+    human beside them, and an author-only reviews list is a `skip`; `skip`s
     while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
     pull request is a draft; and an unreadable reviews list or pending list is
     `failed`, never an assumed `skip`. `test/needs-refinement.test.sh` passes:

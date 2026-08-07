@@ -2405,15 +2405,23 @@ fi
 # lands or it does not, so two nodes sweeping at once cost nothing but a
 # redundant read. Skipped on --dry-run: the sweep requests reviews and posts
 # comments.
+#
+# Its actions get their own event names rather than borrowing `pr-ready`, for
+# the same reason 2.1b's do: the Publisher's outcome ladder reads `pr-ready` as
+# "this cycle got a pull request to ready" and ranks it above every other
+# reading, so a sweep that re-asked for a review on some other repo's
+# long-since-ready pull request would rewrite the outcome of a cycle that stood
+# down or selected nothing.
 if ! (( DRY_RUN )); then
   while IFS= read -r sweep_slug; do
     [[ -n "$sweep_slug" ]] || continue
     while IFS= read -r sweep_action; do
       [[ -n "$sweep_action" ]] || continue
       case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
-        review-requested|human-review-requested)
-          log_event "pr-ready" "$(jq -c --arg r "$sweep_slug" \
-            '{repo: $r, handoff: "sweep"} + del(.action)' <<<"$sweep_action")" ;;
+        review-requested) log_event "review-requested" "$(jq -c --arg r "$sweep_slug" \
+          '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        human-review-requested) log_event "human-review-requested" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         nudged) log_event "human-nudged" "$(jq -c --arg r "$sweep_slug" \
           '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
