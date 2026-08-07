@@ -4508,7 +4508,9 @@ runs unattended.
     human can make. What requirements 38a–38c add is continuity (the guarantee
     holds between the moments a model-driven stage would otherwise renew it)
     and one further origin (a Co-Ordinator's own `needs_refinement` report)
-    that previously reached only a label.
+    that previously reached only a label. Nor does a violation the sweep cannot
+    itself heal become selectable work: it is a `warning` and no more, which is
+    the gap `tech-debt/TD-PPagop-26080801.md` records.
 
 ## Components
 
@@ -4682,7 +4684,8 @@ What exists, and the requirements each part answers to:
    filesystem-CAS stub (`test/claim.test.sh`); must pass `shellcheck`.
 3h. `lib/refinement.sh` implementing the refinement class: requirement 16a's
    well-formedness bar for a `needs_refinement` entry, requirement 34e's block
-   fields and label projection (`REFINEMENT_GH` substitutes a stub for tests,
+   fields and label projection and requirement 38b's assignment projection
+   beside it (`REFINEMENT_GH` substitutes a stub for tests,
    following `CLAIM_GH`), requirement 35d's per-engagement cap, and requirement
    36b's `item-refined` payload and thrash guard. Sourced after
    `lib/void-guard.sh`, whose `entry_field_text` it shares rather than keeping a
@@ -4704,6 +4707,17 @@ What exists, and the requirements each part answers to:
    unanswered question; `SWEEP_GH` stubs `gh` and `AGENT_OPS_CONFIG`
    overrides the config for tests. Unit-tested
    (`test/sweep-orphan-branches.test.sh`); must pass `shellcheck`.
+3r. `scripts/sweep-human-visibility.sh` implementing requirement 38c's sweep:
+   given a repo slug (and, for the nudge comment's header and marker, a cycle
+   id and a node name), examines every open, non-draft, `pr_label`-carrying
+   pull request and prints one JSON action object per pull request it acted on
+   (`review-requested`, `human-review-requested`, `nudged`, `warning`) for the
+   Script to log under those same names. Fail-safe on every unanswered
+   question — a read it cannot make is a `warning`, never an assumed clean
+   answer; `SWEEP_GH` stubs `gh` (and is passed through as `HANDOFF_GH`, since
+   the sweep's decisions are `lib/handoff.sh`'s) and `AGENT_OPS_CONFIG`
+   overrides the config for tests. Unit-tested
+   (`test/sweep-human-visibility.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
@@ -4711,7 +4725,9 @@ What exists, and the requirements each part answers to:
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
    requirement 32b; requirement 31b's `confirm_review_requested`, the same
-   promise for the round after the first; and requirement 9's
+   promise for the round after the first; requirement 38a's
+   `ensure_human_reviewer`, the same promise again where nobody's review is
+   blocking at all; and requirement 9's
    `pr_url_for_branch`, which names the pull request on a claimed branch when
    the stage that opened it named nothing; `HANDOFF_GH` substitutes a stub for
    tests),
