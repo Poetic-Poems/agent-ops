@@ -23,7 +23,7 @@
 #
 # One thing it deliberately will not touch: an issue GitHub reports
 # `state_reason: "reopened"`. Somebody reopened that issue after it was
-# closed, which is the same answer requirement 34j's `void-object-closed`
+# closed, which is the same answer requirement 34k's `void-object-closed`
 # record protects on the other sweep — a human's re-open must win, and must
 # not be undone on the hour, every hour, with a comment each time.
 #
@@ -116,7 +116,7 @@ while IFS=$'\t' read -r pr_number pr_url item merge_sha; do
   # and "still open" alone cannot tell that apart from "never closed" — so
   # without this the sweep would close, every hour, exactly the issue somebody
   # deliberately reopened, and comment each time. That is the failure
-  # requirement 34j's own one-shot rule (`void-object-closed`) exists to
+  # requirement 34k's own one-shot rule (`void-object-closed`) exists to
   # prevent on the other sweep; the same principle applies here, and this is
   # how it is spelled with no per-item record to keep: the reopen *is* the
   # record, and it is GitHub's, not ours.

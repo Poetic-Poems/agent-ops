@@ -261,7 +261,7 @@ problems="$(grep -E '^[[:space:]]+(BAD NAME|BAD FRONTMATTER|MISSING FIELD|BAD FI
             | jq -Rn '[inputs | sub("^ +"; "")]' 2>/dev/null || true)"
 [[ -n "$problems" ]] || problems='[]'
 
-# VOIDED STATUS (issue #240, requirement 34k) — the second, disjoint source
+# VOIDED STATUS (issue #240, requirement 34l) — the second, disjoint source
 # of candidacy the header describes: an item the fleet's void log already
 # knows is done, whose file on disk still says otherwise. Read straight from
 # the tarball already extracted, so this costs no extra API call.
@@ -287,7 +287,7 @@ if [[ "$(jq 'length' <<<"$problems" 2>/dev/null || echo 0)" == "0" ]]; then
   exit 0
 fi
 body="$out$(jq -r 'if length == 0 then "" else
-  "\n\nVOIDED STATUS (requirement 34k, not td-check.pl'"'"'s own): the fleet'"'"'s void log records the following items as already done, but their register status has not been flipped:\n" + (map("  " + .) | join("\n"))
+  "\n\nVOIDED STATUS (requirement 34l, not td-check.pl'"'"'s own): the fleet'"'"'s void log records the following items as already done, but their register status has not been flipped:\n" + (map("  " + .) | join("\n"))
   end' <<<"$void_problems" 2>/dev/null || true)"
 
 jq -nc \

@@ -2708,7 +2708,7 @@ runs unattended.
     reopened it after a close, and "still open" alone cannot tell that apart
     from "never closed". Without the exemption the sweep would re-close, on
     the hour and with a fresh comment each time, exactly the issue a human
-    deliberately put back — the same answer requirement 34j's
+    deliberately put back — the same answer requirement 34k's
     `void-object-closed` record gives on the other sweep, spelled here with
     no record of our own to keep, because the re-open is GitHub's record of
     it. The skip is reported as a warning, never silent.
@@ -3025,7 +3025,7 @@ runs unattended.
     labels the work order carries are BAD NAME, BAD FRONTMATTER, MISSING
     FIELD, BAD FIELD, BAD STATUS, BAD SCOPE, NO SCOPE, ID MISMATCH, DATE
     MISMATCH, STALE FIELD or DUPLICATE ID — all `td-check.pl`'s own — and
-    VOIDED STATUS, which is not (requirement 34k):
+    VOIDED STATUS, which is not (requirement 34l):
     - Most are one-line frontmatter corrections, made to match the facts —
       the pull request its `ref:` names, the filename, the `scope:` declared
       in `TECH-DEBT.md` — never the other way round. Where the facts are not
@@ -3035,7 +3035,7 @@ runs unattended.
       following the `ref:` and confirming the fix has landed before the
       status itself is flipped to `resolved`, or the resolution fields
       cleared and the item left open.
-    - A **VOIDED STATUS** (requirement 34k: the fleet's void log records the
+    - A **VOIDED STATUS** (requirement 34l: the fleet's void log records the
       item done, the file still says `open`/`in-progress`) is judged by
       following the void's own evidence, carried in the work order's `body`,
       and confirming the change did land on the default branch — usually

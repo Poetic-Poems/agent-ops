@@ -178,7 +178,7 @@ expected_body="$( cd "$tmp_dir" \
 assert_eq "per-item body is td-check.pl's output verbatim" "$expected_body" "$body"
 
 # --- VOIDED STATUS: a void'd register row td-check.pl alone would miss ----------
-# (requirement 34k, issue #240). td-check.pl finds the consistent fixture
+# (requirement 34l, issue #240). td-check.pl finds the consistent fixture
 # clean on its own; a void naming its still-`open` item must still surface a
 # candidate.
 make_tarball "$FIXTURES_DIR/tech-debt-items-consistent" "$STUB_TARBALL"

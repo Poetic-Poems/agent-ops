@@ -2750,11 +2750,11 @@ if ! (( DRY_RUN )); then
   done < <(jq -r '[.[].repo] | unique[]' <<<"$void_close_candidates_json" 2>/dev/null || true)
 fi
 
-# Register rows, the other half of requirement 34k: a void item shaped like a
-# tech-debt register id (issue #240) names a file, not a GitHub object, so
-# close-void-github-items.sh above leaves it untouched entirely — this
-# instead re-derives that repo's register-hygiene candidate with the void
-# evidence folded in (scripts/gather-register-hygiene.sh's VOIDED STATUS
+# Register rows, requirement 34l — the other half of acting on a void: a void
+# item shaped like a tech-debt register id (issue #240) names a file, not a
+# GitHub object, so close-void-github-items.sh above leaves it untouched
+# entirely — this instead re-derives that repo's register-hygiene candidate
+# with the void evidence folded in (gather-register-hygiene.sh's VOIDED STATUS
 # problem class), so the ordinary register-hygiene Implementor flow flips
 # the row exactly as it repairs any other frontmatter drift. Only for repos
 # that actually have a void register item — everywhere else costs nothing
