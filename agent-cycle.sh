@@ -1222,6 +1222,18 @@ gather_plan_status() {
 # empty` accepts a stream of several values, and a salvage should never be
 # looser than the straight parse it backs up.
 #
+# The fenced-block fallback matches a closing ``` regardless of what info
+# string the *opening* fence carried, or whether it carried one at all
+# (issue #237): the state machine toggles solely on "is this a fence line",
+# not on the literal text `json` following it. A verdict a model fences
+# bare — ``` … ``` with no language tag — is not an ambiguous case; only a
+# straight parse or a suffix match, not the fence's tag, was ever what told
+# a verdict apart from prose. Before this, poetic-2's completed conflict
+# resolution of PR #205 (2026-08-07T04:40Z) was discarded for exactly this
+# reason — a bare fence the parser could not see — erasing pipeline memory
+# that the conflict was fixed and triggering a three-node duplicate-work
+# cascade on the same PR.
+#
 # scripts/publish-dashboard.sh's `extract_status` is a jq port of this
 # algorithm and review-cycle.sh carries a bash copy; the three move together
 # (docs/DASHBOARD-SPEC.md), and test/extract-json-result.test.sh holds them
@@ -1243,8 +1255,10 @@ extract_json_result() {
     return 0
   fi
   block="$(awk '
-    /^```json[[:space:]]*$/ { capture=""; in_block=1; next }
-    /^```[[:space:]]*$/ { if (in_block) { last=capture; in_block=0 }; next }
+    /^```[A-Za-z0-9_-]*[[:space:]]*$/ {
+      if (in_block) { last=capture; in_block=0 } else { capture=""; in_block=1 }
+      next
+    }
     in_block { capture = capture $0 "\n" }
     END { printf "%s", last }
   ' <<<"$text")"
