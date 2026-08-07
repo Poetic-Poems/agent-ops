@@ -575,6 +575,7 @@ and the schema must carry every one of them.
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
+| `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -4392,6 +4393,103 @@ runs unattended.
     item stays blocked and the log is the only place a stage that routinely
     omits items would ever become visible.
 
+38. **Human-visibility.** Work genuinely waiting on the human must be visible
+    to the human — on `github.com/pulls/review-requested` for a pull request,
+    on Assigned-to-me for an issue — not merely recorded in the pipeline's own
+    log. A 2026-08-07 pipeline-flow review found neither guarantee held: no
+    currently-open pull request carried a live review request (every prior
+    request had been consumed by a submitted review), and the one genuine
+    human-decision block in this repository (#203) was unassigned, so it never
+    appeared on Assigned-to-me either.
+
+38a. **A ready pull request's live review request is kept, not only made
+    once.** `lib/handoff.sh`'s `ensure_human_reviewer(pr_url, assignee)`
+    covers the case `confirm_review_requested` (requirement 31b) does not:
+    nobody's `CHANGES_REQUESTED` is blocking the pull request, so there is no
+    blocking reviewer to re-request from, and yet the human may still not have
+    been *asked* — a first review nobody has given, or an approval nobody has
+    acted on since (poetic-fiddle #170: approved, green, and idle 6.8 days,
+    because CODEOWNERS' request is consumed the moment the review is
+    submitted and nothing asks again). Requesting review from someone who has
+    already approved withdraws nothing they said; it only puts the pull
+    request back in the one queue a human actually watches.
+
+    The target is whoever has ever reviewed the pull request, in any state
+    (`_handoff_known_reviewers`), before it is ever `assignee`
+    (`enabler_assignee`). That order is load-bearing, not stylistic: this
+    system's own pull requests are authored under the same account
+    `enabler_assignee` routinely names — issue assignment has no such
+    conflict, pull-request review does — and GitHub refuses a review request
+    aimed at a pull request's own author with a 422. CODEOWNERS already solved
+    that once, automatically, the moment the pull request went ready; reading
+    who it already picked is both correct and one API call. `assignee` is the
+    fallback for a pull request CODEOWNERS never touched at all, and even
+    there a target that collides with the author is a `skip`, never an
+    attempted (and refused) request — a 422 is not a transient failure worth a
+    `warning` every cycle, it is a fact about the configuration that will not
+    change tomorrow.
+
+    Called from both places `confirm_review_requested` already is — the
+    Reviewer's own handoff and the Enabler's `complete_handoff` — whenever
+    that call answers `none`, and from the periodic sweep of requirement 38c
+    below, so the guarantee holds whether or not any stage touches the pull
+    request in a given cycle. A `failed` result is a `warning` on the
+    `pr-ready` event, on the same terms requirement 31b's own re-request
+    failure is: the pull request is finished and visible, only a notification
+    is missing.
+
+38b. **A Co-Ordinator-recorded block gated on a human decision is assigned,
+    not only labelled.** Requirement 34e projects the `needs-refinement` label
+    onto the issue behind a `needs_refinement` report, but a label matches
+    nothing on Assigned-to-me — agent-ops#203 was exactly this shape (labelled
+    correctly, invisible regardless) until fixed by hand. `lib/refinement.sh`'s
+    `refinement_assignee_add`/`refinement_assignee_remove` mirror the label's
+    lifecycle exactly: `log_needs_refinement_items` assigns `enabler_assignee`
+    to the issue alongside the label, recording it as
+    `needs_refinement_assignee` on the block's `attempt-failed` event (mirrored
+    by `refinement_block_fields`'s third argument) so `release_refinement_label`
+    can take the assignment off again — via `refinement_assignee_targets`, read
+    from the block record exactly as `refinement_label_targets` is — the moment
+    the block clears, by the same three paths that already release the label.
+    Best-effort, like the label: a failed assignment is a `warning`, and the
+    block is recorded regardless.
+
+38c. **An idle, approved pull request is nudged, not left silent.** For every
+    open, non-draft, `pr_label`-carrying pull request in every configured
+    repository — fleet-wide, like the sweeps of requirements 17b and 34i,
+    regardless of `--repo` — `scripts/sweep-human-visibility.sh` runs once per
+    cycle and, per pull request:
+
+    - re-confirms `confirm_review_requested` (self-healing requirement 31b's
+      own promise for a pull request no stage touched this cycle);
+    - where nothing is `CHANGES_REQUESTED`-blocking it, ensures
+      `ensure_human_reviewer` (requirement 38a, kept continuously rather than
+      only at the moment of handoff);
+    - where the pull request is `APPROVED`, `MERGEABLE`, every check
+      genuinely green (an empty `statusCheckRollup` is excluded explicitly —
+      that is CI not having run, not CI having passed), and has been since
+      before `human_nudge_idle_hours` ago, posts one nudge comment naming
+      `enabler_assignee` — unless one is already there, which a
+      `<!-- agent-ops:human-nudge -->` marker comment makes idempotent rather
+      than merely time-windowed. `human_nudge_idle_hours` of `0` disables the
+      nudge only; the review-request self-heal above is unconditional.
+
+    This *is* the periodic, deterministic audit of requirement 38's own
+    guarantee, made self-healing rather than merely reported: a violation this
+    script can fix, it fixes in the same pass, so there is never a gap between
+    detection and correction for a human to fall through. What it cannot fix —
+    a listing or a read that fails — is a `warning`, never a silent skip.
+    Skipped on `--dry-run`, like every sweep that writes.
+
+38d. **Scope note.** Requirement 38 does not extend the same guarantee to
+    every conceivable class of human-blocked work — an `escalate` verdict
+    (requirement 36a) was already assigned and labelled before this
+    requirement existed, and remains the canonical path for a decision only a
+    human can make. What requirements 38a–38c add is continuity (the guarantee
+    holds between the moments a model-driven stage would otherwise renew it)
+    and one further origin (a Co-Ordinator's own `needs_refinement` report)
+    that previously reached only a label.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -6057,6 +6155,33 @@ pull request, run the ones the change touches and any it could regress.
     and returns 0, an unlistable repository returns 1 having created nothing
     and claimed no failures it did not observe, and a guarded call survives a
     total failure under `set -e`.
+
+38. **Human-visibility (requirements 38a–38c).** `test/handoff.test.sh` passes:
+    `ensure_human_reviewer` re-requests review from whoever has ever reviewed
+    the pull request (any state) in preference to `assignee`; falls back to
+    `assignee` only when nobody ever has; `skip`s rather than attempts a
+    request when `assignee` equals the pull request's own author; `skip`s
+    while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
+    pull request is a draft; and an unreadable reviews list or pending list is
+    `failed`, never an assumed `skip`. `test/needs-refinement.test.sh` passes:
+    `refinement_block_fields`'s third argument records `needs_refinement_assignee`
+    independent of the label argument; `refinement_assignee_add`/`_remove` each
+    make one `gh issue edit --add-assignee`/`--remove-assignee` call and fail
+    when the assignee is not a collaborator, the same way the label functions
+    fail when the label does not exist; and `refinement_assignee_targets`
+    finds exactly the assigned issue, scoped by repo the same way
+    `refinement_label_targets` is, surviving a void the same way. `test/sweep-human-visibility.test.sh`
+    passes against a stubbed `gh`: a pull request with nothing blocking it and
+    no known reviewer yet is both re-requested (from the approver) and, when
+    also approved, mergeable, green and idle past `human_nudge_idle_hours`,
+    nudged in the same pass; a pull request nudged once already is not nudged
+    again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
+    approved pull request is never nudged, and neither is one with an empty
+    check rollup; `human_nudge_idle_hours: 0` disables the nudge while leaving
+    the review-request self-heal unconditional; and a listing, a view, or a
+    reviews read that fails is a `warning`, never silence. Confirm the nudge
+    comment carries the visible attribution header and both markers
+    (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
 
 ## Host provisioning (human steps)
 

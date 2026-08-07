@@ -2396,6 +2396,35 @@ if ! (( DRY_RUN )); then
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
+# 2.1d Human-visibility sweep (requirement 38) — the periodic half of the same
+# guarantee requirement 38a keeps at the moment of handoff: every open, ready
+# pull request this system raised gets a live review request whether or not
+# any stage touched it this cycle, and an approved, mergeable, green one idle
+# past `human_nudge_idle_hours` gets one nudge comment. Fleet-wide like the
+# sweeps above and for the same reason — a review request or a comment either
+# lands or it does not, so two nodes sweeping at once cost nothing but a
+# redundant read. Skipped on --dry-run: the sweep requests reviews and posts
+# comments.
+if ! (( DRY_RUN )); then
+  while IFS= read -r sweep_slug; do
+    [[ -n "$sweep_slug" ]] || continue
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        review-requested|human-review-requested)
+          log_event "pr-ready" "$(jq -c --arg r "$sweep_slug" \
+            '{repo: $r, handoff: "sweep"} + del(.action)' <<<"$sweep_action")" ;;
+        nudged) log_event "human-nudged" "$(jq -c --arg r "$sweep_slug" \
+          '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
+          '{detail: ("human-visibility sweep (" + $r + "): " + (del(.action) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-human-visibility.sh" "$sweep_slug" "$cycle_id" "$node_name" \
+               2>>"$cycle_dir/human-visibility-sweep.err" || true)
+  done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+fi
+
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
 #
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-
