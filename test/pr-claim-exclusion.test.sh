@@ -122,9 +122,11 @@ export CLAIM_GH="$stub_bin/gh"
 
 # gather_claimed shells out to "$SCRIPT_DIR/lib/claim.sh" directly (never a
 # configurable override), so it needs the globals the real agent-cycle.sh
-# would have set by the time it runs.
+# would have set by the time it runs. branch_prefix is consumed by the eval'd
+# gather_claimed, which shellcheck cannot see into.
 cycle_dir="$tmp_dir/cycle"
 mkdir -p "$cycle_dir"
+# shellcheck disable=SC2034
 branch_prefix="agent/"
 
 seed_claim() {  # seed_claim <slug> <key> <item> <pr_number-or-empty>
@@ -188,7 +190,11 @@ if [[ "$stale_ref_block_src" != *"stale_enabler_refs_json"* ]]; then
 fi
 
 run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eligible-json>
+  # ordered_repos_json and log_event are consumed by the eval'd block below,
+  # which shellcheck cannot see into.
+  # shellcheck disable=SC2034
   ordered_repos_json="$1" enabler_eligible_json="$2" logged=""
+  # shellcheck disable=SC2317
   log_event() { logged="$logged$1 $2\n"; }
   eval "$stale_ref_block_src"
   jq -c -n --argjson e "$enabler_eligible_json" --arg l "$logged" '{eligible: $e, logged: $l}'
