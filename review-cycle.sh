@@ -193,6 +193,16 @@ log_shared_limit_hit() {
 # a usage-limit / spend-cap phrase; 1 otherwise.
 detect_and_log_limit_hit() {
   local out_file="$1" text resume_at class reset_known
+  # The structured record first, on the same reasoning agent-cycle.sh gives at
+  # its copy of this: it states a real reset time, and it is the only source
+  # that exists at all for a stage stopped the moment the account refused —
+  # such a stage never wrote a final message for the phrase matcher to read.
+  if [[ -n "${stage_rate_limit_json:-}" ]] \
+     && IFS=$'\t' read -r resume_at class reset_known \
+          < <(limit_decide_structured "$stage_rate_limit_json" "$limit_cooldown_default_hours"); then
+    log_shared_limit_hit "$resume_at" "$class" "$reset_known"
+    return 0
+  fi
   limit_phrase_in "$out_file" "$out_file.stderr" || return 1
   text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
   IFS=$'\t' read -r resume_at class reset_known < <(limit_decide "$text" "$limit_cooldown_default_hours")

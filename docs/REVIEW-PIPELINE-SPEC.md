@@ -474,7 +474,10 @@ R7b. **One stage launcher, shared.** `run_claude_stage` is sourced from
    pipeline's stage is the long one — a whole project review — which is
    precisely why the distinction matters here: a review that is merely slow
    must not be killed, and one that has stopped should not hold a node for two
-   hours.
+   hours. The same requirement's third stop applies too: a stream reporting
+   the account refused stops the Reviewer-Agent at once, and
+   `detect_and_log_limit_hit` derives the stand-down from the runner's own
+   record rather than from prose the stopped stage never wrote.
 
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one

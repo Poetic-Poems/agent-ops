@@ -1056,12 +1056,19 @@ A stage has two caps, and they mean different things:
   output *at all* for that long, and was treated as wedged. Ten minutes unless
   you set the key; `0` turns it off and leaves the backstop as the only cap.
 
-Both exit `124`, so the `stage-end` event carries `kill_reason` —
-`backstop` or `inactivity` — to say which fired, and a watchdog kill also
-logs a `warning` you will see on the dashboard. The two want opposite
+A third thing stops a stage and is not a cap at all: the account saying no.
+When the stream reports a usage limit, the stage is stopped there and then,
+rather than holding the node for the rest of its cap while every call it makes
+is refused.
+
+All three exit `124`, so the `stage-end` event carries `kill_reason` —
+`backstop`, `inactivity` or `rate-limit` — to say which, and a watchdog kill
+also logs a `warning` you will see on the dashboard. They want different
 responses: a backstop kill on a stage that was still emitting says the cap is
-too tight, while a watchdog kill says the stage stopped — read
-`<stage>.stream.jsonl` to see what it was doing last.
+too tight; a watchdog kill says the stage stopped, so read
+`<stage>.stream.jsonl` to see what it was doing last; a rate-limit stop says
+nothing about the caps, and the stand-down it writes carries the real reset
+time the account gave rather than this system's estimate of one.
 
 `scripts/doctor.sh` checks that the stream really flushes as it runs on this
 node, because a runtime that buffered it would leave the watchdog with no

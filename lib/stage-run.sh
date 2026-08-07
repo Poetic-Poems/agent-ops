@@ -39,13 +39,20 @@
 # reports `null`.
 stage_gaps_json="null"
 
-# Which cap ended the most recent run, for the same event: `inactivity` when
-# the watchdog fired, `backstop` when the outer wall-clock cap did, and empty
-# when the stage ended on its own — including when it ended badly. The two
-# kills are indistinguishable from `exit_code` alone, which is 124 for both,
-# and they are not the same event: one says the stage stopped producing, the
-# other says it never stopped.
+# Why the most recent run was stopped, for the same event: `inactivity` when
+# the watchdog fired, `backstop` when the outer wall-clock cap did,
+# `rate-limit` when the stream reported the account rejected, and empty when
+# the stage ended on its own — including when it ended badly. All three are
+# indistinguishable from `exit_code` alone, which is 124 for every one of
+# them, and they are not the same event.
 stage_kill_reason=""
+
+# The `rate_limit_info` object of the event that stopped the run, when
+# `stage_kill_reason` is `rate-limit`; empty otherwise. It carries a real
+# reset time (`resetsAt`) and the limit's own kind (`rateLimitType`), which is
+# strictly better evidence than the prose the phrase matcher reads — see
+# `limit_decide_structured` in lib/limit-detect.sh.
+stage_rate_limit_json=""
 
 # stage_stream_file OUT_FILE
 # The progress stream that accompanies a stage's `.out`. Derived rather than
@@ -112,6 +119,37 @@ stage_gap_stats() {
       end' 2>/dev/null || printf 'null'
 }
 
+# stage_rejected_rate_limit STREAM_FILE
+# Print the `rate_limit_info` of a `rate_limit_event` in the stream that says
+# the account was refused, or nothing (returning 1) when there is none.
+#
+# `rejected` and nothing else. The runner's own vocabulary for this field is
+# `allowed`, `allowed_warning` and `rejected`, and only the last is a refusal:
+# `allowed_warning` is "you are close", which a stage should be allowed to run
+# through. Anything unrecognised is likewise left alone, so a value added
+# upstream later cannot start killing stages before anyone has looked at it —
+# it simply falls through to the phrase matcher that has always handled this,
+# after the stage ends. That asymmetry is deliberate: failing to abort early
+# costs the rest of a wall-clock cap, while aborting a healthy stage throws
+# away everything it had done.
+#
+# The `grep` is a pre-filter, not the decision. It runs every poll over the
+# whole stream, which is cheap even at megabytes, and only when it hits does
+# jq confirm the string came from a top-level `rate_limit_event` rather than
+# from inside a tool result — an Implementor working on limit detection would
+# otherwise abort itself for reading its own test fixtures.
+stage_rejected_rate_limit() {
+  local stream_file="$1" info
+  [[ -s "$stream_file" ]] || return 1
+  grep -aqF '"status":"rejected"' "$stream_file" 2>/dev/null || return 1
+  info="$(jq -c 'select(type == "object" and .type == "rate_limit_event")
+                 | .rate_limit_info
+                 | select(type == "object" and .status == "rejected")' \
+            "$stream_file" 2>/dev/null | tail -n 1)" || true
+  [[ -n "$info" ]] || return 1
+  printf '%s\n' "$info"
+}
+
 # stage_watchdog_warning STAGE
 # The body of the `warning` event a watchdog kill earns, or nothing (returning
 # 1) when the last run ended any other way.
@@ -158,11 +196,12 @@ stage_watchdog_warning() {
 run_claude_stage() {
   local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
   local inactivity_sec="${7:-0}"
-  local pid waited=0 rc stream_file
+  local pid waited=0 rc stream_file rate_limit_info
   local seen_bytes=0 now size last_growth gaps=()
   stream_file="$(stage_stream_file "$out_file")"
   stage_gaps_json="null"
   stage_kill_reason=""
+  stage_rate_limit_json=""
 
   # stdout (the event stream) and stderr (diagnostics) are kept in separate
   # files — merging them would let stray stderr output break the JSON parse
@@ -237,6 +276,24 @@ run_claude_stage() {
       gaps+=( "$(( now - last_growth ))" )
       seen_bytes="$size"
       last_growth="$now"
+      # The account has said no. Nothing this stage does from here can
+      # succeed, so every second it goes on holding the node is spent on a
+      # foregone conclusion: limit detection has always run on the transcript
+      # *after* the stage ended, which meant a stage that hit a limit early
+      # burned the rest of its wall-clock cap first. Checked only when the
+      # stream grew, because that is the only moment a new event can have
+      # arrived.
+      if rate_limit_info="$(stage_rejected_rate_limit "$stream_file")"; then
+        # shellcheck disable=SC2034  # read by each pipeline's limit detection
+        stage_rate_limit_json="$rate_limit_info"
+        stage_kill_reason="rate-limit"
+        kill -TERM "-$pid" 2>/dev/null || true
+        sleep 5
+        kill -KILL "-$pid" 2>/dev/null || true
+        wait "$pid" 2>/dev/null || true
+        rc=124
+        break
+      fi
     elif (( inactivity_sec > 0 && now - last_growth >= inactivity_sec )); then
       # Nothing has been written for the whole threshold. The kill is the same
       # sequence as the backstop's — same process group, same TERM-then-KILL

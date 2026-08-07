@@ -151,6 +151,53 @@ limit_decide() {
   printf '%s\t%s\t%s\n' "$resume_at" "$class" "$reset_known"
 }
 
+# limit_decide_structured INFO_JSON COOLDOWN_DEFAULT_HOURS
+# The same `<resume_at>\t<class>\t<reset_known>` triple `limit_decide` prints,
+# but read off the runner's own `rate_limit_info` object rather than parsed out
+# of prose. Returns 1 with no output when the object says nothing usable.
+#
+# This is the better source wherever it exists, and worth saying why: the
+# prose path exists because a limit used to be knowable only from the sentence
+# the model printed, and a sentence has to be pattern-matched, may not state a
+# reset time at all (the spend-cap message never does), and states it in a
+# named zone that has to be resolved. `resetsAt` is an epoch. Where it is
+# present the stand-down is a fact rather than an estimate, which is exactly
+# the distinction `reset_known` was added to carry — and an estimated
+# stand-down costs the fleet a probe every cycle until it clears.
+#
+# The class mapping follows what the fallback cooldown is for, not what the
+# limit is called: a `seven_day*` limit is the long kind that
+# `LIMIT_LONG_COOLDOWN_HOURS` exists for, and `five_hour` is not. It only
+# matters when there is no `resetsAt` to use.
+limit_decide_structured() {
+  local info="${1:-}" cooldown_default_hours="${2:-3}" resets_at class reset_known resume_at
+  [[ -n "$info" ]] || return 1
+  jq -e 'type == "object"' <<<"$info" >/dev/null 2>&1 || return 1
+
+  class="$(jq -r '
+    (.rateLimitType // "" | tostring)
+    | if startswith("seven_day") then "weekly" else "other" end' <<<"$info" 2>/dev/null)" || return 1
+
+  resets_at="$(jq -r '.resetsAt // empty | tostring' <<<"$info" 2>/dev/null || true)"
+  if [[ "$resets_at" =~ ^[0-9]+$ ]] && (( resets_at > 0 )); then
+    resume_at="$(date -u -d "@$resets_at" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || true)"
+  fi
+  if [[ -n "${resume_at:-}" ]]; then
+    reset_known=true
+  else
+    # No stated reset: fall back exactly as the prose path does, so the two
+    # sources cannot produce differently-shaped stand-downs.
+    reset_known=false
+    if [[ "$class" == "weekly" ]]; then
+      resume_at="$(date -u -d "+${LIMIT_LONG_COOLDOWN_HOURS} hours" +%Y-%m-%dT%H:%M:%SZ)"
+    else
+      resume_at="$(date -u -d "+${cooldown_default_hours} hours" +%Y-%m-%dT%H:%M:%SZ)"
+    fi
+  fi
+
+  printf '%s\t%s\t%s\n' "$resume_at" "$class" "$reset_known"
+}
+
 # limit_probe_verdict OUT_TEXT [ERR_TEXT]
 # Classify the transcript of one minimal probe invocation (requirement 2.1b:
 # agent-cycle.sh spends it while an *estimated* stand-down is in force, asking
