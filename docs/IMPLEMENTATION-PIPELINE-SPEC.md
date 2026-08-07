@@ -1241,12 +1241,20 @@ runs unattended.
      stamped by GitHub itself at the moment they happen, so neither can be
      produced by a rebase; a round is answered only once one of them actually
      occurs after the blocking review.
-   - **The blocking review is computed the same way `lib/handoff.sh`'s
-     `_handoff_blocking_reviewers` computes it** (requirement 34a): each
-     reviewer's own most recent APPROVED-or-CHANGES_REQUESTED review, filtered
-     to CHANGES_REQUESTED, latest across reviewers. A COMMENTED review never
-     changes a reviewer's standing position, so a human who requested changes
-     and later left a comment is still blocking.
+   - **The blocking review shares `_handoff_blocking_reviewers`'
+     standing-position rule but deliberately not its bot filter**
+     (requirement 34a): each reviewer's own most recent
+     APPROVED-or-CHANGES_REQUESTED review, filtered to CHANGES_REQUESTED,
+     latest across reviewers. A COMMENTED review never changes a reviewer's
+     standing position, so a human who requested changes and later left a
+     comment is still blocking. Bots count here and not in re-request:
+     `reviewDecision` — the selection filter — counts bots, and the marked
+     reply is the only event that can answer a bot's round, since the
+     pipeline can neither dismiss a review on its own PR nor (by design)
+     re-request a bot. Bot findings are addressed; bots are never pinged.
+     Stating the difference here, in both places, is requirement 34a's
+     point — an asserted-but-false equivalence is exactly the confident
+     wrong answer it exists to prevent.
    - **Gather every review in the round, not just the blocking one.** The
      substance and the formal signal routinely live in different reviews by
      different accounts, precisely *because* an author cannot request changes on

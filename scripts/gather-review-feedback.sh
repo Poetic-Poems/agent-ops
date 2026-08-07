@@ -173,11 +173,16 @@ while IFS= read -r pr; do
   # CHANGES_REQUESTED review among each reviewer's own most recent
   # APPROVED-or-CHANGES_REQUESTED review — the same "standing position per
   # reviewer" computation as lib/handoff.sh's `_handoff_blocking_reviewers`,
-  # so the two cannot disagree about whose review currently blocks the PR
-  # (requirement 34a). A COMMENTED review never changes anyone's standing
-  # position, so it is filtered out *before* picking each reviewer's latest,
-  # not after — a reviewer who requested changes and then merely commented is
-  # still blocking.
+  # minus — deliberately — its bot filter (requirement 34a). Candidate
+  # selection keys off GitHub's `reviewDecision`, which counts bot reviews,
+  # and the marked reply this round produces is the only event that can ever
+  # answer a bot's CHANGES_REQUESTED: the pipeline cannot dismiss a review on
+  # its own PR, and handoff never re-requests a bot. Bots are excluded from
+  # re-request, not from feedback — their findings still reach the
+  # Implementor; nobody is ever pinged over them. A COMMENTED review never
+  # changes anyone's standing position, so it is filtered out *before*
+  # picking each reviewer's latest, not after — a reviewer who requested
+  # changes and then merely commented is still blocking.
   blocking="$(jq -c '
     ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
      | group_by(.who) | map(last)) as $latest_per_reviewer
