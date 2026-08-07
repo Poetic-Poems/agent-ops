@@ -8,8 +8,10 @@
 # as the account it runs as, and GitHub forbids approving or dismissing a review
 # on your own PR — so `reviewDecision` stays CHANGES_REQUESTED even after the
 # fix is pushed. Nothing about the PR's own state ever says "answered". The only
-# thing that does is the comparison this file tests: latest review vs head
-# commit.
+# thing that does is the comparison this file tests: the blocking review
+# against GitHub review-thread events (a marked reply, or a review-requested
+# event) — never a commit's date, which a force-push re-stamps to push time
+# without a human, or the agent, having answered anything (agent-ops#239).
 #
 # Get it wrong and every PR the agent fixes stays a candidate forever: selected,
 # re-fixed, re-selected, on the hour, each cycle looking like a productive one
@@ -29,6 +31,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 failures=0
 
@@ -80,32 +84,105 @@ assert_eq "a human's own branch is never ours to push to" \
   "0" "$(jq '[.[] | select(.number == 62) | select(.headRefName | startswith("agent/"))] | length' <<<"$prs")"
 
 # --- The turn rule: is the feedback unanswered? ---
+#
+# Mirrors scripts/gather-review-feedback.sh's own jq exactly (kept in step, per
+# the file header): the review currently blocking `reviewDecision` (a
+# reviewer's own latest APPROVED-or-CHANGES_REQUESTED review, filtered to
+# CHANGES_REQUESTED), then "answered" is any marked reply or review-requested
+# event *after* that review's timestamp — never a commit's date, which a
+# force-push can re-stamp without a human, or the agent, having done anything
+# (agent-ops#239; PR #205 silently dropped out of selection this way).
+
+marker="$PIPELINE_COMMENT_MARKER_PREFIX"
 
 # submitted_at null = a pending review the human is still drafting; it has not
-# been sent and must not count as feedback.
+# been sent and must not count as feedback. Two accounts, as in the wild: the
+# agent's own (`warwickallen`, COMMENTED only — it cannot request changes on
+# its own PR) and the human's second account (`Warwick-Allen`).
 reviews='[
   {"id": 1, "state": "COMMENTED",         "at": "2026-07-17T01:22:24Z", "who": "warwickallen"},
   {"id": 2, "state": "CHANGES_REQUESTED", "at": "2026-07-17T01:22:54Z", "who": "Warwick-Allen"}
 ]'
 
-fresh_after() {
-  jq -c --arg c "$1" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$reviews"
+blocking_of() {
+  jq -c '
+    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+     | group_by(.who) | map(last)) as $latest_per_reviewer
+    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
+  ' <<<"$1"
+}
+# extract_answer_events REVIEWS ISSUE_COMMENTS REREQUESTS
+# The exact extraction scripts/gather-review-feedback.sh runs: a marked review
+# or marked general comment, or any review-requested timeline event.
+extract_answer_events() {
+  jq -c -n --arg marker "$marker" \
+      --argjson reviews "$1" --argjson comments "$2" --argjson rr "$3" '
+    ([$reviews[]  | select((.body // "") | contains($marker)) | .at]
+     + [$comments[] | select((.body // "") | contains($marker)) | .at]
+     + [$rr[] | .at]) | sort
+  '
+}
+answered_after() {
+  # $1 = answer_events (a JSON array of timestamp strings), $2 = cutoff
+  jq -r --arg c "$2" '[.[] | select(. > $c)] | length' <<<"$1"
 }
 
-# The live case: PR #57's head commit is 01:07:22, the review 01:22:54.
-assert_eq "a review newer than the head commit is unanswered — our turn" \
-  "2" "$(fresh_after "2026-07-17T01:07:22Z" | jq 'length')"
+assert_eq "COMMENTED never blocks — the CHANGES_REQUESTED review is the round" \
+  '{"id":2,"state":"CHANGES_REQUESTED","at":"2026-07-17T01:22:54Z","who":"Warwick-Allen"}' \
+  "$(blocking_of "$reviews")"
 
-# The case that decides whether this feature loops forever. The agent has just
-# pushed at 01:30; reviewDecision is *still* CHANGES_REQUESTED and always will
-# be until the human re-reviews.
-assert_eq "once the agent has pushed, the round is answered — the human's turn" \
-  "0" "$(fresh_after "2026-07-17T01:30:00Z" | jq 'length')"
+blocking_at="$(jq -r '.at' <<<"$(blocking_of "$reviews")")"
 
-# And a fresh round after that push is our turn again.
+assert_eq "no answer event at all — unanswered, our turn" \
+  "0" "$(answered_after '[]' "$blocking_at")"
+
+# The case that decides whether this feature loops forever: the Implementor
+# has answered — a marked reply comment, timestamped by GitHub when it was
+# posted, not by any commit. The reply is a *general PR comment* (`gh pr
+# comment`), which lands in issue comments, not the reviews collection.
+# shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
+implementor_reply="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Implementor** · autonomous pipeline · node `poetic-1`\n\nAddressed both points.\n\n%s cycle=X actor=implementor -->' "$marker")" \
+  '[{at: $at, body: $body}]')"
+answered_by_reply="$(extract_answer_events '[]' "$implementor_reply" '[]')"
+assert_eq "a marked reply after the review — answered, the human's turn" \
+  "1" "$(answered_after "$answered_by_reply" "$blocking_at")"
+
+# An unmarked comment — a human chiming in, or an unrelated bot — must not
+# count as an answer; only this system's own marked write does.
+human_comment="$(jq -c -n --arg at "2026-07-17T01:30:00Z" '[{at: $at, body: "looks close"}]')"
+assert_eq "an unmarked comment after the review does not answer it" \
+  "0" "$(answered_after "$(extract_answer_events '[]' "$human_comment" '[]')" "$blocking_at")"
+
+# Equally, a review-requested event (confirm_review_requested, lib/handoff.sh)
+# answers it, with no reply comment at all — GitHub's timeline record of
+# `confirm_review_requested` asking the reviewer to look again.
+rerequest_event="$(jq -c -n --arg at "2026-07-17T01:31:00Z" '[{at: $at}]')"
+answered_by_rerequest="$(extract_answer_events '[]' '[]' "$rerequest_event")"
+assert_eq "a review-requested event after the review — also answered" \
+  "1" "$(answered_after "$answered_by_rerequest" "$blocking_at")"
+
+# --- The regression this exists to prevent (agent-ops#239) ---
+#
+# A conflict-resolution force-push re-stamps every commit's date to push time.
+# The old rule compared that date against the review's `submitted_at` and
+# read a fresh commit date as "answered" — with no reply, no re-review, and no
+# review-requested event: the push resolved a conflict, it did not address a
+# single word of the review. The new rule has nothing to feed on here: a
+# force-push produces zero answer events, so the round stays a candidate no
+# matter how recent the commit is.
+force_pushed_commit_at="2026-07-17T09:00:00Z"
+assert_eq "a force-push with no answer event never satisfies the old commit compare" \
+  "true" "$([[ "$force_pushed_commit_at" > "$blocking_at" ]] && echo true || echo false)"
+assert_eq "...but the new rule still finds it unanswered, no matter how new the commit is" \
+  "0" "$(answered_after '[]' "$blocking_at")"
+
+# And a fresh round after a genuine answer is our turn again.
 reviews_round2="$(jq -c '. + [{"id": 3, "state": "CHANGES_REQUESTED", "at": "2026-07-17T02:00:00Z", "who": "Warwick-Allen"}]' <<<"$reviews")"
-assert_eq "a new review after the agent's push reopens it" \
-  "1" "$(jq -c --arg c "2026-07-17T01:30:00Z" '[.[] | select(.at > $c)] | length' <<<"$reviews_round2")"
+blocking_at2="$(jq -r '.at' <<<"$(blocking_of "$reviews_round2")")"
+assert_eq "a new CHANGES_REQUESTED after our answer reopens it" \
+  "2026-07-17T02:00:00Z" "$blocking_at2"
+assert_eq "...and the old answer event does not satisfy the new round" \
+  "0" "$(answered_after "$answered_by_reply" "$blocking_at2")"
 
 # --- The round's ref ---
 #
@@ -116,21 +193,14 @@ assert_eq "a new review after the agent's push reopens it" \
 # per-round ref means each round is a new item no old block covers, the same
 # reasoning as the review-dated `review-<date>-R-NN` refs.
 ref_of() {
-  local fresh="$1" id
-  id="$(jq -r '[.[] | select(.state == "CHANGES_REQUESTED")] | (last // .[-1]) | .id' <<<"$fresh")"
-  [[ -n "$id" && "$id" != "null" ]] || id="$(jq -r '.[-1].id' <<<"$fresh")"
+  local reviews_json="$1" id
+  id="$(jq -r '.id' <<<"$(blocking_of "$reviews_json")")"
   printf 'pr-57-review-%s' "$id"
 }
 assert_eq "the ref pins to the blocking review, not the chattiest one" \
-  "pr-57-review-2" "$(ref_of "$(fresh_after "2026-07-17T01:07:22Z")")"
+  "pr-57-review-2" "$(ref_of "$reviews")"
 assert_eq "a second round yields a different ref, so an old block cannot cover it" \
-  "pr-57-review-3" "$(ref_of "$(jq -c --arg c "2026-07-17T01:30:00Z" '[.[] | select(.at > $c)]' <<<"$reviews_round2")")"
-
-# A round with no formal CHANGES_REQUESTED still refs its last review rather
-# than producing `pr-57-review-null`, which would collide across rounds and
-# silently merge two items into one.
-assert_eq "a round with no blocking review still gets a real ref" \
-  "pr-57-review-1" "$(ref_of '[{"id": 1, "state": "COMMENTED", "at": "2026-07-17T01:22:24Z"}]')"
+  "pr-57-review-3" "$(ref_of "$reviews_round2")"
 
 # --- The body: every review in the round, whoever wrote it ---
 #

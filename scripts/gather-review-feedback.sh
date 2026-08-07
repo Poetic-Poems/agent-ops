@@ -21,7 +21,6 @@
 #     "item": "TD26071701",               // the originating item, if inferable
 #     "head_sha": "eea6184…",
 #     "reviewed_at": "2026-07-17T01:22:54Z",
-#     "last_commit_at": "2026-07-17T01:07:22Z",
 #     "body": "…every review body and inline comment in this round, verbatim…"
 #   }
 #
@@ -29,8 +28,9 @@
 #
 # Three reasons, and the third is the one that matters:
 #   1. Cost, as with gather-findings.sh (requirement 3a): assembling a review
-#      round means one call per PR for reviews and another for inline comments,
-#      and the bodies are long. Paying a model to paginate that is waste.
+#      round means several calls per PR — reviews, inline comments, general
+#      comments, the timeline — and the bodies are long. Paying a model to
+#      paginate that is waste.
 #   2. The prose must reach the Implementor *verbatim*. A model summarising a
 #      review before handing it on is a lossy telephone game about the exact
 #      changes a human asked for.
@@ -49,7 +49,7 @@
 #     colleague's PR because they asked for changes would be a memorable way to
 #     learn that;
 #   - `reviewDecision` is CHANGES_REQUESTED;
-#   - **the latest review is newer than the head commit.**
+#   - **no review-thread event answers the blocking review.**
 #
 # That last clause is load-bearing, not a refinement. The agent raises PRs as
 # the authenticated user, and GitHub forbids approving or dismissing a review on
@@ -59,10 +59,45 @@
 # hour, until a human happened to look. The failure would be invisible, because
 # each cycle would look like a productive one.
 #
-# Comparing timestamps answers "whose turn is it?": a review newer than the last
-# commit means the agent hasn't responded; a commit newer than the review means
-# it has, and the ball is with the human. This is the same shape as requirement
-# 15's "a later green run supersedes older failures".
+# ## Why events, not commit timestamps
+#
+# This used to compare the blocking review's `submitted_at` against the head
+# commit's `committedDate`: newer review means our turn, newer commit means the
+# human's. That comparison has a forgeable input. A conflict-resolution
+# force-push re-stamps every commit's date to push time, and on PR #205 that
+# silently satisfied "commit newer than review" — the branch had a fresh commit
+# date from a rebase that never touched the review's actual findings, so the
+# round read as answered and the PR dropped out of every selection query while
+# the human's CHANGES_REQUESTED sat unanswered. The Enabler caught it hours
+# later, by hand.
+#
+# The fix is to derive "answered" from signals GitHub itself timestamps at the
+# moment they happen, none of which a rebase can produce:
+#   - a **marked reply** — a review or a general PR comment carrying
+#     `lib/pipeline-marker.sh`'s invisible marker, i.e. this system's own
+#     answer to the round (`prompts/implementor.md`'s "Answer the review before
+#     you finish"). `gh pr comment` and `gh pr review --comment` file the same
+#     words under different collections, so both are checked, the same way
+#     gather-abandoned-drafts.sh already does for its own staleness clock.
+#   - a **review-requested event** — the timeline record of
+#     `confirm_review_requested` (`lib/handoff.sh`) asking the blocking
+#     reviewer to look again, which GitHub stamps at request time regardless of
+#     what any commit says.
+# A round is answered iff either kind of event happened after the blocking
+# review was submitted. Nothing about a force-push can produce either: it
+# moves no comment, leaves no review body, and asks no one to re-review.
+#
+# ## Gather every review in the round, not just the blocking one
+#
+# The substance and the formal signal routinely live in different reviews by
+# different accounts, because GitHub will not let the PR's author request
+# changes on it. On this project the agent raises the PR as `warwickallen`, that
+# account can therefore only leave a COMMENTED review, and the human's second
+# account posts the CHANGES_REQUESTED — whose body, in the wild, reads in full:
+# "Refer to https://github.com/…#pullrequestreview-4718691960". Gathering only
+# the blocking review would hand the Implementor the word "Refer to" and nothing
+# to act on. So the body below is every review and inline comment submitted
+# since the round began, whoever wrote it.
 #
 # ## Why the ref is scoped to the review round
 #
@@ -74,24 +109,16 @@
 # covers. Same reasoning as the review-dated `review-<date>-R-NN` refs: these
 # expire by irrelevance, which is the only expiry an unattended system performs.
 #
-# ## Every review in the round, not just the blocking one
-#
-# The substance and the formal signal routinely live in different reviews by
-# different accounts, because GitHub will not let the PR's author request
-# changes on it. On this project the agent raises the PR as `warwickallen`, that
-# account can therefore only leave a COMMENTED review, and the human's second
-# account posts the CHANGES_REQUESTED — whose body, in the wild, reads in full:
-# "Refer to https://github.com/…#pullrequestreview-4718691960". Gathering only
-# the blocking review would hand the Implementor the word "Refer to" and nothing
-# to act on. So the body below is every review and inline comment submitted
-# after the head commit, whoever wrote it.
-#
 # Fails safe: always prints a valid JSON array and exits 0. A repo where nothing
 # is under review contributes `[]`; an API that will not answer contributes `[]`
 # too, and the cycle simply does not see this source (see gather-source-state.sh
 # for why the *fingerprint* must not be so relaxed).
 
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -101,8 +128,8 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
-# The open, agent-raised, changes-requested PRs, with their commits so the
-# head's SHA and committed date arrive in the same call as everything else.
+# The open, agent-raised, changes-requested PRs, with their head commit so the
+# candidate can carry `head_sha`.
 #
 # stderr is shown, not swallowed. A `gh` that rejects a field name — as it did
 # for `headRefOid`, which this version of `gh` does not have — otherwise
@@ -129,13 +156,11 @@ while IFS= read -r pr; do
   [[ -n "$pr" ]] || continue
   number="$(jq -r '.number' <<<"$pr")"
   head_sha="$(jq -r '.commits[-1].oid // ""' <<<"$pr")"
-  # The head commit's date decides whose turn it is (see "The candidate rule").
-  last_commit_at="$(jq -r '.commits[-1].committedDate // ""' <<<"$pr")"
-  [[ -n "$head_sha" && -n "$last_commit_at" ]] || continue
+  [[ -n "$head_sha" ]] || continue
 
-  # Every review, so the round can be assembled and the newest-review timestamp
-  # found. `submitted_at` is null on a pending review; those are drafts nobody
-  # has sent and must not count as feedback.
+  # Every review, so the round can be assembled and the blocking review found.
+  # `submitted_at` is null on a pending review; those are drafts nobody has
+  # sent and must not count as feedback.
   reviews="$(gh api "repos/$slug/pulls/$number/reviews" --paginate \
               --jq '[.[] | select(.submitted_at != null)
                          | {id, state, at: .submitted_at, who: .user.login, body: (.body // "")}]' \
@@ -144,18 +169,73 @@ while IFS= read -r pr; do
     continue
   fi
 
-  # Only reviews *after* the head commit are unaddressed. An older round was
-  # answered by the commit that superseded it, and replaying it would ask the
-  # Implementor to redo work already in the branch.
-  fresh="$(jq -c --arg c "$last_commit_at" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$reviews")"
+  # The review currently blocking `reviewDecision`: the most recent
+  # CHANGES_REQUESTED review among each reviewer's own most recent
+  # APPROVED-or-CHANGES_REQUESTED review — the same "standing position per
+  # reviewer" computation as lib/handoff.sh's `_handoff_blocking_reviewers`,
+  # so the two cannot disagree about whose review currently blocks the PR
+  # (requirement 34a). A COMMENTED review never changes anyone's standing
+  # position, so it is filtered out *before* picking each reviewer's latest,
+  # not after — a reviewer who requested changes and then merely commented is
+  # still blocking.
+  blocking="$(jq -c '
+    ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
+     | group_by(.who) | map(last)) as $latest_per_reviewer
+    | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
+  ' <<<"$reviews")"
+  [[ "$blocking" != "null" ]] || continue
+  blocking_at="$(jq -r '.at' <<<"$blocking")"
+
+  # General PR conversation comments, where the Implementor's own reply lands
+  # (`gh pr comment`) carrying `lib/pipeline-marker.sh`'s invisible marker.
+  issue_comments="$(gh api "repos/$slug/issues/$number/comments" --paginate \
+                      --jq '[.[] | {at: .created_at, body: (.body // "")}]' \
+                      2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$issue_comments" >/dev/null 2>&1 || issue_comments='[]'
+
+  # Review-requested timeline events: GitHub's own record of
+  # `confirm_review_requested` (lib/handoff.sh) asking a reviewer to look
+  # again, stamped by GitHub at request time — nothing a rebase can produce.
+  rerequests="$(gh api "repos/$slug/issues/$number/timeline" --paginate \
+                 --jq '[.[] | select(.event == "review_requested" and .created_at != null)
+                            | {at: .created_at}]' \
+                 2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$rerequests" >/dev/null 2>&1 || rerequests='[]'
+
+  # Every answer event in the PR's life, oldest first: a marked review, a
+  # marked general comment, or a review-requested event. Two different
+  # timestamps are read off this one list below — whether the *blocking*
+  # round has been answered, and where the *previous* round left off.
+  answer_events="$(jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" \
+      --argjson reviews "$reviews" --argjson comments "$issue_comments" --argjson rr "$rerequests" '
+    ([$reviews[]  | select((.body // "") | contains($marker)) | .at]
+     + [$comments[] | select((.body // "") | contains($marker)) | .at]
+     + [$rr[] | .at]) | sort
+  ')"
+
+  # Answered iff an answer event happened after the blocking review was
+  # submitted. This is the whole fix: the old comparison used the head
+  # commit's `committedDate`, which a force-push re-stamps to push time with
+  # no review of its own having happened; these events are stamped by GitHub
+  # itself at the moment this system (or a human) actually acted.
+  answered="$(jq -r --arg c "$blocking_at" '[.[] | select(. > $c)] | length' <<<"$answer_events")"
+  [[ "$answered" == "0" ]] || continue
+
+  # Where the previous round's answer left off — the start of the round now
+  # open — so the body carries everything since, including a COMMENTED review
+  # submitted moments before the blocking one (the "Refer to" case above), not
+  # just entries after the blocking review's own timestamp.
+  round_start="$(jq -r --arg c "$blocking_at" \
+    '[.[] | select(. < $c)] | if length == 0 then "" else last end' <<<"$answer_events")"
+
+  fresh="$(jq -c --arg c "$round_start" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$reviews")"
   [[ "$(jq 'length' <<<"$fresh")" != "0" ]] || continue
 
   reviewed_at="$(jq -r '.[-1].at' <<<"$fresh")"
-  # The ref is pinned to the round's *blocking* review where there is one, so
-  # the item is stable across cycles while the round is open, and new the moment
-  # the human opens a fresh round.
-  review_id="$(jq -r '[.[] | select(.state == "CHANGES_REQUESTED")] | (last // .[-1]) | .id' <<<"$fresh" 2>/dev/null || true)"
-  [[ -n "$review_id" && "$review_id" != "null" ]] || review_id="$(jq -r '.[-1].id' <<<"$fresh")"
+  # The ref is pinned to the round's *blocking* review, so the item is stable
+  # across cycles while the round is open, and new the moment the human opens
+  # a fresh round.
+  review_id="$(jq -r '.id' <<<"$blocking")"
 
   # Inline comments, which carry the file-and-line specifics that a review body
   # often only gestures at. Restricted to this round for the same reason.
@@ -164,7 +244,7 @@ while IFS= read -r pr; do
                              path: .path, line: (.line // .original_line),
                              body: (.body // "")}]' 2>/dev/null || echo '[]')"
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || comments='[]'
-  fresh_comments="$(jq -c --arg c "$last_commit_at" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$comments")"
+  fresh_comments="$(jq -c --arg c "$round_start" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$comments")"
 
   # The originating item, so the Implementor can find the tech-debt entry or
   # issue this PR came from. Best-effort: a ref in the branch name or PR body.
@@ -185,7 +265,6 @@ while IFS= read -r pr; do
     --arg item "$item" \
     --arg head_sha "$head_sha" \
     --arg reviewed_at "$reviewed_at" \
-    --arg last_commit_at "$last_commit_at" \
     --arg body "$body" \
     '{source: "review-feedback",
       ref: $ref,
@@ -196,7 +275,6 @@ while IFS= read -r pr; do
       item: (if $item == "" then null else $item end),
       head_sha: $head_sha,
       reviewed_at: $reviewed_at,
-      last_commit_at: $last_commit_at,
       body: $body}')"
   out="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$out")"
 done < <(jq -c '.[]' <<<"$prs" 2>/dev/null || true)
