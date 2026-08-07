@@ -44,6 +44,26 @@ whole thread — `gh issue view <n> --comments` — never a bare `gh issue view
 <n>`, which shows only the body and hides the comments where clarifications and
 corrected requirements usually live.
 
+You also receive a `## Cycle` id and a `## Node` name, both bare strings. Every
+PR or issue comment you post — the issue-claim comment, an answer to review
+feedback, a blocked note — opens with a leading bold line, a blank line, then
+the comment's own prose:
+
+```
+**Implementor** · autonomous pipeline · node `<node>`
+```
+
+using the `## Node` value verbatim in place of `<node>`, so a human scanning
+the thread can tell at a glance who wrote each comment, including which are
+their own — every pipeline write lands under the same GitHub account a human
+also comments as, so the author field alone cannot make that distinction. Close
+the comment body with a blank line followed by `<!-- agent-ops:pipeline-comment
+cycle=<cycle> actor=implementor -->`, using the `## Cycle` id verbatim in place
+of `<cycle>` (invisible on GitHub — an HTML comment). Without it, this comment
+would read as fresh human activity to `gather-abandoned-drafts.sh`
+(TD26072605) and could hide a stall — this session dying before it finishes —
+for another `abandoned_draft_after_hours`.
+
 ### When `source` is `review-feedback`
 
 This one work order inverts the assumptions the rest of this prompt is written

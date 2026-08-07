@@ -49,6 +49,12 @@ Four things to know:
   to; it rings the bell without moving the gate. That's not a bug to route
   around — it's the human gate, enforced by GitHub rather than by good
   intentions.
+- **Every comment the pipeline posts says so, up top.** Because it writes as
+  you, the author field can't tell your own comments from the pipeline's — so
+  every comment it posts opens with a bold label naming which stage wrote it
+  and which node ran it, e.g. `**Implementor** · autonomous pipeline · node
+  \`poetic-2\``. A comment with no such label is one you, or another human,
+  wrote.
 - **It answers each round exactly once.** Whose turn it is comes from comparing
   your latest review against the branch's head commit: review newer means the
   agent owes you a reply; commit newer means it has replied and is waiting on

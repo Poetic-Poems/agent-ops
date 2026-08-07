@@ -64,6 +64,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/fleet.sh"
 # shellcheck source=lib/labels.sh
 . "$SCRIPT_DIR/lib/labels.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 # --- Flags ---
 DRY_RUN=0
@@ -748,7 +750,11 @@ $(jq . <<<"$reviewer_input")
     else detail="reviewer returned no usable completion"; fi
     log_event "review-attempt-failed" "$(jq -nc --arg r "$slug" --arg d "$detail" '{repo: $r, stage: "reviewer", detail: $d}')"
     if [[ -n "$pr_url" ]]; then
-      gh pr comment "$pr_url" --body "Autonomous project-review agent abandoned this PR: $detail. Left for human review." >/dev/null 2>&1 || true
+      gh pr comment "$pr_url" --body "$(pipeline_comment_header review-script "$node_name")
+
+The review agent abandoned this PR: $detail. Left for human review.
+
+$(pipeline_comment_marker "$review_id" review-script)" >/dev/null 2>&1 || true
     fi
     # no-pr is safe even when an abandoned PR exists: lib/claim.sh keeps the
     # ref whenever it has moved or an open PR uses it, and drops the registry

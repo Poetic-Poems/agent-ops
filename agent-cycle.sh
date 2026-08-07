@@ -1202,9 +1202,11 @@ handle_stage_failure() {
   log_attempt_failed "$stage" "$detail" \
     "$(jq -nc --arg u "$pr_url" 'if $u == "" then {} else {pr_url: $u} end')"
   if [[ -n "$pr_url" ]]; then
-    gh pr comment "$pr_url" --body "Autonomous agent ($stage) stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+    gh pr comment "$pr_url" --body "$(pipeline_comment_header script "$node_name")
 
-$(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
+The ${stage^} stopped on this PR: $detail. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -2830,6 +2832,14 @@ implementor_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" implementor 
 \`\`\`json
 $(jq . <<<"$work_order_json")
 \`\`\`
+
+## Cycle
+
+$cycle_id
+
+## Node
+
+$node_name
 "
 impl_out="$cycle_dir/implementor.out"
 
@@ -2904,9 +2914,11 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "blocked" ]]; then
        '{unblock_condition: (.unblock_condition // "")}
         + (if $u == "" then {} else {pr_url: $u} end)' <<<"$impl_status_json")"
   if [[ -n "$impl_pr_url" ]]; then
-    gh pr comment "$impl_pr_url" --body "Autonomous agent (implementor) stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+    gh pr comment "$impl_pr_url" --body "$(pipeline_comment_header script "$node_name")
 
-$(pipeline_comment_marker "$cycle_id")" >/dev/null 2>&1 || true
+The Implementor stopped on this PR: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
     release_claim have-pr
   else
     release_claim no-pr
@@ -2963,6 +2975,10 @@ $(jq . <<<"$impl_status_json")
 ## Cycle
 
 $cycle_id
+
+## Node
+
+$node_name
 "
 rev_out="$cycle_dir/reviewer.out"
 
