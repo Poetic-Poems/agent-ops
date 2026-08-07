@@ -1061,9 +1061,9 @@ gather_merge_conflicts() {
 # candidacy with no commit to the target repo at all (see
 # scripts/gather-register-hygiene.sh and lib/noop-skip.sh).
 gather_register_hygiene() {
-  local slug="$1" branch="$2" out safe
+  local slug="$1" branch="$2" void="${3:-[]}" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-register-hygiene.sh" "$slug" "$branch" \
+  out="$("$SCRIPT_DIR/scripts/gather-register-hygiene.sh" "$slug" "$branch" "$void" \
         2>"$cycle_dir/register-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/register-hygiene-$safe.json"
@@ -2708,6 +2708,77 @@ fi
 
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
+
+# 34k: act on void. A void already stops the item being selected again
+# (requirement 34c), but nothing before this touched the GitHub object it
+# names, so an obsolete draft PR or a superseded issue stayed open — visible
+# to every human and re-derived void by cycle after cycle (issue #240;
+# poetic-fiddle #190/#214 were re-derived void on 7+ separate cycles, never
+# closed). Only the two id shapes that name a GitHub object at all — a bare
+# issue number, or `pr-<n>-…` — are in scope; a register id, a review ref or
+# a plan task id names nothing this can close. `void_object_closed_items`
+# excludes whatever a previous cycle already actioned, so this never
+# re-checks (and never re-closes) the same item twice, even if a human
+# reopens the object directly rather than through `unvoid_label`. Skipped on
+# --dry-run: the sweep closes issues and pull requests.
+if ! (( DRY_RUN )); then
+  void_object_closed_json="$(void_object_closed_items "$union_log")"
+  void_close_candidates_json="$(jq -nc --argjson void "$void_json" --argjson closed "$void_object_closed_json" \
+    --arg issue_re "$WORK_GONE_ISSUE_RE" --arg pr_re "$WORK_GONE_PR_RE" '
+    ($closed | map(.repo + " " + .item)) as $done
+    | [ $void[]
+        | select((.repo // "") != "" and (.item // "") != "")
+        | select((.item | test($issue_re)) or (.item | test($pr_re)))
+        | select((.repo + " " + .item) as $k | ($done | index($k)) == null) ]
+  ' 2>/dev/null || echo '[]')"
+  while IFS= read -r vslug; do
+    [[ -n "$vslug" ]] || continue
+    repo_candidates_json="$(jq -c --arg r "$vslug" '[ .[] | select(.repo == $r)
+      | {item, detail, evidence} ]' <<<"$void_close_candidates_json" 2>/dev/null || echo '[]')"
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        closed) log_event "void-object-closed" \
+          "$(jq -c --arg r "$vslug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        deferred|warning) log_event "warning" "$(jq -c --arg r "$vslug" \
+          '{detail: ("act-on-void sweep (" + $r + "): " + (del(.repo) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(printf '%s' "$repo_candidates_json" \
+               | timeout 120 "$SCRIPT_DIR/scripts/close-void-github-items.sh" "$vslug" "$node_name" "$cycle_id" \
+                 2>>"$cycle_dir/void-close-sweep.err" || true)
+  done < <(jq -r '[.[].repo] | unique[]' <<<"$void_close_candidates_json" 2>/dev/null || true)
+fi
+
+# Register rows, the other half of requirement 34k: a void item shaped like a
+# tech-debt register id (issue #240) names a file, not a GitHub object, so
+# close-void-github-items.sh above leaves it untouched entirely — this
+# instead re-derives that repo's register-hygiene candidate with the void
+# evidence folded in (scripts/gather-register-hygiene.sh's VOIDED STATUS
+# problem class), so the ordinary register-hygiene Implementor flow flips
+# the row exactly as it repairs any other frontmatter drift. Only for repos
+# that actually have a void register item — everywhere else costs nothing
+# beyond the one jq read below. This necessarily re-fetches the register (a
+# second read this cycle, alongside the plain one the loop at "3. Repo
+# ordering" already took) because that earlier pass runs before void_json
+# exists to hand it; the alternative is reordering the cycle around a state
+# read this is the only consumer of.
+void_register_ids_json="$(work_gone_register_ids "$void_json")"
+while IFS= read -r vr_slug; do
+  [[ -n "$vr_slug" ]] || continue
+  vr_branch="$(jq -r --arg s "$vr_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+    <<<"$ordered_repos_json" 2>/dev/null || true)"
+  [[ -n "$vr_branch" ]] || continue
+  vr_candidates_json="$(jq -c --argjson void "$void_json" --arg r "$vr_slug" \
+    --argjson ids "$(jq -c --arg s "$vr_slug" '.[$s] // []' <<<"$void_register_ids_json")" \
+    -n '[ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
+          | {item, detail, evidence} ]' 2>/dev/null || echo '[]')"
+  vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" "$vr_candidates_json")"
+  ordered_repos_json="$(jq -c --arg r "$vr_slug" --argjson rh "$vr_hygiene_json" \
+    'map(if .slug == $r then .register_hygiene = $rh else . end)' \
+    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
+
 # The third extract (requirement 3h): what a previous Enabler engagement
 # specified for an item nobody had specified well enough to work on. For an
 # issue the refinement is a comment and travels in the thread the Co-Ordinator

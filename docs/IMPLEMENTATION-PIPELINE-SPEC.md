@@ -3900,6 +3900,85 @@ runs unattended.
     spending nothing new); the comment becomes part of the thread this
     convention already reads, so a human — or the Co-Ordinator, next time it
     is asked to select this item — can adopt it verbatim.
+34k. **Act on void: close the GitHub object a void names.** A void
+    (requirement 34c) already stops the item being selected again, but
+    nothing before this touched the *object* it is about — an obsolete draft
+    pull request or a superseded issue stayed open on GitHub, visible to
+    every human and to every tool that reads the repository rather than this
+    pipeline's own log, and kept being re-derived void by cycle after cycle
+    with nothing ever said to it (issue #240; poetic-fiddle #190/#214 were
+    re-derived void on 7+ separate cycles and never closed). Void tombstones
+    are private state, and the world they describe was never corrected.
+
+    So, in the same pre-extract window as 34f/34g/34i, against `void_json`
+    (the full void set — an already-void item needs no unblocking, but it
+    still names an object that may need closing), the Script asks
+    `scripts/close-void-github-items.sh` to close it, for the two id shapes
+    that name a GitHub object at all (the same shapes requirement 34i's own
+    work-gone rule reads, from the one definition in `lib/work-gone.sh`):
+
+    - **an issue** (a bare number) — closed, with a comment carrying the
+      void's own `detail` (the reason) and `evidence`, iff GitHub still
+      reports it open;
+    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
+      closed the same way, iff still open.
+
+    Every other void shape — a tech-debt register id, a project-review ref,
+    an implementation-plan task id — names something that is not a GitHub
+    object to close, and requirement 34k does nothing with it; a register id
+    is instead requirement 34l's concern, immediately below.
+
+    **Acted on at most once, ever — deliberately not tied to the void
+    clearing.** `void_object_closed_items` (`lib/cycle-state.sh`) is the set
+    of `{repo, item}` pairs a `void-object-closed` event already names; the
+    Script excludes them from every future pass, regardless of what happens
+    to the object afterwards. This is not the same safety margin as 34d's
+    corroboration — it exists because closing is an action with a visible,
+    somewhat blunt side effect (a comment on someone's issue), and a human
+    who simply reopens the object, without going through the sanctioned
+    `unvoid_label` route (34f) that actually clears the void, must not have
+    it closed on them again next cycle. `unvoid_label` remains the only way
+    to make the *void* itself go away; this only ever runs once regardless.
+
+    Bounded and idempotent: three actions per repo per cycle (the overflow
+    reported, never silent, same as every other sweep here), and a `gh` read
+    before every close means the worst outcome of two nodes racing is both
+    finding nothing left to do. Skipped on `--dry-run`.
+34l. **Register rows, voided.** A void naming a tech-debt register id
+    (`lib/work-gone.sh`'s `WORK_GONE_REGISTER_RE`) names a file, not a
+    GitHub object — 34k's own close has nothing to do with it. But the same
+    defect it exists to close applies just as much here: the fleet's void
+    log already knows the item is done, most often because the fix landed
+    some way other than that item's own claim branch, and the register file
+    still says `status: open`, advertising unfinished work forever
+    (TD-PPpfid-26071901, voided in July, still `open` months later; issue
+    #240).
+
+    So, for every repo `work_gone_register_ids` names against `void_json`
+    (the same shared function requirement 34i's clearance rule already
+    calls, applied here to the void set instead of the blocked one), the
+    Script re-derives that repo's register-hygiene candidate —
+    `scripts/gather-register-hygiene.sh`, called a second time this cycle,
+    now with the void items and their evidence — and replaces the entry
+    requirement 3i's own pre-fetch loop already built for it in the
+    Co-Ordinator's runtime input. The gatherer's own `VOIDED STATUS` problem
+    class (a second, disjoint source of candidacy layered on top of
+    `td-check.pl`'s internal-consistency rules, never fed back into the
+    byte-identical upstream checker) is what makes this a candidate at all
+    when `td-check.pl` alone would find the file fine. The repair travels
+    through the ordinary register-hygiene Implementor flow (prompts/
+    implementor.md's "Register hygiene" procedure) exactly as any other
+    frontmatter drift — flipping `status:` to `resolved` with the void's own
+    evidence as `ref:`, or clearing stray resolution fields, whichever the
+    facts support — never a write this pipeline makes directly against a
+    protected default branch.
+
+    Re-fetching the register a second time per repo (rather than reordering
+    the cycle so requirement 3i's own pass already had `void_json`) costs
+    one extra tarball read, and only for a repo that actually has a void
+    register item — everywhere else, nothing. The alternative was moving
+    34f/34g/34i/34k's whole pre-extract window earlier than the ordering
+    those requirements are already deliberate about.
 
 ### The Enabler
 
@@ -4303,14 +4382,20 @@ What exists, and the requirements each part answers to:
    `CONFLICTING`), each carrying the PR's body verbatim, its base, and a
    head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
-   repo slug and default branch, prints a JSON array holding at most one
-   candidate — the repo's per-item tech-debt register, when
-   `scripts/td-check.pl` says it disagrees with itself — carrying a ref
-   scoped to the register's identity (a digest of the `tech-debt/` tree SHA
-   and the policy blob SHA), the register's URL, the `tech-debt/` tree SHA as
-   the blob SHA, the problem lines, and the checker's output verbatim. A repo
-   with no `tech-debt` tree prints `[]` silently; an API failure prints `[]`
-   with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0).
+   repo slug, default branch and (requirement 34l) an optional JSON array of
+   this repo's void register-shaped candidates, prints a JSON array holding
+   at most one candidate — the repo's per-item tech-debt register, when
+   `scripts/td-check.pl` says it disagrees with itself, or when a named void
+   candidate's file still carries `status: open`/`in-progress` (the
+   `VOIDED STATUS` problem class, this script's own, layered on top of and
+   never fed back into `td-check.pl`) — carrying a ref scoped to the
+   register's identity (a digest of the `tech-debt/` tree SHA and the policy
+   blob SHA), the register's URL, the `tech-debt/` tree SHA as the blob SHA,
+   the problem lines (both classes combined), and a body holding the
+   checker's output verbatim plus a section naming each `VOIDED STATUS`
+   item's void evidence. A repo with no `tech-debt` tree prints `[]`
+   silently; an API failure prints `[]` with `gh`'s diagnosis on stderr.
+   Fails safe to `[]` (exit 0).
    Its candidate rule is regression-tested in `test/register-hygiene.test.sh`;
    must pass `shellcheck`. `scripts/td-check.pl` is a byte-identical copy of
    the canonical script in `Poetic-Poems/poetic`, held here (as this
@@ -4795,7 +4880,8 @@ What exists, and the requirements each part answers to:
     with no marker passes trivially. The workflow runs on every
     `pull_request` event, passing the body through `env:` rather than
     interpolating it into the step directly, so an attacker-controlled title
-    or body from a fork PR cannot inject shell. Must pass `shellcheck`.
+    or body from a fork PR cannot inject shell. Unit-tested
+    (`test/check-closing-keyword.test.sh`); must pass `shellcheck`.
 18. `scripts/sweep-closed-issues.sh` implementing requirement 17c's sweep:
     given a repo slug, a node name and a cycle id, lists that repo's merged
     `pr_label`-labelled pull requests (bounded to the most recently updated),
@@ -4806,6 +4892,18 @@ What exists, and the requirements each part answers to:
     for the Script to log. Capped at three actions per repo per call, the
     overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
     Unit-tested (`test/sweep-closed-issues.test.sh`); must pass `shellcheck`.
+19. `scripts/close-void-github-items.sh` implementing requirement 34k: given
+    a repo slug, a node name, a cycle id and (on stdin) that repo's void
+    candidates already filtered to the id shapes `lib/work-gone.sh` defines
+    (a bare issue number, `pr-<n>-…`) and to what
+    `void_object_closed_items` has not already processed, closes each still-
+    open object with a comment carrying the void's `detail`/`evidence`,
+    printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
+    `"already"` — `deferred`, `warning`) for the Script to log as
+    `void-object-closed`. Any other id shape is left untouched. Capped at
+    three actions per call, the overflow reported rather than silent.
+    `SWEEP_GH` stubs `gh` for tests. Unit-tested
+    (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -5640,6 +5738,43 @@ pull request, run the ones the change touches and any it could regress.
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.
+8j. **A corroborated void closes the GitHub object it names, exactly once
+   (requirement 34k).** `test/close-void-github-items.test.sh` passes against
+   a stubbed `gh`: an open issue or an open, obsolete pull request named by a
+   void is closed with a comment carrying the void's own evidence; an object
+   already closed is reported (`closed_by: "already"`) rather than touched
+   again; a shape naming no GitHub object (a register id) is left entirely
+   alone; and the per-call action cap defers rather than floods.
+   `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
+   once a `void-object-closed` event exists for an item, it is excluded from
+   every later pass — asserted by driving the same item through the extract
+   twice and confirming the second call still yields the recorded set, the
+   fact that stops the sweep re-closing an object a human has since reopened
+   by hand rather than through `unvoid_label`.
+8k. **A void'd register row becomes a candidate even when `td-check.pl` finds
+   nothing wrong (requirement 34l).** `test/register-hygiene.test.sh`'s void
+   section passes against the shipped `scripts/gather-register-hygiene.sh`
+   and a real `td-check.pl` run: a consistent register stays `[]` until a
+   void names one of its `open` items, at which point exactly one candidate
+   appears carrying a `VOIDED STATUS` problem line quoting the void's own
+   reason; a void naming an item already `resolved` adds nothing; a void
+   naming a file that does not exist adds nothing; and a genuinely drifted
+   register's own `td-check.pl` problems and a `VOIDED STATUS` problem
+   coexist in the same one candidate rather than competing.
+8l. **A closing keyword is enforced, not requested (requirements 23b, 25a,
+   17c).** `test/check-closing-keyword.test.sh` passes: a PR body with no
+   `agent-ops:closes-issue` marker always passes; a marker with no matching
+   closing keyword for the same number fails, naming it; a keyword for the
+   *wrong* number does not satisfy a marker (`Closes #199` does not satisfy
+   `item=198`); every recognised keyword form (`Closes`/`Fixes`/`Resolves`,
+   past tense, a colon, case-insensitive) passes; and multiple markers on one
+   body are checked independently — one satisfied marker never excuses
+   another. `test/sweep-closed-issues.test.sh` passes against a stubbed
+   `gh`: a merged, marker-carrying pull request whose issue is still open is
+   closed with the merge cited as evidence; an issue GitHub already closed
+   (or a PR without the marker at all) is left untouched, with no extra API
+   call made for the markerless case; and the per-call action cap defers
+   rather than floods.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

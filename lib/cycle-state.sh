@@ -213,6 +213,39 @@ void_items() {
   _latest_unresolved "item-void" "unvoided" "${1:--}"
 }
 
+# void_object_closed_items [LOG_FILE]
+# Print, as a JSON array of {repo, item}, every void item requirement 34k's
+# act-on-void sweep has already handled — closed the GitHub object for, or
+# found it already closed. Reads LOG_FILE, or stdin if it is omitted or "-".
+#
+# This is the sweep's own idempotency: closing a void'd issue or pull request
+# is a one-shot action, deliberately never repeated even if a human reopens
+# the object without applying the `unvoid_label` (requirement 34f) — the
+# sanctioned way to say a void was wrong. Without this record the sweep would
+# re-close whatever it had just reopened, every cycle, forever: exactly the
+# "unvoided" bug 34f itself warns against, aimed at a human's plain re-open
+# instead of at the label.
+#
+# `void-object-closed` is a fact, not a state with a clearing event like
+# `item-void`/`unvoided` — once an item has been actioned, it stays actioned,
+# so the latest occurrence is enough; no _latest_unresolved pairing is needed.
+void_object_closed_items() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "void-object-closed"
+                   and (.repo // "") != "" and (.item // "") != "")
+      | {repo, item} ] | unique'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # The two states meet in one place, and the answer there is always the same:
 # **void wins** (requirement 34h). An item can hold both marks at once, and
 # routinely does — `item-void` is a state of its own and clears no block, so the

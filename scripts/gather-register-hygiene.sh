@@ -8,7 +8,14 @@
 # Given a repo slug, print a JSON array holding at most one candidate: the
 # repo's register, if `scripts/td-check.pl` says it disagrees with itself.
 #
-# Usage: gather-register-hygiene.sh <owner/repo> [default-branch]
+# Usage: gather-register-hygiene.sh <owner/repo> [default-branch] [void-json]
+#
+# `void-json` (default `[]`) is this repo's slice of the fleet's void set,
+# already filtered to ids shaped like a tech-debt register id
+# (`lib/work-gone.sh`'s own `WORK_GONE_REGISTER_RE`, the one definition —
+# requirement 34a):
+#   [{"item": "TD-PPpfid-26071901", "detail": "…", "evidence": "…"}]
+#
 #
 # Candidate shape:
 #   {
@@ -74,6 +81,33 @@
 # is one pull request either way. At most one candidate per repo, for the
 # same reason — there is only one register.
 #
+# ## VOIDED STATUS: a second, disjoint source of candidacy (issue #240)
+#
+# `td-check.pl`'s rules are all internal — they ask whether a register file
+# agrees with itself, its filename and its repository's declared scope.
+# There is a second way a register row can be wrong that none of them can
+# see: the fleet's own void log (requirement 34c) already knows the item is
+# done — voided with evidence, most often because the fix landed some way
+# other than that item's own claim branch — and the register file still says
+# `status: open`. `td-check.pl` finds nothing wrong with that file in
+# isolation, so it never would, and the row sits there advertising
+# unfinished work forever (TD-PPpfid-26071901, voided in July, still `open`
+# months later).
+#
+# So, given `void-json`, this checks each named id's own file (already
+# in hand, from the same tarball) for its on-disk `status:`, and where it is
+# still `open` or `in-progress`, appends a `VOIDED STATUS` problem line —
+# this script's own label, not one of `td-check.pl`'s, and never fed back
+# into it: the byte-identical upstream copy (`TECH-DEBT-REGISTER.md` in
+# Poetic-Poems/poetic) stays exactly what it is, a checker of internal
+# consistency, and this stays the second, cross-referencing layer the
+# register-hygiene *source* — not the checker — has always been free to add.
+# A register with no `td-check.pl` problems but one `VOIDED STATUS` still
+# becomes a candidate; the pull request that repairs it flips that one item's
+# `status:` to `resolved` (or clears stray resolution fields, whichever the
+# void's own evidence supports), exactly like any other register-hygiene
+# repair.
+#
 # A repo with no `tech-debt/` directory contributes `[]`, and that is a
 # normal answer, not an error: not every repo this fleet touches keeps a
 # register, and one that keeps an as-yet-empty register (a scope-declaring
@@ -136,10 +170,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 slug="${1:-}"
 default_branch="${2:-main}"
+void_json="${3:-[]}"
 if [[ -z "$slug" ]]; then
-  echo "usage: gather-register-hygiene.sh <owner/repo> [default-branch]" >&2
+  echo "usage: gather-register-hygiene.sh <owner/repo> [default-branch] [void-json]" >&2
   exit 64
 fi
+jq -e 'type == "array"' <<<"$void_json" >/dev/null 2>&1 || void_json='[]'
 
 work="$(mktemp -d)" || { printf '[]'; exit 0; }
 trap 'rm -rf "$work"' EXIT
@@ -204,16 +240,12 @@ check_rc=$?
 ref="register-hygiene-$(printf '%s:%s' "$dir_sha" "$policy_sha" | sha256sum | cut -c1-12)"
 url="https://github.com/$slug/tree/$default_branch/tech-debt"
 
-# 0 is a consistent register — the answer this source expects to give almost
-# every cycle. Anything above 1, or a report with nothing in it, is td-check.pl
-# failing to run at all (usage, I/O), which is our problem and not the
-# register's: say so and contribute nothing, rather than filing a repair on
-# behalf of a checker that never checked.
-if (( check_rc == 0 )); then
-  printf '[]'
-  exit 0
-fi
-if (( check_rc > 1 )) || [[ -z "$out" ]]; then
+# Anything above 1 is td-check.pl failing to run at all (usage, I/O), which
+# is our problem and not the register's: say so and contribute nothing at
+# all — the void cross-reference below is skipped too, deliberately: a
+# checker that never checked is not a trustworthy base to layer a second
+# problem class on.
+if (( check_rc > 1 )); then
   printf '%s\n' "$out" >&2
   printf '[]'
   exit 0
@@ -222,16 +254,48 @@ fi
 # The problem lines, split out of the report so the Co-Ordinator can price the
 # item without parsing prose, while `body` keeps the report whole for the
 # Implementor. The labels are td-check.pl's own; keep the two in step.
+# check_rc == 0 (a consistent register, per td-check.pl) leaves this empty —
+# the ordinary answer this source expects to give almost every cycle — and
+# nothing here forces `out` non-empty for it either, unlike the guard above.
 problems="$(grep -E '^[[:space:]]+(BAD NAME|BAD FRONTMATTER|MISSING FIELD|BAD FIELD|BAD STATUS|BAD SCOPE|NO SCOPE|ID MISMATCH|DATE MISMATCH|STALE FIELD|DUPLICATE ID)' <<<"$out" \
             | jq -Rn '[inputs | sub("^ +"; "")]' 2>/dev/null || true)"
 [[ -n "$problems" ]] || problems='[]'
+
+# VOIDED STATUS (issue #240, requirement 34k) — the second, disjoint source
+# of candidacy the header describes: an item the fleet's void log already
+# knows is done, whose file on disk still says otherwise. Read straight from
+# the tarball already extracted, so this costs no extra API call.
+void_problems='[]'
+while IFS=$'\t' read -r v_item v_detail; do
+  [[ -n "$v_item" ]] || continue
+  v_file="$root/tech-debt/$v_item.md"
+  [[ -f "$v_file" ]] || continue
+  v_status="$(awk '
+    /^---[[:space:]]*$/ { c++; next }
+    c == 1 && /^status:[ \t]*/ { sub(/^status:[ \t]*/, ""); print; exit }
+    c >= 2 { exit }
+  ' "$v_file" 2>/dev/null || true)"
+  [[ "$v_status" == "open" || "$v_status" == "in-progress" ]] || continue
+  void_problems="$(jq -c --arg l "VOIDED STATUS  tech-debt/$v_item.md (status: $v_status; void: $v_detail)" \
+    '. + [$l]' <<<"$void_problems" 2>/dev/null || printf '%s' "$void_problems")"
+done < <(jq -r '.[] | select((.item // "") != "") | [.item, (.detail // "no reason given")] | @tsv' \
+         <<<"$void_json" 2>/dev/null || true)
+
+problems="$(jq -c -n --argjson a "$problems" --argjson b "$void_problems" '$a + $b')"
+if [[ "$(jq 'length' <<<"$problems" 2>/dev/null || echo 0)" == "0" ]]; then
+  printf '[]'
+  exit 0
+fi
+body="$out$(jq -r 'if length == 0 then "" else
+  "\n\nVOIDED STATUS (requirement 34k, not td-check.pl'"'"'s own): the fleet'"'"'s void log records the following items as already done, but their register status has not been flipped:\n" + (map("  " + .) | join("\n"))
+  end' <<<"$void_problems" 2>/dev/null || true)"
 
 jq -nc \
   --arg ref "$ref" \
   --arg url "$url" \
   --arg blob_sha "$dir_sha" \
   --argjson problems "$problems" \
-  --arg body "$out" \
+  --arg body "$body" \
   '[{source: "register-hygiene",
      ref: $ref,
      url: $url,

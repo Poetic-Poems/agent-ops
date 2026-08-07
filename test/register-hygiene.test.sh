@@ -131,8 +131,8 @@ export STUB_TARBALL="$tmp_dir/register.tar.gz"
 export STUB_MODE=hit
 export STUB_FORMAT=peritem
 
-run() {  # prints stdout; stderr lands in $tmp_dir/err
-  "$GATHER" "Poetic-Poems/poetic" main 2>"$tmp_dir/err"
+run() {  # [void-json] prints stdout; stderr lands in $tmp_dir/err
+  "$GATHER" "Poetic-Poems/poetic" main "${1:-[]}" 2>"$tmp_dir/err"
 }
 
 # --- A consistent register is [], a drifted one is exactly one candidate --------
@@ -176,6 +176,40 @@ expected_body="$( cd "$tmp_dir" \
                   && cd items \
                   && perl "$SCRIPT_DIR/scripts/td-check.pl" tech-debt; true )"
 assert_eq "per-item body is td-check.pl's output verbatim" "$expected_body" "$body"
+
+# --- VOIDED STATUS: a void'd register row td-check.pl alone would miss ----------
+# (requirement 34k, issue #240). td-check.pl finds the consistent fixture
+# clean on its own; a void naming its still-`open` item must still surface a
+# candidate.
+make_tarball "$FIXTURES_DIR/tech-debt-items-consistent" "$STUB_TARBALL"
+
+out="$(run '[]')"
+assert_eq "an empty void list changes nothing: still []" "[]" "$out"
+
+out="$(run '[{"item":"TD-PPtest-26071501","detail":"already fixed by #999","evidence":"see #999"}]')"
+assert_eq "a void'd open item becomes exactly one candidate" "1" "$(jq 'length' <<<"$out")"
+assert_eq "the problem names the file, the status and the void reason" \
+  "VOIDED STATUS  tech-debt/TD-PPtest-26071501.md (status: open; void: already fixed by #999)" \
+  "$(jq -r '.[0].problems[0]' <<<"$out")"
+assert_eq "the body carries td-check.pl's (empty) report plus the void section" \
+  "1" "$([[ "$(jq -r '.[0].body' <<<"$out")" == *"already fixed by #999"* ]] && echo 1 || echo 0)"
+assert_eq "the ref is still scoped to register identity alone" \
+  "$expected_ref" "$(jq -r '.[0].ref' <<<"$out" 2>/dev/null || true)"
+
+out="$(run '[{"item":"TD-PPtest-26071502","detail":"already resolved"}]')"
+assert_eq "a void naming an already-resolved item adds nothing" "[]" "$out"
+
+out="$(run '[{"item":"TD-PPtest-99999999","detail":"no such file"}]')"
+assert_eq "a void naming an item with no file on disk adds nothing" "[]" "$out"
+
+# A drifted register (td-check.pl already flags it) plus an unrelated void'd
+# item: both problem classes appear together, in one candidate.
+make_tarball "$FIXTURES_DIR/tech-debt-items-drifted" "$STUB_TARBALL"
+out="$(run '[{"item":"TD-PPtest-26071501","detail":"voided too"}]')"
+assert_eq "td-check.pl problems and VOIDED STATUS coexist in one candidate" "1" \
+  "$(jq 'length' <<<"$out")"
+assert_eq "  ... carrying both problem classes" "true" \
+  "$(jq -r '[.[0].problems[] | select(startswith("VOIDED STATUS"))] | length > 0' <<<"$out")"
 
 # --- A repository with no register is a normal, silent [] -----------------------
 #
