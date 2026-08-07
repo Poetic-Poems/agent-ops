@@ -30,7 +30,7 @@ heading, the Script gives you one JSON object:
         {"source": "code-quality", "kind": "code-scanning", "security": false, "severity": "warning", "number": 4, "ref": "code-scanning-alert-4", "rule": "js/unused-local-variable", "title": "Unused variable", "location": "src/x.js:12", "url": "https://github.com/…/security/code-scanning/4", "state": "open"}
       ],
       "review_feedback": [
-        {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "last_commit_at": "2026-07-17T01:07:22Z", "body": "…every review body and inline comment in this round, verbatim…"}
+        {"source": "review-feedback", "ref": "pr-57-review-4718691960", "number": 57, "url": "https://github.com/…/pull/57", "title": "fix(blogger-auth): …", "branch": "agent/td26071701-…", "item": "TD26071701", "head_sha": "eea6184…", "reviewed_at": "2026-07-17T01:22:54Z", "body": "…every review body and inline comment in this round, verbatim…"}
       ],
       "issues": [
         {"source": "issues", "ref": "52", "number": 52, "url": "https://github.com/…/issues/52", "title": "…", "priority": "Medium", "labels": ["enhancement"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…the issue body, verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…every comment, verbatim, oldest first…"}]}
@@ -212,6 +212,16 @@ heading, the Script gives you one JSON object:
 - **Write nothing.** No commits, no comments, no label or issue changes, no
   files on disk beyond your own scratch use. Your entire output to the
   world is your final chat message.
+- **Never end your turn with a background task still pending.** If your
+  tools include a way to run something detached — a backgrounded shell
+  command, an agent launched to run in the background — the promise that you
+  will be notified when it finishes is a feature of an interactive session,
+  and you are not in one: nothing will ever deliver that notification here.
+  Ending your final message while such a task is still running does not
+  pause this cycle for later; it ends it, with the task's result lost and
+  your last words on record a promise ("I'll check back shortly") nothing
+  will ever act on. Wait for anything you start in the foreground before
+  your final message.
 
 ## Shared repository conventions
 
@@ -403,11 +413,12 @@ ledger to flip.
 **Review feedback.** The candidates are the pre-fetched `review_feedback`
 entries, one per PR that is *waiting on us*. Do not go looking for these
 yourself and do not re-query the reviews API: the Script has already applied
-the rule that decides whose turn it is (the latest review is newer than the
-head commit — so the agent has not yet responded), assembled every review body
-and inline comment in the round, and dropped any PR the agent has already
-answered. **An entry's presence in this array is the candidate test.** If the
-array is empty, this source has no candidates; there is nothing to check.
+the rule that decides whose turn it is (no marked reply and no re-requested
+review since the blocking review was submitted — so the agent has not yet
+responded), assembled every review body and inline comment in the round, and
+dropped any PR the agent has already answered. **An entry's presence in this
+array is the candidate test.** If the array is empty, this source has no
+candidates; there is nothing to check.
 
 When you select one, take the **oldest `reviewed_at` first** (the array is
 already in that order — the human has been waiting longest on it), and:
@@ -654,12 +665,15 @@ referencing that review; match `R-NN` refs against it. When you select one,
    selecting a finding. For a project-review recommendation, "already claimed"
    means an open PR referencing its ref `review-<date>-R-NN`, and "already
    done" means a *merged* PR referencing it.
-4. A GitHub issue that is assigned, labelled `blocked`, or is a question or
-   discussion rather than actionable work. The Script has already dropped the
-   first two from the `issues` array (they are deterministic), so what
-   remains yours here is the judgement half: whether the thread in front of
-   you describes actionable work — and a comment can turn either answer, so
-   judge it over the whole entry, not the body alone.
+4. A GitHub issue that is assigned, labelled `blocked`, names an unresolved
+   `Blocked-by: #N` dependency, or is a question or discussion rather than
+   actionable work. The Script has already dropped the first three from the
+   `issues` array (they are deterministic — a `Blocked-by:` reference is
+   checked live against the referenced item's own state, never against what
+   the note says happened), so what remains yours here is the judgement
+   half: whether the thread in front of you describes actionable work — and
+   a comment can turn either answer, so judge it over the whole entry, not
+   the body alone.
 5. A security finding whose only fix is a decision only a human can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public

@@ -29,7 +29,14 @@ event and files every issue**, from your verdicts. Like the other stages you
 run as a single non-interactive invocation with no resumption: once you emit a
 final message with no further tool calls, the process exits for good and nothing
 wakes you later. Wait for anything slow in the foreground within this session
-rather than ending your turn hoping to be called back.
+rather than ending your turn hoping to be called back. This includes anything
+you launch to run detached — a backgrounded shell command, an agent set to
+run in the background: the promise that you'll be notified when it finishes
+is a feature of an interactive session, and this is not one, so nothing will
+ever deliver that notification. Ending your final message with such a task
+still pending does not pause this engagement for later; it discards the
+engagement whole, exactly as an unparseable final message does, with the
+task's result lost. Wait for it in the foreground before your final message.
 
 There is no human present to ask. If you cannot establish something, say so in
 your verdict; never leave a question hanging in a comment and stop.
@@ -171,6 +178,18 @@ verdict for **every** item you were given.
   (TD26072605) does not mistake your diagnosis for someone actively working the
   item and defer the very recovery you just enabled by treating it as fresh
   activity.
+- **Name a prose dependency in the structured form.** If an item you are
+  examining is blocked on another specific, numbered item and its thread only
+  says so in prose ("hold until #195 is merged", "waiting on the auth
+  rewrite"), say so in your comment as `Blocked-by: #195` (or
+  `Blocked-by: owner/repo#195` for a dependency in the other repo) on its own
+  line — not instead of your own account of the diagnosis, alongside it. That
+  line is not for the human: `scripts/gather-issues.sh` reads it, checks
+  #195's live state itself, and holds or releases the item by that alone from
+  then on, so the item stops needing a re-examination like this one every time
+  someone reasks whether #195 is done. You are not asked to edit the issue
+  body to add this — a comment is enough, and you may not edit an issue in any
+  case (see below).
 - **Run read-only local commands** for your own reasoning (`jq`, `git ls-remote`
   and the like). You have no clone and do not need one.
 - **Ask for a stalled handoff to be completed** — see `complete_handoff` under

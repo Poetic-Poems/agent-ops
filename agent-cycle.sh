@@ -70,6 +70,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
@@ -1287,6 +1289,18 @@ gather_plan_status() {
 # empty` accepts a stream of several values, and a salvage should never be
 # looser than the straight parse it backs up.
 #
+# The fenced-block fallback matches a closing ``` regardless of what info
+# string the *opening* fence carried, or whether it carried one at all
+# (issue #237): the state machine toggles solely on "is this a fence line",
+# not on the literal text `json` following it. A verdict a model fences
+# bare — ``` … ``` with no language tag — is not an ambiguous case; only a
+# straight parse or a suffix match, not the fence's tag, was ever what told
+# a verdict apart from prose. Before this, poetic-2's completed conflict
+# resolution of PR #205 (2026-08-07T04:40Z) was discarded for exactly this
+# reason — a bare fence the parser could not see — erasing pipeline memory
+# that the conflict was fixed and triggering a three-node duplicate-work
+# cascade on the same PR.
+#
 # scripts/publish-dashboard.sh's `extract_status` is a jq port of this
 # algorithm and review-cycle.sh carries a bash copy; the three move together
 # (docs/DASHBOARD-SPEC.md), and test/extract-json-result.test.sh holds them
@@ -1308,8 +1322,10 @@ extract_json_result() {
     return 0
   fi
   block="$(awk '
-    /^```json[[:space:]]*$/ { capture=""; in_block=1; next }
-    /^```[[:space:]]*$/ { if (in_block) { last=capture; in_block=0 }; next }
+    /^```[A-Za-z0-9_-]*[[:space:]]*$/ {
+      if (in_block) { last=capture; in_block=0 } else { capture=""; in_block=1 }
+      next
+    }
     in_block { capture = capture $0 "\n" }
     END { printf "%s", last }
   ' <<<"$text")"
@@ -1325,6 +1341,76 @@ extract_json_result() {
     fi
   done < <(grep -n '^[[:space:]]*{' <<<"$text" || true)
   return 1
+}
+
+# A salvage resume is a single short turn — "state the verdict you already
+# reached, nothing else" — so it earns none of the adaptive budgeting a real
+# stage's own caps get from lib/stage-budget.sh (requirement 4e): a fixed,
+# conservative bound is safer than one that could grow to a whole stage's own
+# backstop over time. Five minutes is generous for a turn with no tool calls;
+# the ninety-second watchdog catches a resume that never starts producing at
+# all.
+stage_salvage_backstop_sec=300
+stage_salvage_inactivity_sec=90
+
+# stage_salvage_result STAGE OUT_FILE MODEL CWD
+# The bounded rescue of requirement 37's discard rule (issue #237): before an
+# engagement whose final message failed extract_json_result is discarded
+# whole, resume the exact session that produced it — not a fresh one, which
+# would pay to re-derive work already done — with nothing but "return the
+# verdict object". Prints the recovered JSON on stdout and returns 0 when
+# that resume's own final message parses; returns 1 and prints nothing
+# otherwise, including when the original run left no `session_id` to resume
+# (a killed run's stream can end before the CLI's init event ever landed).
+#
+# Deliberately silent about *why* the first attempt failed — a timeout, a
+# crash, an unparseable message are all the same fact from here: the session
+# is worth one more ask before its work is written off. The caller decides
+# what "worth trying" means for its own stage (an Enabler with a `rc != 0`
+# has no living session to resume in the first place, since the process that
+# would hold one is the one that never exited).
+stage_salvage_result() {
+  local stage="$1" out_file="$2" model="$3" cwd="$4"
+  local session_id salvage_out salvage_rc salvage_result parsed
+  # run_claude_stage sets its caller-visible globals for whichever run is
+  # most recent; the original run's metering is already logged by the time
+  # this is called, but detect_and_log_limit_hit is not — it reads
+  # $stage_rate_limit_json at the call sites' own discretion, later, against
+  # $out_file. Left alone, a salvage attempt would overwrite it with the
+  # resume's own (almost always empty) limit info before that read happens.
+  # Saving and restoring here keeps this function's globals side effect
+  # entirely local, which is what every caller of it is entitled to assume.
+  local saved_gaps="$stage_gaps_json" saved_kill="$stage_kill_reason" \
+        saved_limit="$stage_rate_limit_json"
+  session_id="$(jq -r '.session_id // empty' "$out_file" 2>/dev/null || true)"
+  if [[ -z "$session_id" ]]; then
+    stage_gaps_json="$saved_gaps"; stage_kill_reason="$saved_kill"; stage_rate_limit_json="$saved_limit"
+    return 1
+  fi
+  salvage_out="${out_file%.out}.salvage.out"
+  log_event "salvage" "$(jq -nc --arg s "$stage" '{stage: $s, outcome: "attempted"}')"
+  if run_claude_stage "$stage-salvage" "$stage_salvage_backstop_sec" "$model" \
+       "Return only the verdict JSON object, nothing else." \
+       "$salvage_out" "$cwd" "$stage_salvage_inactivity_sec" "$session_id"; then
+    salvage_rc=0
+  else
+    salvage_rc=$?
+  fi
+  stage_gaps_json="$saved_gaps"; stage_kill_reason="$saved_kill"; stage_rate_limit_json="$saved_limit"
+  if (( salvage_rc != 0 )); then
+    log_event "salvage" "$(jq -nc --arg s "$stage" --argjson rc "$salvage_rc" \
+      '{stage: $s, outcome: "failed", exit_code: $rc}')"
+    return 1
+  fi
+  salvage_result="$(jq -r '.result // empty' "$salvage_out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$salvage_result" 2>/dev/null || true)"
+  if [[ -z "$parsed" ]]; then
+    log_event "salvage" "$(jq -nc --arg s "$stage" '{stage: $s, outcome: "failed"}')"
+    return 1
+  fi
+  log_event "salvage" "$(jq -nc --arg s "$stage" '{stage: $s, outcome: "recovered"}')"
+  printf '%s' "$parsed"
+  return 0
 }
 
 dump_stage_output() {
@@ -1629,6 +1715,7 @@ maybe_run_enabler() {
   local cycle_rc="${1:-1}"
   local claimed_json='[]' engagement_json='[]' n_eligible=0 n_claimed=0 n_out=0 i j
   local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
+  local items_named_json
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
   local e_pr_url e_handoff e_refusal e_refined
   local issue_title issue_body_file created number url missing
@@ -1739,6 +1826,12 @@ $(jq . <<<"$input")
 
   result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
   parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  # A process that exited cleanly but left an unparseable final message has a
+  # living session behind it worth one more ask (issue #237); a timeout or a
+  # non-zero exit does not, since nothing held the session open to resume.
+  if (( rc == 0 )) && [[ -z "$parsed" ]]; then
+    parsed="$(stage_salvage_result enabler "$out" "$enabler_model" "$cycle_dir" || true)"
+  fi
   if (( rc != 0 )) || [[ -z "$parsed" ]]; then
     # A timeout or unparseable output changes nothing: no verdict was reached, so
     # no state event is written and the claims stand until gc allows a retry. The
@@ -1753,8 +1846,23 @@ $(jq . <<<"$input")
       detail="enabler returned an unparseable final message"
     fi
     detect_and_log_limit_hit "$out" || true
+    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>/dev/null || echo '[]')"
     log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
-      '{detail: $d}')"
+      --argjson items "$items_named_json" '{detail: $d, items: $items}')"
+    # The tombstone (requirement 35c) stays a tombstone — releasing it outright
+    # would let the next cycle re-engage the same still-unchanged items at
+    # Opus prices with nothing new to show for it. Backdating each entry's
+    # `ts` past `claim_ttl_hours` is the middle ground requirement 37 asks
+    # for: `lib/claim.sh gc` retires it on its very next sweep — this cycle's
+    # own 2.1a, an hour away rather than up to `claim_ttl_hours` — instead of
+    # leaving a lost engagement's items frozen for the tombstone's full life.
+    for (( i = 0; i < n_claimed; i++ )); do
+      entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$claimed_json" 2>/dev/null || true)"
+      [[ -n "$entry" ]] || continue
+      key="$(enabler_claim_key "$entry")"
+      [[ -n "$key" ]] || continue
+      "$SCRIPT_DIR/lib/claim.sh" expire enabler "$key" >>"$cycle_dir/claim.log" 2>&1 || true
+    done
     return 0
   fi
 
@@ -2609,6 +2717,39 @@ if [[ "$(jq 'length' <<<"$work_gone_json" 2>/dev/null || echo 0)" != "0" ]]; the
   tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
 fi
 
+# Requirement 34j, applied last of the four reconciliations and for the same
+# reason as 34f, 34g and 34i above: it has to land before the extract the
+# Co-Ordinator, the Enabler's eligible set and the dashboard are all handed.
+# What it clears is a block whose own `Blocked-by:` dependency has resolved —
+# read from this cycle's own `issues` candidates, already reshaped once per
+# repo above, so no second `gh` read is spent deciding it: an already-blocked
+# issue reappearing there this cycle is itself gather-issues.sh's live proof
+# that every reference it named is now closed.
+issues_by_repo_json="$(jq -c '
+  map({key: .slug,
+       value: ((.issues // [])
+               | map({key: (.number | tostring),
+                      value: {body: (.body // ""), comments: (.comments // [])}})
+               | from_entries)})
+  | from_entries' <<<"$ordered_repos_json" 2>/dev/null || true)"
+[[ -n "$issues_by_repo_json" ]] || issues_by_repo_json='{}'
+
+dependency_json="$(dependency_clearances "$open_blocked_now" "$issues_by_repo_json")"
+if [[ "$(jq 'length' <<<"$dependency_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  while IFS= read -r clearance; do
+    [[ -n "$clearance" ]] || continue
+    # `by: "dependency-resolved"` distinguishes this from the Co-Ordinator's
+    # own `unblocked` (requirement 18), the Enabler's, the label-driven one of
+    # requirement 34g, and requirement 34i's `work-gone`; `detail` carries the
+    # reference(s) that decided it, so a later reader can audit the clearance
+    # without re-deriving it.
+    log_event "unblocked" "$(jq -c '{item: .item, repo: .repo, by: "dependency-resolved",
+                                      detail: .reason}' <<<"$clearance")"
+  done < <(jq -c '.[]' <<<"$dependency_json" 2>/dev/null || true)
+  tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+fi
+
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
 # The third extract (requirement 3h): what a previous Enabler engagement
@@ -2909,6 +3050,9 @@ fi
 
 coord_result="$(jq -r '.result // empty' "$coordinator_out" 2>/dev/null || true)"
 work_order_json="$(extract_json_result "$coord_result" 2>/dev/null || true)"
+if [[ -z "$work_order_json" ]]; then
+  work_order_json="$(stage_salvage_result coordinator "$coordinator_out" "$coordinator_model" "$cycle_dir" || true)"
+fi
 
 if [[ -z "$work_order_json" ]]; then
   detect_and_log_limit_hit "$coordinator_out" || true
@@ -3149,6 +3293,9 @@ fi
 
 impl_result="$(jq -r '.result // empty' "$impl_out" 2>/dev/null || true)"
 impl_status_json="$(extract_json_result "$impl_result" 2>/dev/null || true)"
+if (( impl_rc == 0 )) && [[ -z "$impl_status_json" ]]; then
+  impl_status_json="$(stage_salvage_result implementor "$impl_out" "$impl_model" "$clone_dir" || true)"
+fi
 # Requirement 9's fallback chain, cheapest first and least dependent on the
 # stage last. The first three all read something the Implementor had to do:
 # report the URL, print it where it could be grepped, write the breadcrumb.
@@ -3289,6 +3436,9 @@ fi
 
 rev_result="$(jq -r '.result // empty' "$rev_out" 2>/dev/null || true)"
 rev_status_json="$(extract_json_result "$rev_result" 2>/dev/null || true)"
+if (( rev_rc == 0 )) && [[ -z "$rev_status_json" ]]; then
+  rev_status_json="$(stage_salvage_result reviewer "$rev_out" "$rev_model" "$clone_dir" || true)"
+fi
 
 if (( rev_rc != 0 )) || [[ -z "$rev_status_json" ]]; then
   handle_stage_failure "reviewer" "$rev_rc" "$rev_out" "$impl_pr_url"

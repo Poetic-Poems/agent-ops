@@ -169,7 +169,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   never replicates, so this Publisher never sees one on a peer and reads none
   on its own node either. Fields used: `result` (final message → parsed
   into the work order / status object via the same algorithm `agent-cycle.sh`
-  uses — straight parse, else the last fenced ```json``` block, else the
+  uses — straight parse, else the last fenced ``` block regardless of its
+  info string (a bare fence or one tagged anything other than `json` is not
+  ambiguous — only the fence's presence is, issue #237), else the
   earliest brace-opening line whose suffix parses as one JSON value;
   `test/extract-json-result.test.sh` holds the ports to it), `total_cost_usd`,
   `duration_ms`, `num_turns`, `is_error`, `terminal_reason`/`stop_reason`,

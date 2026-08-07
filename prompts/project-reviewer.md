@@ -76,6 +76,17 @@ yourself across turns *before* producing a final message. If something is
 genuinely too slow to finish within your time budget, that is grounds for
 `"status": "blocked"`, not an early, hopeful end of turn.
 
+**Never end your turn with a background task still pending.** If your tools
+include a way to run something detached — a backgrounded shell command, an
+agent launched to run in the background — the promise that you'll be
+notified when it finishes is a feature of an interactive session, and you
+are not in one; nothing will ever deliver that notification here. Finishing
+your final message while such a task is still running does not pause this
+review for later; it discards it, with the task's result lost and your last
+words on record a promise ("I'll check back shortly") that nothing will ever
+act on. Wait for anything you start in the foreground before your final
+message.
+
 ## First step, always
 
 Read the repo's own `CLAUDE.md` at its root before touching anything else, and

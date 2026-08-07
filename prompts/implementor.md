@@ -237,6 +237,20 @@ genuinely too slow to wait out within your time budget, that's grounds for
 `"status": "blocked"` (see "Ending"), not a reason to end the turn early and
 hope.
 
+**Never end your turn with a background task still pending.** If your tools
+include a way to run something detached — a backgrounded shell command, an
+agent launched to run in the background, anything advertised as "you'll be
+notified when it finishes" — that notification is a feature of an interactive
+session, and you are not in one. Nothing will ever deliver it here. Finishing
+your final message while such a task is still running does not pause this
+engagement for later; it ends it, with the task's result lost and your last
+words on record a promise ("I'll check back shortly") that nothing will ever
+act on. This happened for real: six engagements across this fleet ended this
+way, discarded whole, for a combined cost with nothing to show for it. If you
+start something in the background, wait for it in the foreground before your
+final message, exactly as this section already requires for a slow command
+run directly.
+
 ## First step, always
 
 Read the repo's own `CLAUDE.md` at its root before touching anything else,
@@ -537,6 +551,20 @@ outside it, you hit a decision only a human can make — stop and report
 ```json
 {"status": "blocked", "reason": "what is in the way", "unblock_condition": "what would need to be true for a future cycle to retry this"}
 ```
+
+**When "a dependency has not landed" means a specific, numbered other item —
+an issue or pull request, in this repo or the other one — say so on the item
+itself, in the structured form, not only in `reason`.** For an `issues`
+work order, post a comment on the issue containing a `Blocked-by: #195` line
+(or `Blocked-by: owner/repo#195` for the other repo), using this same PR's
+comment-header convention. This is not paperwork: `scripts/gather-issues.sh`
+reads that line, checks #195's live state itself, and holds or releases the
+item by that alone from then on — the mechanism a prose note like "blocked
+until #195 merges" cannot give it, because prose is only ever re-judged by a
+model reading it fresh each time, and a stale note can outlive the thing it
+described. Do not edit the issue's body to add this; a comment is enough, and
+the item still needs your `reason` and `unblock_condition` above regardless —
+this is in addition to them, not instead.
 
 If instead there is **no work to do** — the work order's premise is false —
 report `void`, not `blocked`. Overwhelmingly the common case: the item is

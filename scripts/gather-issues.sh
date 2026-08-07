@@ -41,15 +41,17 @@
 # ## What is filtered here, and what is not
 #
 # Requirement 16's issue exclusion has two halves. The *deterministic* half —
-# an issue that is assigned, or labelled `blocked` (case-insensitive) — is
-# applied here, so the Co-Ordinator never spends judgement on entries no rule
-# would let it pick; pull requests (which the issues endpoint also returns)
-# are dropped the same way. The *judgement* half — "a question or discussion
-# rather than actionable work", read over the whole thread — cannot be a jq
-# filter, and stays the Co-Ordinator's (requirement 16.4). Items blocked in
-# the shared log are NOT dropped here: the Co-Ordinator holds the blocked
-# list and requirement 18a's re-check needs the issue's thread and
-# `updated_at` in front of it to decide whether fresh evidence unblocks it.
+# an issue that is assigned, or labelled `blocked` (case-insensitive), or
+# names an unresolved `Blocked-by:` dependency (requirement 34j, checked
+# further down once each candidate's thread is in hand) — is applied here, so
+# the Co-Ordinator never spends judgement on entries no rule would let it
+# pick; pull requests (which the issues endpoint also returns) are dropped
+# the same way. The *judgement* half — "a question or discussion rather than
+# actionable work", read over the whole thread — cannot be a jq filter, and
+# stays the Co-Ordinator's (requirement 16.4). Items blocked in the shared
+# log are NOT dropped here: the Co-Ordinator holds the blocked list and
+# requirement 18a's re-check needs the issue's thread and `updated_at` in
+# front of it to decide whether fresh evidence unblocks it.
 #
 # The `Priority` band is read exactly as gather-source-state.sh reads it for
 # the fingerprint digest — same field, same four names, same Medium default —
@@ -74,6 +76,10 @@
 # nobody has to rediscover it from a truncated thread.
 
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 
 slug="${1:-}"
 if [[ -z "$slug" ]]; then
@@ -100,6 +106,13 @@ jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
 # Enabler's escalation issues, which are always assigned); the label check
 # drops `blocked` whatever its case. The Priority parse mirrors
 # gather-source-state.sh verbatim.
+#
+# A fourth, structured drop happens below, once each candidate's whole
+# thread is in hand: a `Blocked-by:` reference (requirement 34j) naming a
+# still-open issue or pull request holds the candidate back the same way —
+# deterministically, before the Co-Ordinator ever sees it — so an item
+# declaring a dependency never earns a judgement, or an `attempt-failed`,
+# while that dependency stands.
 candidates="$(jq -c '
   [.[]
    | select(has("pull_request") | not)
@@ -129,6 +142,40 @@ while IFS= read -r candidate; do
     || degrade "comments fetch failed for issue #$n"
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 \
     || degrade "comments payload for issue #$n is not an array"
+
+  # Requirement 34j: a `Blocked-by:` reference, in the body or any comment,
+  # holds this candidate back until every reference it names is closed —
+  # checked live, right here, because this is the one place that has both
+  # the whole thread and a `gh` budget for it. Any reference still open (or
+  # unreadable — an unknown reference decides nothing, the same direction
+  # every other deterministic exclusion here fails safe in) drops the
+  # candidate entirely, before the comparatively expensive comments payload
+  # above is put to any other use.
+  thread_text="$(jq -r '.body' <<<"$candidate")
+$(jq -r '[.[].body] | join("\n")' <<<"$comments")"
+  dep_refs="$(dependency_refs "$thread_text")"
+  if [[ "$(jq 'length' <<<"$dep_refs" 2>/dev/null || echo 0)" != "0" ]]; then
+    dep_unresolved=0
+    while IFS= read -r ref; do
+      [[ -n "$ref" ]] || continue
+      if [[ "$ref" == */* ]]; then
+        ref_repo="${ref%%#*}"
+        ref_n="${ref##*#}"
+      else
+        ref_repo="$slug"
+        ref_n="$ref"
+      fi
+      ref_state="$(gh api "repos/$ref_repo/issues/$ref_n" --jq '.state' 2>/dev/null || true)"
+      if [[ "$ref_state" != "closed" ]]; then
+        dep_unresolved=1
+        break
+      fi
+    done < <(jq -r '.[]' <<<"$dep_refs")
+    if (( dep_unresolved == 1 )); then
+      continue
+    fi
+  fi
+
   entry="$(jq -c --argjson comments "$comments" \
     '{source: "issues", ref: (.number | tostring)} + . + {comments: $comments}' \
     <<<"$candidate")" || degrade "entry assembly failed for issue #$n"

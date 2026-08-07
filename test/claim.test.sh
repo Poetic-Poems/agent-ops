@@ -10,7 +10,9 @@
 #
 # Also covered: the release rules (a claim branch is deleted only when it is
 # untouched AND no open PR uses it — pushed work is never deleted), the
-# registry count that feeds back-pressure, and the gc sweep's TTL.
+# registry count that feeds back-pressure, the gc sweep's TTL, and `expire`
+# (issue #237) — the backdate that lets a discarded engagement's tombstone
+# retire on the next gc sweep without releasing it outright.
 #
 # No network and no GitHub. Run directly:
 #
@@ -92,7 +94,14 @@ case "$method $path" in
   "PUT "*/contents/*)
     p="$d/contents/${path#*/contents/}"
     mkdir -p "$(dirname "$p")"
-    ( set -C; printf '%s' "${f[content]}" > "$p" ) 2>/dev/null || exit 1
+    if [[ -v 'f[sha]' ]]; then
+      # A `sha` means "update" in the real contents API — real GitHub also
+      # requires it to match the current content, which this stub does not
+      # bother enforcing (callers here only ever expire what they just read).
+      printf '%s' "${f[content]}" > "$p"
+    else
+      ( set -C; printf '%s' "${f[content]}" > "$p" ) 2>/dev/null || exit 1
+    fi
     exit 0 ;;
   "GET "*/contents/*)
     p="$d/contents/${path#*/contents/}"
@@ -271,6 +280,27 @@ assert_eq "branches lists the live td/ claim branch, registry entry or not" "1" 
   "$(jq '[.[] | select(. == "td/TD-CLAIMS-1")] | length' <<<"$branches_out")"
 assert_eq "branches is not TTL-filtered — the ref alone is the signal" "1" \
   "$(jq '[.[] | select(. == "td/TD-OLD")] | length' <<<"$branches_out")"
+
+# --- expire: a discarded engagement's tombstone is backdated, not released ---------
+# (issue #237) — an Enabler-style file claim under the pseudo-slug `enabler`.
+CLAIM_ITEM_OVERRIDE="TD-EXPIRE-1" CLAIM_SOURCE_OVERRIDE="tech-debt" \
+  run_claim node-a claim file enabler "Poetic-Poems__poetic__TD-EXPIRE-1__100"
+assert_eq "expire leaves the registry entry in place, not released" "1" \
+  "$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" expire enabler "Poetic-Poems__poetic__TD-EXPIRE-1__100" >/dev/null 2>&1; \
+     test -f "$reg_dir/enabler/Poetic-Poems__poetic__TD-EXPIRE-1__100.json" && echo 1 || echo 0)"
+expired_entry="$(base64 -d < "$reg_dir/enabler/Poetic-Poems__poetic__TD-EXPIRE-1__100.json")"
+assert_eq "expire backdates ts far past claim_ttl_hours" "1970-01-01T00:00:01Z" \
+  "$(jq -r '.ts' <<<"$expired_entry")"
+assert_eq "expire preserves the item the entry named" "TD-EXPIRE-1" \
+  "$(jq -r '.item' <<<"$expired_entry")"
+env CLAIM_GH="$stub_bin/gh" "$CLAIM" gc >/dev/null 2>&1
+assert_eq "gc retires an expired claim on its very next sweep" "0" \
+  "$(test -f "$reg_dir/enabler/Poetic-Poems__poetic__TD-EXPIRE-1__100.json" && echo 1 || echo 0)"
+
+# expire on an unknown key is a silent no-op, not an error — the caller may
+# race a gc sweep that already retired the same entry.
+env CLAIM_GH="$stub_bin/gh" "$CLAIM" expire enabler "no-such-key"
+assert_eq "expire on a missing entry is a silent no-op" "0" "$?"
 
 # ------------------------------------------------------------------------------------
 printf '\n%s\n' "----------------------------------------"
