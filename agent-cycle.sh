@@ -1521,7 +1521,7 @@ $(jq . <<<"$input")
   else
     rc=$?
   fi
-  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --argjson m "$(metering_fields "$enabler_model" "$out")" \
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
     '{stage: "enabler", exit_code: $rc} + $m')"
   (( ONCE )) && dump_stage_output "$out"
 
@@ -2594,7 +2594,7 @@ if run_claude_stage coordinator "$(( timeout_coordinator_min * 60 ))" "$coordina
 else
   coord_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out")" \
+log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out" "$stage_gaps_json")" \
   '{stage: "coordinator", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$coordinator_out"
 
@@ -2783,7 +2783,7 @@ if run_claude_stage implementor "$(( timeout_implementor_min * 60 ))" "$impl_mod
 else
   impl_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_fields "$impl_model" "$impl_out")" \
+log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
   '{stage: "implementor", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$impl_out"
 
@@ -2909,7 +2909,7 @@ if run_claude_stage reviewer "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$r
 else
   rev_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --argjson m "$(metering_fields "$rev_model" "$rev_out")" \
+log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --argjson m "$(metering_fields "$rev_model" "$rev_out" "$stage_gaps_json")" \
   '{stage: "reviewer", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$rev_out"
 
