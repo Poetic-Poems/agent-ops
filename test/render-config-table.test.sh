@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test/render-config-table.test.sh — self-contained regression test for
-# scripts/render-config-table.sh (#198, #215).
+# scripts/render-config-table.sh (#198, #215, #219).
 #
 # Runs the actual shipped script (copied byte-for-byte into a scratch
 # "repository" built from a small fixture schema and fixture docs) rather
@@ -62,11 +62,14 @@ chmod +x "$tmp/scripts/render-config-table.sh"
 #     render verbatim; an x-docs.value keyed per audience, both with and
 #     without an entry for the audience being rendered; an empty-string
 #     default; a `|` inside prose; one level of nesting under "schedule" (the
-#     "main" region) and under "review" (its own region); and four notes-cap
+#     "main" region) and under "review" (its own region); and six notes-cap
 #     cases — a plain note over 500 characters (`mu`), one whose naive
 #     480-character cut point lands inside a code span (`nu`) and inside a
-#     link (`xi`), and a dotted key that overflows
-#     (`schedule.overflow_key`) — plus one more dotted overflow in the
+#     link (`xi`), one whose cut point lands inside a link whose text itself
+#     carries a nested `[...]` (`omicron`, #219) and one whose cut point
+#     lands inside a link whose target carries a balanced `(...)` the way a
+#     Wikipedia article URL does (`phi`, #219), and a dotted key that
+#     overflows (`schedule.overflow_key`) — plus one more dotted overflow in the
 #     "review" region (`review.overflow_sub`) to exercise notes-region
 #     heading derivation there too. Every overflowing note here carries only
 #     `x-docs.readme`, so the two specs' (audience "spec") regions render
@@ -141,6 +144,10 @@ cat > "$tmp/config.schema.json" <<'JSON'
       "description": "Xi description.",
       "x-docs": { "readme": "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem [a fairly long link label spanning well past the boundary](https://example.com/somewhere) ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt." }
     },
+    "omicron": {
+      "description": "Omicron description.",
+      "x-docs": { "readme": "Omicron description leading in with prose before the link, so the truncation cut lands exactly inside it here: lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem [Example [nested] link text](https://example.com/page) ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }
+    },
     "pi": {
       "description": "Pi description.",
       "x-docs": { "readme": [
@@ -171,6 +178,10 @@ cat > "$tmp/config.schema.json" <<'JSON'
     "upsilon": {
       "description": "Upsilon description.",
       "x-docs": { "readme": [ { "code": "echo hi\necho bye" } ] }
+    },
+    "phi": {
+      "description": "Phi description.",
+      "x-docs": { "readme": "Phi description leading in with prose before the link, so the truncation cut lands exactly inside it now: lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem [the Diff article](https://en.wikipedia.org/wiki/Diff_(command)) ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }
     },
     "schedule": {
       "properties": {
@@ -431,6 +442,36 @@ xi_line="$(grep '`xi`' "$tmp/README.md" | head -1)"
 assert_contains "xi's row carries the continuation link" "$xi_line" '...[continued below](#extended-notes-xi)'
 assert_not_contains "xi's truncated cell does not carry the embedded link (backed off before it)" "$xi_line" 'example.com'
 
+# --- #219: the truncation cut is positioned to land inside a link whose
+#     text carries a nested `[...]` (omicron) or whose target carries a
+#     balanced `(...)` the way a Wikipedia article URL does (phi). A link
+#     matched as one atom can only be wholly included or wholly excluded, so
+#     a correctly atomised link is excluded entirely here rather than
+#     surviving as a fragment — and either way the cell's brackets/parens
+#     stay balanced. (A regex that still matched text/target up to the
+#     first `]`/`)` would instead treat the link as several plain-word
+#     atoms and could include some of them, landing the cut mid-link and
+#     leaving an unmatched bracket or paren in the cell.) ---
+# shellcheck disable=SC2016
+omicron_line="$(grep '`omicron`' "$tmp/README.md" | head -1)"
+assert_contains "omicron's row carries the continuation link" "$omicron_line" '...[continued below](#extended-notes-omicron)'
+assert_not_contains "omicron's truncated cell does not carry the nested-bracket link (backed off before it)" "$omicron_line" 'example.com'
+# shellcheck disable=SC2016
+omicron_cell="$(sed -E 's/^\| `omicron` \| [^|]*\| (.*) \|$/\1/' <<<"$omicron_line")"
+omicron_open="$(grep -o '\[' <<<"$omicron_cell" | wc -l)"
+omicron_close="$(grep -o ']' <<<"$omicron_cell" | wc -l)"
+assert_eq "omicron's truncated cell has balanced [ and ] (no unmatched bracket)" "$omicron_open" "$omicron_close"
+
+# shellcheck disable=SC2016
+phi_line="$(grep '`phi`' "$tmp/README.md" | head -1)"
+assert_contains "phi's row carries the continuation link" "$phi_line" '...[continued below](#extended-notes-phi)'
+assert_not_contains "phi's truncated cell does not carry the balanced-paren-target link (backed off before it)" "$phi_line" 'wikipedia.org'
+# shellcheck disable=SC2016
+phi_cell="$(sed -E 's/^\| `phi` \| [^|]*\| (.*) \|$/\1/' <<<"$phi_line")"
+phi_open="$(grep -o '(' <<<"$phi_cell" | wc -l)"
+phi_close="$(grep -o ')' <<<"$phi_cell" | wc -l)"
+assert_eq "phi's truncated cell has balanced ( and ) (no unmatched paren)" "$phi_open" "$phi_close"
+
 # --- A dotted key's slug drops the dot rather than the whole segment ---
 # shellcheck disable=SC2016
 sched_line="$(grep '`schedule.overflow_key`' "$tmp/README.md" | head -1)"
@@ -449,10 +490,16 @@ assert_contains "the main notes region has a level-3 heading for nu" "$main_note
 # shellcheck disable=SC2016
 assert_contains "the main notes region has a level-3 heading for xi" "$main_notes_region" $'\n### Extended notes: `xi`'
 # shellcheck disable=SC2016
+assert_contains "the main notes region has a level-3 heading for omicron" "$main_notes_region" $'\n### Extended notes: `omicron`'
+# shellcheck disable=SC2016
+assert_contains "the main notes region has a level-3 heading for phi" "$main_notes_region" $'\n### Extended notes: `phi`'
+# shellcheck disable=SC2016
 assert_contains "the main notes region has a level-3 heading for schedule.overflow_key" "$main_notes_region" $'\n### Extended notes: `schedule.overflow_key`'
 # shellcheck disable=SC2016
 assert_contains "nu's full note (code span intact) appears in the notes region" "$main_notes_region" '`abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ`'
 assert_contains "xi's full note (link intact) appears in the notes region" "$main_notes_region" '(https://example.com/somewhere)'
+assert_contains "omicron's full note (nested-bracket link intact) appears in the notes region" "$main_notes_region" '[Example [nested] link text](https://example.com/page)'
+assert_contains "phi's full note (balanced-paren-target link intact) appears in the notes region" "$main_notes_region" '[the Diff article](https://en.wikipedia.org/wiki/Diff_(command))'
 # shellcheck disable=SC2016
 assert_not_contains "a note that fits (beta) gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `beta`'
 
