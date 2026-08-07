@@ -532,9 +532,15 @@ Four verdicts:
 It also renders a trial crontab — `deploy/docker/render-crontab.sh` into a
 `mktemp -d` it removes afterwards — against the config being checked, so a
 broken template or an impossible `schedule` (every minute of the hour
-excluded, say) shows up here rather than on the node's own cron; and it lists
-any repository whose `nice` biases the walk away from 0, naming the
-multiplier that applies to its effective age.
+excluded, say) shows up here rather than on the node's own cron. A clean
+render reports the cycle, review, heartbeat and background-timer
+(`state_sync_push_minutes`, `state_sync_fetch_minutes`, `log_rotation_minute`)
+minutes the config asks for, and says whether the cycle minute came from an
+explicit, allowed `CYCLE_MINUTE` or was hashed from the node's name — worth
+reading closely on a laptop checking `--config PATH` for a node it is not
+running on, since the hash is taken from *this* host's name, not the target
+node's. It also lists any repository whose `nice` biases the walk away from
+0, naming the multiplier that applies to its effective age.
 
 ```bash
 ./scripts/doctor.sh --offline          # config, toolchain and crontab only, no network

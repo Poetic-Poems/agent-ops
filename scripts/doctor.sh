@@ -320,8 +320,19 @@ else
   crontab_tmp_dir="$(mktemp -d)"
   node_name="${NODE_NAME:-$(hostname 2>/dev/null || echo node)}"
   if render_out="$(NODE_NAME="$node_name" "$render_script" "$tmpl_file" "$crontab_tmp_dir/crontab" "$config_file" 2>&1)"; then
+    render_summary="${render_out##*$'\n'}"
+    render_summary="${render_summary#*: }"
+    if [[ -n "${CYCLE_MINUTE:-}" && "$render_out" != *"is not an allowed minute"* ]]; then
+      minute_note="cycle minute set explicitly by CYCLE_MINUTE=$CYCLE_MINUTE"
+    else
+      minute_note="cycle minute hashed from node name $node_name"
+    fi
     heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes // 5')"
-    ok "${render_out#*: } — heartbeat every ${heartbeat_minutes} min"
+    ok "${render_summary} — heartbeat every ${heartbeat_minutes} min ($minute_note)"
+    push_minutes="$(cfg '.schedule.state_sync_push_minutes // 5')"
+    fetch_minutes="$(cfg '.schedule.state_sync_fetch_minutes // 7')"
+    rotation_minute="$(cfg '.schedule.log_rotation_minute // 19')"
+    ok "background timers — state sync push every ${push_minutes} min, fetch every ${fetch_minutes} min, log rotation at :${rotation_minute}"
   else
     fail "deploy/docker/render-crontab.sh failed against $config_file: ${render_out:-no output}"
   fi

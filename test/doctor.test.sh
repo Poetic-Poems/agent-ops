@@ -243,12 +243,55 @@ assert_not_contains "and is not reported as a failure" "[fail] claude" "$out"
 
 # --- The rendered crontab ---------------------------------------------------
 
-run_doctor
+# CYCLE_MINUTE=1 makes the cycle (and therefore review) minute deterministic —
+# 1, plus base_config's schedule.review_offset_minutes (29), past
+# schedule.review_hour (3) — so the report's minute math is checked exactly,
+# not just for the presence of expected substrings.
+run_doctor CYCLE_MINUTE=1
 assert_contains "a successful render reports the node name" "node " "$out"
-assert_contains "and the cycle minute the config's schedule asks for" \
-  "cycle at minute" "$out"
+assert_contains "and the cycle minute CYCLE_MINUTE asks for" \
+  "cycle at minute 1 past" "$out"
+assert_contains "and the review minute derived from cycle + review_offset_minutes" \
+  "review at 30 past 3:00" "$out"
 assert_contains "and the heartbeat cadence" "heartbeat every 5 min" "$out"
+assert_contains "and the background timer minutes the config asks for" \
+  "state sync push every 5 min, fetch every 7 min, log rotation at :19" "$out"
+assert_contains "and an allowed, explicit CYCLE_MINUTE is named as the source" \
+  "cycle minute set explicitly by CYCLE_MINUTE=1" "$out"
 assert_eq "a clean render does not fail the run by itself" "0" "$rc"
+
+# With CYCLE_MINUTE unset, the same report names the hash instead — the
+# derivation the review flagged as a trap: doctor.sh's node name is
+# $(hostname) unless NODE_NAME overrides it, so --config PATH against a config
+# not yet deployed can hash onto a minute that means nothing on the real node.
+run_doctor CYCLE_MINUTE=
+assert_contains "an unset CYCLE_MINUTE is reported as hashed from the node name" \
+  "cycle minute hashed from node name" "$out"
+assert_not_contains "and not as explicit" "set explicitly by CYCLE_MINUTE" "$out"
+
+# An out-of-range CYCLE_MINUTE falls back to the hash exactly like unset —
+# the renderer's own WARNING path — and is reported as hashed, not explicit.
+run_doctor CYCLE_MINUTE=999
+assert_contains "an out-of-range CYCLE_MINUTE also falls back to the hash" \
+  "cycle minute hashed from node name" "$out"
+assert_not_contains "and is not reported as explicit either" \
+  "set explicitly by CYCLE_MINUTE" "$out"
+
+# A config with schedule values other than the fallback defaults proves the
+# background-timer line reports what the config asks for, not the renderer's
+# own defaults.
+custom_schedule_config="$tmp/custom-schedule-config.json"
+jq '.schedule.heartbeat_minutes = 11
+    | .schedule.state_sync_push_minutes = 13
+    | .schedule.state_sync_fetch_minutes = 17
+    | .schedule.log_rotation_minute = 42' "$base_config" > "$custom_schedule_config"
+out="$(env PATH="$stub_bin:$PATH" CYCLE_MINUTE=1 bash "$DOCTOR" --config "$custom_schedule_config" 2>&1)"
+rc=$?
+assert_contains "a custom heartbeat interval is reported, not the fallback default" \
+  "heartbeat every 11 min" "$out"
+assert_contains "and custom background timer minutes are reported, not the fallback defaults" \
+  "state sync push every 13 min, fetch every 17 min, log rotation at :42" "$out"
+assert_eq "a clean render against a custom schedule does not fail the run" "0" "$rc"
 
 # The real renderer's own failure mode: schedule.excluded_minutes ruling out
 # every minute of the hour leaves it nothing to hash the node's name onto.
@@ -291,6 +334,8 @@ assert_contains "a non-zero nice gets its own line, naming the repo and the weig
 
 out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$niced_config" --offline 2>&1)"
 assert_contains "--offline still renders the crontab" "cycle at minute" "$out"
+assert_contains "--offline still reports the background timer minutes" \
+  "state sync push every 5 min, fetch every 7 min, log rotation at :19" "$out"
 assert_contains "--offline still reports nice reordering" \
   "$slug: nice -5" "$out"
 assert_contains "--offline skips write access" "[skip] every GitHub check (--offline)" "$out"

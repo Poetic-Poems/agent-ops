@@ -4891,8 +4891,12 @@ pull request, run the ones the change touches and any it could regress.
     `schedule.excluded_minutes` rules out every minute is `fail`, the same
     renderer run against a trimmed copy of the repository missing
     `crontab.tmpl` is `skip`, and a clean render is `ok` naming the node and
-    the cycle, review and heartbeat minutes the config asked for; a
-    repository with a non-zero `nice` gets its own line naming the value and
+    the cycle, review and heartbeat minutes the config asked for, and whether
+    the cycle minute came from an explicit, allowed `CYCLE_MINUTE` or was
+    hashed from the node's name; a second `ok` line names the background
+    timer minutes (`state_sync_push_minutes`, `state_sync_fetch_minutes`,
+    `log_rotation_minute`) the config asked for; a repository with a
+    non-zero `nice` gets its own line naming the value and
     the multiplier, and one with every repository at `nice` 0 prints no line
     at all; and `--offline` still renders the crontab and reports `nice`
     reordering while reporting write access and Claude credentials as
