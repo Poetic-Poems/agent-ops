@@ -1436,9 +1436,11 @@ runs unattended.
      array makes the candidate set an input rather than an errand, the same
      move every drifted source before it got (3a, 3c, 3e, 3g, 3i).
    - **The deterministic half of requirement 16.4 is applied here**: assigned
-     issues, issues labelled `blocked` (case-insensitive), and the pull
-     requests the issues endpoint interleaves are dropped in the gatherer, so
-     the Co-Ordinator never spends judgement on entries no rule would let it
+     issues, issues labelled `blocked` (case-insensitive), issues naming an
+     unresolved `Blocked-by:` reference (requirement 34j, checked live once
+     each candidate's whole thread is in hand), and the pull requests the
+     issues endpoint interleaves are dropped in the gatherer, so the
+     Co-Ordinator never spends judgement on entries no rule would let it
      pick — the assignment drop also covers the Enabler's escalation issues,
      which are always assigned. The judgement half ("a question or discussion
      rather than actionable work", over the whole thread) stays the
@@ -2443,13 +2445,14 @@ runs unattended.
       is required to write it and not merely expected to; requirement 9a is
       the backstop for when it is missing anyway — the item is then
       investigated once, and the finding remembered.
-    - an issue that is assigned, labelled `blocked`, or is a question or
-      discussion rather than actionable work — the first two are deterministic
-      and already applied by the Script (requirement 3j drops them from the
-      `issues` array before the Co-Ordinator sees it); the judgement half is
-      the Co-Ordinator's, over the whole thread (requirement 14a), since a
-      comment can block, close, re-scope, or answer an issue that its body
-      alone would make look selectable;
+    - an issue that is assigned, labelled `blocked`, names an unresolved
+      `Blocked-by:` dependency (requirement 34j), or is a question or
+      discussion rather than actionable work — the first three are
+      deterministic and already applied by the Script (requirement 3j drops
+      them from the `issues` array before the Co-Ordinator sees it); the
+      judgement half is the Co-Ordinator's, over the whole thread
+      (requirement 14a), since a comment can block, close, re-scope, or
+      answer an issue that its body alone would make look selectable;
     - a security finding whose only available fix is one a human must choose
       (e.g. a Dependabot alert with no non-breaking upgrade, needing a major
       version bump that changes the repo's public behaviour) — flag it, don't
@@ -3686,6 +3689,82 @@ runs unattended.
     `lib/work-gone.sh`, which is pure: it decides from the blocked set, the
     digests and the three side-channel status maps (register, review, plan) it
     is handed, and reads nothing itself.
+34j. **A structured dependency is held, and released, by code — never by a
+    model re-reading prose.** `Blocked-by: #195` (same repo) or
+    `Blocked-by: owner/repo#195` (a repo this pipeline also walks), one or
+    more comma- or whitespace-separated references on their own line in a
+    GitHub issue's body or any comment in its thread, names a specific item
+    whose live open/closed state — not a narrative account of it — decides
+    the block. This exists because prose did not survive being re-judged: a
+    note like "hold until #195 is merged" is only ever a description of a
+    moment, and the moment it describes can pass without the note changing.
+    Four issues (#196–#199) recorded exactly that — the initial re-check
+    correctly cleared them within 43 minutes of #195 actually merging, and
+    the same stale sentence then re-blocked more than one of them again,
+    each false block costing a full Enabler engagement to undo, because the
+    only reader of the note was a Co-Ordinator asked to re-examine it
+    (requirement 18a) from nothing but the paragraph itself. A reference is
+    immune to this by construction: nothing here ever trusts what a
+    `Blocked-by:` line asserts happened, only what re-checking the number it
+    names says *now* — so a stale line naming an already-closed item is
+    inert, not wrong, and never needs to be edited out for the mechanism to
+    stay correct (contrast the Enabler's own remedy below, which is about
+    the next dependency, not this one).
+
+    Two deterministic mechanisms apply it, both reusing data the cycle
+    already holds and asking no model anything:
+
+    - **Holding.** `scripts/gather-issues.sh` drops a candidate whose thread
+      names a `Blocked-by:` reference that is not closed — checked live,
+      per reference, the moment its whole thread is in hand — the same way
+      it already drops an assigned or `blocked`-labelled issue (requirement
+      3j). An item newly declaring a dependency therefore never reaches the
+      Co-Ordinator and never earns an `attempt-failed`: the dependency holds
+      it before the pipeline's own notion of "blocked" is ever written, at
+      zero cost beyond the one `gh` read per reference the candidate would
+      otherwise have spent a full evaluation on anyway.
+    - **Releasing.** Against the *open* blocked set (34h), in the same
+      pre-extract window as 34f, 34g and 34i, the Script reshapes this
+      cycle's own freshly gathered `issues` candidates to a `repo → item →
+      thread` map and clears any blocked issue found there whose thread
+      still carries a `Blocked-by:` line: presence in that map, on its own,
+      already proves gather-issues.sh's holding check found every reference
+      resolved this same cycle, so the release asks no second question of
+      GitHub — it reads the holding check's own verdict rather than
+      re-deriving one. An item excluded from this cycle's candidates for
+      *any* reason — a reference still open, an assignment, the `blocked`
+      label, or simply a repo this cycle did not walk — is absent from the
+      map and decides nothing, the same "unknown is never gone" rule
+      requirement 34i's clearances observe. Logged `unblocked` with
+      `by: "dependency-resolved"` and a `detail` naming the reference(s)
+      that resolved.
+
+    The rule has one implementation, `dependency_clearances` in
+    `lib/dependency-gate.sh`, alongside the parser, `dependency_refs`, that
+    both mechanisms share.
+
+    This binds to GitHub issues only, for the same reason requirement 18a
+    does: they are the one blocked-item shape with a thread the cycle
+    already reads whole. It does not need requirement 3b's fingerprint
+    extended to cover it: a same-repo reference's state is already part of
+    that repo's `issues` digest (open issues) or claim signal (open PRs),
+    and a cross-repo reference needs its own repo configured and walked
+    for the same reason 34i's register/review/plan reads do — so the
+    reference resolving always changes the `issues` array gather-issues.sh
+    hands the Co-Ordinator (a previously excluded candidate now appears),
+    which requirement 3b already fingerprints verbatim, waking the fleet
+    within the hour without a dedicated projection.
+
+    A model's part in this is deliberately narrow. Nothing here edits an
+    issue's body — an agent rewriting a human's own text is a cost this
+    convention does not need paid, since a stale reference is inert rather
+    than misleading. The Enabler, examining a blocked or refinement-class
+    item and recognising an unstructured dependency note it cannot itself
+    act on, may post one comment naming the structured form the pipeline
+    can read (requirement 36's existing "one concise comment" power,
+    spending nothing new); the comment becomes part of the thread this
+    convention already reads, so a human — or the Co-Ordinator, next time it
+    is asked to select this item — can adopt it verbatim.
 
 ### The Enabler
 
@@ -4083,12 +4162,25 @@ What exists, and the requirements each part answers to:
    that keeps this source's volume near zero.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
    prints the JSON array of the repo's candidate issues — open, unassigned,
-   not labelled `blocked`, pull requests dropped — each carrying the bare
-   issue number as its ref, the `Priority` band (default `Medium`, read as
-   the source-state digest reads it), and the whole thread verbatim (`body`
-   plus `comments`). Fails safe to `[]` (exit 0) with failures loud on
-   stderr. Its filter and shape are regression-tested in
-   `test/issues-prefetch.test.sh`; must pass `shellcheck`.
+   not labelled `blocked`, naming no unresolved `Blocked-by:` reference
+   (requirement 34j, each reference's state checked live once the
+   candidate's whole thread is in hand), pull requests dropped — each
+   carrying the bare issue number as its ref, the `Priority` band (default
+   `Medium`, read as the source-state digest reads it), and the whole thread
+   verbatim (`body` plus `comments`). Fails safe to `[]` (exit 0) with
+   failures loud on stderr. Its filter and shape are regression-tested in
+   `test/issues-prefetch.test.sh` and `test/dependency-gate.test.sh`; must
+   pass `shellcheck`.
+3q. `lib/dependency-gate.sh` implementing requirement 34j: `dependency_refs`,
+   which parses every `Blocked-by:` reference out of a body of text into a
+   normalized JSON array (same-repo references as a bare number, cross-repo
+   as `owner/repo#N`), and `dependency_clearances`, which given the open
+   blocked set and this cycle's own reshaped `issues` candidates prints the
+   blocked issues whose dependencies are proven resolved by their presence
+   there — pure, reading nothing itself. Both are shared by
+   `scripts/gather-issues.sh` (the holding half) and `agent-cycle.sh` (the
+   releasing half, in the same pre-extract window as requirement 34i).
+   Unit-tested (`test/dependency-gate.test.sh`); must pass `shellcheck`.
 3k. `scripts/gather-register-status.sh` implementing requirement 34i's register
    half: given a repo slug, default branch and item ids, prints a JSON object
    mapping each id to the `status` its own item file declares on that branch.
@@ -5326,6 +5418,26 @@ pull request, run the ones the change touches and any it could regress.
    `scripts/gather-review-status.sh` and `scripts/gather-plan-status.sh` each run
    for real against a stubbed `gh` in that file, so what is asserted is the
    shipped scripts rather than a copy of their logic.
+8i. **A structured dependency is held and released without a model ever
+   re-reading it (requirement 34j).** `test/dependency-gate.test.sh` passes:
+   `dependency_refs` parses a same-repo `#195`, a cross-repo
+   `owner/repo#42`, several references on one comma-separated line, and
+   references spread across the body and more than one comment, is
+   case-insensitive on the keyword, tolerates a leading list marker, ignores
+   a bare number with no `#`, and returns `[]` for text with no `Blocked-by:`
+   line at all; `dependency_clearances` clears a blocked issue present in the
+   reshaped `issues` map with a `Blocked-by:` line still in its thread, and
+   clears nothing for a blocked issue absent from that map, present but with
+   no `Blocked-by:` line, or of a shape other than a bare issue number. Then
+   the #196–#199-shaped scenario, end to end against a stubbed `gh`: an issue
+   whose body reads `Blocked-by: #195` while #195 is open is absent from
+   `scripts/gather-issues.sh`'s candidates; the same issue, already recorded
+   `attempt-failed`, stays in the open blocked set that cycle. Flip #195 to
+   closed and run both again — the issue reappears in `gather-issues.sh`'s
+   candidates *and* `dependency_clearances` produces its release — asserting
+   both halves clear within the one cycle the dependency resolved in, and
+   that neither ever spent an Enabler engagement or a Co-Ordinator judgement
+   doing it.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

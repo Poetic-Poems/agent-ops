@@ -636,12 +636,15 @@ referencing that review; match `R-NN` refs against it. When you select one,
    selecting a finding. For a project-review recommendation, "already claimed"
    means an open PR referencing its ref `review-<date>-R-NN`, and "already
    done" means a *merged* PR referencing it.
-4. A GitHub issue that is assigned, labelled `blocked`, or is a question or
-   discussion rather than actionable work. The Script has already dropped the
-   first two from the `issues` array (they are deterministic), so what
-   remains yours here is the judgement half: whether the thread in front of
-   you describes actionable work — and a comment can turn either answer, so
-   judge it over the whole entry, not the body alone.
+4. A GitHub issue that is assigned, labelled `blocked`, names an unresolved
+   `Blocked-by: #N` dependency, or is a question or discussion rather than
+   actionable work. The Script has already dropped the first three from the
+   `issues` array (they are deterministic — a `Blocked-by:` reference is
+   checked live against the referenced item's own state, never against what
+   the note says happened), so what remains yours here is the judgement
+   half: whether the thread in front of you describes actionable work — and
+   a comment can turn either answer, so judge it over the whole entry, not
+   the body alone.
 5. A security finding whose only fix is a decision only a human can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public

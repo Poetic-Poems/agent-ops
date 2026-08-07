@@ -70,6 +70,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/dependency-gate.sh
+. "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
@@ -2534,6 +2536,39 @@ if [[ "$(jq 'length' <<<"$work_gone_json" 2>/dev/null || echo 0)" != "0" ]]; the
     log_event "unblocked" "$(jq -c '{item: .item, repo: .repo, by: "work-gone",
                                      detail: .reason}' <<<"$clearance")"
   done < <(jq -c '.[]' <<<"$work_gone_json" 2>/dev/null || true)
+  tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+fi
+
+# Requirement 34j, applied last of the four reconciliations and for the same
+# reason as 34f, 34g and 34i above: it has to land before the extract the
+# Co-Ordinator, the Enabler's eligible set and the dashboard are all handed.
+# What it clears is a block whose own `Blocked-by:` dependency has resolved —
+# read from this cycle's own `issues` candidates, already reshaped once per
+# repo above, so no second `gh` read is spent deciding it: an already-blocked
+# issue reappearing there this cycle is itself gather-issues.sh's live proof
+# that every reference it named is now closed.
+issues_by_repo_json="$(jq -c '
+  map({key: .slug,
+       value: ((.issues // [])
+               | map({key: (.number | tostring),
+                      value: {body: (.body // ""), comments: (.comments // [])}})
+               | from_entries)})
+  | from_entries' <<<"$ordered_repos_json" 2>/dev/null || true)"
+[[ -n "$issues_by_repo_json" ]] || issues_by_repo_json='{}'
+
+dependency_json="$(dependency_clearances "$open_blocked_now" "$issues_by_repo_json")"
+if [[ "$(jq 'length' <<<"$dependency_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  while IFS= read -r clearance; do
+    [[ -n "$clearance" ]] || continue
+    # `by: "dependency-resolved"` distinguishes this from the Co-Ordinator's
+    # own `unblocked` (requirement 18), the Enabler's, the label-driven one of
+    # requirement 34g, and requirement 34i's `work-gone`; `detail` carries the
+    # reference(s) that decided it, so a later reader can audit the clearance
+    # without re-deriving it.
+    log_event "unblocked" "$(jq -c '{item: .item, repo: .repo, by: "dependency-resolved",
+                                      detail: .reason}' <<<"$clearance")"
+  done < <(jq -c '.[]' <<<"$dependency_json" 2>/dev/null || true)
   tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
 fi
 
