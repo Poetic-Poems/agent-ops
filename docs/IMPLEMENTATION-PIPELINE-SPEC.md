@@ -610,7 +610,13 @@ same value; no other qualifier is accepted.
 
 ### Extended notes: `repos`
 
-Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands. A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`. A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
+Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.
+
+The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.
+
+A repo entry may also carry `implementation_plan_path` — the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.
+
+A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
 ### Extended notes: `needs_refinement_label`
 
@@ -4059,8 +4065,15 @@ What exists, and the requirements each part answers to:
     anything else as compact JSON in backticks, else `*(required)*`; its
     notes cell is
     `x-docs.readme` for the README's two tables and `x-docs.spec` for the two
-    specs' — a string or an array of strings joined with a space — falling
-    back to `description` when the key carries no `x-docs` for that audience.
+    specs' — a string, or an array of blocks (a string is a paragraph,
+    `{"list": [...]}` an unordered list, `{"code": ..., "lang": ...}` a
+    fenced example, `lang` optional) — falling back to `description` when the
+    key carries no `x-docs` for that audience. A cell holds one line, so every
+    block flattens into it: a paragraph verbatim, a list's items joined `, `,
+    code's newlines turned to spaces and wrapped in one backtick span, each
+    block joined to the next by a single space — the same join a plain array
+    of paragraph strings always got, and what a single string (a one-block
+    array) already renders as unchanged.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
     `id=review` … `<!-- config-table:end -->`) in place with no arguments.
     Each region's first two lines, immediately after the start marker, are a
@@ -4088,7 +4101,12 @@ What exists, and the requirements each part answers to:
     in that document's own `config-table:notes id=<region>` … `notes-end`
     region, one per `config-table:start` region and required even where
     nothing in it currently overflows; a region with nothing to say renders
-    empty. The heading's level is derived, not hard-coded — the nearest ATX
+    empty. Unlike the cell, this subsection is ordinary document prose, so
+    each block renders as real block Markdown instead of flattening — a
+    paragraph string on its own, blank-line-separated from its neighbours; a
+    list as real `- ` items; code as a real fenced ```` ``` ```` block — one
+    blank line between each pair of blocks.
+    The heading's level is derived, not hard-coded — the nearest ATX
     heading strictly above the notes-start marker, plus one, clamped at 6 —
     and its own placement, unlike the table region's, is up to whoever wrote
     the surrounding prose: the script rewrites whatever sits between the
@@ -4927,7 +4945,16 @@ pull request, run the ones the change touches and any it could regress.
     notes subsection, including for a dotted (`schedule.*`-style) key; a
     document with two Extended notes headings that would slug the same is
     refused, and so is a document missing either half of a
-    `config-table:notes` marker pair.
+    `config-table:notes` marker pair. A note that is an array of blocks
+    (#220) — two paragraph strings; a paragraph, a `list` block and a
+    paragraph; a paragraph, a `code` block and a paragraph, each over the
+    cap — flattens to one space-joined table-cell line (the list's items
+    comma-joined, the code's newlines turned to spaces and backtick-wrapped)
+    and, separately, renders as real block Markdown in the Extended notes
+    subsection: a blank line between paragraphs, real `- ` list items, a
+    real fenced code block, each still blank-line-separated from its
+    neighbours; a `list`-only or `code`-only note under the cap degrades the
+    same way in its cell with no Extended notes subsection generated at all.
     `.github/workflows/config-table.yml`
     runs `--check` on every pull request, so a schema edit landing without a
     matching doc regeneration (or the reverse) fails CI rather than drifting
