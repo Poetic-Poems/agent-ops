@@ -83,7 +83,7 @@ export PATH="$tmp_dir/bin:$PATH"
 
 # --- Extraction -----------------------------------------------------------------
 # The signal block runs from the module-level `stage_pid=""` initialiser to the
-# last trap line; run_claude_stage from its definition to its closing brace.
+# last trap line; the stage runner comes from the library both scripts source.
 extract_signal_block() {
   awk '
     /^stage_pid=""$/     { on = 1 }
@@ -92,12 +92,12 @@ extract_signal_block() {
   ' "$1"
 }
 
-extract_run_claude_stage() {
-  awk '
-    /^run_claude_stage\(\) \{$/ { on = 1 }
-    on                          { print }
-    on && /^\}$/                { exit }
-  ' "$1"
+# The stage runner is a library both cycle scripts source (requirement 4d), so
+# it is taken whole rather than carved out of a script: `run_claude_stage`
+# calls its neighbours in that file, and a lift of the function alone would
+# assemble a script that could not run it.
+stage_runner_lib() {
+  cat "$SCRIPT_DIR/lib/stage-run.sh"
 }
 
 # assemble_and_signal NAME CAPTURE_DIR PRELUDE MAINLINE SIGNAL_BLOCK STAGE_FN
@@ -160,7 +160,7 @@ claim_active=1
 
 # --- agent-cycle.sh: a TERM mid-stage -------------------------------------------
 signal_block="$(extract_signal_block "$SCRIPT_DIR/agent-cycle.sh")"
-stage_fn="$(extract_run_claude_stage "$SCRIPT_DIR/agent-cycle.sh")"
+stage_fn="$(stage_runner_lib)"
 
 if [[ "$signal_block" != *"on_signal"* || "$stage_fn" != *"claude -p"* ]]; then
   printf 'FAIL - the signal machinery could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -238,9 +238,12 @@ assert_contains "agent-cycle: and blames the cycle, not a stage that had already
 
 # --- review-cycle.sh: a TERM mid-review -----------------------------------------
 review_signal_block="$(extract_signal_block "$SCRIPT_DIR/review-cycle.sh")"
-review_stage_fn="$(extract_run_claude_stage "$SCRIPT_DIR/review-cycle.sh")"
+# The same library, deliberately: the two pipelines run one stage runner, and
+# a review-side copy of this fixture would be testing something the review
+# pipeline no longer has.
+review_stage_fn="$stage_fn"
 
-if [[ "$review_signal_block" != *"on_signal"* || "$review_stage_fn" != *"claude -p"* ]]; then
+if [[ "$review_signal_block" != *"on_signal"* ]]; then
   printf 'FAIL - the signal machinery could not be found in review-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
