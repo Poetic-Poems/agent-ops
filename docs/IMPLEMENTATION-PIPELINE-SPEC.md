@@ -2997,6 +2997,28 @@ runs unattended.
     review and no comment, so 45 minutes of Opus review produced nothing that
     outlived the clone. A stage cannot be stopped from dying mid-review, but it
     can be stopped from dying with everything still inside it.
+30b. **Reports completion, unconditionally.** Every run posts exactly one more
+    comment beyond requirement 30a's findings: a completion comment stating the
+    review has finished and what it concluded, posted whether or not
+    requirement 30 found anything — a clean PR is otherwise indistinguishable
+    from one no Reviewer has looked at yet, since every write lands under the
+    same account a human also comments as (requirement 9d). It is a separate
+    `gh pr comment` call, never folded into a findings comment and never filed
+    as a review (`gh pr review --comment`), carrying the same header and marker
+    as every other pipeline comment (requirements 9d, 3e) plus four facts: the
+    outcome (handed to the human, or left in draft and why), the CI state, the
+    fixes requirement 30 pushed (or none), and the number of concerns
+    requirement 30a raised (or none, stated plainly when the PR was otherwise
+    green). Requirement 32's `comments_left` still counts only requirement
+    30a's findings comments — this one is never among them.
+
+    On the `ready` path it is the last act, posted after requirement 31's
+    hand-off and requirement 31b's re-request, so it can state the true final
+    state; on the `blocked` path, which never reaches requirement 31, it is
+    posted immediately before requirement 32's final JSON. A post that fails
+    does not become a `blocked` outcome — a comment that could not be written
+    is not a review that did not happen — the Reviewer carries on and reports
+    its verdict as normal.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never
@@ -4964,7 +4986,10 @@ pull request, run the ones the change touches and any it could regress.
    still prefixed with `PIPELINE_COMMENT_MARKER_PREFIX`; and each of
    `prompts/implementor.md`, `prompts/enabler.md` and `prompts/reviewer.md`
    contains the literal header form `pipeline_comment_header` produces for its
-   own actor token. `test/abandoned-drafts.test.sh` separately proves an
+   own actor token. `prompts/reviewer.md` also contains the literal
+   instruction to post an unconditional completion comment (requirement 30b),
+   pinned by a distinctive phrase from that instruction.
+   `test/abandoned-drafts.test.sh` separately proves an
    older, actor-less marker and a newer, actor-carrying one both still exclude
    a comment from the activity clock, and that all three prompts (now
    including `prompts/implementor.md`) still carry
