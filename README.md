@@ -154,6 +154,44 @@ part of the fingerprint the no-op check watches, alongside labels and `Priority`
 (see [Skipping no-op cycles](#skipping-no-op-cycles)) — so unassigning always
 wakes the Co-Ordinator rather than being absorbed by a "nothing changed" skip.
 
+## Cross-item dependencies
+
+**`Blocked-by: #195`, on its own line in an issue's body or any comment on
+it, holds that issue back until #195 closes.** For a dependency in the other
+repo this pipeline also works, name it in full: `Blocked-by: owner/repo#42`.
+Several references can share one line, comma- or space-separated
+(`Blocked-by: #1, #2`), and the line can carry a leading `-` if you're
+itemising it in a list.
+
+This is the structured alternative to writing "blocked until #195 is
+merged" in prose. Prose has to be re-read and re-judged by a model every time
+the pipeline reconsiders the issue, and a note describing a moment in time
+does not update itself once that moment has passed — four issues in this
+project's own history were repeatedly, wrongly re-blocked from a stale prose
+note like that, well after the dependency it named had actually merged, each
+false block costing a full Enabler engagement to clear. `Blocked-by:` does
+not have that failure mode: nothing here ever trusts what the line says
+happened, only what re-checking `#195`'s own state says right now, so a line
+left in place after `#195` closes is inert rather than wrong — there's
+nothing to remember to clean up.
+
+Both directions are code, not a model's judgement, and cost nothing beyond
+one `gh` read per reference:
+
+- **Holding.** An issue naming an unresolved `Blocked-by:` reference never
+  reaches the Co-Ordinator's candidates at all — the same deterministic drop
+  as an assigned or `blocked`-labelled issue (see [Reserving an issue for
+  yourself](#reserving-an-issue-for-yourself)).
+- **Releasing.** An issue the pipeline has already recorded blocked — for
+  this reason or any other — clears automatically, logged `by:
+  "dependency-resolved"`, the moment every `Blocked-by:` reference it still
+  names is closed. You do not have to touch the issue for this to happen;
+  closing (or merging) the referenced item is enough.
+
+You do not have to write the line yourself: if the pipeline's own agents
+recognise an item is waiting on another specific, numbered one, they use this
+form too, in a comment, so the mechanism above applies to it as well.
+
 ## Handing a pull request to the pipeline
 
 The `autonomous-agent` label is what marks a pull request as the pipeline's to
@@ -855,7 +893,10 @@ remedies:
   request, or whose implementation-plan task is checked off in the plan
   document, is unblocked deterministically, logged `by: "work-gone"` with the
   fact that decided it. So finishing something by hand is enough to take it off
-  the list — you never have to tell the pipeline you did.
+  the list — you never have to tell the pipeline you did. A block declared with
+  a structured [`Blocked-by:`](#cross-item-dependencies) reference clears the
+  same way, logged `by: "dependency-resolved"`, the moment every item it names
+  is closed.
 - **Void** — there is no work: the item is already done, or its premise was
   false. No agent can ever clear this, by design — the only evidence that would
   ever turn up ("it's already done") is the reason it is void, so an agent

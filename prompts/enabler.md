@@ -178,6 +178,18 @@ verdict for **every** item you were given.
   (TD26072605) does not mistake your diagnosis for someone actively working the
   item and defer the very recovery you just enabled by treating it as fresh
   activity.
+- **Name a prose dependency in the structured form.** If an item you are
+  examining is blocked on another specific, numbered item and its thread only
+  says so in prose ("hold until #195 is merged", "waiting on the auth
+  rewrite"), say so in your comment as `Blocked-by: #195` (or
+  `Blocked-by: owner/repo#195` for a dependency in the other repo) on its own
+  line — not instead of your own account of the diagnosis, alongside it. That
+  line is not for the human: `scripts/gather-issues.sh` reads it, checks
+  #195's live state itself, and holds or releases the item by that alone from
+  then on, so the item stops needing a re-examination like this one every time
+  someone reasks whether #195 is done. You are not asked to edit the issue
+  body to add this — a comment is enough, and you may not edit an issue in any
+  case (see below).
 - **Run read-only local commands** for your own reasoning (`jq`, `git ls-remote`
   and the like). You have no clone and do not need one.
 - **Ask for a stalled handoff to be completed** — see `complete_handoff` under

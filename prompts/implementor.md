@@ -552,6 +552,20 @@ outside it, you hit a decision only a human can make — stop and report
 {"status": "blocked", "reason": "what is in the way", "unblock_condition": "what would need to be true for a future cycle to retry this"}
 ```
 
+**When "a dependency has not landed" means a specific, numbered other item —
+an issue or pull request, in this repo or the other one — say so on the item
+itself, in the structured form, not only in `reason`.** For an `issues`
+work order, post a comment on the issue containing a `Blocked-by: #195` line
+(or `Blocked-by: owner/repo#195` for the other repo), using this same PR's
+comment-header convention. This is not paperwork: `scripts/gather-issues.sh`
+reads that line, checks #195's live state itself, and holds or releases the
+item by that alone from then on — the mechanism a prose note like "blocked
+until #195 merges" cannot give it, because prose is only ever re-judged by a
+model reading it fresh each time, and a stale note can outlive the thing it
+described. Do not edit the issue's body to add this; a comment is enough, and
+the item still needs your `reason` and `unblock_condition` above regardless —
+this is in addition to them, not instead.
+
 If instead there is **no work to do** — the work order's premise is false —
 report `void`, not `blocked`. Overwhelmingly the common case: the item is
 already done on `default_branch`, because it was fixed by a direct commit or
