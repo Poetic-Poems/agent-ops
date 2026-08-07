@@ -381,11 +381,11 @@ else
     else
       minute_note="cycle minute hashed from node name $node_name"
     fi
-    heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes // 5')"
+    heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes')"
     ok "${render_summary} — heartbeat every ${heartbeat_minutes} min ($minute_note)"
-    push_minutes="$(cfg '.schedule.state_sync_push_minutes // 5')"
-    fetch_minutes="$(cfg '.schedule.state_sync_fetch_minutes // 7')"
-    rotation_minute="$(cfg '.schedule.log_rotation_minute // 19')"
+    push_minutes="$(cfg '.schedule.state_sync_push_minutes')"
+    fetch_minutes="$(cfg '.schedule.state_sync_fetch_minutes')"
+    rotation_minute="$(cfg '.schedule.log_rotation_minute')"
     ok "background timers — state sync push every ${push_minutes} min, fetch every ${fetch_minutes} min, log rotation at :${rotation_minute}"
   else
     fail "deploy/docker/render-crontab.sh failed against $config_file: ${render_out:-no output}"
