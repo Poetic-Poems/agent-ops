@@ -100,7 +100,7 @@ stops cycles from starting (shared with review-cycle.sh).
   --for <duration>   How long --disable lasts: 90m, 4h, 2d, or `forever`.
   --until <timestamp> When --disable lasts until: a GNU `date`-compatible
                      absolute timestamp (e.g. '2026-08-10 18:00', 'tomorrow
-                     noon'), an alternative to --for. With both given, the
+                     12:00'), an alternative to --for. With both given, the
                      later of the two deadlines wins and a warning is issued.
   --enable           Clear the switch and let cycles run again.
   --clear-limit      Lift a usage-limit stand-down across the fleet (2.1). Use

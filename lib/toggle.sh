@@ -104,7 +104,7 @@ toggle_parse_ttl() {
 # toggle_parse_until SPEC
 # Print the ISO-8601 instant named by SPEC, a GNU `date`-compatible absolute
 # timestamp (anything `date -d` accepts, e.g. '2026-08-10 18:00', 'tomorrow
-# noon', '2026-08-10T18:00:00Z') — the --until counterpart to
+# 12:00', '2026-08-10T18:00:00Z') — the --until counterpart to
 # toggle_parse_ttl's relative SPEC.
 #
 # Returns 64 on an unparseable SPEC, or on one that names an instant that has
@@ -116,7 +116,7 @@ toggle_parse_until() {
   local spec="${1:-}" epoch now
   epoch="$(date -d "$spec" +%s 2>/dev/null)"
   if [[ -z "$epoch" ]]; then
-    echo "toggle: unparseable timestamp '$spec' (want anything GNU date -d accepts, e.g. '2026-08-10 18:00', 'tomorrow noon')" >&2
+    echo "toggle: unparseable timestamp '$spec' (want anything GNU date -d accepts, e.g. '2026-08-10 18:00', 'tomorrow 12:00')" >&2
     return 64
   fi
   now="$(_toggle_now)"

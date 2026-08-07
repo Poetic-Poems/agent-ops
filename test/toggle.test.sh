@@ -107,6 +107,15 @@ assert_eq "an unparseable --until is an error, not a guess" "64" "$?"
 toggle_parse_until "2026-07-17T10:00:00Z" >/dev/null 2>&1
 assert_eq "a --until already in the past is an error" "64" "$?"
 
+# The examples --help and the unparseable-timestamp error advertise must
+# themselves parse. An example that errors is worse than no example, because
+# it is precisely what a hurried operator copies — and GNU date has no `noon`
+# keyword, so the obvious-looking 'tomorrow noon' is not one of them.
+for example in "2026-08-10 18:00" "tomorrow 12:00"; do
+  toggle_parse_until "$example" >/dev/null 2>&1
+  assert_eq "the advertised example '$example' actually parses" "0" "$?"
+done
+
 # --- toggle_resolve_disable_spec ---
 
 assert_eq "only --for given passes through unchanged" \
