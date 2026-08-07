@@ -79,9 +79,13 @@ info() { printf 'info - %s\n' "$1"; }
 result="$("${compose[@]}" exec -T scheduler bash <<'INNER' 2>/dev/null
 . /app/lib/version.sh
 . /app/lib/image-drift.sh
-. /app/lib/config-schema.sh
 v="$(image_drift_status "$(agent_ops_version /app)" "")"
-g="$(config_defaults /app/config.json /app/config.schema.json 2>/dev/null | jq -r '.image_behind_grace_hours')"
+# Deliberately not config_defaults: this runs inside whatever image the node
+# is currently running, which by this script's whole purpose is often one
+# that predates config_defaults — reading the raw file stays correct against
+# any image vintage the container might be, the same exemption
+# deploy/docker/watchtower-pre-update.sh's literals carry.
+g="$(jq -r '.image_behind_grace_hours // 3' /app/config.json)"
 jq -nc --argjson v "$v" --arg g "$g" '{verdict: $v, grace_hours: ($g | tonumber? // 3)}'
 INNER
 )"

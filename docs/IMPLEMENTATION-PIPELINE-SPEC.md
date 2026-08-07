@@ -743,21 +743,27 @@ runs unattended.
    `config.json` reads that merge rather than a `// literal` of its own:
    `agent-cycle.sh`, `review-cycle.sh`, `scripts/doctor.sh`, `lib/claim.sh`,
    `lib/labels.sh`, `scripts/state-sync.sh`, `scripts/rotate-logs.sh`,
-   `scripts/sweep-orphan-branches.sh`, `scripts/publish-dashboard.sh`,
-   `scripts/check-node-image.sh` and `deploy/docker/render-crontab.sh`. A
-   default therefore exists in one place, and each of those scripts requires
-   `config.schema.json` beside `config.json` at runtime. The merge performs no
-   validation of its own — a config that fails the gate above still merges,
-   defaults and all — which is what lets `doctor.sh` go on diagnosing a config
-   the Script would refuse. Three kinds of fallback are deliberately not schema
-   defaults and stay in code: one that holds *between* two keys, of which
+   `scripts/sweep-orphan-branches.sh`, `scripts/publish-dashboard.sh` and
+   `deploy/docker/render-crontab.sh`. A default therefore exists in one place,
+   and each of those scripts requires `config.schema.json` beside
+   `config.json` at runtime. The merge performs no validation of its own — a
+   config that fails the gate above still merges, defaults and all — which is
+   what lets `doctor.sh` go on diagnosing a config the Script would refuse.
+   Three kinds of fallback are deliberately not schema defaults and stay in
+   code: one that holds *between* two keys, of which
    `refinement_after_coordinator_cycles` inheriting
    `enabler_after_coordinator_cycles` (requirement 34e) is the case in point;
-   `deploy/docker/watchtower-pre-update.sh`'s, which depends on nothing
-   but bash, `jq` and `config.json` by design and reads three keys
+   readers that must depend on nothing but bash, `jq` and `config.json` by
+   design, so that what they read cannot drift from what is actually
+   deployed — `deploy/docker/watchtower-pre-update.sh`, reading three keys
    (`state_dir`, `lock_stale_after`, `review.lock_stale_after`) that carry no
-   schema `default` to take; and the shipped priors of the two self-tuning
-   stage caps (requirement 4f), which live in `lib/stage-budget.sh`'s
+   schema `default` to take, and `scripts/check-node-image.sh`'s in-container
+   grace read, which runs inside whatever image the node is currently running
+   and so must stay correct against an image that predates `config_defaults`
+   entirely — its `image_behind_grace_hours` key does carry a schema
+   `default`, but the read stays a literal `// 3` on principle rather than on
+   necessity; and the shipped priors of the two self-tuning stage caps
+   (requirement 4f), which live in `lib/stage-budget.sh`'s
    `STAGE_BUDGET_PRIORS`. The last is the one case where a `default` here would
    be actively wrong rather than merely redundant: the `timeout_*`,
    `inactivity_*` and `review.timeout_review` / `review.inactivity_review` keys
