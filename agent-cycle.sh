@@ -2774,6 +2774,14 @@ while IFS= read -r vr_slug; do
     -n '[ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
           | {item, detail, evidence} ]' 2>/dev/null || echo '[]')"
   vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" "$vr_candidates_json")"
+  # Only ever *adds* to what the first pass found. gather_register_hygiene
+  # fails safe to `[]`, and this second read can fail where the first
+  # succeeded — a rate limit, a network blip, a branch moved between the two.
+  # Overwriting on that answer would delete a genuine register-hygiene
+  # candidate the cycle already holds, on no evidence at all; the whole point
+  # of this pass is a superset of the first, so an empty result is the one
+  # answer it can never mean.
+  [[ "$(jq 'length' <<<"$vr_hygiene_json" 2>/dev/null || echo 0)" != "0" ]] || continue
   ordered_repos_json="$(jq -c --arg r "$vr_slug" --argjson rh "$vr_hygiene_json" \
     'map(if .slug == $r then .register_hygiene = $rh else . end)' \
     <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"

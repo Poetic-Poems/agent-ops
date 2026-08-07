@@ -3980,7 +3980,11 @@ runs unattended.
     `scripts/gather-register-hygiene.sh`, called a second time this cycle,
     now with the void items and their evidence — and replaces the entry
     requirement 3i's own pre-fetch loop already built for it in the
-    Co-Ordinator's runtime input. The gatherer's own `VOIDED STATUS` problem
+    Co-Ordinator's runtime input. The replacement only ever happens on a
+    non-empty answer: this pass is a superset of the first by construction,
+    so an empty result means the second read failed where the first
+    succeeded, and overwriting on it would delete a candidate the cycle
+    already holds on no evidence at all. The gatherer's own `VOIDED STATUS` problem
     class (a second, disjoint source of candidacy layered on top of
     `td-check.pl`'s internal-consistency rules, never fed back into the
     byte-identical upstream checker) is what makes this a candidate at all
