@@ -24,16 +24,36 @@
 #
 # For one repository, this lists every open, non-draft pull request carrying
 # `pr_label` and, for each:
-#   1. Re-confirms review from anyone CHANGES_REQUESTED-blocking it
-#      (`confirm_review_requested`) — self-healing requirement 31b's own
-#      promise for a pull request no Reviewer or Enabler touched this cycle.
-#   2. Where nothing is blocking it, ensures a live review request exists at
-#      all (`ensure_human_reviewer`) — requirement 38a's guarantee, kept
-#      continuously rather than only at the moment of handoff.
-#   3. Where the pull request is approved, mergeable and green, and has been
+#   1. Ensures a live review request exists where nothing is
+#      CHANGES_REQUESTED-blocking it (`ensure_human_reviewer`) — requirement
+#      38a's guarantee, kept continuously rather than only at the moment of
+#      handoff.
+#   2. Where the pull request is approved, mergeable and green, and has been
 #      since before `human_nudge_idle_hours` ago, posts one nudge comment
 #      naming `enabler_assignee` — requirement 38c — unless one is there
 #      already (a marker comment makes this idempotent, not time-windowed).
+#
+# ## Why the sweep never calls `confirm_review_requested`
+#
+# A pull request something is still CHANGES_REQUESTED-blocking is left
+# entirely alone, and the omission is load-bearing, not an economy.
+# `confirm_review_requested` (requirement 31b) exists for the round *after*
+# the Implementor answers a review; the judgement "these changes answer the
+# review" comes from the Reviewer's `ready` verdict, which is the only place
+# agent-cycle.sh calls it from — and the sweep has no such judgement to
+# offer. Re-requesting without it inverts the queue (the human is asked to
+# re-look at a pull request whose next actor is the pipeline), and does
+# something quieter and worse: requirement 3c's candidate rule reads a
+# review-requested timeline event as the round having been *answered*
+# (scripts/gather-review-feedback.sh — the events-not-timestamps fix), so a
+# blind re-request would also drop the pull request out of the Implementor's
+# own review-feedback selection while the human's CHANGES_REQUESTED sat
+# unanswered — PR #205's silent-starvation failure, reintroduced hourly and
+# fleet-wide. The one case this leaves unhealed — a `ready`-verdict
+# re-request the handoff lost to a crash — needs requirement 3c's
+# answered-from-events predicate shared out of its script before the sweep
+# can tell it apart from an unanswered round; that deferral is
+# tech-debt/TD-PPagop-26080802.md.
 #
 # Fails safe throughout: any answer this script cannot get (a listing that
 # errors, a pull request whose state cannot be read) is skipped with a
@@ -43,7 +63,6 @@
 # and re-attempting a already-live one is a no-op both sides read the same way.
 #
 # Output: one JSON object per action on stdout —
-#   {"action":"review-requested","pr_url":…,"reviewers":[…]}
 #   {"action":"human-review-requested","pr_url":…,"reviewers":[…]}
 #   {"action":"nudged","pr_url":…,"reviewer":…}
 #   {"action":"warning","pr_url":…,"detail":…}
@@ -107,41 +126,27 @@ fi
 while IFS= read -r pr_url; do
   [[ -n "$pr_url" ]] || continue
 
-  rereview="$(confirm_review_requested "$pr_url")" || true
-  rereview_state=""; rereview_who=""
-  IFS=$'\t' read -r rereview_state rereview_who <<<"$rereview" || true
-  case "$rereview_state" in
+  # `ensure_human_reviewer` carries its own guard for the blocked case: a pull
+  # request something is still CHANGES_REQUESTED-blocking answers `skip`, and
+  # the sweep leaves it to its own actors (see the design note in the header
+  # for why there is deliberately no `confirm_review_requested` here).
+  human_state="$(ensure_human_reviewer "$pr_url" "$assignee")" || true
+  human_who=""
+  IFS=$'\t' read -r human_state human_who <<<"$human_state" || true
+  case "$human_state" in
     requested)
-      jq -nc --arg u "$pr_url" --arg w "$rereview_who" \
-        '{action: "review-requested", pr_url: $u, reviewers: ($w | split(","))}'
+      jq -nc --arg u "$pr_url" --arg w "$human_who" \
+        '{action: "human-review-requested", pr_url: $u, reviewers: ($w | split(","))}'
       ;;
     failed)
-      warn "$pr_url" "could not re-request review from ${rereview_who:-the reviewer(s)} still blocking it"
+      warn "$pr_url" "could not request review from ${human_who:-$assignee}"
       ;;
   esac
 
-  # Nothing CHANGES_REQUESTED-blocking it is exactly ensure_human_reviewer's
-  # domain (requirement 38a) — a first review nobody has given, or an
-  # approval nobody has acted on since.
-  if [[ "$rereview_state" == "none" ]]; then
-    human_state="$(ensure_human_reviewer "$pr_url" "$assignee")" || true
-    human_who=""
-    IFS=$'\t' read -r human_state human_who <<<"$human_state" || true
-    case "$human_state" in
-      requested)
-        jq -nc --arg u "$pr_url" --arg w "$human_who" \
-          '{action: "human-review-requested", pr_url: $u, reviewers: ($w | split(","))}'
-        ;;
-      failed)
-        warn "$pr_url" "could not request review from ${human_who:-$assignee}"
-        ;;
-    esac
-  fi
-
-  # The idle nudge only makes sense once nothing is CHANGES_REQUESTED-blocking
-  # the pull request — that state has its own actor (the Implementor,
-  # answering the review) and its own clock, not this one's.
-  [[ "$rereview_state" == "none" ]] || continue
+  # The idle nudge stands on its own facts, read below: `reviewDecision ==
+  # APPROVED` is what keeps it off a CHANGES_REQUESTED pull request — that
+  # state has its own actor (the Implementor, answering the review) and its
+  # own clock, not this one's.
   awk -v h="$idle_hours" 'BEGIN{exit !(h>0)}' || continue
 
   if ! pr_json="$("$GH" pr view "$pr_url" \

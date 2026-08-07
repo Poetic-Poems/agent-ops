@@ -4457,7 +4457,7 @@ runs unattended.
     nothing on Assigned-to-me — agent-ops#203 was exactly this shape (labelled
     correctly, invisible regardless) until fixed by hand. `lib/refinement.sh`'s
     `refinement_assignee_add`/`refinement_assignee_remove` mirror the label's
-    lifecycle exactly: `log_needs_refinement_items` assigns `enabler_assignee`
+    lifecycle: `log_needs_refinement_items` assigns `enabler_assignee`
     to the issue alongside the label, recording it as
     `needs_refinement_assignee` on the block's `attempt-failed` event (mirrored
     by `refinement_block_fields`'s third argument) so `release_refinement_label`
@@ -4467,14 +4467,30 @@ runs unattended.
     Best-effort, like the label: a failed assignment is a `warning`, and the
     block is recorded regardless.
 
+    The mirror stops one step short of the label's, on purpose. The
+    assignment goes on through `refinement_assignee_project`, which reads the
+    issue's assignees before writing: an assignment already there — the
+    human's own, made for their own reasons before the block existed — is
+    left exactly as found and recorded as nothing, because `gh issue edit
+    --add-assignee` succeeds as a no-op on an assigned issue, and an
+    assignment recorded off the back of that no-op would be *removed* when
+    the block cleared — a false removal from the very list this requirement
+    exists to keep accurate, silently and by the pipeline's hand. The label
+    keeps its unconditional lifecycle and the asymmetry is deliberate:
+    `needs-refinement` is this system's own vocabulary, convergent with block
+    state by design (a hand-applied instance is itself read back as a report,
+    requirement 34g), where an assignment is a general-purpose signal the
+    projection only borrows. An unreadable assignee list assigns best-effort
+    but records nothing, with a `warning` saying so — over-holding an
+    assignment is cosmetic; removing one that may have pre-existed is the
+    defect the read exists to prevent.
+
 38c. **An idle, approved pull request is nudged, not left silent.** For every
     open, non-draft, `pr_label`-carrying pull request in every configured
     repository — fleet-wide, like the sweeps of requirements 17b and 34i,
     regardless of `--repo` — `scripts/sweep-human-visibility.sh` runs once per
     cycle and, per pull request:
 
-    - re-confirms `confirm_review_requested` (self-healing requirement 31b's
-      own promise for a pull request no stage touched this cycle);
     - where nothing is `CHANGES_REQUESTED`-blocking it, ensures
       `ensure_human_reviewer` (requirement 38a, kept continuously rather than
       only at the moment of handoff);
@@ -4494,8 +4510,28 @@ runs unattended.
     a listing or a read that fails — is a `warning`, never a silent skip.
     Skipped on `--dry-run`, like every sweep that writes.
 
+    A pull request something is still `CHANGES_REQUESTED`-blocking is left
+    entirely alone — the sweep never calls `confirm_review_requested`
+    (requirement 31b), and the omission is deliberate. That function's
+    contract assumes the judgement "these changes answer the review", which
+    only the Reviewer's `ready` verdict supplies (requirement 31b's one call
+    site), and the sweep has none to offer: re-requesting without it inverts
+    the queue — the human is asked to re-look at a pull request whose next
+    actor is the pipeline — and, because requirement 3c's candidate rule
+    reads a review-requested timeline event as the round having been
+    *answered* (`scripts/gather-review-feedback.sh`, the
+    events-not-timestamps fix), it would also drop the pull request out of
+    the Implementor's own review-feedback selection while the human's
+    `CHANGES_REQUESTED` sat unanswered — PR #205's silent-starvation failure
+    reintroduced hourly and fleet-wide. The case this leaves unhealed (a
+    `ready`-verdict re-request lost to a crash between the push and the
+    request) is recorded as deferred work in
+    `tech-debt/TD-PPagop-26080802.md`: healing it correctly needs
+    requirement 3c's answered-from-events predicate shared out of its
+    script, so the sweep can tell an answered round from an unanswered one.
+
     The Script logs what the sweep did under the sweep's own event names —
-    `review-requested`, `human-review-requested` and `human-nudged`, each
+    `human-review-requested` and `human-nudged`, each
     carrying the `repo` swept and the `pr_url` acted on — exactly as
     requirement 17b's sweep logs `orphan-branch-recovered` /
     `orphan-branch-released`, and deliberately not as `pr-ready`. A sweep
@@ -4716,7 +4752,7 @@ What exists, and the requirements each part answers to:
    given a repo slug (and, for the nudge comment's header and marker, a cycle
    id and a node name), examines every open, non-draft, `pr_label`-carrying
    pull request and prints one JSON action object per pull request it acted on
-   (`review-requested`, `human-review-requested`, `nudged`, `warning`) for the
+   (`human-review-requested`, `nudged`, `warning`) for the
    Script to log under those same names. Fail-safe on every unanswered
    question — a read it cannot make is a `warning`, never an assumed clean
    answer; `SWEEP_GH` stubs `gh` (and is passed through as `HANDOFF_GH`, since
@@ -6232,13 +6268,21 @@ pull request, run the ones the change touches and any it could regress.
     independent of the label argument; `refinement_assignee_add`/`_remove` each
     make one `gh issue edit --add-assignee`/`--remove-assignee` call and fail
     when the assignee is not a collaborator, the same way the label functions
-    fail when the label does not exist; and `refinement_assignee_targets`
+    fail when the label does not exist; `refinement_assignee_project` reads
+    the issue's assignees before writing — a pre-existing assignment is
+    `present` (untouched, unrecorded), an absent one is added and `added`,
+    an unreadable list is applied best-effort but `unrecorded`, and a
+    non-collaborator is `failed`; and `refinement_assignee_targets`
     finds exactly the assigned issue, scoped by repo the same way
     `refinement_label_targets` is, surviving a void the same way. `test/sweep-human-visibility.test.sh`
     passes against a stubbed `gh`: a pull request with nothing blocking it and
     no known reviewer yet is both re-requested (from the approver) and, when
     also approved, mergeable, green and idle past `human_nudge_idle_hours`,
-    nudged in the same pass; a pull request nudged once already is not nudged
+    nudged in the same pass; a `CHANGES_REQUESTED`-blocked pull request has
+    no review request made for it and is never nudged — the sweep never
+    calls `confirm_review_requested` (requirement 38c's design note), and
+    the nudge's own `reviewDecision == APPROVED` gate holds it off; a pull
+    request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
     check rollup; `human_nudge_idle_hours: 0` disables the nudge while leaving

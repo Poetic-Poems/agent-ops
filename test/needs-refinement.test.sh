@@ -82,6 +82,14 @@ assert_contains() {
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
+# `issue view <n> -R <slug> --json assignees --jq ...` serves the logins in
+# $tmp_dir/issue-assignees, one per line; $tmp_dir/view-fail makes it fail —
+# the read refinement_assignee_project has to survive without ever recording.
+if [[ "$1" == "issue" && "$2" == "view" ]]; then
+  [[ -f "$d/view-fail" ]] && exit 1
+  cat "$d/issue-assignees" 2>/dev/null
+  exit 0
+fi
 [[ "$1" == "issue" && "$2" == "edit" ]] || exit 1
 number="$3"; shift 3
 repo=""; action=""; label=""; assignee=""
@@ -283,6 +291,46 @@ assert_eq "  ... through one gh call" "assign o/r 52 octocat" "$(assignee_calls)
 printf 'octocat\n' >"$tmp_dir/missing-assignees"
 assert_eq "an assignee who is not a collaborator fails rather than silently passing" "1" \
   "$(refinement_assignee_add "o/r" 52 octocat; echo $?)"
+rm -f "$tmp_dir/missing-assignees"
+
+# --- The projection reads before it writes (requirement 38b) --------------------
+# `gh issue edit --add-assignee` is a no-op-success on an issue already
+# assigned, so `refinement_assignee_project` reads the assignee list first: a
+# pre-existing assignment — the human's own, made for their own reasons — is
+# `present`, untouched and unrecorded, and clearing the block later never
+# takes it off. Only an assignment the projection itself added is `added`,
+# i.e. the caller's to record and the clearing's to remove.
+reset_assignee_calls
+rm -f "$tmp_dir/issue-assignees" "$tmp_dir/view-fail"
+assert_eq "an unassigned issue is assigned and recorded" "added" \
+  "$(refinement_assignee_project "o/r" 52 octocat)"
+assert_eq "  ... through one gh edit call" "assign o/r 52 octocat" "$(assignee_calls)"
+
+reset_assignee_calls
+printf 'octocat\n' >"$tmp_dir/issue-assignees"
+assert_eq "a pre-existing assignment is present, not re-added" "present" \
+  "$(refinement_assignee_project "o/r" 52 octocat)"
+assert_eq "  ... and nothing is edited at all" "" "$(assignee_calls)"
+
+reset_assignee_calls
+printf 'someone-else\n' >"$tmp_dir/issue-assignees"
+assert_eq "someone else's assignment does not mask the add" "added" \
+  "$(refinement_assignee_project "o/r" 52 octocat)"
+assert_eq "  ... which still happens" "assign o/r 52 octocat" "$(assignee_calls)"
+
+reset_assignee_calls
+rm -f "$tmp_dir/issue-assignees"
+printf x >"$tmp_dir/view-fail"
+assert_eq "an unreadable assignee list is applied best-effort but never recorded" \
+  "unrecorded" "$(refinement_assignee_project "o/r" 52 octocat)"
+assert_eq "  ... the best-effort add still reaches the issue" \
+  "assign o/r 52 octocat" "$(assignee_calls)"
+rm -f "$tmp_dir/view-fail"
+
+printf 'octocat\n' >"$tmp_dir/missing-assignees"
+rm -f "$tmp_dir/issue-assignees"
+assert_eq "a non-collaborator fails the projection as it fails the add" "failed" \
+  "$(refinement_assignee_project "o/r" 52 octocat)"
 rm -f "$tmp_dir/missing-assignees"
 
 cat > "$log" <<'EOF'

@@ -268,6 +268,68 @@ refinement_assignee_remove() {
   "$gh_bin" issue edit "$number" -R "$repo" --remove-assignee "$assignee" >/dev/null 2>&1
 }
 
+# refinement_assignee_project REPO NUMBER ASSIGNEE
+# Put ASSIGNEE on the issue iff they are not already there, and say whether
+# the resulting assignment is this projection's to remove later. This — not
+# `refinement_assignee_add` — is what `log_needs_refinement_items` calls,
+# because `gh issue edit --add-assignee` succeeds as a no-op on an issue
+# already assigned: an unconditional add-and-record would later let
+# `release_refinement_label` take an assignment off that a human had made for
+# their own reasons before the block ever existed. Requirement 38b's whole
+# purpose is that Assigned-to-me is the list the human actually watches, and
+# a false *removal* from it costs more than any stale label does.
+#
+# The label deliberately keeps its unconditional lifecycle, and the asymmetry
+# is a decision, not an oversight: `needs-refinement` is this system's own
+# vocabulary — a hand-applied instance is itself read back as a report
+# (requirement 34g), so label and block state are convergent by design and
+# taking the label off a clearing block is correct whoever applied it. An
+# assignment is a general-purpose signal that predates and outlives this
+# mechanism; a pre-existing one is the human's own statement about the issue,
+# and not this projection's to withdraw.
+#
+# Prints one word:
+#   added       ASSIGNEE was absent and is now on the issue — record them as
+#               `needs_refinement_assignee`, so the block's clearing takes
+#               the assignment off again.
+#   present     ASSIGNEE was already on the issue. Nothing is touched and
+#               nothing must be recorded.
+#   unrecorded  the assignee list could not be read, so the add was attempted
+#               best-effort but must not be recorded — over-holding an
+#               assignment is a cosmetic fault on an issue the human was
+#               genuinely wanted on; removing one that may have pre-existed
+#               is the defect this function exists to prevent.
+#   failed      the list was readable, ASSIGNEE was absent, and the add would
+#               not take (not a collaborator on that repo is the practical
+#               case) — same contract as `refinement_label_add`: the caller
+#               records the block regardless.
+#
+# Exit status is 0 for `added` and `present` (the projection is healthy),
+# 1 for `unrecorded` and `failed`.
+refinement_assignee_project() {
+  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}" existing
+  if [[ -z "$repo" || -z "$number" || -z "$assignee" ]]; then
+    printf 'failed'
+    return 1
+  fi
+  if ! existing="$("$gh_bin" issue view "$number" -R "$repo" --json assignees \
+                     --jq '.assignees[].login' 2>/dev/null)"; then
+    refinement_assignee_add "$repo" "$number" "$assignee" || true
+    printf 'unrecorded'
+    return 1
+  fi
+  if grep -qxF "$assignee" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  if refinement_assignee_add "$repo" "$number" "$assignee"; then
+    printf 'added'
+    return 0
+  fi
+  printf 'failed'
+  return 1
+}
+
 # refinement_engagement_set ELIGIBLE_JSON MAX
 # Print the eligible items one engagement takes on (requirement 35d): every
 # ordinary blocked item, plus at most MAX refinement-class items, in the input's

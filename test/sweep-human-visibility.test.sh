@@ -202,16 +202,20 @@ out="$(run_sweep)"
 assert_eq "no enabler_assignee means nothing to request or nudge" "" "$out"
 write_config warwickallen 24
 
-# --- Still CHANGES_REQUESTED-blocked: self-heals the re-request, nothing else ---
+# --- Still CHANGES_REQUESTED-blocked: left entirely alone -----------------------
+# The sweep never calls confirm_review_requested (see the script's design
+# note): it cannot judge whether the round has been answered, a premature
+# re-request inverts the queue, and gather-review-feedback.sh would read the
+# request event itself as the round having been answered. The blocked PR's
+# next actor is the pipeline, not the human, so nothing is requested and
+# nothing is nudged.
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
-assert_eq "a still-blocked PR gets its re-request self-healed" "review-requested" \
-  "$(jq -r '.action' <<<"$out")"
-assert_eq "  ... naming who is blocking it" "Warwick-Allen" \
-  "$(jq -r '.reviewers[0]' <<<"$out")"
-assert_eq "  ... and nothing else — no idle check on a blocked PR" "1" \
-  "$(wc -l <<<"$out")"
+assert_eq "a still-blocked PR is left entirely alone" "" "$out"
+assert_eq "  ... no review request POSTed" "" "$(cat "$tmp_dir/posts")"
+assert_eq "  ... no nudge comment posted" "0" "$(comment_count)"
 
 # --- Approved, idle, and never re-asked: both halves fire together --------------
 # ensure_human_reviewer re-requests the approver (nobody CHANGES_REQUESTED-

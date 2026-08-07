@@ -891,14 +891,24 @@ log_needs_refinement_items() {
         # made" is exactly what exclusions 5 and 6 report here — reaches the
         # human's own Assigned-to-me dashboard the moment it is recorded,
         # rather than waiting for the Enabler's own, much later, escalation.
+        # Through `refinement_assignee_project`, not `refinement_assignee_add`:
+        # an assignment the human made themselves before the block existed is
+        # recorded by neither, so clearing the block never removes it.
         if [[ -n "$enabler_assignee" ]]; then
-          if refinement_assignee_add "$repo" "$number" "$enabler_assignee"; then
-            assignee="$enabler_assignee"
-          else
-            log_event "warning" "$(jq -nc \
-              --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
-              '{detail: $d}')"
-          fi
+          case "$(refinement_assignee_project "$repo" "$number" "$enabler_assignee")" in
+            added) assignee="$enabler_assignee" ;;
+            present) ;;
+            unrecorded)
+              log_event "warning" "$(jq -nc \
+                --arg d "could not read $repo#$number's assignees — $enabler_assignee was assigned best-effort but not recorded on the block, so clearing it will not unassign them" \
+                '{detail: $d}')"
+              ;;
+            *)
+              log_event "warning" "$(jq -nc \
+                --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
+                '{detail: $d}')"
+              ;;
+          esac
         fi
       fi
     fi
@@ -2418,8 +2428,6 @@ if ! (( DRY_RUN )); then
     while IFS= read -r sweep_action; do
       [[ -n "$sweep_action" ]] || continue
       case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
-        review-requested) log_event "review-requested" "$(jq -c --arg r "$sweep_slug" \
-          '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         human-review-requested) log_event "human-review-requested" \
           "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         nudged) log_event "human-nudged" "$(jq -c --arg r "$sweep_slug" \
