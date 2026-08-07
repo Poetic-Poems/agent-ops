@@ -2624,6 +2624,12 @@ runs unattended.
       contention, the work is being done, just not by this node) or
       `unreachable` for its rc 1 (GitHub could not be reached at all,
       fail-closed: no work is being done by anyone), any other rc verbatim.
+      A miss on the PR-keyed claim above rather than on the item claim reads
+      `pr-held` instead of `held` — the same healthy contention, named apart so
+      a reader can tell which of the two claims a peer holds — and carries the
+      `pr_claim_key` it contended on. It renames `held` only: a PR-keyed claim
+      that came back `unreachable` is an outage like any other and is counted
+      as one.
       A cycle whose every candidate is lost stands down with reason "every
       candidate is already claimed elsewhere" — unless every miss was
       `unreachable`, in which case the reason instead names the outage
@@ -3241,7 +3247,9 @@ runs unattended.
     first cycle and then not again unless a label is deleted or the token
     cannot create one. A `claim-lost` names the repo, item and branch of
     the candidate the Script failed to claim, plus a `cause` — `held` when a
-    peer node won it, `unreachable` when GitHub could not be reached, or the
+    peer node won it, `pr-held` when a peer holds the pull request it targets
+    under some other item ref (and then also `pr_claim_key`, the `pr-<number>`
+    key contended on), `unreachable` when GitHub could not be reached, or the
     raw exit code otherwise (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);

@@ -2994,7 +2994,10 @@ for (( ci = 0; ci < n_cand; ci++ )); do
       # the same create-only way. Losing it means a peer holds this PR already
       # (under whatever ref won there); nothing was pushed under the item claim
       # yet, so release it and fall through to the next candidate exactly as a
-      # lost item claim would.
+      # lost item claim would — carrying this claim's *own* rc outward, not a
+      # flattened 3, so that an unreachable GitHub here still reads as rc 1 and
+      # still counts toward the outage stand-down below rather than being
+      # miscounted as a fleet politely yielding to itself.
       c_pr_key="pr-${c_pr_number}"
       pr_claim_rc=0
       CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
@@ -3004,7 +3007,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
       if (( pr_claim_rc != 0 )); then
         timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$c_repo" "$c_item" \
           >>"$cycle_dir/claim.log" 2>&1 || true
-        claim_rc=3
+        claim_rc=$pr_claim_rc
         pr_claim_lost=1
       fi
     fi
@@ -3028,13 +3031,18 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # the event wearing one reason for both. `pr-held` is the same healthy
   # contention as `held`, distinguished only so a reader can tell the two
   # claims apart: this candidate's own item claim won, but a peer already
-  # holds the PR it targets under a different item ref.
+  # holds the PR it targets under a different item ref. It renames `held`
+  # alone — an `unreachable` PR-keyed claim is still an outage and must still
+  # be counted as one, or a fleet-wide outage during the second claim would
+  # stand down reporting contention that never happened.
   case "$claim_rc" in
     3) claim_cause="held" ;;
     1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
     *) claim_cause="$claim_rc" ;;
   esac
-  (( pr_claim_lost )) && claim_cause="pr-held"
+  if (( pr_claim_lost )) && [[ "$claim_cause" == "held" ]]; then
+    claim_cause="pr-held"
+  fi
   log_event "claim-lost" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg b "$c_branch" \
     --argjson rc "$claim_rc" --arg cause "$claim_cause" --arg pr "$c_pr_key" \
     '{repo: $r, item: $i, branch: $b, rc: $rc, cause: $cause} + (if $pr == "" then {} else {pr_claim_key: $pr} end)')"
