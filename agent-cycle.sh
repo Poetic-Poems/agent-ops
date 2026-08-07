@@ -2828,9 +2828,9 @@ void_json="$(void_items "$union_log")"
 # excludes whatever a previous cycle already actioned, so this never
 # re-checks (and never re-closes) the same item twice, even if a human
 # reopens the object directly rather than through `unvoid_label`. The event's
-# `stage` travels with each candidate because the sweep acts only on the
-# Co-Ordinator's voids — the one writer requirement 34d corroborates — until
-# WI-7 (#243) corroborates the other two; the gate itself lives in
+# `stage` travels with each candidate because the sweep's corroboration gate
+# keys on it — every writer's `item-void` passes requirement 34d before it is
+# logged (issue #243), so all three are eligible, and the gate itself lives in
 # close-void-github-items.sh (requirement 34a: one definition, at the point
 # of action). Skipped on --dry-run: the sweep closes issues and pull
 # requests.

@@ -4010,20 +4010,18 @@ runs unattended.
     object to close, and requirement 34k does nothing with it; a register id
     is instead requirement 34l's concern, immediately below.
 
-    **Only a corroborated void, which today means the Co-Ordinator's.**
-    `void_json` holds the unresolved `item-void` events of all three
-    writers, but only the Co-Ordinator's passes requirement 34d's guard
-    before it is logged: the Implementor's and the Enabler's are the model's
-    own unexamined verdict, and issue #240 scopes this action to a void that
-    "survives corroboration (WI-7)". So each candidate carries its event's
-    `stage`, and `close-void-github-items.sh` acts only on
-    `stage == "coordinator"` — an uncorroborated "already done" must not
-    close a live issue on an unexamined claim. The gate is on corroboration,
-    not on the stage as such: when WI-7 (#243) extends 34d's guard to the
-    other two writers, their voids become eligible here by widening this one
-    gate, nothing else. An ineligible void is left exactly as a register id
-    is — unprocessed and unmarked, so nothing stops a later, corroborated
-    pass acting on it. The one-shot rule immediately below is the second,
+    **Only a corroborated void — today, that is all three writers.**
+    `void_json` holds the unresolved `item-void` events of all three writers
+    (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
+    corroborates every one of them before it is logged (issue #243), so each
+    is eligible here. Each candidate still carries its event's `stage`, and
+    `close-void-github-items.sh` still gates on it — an uncorroborated
+    `item-void` must never reach this point, but if one somehow did (a future
+    writer that bypassed the guard, a malformed or stageless entry), the gate
+    is what stops it closing a live issue on an unexamined claim. An
+    ineligible void is left exactly as a register id is — unprocessed and
+    unmarked, so nothing stops a later pass acting on it once it is
+    corroborated. The one-shot rule immediately below is the second,
     independent bound — recovery rather than precondition — and a human's
     plain re-open wins permanently.
 
@@ -6027,14 +6025,15 @@ pull request, run the ones the change touches and any it could regress.
 8j. **A corroborated void closes the GitHub object it names, exactly once
    (requirement 34k).** `test/close-void-github-items.test.sh` passes against
    a stubbed `gh`: an open issue or an open, obsolete pull request named by a
-   Co-Ordinator void is closed with a comment carrying the void's own
-   evidence; an Implementor or Enabler void — or one carrying no `stage` at
-   all — is left entirely alone with no API call made, because those writers'
-   verdicts are uncorroborated until WI-7 (#243); an object already closed is
-   reported (`closed_by: "already"`) rather than touched again; a shape
-   naming no GitHub object (a register id) is left entirely alone; a void
-   carrying no reason still reaches the comment with its evidence intact;
-   and the per-call action cap defers rather than floods.
+   void from any of the three writers — Co-Ordinator, Enabler, Implementor,
+   all corroborated by requirement 34d (issue #243) — is closed with a
+   comment carrying the void's own evidence; a void carrying no `stage` at
+   all is left entirely alone with no API call made, the fail-closed default
+   for an entry no writer this script recognises corroborated; an object
+   already closed is reported (`closed_by: "already"`) rather than touched
+   again; a shape naming no GitHub object (a register id) is left entirely
+   alone; a void carrying no reason still reaches the comment with its
+   evidence intact; and the per-call action cap defers rather than floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract

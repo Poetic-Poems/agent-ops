@@ -25,17 +25,17 @@
 # id) names something that is not a GitHub object to close and is left alone
 # here entirely.
 #
-# And only a void the Co-Ordinator wrote (`stage == "coordinator"`): that is
-# the one `item-void` writer whose verdict passes requirement 34d's
-# corroboration guard before it is logged. The Implementor's and the
-# Enabler's voids are the model's own unexamined claim — issue #240 scopes
-# this action to a void that "survives corroboration (WI-7)", and until WI-7
-# (#243) corroborates those two writers, acting on them would let an
-# unexamined "already done" close a live issue. They are left exactly as a
-# register id is left: unprocessed and unmarked, so when #243 lands they
-# become eligible here with no further change to this gate's shape — the
-# gate is on corroboration, and "coordinator" is simply the only stage whose
-# voids carry it today.
+# And only a void whose writer's verdict passes requirement 34d's
+# corroboration guard — every stage, now that issue #243 made
+# `void_guard_reason` the one path all three (`coordinator`, `enabler`,
+# `implementor`) write `item-void` through. Before #243 the Implementor's and
+# the Enabler's voids were the model's own unexamined claim — issue #240
+# scoped this action to a void that "survives corroboration (WI-7)", and
+# until #243 corroborated those two writers, acting on them would have let an
+# unexamined "already done" close a live issue. The gate was on corroboration,
+# not on the stage name, so once every writer earned it the gate simply opened
+# to all three — a stage this script has never heard of (a future writer that
+# does not go through the guard) still stops here, unrecognised.
 #
 # Usage: close-void-github-items.sh <owner/repo> <node-name> <cycle-id>
 # Stdin: a JSON array of this repo's void candidates, each
@@ -109,11 +109,15 @@ while IFS=$'\t' read -r item detail evidence stage; do
   [[ "$evidence" == "-" ]] && evidence=""
   [[ -n "$item" ]] || continue
 
-  # The corroboration gate (see header): only the Co-Ordinator's voids have
-  # passed requirement 34d's guard. Anything else is skipped before the
-  # action cap — an ineligible item must not eat a slot, nor count as
-  # deferred work that a later pass could do.
-  [[ "$stage" == "coordinator" ]] || continue
+  # The corroboration gate (see header): every stage's voids pass requirement
+  # 34d's guard (issue #243), so all three writers are eligible here. Anything
+  # else — a stageless entry, or a stage this script does not recognise — is
+  # skipped before the action cap: an ineligible item must not eat a slot, nor
+  # count as deferred work that a later pass could do.
+  case "$stage" in
+    coordinator|enabler|implementor) ;;
+    *) continue ;;
+  esac
 
   if (( actions >= max_actions )); then
     deferred=$(( deferred + 1 ))
