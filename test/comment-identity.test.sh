@@ -59,9 +59,11 @@ assert_eq "an unknown token fails open to its own bare form" \
 
 # --- pipeline_comment_header: the leading, visible line ---
 
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
 assert_eq "the header names the actor's display and the node, verbatim" \
   '**Implementor** · autonomous pipeline · node `poetic-2`' \
   "$(pipeline_comment_header implementor poetic-2)"
+# shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
 assert_eq "an unknown actor still produces a header, via the fail-open token" \
   '**some-future-actor** · autonomous pipeline · node `poetic-1`' \
   "$(pipeline_comment_header some-future-actor poetic-1)"
