@@ -43,6 +43,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
+# shellcheck source=lib/stage-run.sh
+. "$SCRIPT_DIR/lib/stage-run.sh"
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
@@ -1324,58 +1326,10 @@ assert_in_workspace() {
   esac
 }
 
-# --- Run a headless claude invocation with a wall-clock timeout, killing its
-#     whole process group on timeout. `set -m` gives the backgrounded job its
-#     own process group so `kill -TERM -$pid` reaches every descendant. ---
-run_claude_stage() {
-  local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
-  local pid waited=0 rc
-
-  # stdout (the JSON envelope) and stderr (diagnostics) are kept in separate
-  # files — merging them would let stray stderr output break the JSON parse
-  # of the final result.
-  #
-  # The prompt goes in on stdin, never as an argument (requirement 4c). Linux
-  # caps a *single* argv entry at MAX_ARG_STRLEN — 32 pages, 131072 bytes,
-  # fixed at compile time and unaffected by `ulimit`, so `getconf ARG_MAX`'s
-  # far larger total is no guide to it. An assembled stage prompt is already
-  # the same order of magnitude and grows with every prompt edit, so passing
-  # it as `claude -p "$prompt"` puts the pipeline one paragraph away from an
-  # exec that fails with E2BIG before the model is ever reached. A here-string
-  # (rather than a pipe) keeps the invocation a single process whose status is
-  # the stage's own: under `pipefail` a `printf | claude` would report
-  # printf's SIGPIPE, 141, whenever a stage exited without draining stdin.
-  set -m
-  ( cd "$cwd" && claude -p --model "$model" --dangerously-skip-permissions --output-format json <<<"$prompt" ) \
-    >"$out_file" 2>"$out_file.stderr" &
-  pid=$!
-  set +m
-  # Advertised for the signal handler (requirement 9c): the job's own process
-  # group is beyond any signal sent to ours, so a handler that does not know
-  # this pid cannot stop the model this cycle is paying for.
-  stage_pid="$pid"
-  stage_name="$stage"
-
-  while kill -0 "$pid" 2>/dev/null; do
-    if (( waited >= timeout_sec )); then
-      kill -TERM "-$pid" 2>/dev/null || true
-      sleep 5
-      kill -KILL "-$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      stage_pid=""
-      stage_name=""
-      return 124
-    fi
-    sleep 2
-    waited=$(( waited + 2 ))
-  done
-
-  wait "$pid"
-  rc=$?
-  stage_pid=""
-  stage_name=""
-  return "$rc"
-}
+# `run_claude_stage` — the stage launcher, its wall-clock cap and its
+# process-group kill — lives in lib/stage-run.sh, sourced at the top of this
+# script alongside every other shared rule. It is shared with review-cycle.sh
+# rather than copied into it (requirement 4d).
 
 # --- The Enabler (requirements 35–37) ---------------------------------------
 # The pipeline's escalation path: a high-tier model, engaged rarely, that
@@ -1567,7 +1521,7 @@ $(jq . <<<"$input")
   else
     rc=$?
   fi
-  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --argjson m "$(metering_fields "$enabler_model" "$out")" \
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --argjson m "$(metering_fields "$enabler_model" "$out" "$stage_gaps_json")" \
     '{stage: "enabler", exit_code: $rc} + $m')"
   (( ONCE )) && dump_stage_output "$out"
 
@@ -2640,7 +2594,7 @@ if run_claude_stage coordinator "$(( timeout_coordinator_min * 60 ))" "$coordina
 else
   coord_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out")" \
+log_event "stage-end" "$(jq -nc --argjson rc "$coord_rc" --argjson m "$(metering_fields "$coordinator_model" "$coordinator_out" "$stage_gaps_json")" \
   '{stage: "coordinator", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$coordinator_out"
 
@@ -2829,7 +2783,7 @@ if run_claude_stage implementor "$(( timeout_implementor_min * 60 ))" "$impl_mod
 else
   impl_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_fields "$impl_model" "$impl_out")" \
+log_event "stage-end" "$(jq -nc --argjson rc "$impl_rc" --argjson m "$(metering_fields "$impl_model" "$impl_out" "$stage_gaps_json")" \
   '{stage: "implementor", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$impl_out"
 
@@ -2955,7 +2909,7 @@ if run_claude_stage reviewer "$(( timeout_reviewer_min * 60 ))" "$rev_model" "$r
 else
   rev_rc=$?
 fi
-log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --argjson m "$(metering_fields "$rev_model" "$rev_out")" \
+log_event "stage-end" "$(jq -nc --argjson rc "$rev_rc" --argjson m "$(metering_fields "$rev_model" "$rev_out" "$stage_gaps_json")" \
   '{stage: "reviewer", exit_code: $rc} + $m')"
 (( ONCE )) && dump_stage_output "$rev_out"
 

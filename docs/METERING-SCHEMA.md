@@ -23,9 +23,12 @@ contract for both:
   (`docs/DASHBOARD-SPEC.md`): a cycle's total cost, and fleet-wide spend by
   day, by model, and by actor.
 
-Both derive from the same upstream source: the JSON envelope
-`claude --output-format json` writes to `<stage>.out` (dashboard spec,
-"`cycles/<cycle-id>/<stage>.out`"). This document does not restate that
+Both derive from the same upstream source: the JSON envelope in
+`<stage>.out` (dashboard spec, "`cycles/<cycle-id>/<stage>.out`") — the
+`result` event of the stage's own stream, which `run_claude_stage` truncates
+into that file and which is byte-for-byte what `claude --output-format json`
+wrote there before the pipelines began streaming (requirement 4d). This
+document does not restate that
 envelope's own schema — that is Anthropic's contract, not this repo's, and
 only a subset of it is used here. It documents the fields **this repo depends
 on**, the shape it derives from them, and the guarantee it makes about that
@@ -51,6 +54,10 @@ either emits the same shape.
 | `tokens.output` | integer | tokens | Sum of each model's `outputTokens`. |
 | `tokens.cache_creation` | integer | tokens | Sum of each model's `cacheCreationInputTokens` — tokens written to the prompt cache. |
 | `tokens.cache_read` | integer | tokens | Sum of each model's `cacheReadInputTokens` — tokens served from the prompt cache. |
+| `gaps` | object \| null | — | How long the invocation went between one piece of output and the next — see below. `null` means the record was not measured (a stage that never ran, or a record derived after the fact from an envelope alone), never that the run was continuously busy: every run that happened has at least one gap. |
+| `gaps.n` | integer | count | Gaps observed. |
+| `gaps.p50`, `.p95`, `.p99` | integer | seconds | Nearest-rank percentiles of the gap sample. |
+| `gaps.max` | integer | seconds | The longest single silence in the run. |
 
 A field's absence from the envelope is distinct from it being genuinely zero
 or `false` — a stage entirely served from cache can have `cost_usd: 0`, and
@@ -74,6 +81,45 @@ sum; a stage whose subagents ran a different model has several, and `tokens`
 reports their total, not a per-model breakdown — `model` above already names
 the invocation's own model, and a full per-model breakdown was not needed by
 any reader this schema serves.
+
+### `gaps`
+
+`gaps` is the odd field here, and in a way worth stating plainly: every other
+field is read out of the envelope the invocation wrote when it finished, and
+this one cannot be, because it is a fact about *when* the run was doing
+things and the envelope records only that it did them.
+
+A **gap** is the interval between one growth of the stage's own event stream
+(`<stage>.stream.jsonl`, requirement 4d) and the next. `lib/stage-run.sh`
+measures them by `stat`-ing that file inside the poll loop that already runs
+every two seconds while a stage is in flight, so:
+
+- **the unit of observation is bytes arriving, not events parsed.** The
+  contract is "the runner streams progress to a file; liveness is monotonic
+  growth of that file" — deliberately not "the events carry timestamps",
+  which is a fact about one CLI's output format rather than about running a
+  stage at all.
+- **the stage cooperates in nothing and can fake nothing.** No heartbeat is
+  emitted, no cadence is agreed, and an actor that hangs cannot report
+  otherwise.
+- **the resolution is the poll interval**, two seconds. Percentiles are
+  therefore multiples of it, and `n` is a count of *observed growths*, not of
+  events: several events arriving inside one interval are one observation.
+  That is the correct unit for the purpose — what is being measured is how
+  long the file stood still, and it did not stand still between them.
+- **the first gap is the wait for the run's first byte** — model start-up,
+  reliably one of the longer silences — and **the last is the interval from
+  the final growth to the end of the stage**. That last one is included
+  deliberately, and unconditionally: a stage that fell silent and was killed
+  has its longest silence at the end, unterminated by any event, and a sample
+  that dropped it would be missing precisely the population these numbers
+  exist to describe. It is why a stage that emitted nothing at all still
+  reports one gap, spanning the whole run, rather than none.
+
+Percentiles are nearest-rank over the sorted sample (`ceil(p·n)`-th smallest),
+not interpolated, so every figure printed is a silence that really happened.
+`null` therefore means one thing only — this record carries no measurement —
+and never "the run was never quiet".
 
 ## Per-cycle aggregate
 
@@ -139,7 +185,9 @@ any other spec/code disagreement is.
 - **Produced:** `lib/metering.sh` (`metering_fields`), called from
   `agent-cycle.sh`'s four stage-end sites (Co-Ordinator, Implementor,
   Reviewer, Enabler) and `review-cycle.sh`'s one (the weekly Reviewer), each
-  passing its own model id and `.out` path (requirement 33a). Those five are
+  passing its own model id, `.out` path and the gap statistics
+  `lib/stage-run.sh` left in `stage_gaps_json` for the run that just ended
+  (requirement 33a). Those five are
   every invocation either pipeline logs a stage for. The one other invocation
   that spends is the usage-limit probe of requirement 1b — a single
   minimal-model call that is deliberately not a stage, logs no
@@ -158,6 +206,14 @@ any other spec/code disagreement is.
 a well-formed single-model envelope, a multi-model envelope (the subagent
 case), and the missing-file, empty-object and malformed-JSON degradations,
 and asserts the exact shape documented above — including that a genuinely
-zero or `false` value survives rather than collapsing to `null`. Because both
+zero or `false` value survives rather than collapsing to `null`, and that
+`gaps` passes through when given, is `null` when omitted, and is `null`
+rather than fatal when the caller hands it something unparseable. Because both
 pipelines call the same function, "both pipelines emit conforming records"
 reduces to one producer to check, rather than two.
+
+`test/stage-gaps.test.sh` covers the measurement itself, which
+`metering_fields` only carries: the percentile arithmetic against a known
+sample, and — against a stub that emits with controlled pauses — that a real
+run's gaps are measured from stream growth, that the silence after the last
+event is counted, and that a stage which emitted nothing reports `null`.

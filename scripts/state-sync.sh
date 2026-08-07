@@ -61,6 +61,8 @@ Environment:
   STATE_SYNC_LOCAL_RETAINED
                         override `state_local_cycles_retained` (tests use a
                         small value).
+  STATE_SYNC_STREAMS_RETAINED
+                        override `state_local_streams_retained` (likewise).
 EOF
 }
 
@@ -94,6 +96,7 @@ state_dir="$(expand_home "$(cfg '.state_dir')")"
 workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 cycles_retained="$(cfg '.cycles_retained // 200')"
 local_retained="${STATE_SYNC_LOCAL_RETAINED:-$(cfg '.state_local_cycles_retained // 1000')}"
+streams_retained="${STATE_SYNC_STREAMS_RETAINED:-$(cfg '.state_local_streams_retained // 50')}"
 
 node_name="${NODE_NAME:-$(hostname)}"
 node_name="${node_name//[^A-Za-z0-9._-]/-}"
@@ -121,11 +124,27 @@ peers_dir="$(fleet_peers_dir "$workspace_root")"
 #   cache            the registry (lib/image-drift.sh) — a peer's copy of it
 #                   would answer for a registry query nobody there ran, not
 #                   for that peer.
+#   the stage       `*.stream.jsonl` is a stage's whole event stream, every
+#   streams          message and every tool result (lib/stage-run.sh). It is
+#                   local forensics and, while the stage runs, its liveness
+#                   signal — neither of which is a fact about this node that
+#                   a peer needs. The size is what makes it a hard exclusion
+#                   rather than a preference: a stage's `.out` is one JSON
+#                   object, but its stream runs to megabytes, and the mirror
+#                   holds `cycles_retained` cycles across four branches with
+#                   the whole history in git. What a peer reads — the result
+#                   envelope — is published as `<stage>.out` exactly as
+#                   before.
 #   .git            the mirror's own repository, which lives at the same root.
 #
 # Everything else — log.jsonl, review-log.jsonl, cycles/, reviews/,
 # disabled.json, the cron logs — is the node's contribution to the fleet's
 # memory and is published.
+#
+# The stream exclusion has to be stated twice, once here and once in the
+# cycles filter file below, because the cycle directories are transferred by a
+# second rsync whose `--filter` rules these `--exclude`s do not reach. The
+# comment is here rather than there so the two do not drift.
 EXCLUDES=(
   --exclude=.git
   --exclude=lock.json
@@ -137,6 +156,7 @@ EXCLUDES=(
   --exclude=.dashboard-github.json
   --exclude=.dashboard-claims.json
   --exclude=.image-drift-cache.json
+  --exclude=*.stream.jsonl
   --exclude=/dashboard/
 )
 
@@ -196,6 +216,32 @@ prune_local() {
   return 0
 }
 
+# The stage event streams are bounded far more tightly than the records that
+# hold them, and separately from them, because they are a different order of
+# size: a cycle directory without its streams is a handful of kilobytes of
+# JSON, and one 47-turn Reviewer stream alone can be megabytes. Keeping
+# `state_local_cycles_retained` (1000) cycles' worth of those would trade the
+# node's whole disk for forensics nobody reads past the day of the incident,
+# so the streams go early and the records they belong to stay.
+#
+# Newest-first with a floor of 1, exactly as `prune_local`: the cycle running
+# right now must never lose the stream its own watchdog is reading.
+prune_streams() {
+  local dir="$1" retained="$2" doomed pruned=0
+  [[ -d "$dir" ]] || return 0
+  (( retained >= 1 )) || retained=1
+  while IFS= read -r doomed; do
+    [[ -n "$doomed" ]] || continue
+    while IFS= read -r -d '' f; do
+      rm -f -- "$f"
+      pruned=$(( pruned + 1 ))
+    done < <(find "${dir:?}/$doomed" -maxdepth 1 -name '*.stream.jsonl' -type f -print0 2>/dev/null)
+  done < <(find "$dir" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
+             | sort -r | tail -n "+$(( retained + 1 ))")
+  (( pruned > 0 )) && say "pruned $pruned stage stream(s) from $(basename "$dir"), keeping those of the newest $retained"
+  return 0
+}
+
 do_push() {
   require rsync
   require git
@@ -208,6 +254,8 @@ do_push() {
   # and the machine stays the longer record of the two.
   prune_local "$state_dir/cycles"  "$local_retained"
   prune_local "$state_dir/reviews" "$local_retained"
+  prune_streams "$state_dir/cycles"  "$streams_retained"
+  prune_streams "$state_dir/reviews" "$streams_retained"
 
   # Start from the branch's current tip when there is one — the amend below
   # keeps history a single rolling commit per node.
@@ -227,6 +275,11 @@ do_push() {
   filter_file="$(mktemp)"
   # shellcheck disable=SC2064  # expand the path now, while it is still set
   trap "rm -f '$filter_file'" RETURN
+  # First rule wins in an rsync filter, so the stage streams are excluded
+  # ahead of the per-cycle includes that would otherwise carry them. With
+  # `--delete-excluded` below, this also removes any stream a node published
+  # before this rule existed.
+  printf -- '- *.stream.jsonl\n' >> "$filter_file"
   while IFS= read -r c; do
     [[ -n "$c" ]] && printf -- '+ /%s/\n' "$c" >> "$filter_file"
   done < <(kept_cycles)

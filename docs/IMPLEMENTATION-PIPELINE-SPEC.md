@@ -551,6 +551,7 @@ and the schema must carry every one of them.
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
 | `cycles_retained` | `200` | Cycle directories kept in the replicated mirror — about eight days of hourly cycles. Bounds a repository that is force-pushed after every cycle. The node's own `state_dir` is bounded by `state_local_cycles_retained` instead. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's *own* `state_dir` keeps — about six weeks of hourly cycles; the same push that replicates prunes to it (requirement 2.5). Deliberately far above `cycles_retained`, so the local machine is always the longer record, with a floor of one protecting the cycle being recorded. `STATE_SYNC_LOCAL_RETAINED` overrides it for tests. |
+| `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`, requirement 4d) are kept; the push that replicates prunes to it (requirement 2.5). Far below `state_local_cycles_retained` because a stream is a different order of size from the record holding it — a cycle directory without them is kilobytes, one Reviewer stream megabytes — so streams go early and their records stay. Streams never reach the state repository. `STATE_SYNC_STREAMS_RETAINED` overrides it for tests. |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log` (requirement 2.6). `log.jsonl` and `review-log.jsonl` are never rotated regardless of size. `ROTATE_LOGS_RETAINED_BYTES` overrides it for tests. |
 | `log_generations` | `3` | Rotated generations of each log kept beside the live file (`<name>.1` … `<name>.<log_generations>`), floored at one. `ROTATE_LOGS_GENERATIONS` overrides it for tests. |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -980,13 +981,21 @@ runs unattended.
    **What replicates.** Everything under `state_dir` except the live locks
    (`lock.json`, `review-lock.json`), the dashboard's own machinery
    (`dashboard/`, `dashboard.log`, `dashboard-server.log`,
-   `.dashboard-github.json`, `.image-drift-cache.json`), and `state-sync.log`.
+   `.dashboard-github.json`, `.image-drift-cache.json`), `state-sync.log`,
+   and the stage event streams (`*.stream.jsonl`, requirement 4d).
    The exclusions are not tidiness: a copied `lock.json` is a lock no process
    holds — peers read logs, never locks; the
    dashboard is generated from the state beside it, so copying it would be
    copying a derivative of what is already being copied; a copied
    `.image-drift-cache.json` would answer for a registry query nobody on the
-   peer ran. `log.jsonl`,
+   peer ran. The streams are excluded on size as much as on relevance: what
+   a peer reads of a stage is its result envelope, which replicates as
+   `<stage>.out` exactly as before, while the stream beside it is every
+   message and every tool result — kilobytes against megabytes — and the
+   branch is a single rolling commit holding `cycles_retained` of them. The
+   exclusion covers both transfers, the general one and the cycle
+   directories' own filter, and deletes any stream a node published before
+   the rule existed. `log.jsonl`,
    `review-log.jsonl`, `cycles/`, `reviews/`, `disabled.json` and the cron logs
    do replicate — they are what makes a spare node warm rather than merely
    installed. Git stores no empty directories, so a cycle that stood down
@@ -1032,7 +1041,14 @@ runs unattended.
    `state_local_cycles_retained` each — a deliberately longer record than
    the branch's, so everything the branch wants is always still on disk and
    the machine remains the fuller history of the two, with a floor of one so
-   the cycle being recorded is always kept. A mirror-level `flock`
+   the cycle being recorded is always kept. The stage streams inside those
+   directories are bounded separately again, and far more tightly: the same
+   push deletes every `*.stream.jsonl` outside the newest
+   `state_local_streams_retained` directories, leaving the directories
+   themselves — and everything else in them — untouched. Two retentions
+   rather than one because the two are different orders of size: keeping six
+   weeks of cycle *records* costs megabytes, and keeping six weeks of the
+   streams inside them would cost tens of gigabytes. A mirror-level `flock`
    serialises the cron push against the end-of-cycle push.
 
    **Fetch.** Every node materialises every *other* node's branch, whole,
@@ -1573,8 +1589,8 @@ runs unattended.
    `coordinator_model`, `--dangerously-skip-permissions`, stage timeout),
    passing it the ordered repo list (each entry carrying its work sources and
    its pre-fetched `findings`) and the blocked-item extract from the shared
-   log. Capture its final message with Claude Code's JSON output format and
-   parse the work order from it.
+   log. Capture its final message from the stage's own transcript
+   (requirement 4d) and parse the work order from it.
 4a. **Per-installation prompt overrides.** Every stage prompt this Script
    assembles — the Co-Ordinator's here, the Implementor's (requirement 7), the
    Reviewer's (requirement 8), and the Enabler's (requirement 35) — is built by
@@ -1693,10 +1709,43 @@ runs unattended.
    rather than a pipe so the invocation stays a single process whose exit
    status is the stage's own; under `pipefail` a `printf | claude` would
    report printf's SIGPIPE as the stage's result whenever a stage exited
-   without draining its input. `review-cycle.sh` launches its stages the same
-   way (`docs/REVIEW-PIPELINE-SPEC.md`, R5.3): the two functions are one
-   mechanism, and the review pipeline's smaller prompt makes it the one that
-   would sit broken longest before anyone noticed.
+   without draining its input. `review-cycle.sh` launches its stages through
+   the same function (requirement 4d), so the review pipeline's smaller
+   prompt — the one that would sit broken longest before anyone noticed — is
+   covered by construction rather than by a second copy kept in step by hand.
+4d. **One stage launcher, and it streams.** Every headless `claude`
+   invocation either pipeline makes — the four stages of this document, the
+   usage-limit probe of requirement 1b, and the Reviewer-Agent of
+   `docs/REVIEW-PIPELINE-SPEC.md` R5.3 — goes through `run_claude_stage` in
+   `lib/stage-run.sh`: one implementation, sourced by both cycle scripts,
+   rather than a copy in each. It launches the invocation in its own process
+   group (`set -m`), so the stage timeout's kill reaches every descendant
+   (requirement 9c), and it runs the invocation under
+   `--output-format stream-json --verbose`. Each invocation therefore leaves
+   three files beside each other:
+   `<stage>.stream.jsonl` — every event the run emitted, one JSON object per
+   line, flushed as the run proceeds; `<stage>.out` — that stream's final
+   `result` event and nothing else; and `<stage>.out.stderr` — the
+   invocation's diagnostics, kept in a separate file so stray output can
+   never break the parse of the envelope.
+   The streaming form is chosen for *when* its output arrives, not for its
+   shape: `--output-format json` writes one object at the very end, so a
+   stage killed at its cap leaves an empty file and nothing whatever is known
+   about how far it had got, while a stream is a record of the run that
+   survives the kill and is readable while the run is still going. What lands
+   in `<stage>.out` is byte-for-byte the envelope the non-streaming form
+   produced, so every reader of a stage transcript — the result parsers, the
+   per-stage metering record (requirement 33a), limit detection (requirement
+   2.1), the dashboard's own rendering — reads exactly what it read before. A
+   stage that was killed, or that died before emitting a `result` event,
+   leaves `<stage>.out` empty, which is the same degradation those readers
+   already handle for a stage that never ran.
+   The streams are **local-only**: they are excluded from the state
+   replication in both directions and pruned to `state_local_streams_retained`
+   directories (requirement 2.5). A `.out` is one JSON object; a stream is
+   every message and every tool result, and the mirror holds `cycles_retained`
+   cycles per node in git history, so replicating them would trade a bounded
+   repository for an unbounded one.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -2897,7 +2946,7 @@ runs unattended.
 33a. **Metering.** Every `stage-end` event additionally carries the per-stage
     metering record: `model` (the model id passed to the invocation),
     `cost_usd`, `duration_ms`, `num_turns`, `is_error` (pulled from the
-    `claude --output-format json` envelope named in requirement 11 /
+    stage's `result` envelope named in requirements 11 and 4d /
     `docs/DASHBOARD-SPEC.md`), and `tokens` — an object with `input`,
     `output`, `cache_creation` and `cache_read`, summed across every model the
     invocation's own tree used (top-level plus any subagents), matching how
@@ -2913,6 +2962,23 @@ runs unattended.
     `stage` and `exit_code` — the fields requirement 33 above and requirement
     34 below key on — and the metering of a stage must never be able to do
     that.
+    The record additionally carries `gaps` — `{n, p50, p95, p99, max}` in
+    seconds, or `null` — the run's own **inter-event gap statistics**: how
+    long the invocation went between one piece of output and the next. This is
+    the one field not read from the envelope, because it cannot be: the
+    envelope records that the run did things, never when. `lib/stage-run.sh`
+    measures it by `stat`-ing the stage's event stream inside the poll loop
+    that already runs every two seconds while a stage is in flight, so the
+    unit of observation is bytes arriving rather than events parsed — the
+    contract is "the runner streams progress to a file; liveness is monotonic
+    growth of that file", which is a statement about running a stage rather
+    than about one CLI's output format. The stage emits nothing for this,
+    agrees no cadence, and can fake nothing. The first gap is the wait for the
+    run's first byte and the last is the silence from the final output to the
+    end of the stage — that one included deliberately, because a stage that
+    fell quiet and was killed has its longest silence at the end, and a sample
+    that dropped it would omit exactly the runs the measurement exists to
+    describe.
     `docs/METERING-SCHEMA.md` is the field-by-field contract: types, units,
     the per-cycle aggregation rule, and what future change is additive versus
     breaking.
@@ -3806,7 +3872,12 @@ What exists, and the requirements each part answers to:
    promise for the round after the first; and requirement 9's
    `pr_url_for_branch`, which names the pull request on a claimed branch when
    the stage that opened it named nothing; `HANDOFF_GH` substitutes a stub for
-   tests) and
+   tests),
+   `lib/stage-run.sh` (requirement 4d's `run_claude_stage`, the one stage
+   launcher both pipelines call, with `stage_stream_file` and
+   `stage_result_line` naming and reading the stream it writes, and
+   `stage_gap_stats` summarising the inter-event gaps it measures from that
+   stream for requirement 33a) and
    `lib/metering.sh`) holding every
    rule that more than one component computes — at minimum requirement 34's blocked
    semantics, requirement 35a's eligibility rule (the Script engages on it, the
@@ -4375,9 +4446,10 @@ pull request, run the ones the change touches and any it could regress.
    table` key canonicalises the same as one carrying it empty.
 1k. **A stage prompt reaches `claude` on stdin, at a size argv could not
    carry (requirement 4c).** `test/stage-prompt-delivery.test.sh` passes: for
-   `run_claude_stage` as lifted from `agent-cycle.sh` *and* from
-   `review-cycle.sh`, a 200000-byte prompt — comfortably past
-   `MAX_ARG_STRLEN` — exits 0, arrives on the stub's stdin whole, appears
+   `run_claude_stage` as sourced from `lib/stage-run.sh` — the one copy both
+   pipelines call, which the file asserts by finding the function in neither
+   cycle script — a 200000-byte prompt, comfortably past `MAX_ARG_STRLEN`,
+   exits 0, arrives on the stub's stdin whole, appears
    nowhere in its argv, and leaves the JSON envelope in `out_file` where the
    caller's parser looks for it; an ordinary short prompt is delivered byte
    for byte. The oversize prompt is sized to the kernel's constant rather
@@ -4385,6 +4457,44 @@ pull request, run the ones the change touches and any it could regress.
    is ever trimmed; the file first confirms the cap exists on the kernel it
    is running on, and says so and skips rather than passing vacuously if it
    does not.
+1k1. **A stage streams as it runs, and leaves the envelope its readers
+   expect (requirement 4d).** `test/stage-stream.test.sh` passes, against a
+   `claude` stub that emits stream-json a line at a time with a pause
+   between lines: the invocation is made with `--output-format stream-json
+   --verbose`; `<stage>.stream.jsonl` grows *while the stage is still
+   running*, which is the property the non-streaming form could not provide
+   and the one every later use of the stream rests on; every emitted event
+   survives in it; `<stage>.out` holds exactly the final `result` event, one
+   line, and `metering_fields` derives from it the same record it derives
+   from a bare `--output-format json` envelope carrying the same numbers; a
+   stream whose last line is torn — the shape a killed stage leaves — still
+   yields the earlier `result` event if it has one, and yields an empty
+   `.out`, not a corrupt one, if it does not; and a stage that emitted no
+   `result` event at all leaves `.out` existing and empty, which is what its
+   readers already treat as "no envelope". `test/state-sync.test.sh` passes:
+   a `*.stream.jsonl` written into a cycle directory reaches neither the
+   mirror nor the pushed branch while the `.out` beside it reaches both, one
+   already in the mirror from before the exclusion is deleted from it, and
+   `state_local_streams_retained` removes the streams of older cycle and
+   review directories while leaving those directories and every other file
+   in them in place.
+1k2. **A stage's inter-event gaps are measured while it runs (requirement
+   33a).** `test/stage-gaps.test.sh` passes: `stage_gap_stats` summarises a
+   known sample at the nearest rank — checked at the ranks where definitions
+   differ, not only in the middle — leaves one long silence among short ones
+   visible as `max` without moving `p50`, skips an unreadable observation
+   rather than failing the record, and reports `null` only for a sample with
+   nothing readable in it. Against a stub emitting with controlled pauses:
+   an eight-second silence is measured rather than averaged away, gaps are
+   counted per observed growth of the stream, the silence after the final
+   event is counted even though no event closed it, a stage that emitted
+   nothing at all still reports the one gap that was all of it, and the
+   stage's own envelope and exit status are unaffected by being measured.
+   Timing assertions bound from below, never exactly: a loaded machine makes
+   a silence look longer, never shorter. `test/metering.test.sh` passes:
+   `gaps` is carried through as given, is `null` when the caller supplies
+   none, and degrades to `null` — rather than failing the whole record —
+   when the caller supplies something unparseable.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to

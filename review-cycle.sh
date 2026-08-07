@@ -52,6 +52,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 . "$SCRIPT_DIR/lib/config-schema.sh"
 # shellcheck source=lib/metering.sh
 . "$SCRIPT_DIR/lib/metering.sh"
+# shellcheck source=lib/stage-run.sh
+. "$SCRIPT_DIR/lib/stage-run.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/role.sh
@@ -327,49 +329,13 @@ assert_in_workspace() {
   esac
 }
 
-# --- Run a headless claude invocation with a wall-clock timeout, killing its
-#     whole process group on timeout (identical mechanism to agent-cycle.sh). ---
-run_claude_stage() {
-  local stage="$1" timeout_sec="$2" model="$3" prompt="$4" out_file="$5" cwd="$6"
-  local pid waited=0 rc
-
-  # The prompt goes in on stdin, never as an argument, for the reason
-  # agent-cycle.sh's copy of this function sets out at length: Linux caps a
-  # single argv entry at 131072 bytes, and a stage prompt is the one input
-  # here that grows without bound. This pipeline's prompt is well short of
-  # that today, but the two functions are the same mechanism and drifting
-  # them apart would leave the smaller one waiting to fail the same way.
-  set -m
-  ( cd "$cwd" && claude -p --model "$model" --dangerously-skip-permissions --output-format json <<<"$prompt" ) \
-    >"$out_file" 2>"$out_file.stderr" &
-  pid=$!
-  set +m
-  # Advertised for the signal handler (R7a): the job's own process group is
-  # beyond any signal sent to ours, so a handler that does not know this pid
-  # cannot stop the model this run is paying for.
-  stage_pid="$pid"
-  stage_name="$stage"
-
-  while kill -0 "$pid" 2>/dev/null; do
-    if (( waited >= timeout_sec )); then
-      kill -TERM "-$pid" 2>/dev/null || true
-      sleep 5
-      kill -KILL "-$pid" 2>/dev/null || true
-      wait "$pid" 2>/dev/null || true
-      stage_pid=""
-      stage_name=""
-      return 124
-    fi
-    sleep 2
-    waited=$(( waited + 2 ))
-  done
-
-  wait "$pid"
-  rc=$?
-  stage_pid=""
-  stage_name=""
-  return "$rc"
-}
+# `run_claude_stage` — the stage launcher, its wall-clock cap and its
+# process-group kill — comes from lib/stage-run.sh, sourced at the top of this
+# script. It used to be a second copy of agent-cycle.sh's, kept in step by
+# hand; R7b is the requirement that there is now one of it. This pipeline's
+# prompt is far short of the argv cap that copy existed to dodge, which is
+# exactly why sharing matters: the smaller prompt is the one that would sit
+# broken longest before anyone noticed.
 
 log_event "review-start" "$(jq -nc --argjson once "$([[ $ONCE == 1 ]] && echo true || echo false)" \
   --argjson dry_run "$([[ $DRY_RUN == 1 ]] && echo true || echo false)" '{once: $once, dry_run: $dry_run}')"
@@ -742,7 +708,7 @@ $(jq . <<<"$reviewer_input")
     rc=$?
   fi
   log_event "review-stage-end" "$(jq -nc --arg r "$slug" --argjson rc "$rc" \
-    --argjson m "$(metering_fields "$review_model" "$out_file")" '{repo: $r, exit_code: $rc} + $m')"
+    --argjson m "$(metering_fields "$review_model" "$out_file" "$stage_gaps_json")" '{repo: $r, exit_code: $rc} + $m')"
   (( ONCE )) && dump_stage_output "$out_file"
 
   detect_and_log_limit_hit "$out_file" || true

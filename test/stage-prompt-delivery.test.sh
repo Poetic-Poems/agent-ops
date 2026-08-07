@@ -19,13 +19,15 @@
 #
 # The property under test is therefore *not* "the prompt is delivered" (which
 # the argv version also satisfied, for a year) but "the prompt is delivered at a
-# size the argv version could not carry". Both cycle scripts are covered: they
-# hold byte-identical copies of `run_claude_stage`, and the review pipeline's
-# smaller prompt makes it the one that would sit broken longest unnoticed.
+# size the argv version could not carry". Both cycle scripts are covered by one
+# check because since requirement 4d they call one `run_claude_stage`, in
+# `lib/stage-run.sh`; that they still do is asserted here rather than assumed,
+# since the review pipeline's smaller prompt makes it the one that would sit
+# broken longest unnoticed if a copy ever grew back.
 #
-# The function is lifted out of each script rather than restated here, so this
-# cannot pass against a copy the script has since moved on from; the extraction
-# asserts it found something for the same reason. `claude` is a stub on PATH
+# The function is sourced from the library rather than restated here, so this
+# cannot pass against an implementation the pipelines have since moved on from;
+# the source path is asserted for the same reason. `claude` is a stub on PATH
 # that records what it was given — no network, no model, no cost.
 #
 # Run directly: ./test/stage-prompt-delivery.test.sh — exit 0 iff all passed.
@@ -100,24 +102,30 @@ if /bin/true "$over_cap" 2>/dev/null; then
   exit 0
 fi
 
-# --- One script's copy of the function -------------------------------------------
-check_script() {
-  local script="$1" name="${1##*/}"
-  local fn capture rc seen_bytes argv_seen
+# --- The one copy of the function -------------------------------------------------
+# Sourced from lib/stage-run.sh rather than lifted out of a cycle script,
+# because since requirement 4d there is one implementation and both pipelines
+# call it. That is asserted below rather than assumed: a script that grew its
+# own copy back would pass every delivery assertion here on a function this
+# file never looked at.
+LIB="$SCRIPT_DIR/lib/stage-run.sh"
+if [[ ! -f "$LIB" ]] || ! grep -q '^run_claude_stage() {$' "$LIB"; then
+  printf 'FAIL - run_claude_stage could not be found in lib/stage-run.sh (renamed or moved?)\n'
+  exit 1
+fi
 
-  fn="$(awk '
-    /^run_claude_stage\(\) \{$/ { on = 1 }
-    on                          { print }
-    on && /^\}$/                { exit }
-  ' "$script")"
-
-  if [[ -z "$fn" || "$fn" != *"claude -p"* ]]; then
-    printf 'FAIL - run_claude_stage could not be found in %s (renamed or moved?)\n' "$name"
+for script in agent-cycle.sh review-cycle.sh; do
+  if grep -q '^run_claude_stage() {$' "$SCRIPT_DIR/$script"; then
+    printf 'FAIL - %s defines its own run_claude_stage again; there is meant to be one (requirement 4d)\n' "$script"
     failures=$(( failures + 1 ))
-    return
+  else
+    printf 'ok   - %s calls the shared launcher rather than a copy\n' "$script"
   fi
+done
 
-  capture="$tmp_dir/${name%.sh}"
+check_delivery() {
+  local capture rc seen_bytes argv_seen
+  capture="$tmp_dir/delivery"
   mkdir -p "$capture"
 
   # Exported out here rather than inside the subshell: the subshell inherits it
@@ -125,35 +133,37 @@ check_script() {
   # to flag as lost (SC2030/SC2031).
   export STUB_CAPTURE="$capture"
 
-  # `set -euo pipefail` matches the shell both scripts run the function under —
-  # the pipefail half is load-bearing here, since a `printf | claude` delivery
-  # would report printf's SIGPIPE (141) rather than the stage's own status.
+  # `set -euo pipefail` matches the shell both scripts source the library
+  # under — the pipefail half is load-bearing here, since a `printf | claude`
+  # delivery would report printf's SIGPIPE (141) rather than the stage's own
+  # status.
   (
     set -euo pipefail
-    eval "$fn"
+    # shellcheck source=lib/stage-run.sh
+    . "$LIB"
     run_claude_stage test-stage 60 test-model "$over_cap" "$capture/out" "$capture"
   )
   rc=$?
 
-  assert_eq "$name: a prompt past the argv cap runs to completion" 0 "$rc"
+  assert_eq "a prompt past the argv cap runs to completion" 0 "$rc"
 
   seen_bytes=0
   [[ -f "$capture/prompt.seen" ]] && seen_bytes="$(wc -c < "$capture/prompt.seen")"
   # The here-string adds the trailing newline every text stream ends with.
-  assert_eq "$name: and arrives on stdin whole" \
+  assert_eq "and arrives on stdin whole" \
     "$(( ${#over_cap} + 1 ))" "$seen_bytes"
 
   # Asserted against the flags the stub really saw, so this cannot pass by the
   # stub never having run — which is exactly what the argv version did.
   argv_seen="$(cat "$capture/argv.seen" 2>/dev/null)"
-  assert_contains "$name: the stage was launched with its model" \
+  assert_contains "the stage was launched with its model" \
     "--model" "$argv_seen"
-  assert_not_contains "$name: with no part of the prompt in argv" \
+  assert_not_contains "with no part of the prompt in argv" \
     "xxxxxxxxxx" "$argv_seen"
 
   # The envelope still lands where the caller's parser looks for it: delivery
   # changed, capture did not.
-  assert_eq "$name: and the JSON envelope is captured as before" \
+  assert_eq "and the JSON envelope is captured as before" \
     '{"type":"result","is_error":false,"result":"ok"}' \
     "$(cat "$capture/out" 2>/dev/null)"
 
@@ -162,16 +172,16 @@ check_script() {
   rm -f "$capture/prompt.seen"
   (
     set -euo pipefail
-    eval "$fn"
+    # shellcheck source=lib/stage-run.sh
+    . "$LIB"
     run_claude_stage test-stage 60 test-model "$small" "$capture/out" "$capture"
   )
-  assert_eq "$name: an ordinary prompt is delivered byte for byte" \
+  assert_eq "an ordinary prompt is delivered byte for byte" \
     "$small" "$(cat "$capture/prompt.seen" 2>/dev/null)"
 }
 
 printf -- '--- the cap this guards: %d bytes ---\n' "$MAX_ARG_STRLEN"
-check_script "$SCRIPT_DIR/agent-cycle.sh"
-check_script "$SCRIPT_DIR/review-cycle.sh"
+check_delivery
 
 printf '\n'
 if (( failures )); then

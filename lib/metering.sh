@@ -4,15 +4,25 @@
 # requirement 33a of docs/IMPLEMENTATION-PIPELINE-SPEC.md).
 #
 # Sourced by agent-cycle.sh and review-cycle.sh so both pipelines derive the
-# same record from a stage's own `claude --output-format json` envelope,
-# rather than each growing its own copy of the field list.
+# same record from a stage's own JSON envelope — the `result` event
+# lib/stage-run.sh leaves in `<stage>.out` — rather than each growing its own
+# copy of the field list.
 
-# metering_fields MODEL OUT_FILE
+# metering_fields MODEL OUT_FILE [GAPS_JSON]
 # Prints the documented per-stage metering object: model, cost_usd,
-# duration_ms, num_turns, is_error, and tokens{input,output,cache_creation,
-# cache_read}. MODEL is the id passed to the invocation (not re-derived from
-# the envelope, which may be silent or ambiguous about it); OUT_FILE is the
-# stage's own `.out` transcript.
+# duration_ms, num_turns, is_error, tokens{input,output,cache_creation,
+# cache_read}, and gaps. MODEL is the id passed to the invocation (not
+# re-derived from the envelope, which may be silent or ambiguous about it);
+# OUT_FILE is the stage's own `.out` transcript.
+#
+# GAPS_JSON is the one field that does not come from the envelope, because it
+# cannot: it is what the Script observed of the run's own event stream while
+# the run was happening (`lib/stage-run.sh`'s `stage_gaps_json`), and nothing
+# the run writes at the end records it. It is passed in rather than read here
+# so this function stays a pure derivation from a file, testable against a
+# canned envelope; omitted or unparseable, it degrades to `null` like every
+# other field, so a caller that has no gaps to report — or an envelope
+# examined long after the fact — still yields a conforming record.
 #
 # tokens sums the envelope's `modelUsage` map across every model entry rather
 # than reading its top-level `usage` object: `usage` excludes subagent
@@ -33,8 +43,12 @@
 # after the call: whatever jq makes of the envelope, this function prints one
 # valid object.
 metering_fields() {
-  local model="$1" out_file="$2" record
-  record="$(jq -nc --arg model "$model" \
+  local model="$1" out_file="$2" gaps="${3:-null}" record
+  # Validated here rather than trusted: an unparseable third argument fed to
+  # `--argjson` would fail the whole jq call, which is the one failure this
+  # function is written to make impossible.
+  jq -e . <<<"$gaps" >/dev/null 2>&1 || gaps="null"
+  record="$(jq -nc --arg model "$model" --argjson gaps "$gaps" \
     --rawfile raw <(cat "$out_file" 2>/dev/null || printf '{}') '
     ($raw | try fromjson catch {}) as $raw_e
     | (if ($raw_e | type) == "object" then $raw_e else {} end) as $e
@@ -64,11 +78,18 @@ metering_fields() {
               cache_read: ([$used[] | (.cacheReadInputTokens // 0)] | add)
             }
             end
-        )
+        ),
+        # Straight through. Unlike every field above it, this one is an
+        # observation the Script made while the run was happening rather than
+        # a reading of the envelope, so there is nothing here to derive or to
+        # degrade. (No apostrophes in this comment, and none anywhere else in
+        # this jq program: the whole thing is one single-quoted shell word,
+        # and an apostrophe would end it.)
+        gaps: $gaps
       }' 2>/dev/null)" || record=""
   if [[ -z "$record" ]]; then
     record="$(jq -nc --arg model "$model" \
-      '{model: $model, cost_usd: null, duration_ms: null, num_turns: null, is_error: null, tokens: null}')"
+      '{model: $model, cost_usd: null, duration_ms: null, num_turns: null, is_error: null, tokens: null, gaps: null}')"
   fi
   printf '%s\n' "$record"
 }

@@ -201,6 +201,7 @@ Keys:
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
 | `cycles_retained` | `200` | Cycle directories kept in the replicated copy (~8 days of hourly cycles). Your own `state_dir` is not pruned. |
 | `state_local_cycles_retained` | `1000` | Cycle and review directories the node's own `state_dir` keeps; the same push that replicates prunes to it. Deliberately far above `cycles_retained`, so the local machine is always the longer record. |
+| `state_local_streams_retained` | `50` | Cycle and review directories whose stage event streams (`<stage>.stream.jsonl`) are kept. Streams are large and local-only — never replicated — so they are bounded well below `state_local_cycles_retained`; the records themselves are untouched. |
 | `log_retained_bytes` | `2000000` | Size at which `scripts/rotate-logs.sh` rotates `dashboard.log`, `state-sync.log`, `cron.log` and `review-cron.log`. `log.jsonl` and `review-log.jsonl` are never rotated. |
 | `log_generations` | `3` | Rotated generations kept beside each live log (`<name>.1` … `<name>.<log_generations>`). |
 | `coordinator_model` | `claude-haiku-4-5-20251001` | Selection is cheap triage. |
@@ -1016,9 +1017,17 @@ projection of state the log already holds, not a second way to change it.
 ```bash
 ls -la ~/.local/state/poetic-agents/cycles/
 ```
-Each cycle gets a directory (`<cycle-id>/`) with one `<stage>.out` (the
-`claude --output-format json` envelope on stdout — this is what gets parsed)
-and one `<stage>.out.stderr` (diagnostics) per stage that ran. When a cycle
+Each cycle gets a directory (`<cycle-id>/`) with three files per stage that
+ran: `<stage>.out` (the run's final JSON envelope — this is what gets
+parsed), `<stage>.out.stderr` (diagnostics), and `<stage>.stream.jsonl`
+(every event the run emitted, one JSON object per line, written as it
+happened). The stream is the one to read when a stage did not finish: the
+envelope is written only at the very end, so a stage killed at its timeout
+leaves an empty `.out` and a stream showing exactly how far it had got.
+Streams stay on the node that produced them — they are never replicated to
+the state repository — and are pruned to the newest
+`state_local_streams_retained` cycles, well ahead of the cycle directories
+themselves. When a cycle
 pre-fetches findings, that directory also holds `findings-<owner>_<repo>.json`
 (the normalised Dependabot + code-scanning alerts the Co-Ordinator was given).
 
