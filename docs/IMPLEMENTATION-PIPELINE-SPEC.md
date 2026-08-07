@@ -5059,12 +5059,12 @@ pull request, run the ones the change touches and any it could regress.
     delimited, the latter's content free to carry a literal backtick) or a
     link, each covered by its own fixture note — with its full text
     reproduced in the matching Extended notes subsection, including for a
-    dotted (`schedule.*`-style) key; a
-    document with two Extended notes headings that would slug the same is
-    refused, and so is a document missing either half of a
-    `config-table:notes` marker pair. A note that is an array of blocks
-    (#220) — two paragraph strings; a paragraph, a `list` block and a
-    paragraph; a paragraph, a `code` block and a paragraph, each over the
+    dotted (`schedule.*`-style) key; a document with two Extended notes
+    headings that would slug the same is refused, and so is a document
+    missing either half of a `config-table:notes` marker pair. A note that
+    is an array of blocks (#220) — two paragraph strings; a paragraph, a
+    `list` block and a paragraph; a paragraph, a `code` block and a
+    paragraph, each over the
     cap — flattens to one space-joined table-cell line (the list's items
     comma-joined, the code's newlines turned to spaces and backtick-wrapped)
     and, separately, renders as real block Markdown in the Extended notes
