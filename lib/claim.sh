@@ -32,7 +32,7 @@
 #   claim.sh release  file   <target-slug> <key>      # registry only
 #   claim.sh count    <target-slug>                   # live registry entries
 #   claim.sh claims   <target-slug>                   # registry entries younger than claim_ttl_hours,
-#                                                      # as {item, kind, age_hours} (both shapes)
+#                                                      # as {item, kind, age_hours, pr_number?} (both shapes)
 #   claim.sh branches <target-slug>                   # live td/*, <branch_prefix>* branch names
 #   claim.sh gc                                       # sweep entries older than claim_ttl_hours
 #
@@ -46,11 +46,20 @@
 # it can simply come up short on this once.
 #
 # Environment:
-#   CLAIM_GH      override `gh` (tests stub it).
-#   CLAIM_NODE    this node's name, recorded in the registry entry.
-#   CLAIM_CYCLE   the claiming cycle's id, recorded in the registry entry.
-#   CLAIM_ITEM    the work item, recorded in the registry entry.
-#   CLAIM_SOURCE  the work source, recorded in the registry entry.
+#   CLAIM_GH         override `gh` (tests stub it).
+#   CLAIM_NODE       this node's name, recorded in the registry entry.
+#   CLAIM_CYCLE      the claiming cycle's id, recorded in the registry entry.
+#   CLAIM_ITEM       the work item, recorded in the registry entry.
+#   CLAIM_SOURCE     the work source, recorded in the registry entry.
+#   CLAIM_PR_NUMBER  the pull request this claim targets, when it targets one at
+#                    all (issue #238): recorded in the registry entry as
+#                    `pr_number` and surfaced by `claims`, so a file claim keyed
+#                    `pr-<number>` — the second claim `agent-cycle.sh` takes
+#                    alongside the item claim for the three finishing sources,
+#                    the one that actually excludes a peer working the same PR
+#                    under a different item ref — carries the number a reader
+#                    can act on. Omitted (not recorded as `""`/`0`) when unset,
+#                    so an ordinary branch claim's entry is unchanged.
 #
 # When `state_repo` is unset in config.json this is a single-node operation:
 # file claims are vacuously won, the registry is skipped, and branch claims
@@ -107,9 +116,11 @@ registry_put() {  # <target-slug> <key> <kind> <branch> <sha>
     --arg node "${CLAIM_NODE:-$(hostname)}" --arg cycle "${CLAIM_CYCLE:-}" \
     --arg repo "$1" --arg key "$2" --arg kind "$3" --arg branch "$4" --arg sha "$5" \
     --arg item "${CLAIM_ITEM:-}" --arg source "${CLAIM_SOURCE:-}" \
+    --arg pr_number "${CLAIM_PR_NUMBER:-}" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{node: $node, cycle: $cycle, repo: $repo, key: $key, kind: $kind,
-      branch: $branch, sha: $sha, item: $item, source: $source, ts: $ts}')"
+      branch: $branch, sha: $sha, item: $item, source: $source, ts: $ts}
+     + (if $pr_number == "" then {} else {pr_number: ($pr_number | tonumber)} end)')"
   payload="$(printf '%s\n' "$body" | base64 -w0)"
   "$GH" api -X PUT "repos/$state_repo/contents/$(registry_path "$1" "$2")" \
     -f "message=claim: ${CLAIM_NODE:-?} $2" -f "content=$payload" >/dev/null 2>&1 || true
@@ -162,9 +173,11 @@ do_claim_file() {  # <target-slug> <key>
     --arg node "${CLAIM_NODE:-$(hostname)}" --arg cycle "${CLAIM_CYCLE:-}" \
     --arg repo "$slug" --arg key "$key" \
     --arg item "${CLAIM_ITEM:-}" --arg source "${CLAIM_SOURCE:-}" \
+    --arg pr_number "${CLAIM_PR_NUMBER:-}" \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     '{node: $node, cycle: $cycle, repo: $repo, key: $key, kind: "file",
-      branch: "", sha: "", item: $item, source: $source, ts: $ts}')"
+      branch: "", sha: "", item: $item, source: $source, ts: $ts}
+     + (if $pr_number == "" then {} else {pr_number: ($pr_number | tonumber)} end)')"
   payload="$(printf '%s\n' "$body" | base64 -w0)"
   if ! "$GH" api -X PUT "repos/$state_repo/contents/$path" \
         -f "message=claim: ${CLAIM_NODE:-?} $key" -f "content=$payload" >/dev/null 2>&1; then
@@ -216,8 +229,8 @@ do_count() {  # <target-slug> -> number of live registry entries
     --jq '[.[] | select(.type == "file")] | length' 2>/dev/null || echo 0
 }
 
-do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours} younger than claim_ttl_hours
-  local slug="$1" now_epoch cutoff files f key entry ts_epoch item kind age_hours out
+do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours, pr_number?} younger than claim_ttl_hours
+  local slug="$1" now_epoch cutoff files f key entry ts_epoch item kind pr_number age_hours out
   out='[]'
   [[ -n "$state_repo" ]] || { printf '%s\n' "$out"; return 0; }
   now_epoch="$(date +%s)"
@@ -234,9 +247,11 @@ do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours} younger 
     item="$(jq -r '.item // ""' <<<"$entry")"
     [[ -n "$item" ]] || continue
     kind="$(jq -r '.kind // "file"' <<<"$entry")"
+    pr_number="$(jq -r '.pr_number // empty' <<<"$entry")"
     age_hours=$(( (now_epoch - ts_epoch) / 3600 ))
-    out="$(jq -c --arg i "$item" --arg k "$kind" --argjson a "$age_hours" \
-      '. + [{item: $i, kind: $k, age_hours: $a}]' <<<"$out" 2>/dev/null || printf '%s' "$out")"
+    out="$(jq -c --arg i "$item" --arg k "$kind" --argjson a "$age_hours" --arg pr "$pr_number" \
+      '. + [{item: $i, kind: $k, age_hours: $a} + (if $pr == "" then {} else {pr_number: ($pr | tonumber)} end)]' \
+      <<<"$out" 2>/dev/null || printf '%s' "$out")"
   done <<<"$files"
   printf '%s\n' "$out"
 }

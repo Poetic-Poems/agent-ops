@@ -664,6 +664,11 @@ log_attempt_failed() {
 claim_active=0
 claim_kind=""
 claim_key=""
+# The second, PR-keyed file claim (issue #238) a finishing-source win also
+# holds — empty for every other source, and for a finishing source whose
+# candidate carried no `pr_number` to key it on. Always a `file` claim
+# (there is no PR-keyed branch), so its release never touches a ref.
+claim_pr_key=""
 
 # Zero means unbounded (GNU timeout treats a duration of 0 as "no timeout"),
 # which is every ordinary release. The signal handler (requirement 9c) sets a
@@ -680,6 +685,13 @@ release_claim() {  # release_claim have-pr|no-pr
       >>"$cycle_dir/claim.log" 2>&1 || true
   else
     timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release "$claim_kind" "$selected_repo" "$claim_key" \
+      >>"$cycle_dir/claim.log" 2>&1 || true
+  fi
+  # The PR-keyed claim is always a registry-only file claim, so "have-pr" and
+  # "no-pr" release it identically — the PR that "have-pr" is keeping is the
+  # item-keyed branch/file above, not this bookkeeping entry.
+  if [[ -n "$claim_pr_key" ]]; then
+    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_pr_key" \
       >>"$cycle_dir/claim.log" 2>&1 || true
   fi
   claim_active=0
@@ -716,7 +728,15 @@ claim_branch_for() {  # <source> <item>
 # an issue number, an alert ref, a register-hygiene or project-review ref —
 # none of which contain a character claim_branch_for's sanitiser would have
 # touched, so there is nothing lossy to recover from in practice.
-gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours}
+#
+# `pr_number` (issue #238) rides along wherever the registry knows one — a
+# finishing-source claim's item-keyed entry and its PR-keyed sibling both
+# record it, so it survives the dedup below regardless of which of the two
+# entries `group_by` happens to read it from. Omitted, not `null`, when
+# nothing in the group carries one: an ordinary tech-debt or issue claim
+# targets no PR at all, and the field's *absence* is what the repo-loop's
+# PR-level exclusion (below) and requirement 16's exclusion 3 test for.
+gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours, pr_number?}
   local slug="$1" safe registry_out branches_out
   safe="${slug//\//_}"
   registry_out="$("$SCRIPT_DIR/lib/claim.sh" claims "$slug" 2>"$cycle_dir/claims-$safe.err" || true)"
@@ -724,17 +744,40 @@ gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours}
   branches_out="$("$SCRIPT_DIR/lib/claim.sh" branches "$slug" 2>"$cycle_dir/claim-branches-$safe.err" || true)"
   jq -e 'type == "array"' <<<"$branches_out" >/dev/null 2>&1 || branches_out='[]'
   jq -c -n --arg tp 'td/' --arg ap "$branch_prefix" --argjson reg "$registry_out" --argjson br "$branches_out" '
-    ( [ $reg[] | {item, age_hours} ] ) as $from_registry
+    ( [ $reg[] | {item, age_hours, pr_number: (.pr_number // null)} ] ) as $from_registry
     | ( [ $br[]
           | (if startswith($tp) then .[($tp | length):]
              elif ($ap != "" and startswith($ap)) then .[($ap | length):]
              else empty end)
           | select(. != "")
-          | {item: ., age_hours: null} ] ) as $from_branches
+          | {item: ., age_hours: null, pr_number: null} ] ) as $from_branches
     | ($from_registry + $from_branches)
     | group_by(.item)
-    | map({item: .[0].item, age_hours: (([.[].age_hours | select(. != null)] | first) // null)})
+    | map(
+        (.[0].item) as $item
+        | (([.[].age_hours | select(. != null)] | first) // null) as $age
+        | (([.[].pr_number | select(. != null)] | first) // null) as $pr
+        | {item: $item, age_hours: $age} + (if $pr == null then {} else {pr_number: $pr} end)
+      )
   ' 2>/dev/null || echo '[]'
+}
+
+# Requirement 3p/issue #238: drop any of a finishing source's own candidates
+# whose `pr_number` is one a peer already holds a claim on — under whatever
+# item ref that peer claimed it, which need not be (and after a fresh review
+# round or a moved head, usually isn't) this cycle's own ref for the same PR.
+# This is what makes the Co-Ordinator's exclusion deterministic code instead of
+# a comparison it has to remember to make per candidate: a PR already excluded
+# here never reaches its runtime input, so there is nothing left for it to
+# reason past. Malformed input degrades to passing the array through
+# unfiltered — this is a visibility layer over the atomic PR-level claim taken
+# in the selection loop below, never itself the exclusion's hard gate.
+exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
+  local candidates="$1" claimed_prs="${2:-[]}"
+  jq -e 'type == "array"' <<<"$claimed_prs" >/dev/null 2>&1 || claimed_prs='[]'
+  jq -c --argjson claimed "$claimed_prs" \
+    '[.[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
+    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
 }
 
 # Requirement 34c: an item whose premise is false is void, not blocked. It goes
@@ -2298,6 +2341,19 @@ done < <(jq -r '.[].slug' <<<"$repos_json")
 
 while IFS=$'\t' read -r _ slug default_branch; do
   sources="$(jq -c --arg s "$slug" '.[] | select(.slug == $s) | .sources' <<<"$repos_json")"
+  # Requirement 3o, gathered here — ahead of the three finishing sources below,
+  # not after them as before — so their own candidate arrays can be filtered by
+  # it: unconditional, regardless of `sources`, because any starting source's
+  # item can be claimed.
+  repo_claimed_json="$(gather_claimed "$slug")"
+  claimed_json="$(jq -c --arg r "$slug" --argjson items "$repo_claimed_json" \
+    '. + ($items | map({repo: $r} + .))' <<<"$claimed_json")"
+  # Requirement 3p/issue #238: the PR numbers a peer already holds a claim on,
+  # for this repo. Filtered into the three finishing sources' own arrays below —
+  # deterministic code, not something the Co-Ordinator is asked to notice and
+  # apply itself, which is exactly the step a Co-Ordinator run "saw" a peer's
+  # claim on PR #205 and reasoned past because the item ref didn't match.
+  claimed_pr_numbers_json="$(jq -c '[.[] | select(has("pr_number")) | .pr_number]' <<<"$repo_claimed_json")"
   # Pre-fetch security/code-quality findings only when this repo lists either
   # source, so a repo that opts out of them costs no gh calls.
   findings="[]"
@@ -2306,15 +2362,15 @@ while IFS=$'\t' read -r _ slug default_branch; do
   fi
   review_feedback="[]"
   if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
-    review_feedback="$(gather_review_feedback "$slug")"
+    review_feedback="$(exclude_claimed_prs "$(gather_review_feedback "$slug")" "$claimed_pr_numbers_json")"
   fi
   abandoned_drafts="[]"
   if jq -e 'any(.[]; . == "abandoned-drafts")' <<<"$sources" >/dev/null 2>&1; then
-    abandoned_drafts="$(gather_abandoned_drafts "$slug")"
+    abandoned_drafts="$(exclude_claimed_prs "$(gather_abandoned_drafts "$slug")" "$claimed_pr_numbers_json")"
   fi
   merge_conflicts="[]"
   if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
-    merge_conflicts="$(gather_merge_conflicts "$slug")"
+    merge_conflicts="$(exclude_claimed_prs "$(gather_merge_conflicts "$slug")" "$claimed_pr_numbers_json")"
   fi
   register_hygiene="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
@@ -2363,12 +2419,6 @@ while IFS=$'\t' read -r _ slug default_branch; do
     hand_flagged_refinements_json="$(jq -c --argjson r "$(gather_hand_flagged_refinements "$slug")" '. + $r' \
       <<<"$hand_flagged_refinements_json")"
   fi
-  # Requirement 3o, gathered here for the repo loop's one pass but a top-level
-  # array in the Co-Ordinator's input (like `blocked` and `void`), never
-  # folded into `entry`: unconditional, regardless of `sources`, because any
-  # starting source's item can be claimed.
-  claimed_json="$(jq -c --arg r "$slug" --argjson items "$(gather_claimed "$slug")" \
-    '. + ($items | map({repo: $r} + .))' <<<"$claimed_json")"
 done < <(repo_order_by_effective_age "$repo_order_now" "$repos_json" < "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
 
@@ -2562,6 +2612,46 @@ open_issues_json="$(jq -c '[.[] | select(.ok == true)
 enabler_eligible_json="$(enabler_eligible_items "$union_log" \
   "$enabler_after_coordinator_cycles" "$enabler_recheck_hours" "$open_issues_json" \
   "" "$refinement_after_coordinator_cycles")"
+
+# Issue #238's third acceptance: a blocked `merge-conflicts`/`abandoned-drafts`
+# item's ref is scoped to the head SHA it was detected at (requirements 3e,
+# 3g) precisely so a later push mints a fresh ref that no old block covers —
+# but the old ref itself is never cleared, only superseded, so without this
+# filter it would sit `enabler_eligible` forever, costing a full engagement
+# every time its recheck clock came round only to be voided as stale (as
+# happened to `pr-205-conflict-305ca060016d`, claimed and voided three minutes
+# later). This cycle's own fresh `merge_conflicts`/`abandoned_drafts` arrays —
+# already gathered into `ordered_repos_json` above — are the current truth for
+# every PR still in either state; a SHA-scoped ref absent from them has been
+# superseded (a newer push) or resolved outright, either way stale. Only refs
+# shaped `pr-<n>-conflict-<sha>`/`pr-<n>-abandoned-<sha>` are tested — every
+# other blocked item kind (a tech-debt id, an issue number, a review-feedback
+# round) has no such re-detectable "current" state to compare against, and
+# `test` on a plain id or number simply never matches the pattern. A jq
+# failure leaves the set unfiltered: this is a cost saving, never the
+# correctness gate (the Enabler still voids a stale item it does reach).
+live_pr_refs_json="$(jq -c \
+  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
+  <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+# `as $repo`/`as $item` before piping into `$live`: `|` rebinds `.` to its
+# right-hand side for everything downstream, `$live` included, so reading
+# `.repo`/`.item` *after* `$live |` would read them off the live-refs array
+# instead of off the eligible entry — jq has no other way to hold onto the
+# outer `.` across a nested pipe.
+stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
+  [ .[] | (.repo // "") as $repo | (.item // "") as $item
+        | select(($item | test("^pr-[0-9]+-(conflict|abandoned)-[0-9a-f]+$"))
+                 and (($live | index($repo + "#" + $item)) == null)) ]
+  ' <<<"$enabler_eligible_json" 2>/dev/null || echo '[]')"
+if [[ "$(jq 'length' <<<"$stale_enabler_refs_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  log_event "enabler-stale-refs-skipped" "$(jq -c '[.[] | {repo, item}]' <<<"$stale_enabler_refs_json")"
+  enabler_eligible_json="$(jq -c --argjson stale "$stale_enabler_refs_json" '
+    ($stale | map((.repo // "") + "#" + (.item // ""))) as $staleset
+    | [ .[] | (.repo // "") as $repo | (.item // "") as $item
+            | select(($staleset | index($repo + "#" + $item)) == null) ]
+    ' <<<"$enabler_eligible_json" 2>/dev/null || printf '%s' "$enabler_eligible_json")"
+fi
+
 # Past this line the exit trap may engage the Enabler: every input it needs now
 # exists, so `maybe_run_enabler`'s own guards are all that stand between this
 # cycle and an engagement. Before it, an early exit could not have one.
@@ -2858,6 +2948,8 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
   claim_attempts=$(( claim_attempts + 1 ))
   claim_rc=0
+  pr_claim_lost=0
+  c_pr_key=""
   if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" || "$c_source" == "merge-conflicts" ]]; then
     # No new branch to create — the PR already exists (a human's review round for
     # review-feedback, this system's own stalled draft for abandoned-drafts, a
@@ -2866,9 +2958,34 @@ for (( ci = 0; ci < n_cand; ci++ )); do
     # would 422 against the branch already there.
     claim_kind="file"; claim_key="$c_item"
     c_branch="$(jq -r '.branch // ""' <<<"$cand")"
+    c_pr_number="$(jq -r '.pr_number // empty' <<<"$cand")"
     CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
+      CLAIM_PR_NUMBER="$c_pr_number" \
       "$SCRIPT_DIR/lib/claim.sh" claim file "$c_repo" "$c_item" \
       >>"$cycle_dir/claim.log" 2>&1 || claim_rc=$?
+    if (( claim_rc == 0 )) && [[ -n "$c_pr_number" ]]; then
+      # Issue #238: the item claim just won is scoped to this round/head SHA
+      # (requirements 3c/3e/3g), so it excludes nothing about a peer working the
+      # *same PR* under a different item ref — which is exactly how PR #205 was
+      # worked by three nodes at once. A second, PR-keyed file claim taken here,
+      # alongside it, is what actually excludes fleet-wide: GitHub arbitrates it
+      # the same create-only way. Losing it means a peer holds this PR already
+      # (under whatever ref won there); nothing was pushed under the item claim
+      # yet, so release it and fall through to the next candidate exactly as a
+      # lost item claim would.
+      c_pr_key="pr-${c_pr_number}"
+      pr_claim_rc=0
+      CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
+        CLAIM_PR_NUMBER="$c_pr_number" \
+        "$SCRIPT_DIR/lib/claim.sh" claim file "$c_repo" "$c_pr_key" \
+        >>"$cycle_dir/claim.log" 2>&1 || pr_claim_rc=$?
+      if (( pr_claim_rc != 0 )); then
+        timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$c_repo" "$c_item" \
+          >>"$cycle_dir/claim.log" 2>&1 || true
+        claim_rc=3
+        pr_claim_lost=1
+      fi
+    fi
   else
     c_branch="$(claim_branch_for "$c_source" "$c_item")"
     claim_kind="branch"; claim_key="$c_branch"
@@ -2878,6 +2995,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   fi
   if (( claim_rc == 0 )); then
     claim_active=1
+    claim_pr_key="$c_pr_key"
     claimed_json="$(jq -c --arg b "$c_branch" '. + {branch: $b}' <<<"$cand")"
     break
   fi
@@ -2885,15 +3003,19 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # by this node) — 1 = GitHub was unreachable (fail-closed: this node could
   # not have pushed the work either, but no work is being done by anyone).
   # Opposite operational conditions, so `cause` tells them apart instead of
-  # the event wearing one reason for both.
+  # the event wearing one reason for both. `pr-held` is the same healthy
+  # contention as `held`, distinguished only so a reader can tell the two
+  # claims apart: this candidate's own item claim won, but a peer already
+  # holds the PR it targets under a different item ref.
   case "$claim_rc" in
     3) claim_cause="held" ;;
     1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
     *) claim_cause="$claim_rc" ;;
   esac
+  (( pr_claim_lost )) && claim_cause="pr-held"
   log_event "claim-lost" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg b "$c_branch" \
-    --argjson rc "$claim_rc" --arg cause "$claim_cause" \
-    '{repo: $r, item: $i, branch: $b, rc: $rc, cause: $cause}')"
+    --argjson rc "$claim_rc" --arg cause "$claim_cause" --arg pr "$c_pr_key" \
+    '{repo: $r, item: $i, branch: $b, rc: $rc, cause: $cause} + (if $pr == "" then {} else {pr_claim_key: $pr} end)')"
 done
 
 if [[ -z "$claimed_json" ]]; then
