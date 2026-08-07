@@ -18,9 +18,9 @@ CHECK="$SCRIPT_DIR/scripts/check-closing-keyword.sh"
 
 failures=0
 
-assert_pass() {  # assert_pass DESC BODY
-  local desc="$1" body="$2"
-  if "$CHECK" "$body" >/dev/null 2>&1; then
+assert_pass() {  # assert_pass DESC BODY [BRANCH]
+  local desc="$1" body="$2" branch="${3:-}"
+  if "$CHECK" "$body" "$branch" >/dev/null 2>&1; then
     printf 'ok   - %s\n' "$desc"
   else
     printf 'FAIL - %s (expected exit 0)\n' "$desc"
@@ -28,10 +28,10 @@ assert_pass() {  # assert_pass DESC BODY
   fi
 }
 
-assert_fail() {  # assert_fail DESC BODY [NEEDLE]
-  local desc="$1" body="$2" needle="${3:-}" err
-  err="$("$CHECK" "$body" 2>&1 >/dev/null)"
-  if "$CHECK" "$body" >/dev/null 2>&1; then
+assert_fail() {  # assert_fail DESC BODY [NEEDLE] [BRANCH]
+  local desc="$1" body="$2" needle="${3:-}" branch="${4:-}" err
+  err="$("$CHECK" "$body" "$branch" 2>&1 >/dev/null)"
+  if "$CHECK" "$body" "$branch" >/dev/null 2>&1; then
     printf 'FAIL - %s (expected non-zero exit)\n' "$desc"
     failures=$(( failures + 1 ))
     return
@@ -102,6 +102,52 @@ assert_pass "two markers, both satisfied" \
 
 # --- No PR body at all (defensive) --------------------------------------------------
 assert_pass "an empty body has no marker to fail" ""
+
+# --- The branch anchor: `agent/<N>` demands presence, not just consistency ---------
+# The Script mints `agent/<N>` (a bare issue number) for issue-sourced work
+# orders and for nothing else, so the branch — which no model writes — demands
+# both the marker and the keyword be *present*. Without this, an Implementor
+# that forgot the marker passed trivially: the same silent prompt-skip the
+# check exists to prevent.
+assert_pass "an agent/<N> branch with marker and keyword passes" \
+  "Closes #240.
+<!-- agent-ops:closes-issue item=240 -->" \
+  "agent/240"
+assert_fail "an agent/<N> branch with no marker fails, naming the marker" \
+  "Closes #240." \
+  "closes-issue item=240" \
+  "agent/240"
+assert_fail "an agent/<N> branch with a marker but no keyword fails, naming the number" \
+  "Implements #240.
+<!-- agent-ops:closes-issue item=240 -->" \
+  "#240" \
+  "agent/240"
+assert_fail "an agent/<N> branch with an empty body fails both ways" \
+  "" \
+  "closes-issue item=240" \
+  "agent/240"
+assert_fail "a forgotten marker still demands the keyword too" \
+  "Some prose, no keyword, no marker." \
+  "#240" \
+  "agent/240"
+assert_fail "a satisfied branch anchor does not excuse an unsatisfied second marker" \
+  "Closes #240.
+<!-- agent-ops:closes-issue item=240 -->
+<!-- agent-ops:closes-issue item=2 -->" \
+  "#2" \
+  "agent/240"
+
+# --- Non-numeric branches demand nothing -------------------------------------------
+assert_pass "a non-numeric agent branch (tech-debt shaped) demands nothing" \
+  "A fix, nothing to close." "agent/td26072001-cache"
+assert_pass "a register-hygiene branch demands nothing" \
+  "Register housekeeping." "agent/register-hygiene-abc123"
+assert_pass "a td/ claim branch demands nothing" \
+  "A tech-debt fix." "td/TD-PPagop-26080101"
+assert_pass "a human's branch demands nothing" \
+  "Anything at all." "feature/agent/240-lookalike"
+assert_pass "no branch argument at all keeps the marker-only behaviour" \
+  "No marker here."
 
 if (( failures > 0 )); then
   echo "$failures failure(s)"

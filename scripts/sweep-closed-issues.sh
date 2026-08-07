@@ -14,12 +14,20 @@
 # for three more days — selected and voided twice — before a human closed it
 # by hand. Nothing but a human noticing ever would have.
 #
-# For every merged pull request labelled `pr_label` that carries the
-# `<!-- agent-ops:closes-issue item=N -->` marker (`prompts/implementor.md`
-# Procedure step 2; requirement 23b) whose issue `N` is still open, this
-# closes issue `N` with a comment carrying the merge evidence — the PR
-# number, its merge commit, and when it merged — instead of leaving the
-# tombstone that keeps a finished item selectable forever (issue #240).
+# For every merged pull request labelled `pr_label` that names an issue `N`
+# still open, this closes issue `N` with a comment carrying the merge
+# evidence — the PR number, its merge commit, and when it merged — instead
+# of leaving the tombstone that keeps a finished item selectable forever
+# (issue #240). A PR names its issue two ways, either sufficing:
+#
+#   - the `<!-- agent-ops:closes-issue item=N -->` marker
+#     (`prompts/implementor.md` Procedure step 2; requirement 23b);
+#   - failing that, a head branch of exactly `agent/<N>` — the name the
+#     Script itself mints for an issue-sourced work order (`claim_branch_for`,
+#     agent-cycle.sh) and for nothing else, so it needs no model to have
+#     remembered anything. Without this fallback, the Implementor forgetting
+#     the marker blinded the sweep and the CI check together — the two
+#     defences failing on the same omission they exist to catch.
 #
 # One thing it deliberately will not touch: an issue GitHub reports
 # `state_reason: "reopened"`. Somebody reopened that issue after it was
@@ -84,17 +92,17 @@ warn() { jq -nc --arg d "$1" '{action: "warning", detail: $d}'; }  # warn DETAIL
 [[ -n "$pr_label" ]] || { warn "no pr_label configured — nothing to sweep"; exit 0; }
 
 prs_json="$("$GH" pr list -R "$slug" --state merged --label "$pr_label" \
-  --json number,body,url,mergeCommit --limit "$pr_search_limit" 2>/dev/null)" || prs_json=""
+  --json number,body,url,mergeCommit,headRefName --limit "$pr_search_limit" 2>/dev/null)" || prs_json=""
 if [[ -z "$prs_json" ]]; then
   warn "could not list merged, $pr_label-labelled pull requests — skipping this pass"
   exit 0
 fi
 
-while IFS=$'\t' read -r pr_number pr_url item merge_sha; do
+while IFS=$'\t' read -r pr_number pr_url item merge_sha named_by; do
   # bash's `read` collapses consecutive IFS-whitespace delimiters (tab
   # included) even when IFS is narrowed to just "\t", so a genuinely empty
   # middle field shifts every field after it — jq emits "-" rather than ""
-  # for "no marker" specifically to keep the four columns aligned.
+  # for "no marker" specifically to keep the five columns aligned.
   [[ "$item" == "-" ]] && item=""
   [[ -n "$pr_number" && -n "$item" ]] || continue
 
@@ -126,10 +134,19 @@ while IFS=$'\t' read -r pr_number pr_url item merge_sha; do
     continue
   fi
 
-  evidence="pull request #$pr_number ($pr_url) carries the \
+  if [[ "$named_by" == "branch" ]]; then
+    evidence="pull request #$pr_number ($pr_url) is the merged work order for \
+this issue — its head branch is \`agent/$item\`, the name this pipeline mints \
+only for issue-sourced work\
+$( [[ -n "$merge_sha" && "$merge_sha" != "-" ]] && printf ' (merged as %s)' "$merge_sha" )\
+ — but its body carried neither the \`agent-ops:closes-issue\` marker nor a \
+closing keyword, so GitHub never auto-closed it."
+  else
+    evidence="pull request #$pr_number ($pr_url) carries the \
 \`agent-ops:closes-issue item=$item\` marker and is merged\
 $( [[ -n "$merge_sha" && "$merge_sha" != "-" ]] && printf ' (%s)' "$merge_sha" )\
 , but never triggered GitHub's own closing-keyword auto-close."
+  fi
 
   comment_body="$(pipeline_comment_header script "$node_name")
 
@@ -147,11 +164,15 @@ $(pipeline_comment_marker "$cycle_id" script)"
   else
     warn "could not close issue #$item (named by PR #$pr_number)"
   fi
-done < <(jq -r '.[] | [
+done < <(jq -r '.[]
+  | ((.body // "") | capture("<!-- agent-ops:closes-issue item=(?<n>[0-9]+) -->")? // null) as $marker
+  | ((.headRefName // "") | capture("^agent/(?<n>[0-9]+)$")? // null) as $branch
+  | [
     (.number|tostring),
     .url,
-    ((.body // "") | (capture("<!-- agent-ops:closes-issue item=(?<n>[0-9]+) -->")? // {n:"-"}) | .n),
-    (.mergeCommit.oid // "-")
+    (if $marker then $marker.n elif $branch then $branch.n else "-" end),
+    (.mergeCommit.oid // "-"),
+    (if $marker then "marker" elif $branch then "branch" else "-" end)
   ] | @tsv' <<<"$prs_json" 2>/dev/null || true)
 
 if (( deferred > 0 )); then

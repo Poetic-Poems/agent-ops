@@ -25,9 +25,21 @@
 # id) names something that is not a GitHub object to close and is left alone
 # here entirely.
 #
+# And only a void the Co-Ordinator wrote (`stage == "coordinator"`): that is
+# the one `item-void` writer whose verdict passes requirement 34d's
+# corroboration guard before it is logged. The Implementor's and the
+# Enabler's voids are the model's own unexamined claim — issue #240 scopes
+# this action to a void that "survives corroboration (WI-7)", and until WI-7
+# (#243) corroborates those two writers, acting on them would let an
+# unexamined "already done" close a live issue. They are left exactly as a
+# register id is left: unprocessed and unmarked, so when #243 lands they
+# become eligible here with no further change to this gate's shape — the
+# gate is on corroboration, and "coordinator" is simply the only stage whose
+# voids carry it today.
+#
 # Usage: close-void-github-items.sh <owner/repo> <node-name> <cycle-id>
 # Stdin: a JSON array of this repo's void candidates, each
-#   {"item": "198", "detail": "…", "evidence": "…"}
+#   {"item": "198", "detail": "…", "evidence": "…", "stage": "coordinator"}
 # (the shape `void_items` in lib/cycle-state.sh already produces, filtered by
 # the caller to this repo and to items requirement 34k's exclusion set —
 # `void_object_closed_items` — has not already processed).
@@ -86,15 +98,22 @@ close_comment() {  # close_comment REASON EVIDENCE
   printf '%s' "$(pipeline_comment_marker "$cycle_id" script)"
 }
 
-while IFS=$'\t' read -r item detail evidence; do
+while IFS=$'\t' read -r item detail evidence stage; do
   # bash's `read` collapses consecutive IFS-whitespace delimiters (tab
   # included) even when IFS is narrowed to just "\t", so an empty `detail`
-  # would shift `evidence` into its place and leave the evidence section off
-  # the comment entirely. jq emits "-" for "no reason recorded" specifically
-  # to keep the three columns aligned — the same guard
-  # scripts/sweep-closed-issues.sh keeps over its own four.
+  # (or, now that a column follows it, an empty `evidence`) would shift the
+  # later fields into the earlier places. jq emits "-" for an empty middle
+  # field specifically to keep the four columns aligned — the same guard
+  # scripts/sweep-closed-issues.sh keeps over its own five.
   [[ "$detail" == "-" ]] && detail=""
+  [[ "$evidence" == "-" ]] && evidence=""
   [[ -n "$item" ]] || continue
+
+  # The corroboration gate (see header): only the Co-Ordinator's voids have
+  # passed requirement 34d's guard. Anything else is skipped before the
+  # action cap — an ineligible item must not eat a slot, nor count as
+  # deferred work that a later pass could do.
+  [[ "$stage" == "coordinator" ]] || continue
 
   if (( actions >= max_actions )); then
     deferred=$(( deferred + 1 ))
@@ -156,7 +175,8 @@ while IFS=$'\t' read -r item detail evidence; do
   # purpose-built reader can still act on it.
 done < <(jq -r '.[] | [.item,
                        ((.detail // "") | if . == "" then "-" else . end),
-                       (.evidence // "")] | @tsv' \
+                       ((.evidence // "") | if . == "" then "-" else . end),
+                       (.stage // "-")] | @tsv' \
          <<<"$candidates_json" 2>/dev/null || true)
 
 if (( deferred > 0 )); then

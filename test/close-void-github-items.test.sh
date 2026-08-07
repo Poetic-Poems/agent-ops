@@ -74,7 +74,7 @@ run() {  # run STUB_DIR CANDIDATES_JSON
 
 # --- Case 1: an open void'd issue is closed with the evidence ---------------------
 c="$tmp_dir/case1"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"198","detail":"already fixed elsewhere","evidence":"see PR #206"}]')"
+out="$(run "$c" '[{"item":"198","detail":"already fixed elsewhere","evidence":"see PR #206","stage":"coordinator"}]')"
 calls="$(cat "$c/calls.log")"
 assert_eq "the issue is closed by the sweep" \
   '{"action":"closed","item":"198","kind":"issue","closed_by":"sweep"}' \
@@ -86,7 +86,7 @@ assert_contains "the close call carries a comment" "issue close 198 -R x/y --com
 # consecutive tabs even with IFS narrowed to one: an empty middle field would
 # shift the evidence into the reason's place and drop it from the comment.
 c="$tmp_dir/case1b"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"198","detail":"","evidence":"the fix merged in PR #206"}]')"
+out="$(run "$c" '[{"item":"198","detail":"","evidence":"the fix merged in PR #206","stage":"coordinator"}]')"
 calls="$(cat "$c/calls.log")"
 assert_eq "an empty reason still closes the issue" \
   '{"action":"closed","item":"198","kind":"issue","closed_by":"sweep"}' \
@@ -97,7 +97,7 @@ assert_contains "and the evidence still reaches the comment" \
 # --- Case 2: the object is already closed (a human, or another route) -------------
 c="$tmp_dir/case2"; mkdir -p "$c"
 touch "$c/issue-198-closed"
-out="$(run "$c" '[{"item":"198","detail":"already fixed elsewhere"}]')"
+out="$(run "$c" '[{"item":"198","detail":"already fixed elsewhere","stage":"coordinator"}]')"
 assert_eq "an already-closed issue is reported, not re-closed" \
   '{"action":"closed","item":"198","kind":"issue","closed_by":"already"}' \
   "$(jq -c . <<<"$out")"
@@ -106,20 +106,44 @@ assert_eq "no close call was made" "0" \
 
 # --- Case 3: a void'd obsolete draft pull request is closed ------------------------
 c="$tmp_dir/case3"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"superseded by #232"}]')"
+out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"superseded by #232","stage":"coordinator"}]')"
 assert_eq "the pull request is closed" \
   '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
   "$(jq -c . <<<"$out")"
 
+# --- Case 3b: an uncorroborated void acts on nothing -------------------------------
+# Only the Co-Ordinator's voids pass requirement 34d's guard before they are
+# logged; the Implementor's and the Enabler's are the model's own unexamined
+# verdict, and issue #240 scopes this action to a void that survives
+# corroboration (WI-7, #243). Until that lands, an open issue named by an
+# uncorroborated void must stay exactly as it is — not closed, not read, not
+# marked done.
+c="$tmp_dir/case3b"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"198","detail":"implementor says already done","stage":"implementor"},
+                  {"item":"pr-205-abandoned-abc123","detail":"enabler retired it","stage":"enabler"},
+                  {"item":"198","detail":"no stage recorded at all"}]')"
+assert_eq "an implementor/enabler/stageless void is never actioned" "" "$out"
+assert_eq "and gh is never even called for one" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
+
+# --- Case 3c: the corroboration gate must not eat the evidence column --------------
+# `stage` rides as a fourth TSV column behind `evidence`; with an empty
+# evidence the columns would collapse and the stage read "coordinator" out of
+# the wrong field — this pins the alignment guard on both sides.
+c="$tmp_dir/case3c"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"198","detail":"already fixed elsewhere","evidence":"","stage":"coordinator"}]')"
+assert_eq "an empty evidence with a coordinator stage still closes" \
+  '{"action":"closed","item":"198","kind":"issue","closed_by":"sweep"}' \
+  "$(jq -c 'select(.item == "198")' <<<"$out")"
+
 # --- Case 4: a shape that names no GitHub object is left alone --------------------
 c="$tmp_dir/case4"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"TD-PPagop-26072401","detail":"voided, register not flipped"}]')"
+out="$(run "$c" '[{"item":"TD-PPagop-26072401","detail":"voided, register not flipped","stage":"coordinator"}]')"
 assert_eq "a register id is never actioned here" "" "$out"
 assert_eq "and gh is never even called" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 5: an unreadable object is left alone, not guessed at -------------------
 c="$tmp_dir/case5"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"199","detail":"unreadable"}]')"
+out="$(run "$c" '[{"item":"199","detail":"unreadable","stage":"coordinator"}]')"
 assert_eq "an unreadable issue is a warning, not a close" \
   '{"action":"warning","item":"199","detail":"could not read issue #199 — leaving it alone"}' \
   "$(jq -c . <<<"$out")"
@@ -138,7 +162,7 @@ case "$args" in
 esac
 STUB
 chmod +x "$stub"
-out="$(run "$c" '[{"item":"11"},{"item":"12"},{"item":"13"},{"item":"14"}]')"
+out="$(run "$c" '[{"item":"11","stage":"coordinator"},{"item":"12","stage":"coordinator"},{"item":"13","stage":"coordinator"},{"item":"14","stage":"coordinator"}]')"
 assert_eq "closes exactly the per-run cap" "3" \
   "$(jq -c 'select(.action == "closed")' <<<"$out" | wc -l | tr -d ' ')"
 assert_eq "and reports the rest as deferred" \

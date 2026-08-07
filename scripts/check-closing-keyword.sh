@@ -17,19 +17,31 @@
 #
 #   <!-- agent-ops:closes-issue item=198 -->
 #
-# (`prompts/implementor.md`'s Procedure step 2). This script's whole job is
-# to fail when that marker is present without a matching closing keyword for
-# the same number — it says nothing about a PR that carries no marker at
-# all, which covers every non-issue-sourced source (tech-debt, register-
-# hygiene, security, project-review, …) that has nothing to close.
+# (`prompts/implementor.md`'s Procedure step 2). This script fails when that
+# marker is present without a matching closing keyword for the same number.
 #
-# Usage: check-closing-keyword.sh <pr-body-text>
-# Exit 0: no marker, or a marker with a matching closing keyword.
-# Exit 1: a marker with no matching closing keyword, printing why.
+# The marker alone would leave the check anchored to a prompt instruction —
+# an Implementor that forgets the marker entirely produces a PR this check
+# passes trivially, which is the same silent skip that motivated issue #240
+# in the first place. So the check has a second anchor no model writes: the
+# head branch. The Script names an issue-sourced work order's branch
+# `agent/<N>` with a bare issue number (`claim_branch_for`, agent-cycle.sh),
+# and no other source ever yields a purely numeric item (`lib/work-gone.sh`);
+# a head branch matching `agent/<N>` therefore *requires* both the marker for
+# `N` (which the post-merge sweep keys on, requirement 17c) and a closing
+# keyword for `N`. A PR with no marker and a non-numeric branch covers every
+# non-issue-sourced source (tech-debt, register-hygiene, security,
+# project-review, …) that has nothing to close, and passes.
+#
+# Usage: check-closing-keyword.sh <pr-body-text> [<head-branch>]
+# Exit 0: nothing claims an issue, or every claim has its closing keyword.
+# Exit 1: a marker with no matching closing keyword, or an `agent/<N>`
+#   branch missing the marker or the keyword — printing why.
 
 set -uo pipefail
 
 body="${1:-}"
+head_branch="${2:-}"
 
 # Every marker this PR body carries, one item number per line. A PR could in
 # principle carry more than one (unusual, but the check must not silently
@@ -37,9 +49,23 @@ body="${1:-}"
 mapfile -t items < <(grep -oE '<!-- agent-ops:closes-issue item=[0-9]+ -->' <<<"$body" \
   | grep -oE '[0-9]+')
 
-(( ${#items[@]} > 0 )) || exit 0
-
 status=0
+
+# The branch anchor: `agent/<N>` is minted by the Script for issue-sourced
+# work orders only, so it demands the marker's *presence* — the one thing the
+# marker cannot demand of itself. The number joins the keyword loop below
+# whether or not the marker was there, so a branch-anchored PR missing both
+# gets both told to it.
+if [[ "$head_branch" =~ ^agent/([0-9]+)$ ]]; then
+  branch_item="${BASH_REMATCH[1]}"
+  if ! printf '%s\n' "${items[@]:-}" | grep -qx "$branch_item"; then
+    echo "::error::head branch $head_branch is an issue-sourced work order, but the PR body has no <!-- agent-ops:closes-issue item=${branch_item} --> marker (the post-merge sweep keys on it)" >&2
+    status=1
+    items+=("$branch_item")
+  fi
+fi
+
+(( ${#items[@]} > 0 )) || exit 0
 for item in "${items[@]}"; do
   # GitHub's own closing-keyword list: close(s|d), fix(es|ed), resolve(s|d),
   # case-insensitive, immediately followed by "#N" (optionally ": #N") for

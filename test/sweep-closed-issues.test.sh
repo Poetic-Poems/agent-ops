@@ -113,17 +113,38 @@ out="$(run_sweep "$c")"
 assert_eq "an already-closed issue is left alone" '' \
   "$(jq -c 'select(.action == "closed")' <<<"$out" 2>/dev/null || true)"
 
-# --- Case 3: a merged PR with no marker at all ------------------------------------
+# --- Case 3: a merged PR with no marker and no numeric agent branch ----------------
 c="$tmp_dir/case3"; mkdir -p "$c"
 jq -n '[{number: 400, url: "https://github.com/x/y/pull/400",
          body: "A tech-debt fix, nothing to close.",
+         headRefName: "agent/td26072001-cache",
          mergeCommit: {oid: "ghi789"}}]' > "$c/prs.json"
 
 out="$(run_sweep "$c")"
 calls="$(cat "$c/calls.log")"
-assert_eq "no action for a PR without the marker" '' \
+assert_eq "no action for a PR naming no issue either way" '' \
   "$(jq -c 'select(.action == "closed")' <<<"$out" 2>/dev/null || true)"
 assert_not_contains "and no issue lookup is even made" "issues/" "$calls"
+
+# --- Case 3a: no marker, but the head branch is agent/<N> --------------------------
+# The branch is the Script's own name for an issue-sourced work order — the
+# anchor that survives an Implementor forgetting the marker, so the sweep and
+# the CI check cannot both be blinded by the same omission (issue #240).
+c="$tmp_dir/case3a"; mkdir -p "$c"
+jq -n '[{number: 600, url: "https://github.com/x/y/pull/600",
+         body: "Implements the thing. No marker, no keyword.",
+         headRefName: "agent/601",
+         mergeCommit: {oid: "mno345"}}]' > "$c/prs.json"
+jq -n '{state: "open"}' > "$c/issue-601"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "the branch-named issue is closed" \
+  '{"action":"closed","issue":601,"pr_number":600,"pr_url":"https://github.com/x/y/pull/600"}' \
+  "$(jq -c 'select(.action == "closed")' <<<"$out")"
+assert_contains "with the branch cited as the anchor" "agent/601" "$calls"
+assert_not_contains "and the marker not claimed as evidence" \
+  "closes-issue item=601\` marker" "$calls"
 
 # --- Case 3b: an issue a human reopened after a close ------------------------------
 # "Open" alone cannot tell "never closed" from "somebody put it back"; without

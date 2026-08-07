@@ -8,9 +8,13 @@ name: Closing keyword check
 # said "Implements #198" instead of "Closes #198", and #198 stayed open for
 # three days after its own fix merged) — see issue #240.
 #
-# A PR without the marker — everything that is not issue-sourced — passes
-# trivially; scripts/check-closing-keyword.sh only ever fails on a marker
-# with no matching keyword.
+# The head branch is the check's second anchor, and the one that makes it
+# presence-enforcing rather than consistency-only: the Script mints
+# `agent/<N>` (a bare issue number) for issue-sourced work orders and for
+# nothing else, so a PR from such a branch must carry both the marker and the
+# keyword for `N` — an Implementor that forgets the marker goes red instead
+# of passing trivially. A PR without the marker on any other branch —
+# everything that is not issue-sourced — passes.
 #
 # Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
 # runs with write-scoped secrets, and ungated by `paths:` — the body can be
@@ -32,4 +36,5 @@ jobs:
       - name: Check closing keyword
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: scripts/check-closing-keyword.sh "$PR_BODY"
+          PR_HEAD_BRANCH: ${{ github.head_ref }}
+        run: scripts/check-closing-keyword.sh "$PR_BODY" "$PR_HEAD_BRANCH"

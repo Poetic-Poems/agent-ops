@@ -2719,8 +2719,13 @@ void_json="$(void_items "$union_log")"
 # a plan task id names nothing this can close. `void_object_closed_items`
 # excludes whatever a previous cycle already actioned, so this never
 # re-checks (and never re-closes) the same item twice, even if a human
-# reopens the object directly rather than through `unvoid_label`. Skipped on
-# --dry-run: the sweep closes issues and pull requests.
+# reopens the object directly rather than through `unvoid_label`. The event's
+# `stage` travels with each candidate because the sweep acts only on the
+# Co-Ordinator's voids — the one writer requirement 34d corroborates — until
+# WI-7 (#243) corroborates the other two; the gate itself lives in
+# close-void-github-items.sh (requirement 34a: one definition, at the point
+# of action). Skipped on --dry-run: the sweep closes issues and pull
+# requests.
 if ! (( DRY_RUN )); then
   void_object_closed_json="$(void_object_closed_items "$union_log")"
   void_close_candidates_json="$(jq -nc --argjson void "$void_json" --argjson closed "$void_object_closed_json" \
@@ -2734,7 +2739,7 @@ if ! (( DRY_RUN )); then
   while IFS= read -r vslug; do
     [[ -n "$vslug" ]] || continue
     repo_candidates_json="$(jq -c --arg r "$vslug" '[ .[] | select(.repo == $r)
-      | {item, detail, evidence} ]' <<<"$void_close_candidates_json" 2>/dev/null || echo '[]')"
+      | {item, detail, evidence, stage} ]' <<<"$void_close_candidates_json" 2>/dev/null || echo '[]')"
     while IFS= read -r sweep_action; do
       [[ -n "$sweep_action" ]] || continue
       case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
