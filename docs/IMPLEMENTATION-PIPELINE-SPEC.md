@@ -625,11 +625,19 @@ A repo entry may also carry `nice` — an optional integer from `-19` to `19` (a
 
 ### Extended notes: `needs_refinement_label`
 
-The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing. It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`.
+The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears.
+
+Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way.
+
+Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing.
+
+It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
-How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
+How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.
+
+Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
 
 ### Extended notes: `timeout_reviewer`
 
