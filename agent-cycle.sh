@@ -2471,21 +2471,41 @@ fi
 # deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
 # all waiting on the agent, and the one source that could clear them never
 # reached. The cost of deferring is the handful of `gh` calls in step 3.
-# The count is taken in three parts — ready PRs, draft PRs, live claims —
-# because the trip decision needs only the sum, but the logged reason states
-# the split: a ready PR is the human's queue, a draft is work in flight (the
-# Implementor's own claim marker, requirement 23), and which of them filled
-# the gate is what a cap-tuning decision needs to know. Recording it here
-# costs nothing; reconstructing it later means cycle-record archaeology.
+#
+# A ready PR only counts toward the trip when the pipeline itself has a next
+# action on it — `reviewDecision == CHANGES_REQUESTED`, the same "whose turn
+# is it" rule requirement 3c's review-feedback candidate filter uses
+# (scripts/gather-review-feedback.sh), so the two definitions cannot disagree.
+# A ready PR that is approved, or awaiting a first or re-review with nothing
+# currently `CHANGES_REQUESTED`-blocking it, is sitting in the human's queue —
+# the pipeline cannot shrink that by declining to open new work, so counting
+# it against the cap only back-pressures the fleet for a queue it has no lever
+# to drain (agent-ops#246).
+#
+# The count is taken in four parts — ready PRs awaiting a human, ready PRs
+# awaiting the pipeline, draft PRs, live claims — because the trip decision
+# needs only the human-queue-excluded sum, but the logged reason states the
+# full split: a human-queue PR could fill the raw total without ever counting
+# against the cap; a pipeline-turn ready PR is the human's queue answered and
+# now the agent's to act on; a draft is work in flight (the Implementor's own
+# claim marker, requirement 23); an unraised claim is a registry entry whose
+# PR does not yet exist. Which of them filled the gate is what a cap-tuning
+# decision needs to know. Recording it here costs nothing; reconstructing it
+# later means cycle-record archaeology.
 ready_count=0
+human_queue_count=0
 draft_count=0
 while IFS= read -r slug; do
-  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft \
-    --jq '[([.[] | select(.isDraft | not)] | length), ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
-  IFS=$'\t' read -r n_ready n_draft <<<"$counts"
+  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft,reviewDecision \
+    --jq '[([.[] | select(.isDraft | not)] | length),
+           ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
+           ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
+  IFS=$'\t' read -r n_ready n_human n_draft <<<"$counts"
   [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
+  [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
   ready_count=$(( ready_count + n_ready ))
+  human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
@@ -2502,11 +2522,13 @@ while IFS= read -r slug; do
   claim_count=$(( claim_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
-open_count=$(( ready_count + draft_count + claim_count ))
-open_composition="$ready_count ready + $draft_count draft + $claim_count unraised claim(s)"
+pipeline_ready_count=$(( ready_count - human_queue_count ))
+raw_open_count=$(( ready_count + draft_count + claim_count ))
+adjusted_open_count=$(( pipeline_ready_count + draft_count + claim_count ))
+open_composition="$pipeline_ready_count changes-requested + $draft_count draft + $claim_count unraised claim(s) — plus $human_queue_count waiting on human ($raw_open_count raw)"
 
 backpressure_tripped=0
-if (( open_count >= max_open_agent_prs )); then
+if (( adjusted_open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
 fi
 
@@ -2951,7 +2973,7 @@ if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
@@ -2964,7 +2986,7 @@ if (( backpressure_tripped )); then
                                     | .issues = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
+    --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 

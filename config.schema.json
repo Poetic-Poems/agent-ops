@@ -423,12 +423,12 @@
       }
     },
     "max_open_agent_prs": {
-      "description": "Back-pressure: total open pull requests (draft or ready) carrying `pr_label` across all repositories, plus live claim-registry entries.",
+      "description": "Back-pressure: draft pull requests, ready pull requests still `CHANGES_REQUESTED`, and live claim-registry entries, all carrying `pr_label` across all repositories. A ready pull request whose next action is human-side — approved, or awaiting a review nothing is currently `CHANGES_REQUESTED`-blocking — does not count.",
       "type": "integer",
       "minimum": 1,
       "x-docs": {
-        "readme": "Back-pressure limit: total open agent PRs (draft or ready) across both repos.",
-        "spec": "Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2).",
+        "readme": "Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review.",
+        "spec": "Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2).",
         "value": "`8`"
       }
     },
