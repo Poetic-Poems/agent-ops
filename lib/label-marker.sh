@@ -62,6 +62,7 @@ label_own_action_fields() {
 # fail-safe shape as every other extract in `lib/cycle-state.sh`.
 label_own_actions_map() {
   local label="$1" src="${2:--}" out=""
+  # shellcheck disable=SC2016  # jq's $label/$e, not the shell's.
   local jq_prog='
     [ .[] | select(.event == "own-label-action" and (.label // "") == $label
                    and (.repo // "") != "" and (.item // "") != "") ]
