@@ -1414,6 +1414,87 @@ runs unattended.
      definition (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
      3c. `shellcheck`-clean.
+3s. **Dependabot conflicts: nudge, then take over (issue #250).** Requirement
+   3g's `merge_conflicts` array also carries Dependabot's own conflicted PRs —
+   open, non-draft, `mergeable` exactly `CONFLICTING`, authored by
+   `DEPENDABOT_LOGIN` (`app/dependabot`, `lib/dependabot-bump.sh`) — regardless
+   of `pr_label` or `branch_prefix`, neither of which a bot PR ever carries.
+   Each such entry carries `bot: true` and three fields no ours-by-label entry
+   does:
+
+   - `rebase_requested` — true iff a comment already on the PR carries
+     `dependabot_rebase_marker` scoped to *this exact* head SHA (12 hex
+     chars, the same scoping as the `ref` itself): this system has already
+     asked Dependabot to rebase this state and it has not resolved.
+   - `superseded_by` — another open Dependabot PR's number, when it bumps the
+     same dependency (same family: package manager plus dependency, read off
+     the branch name by `dependabot_bump_family`) to a strictly newer version
+     (`dependabot_bump_version`, compared via `sort -V`) — this PR's bump is
+     moot regardless of its conflict.
+   - `superseded_evidence` — present only alongside `superseded_by`:
+     pre-formatted evidence text a Co-Ordinator pastes **verbatim** into a
+     `voided` entry. It names this PR's own number as "PR #N" (which
+     `lib/void-guard.sh`'s `void_pr_matches_item` trusts unconditionally for a
+     `pr-<n>-…` item — the id is minted from that very PR) and the superseding
+     PR only by URL, never as "PR #M" (which the guard would fetch and refuse,
+     since a different, independent bump will never carry this item's id in
+     its own body or branch). This is the one piece of free-text evidence in
+     the whole pipeline a writer must not compose itself — see the "Dependabot's
+     own conflicted PRs" entry in Design decisions.
+
+   The write side is `scripts/nudge-dependabot-rebase.sh` (requirement 3s
+   continued below); the read side above computes every field fresh each
+   cycle and writes nothing — one definition of the classification rule
+   (requirement 34a), shared by both.
+
+   Three outcomes follow, all still ranked and claimed as an ordinary
+   `merge_conflicts` candidate (requirement 15d), never a new source or
+   ledger:
+
+   - **First sighting** (`bot: true`, `rebase_requested: false`, no
+     `superseded_by`): before the Co-Ordinator ever sees this cycle's
+     `merge_conflicts` array, `agent-cycle.sh`'s per-repo gather step pipes it
+     through `scripts/nudge-dependabot-rebase.sh`, which posts `@dependabot
+     rebase` (this system's ordinary comment header and marker, plus the
+     scoped rebase marker) and drops the candidate from the array — both the
+     copy stored for the fingerprint and the copy the Co-Ordinator receives.
+     There is genuinely nothing selectable yet; the next cycle's
+     `gather-merge-conflicts.sh` read reports `rebase_requested: true` for
+     the same head, a different array shape that busts the no-op fingerprint
+     on its own (requirement 3b), exactly as requirement 3g's own base-moved
+     transition does. This step is a real write, so `--dry-run` skips it. A
+     failed post is logged as a `warning` and retried automatically next
+     cycle, since a failed nudge leaves `rebase_requested: false`.
+   - **Still conflicting a cycle later** (`bot: true`, `rebase_requested:
+     true`, no `superseded_by`): a **takeover** candidate. The Co-Ordinator
+     may select it, but the work order it constructs sets `"takeover": true`
+     and, unlike every other `merge-conflicts` work order, carries no
+     `branch` — Dependabot's own branch is the bot's, never rebased or
+     force-pushed by this system, so the Script claims and derives
+     `agent/<ref>` for this work order exactly as it does for a non-finishing
+     source (requirement 17a's carve-out below), and the Implementor follows
+     the ordinary new-item Procedure (branch already claimed, open a draft
+     PR) rather than the "branch and PR already exist" shortcut every other
+     `merge-conflicts` item uses. It reads the bot PR's diff, recreates the
+     same dependency bump on its own branch, and closes the bot's PR
+     referencing the replacement (`prompts/implementor.md`'s "Dependabot
+     takeover" section) — the underlying bump is what completes, unlike the
+     ordinary rebase case, because there is no other PR left to carry it.
+   - **Superseded** (`superseded_by` non-null, either state of
+     `rebase_requested`): never nudged (nothing to gain by asking Dependabot
+     to rebase a PR about to be closed as redundant) and never a takeover
+     candidate. The Co-Ordinator instead records it in `voided`, copying
+     `superseded_evidence` verbatim as `evidence` — closing the PR is
+     `close-void-github-items.sh`'s ordinary act-on-void path (requirement
+     34k), unchanged: the item's `pr-<n>-…` ref shape is all that path has
+     ever needed.
+
+   Claimed and ranked exactly as any other `merge_conflicts` candidate
+   (requirements 15d, 17a) with the one carve-out named above for a takeover's
+   claim kind and branch. No new ledger, escalation concept, or source token
+   is introduced — the acceptance test this requirement was written against
+   (poetic-fiddle #129) is a candidate in the same `merge_conflicts` array
+   every other conflicted PR is.
 3i. **Register-hygiene pre-fetch.** For each configured repo whose `sources`
    include `register-hygiene`, run `scripts/gather-register-hygiene.sh <slug>
    <default_branch>` and attach the array to that repo's entry as
@@ -2505,7 +2586,17 @@ runs unattended.
     already established it is ours and conflicting. The Implementor's job here is
     narrow: rebase onto the base and resolve the conflict, without completing or
     re-doing the underlying item (that is what merges the PR, and remains the
-    human's call).
+    human's call). A Dependabot takeover candidate (requirement 3s) ranks and is
+    exempted from requirement 16's claim exclusion here identically, even though
+    it is, unlike every other `merge_conflicts` candidate, genuinely new work — a
+    fresh PR on a fresh branch, not a finish of an existing one, and it does raise
+    `max_open_agent_prs`' count by one once claimed (Dependabot's own PR never
+    counted toward it; the replacement does, until it merges or is closed). This
+    is a deliberate simplicity trade-off, not an oversight: a takeover is rare
+    (it fires only after a nudge has already failed to clear the conflict) and
+    routing it through a second source or a back-pressure carve-out of its own
+    would be exactly the new ledger/escalation concept the feature was built
+    without (issue #250's acceptance criteria).
 15c. **Abandoned drafts come fifth, across all repos.** After security, urgent
     issues, review-feedback and merge-conflicts, and likewise outranking the plain
     repo-then-source walk: any selectable `abandoned_drafts` candidate in any repo
@@ -2696,7 +2787,8 @@ runs unattended.
     order and handing the first successful claim onward (`lib/claim.sh`).
     The primitive is create-only, so GitHub arbitrates every race:
     - *Branch claims* (every source except the three finishing ones —
-      `review-feedback`, `merge-conflicts` and `abandoned-drafts`): a REST
+      `review-feedback`, `merge-conflicts` and `abandoned-drafts` — plus one
+      exception within `merge-conflicts` itself, below): a REST
       create-ref (`POST /git/refs`) on the target repository at the default
       branch's head. The claim branch **is** the
       working branch, derived deterministically so every node computes the same
@@ -2706,13 +2798,28 @@ runs unattended.
       even at the same SHA — which a plain `git push` of an identical ref would
       no-op) means a peer holds the item: log `claim-lost` and move to the
       next candidate.
-    - *File claims* (`review-feedback`, `merge-conflicts` and `abandoned-drafts`,
-      which finish an existing PR and have no new branch to create): a create-only
+
+      A `merge-conflicts` work order carrying `"takeover": true` (requirement
+      3s) takes a *branch* claim, not the file claim every other
+      `merge-conflicts` item takes below — it names Dependabot's PR, and
+      taking it over means a new PR on a new branch of ours, exactly like any
+      other fresh item, not a finish of an existing one. The item ref
+      (`pr-<n>-conflict-<head-sha>`) still exists and is still what gets
+      claimed — only the *kind* of claim differs, decided by the work order's
+      `takeover` field, which the Co-Ordinator sets and the Script reads
+      before deriving `agent/<item-ref>` as usual.
+    - *File claims* (`review-feedback` and `abandoned-drafts`, plus every
+      `merge-conflicts` work order *except* a takeover, which finish an
+      existing PR and have no new branch to create): a create-only
       contents-API PUT (no `sha`) of `claims/<repo>/<ref>.json` in the state
       repository. For `abandoned-drafts` the ref is scoped to the draft's head SHA
       (`pr-<n>-abandoned-<head-sha>`), and for `merge-conflicts` likewise to the
       PR's head SHA (`pr-<n>-conflict-<head-sha>`), so two nodes racing to finish
-      or rebase the same PR contend on the same file and one wins.
+      or rebase the same PR contend on the same file and one wins. A takeover
+      needs no separate file claim of its own: `agent/<item-ref>` is derived
+      from the same head-SHA-scoped ref, so two nodes racing to take over the
+      *same* Dependabot PR compute the identical branch name and contend on
+      that single `POST /git/refs` instead — one claim, not two.
     - Every won claim also writes a best-effort **registry entry** at
       `claims/<repo>/<key>.json` in the state repository — the lock is the
       ref or file above; the registry is what back-pressure counts (2.2)
@@ -2945,7 +3052,19 @@ runs unattended.
     resolve the conflict — not to re-do or extend the work; `acceptance` is the PR
     mergeable again (no longer `CONFLICTING`) with CI green and the PR left in the
     ready state it was already in, the underlying item deliberately left for its
-    own eventual merge. For an
+    own eventual merge. **Exception — a Dependabot takeover** (requirement 3s: the
+    entry carries `bot: true`, `rebase_requested: true`, no `superseded_by`): the
+    order instead carries `"takeover": true` and **omits `branch`** — the Script
+    derives `agent/<ref>` for it exactly as for a non-finishing source (requirement
+    17a's carve-out), since the PR named in `context` is Dependabot's, never
+    rebased or force-pushed. `context` still carries the bot PR's `body`, `url`,
+    `number`, `branch` (named as Dependabot's own, not to be checked out), `base`
+    and `head_sha` verbatim, telling the Implementor to recreate the same bump on
+    its new branch and close the bot's PR referencing the replacement; `acceptance`
+    is a new, mergeable, CI-green PR carrying the same dependency bump, left a
+    **draft**, with the bot's PR closed. A `superseded_by` entry never becomes a
+    work order at all — it belongs in `voided`, evidence copied from the entry's
+    own `superseded_evidence` verbatim (requirement 3s). For an
     `abandoned-drafts` entry, `item` is its `ref`, `branch` is the draft PR's
     **existing** branch, the order also carries `pr_url` and `pr_number`, and
     `context` must carry the draft PR's own `body` verbatim (the original plan)
@@ -4770,11 +4889,46 @@ What exists, and the requirements each part answers to:
    forms out — are asserted against `PIPELINE_COMMENT_MARKER_PREFIX` by
    `test/abandoned-drafts.test.sh` and against the header's literal form by
    `test/comment-identity.test.sh`, so neither can drift between any of them.
-3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g: given a
-   repo slug, PR label and branch prefix, prints the JSON array of this system's
-   own ready-but-conflicted PRs (open, non-draft, ours, `mergeable` definitively
-   `CONFLICTING`), each carrying the PR's body verbatim, its base, and a
-   head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
+3g. `scripts/gather-merge-conflicts.sh` implementing requirement 3g (extended by
+   requirement 3s for Dependabot's own PRs): given a
+   repo slug, PR label and branch prefix, prints the JSON array of ready-but-
+   conflicted PRs — this system's own (open, non-draft, ours, `mergeable`
+   definitively `CONFLICTING`) and Dependabot's own (same, but by authorship
+   instead of label/branch) — each carrying the PR's body verbatim, its base,
+   and a head-SHA-scoped ref; a Dependabot entry additionally carries `bot:
+   true`, `rebase_requested`, `superseded_by` and (when superseded)
+   `superseded_evidence`. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
+3s. `lib/dependabot-bump.sh` and `scripts/nudge-dependabot-rebase.sh`
+   implementing requirement 3s. The library holds `DEPENDABOT_LOGIN`
+   (`app/dependabot`, the login Dependabot's PRs carry through `gh`'s
+   GraphQL-backed `--json` reads), `dependabot_rebase_marker` (the
+   head-SHA-scoped HTML-comment marker `gather-merge-conflicts.sh` reads and
+   `nudge-dependabot-rebase.sh` writes), `dependabot_bump_family` and
+   `dependabot_bump_version` (parsing a Dependabot branch name into a
+   dependency+manager family and a target version), and
+   `dependabot_newer_open_pr` (given a PR's number, branch and every open
+   Dependabot PR in the repo, the number of another one bumping the same
+   family to a strictly newer version, via `sort -V`, if any). The script
+   takes, on stdin, the merge-conflicts candidate array
+   `gather-merge-conflicts.sh` produced for one repo, and for every candidate
+   carrying `bot: true`, `rebase_requested: false` and no `superseded_by`,
+   posts a `@dependabot rebase` comment (this system's ordinary comment
+   header and marker, plus the rebase marker) and drops that candidate from
+   the array it prints back on stdout as `{"conflicts": [...], "actions":
+   [...]}` — `actions` records one `{"number", "outcome": "requested"|
+   "failed"}` per attempt, for the caller to log; a `"failed"` outcome is not
+   retried within the same run, since the candidate it would have retried was
+   already dropped from `conflicts` either way, and the next cycle's
+   `gather-merge-conflicts.sh` read (still reporting `rebase_requested:
+   false`, since no comment landed) causes the same attempt again. Every other
+   candidate (not a bot PR, already nudged, or superseded) passes through
+   `conflicts` untouched with no action recorded. Fails safe to
+   `{"conflicts": [], "actions": []}` on unreadable stdin. Both must pass
+   `shellcheck`; `lib/dependabot-bump.sh`'s parsing and comparison rules are
+   regression-tested in `test/dependabot-bump.test.sh`, the script's
+   nudge/drop/pass-through behaviour in `test/nudge-dependabot-rebase.test.sh`,
+   and the two together (through the real `gather-merge-conflicts.sh`, via
+   `MERGE_CONFLICTS_GH`) in `test/merge-conflicts.test.sh`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
    repo slug, default branch and (requirement 34l) an optional JSON array of
    this repo's void register-shaped candidates, prints a JSON array holding
@@ -5715,8 +5869,26 @@ pull request, run the ones the change touches and any it could regress.
    regression-tested in `test/abandoned-drafts.test.sh`.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
-   never aborts the cycle. Its candidate rule is regression-tested in
-   `test/merge-conflicts.test.sh`.
+   never aborts the cycle. Its candidate rule, including the `bot`,
+   `rebase_requested`, `superseded_by` and `superseded_evidence` fields on a
+   Dependabot candidate, is regression-tested (through the real script, via
+   `MERGE_CONFLICTS_GH`) in `test/merge-conflicts.test.sh`. Against the real
+   API, `scripts/gather-merge-conflicts.sh Poetic-Poems/poetic-fiddle
+   autonomous-agent agent/` reports poetic-fiddle #129 (issue #250's acceptance
+   test) as a `bot: true` candidate.
+2h. **Dependabot's own conflicted PRs are nudged, then — only after a full
+   cycle at the same head — offered as a takeover (requirement 3s).**
+   `lib/dependabot-bump.sh`'s family/version parsing and its
+   strictly-newer-version supersession pick are regression-tested in
+   `test/dependabot-bump.test.sh`. `scripts/nudge-dependabot-rebase.sh`'s
+   nudge-then-drop, pass-through-unchanged, and fails-safe behaviour is
+   regression-tested (against a stubbed `gh`, via `NUDGE_GH`) in
+   `test/nudge-dependabot-rebase.test.sh`: a first-sighting `bot` candidate is
+   both commented on (the `@dependabot rebase` ask, this system's ordinary
+   header and marker, plus the head-scoped rebase marker) and dropped from the
+   array it returns; an already-nudged or superseded candidate is neither
+   commented on nor dropped; a non-bot candidate is untouched; a failed post is
+   recorded but still drops nothing extra to retry next cycle.
 2e. `scripts/gather-register-hygiene.sh Poetic-Poems/does-not-exist main` prints
    `[]` and exits 0, silently — a repo (or a repo with no register, or an
    as-yet-empty one) is a normal `[]`, not an error. Against each configured
@@ -6705,6 +6877,36 @@ requirements above, which state only what is.
   the no-op fingerprint verbatim so the conflict appearing still wakes the pipeline
   (requirement 3b), the same fix abandoned-drafts needs for its clock-based
   candidacy.
+- **Dependabot's own conflicted PRs get one nudge before a takeover, never a
+  force-push (requirement 3s, issue #250).** poetic-fiddle #129 sat
+  merge-conflicting for twelve days: dependabot will rebase its own PR on
+  request, but nothing was asking, and the ordinary merge-conflicts rebase
+  path only ever touches branches under our own `pr_label`/`branch_prefix` —
+  a bot PR carries neither. The fix keeps the same array (`merge_conflicts`)
+  and the same ranking rather than a new source, and keeps the same
+  hands-off-a-branch-that-is-not-ours discipline the ordinary rebase case
+  already has: this system asks (`@dependabot rebase`) rather than
+  force-pushing the bot's branch itself, because Dependabot rewrites and
+  re-force-pushes its own PRs on its own schedule and a competing force-push
+  from this system would just be two writers fighting over the same ref.
+  Only once Dependabot has had a full cycle and the PR is still conflicting
+  at the *same* head does the pipeline take over — a new PR, on its own
+  branch, closing the bot's — because at that point Dependabot is
+  demonstrably not going to resolve it itself. A superseded bump (a newer
+  Dependabot PR already covers the same dependency) is voided rather than
+  nudged or taken over, through the *existing* act-on-void path
+  (`close-void-github-items.sh`, WI-4) rather than a new closing mechanism —
+  the one piece of care that path needed was the evidence text: void
+  corroboration (`lib/void-guard.sh`) reads "PR #N" in evidence as a claim
+  that PR *implements* the item, and would fetch a cited superseding PR and
+  correctly refuse it (a different, independent bump will never carry the
+  superseded item's id). So `gather-merge-conflicts.sh` pre-formats the
+  evidence itself, citing the superseded PR's *own* number — which the guard
+  already trusts unconditionally for a `pr-<n>-…` item — and naming the
+  superseding PR only by URL. A Co-Ordinator composing its own sentence
+  naming "PR #135" instead would have every such void refused, silently,
+  forever; pre-formatting the one sentence that must not vary was cheaper
+  than teaching every future writer the distinction.
 - **A register that lies about itself is repaired by the pipeline, and prevented
   by CI — two layers, because one was demonstrably not enough.** The register
   now keeps one convention throughout: a `tech-debt/<id>.md` file per record,
