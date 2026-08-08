@@ -15,9 +15,9 @@
 #
 # `preflight_done_reason` is a one-item call into that same machinery, not a
 # second implementation of it: it wraps `work_gone_clearances` around a
-# synthetic one-entry blocked list, then — only for an ordinary issues/
-# tech-debt item, whose id is not already the `pr-<n>-…` shape
-# `work_gone_clearances` just asked about — checks the cycle's own
+# synthetic one-entry blocked list, then — for every item but a finishing
+# source's own `pr-<n>-…`-shaped one, which `work_gone_clearances` just asked
+# about — checks the cycle's own
 # `source_states_json` for an open pull request already carrying this claim's
 # own branch (the "stale claim, previous cycle's branch/PR already exists"
 # shape a lost-then-recovered claim race can produce). Both halves are pure —
@@ -76,10 +76,12 @@ preflight_done_reason() {
     return
   fi
   # A finishing source's item is already the pr-<n>-… shape the clearance
-  # check above just asked about; only an ordinary issues/tech-debt item
-  # reaches here, and only for those can an already-open PR on this claim's
-  # own branch be a stale-claim signal rather than the very PR this cycle is
-  # about to raise. `WORK_GONE_PR_RE` carries a named group written for jq's
+  # check above just asked about; every other item — an issue, a tech-debt
+  # id, an alert ref, a review or plan ref — reaches here, and only for those
+  # can an already-open PR on this claim's own branch be a stale-claim signal
+  # rather than the very PR this cycle is about to raise. All of them are
+  # minted a branch by the claim, so all of them can carry the signal.
+  # `WORK_GONE_PR_RE` carries a named group written for jq's
   # Oniguruma engine, which POSIX ERE (`grep -E`) cannot compile — `grep -P`
   # is the same convention scripts/close-void-github-items.sh already uses
   # for this constant.
@@ -91,6 +93,11 @@ preflight_done_reason() {
 # already carrying BRANCH, read from the cycle's own pre-claim digest. Pure:
 # it asks nothing of GitHub itself, only of the `open_prs` digest
 # `scripts/gather-source-state.sh` already sampled.
+#
+# Always succeeds, printing nothing for input it cannot read — the same
+# discipline `work_gone_clearances` states for itself and for the same reason:
+# its caller is a mid-cycle `set -e` command substitution, so a malformed
+# digest must cost a done-signal, never the cycle.
 preflight_open_pr_reason() {
   local repo="$1" branch="$2" states="$3"
   [[ -n "$branch" ]] || return 0
@@ -99,7 +106,7 @@ preflight_open_pr_reason() {
     | if $st == null then ""
       elif ([ ($st.open_prs // [])[] | select((.h // "") == $b) ] | length) > 0
       then "an open pull request already carries branch \($b)"
-      else "" end' <<<"$states" 2>/dev/null
+      else "" end' <<<"$states" 2>/dev/null || true
 }
 
 # preflight_branch_merged_reason SLUG DEFAULT_BRANCH BRANCH — the work-order

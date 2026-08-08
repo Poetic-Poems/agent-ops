@@ -3674,8 +3674,15 @@ runs unattended.
     made permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
     entry point the Co-Ordinator (requirement 18), the Enabler (requirement
     36a's `void` row) and the Implementor (requirement 9b) all call before
-    logging `item-void`; none of the three may write it directly. Four tests,
-    all on the Script's side of the boundary:
+    logging `item-void`; none of the three may write it directly. The rule is
+    about the three *stages*, and there is exactly one writer outside it: the
+    Script's own pre-flight (requirement 34m), which reads its evidence
+    straight off `gh`, the register file or the cycle's own pre-claim digest
+    — the ground truth the tests below check a stage's citation *against* —
+    and so has nothing for the guard to corroborate it with. Its event
+    carries `stage: preflight` all the same, so a reader auditing the log for
+    guarded voids should not mistake it for a fourth stage evading this
+    requirement. Four tests, all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
       required on every void, and `null`, `""`, whitespace, `{}` and `[]` are
       all absence. An entry without it is not a verdict, it is an opinion.
@@ -4253,8 +4260,12 @@ runs unattended.
     enough to cost no clone of their own:
 
     - **An open pull request already carries the just-claimed branch**, for
-      an ordinary `issues`/`tech-debt` item only (a finishing source's item is
-      already the `pr-<n>-…` shape the check above covers). Read from the
+      every item whose id is not a finishing source's own `pr-<n>-…` shape —
+      an `issues` or `tech-debt` item typically, but equally a `security`,
+      `code-quality`, `project-review`, `implementation-plan` or
+      `register-hygiene` one, since the claim mints all of them a branch the
+      same way. The `pr-<n>-…` shape is excluded because the check above
+      already covers it. Read from the
       same `source_states_json` digest's `open_prs[].h`, gathered before the
       claim — the "stale claim, a previous cycle's branch/PR already exists"
       shape a lost-then-recovered claim race (requirement 17a) can produce.
@@ -4978,8 +4989,9 @@ What exists, and the requirements each part answers to:
    `preflight_done_reason`, which given a repo, an item, its claim branch, the
    cycle's source-state digests and (for a tech-debt item) its one freshly
    read register row, wraps them into the one-entry blocked list
-   `work_gone_clearances` (3m) expects, then — for an ordinary issues/
-   tech-debt item only — falls back to `preflight_open_pr_reason`, checking
+   `work_gone_clearances` (3m) expects, then — for every item but a finishing
+   source's own `pr-<n>-…`-shaped one — falls back to
+   `preflight_open_pr_reason`, checking
    the same digest for an open pull request already carrying the claim
    branch; returns the first reason found, or nothing. `preflight_branch_merged_reason`
    is the third signal, kept separate because it is impure (one live
