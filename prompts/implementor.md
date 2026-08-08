@@ -621,6 +621,14 @@ pays to rediscover exactly what you just discovered.
 Report `void` regardless of how much you have already done to find out — the
 verdict describes the item, not your effort.
 
+The Script corroborates your `void` before recording it: if `evidence` cites a
+PR or a commit, it must actually be about this item — its body, branch,
+message, or a linked pull request naming the item's own id — not merely a real
+artefact that happens to exist. A citation that does not hold is refused and
+recorded `blocked` instead of `void`, which the next Enabler engagement will
+re-examine; so name the thing that genuinely implements this item, not a PR or
+commit that is merely thematically related.
+
 Leave whatever you've already pushed (draft PR, branch, status flip) exactly as
 it is when you report `blocked` — don't unwind your own claim. The Script and,
 ultimately, a human decide what happens to an abandoned claim; that's not your
