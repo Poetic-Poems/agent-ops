@@ -81,24 +81,56 @@ label_own_actions_map() {
   printf '%s' "$out"
 }
 
+# label_filter_own_applications CANDIDATES_JSON OWN_ACTIONS_JSON
+# Print CANDIDATES_JSON — the `{repo, number, labelled_at, …}` array
+# `scripts/gather-hand-flagged-refinements.sh` produces — with every entry
+# dropped whose label is currently present by this system's own hand rather
+# than a human's: our latest recorded action for that repo+item+label was an
+# `add`, and GitHub's own record of when the label was last applied
+# (`labelled_at`) is no later than ours, since a human touching the label
+# after we did would push `labelled_at` past our own `ts`.
+#
+# This is the read-back half requirement 39f describes, and the one place the
+# attribution is decided: `label_is_own_application` below answers the same
+# question for a single item by asking this function. Entries are kept, not
+# dropped, whenever the record is silent — an empty own record, an empty
+# `labelled_at`, a malformed argument — because "not ours" is the safe
+# direction: it leaves the caller with exactly the behaviour it had before
+# this file existed rather than swallowing a human's flag.
+label_filter_own_applications() {
+  local candidates="${1:-[]}" own_map="${2:-{\}}" out=""
+  out="$(jq -nc --argjson c "$candidates" --argjson o "$own_map" '
+    [ $c[]?
+      | . as $e
+      | ((($o // {})[(($e.repo // "") | tostring) + "|" + (($e.number // "") | tostring)])
+         // {}) as $own
+      | select(((($own.action // "") == "add")
+                and (($own.ts // "") != "")
+                and (($e.labelled_at // "") != "")
+                and (($e.labelled_at) <= ($own.ts))) | not) ]' 2>/dev/null || true)"
+  if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    if jq -e 'type == "array"' <<<"$candidates" >/dev/null 2>&1; then
+      out="$candidates"
+    else
+      out='[]'
+    fi
+  fi
+  printf '%s' "$out"
+}
+
 # label_is_own_application OWN_ACTIONS_JSON REPO ITEM LABELLED_AT
 # True (exit 0) when the label's current presence on REPO/ITEM is explained by
-# this system's own last action rather than a human's: our latest recorded
-# action for that repo+item+label was `add`, and GitHub's own record of when
-# the label was last applied (LABELLED_AT, from
-# `gather-hand-flagged-refinements.sh`) is no later than ours — a human
-# touching the label after we did would push LABELLED_AT past our own `ts`.
-# Either an empty own record or an empty LABELLED_AT resolves to "not ours" —
-# nothing here to disprove human authorship, which is the safe direction: it
-# is what every hand-flag read already assumed before this file existed.
+# this system's own last action rather than a human's — the single-item form
+# of `label_filter_own_applications` above, and deliberately expressed in
+# terms of it so the two can never drift into disagreeing about who applied a
+# label. Either an empty own record or an empty LABELLED_AT resolves to "not
+# ours", the safe direction: it is what every hand-flag read already assumed
+# before this file existed.
 label_is_own_application() {
   local own_map="$1" repo="$2" item="$3" labelled_at="$4"
-  local key own action ts
-  key="$repo|$item"
-  own="$(jq -c --arg k "$key" '.[$k] // {}' <<<"$own_map" 2>/dev/null || printf '{}')"
-  action="$(jq -r '.action // ""' <<<"$own" 2>/dev/null || true)"
-  ts="$(jq -r '.ts // ""' <<<"$own" 2>/dev/null || true)"
-  [[ "$action" == "add" ]] || return 1
-  [[ -n "$ts" && -n "$labelled_at" ]] || return 1
-  [[ ! "$labelled_at" > "$ts" ]]
+  local candidate kept
+  candidate="$(jq -nc --arg r "$repo" --arg i "$item" --arg at "$labelled_at" \
+    '[{repo: $r, number: $i, labelled_at: $at}]' 2>/dev/null || printf '[]')"
+  kept="$(label_filter_own_applications "$candidate" "$own_map")"
+  [[ "$(jq 'length' <<<"$kept" 2>/dev/null || printf '1')" == "0" ]]
 }

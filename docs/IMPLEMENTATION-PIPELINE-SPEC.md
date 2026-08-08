@@ -5034,12 +5034,12 @@ runs unattended.
     (requirement 33): `refinement_label_add`/`_remove`'s callers in
     `agent-cycle.sh` log one alongside every successful call, for both
     `needs_refinement_label` and `refined_label`. `lib/label-marker.sh`'s
-    `label_own_actions_map`/`label_is_own_application` read it back: a label
-    currently present on an issue is explained by this system's own hand,
-    rather than a human's, when the most recent `own-label-action` for that
-    repo, item and label was an `add` at or after GitHub's own record of when
-    the label was last applied (`gather-hand-flagged-refinements.sh`'s
-    `labelled_at`).
+    `label_own_actions_map`, `label_filter_own_applications` and
+    `label_is_own_application` read it back: a label currently present on an
+    issue is explained by this system's own hand, rather than a human's, when
+    the most recent `own-label-action` for that repo, item and label was an
+    `add` at or after GitHub's own record of when the label was last applied
+    (`gather-hand-flagged-refinements.sh`'s `labelled_at`).
 
     This closes the gap requirement 34g's original design left: a block that
     cleared correctly but whose `needs_refinement_label` *removal* silently
@@ -5047,11 +5047,16 @@ runs unattended.
     already tolerates this by design) left the label sitting on an issue with
     no open block, which the next cycle's hand-flag scan read exactly like a
     human asking for one — restarting a block nobody asked for, the RC4
-    incident of the 2026-08-07 pipeline-flow review. `refinement_hand_flag_new`
-    now excludes a candidate this file's read-back attributes to the Script's
-    own last action, in addition to the existing "not already blocked" test,
-    rather than relying on that test alone to have covered every case a failed
-    removal could produce.
+    incident of the 2026-08-07 pipeline-flow review. The Co-Ordinator's
+    hand-flag scan now passes the gathered candidates through
+    `label_filter_own_applications` before `refinement_hand_flag_new` sees
+    them, so a label the read-back attributes to the Script's own last action
+    is excluded in addition to the existing "not already blocked" test, rather
+    than relying on that test alone to have covered every case a failed
+    removal could produce. Only the `new` half is filtered:
+    `refinement_hand_flag_cleared` reads the unfiltered list, because it asks
+    which issues have *lost* the label and a candidate removed for being the
+    Script's own would read there as a label that had gone.
 
     The scope stays exactly as narrow as requirement 34g's own design note
     requires: this is a stronger *test* for the one read-back that already
@@ -5248,9 +5253,11 @@ What exists, and the requirements each part answers to:
 3s. `lib/label-marker.sh` implementing requirement 39f's own-label-action
    memory: `label_own_action_fields` (the payload an `own-label-action` event
    carries), `label_own_actions_map` (every such event for one label, reduced
-   to the latest per repo+item) and `label_is_own_application` (whether a
-   label's current presence is explained by the Script's own last action
-   rather than a human's). A pure reader of the log, on the same "library
+   to the latest per repo+item), `label_filter_own_applications` (a gathered
+   hand-flag candidate list with the Script's own applications dropped, which
+   is what `agent-cycle.sh` calls) and `label_is_own_application` (the same
+   question for one item, expressed in terms of the filter so the two cannot
+   disagree). A pure reader of the log, on the same "library
    stays a pure function" boundary `stage_budget_overrides` documents for its
    own config read — the events themselves are logged at the call site in
    `agent-cycle.sh`, alongside the `refinement_label_add`/`_remove` calls
@@ -6763,10 +6770,15 @@ pull request, run the ones the change touches and any it could regress.
     `label_is_own_application` reads true only when the last recorded action was
     an `add` at or before GitHub's own `labelled_at`, and false when a human's
     later application, an empty own record, or an empty `labelled_at` leaves
-    nothing to attribute to the Script. `test/needs-refinement.test.sh` passes a
-    case built on it: a hand-flag scan that finds the label still present after
-    a simulated removal failure, with the own-action log showing the Script's
-    own `add` and nothing since, does not manufacture a fresh block.
+    nothing to attribute to the Script; `label_filter_own_applications` drops
+    exactly those candidates from a gathered list and preserves the rest
+    verbatim, dropping none when the own map is empty or malformed.
+    `test/needs-refinement.test.sh` passes cases built on the call site's own
+    composition of the two: a hand-flag scan that finds the label still present
+    after a simulated removal failure, with the own-action log showing the
+    Script's own `add` and nothing since, does not manufacture a fresh block —
+    while a label a human applied after the Script's last action, and one whose
+    removal was recorded as having succeeded, both still do.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the

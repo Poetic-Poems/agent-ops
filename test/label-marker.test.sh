@@ -135,6 +135,28 @@ else
 fi
 [[ -n "$own_entry" ]] || assert_eq "the own-action record for the stuck label exists" "non-empty" "empty"
 
+# --- label_filter_own_applications -------------------------------------------
+# The form `agent-cycle.sh` actually calls: a whole gathered candidate list,
+# with the Script's own applications dropped and everything else preserved
+# verbatim for `refinement_hand_flag_new` to judge.
+candidates='[{"repo":"o/r","number":52,"label":"needs-refinement","state":"open","labelled_at":"2026-08-01T09:00:00Z","by":"warwick"},
+             {"repo":"o/r","number":53,"label":"needs-refinement","state":"open","labelled_at":"2026-08-01T09:00:00Z","by":"warwick"}]'
+filtered="$(label_filter_own_applications "$candidates" "$stuck_map")"
+assert_eq "our own application is dropped from the candidate list" "1" \
+  "$(jq 'length' <<<"$filtered")"
+assert_eq "  ... and the candidate nobody recorded survives, verbatim" "53" \
+  "$(jq -r '.[0].number' <<<"$filtered")"
+assert_eq "  ... with its gathered fields untouched" "warwick" \
+  "$(jq -r '.[0].by' <<<"$filtered")"
+assert_eq "an empty own map drops nothing" "2" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$candidates" '{}')")"
+assert_eq "a malformed own map drops nothing — 'not ours' is the safe direction" "2" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$candidates" 'not json')")"
+assert_eq "a malformed candidate list yields an empty array, never a crash" "[]" \
+  "$(label_filter_own_applications 'not json' "$stuck_map")"
+assert_eq "an empty candidate list stays empty" "[]" \
+  "$(label_filter_own_applications '[]' "$stuck_map")"
+
 # The call-site shape under `set -e`.
 (
   set -euo pipefail
@@ -142,6 +164,8 @@ fi
   a="$(label_own_actions_map "needs-refinement" "/nonexistent/log.jsonl")"
   b="$(label_own_actions_map "needs-refinement" "garbage-not-a-path-either")"
   label_is_own_application 'not json' "o/r" "5" "2026-08-01T09:00:00Z" || true
+  c="$(label_filter_own_applications 'not json' 'not json')"
+  printf '%s' "$c" >/dev/null
   printf '%s%s' "$a" "$b" >/dev/null
   exit 0
 ) >/dev/null 2>&1

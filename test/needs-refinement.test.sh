@@ -47,6 +47,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/label-marker.sh
+. "$SCRIPT_DIR/lib/label-marker.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -590,6 +592,44 @@ assert_eq "a closed issue earns nothing, even freshly labelled" "[]" \
 assert_eq "another repo's identically-numbered issue is untouched by this one's block" \
   "$hand_flagged_compact" "$(refinement_hand_flag_new "$hand_flagged" \
        '[{"repo": "o/other", "item": "52", "kind": ""}]')"
+
+# Requirement 39f: the scan the Script actually runs is the composition of
+# `label_filter_own_applications` and `refinement_hand_flag_new`, in that
+# order. The case it exists for is a block that cleared correctly but whose
+# label removal silently failed: the label is still present, no block is open,
+# and without the filter that reads exactly like a human asking for one.
+own_log="$tmp_dir/own-label-actions.jsonl"
+printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
+own_map="$(label_own_actions_map "needs-refinement" "$own_log")"
+assert_eq "a stuck label from our own failed removal manufactures no fresh block" "[]" \
+  "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$own_map")" '[]')"
+
+# ... but the same issue flagged by a human *after* our own last action is a
+# genuine request, and must still earn its block.
+human_map="$(label_own_actions_map "needs-refinement" /dev/null)"
+assert_eq "an unrecorded label is still read as the human's own flag" \
+  "$hand_flagged_compact" \
+  "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$human_map")" '[]')"
+printf '%s\n' '{"ts":"2026-07-20T09:00:00Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
+assert_eq "a human re-applying the label after us still earns a block" \
+  "$hand_flagged_compact" \
+  "$(refinement_hand_flag_new \
+       "$(label_filter_own_applications "$hand_flagged" \
+            "$(label_own_actions_map "needs-refinement" "$own_log")")" '[]')"
+printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"remove"}' >> "$own_log"
+assert_eq "a label still present after a *recorded* removal is not ours to explain" \
+  "$hand_flagged_compact" \
+  "$(refinement_hand_flag_new \
+       "$(label_filter_own_applications "$hand_flagged" \
+            "$(label_own_actions_map "needs-refinement" "$own_log")")" '[]')"
+
+# The `cleared` half must never see the filtered list: it asks which issues
+# have *lost* the label, so an entry dropped for being our own would read
+# there as a label that had gone and unblock the item.
+printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
+assert_eq "the unfiltered list keeps a hand-flagged block standing" "[]" \
+  "$(refinement_hand_flag_cleared "$hand_flagged" \
+       '[{"repo": "o/r", "item": "52", "kind": "needs-refinement", "hand_flagged": true}]')"
 
 fields="$(refinement_hand_flag_fields "o/r" 52 needs-refinement warwick \
   "2026-07-28T09:00:00Z" "https://github.com/o/r/issues/52")"
