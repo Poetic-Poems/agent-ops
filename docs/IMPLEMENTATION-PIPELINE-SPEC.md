@@ -3218,7 +3218,9 @@ runs unattended.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never
-    approves and never merges.
+    approves and never merges. A `ready` verdict is itself re-verified against
+    GitHub before any of this runs (requirement 31c) — the Reviewer's own
+    confirmation is a model's, and the Script's is not.
 31a. **The handoff is verified, not reported.** Requirement 31 is the pipeline's
     only irreversible outward act, and requirement 32 has the Reviewer *describe*
     it — two different things. Before recording `pr-ready` the Script asks GitHub
@@ -3304,6 +3306,48 @@ runs unattended.
     the model may still do it, the Script asks GitHub whether it happened, and
     where it did not the Script does it. One definition, in `lib/handoff.sh`
     (requirement 34a).
+31c. **A `ready` verdict is confirmed against GitHub before it is acted on, not
+    trusted from the Reviewer.** poetic-fiddle #216 reached
+    `reviewDecision: APPROVED` while a CodeQL high-severity alert ("clear-text
+    logging of sensitive information") sat open, hidden inside an otherwise
+    15/16-green check list — the Reviewer's own instruction to confirm CI is
+    green (requirement 30) is a model reading a check list and judging it, and
+    that judgement is exactly what missed this one. So before requirement 31's
+    draft flip ever runs, the Script asks GitHub directly, through
+    `lib/review-gate.sh`'s `review_gate_verdict` (component 20):
+    - every required status check green at the pull request's *current* head
+      commit (`gh pr checks --required`, asked fresh rather than reused from
+      anything read earlier in the engagement, so a check still catching up to
+      a fix just pushed is never mistaken for one that passed). An empty or
+      unreadable required-check list is treated as failing, never as a vacuous
+      pass — poetic-fiddle #190, a CONFLICTING pull request, reports *no*
+      required checks at all, which is the conflicting-PR-runs-no-CI trap this
+      guards against;
+    - no code-scanning alert carrying a security severity that this pull
+      request's branch carries and the default branch does not — a default
+      branch that already lives with an accepted alert must not freeze every
+      future pull request over debt that is not theirs, so the default
+      branch's own open alerts are read and subtracted before anything is
+      judged "introduced" by this pull request.
+
+    `clean` — requirement 31 proceeds exactly as before. `dirty` — the
+    handoff never runs at all; this is recorded as a Reviewer handback
+    (requirement 32a) naming what the gate found, exactly as though the
+    Reviewer itself had reported `blocked`, and no `gh pr ready` is attempted.
+    `unknown` — the code-scanning read could not be asked at all (no
+    `security_events` permission on this token, code scanning not enabled, an
+    unreachable API): a fact about the node or the repository, not the pull
+    request, so the handoff proceeds and a `warning` is logged instead — the
+    same "could not check is not a failure" contract requirement 24a's Vercel
+    preview check already keeps, applied here so a token missing one
+    permission cannot silently freeze every pull request's handoff fleet-wide.
+    An `unknown` alert read never softens a `dirty` required-check verdict;
+    required checks are asked first and gate on their own.
+
+    #216 itself: the human resolved it directly on the pull request (renaming
+    the flagged constant, commit `8e62ff6`) before this requirement existed to
+    check it, which is itself the confirmation that a script-side gate would
+    have found nothing further to do once that fix landed.
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
@@ -5202,6 +5246,25 @@ What exists, and the requirements each part answers to:
     three actions per call, the overflow reported rather than silent.
     `SWEEP_GH` stubs `gh` for tests. Unit-tested
     (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
+20. `lib/review-gate.sh` implementing requirement 31c: given a pull request
+    URL and the repository's default branch, `review_gate_verdict` prints
+    `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — every required
+    status check green at the current head commit
+    (`review_gate_required_checks`, `gh pr checks --required`, an empty or
+    unreadable list treated as failing rather than vacuously passing) and no
+    code-scanning alert carrying a security severity that the pull request's
+    branch has and the default branch does not (`review_gate_security_alerts`,
+    the base branch's own open alerts subtracted first so inherited debt never
+    blocks a pull request that did not introduce it). The pull request's
+    alerts are read on its **merge** ref (`refs/pull/<n>/merge`) — the ref its
+    `pull_request`-triggered analysis runs against, and so the only one GitHub
+    files a pull request's alerts under; `refs/pull/<n>/head` carries no
+    analysis and answers with an empty list and a 200, which is
+    indistinguishable from a clean pull request. An alerts API that
+    cannot be asked at all is `unknown`, never `clean` — the same "could not
+    check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
+    already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
+    (`test/review-gate.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -5944,6 +6007,28 @@ pull request, run the ones the change touches and any it could regress.
    `CHANGES_REQUESTED` and the PR must still be un-mergeable afterwards. A
    re-request that cleared the block would have moved the human gate, not
    rung it.
+8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
+   handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
+   passes: every required check passing is `clean`; a failing required check,
+   an empty required-check list, and an unreadable required-check list are all
+   `dirty`, never a vacuous pass; an open code-scanning alert with a security
+   severity on the pull request's branch is `dirty` unless the same alert
+   number is already open on the default branch, in which case it is `clean`;
+   an alert with no security severity never gates; the pull request's alerts
+   are read on `refs/pull/<n>/merge` and never on `refs/pull/<n>/head`
+   (asserted on the ref the stubbed `gh` is actually asked for, because the
+   head ref answers with an empty list and a 200 — a silent `clean` that
+   leaves every other assertion here passing); and an alerts API that
+   cannot be asked at all is `unknown`, never `clean`, and never turns a dirty
+   required-check verdict into anything softer. Then drive a cycle whose
+   Reviewer answers `{"status": "ready"}` against a stubbed `gh` reporting a
+   failing required check: the cycle must record the same outcome as a
+   Reviewer `blocked` verdict (requirement 32a) — an `attempt-failed` naming
+   what the gate found — and must never call `gh pr ready` at all. Assert the
+   `unknown` path separately: the same cycle with the alerts read failing but
+   required checks clean must still complete the handoff, with a `warning`
+   logged rather than a block, so a token missing one permission cannot
+   silently freeze every pull request's handoff fleet-wide.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
@@ -6823,4 +6908,5 @@ confident, recurring no-op.
 | One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |
 | A staleness clock reset by the system's own housekeeping | `abandoned-drafts` (requirement 3e) measured a draft's staleness from `updatedAt`, which moves for anything at all. On poetic#92 a label edit deferred detection by a full `abandoned_draft_after_hours`, and — the sharper case — the Enabler's own comment correctly diagnosing the stall reset the clock in the same breath it cleared the block, deferring the very recovery it had just enabled. Filtering by comment author could not fix it: every pipeline write happens under the same GitHub account a human also comments as. | Ask "would *this system itself* ever produce this signal, and does that mean what a human producing it would mean?" before trusting a timestamp as "somebody is on it" (TD26072605). Where the answer differs, stamp what you write (`lib/pipeline-marker.sh`'s invisible marker) so the reader can tell its own hand from a human's, and discount your own bookkeeping (label edits) unconditionally. Same shape as "a change-detection digest that tracks churn instead of meaning" above, but the churn here is the system talking to itself. |
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
+| A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
