@@ -132,7 +132,17 @@ review_gate_security_alerts() {
   fi
   IFS=$'\t' read -r slug number <<<"$parts"
 
-  if ! pr_alerts="$(_review_gate_open_alerts "$slug" "refs/pull/$number/head")"; then
+  # `refs/pull/<n>/merge`, not `.../head`: a pull request's code-scanning
+  # analysis is uploaded by the `pull_request`-triggered workflow, which runs
+  # against the merge commit, so that is the only ref GitHub ever files a pull
+  # request's alerts under. The head ref carries no analysis at all and the
+  # alerts API answers it with an empty list and a 200 — indistinguishable, to
+  # every caller below, from "this pull request is clean". Asking the wrong ref
+  # here does not fail loudly; it passes silently, which is the one failure
+  # this whole file exists to prevent. Confirmed against the motivating case:
+  # poetic-fiddle #216's high-severity alert is listed on
+  # `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state.
+  if ! pr_alerts="$(_review_gate_open_alerts "$slug" "refs/pull/$number/merge")"; then
     printf 'unknown\tcould not read %s'\''s code-scanning alerts' "$url"
     return 0
   fi

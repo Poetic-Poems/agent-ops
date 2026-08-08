@@ -69,9 +69,18 @@ URL="https://github.com/Poetic-Poems/poetic-fiddle/pull/216"
 #   $tmp_dir/required.json   the `pr checks --required --json name,bucket`
 #                             payload; "ERROR" makes the call fail as #190's
 #                             does (empty stdout, non-zero exit).
-#   $tmp_dir/pr-alerts.tsv   lines for the `ref=refs/pull/<n>/head` alerts
+#   $tmp_dir/pr-alerts.tsv   lines for the `ref=refs/pull/<n>/merge` alerts
 #                             call; "ERROR" makes the call fail.
 #   $tmp_dir/base-alerts.tsv the same, for `ref=refs/heads/<default-branch>`.
+#   $tmp_dir/refs-asked      every ref the stub was asked for, one per line, so
+#                             an assertion can pin *which* ref the alerts read
+#                             uses rather than only what it does with the
+#                             answer. A pull request's alerts exist only under
+#                             `refs/pull/<n>/merge`; asking `.../head` returns
+#                             an empty list and a 200, which reads as "clean"
+#                             and would silently disarm the whole gate, so the
+#                             stub answers only the merge ref and any other
+#                             pull-request ref fails the call outright.
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -88,9 +97,10 @@ if [[ "$1" == "api" ]]; then
   for arg in "$@"; do
     [[ "$arg" == ref=* ]] && ref="${arg#ref=}"
   done
+  printf '%s\n' "$ref" >>"$d/refs-asked"
   case "$ref" in
-    refs/pull/*/head) file="$d/pr-alerts.tsv" ;;
-    refs/heads/*)     file="$d/base-alerts.tsv" ;;
+    refs/pull/*/merge) file="$d/pr-alerts.tsv" ;;
+    refs/heads/*)      file="$d/base-alerts.tsv" ;;
     *) exit 1 ;;
   esac
   content="$(cat "$file" 2>/dev/null || printf '')"
@@ -147,6 +157,24 @@ set_pr_alerts ''
 out="$(review_gate_security_alerts "$URL" "main")"; rc=$?
 assert_eq "no open alerts at all is clean" "clean" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
+
+# The ref itself, pinned. GitHub files a pull request's code-scanning alerts
+# only under `refs/pull/<n>/merge` — the ref its `pull_request`-triggered
+# analysis runs against. `refs/pull/<n>/head` carries no analysis, so the
+# alerts API answers it with an empty list and a 200, which every branch below
+# reads as "clean". That disarms the security half of this gate completely
+# while leaving every other assertion in this file passing, so the ref gets an
+# assertion of its own rather than being left implicit in the stub.
+rm -f "$tmp_dir/refs-asked"
+set_pr_alerts "$(printf '42\thigh')"
+set_base_alerts ''
+out="$(review_gate_security_alerts "$URL" "main")"
+assert_contains "the pull request's alerts are read on its merge ref" \
+  "refs/pull/216/merge" "$(cat "$tmp_dir/refs-asked")"
+assert_eq "  ... and not on its head ref, which carries no analysis" \
+  "" "$(grep -c 'refs/pull/216/head' "$tmp_dir/refs-asked" | grep -v '^0$')"
+assert_contains "  ... and the base branch on its heads ref" \
+  "refs/heads/main" "$(cat "$tmp_dir/refs-asked")"
 
 set_pr_alerts "$(printf '42\thigh')"
 set_base_alerts ''
