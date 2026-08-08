@@ -888,7 +888,12 @@ number's twins elsewhere on the page.
   keyless renders no badge and no note anywhere on the page. A node behind an
   image published longer ago than `image_behind_grace_hours` carries an
   **image behind** badge naming the registry commit, while one whose registry
-  check failed carries **image unverified** instead (#155). A source marked
+  check failed carries **image unverified** instead (#155). A cycle whose
+  `selection` carried `race_losses` (implementation spec 17d, #248) shows a
+  blue **recovered race ×N** badge beside its title in the cycle history —
+  informational, not a warning, since losing a claim race and then winning a
+  later one is the claims (17a) working as designed — while a cycle with no
+  `race_losses` at all shows none. A source marked
   `failed` in `github.inputs[<slug>].state` (TD-PPagop-26080201) renders a
   "couldn't read" marker in place of its count, a source marked
   `answered_404` (a repo with no tech-debt register) still renders an

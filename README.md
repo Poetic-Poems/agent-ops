@@ -871,8 +871,11 @@ Leave `state_repo` out of `config.json` and none of this happens at all.
 ## Skipping no-op cycles
 
 The Co-Ordinator costs the same to say "nothing to do" as it does to select
-work — about 2½ minutes of Haiku, reading both repos. On a quiet week that was
-24 identical answers a day, all of them paid for.
+work — about 2½ minutes of Haiku, reading both repos. Firing every
+`schedule.cycle_interval_minutes` (15 by default; see [Configuration](#configuration)) instead
+of once an hour is only affordable because of this check: without it, a quiet
+week would be a Co-Ordinator call roughly every 15 minutes, all of them paid
+for, purely to hear "nothing changed" again.
 
 So before launching it, the Script fingerprints everything the Co-Ordinator's
 verdict depends on: each repo's head commit, its pre-fetched findings, its open
