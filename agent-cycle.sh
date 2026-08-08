@@ -953,11 +953,15 @@ record_needs_refinement_block() {
       # a `refined_label` a prior Refiner engagement left must come off too —
       # the same consistency `release_refinement_label` keeps for the negative
       # label, mirrored here for the positive one.
-      if [[ -n "$refined_label" ]] && jq -e --arg r "$repo" --arg i "$item" \
+      if [[ -n "$refined_label" ]] && [[ -n "$number" ]] && jq -e --arg r "$repo" --arg i "$item" \
            '(.[$r][$i] // null) != null' <<<"${refinements_json:-{\}}" >/dev/null 2>&1; then
         if refinement_label_remove "$repo" "$number" "$refined_label"; then
           log_event "own-label-action" \
             "$(label_own_action_fields "$repo" "$number" "$refined_label" "remove")"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "could not remove the $refined_label label from $repo#$number — the fresher block is recorded regardless" \
+            '{detail: $d}')"
         fi
       fi
     fi
