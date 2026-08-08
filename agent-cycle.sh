@@ -3399,22 +3399,29 @@ fi
 # --- 5c. Pre-flight already-done check (issue #245) ---
 # Deterministic, no LLM, run before the clone and the Implementor engagement
 # either one is paid for: ask whether the item this cycle just claimed is
-# already done — its register row resolved, its issue closed, or (for a
-# finishing source, whose item is the `pr-<n>-…` shape `lib/work-gone.sh`
-# recognises) its pull request already closed or merged. `source_states_json`
-# already carries every repo this cycle walked, gathered well before the
-# claim, which is all an issue or a finishing source's PR needs; a tech-debt
-# item additionally needs its own fresh register read, because a freshly
-# claimed item was never a member of the blocked set `register_status_json`
-# is scoped to.
+# already done — its register row resolved, its issue closed, its
+# work-order branch already merged, an open PR already carrying that branch,
+# or (for a finishing source, whose item is the `pr-<n>-…` shape
+# `lib/work-gone.sh` recognises) its pull request already closed or merged.
+# `source_states_json` already carries every repo this cycle walked, gathered
+# well before the claim, which is all an issue, a finishing source's PR or the
+# stale-open-PR check needs; a tech-debt item additionally needs its own
+# fresh register read, because a freshly claimed item was never a member of
+# the blocked set `register_status_json` is scoped to.
 preflight_register_json='{}'
 if [[ "$selected_source" == "tech-debt" ]]; then
   preflight_register_json="$(jq -nc --arg s "$selected_repo" \
     --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" "$selected_item")" \
     '{($s): $m}')"
 fi
-preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" \
+preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
   "$source_states_json" "$preflight_register_json")"
+# The ancestry check is the one live `gh` call in this section (lib/preflight.sh's
+# header explains why it is gated to the three sources whose branch predates the
+# claim), so it only runs when the cheaper, pure checks above found nothing.
+if [[ -z "$preflight_reason" ]] && preflight_existing_branch_source "$selected_source"; then
+  preflight_reason="$(preflight_branch_merged_reason "$selected_repo" "$selected_default_branch" "$selected_branch")"
+fi
 if [[ -n "$preflight_reason" ]]; then
   log_item_void "preflight" "$preflight_reason" \
     "$(jq -nc --arg e "$preflight_reason" '{evidence: $e}')"

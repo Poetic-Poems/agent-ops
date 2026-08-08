@@ -4249,14 +4249,40 @@ runs unattended.
     34i already reads deterministically, reused, not a new one invented for
     the occasion.
 
-    A hit logs `item-void` (stage `preflight`) with the same reason
-    `work_gone_clearances` would give a blocked item, releases the claim
-    (requirement 17a's release rules) and ends the cycle — no Implementor
-    engagement spent. This needs no corroboration guard of its own
-    (requirement 34d exists to catch a model's fabricated citation, and there
-    is no model in this path to fabricate one): the evidence is read directly
-    off `gh`/the register file, the same ground truth requirement 34d's guard
-    checks a citation against.
+    Two more done-signals run alongside `preflight_done_reason`, both cheap
+    enough to cost no clone of their own:
+
+    - **An open pull request already carries the just-claimed branch**, for
+      an ordinary `issues`/`tech-debt` item only (a finishing source's item is
+      already the `pr-<n>-…` shape the check above covers). Read from the
+      same `source_states_json` digest's `open_prs[].h`, gathered before the
+      claim — the "stale claim, a previous cycle's branch/PR already exists"
+      shape a lost-then-recovered claim race (requirement 17a) can produce.
+      `lib/preflight.sh`'s `preflight_open_pr_reason`, called from
+      `preflight_done_reason` itself.
+    - **The claimed branch is already merged into `default_branch`**
+      (`lib/preflight.sh`'s `preflight_branch_merged_reason`): one live
+      `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
+      `identical` or `behind` means every commit on the branch is already an
+      ancestor of `default_branch`, so the draft's work landed some other way
+      while it sat. Run only for `review-feedback`, `merge-conflicts` and
+      `abandoned-drafts` — the three sources whose branch and pull request
+      predate the claim (`lib/preflight.sh`'s
+      `preflight_existing_branch_source`) — and never for an ordinary
+      `issues`/`tech-debt` claim, whose branch the Script has just created at
+      `default_branch`'s own head: comparing it against that same head the
+      moment the claim is won would always read `identical` and void every
+      ordinary claim on its first tick.
+
+    A hit from any of the three logs `item-void` (stage `preflight`) with the
+    reason `work_gone_clearances`, `preflight_open_pr_reason` or
+    `preflight_branch_merged_reason` gives, releases the claim (requirement
+    17a's release rules) and ends the cycle — no Implementor engagement
+    spent. None needs a corroboration guard of its own (requirement 34d
+    exists to catch a model's fabricated citation, and there is no model in
+    this path to fabricate one): the evidence is read directly off
+    `gh`/the register file/the cycle's own pre-claim digest, the same ground
+    truth requirement 34d's guard checks a citation against.
 
 ### The Enabler
 
@@ -4949,13 +4975,22 @@ What exists, and the requirements each part answers to:
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
 3s. `lib/preflight.sh` implementing requirement 34m's decision:
-   `preflight_done_reason`, which given a repo, an item, the cycle's
-   source-state digests and (for a tech-debt item) its one freshly read
-   register row, wraps them into the one-entry blocked list
-   `work_gone_clearances` (3m) expects and returns its reason, or nothing.
-   Pure — it reads nothing itself, sourced after `lib/work-gone.sh`, whose
-   function it wraps. Unit-tested (`test/preflight.test.sh`); must pass
-   `shellcheck`.
+   `preflight_done_reason`, which given a repo, an item, its claim branch, the
+   cycle's source-state digests and (for a tech-debt item) its one freshly
+   read register row, wraps them into the one-entry blocked list
+   `work_gone_clearances` (3m) expects, then — for an ordinary issues/
+   tech-debt item only — falls back to `preflight_open_pr_reason`, checking
+   the same digest for an open pull request already carrying the claim
+   branch; returns the first reason found, or nothing. `preflight_branch_merged_reason`
+   is the third signal, kept separate because it is impure (one live
+   `gh api compare` call against the target repository) and `preflight_existing_branch_source`
+   is the gate that scopes it to the three sources whose branch predates the
+   claim (review-feedback, merge-conflicts, abandoned-drafts) — see
+   requirement 34m for why an ordinary claim's freshly created branch cannot
+   use this check. `preflight_done_reason` and `preflight_open_pr_reason` are
+   pure — they read nothing themselves — sourced after `lib/work-gone.sh`,
+   whose function `preflight_done_reason` wraps. Unit-tested
+   (`test/preflight.test.sh`); must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
    prints one JSON action object per orphan handled (`recovered`, `released`,
@@ -6331,6 +6366,16 @@ pull request, run the ones the change touches and any it could regress.
    sampled, and for a tech-debt item whose register row pre-flight never
    fetched (the register map is fetched fresh, per item, only when the source
    is `tech-debt`; passing none must decide nothing rather than assume open).
+   An ordinary issues/tech-debt item whose own claim branch already carries an
+   open pull request in the pre-claim digest reads as already done too, and a
+   finishing source's own `pr-<n>-…`-shaped item never asks that question — it
+   is already answered by the check above. `preflight_branch_merged_reason`
+   reads `identical`/`behind` from a stubbed `gh api compare` as already
+   merged, `diverged`/`ahead` as still live, and an unreadable or failed
+   comparison as deciding nothing; `preflight_existing_branch_source` is true
+   for exactly `review-feedback`, `merge-conflicts` and `abandoned-drafts`,
+   false for every other source (including one that merely contains one of
+   those names as a substring).
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
