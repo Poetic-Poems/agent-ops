@@ -442,6 +442,16 @@
         "spec": "How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle."
       }
     },
+    "max_chained_cycles": {
+      "description": "Finish-then-continue: how many further selection cycles a cycle that did real work (claimed an item and ran the Implementor) may chain immediately afterward, in the same process lineage, when the sources it already gathered this cycle are still non-empty and non-excluded. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
+      "type": "integer",
+      "minimum": 1,
+      "default": 3,
+      "x-docs": {
+        "readme": "How many further cycles a cycle that just did real work may chain immediately, instead of waiting for the next cron firing, while sources it already gathered are still non-empty. `1` disables chaining.",
+        "spec": "Finish-then-continue (requirement 41): how many further selection cycles a cycle that did real work may chain immediately afterward, bounded so a busy fleet still yields the lock periodically. `1` disables chaining."
+      }
+    },
     "claim_ttl_hours": {
       "description": "Age beyond which lib/claim.sh sweeps a claim-registry entry. Set it far beyond a whole cycle, so only a dead node's claim ever expires.",
       "type": "number",
@@ -756,6 +766,18 @@
           "x-docs": {
             "readme": "The hour field of the containerised node's implementation-cycle crontab line (`deploy/docker/render-crontab.sh`); `*` means every hour.",
             "spec": "The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour."
+          }
+        },
+        "cycle_interval_minutes": {
+          "description": "How often, in minutes, the implementation cycle's crontab line fires within an allowed hour — the node's per-name minute (env or hash) is the first firing, then every interval after it, each occurrence skipped if it lands on an excluded_minutes entry. 60 reproduces the single-firing-per-hour shape earlier releases hard-coded. Kept cheap by lib/noop-skip.sh: an idle firing costs a fingerprint comparison and no LLM call.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 60,
+          "default": 15,
+          "x-docs": {
+            "readme": "Minutes between implementation-cycle firings within an allowed hour (the no-op short-circuit keeps an idle firing cheap); `60` fires once per hour, as every release before this key existed.",
+            "spec": "How often, in minutes, the implementation cycle's crontab line fires within an allowed hour, rendered by `deploy/docker/render-crontab.sh`; `60` reproduces the single-firing-per-hour shape every release before this key carried.",
+            "value": "`15`"
           }
         },
         "excluded_minutes": {
