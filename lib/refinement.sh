@@ -568,7 +568,7 @@ refiner_policy_value() {
 #
 # `tech-debt`, `project-review` and `implementation-plan` items are never
 # candidates here, whatever their policy says: the Script does not pre-fetch
-# them as structured data (TD-PPagop-26080808), so there is nothing in
+# them as structured data (TD-PPagop-26080809), so there is nothing in
 # REPOS_JSON to offer the Refiner for them. Setting a policy for one of those
 # three still shapes the Co-Ordinator's own ranking; it just finds no
 # engagement here to act on it.

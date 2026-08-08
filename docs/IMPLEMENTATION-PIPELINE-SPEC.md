@@ -663,7 +663,7 @@ It must not be `blocked`, for the reason given against `enabler_escalation_label
 
 ### Extended notes: `refinement_policy`
 
-Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement (TD-PPagop-26080808).
+Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement (TD-PPagop-26080809).
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -4913,7 +4913,7 @@ runs unattended.
        `ref`). `tech-debt`, `project-review` and `implementation-plan` items
        are never candidates, whatever their policy says: the Script does not
        pre-fetch them as structured data, so there is nothing here to offer
-       the Refiner for them (`tech-debt/TD-PPagop-26080808.md`);
+       the Refiner for them (`tech-debt/TD-PPagop-26080809.md`);
     2. its source's `refinement_policy` (config) is not `"exempt"` — the
        default for a source the object does not name, and the correct default
        for a source whose items already carry their own specification (a
@@ -4942,7 +4942,7 @@ runs unattended.
     a `"required"` or `"preferred"` source to benefit from — setting either
     policy on a source this paragraph's clause 1 excludes shapes the
     Co-Ordinator's ranking but starves it of anything to rank favourably,
-    which is exactly what `tech-debt/TD-PPagop-26080808.md` records as
+    which is exactly what `tech-debt/TD-PPagop-26080809.md` records as
     follow-up work.
 
 39b. **Claims and the engagement cap.** Before claiming, the candidate set is
