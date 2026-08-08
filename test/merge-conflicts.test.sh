@@ -22,6 +22,13 @@
 # to be worth invoking the actual script against a stub rather than
 # re-replicating it in jq a second time.
 #
+# Further down still: agent-cycle.sh's own `gather_merge_conflicts` wrapper,
+# lifted straight out of the script (as test/stage-salvage.test.sh already
+# does for its own functions), pinning that its nudge-failure fallback drops a
+# never-nudged bot candidate exactly as scripts/nudge-dependabot-rebase.sh
+# itself would — the third leg of requirement 3s's defence in depth, alongside
+# the write-side drop and prompts/coordinator.md's explicit fourth case.
+#
 # Run directly:
 #
 #   ./test/merge-conflicts.test.sh
@@ -251,6 +258,69 @@ trap - EXIT
 assert_eq "an unknown repo yields [] and exit 0, never a broken cycle" "[]" \
   "$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "Poetic-Poems/does-not-exist" autonomous-agent 'agent/' 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
+
+# --- agent-cycle.sh's gather_merge_conflicts: the nudge-failure fallback still
+#     drops a never-nudged bot candidate (requirement 3s) ---
+#
+# When nudge-dependabot-rebase.sh itself fails to produce a usable result,
+# gather_merge_conflicts falls back to the gatherer's own array rather than
+# losing every candidate in the repo over one broken write step. That fallback
+# must apply the same drop the nudge step itself would have: a `bot: true`,
+# `rebase_requested: false`, no-`superseded_by` entry is never selectable, and
+# letting one through here would land it in prompts/coordinator.md's
+# ordinary-case catch-all, which force-pushes onto a branch Dependabot owns.
+lift_bash_fn() {
+  awk -v name="$2" '
+    $0 == name "() {" { on = 1 }
+    on               { print }
+    on && /^\}$/      { exit }
+  ' "$1"
+}
+gather_fn="$(lift_bash_fn "$SCRIPT_DIR/agent-cycle.sh" gather_merge_conflicts)"
+if [[ -z "$gather_fn" ]]; then
+  echo "FAIL - could not lift gather_merge_conflicts from agent-cycle.sh"
+  failures=$(( failures + 1 ))
+else
+  fallback_tmp="$(mktemp -d)"
+  mkdir -p "$fallback_tmp/scripts" "$fallback_tmp/cycle"
+
+  cat > "$fallback_tmp/scripts/gather-merge-conflicts.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' '[
+  {"ref": "pr-129-conflict-aaa", "number": 129, "bot": true, "rebase_requested": false, "superseded_by": null},
+  {"ref": "pr-57-conflict-bbb", "number": 57, "bot": false}
+]'
+STUB
+  chmod +x "$fallback_tmp/scripts/gather-merge-conflicts.sh"
+
+  # The nudge step fails outright — the exact condition the fallback exists for.
+  cat > "$fallback_tmp/scripts/nudge-dependabot-rebase.sh" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+exit 1
+STUB
+  chmod +x "$fallback_tmp/scripts/nudge-dependabot-rebase.sh"
+
+  out="$(bash -c "
+    $gather_fn
+    SCRIPT_DIR='$fallback_tmp'
+    cycle_dir='$fallback_tmp/cycle'
+    pr_label=autonomous-agent
+    branch_prefix=agent/
+    cycle_id=test-cycle
+    node_name=test-node
+    DRY_RUN=0
+    log_event() { :; }
+    gather_merge_conflicts o/r
+  ")"
+
+  assert_eq "the fallback drops the never-nudged bot candidate, keeping the ordinary one" \
+    '["pr-57-conflict-bbb"]' "$(jq -c '[.[].ref]' <<<"$out")"
+  assert_eq "  ... and the fingerprint file on disk reflects the same filtered array" \
+    '["pr-57-conflict-bbb"]' "$(jq -c '[.[].ref]' "$fallback_tmp/cycle/merge-conflicts-o_r.json")"
+
+  rm -rf "$fallback_tmp"
+fi
 
 printf '\n'
 if (( failures > 0 )); then
