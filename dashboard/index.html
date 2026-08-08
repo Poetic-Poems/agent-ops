@@ -741,6 +741,11 @@
     if (cur.repo)   { sep(); what.appendChild(el("span", {class:"mono", text: cur.repo.split("/")[1]})); }
     if (cur.source) { what.appendChild(document.createTextNode(" ")); what.appendChild(sourceTag(cur.source)); }
     if (label)      what.appendChild(document.createTextNode(" " + (label.length > 70 ? label.slice(0,69) + "…" : label)));
+    if (cur.race_losses) {
+      what.appendChild(el("span", {class:"badge b-blue", style:"margin-left:6px",
+        title: cur.race_losses + " candidate(s) lost to a peer before this claim landed",
+        text: "recovered race ×" + cur.race_losses}));
+    }
     return what;
   }
 
@@ -1217,7 +1222,14 @@
         el("td", {}, sourceTag(cy.source)),
         el("td", {class:"wrap roomy"}, [
           cy.repo ? el("span", {class:"mono muted", text: cy.repo.split("/")[1] + " "}) : null,
-          esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")) ]),
+          esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")),
+          // requirement 17d: this cycle lost the claim race for one or more
+          // higher-ranked candidates before winning a lower one — healthy
+          // contention recovered from, not a fault, so an informational
+          // badge rather than an amber/red one.
+          cy.race_losses ? el("span", {class:"badge b-blue", style:"margin-left:6px",
+            title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
+            text: "recovered race ×" + cy.race_losses}) : null ]),
         el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         // The number, not the word "PR": it is the same identifier the rest of

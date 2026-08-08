@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+# Captured before the flag loop below consumes it with `shift`: finish-then-
+# continue (requirement 39) re-launches this same script with the same
+# arguments a chained cycle later, and by then "$@" is long gone.
+ORIGINAL_ARGV=("$@")
+
 # --- PATH: cron's environment is minimal; make sure claude, gh, git, jq resolve. ---
 nvm_bin=""
 if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
@@ -90,6 +95,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 # shellcheck source=lib/labels.sh
 . "$SCRIPT_DIR/lib/labels.sh"
+# shellcheck source=lib/chain.sh
+. "$SCRIPT_DIR/lib/chain.sh"
 
 usage() {
   cat <<'EOF'
@@ -434,6 +441,7 @@ limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
+max_chained_cycles="$(cfg '.max_chained_cycles')"
 # How long a draft PR this system raised may sit untouched before it counts as
 # abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
 # beyond a whole cycle, so a draft merely being worked never qualifies.
@@ -1480,6 +1488,18 @@ limit_hit_this_cycle=0
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
 clone_dir=""
+# Finish-then-continue (requirement 39): set true only once this cycle has
+# won a claim and is about to run the Implementor. Initialised here, ahead
+# of the trap, for the same reason lock_acquired is: a cycle that stands
+# down or fails before ever reaching that point still runs cleanup, and an
+# unset variable read under `set -u` inside a trap would abort it part-way.
+#
+# chain_count is this cycle's own place in its lineage, 1 for the cron-fired
+# original — AGENT_CYCLE_CHAIN_COUNT is how a chained child learns it is not
+# the original; garbage or absent both mean "the original".
+chain_eligible=0
+chain_count="${AGENT_CYCLE_CHAIN_COUNT:-1}"
+[[ "$chain_count" =~ ^[0-9]+$ && "$chain_count" -ge 1 ]] || chain_count=1
 cleanup() {
   local exit_code=$?
   # A signal landing mid-cleanup must not re-enter the handler over a cycle
@@ -1512,6 +1532,38 @@ cleanup() {
   # gh call here must never affect the cycle's outcome or exit code.
   if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
     timeout 120 "$SCRIPT_DIR/scripts/publish-dashboard.sh" >/dev/null 2>&1 || true
+  fi
+  # Finish-then-continue (requirement 39), last of all: a chained cycle is a
+  # brand-new process with its own cycle id, its own lock acquisition and its
+  # own full cleanup, so it must not start until this one has released
+  # everything above — the lock first of all, or it would just log
+  # `cycle-skipped` and exit. Gated on `exit_code == 0` too: `chain_eligible`
+  # is decided at claim time (requirement 17a) and nothing past that point
+  # may turn a real success into a chain off of a genuine failure. Detached
+  # with input from /dev/null and both streams appended to the same cron.log
+  # a cron-fired cycle already writes to, then disowned: this process is
+  # about to exit, and nothing here should wait for — or die with — the
+  # child.
+  #
+  # Spawned through a subshell that restores the default dispositions first,
+  # which is not decoration: an *ignored* signal is inherited across both fork
+  # and exec, and a shell that starts with a signal already ignored can never
+  # take it back — `trap ... TERM` in the child is silently a no-op for the
+  # rest of its life. The `trap '' TERM INT HUP` at the top of this function
+  # is exactly such an ignore, so a child forked from here would run the whole
+  # of the next cycle deaf to every signal requirement 9c's handler exists to
+  # catch, and requirement 1's stale-lock takeover would find its TERM ignored
+  # and reach the item only through the KILL that follows — no `attempt-failed`,
+  # no `cycle-end`, no claim released. EXIT is reset alongside them so a failed
+  # `exec` cannot re-enter this same handler in the subshell.
+  if (( chain_eligible )) && (( exit_code == 0 )); then
+    log_event "chained" "$(jq -nc --argjson n "$(( chain_count + 1 ))" --argjson m "$max_chained_cycles" \
+      '{depth: $n, max_chained_cycles: $m}')"
+    (
+      trap - TERM INT HUP EXIT
+      AGENT_CYCLE_CHAIN_COUNT=$(( chain_count + 1 )) exec "$SCRIPT_DIR/agent-cycle.sh" "${ORIGINAL_ARGV[@]}"
+    ) </dev/null >>"$state_dir/cron.log" 2>&1 &
+    disown 2>/dev/null || true
   fi
   exit "$exit_code"
 }
@@ -3240,11 +3292,15 @@ claimed_json=""
 n_cand="$(jq 'length' <<<"$candidates_json")"
 claim_attempts=0
 claim_unreachable=0
-# Contention losses ("held" — a peer genuinely holds the item) before a win,
-# distinct from `claim_unreachable`: this is what makes the eventual win a
-# *recovered* race rather than an ordinary first-try selection, and the
-# dashboard needs to be able to tell the two apart (issue #245).
-claim_losses_held=0
+# race_losses (requirement 17d): how many candidates this cycle lost to a
+# peer genuinely holding the item (cause "held" — healthy contention, not an
+# outage), distinct from `claim_unreachable`. Carried on both the eventual
+# `selection` (only when it recovered from a loss — issue #245) and the
+# all-claimed `stand-down` below, so a rising rate is visible without
+# cross-referencing `claim-lost` events by hand — the observability
+# finish-then-continue and the faster cadence both raise the concurrent-claim
+# frequency for (#248).
+race_losses=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -3283,7 +3339,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # Opposite operational conditions, so `cause` tells them apart instead of
   # the event wearing one reason for both.
   case "$claim_rc" in
-    3) claim_cause="held"; claim_losses_held=$(( claim_losses_held + 1 )) ;;
+    3) claim_cause="held"; race_losses=$(( race_losses + 1 )) ;;
     1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
     *) claim_cause="$claim_rc" ;;
   esac
@@ -3307,7 +3363,8 @@ if [[ -z "$claimed_json" ]]; then
     standdown_cause="raced"
   fi
   log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" --arg c "$standdown_cause" \
-    '{reason: $r, candidates: $n, cause: $c}')"
+    --argjson rl "$race_losses" \
+    '{reason: $r, candidates: $n, cause: $c, race_losses: $rl}')"
   exit 0
 fi
 
@@ -3320,9 +3377,24 @@ selected_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_jso
 # `race_losses` is present only when this selection recovered from at least
 # one lost claim (issue #245) — an ordinary first-try selection, still the
 # overwhelming majority, carries nothing new on this event.
-log_event "selection" "$(jq -c --argjson n "$claim_losses_held" \
+log_event "selection" "$(jq -c --argjson n "$race_losses" \
   '{repo, item, source, model, title, branch} + (if $n > 0 then {race_losses: $n} else {} end)' \
   <<<"$work_order_json")"
+
+# Finish-then-continue (requirement 39): a claim just won is real work, and
+# `ordered_repos_json` — gathered once, ahead of the Co-Ordinator, and
+# untouched since — is cheap evidence of whether more might be waiting
+# (lib/chain.sh). `--once` is a human or a test asking for exactly one
+# cycle, not an unattended tick, so it never chains regardless. The next
+# chained cycle runs its own Co-Ordinator, with its own fresh gather and its
+# own no-op fingerprint, so this is only ever a cheap "was it worth asking
+# again", never a prediction of what that cycle will find. Set before the
+# pre-flight check below so that even a cycle that voids out here — real
+# work, just none of it left to do — still chains rather than wasting the
+# rest of its tick.
+if ! (( ONCE )) && chain_should_continue "$chain_count" "$max_chained_cycles" "$ordered_repos_json"; then
+  chain_eligible=1
+fi
 
 # --- 5c. Pre-flight already-done check (issue #245) ---
 # Deterministic, no LLM, run before the clone and the Implementor engagement

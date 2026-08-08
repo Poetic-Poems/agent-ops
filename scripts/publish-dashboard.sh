@@ -375,6 +375,10 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
           item:   ([ $e[] | select(.item)  | .item ] | last),
           source: ([ $e[] | select(.event=="selection") | .source ] | last),
           title:  ([ $e[] | select(.event=="selection") | .title ]  | last),
+          # requirement 17d: how many candidates this cycle lost to a peer
+          # before winning its claim — a "recovered race" is race_losses > 0
+          # on a cycle that still went on to select.
+          race_losses: (([ $e[] | select(.event=="selection") | .race_losses ] | last) // 0),
           pr_url: ([ $e[] | select(.pr_url) | .pr_url ] | last),
           reason: ([ $e[] | select(.event=="none-selected" or .event=="stand-down" or .event=="cycle-skipped") | (.reason // .detail) ] | last),
           fail_detail: ([ $e[] | select(.event=="attempt-failed") | ((.stage // "?") + ": " + (.detail // "")) ] | last),
@@ -674,7 +678,8 @@ status_json="$(jq -n \
           repo:   ([ .[] | select(.event=="selection") | .repo ]   | last),
           item:   ([ .[] | select(.event=="selection") | .item ]   | last),
           source: ([ .[] | select(.event=="selection") | .source ] | last),
-          title:  ([ .[] | select(.event=="selection") | .title ]  | last)
+          title:  ([ .[] | select(.event=="selection") | .title ]  | last),
+          race_losses: (([ .[] | select(.event=="selection") | .race_losses ] | last) // 0)
         } end
       ),
       # The newest FINISHED cycle the FLEET ran, not the newest this node ran:
@@ -885,7 +890,8 @@ node_live_json="$(jq -c '
             repo:   ([ $c[] | select(.event == "selection") | .repo ]   | last),
             item:   ([ $c[] | select(.event == "selection") | .item ]   | last),
             source: ([ $c[] | select(.event == "selection") | .source ] | last),
-            title:  ([ $c[] | select(.event == "selection") | .title ]  | last) }
+            title:  ([ $c[] | select(.event == "selection") | .title ]  | last),
+            race_losses: (([ $c[] | select(.event == "selection") | .race_losses ] | last) // 0) }
       end;
   map(select((.node // "") != "")) | group_by(.node)
   | map({key: .[0].node, value: live_of}) | from_entries' "$events_file")"
