@@ -3598,8 +3598,13 @@ runs unattended.
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`,
+    `dependabot-rebase-requested`,
     `disabled`, `enabled`, `salvage`,
-    `warning`, `cycle-end`. A `salvage` event (requirement 9e) carries the
+    `warning`, `cycle-end`. A `dependabot-rebase-requested` (requirement 3s)
+    carries the `repo` and the `number` of the Dependabot pull request this
+    cycle asked to rebase itself; a nudge that could not be posted is a
+    `warning` whose `detail` names the same repo and number instead, since
+    nothing was requested and the retry is automatic next cycle. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
     `failed` — plus `exit_code` when the resume itself did not exit 0. It is
     written for every resume the Script actually starts, success or not,
