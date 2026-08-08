@@ -1688,6 +1688,7 @@ maybe_run_enabler() {
   local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
   local items_named_json
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
+  local e_void_entry e_void_refusal
   local e_pr_url e_handoff e_refusal e_refined
   local issue_title issue_body_file created number url missing
 
@@ -1963,9 +1964,29 @@ $(jq . <<<"$input")
         ;;
       void)
         # Requirement 9b: "the work is already done" is a void, never an unblock.
-        log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
-          "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
-        release_refinement_label "$e_item" "$e_repo"
+        # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
+        # every stage: the Enabler reads the issue and the PR (requirement 35),
+        # but reading more does not stop a model citing the wrong artefact
+        # inside it — see lib/void-guard.sh's own note on issue #243. `repos`
+        # is passed as `[]`: the Enabler gathers no per-cycle candidate list, so
+        # `void_guard_reason`'s PR-diff check (Co-Ordinator only) simply has
+        # nothing to test against; the citation check needs nothing from it.
+        e_void_entry="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg reason "$e_reason" \
+          --argjson x "$ex" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
+        if e_void_refusal="$(void_guard_reason "$e_void_entry" '[]')"; then
+          log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
+            "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
+          release_refinement_label "$e_item" "$e_repo"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler void refused for ${e_repo:-<no repo>} $e_item — $e_void_refusal; recorded blocked instead" \
+            '{detail: $d}')"
+          log_event "attempt-failed" "$(item_event_fields "enabler" \
+            "void refused ($e_void_refusal). The Enabler's stated reason was: $e_reason" "$e_repo" "$e_item" \
+            "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+              '{unblock_condition: $c}')")"
+          outcome="void-refused"
+        fi
         ;;
       still-blocked)
         # Nothing extra to record: the block stands, and the refreshed condition
@@ -2807,9 +2828,9 @@ void_json="$(void_items "$union_log")"
 # excludes whatever a previous cycle already actioned, so this never
 # re-checks (and never re-closes) the same item twice, even if a human
 # reopens the object directly rather than through `unvoid_label`. The event's
-# `stage` travels with each candidate because the sweep acts only on the
-# Co-Ordinator's voids — the one writer requirement 34d corroborates — until
-# WI-7 (#243) corroborates the other two; the gate itself lives in
+# `stage` travels with each candidate because the sweep's corroboration gate
+# keys on it — every writer's `item-void` passes requirement 34d before it is
+# logged (issue #243), so all three are eligible, and the gate itself lives in
 # close-void-github-items.sh (requirement 34a: one definition, at the point
 # of action). Skipped on --dry-run: the sweep closes issues and pull
 # requests.
@@ -3361,11 +3382,33 @@ impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || tr
 # already-done recommendation be unblocked by the next Co-Ordinator and
 # re-selected indefinitely.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
-  log_item_void "implementor" \
-    "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
-    "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
+  # every stage: the Implementor reads the tree itself (requirement 27b), but
+  # that does not stop a model citing the wrong artefact from it — see
+  # lib/void-guard.sh's own note on issue #243. `repos` is passed as `[]`: the
+  # Implementor gathers no per-cycle candidate list, so `void_guard_reason`'s
+  # PR-diff check (Co-Ordinator only) simply has nothing to test against; the
+  # citation check needs nothing from it.
+  impl_void_entry="$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" \
+    --arg reason "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    --argjson x "$impl_status_json" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
+  if impl_void_refusal="$(void_guard_reason "$impl_void_entry" '[]')"; then
+    log_item_void "implementor" \
+      "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+      "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  else
+    log_event "warning" "$(jq -nc \
+      --arg d "implementor void refused for ${selected_repo:-<no repo>} $selected_item — $impl_void_refusal; recorded blocked instead" \
+      '{detail: $d}')"
+    log_attempt_failed "implementor" \
+      "void refused ($impl_void_refusal). The Implementor's stated reason was: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+      "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+        '{unblock_condition: $c}')"
+  fi
   # A void item has no work, so its claim must not outlive the verdict — the
-  # branch (if untouched) and the registry entry both go.
+  # branch (if untouched) and the registry entry both go. A refused void is
+  # recorded blocked instead, but the claim releases the same way either way:
+  # the Implementor found no PR to raise for this item.
   release_claim no-pr
   exit 0
 fi

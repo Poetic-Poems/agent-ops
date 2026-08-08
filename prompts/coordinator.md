@@ -797,6 +797,15 @@ the repository — will settle it. That is a correct outcome, not a punishment,
 but it costs a cycle, so when in doubt select the item and let the Implementor
 investigate properly. A wrong `void` needs a human to undo.
 
+Naming a PR or commit is only corroboration if it is really about *this* item.
+When you cite "PR #N" or a commit, the Script fetches it and checks the item's
+own id appears in the PR's body or branch name, or the commit's message or one
+of its linked pull requests — the same way the gatherers associate a PR with an
+item in the first place. A real, mergeable PR that happens to exist is not
+enough if it belongs to a different item; that citation is refused exactly like
+an unrefuted diff above, so make sure the artefact you name is actually the one
+that implements this item, not merely one that exists.
+
 ## Reporting an under-specified item
 
 There are two reasons you skip an item that are not really about the item

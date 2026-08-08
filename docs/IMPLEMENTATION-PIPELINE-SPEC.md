@@ -2145,9 +2145,12 @@ runs unattended.
      Co-Ordinator is expected to re-check these and clear them (`unblocked`)
      when the impediment lifts.
    - **`void`** — there is no work: the premise is false, almost always
-     because the item is already done on `default_branch`. Record `item-void`
-     with the stage's `reason` and `evidence`. **No agent may ever clear it**;
-     only a human, by appending `unvoided` to the log by hand.
+     because the item is already done on `default_branch`. Pass the stage's
+     `reason` and `evidence` through requirement 34d's shared corroboration
+     guard first; record `item-void` only if it passes, `attempt-failed`
+     (outcome `void-refused`) if it does not. **No agent may ever clear a
+     recorded void**; only a human, by appending `unvoided` to the log by
+     hand.
    The failure mode if you merge them is specific, silent, and was found in
    production rather than in review. An already-done recommendation is filed
    as `blocked`. The next Co-Ordinator, obeying its standing instruction to
@@ -3531,52 +3534,79 @@ runs unattended.
       safe where clearing is not — a wrong unvoid costs a cycle every hour until
       someone notices — but it is not free, and requirement 34d is what makes it
       safe enough to keep.
-34d. **A Co-Ordinator void is corroborated before it is made permanent.** The
-    Co-Ordinator is the one void author that never opens the repository: the
-    Implementor reads the tree (requirement 27b) and the Enabler reads the issue
-    and the pull request (requirement 35), while the Co-Ordinator is given a JSON
-    digest of candidates and nothing else. An assertion about the default branch,
-    made by the only actor that never looks at the default branch, is the
-    assertion to check. Three tests, all on the Script's side of the boundary:
+34d. **Every `item-void` write, from every stage, is corroborated before it is
+    made permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
+    entry point the Co-Ordinator (requirement 18), the Enabler (requirement
+    36a's `void` row) and the Implementor (requirement 9b) all call before
+    logging `item-void`; none of the three may write it directly. Four tests,
+    all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
-      required on every `voided` entry, and `null`, `""`, whitespace, `{}` and
-      `[]` are all absence. An entry without it is not a verdict, it is an
-      opinion.
-    - **A resolvable citation must resolve.** The PR-diff test below only fires
-      when the item has an open pull request among this cycle's candidates —
-      the finishing sources. Most voids have no such candidate: a tech-debt item
-      with no PR open, a review recommendation, a `failed-runs` entry. For
-      those, `evidence` shaped `{ref, path, expect: "present"|"absent",
-      pattern}` names a specific claim about a specific file at a specific ref —
-      "the fix is on `main`", "the register says resolved" — and the guard
-      fetches `repos/<slug>/contents/<path>?ref=<ref>` and tests it: `expect:
-      "absent"` holds iff GitHub answers `404 Not Found`, `expect: "present"`
-      holds iff the fetch succeeds and, when `pattern` is given, the decoded
-      content matches it. Only that one answer establishes absence: a fetch
-      that fails any other way — rate limited, unauthenticated, no network, a
-      `ref` GitHub cannot resolve — has established nothing, and reads as the
-      unreadable pull request below does, not as the absence it was asked
-      about. A citation that does not fit the shape at all is free text, and is
-      accepted on the presence test alone, as it always was — the guard tests
-      what it can test, not a shape every claim must take. A citation that does
-      fit the shape but does not resolve — the fetch fails, or the
-      presence/absence/pattern does not hold, or the entry names no repo to
-      resolve it against — is refused the same way an unrefuted PR diff is
-      below.
-    - **This cycle's own candidates must not refute it.** Where the voided
-      repo+item matches a gathered candidate carrying a `pr_number`, the guard
-      reads that PR's changed files: a non-empty diff against its base means the
-      change is by definition not on the base, whatever anyone asserts. The
-      candidates tested are the ones the Co-Ordinator was given, so a void can
-      never be refused over something it could not have seen. A PR the API will
-      not answer for counts as uncorroborated, not as innocent.
+      required on every void, and `null`, `""`, whitespace, `{}` and `[]` are
+      all absence. An entry without it is not a verdict, it is an opinion.
+    - **A resolvable citation must resolve.** `evidence` shaped `{ref, path,
+      expect: "present"|"absent", pattern}` names a specific claim about a
+      specific file at a specific ref — "the fix is on `main`", "the register
+      says resolved" — and the guard fetches `repos/<slug>/contents/<path>?ref=<ref>`
+      and tests it: `expect: "absent"` holds iff GitHub answers `404 Not
+      Found`, `expect: "present"` holds iff the fetch succeeds and, when
+      `pattern` is given, the decoded content matches it. Only that one answer
+      establishes absence: a fetch that fails any other way — rate limited,
+      unauthenticated, no network, a `ref` GitHub cannot resolve — has
+      established nothing, and reads as the unreadable pull request below
+      does, not as the absence it was asked about. A citation that does not
+      fit the shape at all is free text, and is accepted on the presence test
+      alone, as it always was — the guard tests what it can test, not a shape
+      every claim must take. A citation that does fit the shape but does not
+      resolve — the fetch fails, the presence/absence/pattern does not hold,
+      or the entry names no repo to resolve it against — is refused the same
+      way an unrefuted PR diff is below.
+    - **A cited PR or commit must actually be about this item.** Evidence
+      naming "PR #N" or "pull request #N" is fetched live
+      (`repos/<slug>/pulls/<n>`) and checked for the item id, as a whole word,
+      in its body or its head branch — the same two places the gatherers read
+      to associate a PR with an item in the first place. Evidence naming a
+      commit ("commit `<sha>`" or "`<ref>@<sha>`") is checked two ways: the
+      commit must be an ancestor of the repository's default branch
+      (`repos/<slug>/compare/<sha>...<default_branch>`, `status` `identical`
+      or `ahead`), and either its own message or a pull request GitHub
+      associates with it (`repos/<slug>/commits/<sha>/pulls`) must name the
+      item the same way a cited PR does. One item shape is decided by its id
+      alone, with no fetch: a finishing-source item **is** a pull request —
+      requirements 3e, 3g and 23 mint its id as `pr-<n>-abandoned-<head-sha>`,
+      `pr-<n>-review-<review-id>` or `pr-<n>-conflict-<head-sha>` — so a
+      citation of pull request `<n>` corroborates item `pr-<n>-…` by the id's
+      own construction, while any other pull request is tested as usual.
+      Nothing writes that synthetic id into the pull request's body or branch,
+      so without this the test would refuse the one citation these items can
+      honestly make, on exactly the sources the candidate test below
+      corroborates best. Evidence citing neither a PR nor a commit is
+      untouched by this test — the two tests above are what govern free prose.
+      This is what a citation that merely *exists* was missing: the shipped
+      defect that motivated it (below) cited a PR that was real, open, and
+      entirely unrelated to the item being voided.
+    - **This cycle's own candidates must not refute it (Co-Ordinator only).**
+      Where the voided repo+item matches a gathered candidate carrying a
+      `pr_number`, the guard reads that PR's changed files: a non-empty diff
+      against its base means the change is by definition not on the base,
+      whatever anyone asserts. The candidates tested are the ones the
+      Co-Ordinator was given, so a void can never be refused over something it
+      could not have seen. A PR the API will not answer for counts as
+      uncorroborated, not as innocent. The Enabler and the Implementor gather
+      no per-cycle candidate list, so they call the same guard with `repos:
+      []`; this one test simply has nothing to run, and every other test above
+      applies to them exactly as it does to the Co-Ordinator.
 
     A refused void is recorded `attempt-failed` — blocked, not void — plus a
-    `warning` naming the refusal. Blocked is the clearable twin: the Co-Ordinator
-    still skips the item so nothing churns, and requirement 35a makes it
-    Enabler-eligible, so an actor that *can* read the tree adjudicates. If the
-    item really is done the Enabler voids it properly, with evidence. The
-    pipeline reaches the same answer; it may not reach it by assertion.
+    `warning` naming the refusal, with `stage` set to whichever of the three
+    wrote it. Blocked is the clearable twin: the stage still skips the item so
+    nothing churns, and requirement 35a makes it Enabler-eligible, so an actor
+    that *can* read the tree adjudicates. If the item really is done, a later
+    engagement voids it properly, with evidence that survives corroboration.
+    The pipeline reaches the same answer; it may not reach it by assertion. A
+    refusal from the Enabler's own `void` verdict is recorded with the outcome
+    `void-refused` on its `enabler-examined` event (requirement 36a) — an
+    ordinary examination, not `escalation-failed`'s exemption, since the
+    engagement did reach a verdict; it was simply not corroborated.
 
     Not a prompt instruction, and the distinction matters: "be certain" is
     already in `prompts/coordinator.md` twice, and the Co-Ordinator that voided
@@ -3591,6 +3621,17 @@ runs unattended.
     fingerprint (requirement 3b) then matched, and three nodes stood down hourly
     on a repository with outstanding work. That is the shape of the failure this
     guards: not a wrong answer, but a silent one.
+
+    The citation test above closes a second, distinct shape of the same
+    failure: a Co-Ordinator voided an issue citing "PR #232 implemented all
+    five rewrites" — #232 was real and mergeable, but it was a different
+    issue's PR; the actual fix had landed in a different pull request
+    entirely. Every test that existed before the citation test passed, because
+    none of them had ever asked whether the cited PR was *about the item being
+    voided*. Reading more of the repository does not fix this by itself — the
+    Enabler and the Implementor already read more than the Co-Ordinator does,
+    and carried the same gap regardless — only checking the citation does,
+    which is why the guard is shared rather than duplicated per stage.
 
 34e. **Under-specification is a class of block, not a parallel state.** Each
     well-formed `needs_refinement` entry (requirement 16a) is recorded by the
@@ -3978,20 +4019,18 @@ runs unattended.
     object to close, and requirement 34k does nothing with it; a register id
     is instead requirement 34l's concern, immediately below.
 
-    **Only a corroborated void, which today means the Co-Ordinator's.**
-    `void_json` holds the unresolved `item-void` events of all three
-    writers, but only the Co-Ordinator's passes requirement 34d's guard
-    before it is logged: the Implementor's and the Enabler's are the model's
-    own unexamined verdict, and issue #240 scopes this action to a void that
-    "survives corroboration (WI-7)". So each candidate carries its event's
-    `stage`, and `close-void-github-items.sh` acts only on
-    `stage == "coordinator"` — an uncorroborated "already done" must not
-    close a live issue on an unexamined claim. The gate is on corroboration,
-    not on the stage as such: when WI-7 (#243) extends 34d's guard to the
-    other two writers, their voids become eligible here by widening this one
-    gate, nothing else. An ineligible void is left exactly as a register id
-    is — unprocessed and unmarked, so nothing stops a later, corroborated
-    pass acting on it. The one-shot rule immediately below is the second,
+    **Only a corroborated void — today, that is all three writers.**
+    `void_json` holds the unresolved `item-void` events of all three writers
+    (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
+    corroborates every one of them before it is logged (issue #243), so each
+    is eligible here. Each candidate still carries its event's `stage`, and
+    `close-void-github-items.sh` still gates on it — an uncorroborated
+    `item-void` must never reach this point, but if one somehow did (a future
+    writer that bypassed the guard, a malformed or stageless entry), the gate
+    is what stops it closing a live issue on an unexamined claim. An
+    ineligible void is left exactly as a register id is — unprocessed and
+    unmarked, so nothing stops a later pass acting on it once it is
+    corroborated. The one-shot rule immediately below is the second,
     independent bound — recovery rather than precondition — and a human's
     plain re-open wins permanently.
 
@@ -4275,7 +4314,7 @@ runs unattended.
     | Verdict | The Script does |
     |---|---|
     | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft. On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
-    | `void` | logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e |
+    | `void` | corroborated by requirement 34d's shared guard; on success logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e; on refusal logs `attempt-failed` and a `warning` instead, with outcome `void-refused` |
     | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
     | any | logs `enabler-examined` with `repo`, `item`, `blocked_ts`, `outcome` and `detail` |
@@ -5845,12 +5884,24 @@ pull request, run the ones the change touches and any it could regress.
    whose repo+item matches a gathered candidate whose PR still changes files is
    refused naming that PR; a PR the API will not answer for is refused as
    uncorroborated; and an evidenced entry with an empty PR diff, or with no PR
-   to check at all, is allowed. Then drive it end to end: a Co-Ordinator
-   returning a `voided` entry the guard refuses must produce an `attempt-failed`
-   for that item and **no** `item-void`, and the next cycle must list the item as
-   blocked rather than void. The negative matters as much — assert a well-formed
-   void is still recorded, or the guard has quietly abolished a feature
-   requirement 18 depends on to avoid full Implementor runs.
+   to check at all, is allowed. Assert the citation test directly: an entry
+   citing a real, fetchable PR whose body and branch name neither one mentions
+   the voided item is refused as a fabricated citation; the identical entry
+   citing the pull request that genuinely implements the item is allowed; and
+   the same shape holds for a cited commit — refused when it is not an
+   ancestor of the default branch, or when it is but neither its message nor
+   any pull request associated with it names the item, and allowed when one of
+   those does. Assert the finishing sources are not caught by it: an item
+   `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
+   request `<n>` is allowed on the id alone, while the same item citing a
+   different pull request is refused. Assert it runs with `repos: []` exactly
+   as the Enabler's and the Implementor's calls do. Then drive it end to end: a
+   Co-Ordinator returning a `voided` entry the guard refuses must produce an
+   `attempt-failed` for that item and **no** `item-void`, and the next cycle
+   must list the item as blocked rather than void. The negative matters as
+   much — assert a well-formed void is still recorded, or the guard has
+   quietly abolished a feature requirement 18 depends on to avoid full
+   Implementor runs.
 8d. **A `pr-ready` event means the pull request is not a draft (requirement
    31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
    without calling `gh pr ready`; a draft is flipped and reports `flipped`; a
@@ -5984,14 +6035,15 @@ pull request, run the ones the change touches and any it could regress.
 8j. **A corroborated void closes the GitHub object it names, exactly once
    (requirement 34k).** `test/close-void-github-items.test.sh` passes against
    a stubbed `gh`: an open issue or an open, obsolete pull request named by a
-   Co-Ordinator void is closed with a comment carrying the void's own
-   evidence; an Implementor or Enabler void — or one carrying no `stage` at
-   all — is left entirely alone with no API call made, because those writers'
-   verdicts are uncorroborated until WI-7 (#243); an object already closed is
-   reported (`closed_by: "already"`) rather than touched again; a shape
-   naming no GitHub object (a register id) is left entirely alone; a void
-   carrying no reason still reaches the comment with its evidence intact;
-   and the per-call action cap defers rather than floods.
+   void from any of the three writers — Co-Ordinator, Enabler, Implementor,
+   all corroborated by requirement 34d (issue #243) — is closed with a
+   comment carrying the void's own evidence; a void carrying no `stage` at
+   all is left entirely alone with no API call made, the fail-closed default
+   for an entry no writer this script recognises corroborated; an object
+   already closed is reported (`closed_by: "already"`) rather than touched
+   again; a shape naming no GitHub object (a register id) is left entirely
+   alone; a void carrying no reason still reaches the comment with its
+   evidence intact; and the per-call action cap defers rather than floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract

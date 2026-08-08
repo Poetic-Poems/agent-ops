@@ -265,7 +265,12 @@ verdict is to undo.
   the evidence bar is the highest here: cite the SHAs, paths, or command output
   that let someone confirm your verdict without repeating your investigation.
   Report `void` however much effort the item cost to assess — the verdict
-  describes the item, not your work.
+  describes the item, not your work. The Script corroborates it before
+  recording it: if you cite a PR or a commit, it must actually be about this
+  item — its body, branch, message, or a linked pull request naming the item's
+  own id — not merely a real artefact that exists. A citation that does not
+  hold is refused and recorded blocked instead, so name the thing that really
+  implements this item.
 
 An item you genuinely cannot settle is `still-blocked` with an honest reason.
 Never invent a verdict to look decisive; a wrong `void` needs a human to undo
