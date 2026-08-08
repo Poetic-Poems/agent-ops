@@ -173,6 +173,15 @@ assert_contains "the open-PR panel renders the pull request" \
   "fix the thing" "$out"
 assert_contains "with its checks summarised" \
   "checks pass" "$out"
+# Back-pressure gauge (agent-ops#246): 3 open agent PRs, one of them
+# (#200) a ready PR with no reviewDecision — waiting on a human, not the
+# pipeline — so the gauge's own figure is 2 (the draft plus the
+# changes-requested PR) against max_open_agent_prs, with the raw open
+# total and the human-queue count shown alongside it.
+assert_contains "the back-pressure gauge trips on the adjusted count, not the raw total" \
+  "/ 3 max" "$out"
+assert_contains "and names the raw open total and the human-queue count beside it" \
+  "3 open, 1 waiting on human" "$out"
 # Single-quoted: these are literal rendered dollar amounts, not shell
 # expansions, so the SC2016 the pinned linter raises on them is a false
 # positive.
