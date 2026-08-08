@@ -3033,8 +3033,19 @@ fi
 # collide with); then, against the extract as it stands after those new
 # blocks, which hand-flagged blocks this mechanism created have lost their
 # label since — the `unblocked` half of the same requirement.
+#
+# Requirement 39f narrows the *new* half, and only that half: an issue still
+# carrying the label because this system's own removal silently failed is not
+# a human asking for anything, so `label_filter_own_applications` drops it
+# before the "not already blocked" test ever sees it. The `cleared` half below
+# reads the unfiltered list on purpose — it asks which issues have *lost* the
+# label, and an entry filtered out for being our own would read there as a
+# label that had gone, unblocking the very item this rule exists to leave
+# alone.
 if [[ -n "$needs_refinement_label" ]]; then
-  hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_refinements_json" "$(blocked_items "$union_log")")"
+  hand_flagged_not_ours_json="$(label_filter_own_applications "$hand_flagged_refinements_json" \
+    "$(label_own_actions_map "$needs_refinement_label" "$union_log")")"
+  hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_not_ours_json" "$(blocked_items "$union_log")")"
   if [[ "$(jq 'length' <<<"$hand_flag_new_json" 2>/dev/null || echo 0)" != "0" ]]; then
     log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
     while IFS= read -r flag; do
