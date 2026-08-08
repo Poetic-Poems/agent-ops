@@ -449,10 +449,21 @@ still being computed. **An entry's presence in this array is the candidate
 test.** If the array is empty, this source has no candidates.
 
 An entry carrying `bot: true` is Dependabot's own PR, not ours (requirement
-3s, issue #250), and needs one of two different treatments below —
-**superseded**, or **takeover** — before you ever get to the ordinary rebase
-case. Every entry with `bot` absent or `false` follows the ordinary case
-unchanged.
+3s, issue #250), and needs one of three different treatments below —
+**never nudged yet**, **superseded**, or **takeover** — before you ever get
+to the ordinary rebase case. Every entry with `bot` absent or `false` follows
+the ordinary case unchanged.
+
+*Never nudged yet (`bot: true`, `rebase_requested: false`, no
+`superseded_by`).* This system has not yet asked Dependabot to rebase this
+PR — that ask is a write the Script's own gather step makes, not something
+you do, and it may simply not have happened yet this cycle. **Skip it: do
+not select it, and do not add it to `voided`.** It is not a candidate of any
+kind — not ours to rebase (it carries neither our label nor our branch
+prefix, so the ordinary case's `git push --force-with-lease` would be a
+force-push onto a branch Dependabot owns), not superseded, and not yet a
+confirmed takeover. It becomes selectable — as a takeover — only once a later
+cycle reports `rebase_requested: true` for the same head.
 
 *Superseded (`bot: true` and `superseded_by` non-null).* A newer open
 Dependabot PR already bumps the same dependency further, so this one has
@@ -1009,7 +1020,9 @@ the list, and one strong candidate alone is a perfectly good list.
   `superseded_by`) instead carries `"takeover": true` and omits `branch`
   entirely — see "Merge conflicts" above. A superseded Dependabot entry
   (`superseded_by` non-null) never becomes a candidate at all; it belongs in
-  `voided`.
+  `voided`. A never-nudged Dependabot entry (`bot: true`,
+  `rebase_requested: false`, no `superseded_by`) never becomes a candidate
+  either — skip it, it is not a void.
 - For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor finishes that existing draft PR instead of opening

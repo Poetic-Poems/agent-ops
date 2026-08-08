@@ -1123,8 +1123,18 @@ gather_merge_conflicts() {
         2>"$cycle_dir/dependabot-nudge-$safe.err" || true)"
   if [[ -z "$nudge_result" ]] || ! jq -e 'type == "object"' <<<"$nudge_result" >/dev/null 2>&1; then
     # The nudge step failing is not this array's failure — fall back to the
-    # gatherer's own output unfiltered rather than losing every candidate in
-    # this repo (including our own, non-bot ones) over one broken write step.
+    # gatherer's own output rather than losing every candidate in this repo
+    # (including our own, non-bot ones) over one broken write step. Still
+    # drop any bot candidate that has never been nudged (`bot: true`,
+    # `rebase_requested: false`, no `superseded_by`) — the same predicate
+    # nudge-dependabot-rebase.sh itself applies — so a broken nudge step
+    # cannot hand the Co-Ordinator's ordinary-case catch-all an un-nudged
+    # bot branch to force-push (requirement 3s).
+    out="$(jq -c '[.[] | select(
+        ((.bot // false) == true)
+        and ((.rebase_requested // false) == false)
+        and ((.superseded_by // null) == null)
+        | not)]' <<<"$out")"
     printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
     printf '%s' "$out"
     return

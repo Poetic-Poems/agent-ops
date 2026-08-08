@@ -1464,7 +1464,15 @@ runs unattended.
      on its own (requirement 3b), exactly as requirement 3g's own base-moved
      transition does. This step is a real write, so `--dry-run` skips it. A
      failed post is logged as a `warning` and retried automatically next
-     cycle, since a failed nudge leaves `rebase_requested: false`.
+     cycle, since a failed nudge leaves `rebase_requested: false`. If the
+     nudge step itself fails to produce a valid result (`nudge-dependabot-rebase.sh`
+     crashes, or emits something other than the expected object),
+     `agent-cycle.sh`'s `gather_merge_conflicts` falls back to the gatherer's
+     own read rather than losing every candidate in the repo — including our
+     own, non-bot ones — over one broken write step, but that fallback drops
+     first-sighting entries too, by the same predicate: a broken nudge step
+     must never hand the Co-Ordinator an un-nudged `bot: true` candidate
+     either.
    - **Still conflicting a cycle later** (`bot: true`, `rebase_requested:
      true`, no `superseded_by`): a **takeover** candidate. The Co-Ordinator
      may select it, but the work order it constructs sets `"takeover": true`
@@ -1488,6 +1496,15 @@ runs unattended.
      `close-void-github-items.sh`'s ordinary act-on-void path (requirement
      34k), unchanged: the item's `pr-<n>-…` ref shape is all that path has
      ever needed.
+
+   `prompts/coordinator.md` states the first-sighting case explicitly, as a
+   named third treatment alongside superseded and takeover, rather than
+   leaving it to fall through the ordinary case's catch-all ("every other
+   entry, including `bot: false`") on the strength of a separate paragraph
+   alone — defence in depth for any path, present or future, that hands the
+   Co-Ordinator an unfiltered array: a first-sighting entry must read as
+   unselectable and not-a-void on its own terms, not only because nothing
+   upstream is meant to let one through.
 
    Claimed and ranked exactly as any other `merge_conflicts` candidate
    (requirements 15d, 17a) with the one carve-out named above for a takeover's
