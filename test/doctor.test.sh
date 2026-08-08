@@ -244,13 +244,14 @@ assert_not_contains "and is not reported as a failure" "[fail] claude" "$out"
 # --- The rendered crontab ---------------------------------------------------
 
 # CYCLE_MINUTE=1 makes the cycle (and therefore review) minute deterministic —
-# 1, plus base_config's schedule.review_offset_minutes (29), past
+# 1, repeating every base_config's schedule.cycle_interval_minutes (15) —
+# 1,16,31,46 — plus base_config's schedule.review_offset_minutes (29), past
 # schedule.review_hour (3) — so the report's minute math is checked exactly,
 # not just for the presence of expected substrings.
 run_doctor CYCLE_MINUTE=1
 assert_contains "a successful render reports the node name" "node " "$out"
-assert_contains "and the cycle minute CYCLE_MINUTE asks for" \
-  "cycle at minute 1 past" "$out"
+assert_contains "and the cycle minute(s) CYCLE_MINUTE asks for, every cycle_interval_minutes" \
+  "cycle at minute(s) 1,16,31,46 past" "$out"
 assert_contains "and the review minute derived from cycle + review_offset_minutes" \
   "review at 30 past 3:00" "$out"
 assert_contains "and the heartbeat cadence" "heartbeat every 5 min" "$out"
