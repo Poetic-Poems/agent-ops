@@ -288,7 +288,7 @@ Keys:
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
-| `max_open_agent_prs` | `8` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
+| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
 | `claim_ttl_hours` | `6` | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |

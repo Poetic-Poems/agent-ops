@@ -571,7 +571,7 @@ and the schema must carry every one of them.
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
+| `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
@@ -866,26 +866,42 @@ runs unattended.
       coordination is needed, because a registry delete is sha-guarded and a
       claim branch is deleted only if unmoved and PR-less, so the worst race
       outcome is a no-op.
-   2. *Back-pressure*: if the number of open PRs labelled `pr_label` across
-      all configured repos (drafts included), **plus the live claim-registry
-      entries for those repos** (requirement 17a — work a node has claimed
-      but not yet surfaced as a PR; each entry is dropped the moment its PR
-      exists), is ≥ `max_open_agent_prs`, stand down. This is the primary
-      throttle on both spend and on the human gate silting up. The count is
-      approximate by design: N nodes can pass it simultaneously, so the
-      stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
+   2. *Back-pressure*: if the number of draft PRs labelled `pr_label`, plus
+      the ready PRs labelled `pr_label` whose `reviewDecision` is
+      `CHANGES_REQUESTED`, across all configured repos, **plus the live
+      claim-registry entries for those repos** (requirement 17a — work a
+      node has claimed but not yet surfaced as a PR; each entry is dropped
+      the moment its PR exists), is ≥ `max_open_agent_prs`, stand down. This
+      is the primary throttle on both spend and on the human gate silting
+      up. The count is approximate by design: N nodes can pass it
+      simultaneously, so the stated bound is `max_open_agent_prs +
+      (nodes − 1)`, transient.
+
+      A ready PR whose `reviewDecision` is **not** `CHANGES_REQUESTED` —
+      approved, or awaiting a first or re-review with nothing currently
+      `CHANGES_REQUESTED`-blocking it — does not count. Its next action
+      belongs to a human, and the pipeline cannot shrink a full human queue
+      by declining to open new work; counting it would only back-pressure
+      the fleet for a queue it has no lever to drain (agent-ops#246). This is
+      the same "whose turn is it" rule requirement 3c's review-feedback
+      candidate filter uses (`scripts/gather-review-feedback.sh`), read here
+      rather than re-derived, so the two definitions cannot disagree.
 
       The logged reason — of the stand-down here and of the restriction
-      warning in 2.2a — states the count's composition:
-      `(N ready + N draft + N unraised claim(s))`. A ready PR is the human's
-      queue; a draft is work in flight (the Implementor's own claim marker,
-      requirement 23); an unraised claim is a registry entry whose PR does
-      not yet exist. Whether the cap stood the fleet down because the queue
-      was genuinely full, or fired early on in-flight work, is exactly what
-      a cap-tuning decision needs — and it must be readable from the log
-      line alone, because the PRs behind a historical count are merged or
-      closed by the time anyone asks, leaving cycle-record archaeology as
-      the only other answer.
+      warning in 2.2a — states the count's full composition:
+      `(N changes-requested + N draft + N unraised claim(s) — plus N waiting
+      on human (N raw))`. A changes-requested PR is a human's review
+      answered and now the pipeline's turn; a draft is work in flight (the
+      Implementor's own claim marker, requirement 23); an unraised claim is
+      a registry entry whose PR does not yet exist; the human-queue count is
+      the ready PRs excluded from the trip, and the raw total is what the
+      count would have been before that exclusion. Whether the cap stood the
+      fleet down because the queue was genuinely full, or fired early on
+      in-flight work, or would have tripped only on PRs already waiting on a
+      human, is exactly what a cap-tuning decision needs — and it must be
+      readable from the log line alone, because the PRs behind a historical
+      count are merged or closed by the time anyone asks, leaving
+      cycle-record archaeology as the only other answer.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
