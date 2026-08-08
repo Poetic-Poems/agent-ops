@@ -682,7 +682,7 @@
   // 5-second refresh never collapses what they were reading.
   var expanded = Object.create(null);     // cycle id -> true while its detail row is open
   var openDetails = Object.create(null);  // "cycle/stage/kind" -> true for open <details>
-  var nodeFilter = null;                  // node name while the cycle list is filtered to one node
+  var nodeFilter = null;                  // node name while the cycle list and the recent log are filtered to one node
   var hideRefinement = false;             // true while needs-refinement blocks are hidden from the blocked list
   var voidShowAll = false;                // true while the void list shows past its first VOID_ROWS rows
   var voidOpen = Object.create(null);     // "repo/item/row" -> true while that void row shows its full text
@@ -1078,8 +1078,8 @@
   // the readout the header used to carry alone, back when a node and the
   // pipeline were the same thing; with a fleet there is no single "what is it
   // doing", so the question is answered per node here and only summarised up
-  // top. Clicking a card filters the cycle list to that node; clicking it
-  // again clears the filter.
+  // top. Clicking a card filters the cycle list and the recent log to that
+  // node; clicking it again clears the filter.
   function fleetStrip() {
     var wrap = el("div", {class:"cards fleet", id:"fleetstrip"});
     fleetNodes().forEach(function (n) { wrap.appendChild(nodeCard(n)); });
@@ -1100,7 +1100,7 @@
     // before it the stage's own timeout is the only one that can fire at all.
     var doubt = livenessDoubt(n) || nodeStageOverrun(n);
     var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
-                          title: nodeFilter === n.node ? "click to show every node's cycles" : "click to filter cycles to " + n.node});
+                          title: nodeFilter === n.node ? "click to show every node's cycles and log events" : "click to filter cycles and log events to " + n.node});
     card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]));
 
     var state = el("div", {class:"state"});
@@ -1714,32 +1714,31 @@
     if (ev === "pr-ready" && e.handoff && e.handoff !== "script") return e.handoff;
     return null;
   }
-  // "Where" used to run the repo and the stage together, unlabelled and each
-  // present only when the event carried it — so a one-token cell could be
-  // either, and the node that ran it (the fleet's first question) was not
-  // there at all. The three are different kinds of answer, so they are three
-  // fixed slots read positionally, with a dash for whatever the event does not
-  // carry: the middle token is the repository whether or not the other two are
-  // known.
-  function whereText(e) {
-    var actor = eventActor(e);
-    return [ e.node || "—",
-             e.repo ? e.repo.split("/")[1] : "—",
-             actor || "—" ].join(" / ");
-  }
+  // "Where" used to run the repo and the stage together in one cell,
+  // unlabelled and each present only when the event carried it — so a
+  // one-token cell could be either, and the node that ran it (the fleet's
+  // first question) was not there at all. The three are different kinds of
+  // answer, so they get one column each, with a dash for whatever the event
+  // does not carry — the Repo cell is the repository whether or not the
+  // other two are known.
   function logPanel() {
-    var evs = (D.log_tail || []).slice(0, 80);
-    if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No log events."}));
+    var evs = D.log_tail || [];
+    if (nodeFilter) evs = evs.filter(function (e) { return e.node === nodeFilter; });
+    evs = evs.slice(0, 80);
+    if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty",
+      text: nodeFilter ? "No log events from " + nodeFilter + "." : "No log events."}));
     var rows = evs.map(function (e) {
       var extra = e.reason || e.detail || e.cause || e.title || e.pr_url || e.resume_at || "";
       return el("tr", {}, [
         el("td", {class:"muted mono", text: fmtTime(e.ts)}),
         el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: e.event})),
-        el("td", {class:"mono muted", text: whereText(e)}),
+        el("td", {class:"mono muted", text: e.node || "—"}),
+        el("td", {class:"mono muted", text: e.repo ? e.repo.split("/")[1] : "—"}),
+        el("td", {class:"mono muted", text: eventActor(e) || "—"}),
         el("td", {class:"wrap muted", text: esc(extra)})
       ]);
     });
-    return tableOf(["Time","Event","Node / Repo / Actor","Detail"], rows);
+    return tableOf(["Time","Event","Node","Repo","Actor","Detail"], rows);
   }
   function cronPanel() {
     var lines = D.cron_tail || [];
@@ -1994,7 +1993,8 @@
       "All three charts cover the same transcripts — every actor of both pipelines, " +
       "across every node, since one Claude account pays for the fleet."}));
 
-    app.appendChild(sectionOf("Recent log events", logPanel()));
+    app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
+      logPanel()));
     app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
 
     window.scrollTo(0, y);

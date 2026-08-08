@@ -64,6 +64,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/git-identity.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
+# shellcheck source=lib/review-gate.sh
+. "$SCRIPT_DIR/lib/review-gate.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/unvoid-label.sh
@@ -3597,6 +3599,26 @@ fi
 
 rev_status="$(jq -r '.status // empty' <<<"$rev_status_json")"
 if [[ "$rev_status" == "ready" ]]; then
+  # Requirement 31c (agent-ops#249): a Reviewer's "ready" is a model reading a
+  # check list, exactly the judgement that missed poetic-fiddle #216's CodeQL
+  # alert hidden inside an otherwise-green list. Before any handoff mechanism
+  # runs, ask GitHub directly, the same "confirm, don't trust" shape requirement
+  # 31a already applies to the draft flag itself.
+  gate_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
+  gate_result="$(review_gate_verdict "$impl_pr_url" "$gate_default_branch")" || true
+  gate_word=""; gate_reason=""
+  IFS=$'\t' read -r gate_word gate_reason <<<"$gate_result" || true
+  if [[ "$gate_word" == "dirty" ]]; then
+    log_reviewer_handback \
+      "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $gate_reason" \
+      "$impl_pr_url" "Get every required check green and clear the named security-severity code-scanning alert, then let the Reviewer re-examine it."
+    exit 0
+  fi
+  if [[ "$gate_word" == "unknown" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
+      '{detail: ("could not confirm " + $u + " carries no new security-severity code-scanning alert: " + $d), pr_url: $u}')"
+  fi
+
   # Requirement 31a: the verdict is the Reviewer's — it is the only actor that
   # read the diff — but the handoff is a fact about the PR, and asking GitHub
   # costs one field. `pr-ready` now means the PR is not a draft, not that
