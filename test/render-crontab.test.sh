@@ -31,6 +31,14 @@
 
 set -uo pipefail
 
+# Every deployed node carries CYCLE_MINUTE in its own environment, and the
+# renderer honours it over the hash by design — so an inherited one silently
+# pins every minute this file computes a hash expectation for, and the suite
+# fails on exactly the machines it is most often run on. The cases that want
+# a chosen minute set it explicitly on their own `env` line; ambient ones are
+# never wanted here.
+unset CYCLE_MINUTE
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RENDER="$SCRIPT_DIR/deploy/docker/render-crontab.sh"
 TMPL="$SCRIPT_DIR/deploy/docker/crontab.tmpl"
