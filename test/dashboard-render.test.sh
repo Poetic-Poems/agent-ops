@@ -183,6 +183,14 @@ assert_contains "the open-PR panel renders the pull request" \
   "fix the thing" "$out"
 assert_contains "with its checks summarised" \
   "checks pass" "$out"
+# requirement 17d / #248: a cycle whose selection carried race_losses shows
+# the recovered-race badge in the cycle history, and a cycle with none does
+# not — the second and third cycles in this fixture carry no race_losses at
+# all, so an absent field must render nothing, not a badge for zero losses.
+assert_contains "a cycle that recovered a lost claim race shows the badge" \
+  "recovered race ×2" "$out"
+assert_contains "coloured informational, not a warning — healthy contention, not a fault" \
+  'class="badge b-blue"' "$out"
 # Back-pressure gauge (agent-ops#246): 3 open agent PRs, one of them
 # (#200) a ready PR with no reviewDecision — waiting on a human, not the
 # pipeline — so the gauge's own figure is 2 (the draft plus the

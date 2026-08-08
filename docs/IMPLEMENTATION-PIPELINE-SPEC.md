@@ -157,24 +157,34 @@ a node updates by pulling a new image rather than by pulling a branch.
   environment when it names a minute `schedule.excluded_minutes` does not
   rule out, else a stable hash of `NODE_NAME` onto whichever minutes that
   exclusion list leaves standing — deterministic, needing no coordination,
-  and never one of the excluded minutes. The cycle fires every hour named by
-  `schedule.cycle_hours` (`*` by default); the review runs at
-  `schedule.review_offset_minutes` past `CYCLE_MINUTE` (mod 60), at
-  `schedule.review_hour`, keeping one node's two heavy pipelines maximally
-  apart. Why: every active node spends one Claude account and pushes to the
-  same repositories; the claims (17a) make simultaneous firing *correct*, the
-  offsets make it *cheap*. Excluding minutes at all is a per-deployment
-  choice, not logic this renderer carries: `schedule.excluded_minutes` is
-  configuration, and poetic's own `config.json` excludes `0` because its
-  hourly sync workflow owns the top of the hour, recording that reason in
-  `schedule.excluded_minutes_reason` — a deployment with no such conflict
-  ships an empty list. An invalid or excluded `CYCLE_MINUTE` warns loudly and
-  uses the hash — a typo must not silently land a node on an excluded minute
-  — and any render failure (including a missing or malformed `config.json`)
-  leaves the baked crontab, a valid schedule, byte-untouched
-  (`test/render-crontab.test.sh` pins all of this). The offsets therefore
-  arrive with the image alone; setting `CYCLE_MINUTE` explicitly requires the
-  compose file that maps it.
+  and never one of the excluded minutes. The cycle fires every
+  `schedule.cycle_interval_minutes` (15 by default; issue #248, "faster
+  heartbeat") from that minute, within every hour named by
+  `schedule.cycle_hours` (`*` by default), as an explicit cron minute list
+  (`base`, `base+interval`, `base+2×interval`, …, each occurrence dropped
+  rather than shifted if it lands on an excluded minute) —
+  `cycle_interval_minutes=60` reproduces the single-firing-per-hour shape
+  every release before it carried. A firing that finds nothing changed
+  costs a fingerprint comparison and no Co-Ordinator call at all (3b), so a
+  faster interval raises the fleet's pickup responsiveness without raising
+  its idle spend. The review runs at `schedule.review_offset_minutes` past
+  the node's *base* minute (mod 60, not the interval list — the review
+  stays hourly), at `schedule.review_hour`, keeping one node's two heavy
+  pipelines maximally apart. Why: every active node spends one Claude
+  account and pushes to the same repositories; the claims (17a) make
+  simultaneous firing *correct*, the offsets make it *cheap*. Excluding
+  minutes at all is a per-deployment choice, not logic this renderer
+  carries: `schedule.excluded_minutes` is configuration, and poetic's own
+  `config.json` excludes `0` because its hourly sync workflow owns the top
+  of the hour, recording that reason in `schedule.excluded_minutes_reason`
+  — a deployment with no such conflict ships an empty list. An invalid or
+  excluded `CYCLE_MINUTE` warns loudly and uses the hash — a typo must not
+  silently land a node on an excluded minute — and any render failure
+  (including a missing or malformed `config.json`, or a
+  `schedule.cycle_interval_minutes` outside 1..60) leaves the baked
+  crontab, a valid schedule, byte-untouched (`test/render-crontab.test.sh`
+  pins all of this). The offsets therefore arrive with the image alone;
+  setting `CYCLE_MINUTE` explicitly requires the compose file that maps it.
 - Nothing host-specific and nothing secret is baked in. `GH_TOKEN`, the Claude
   credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
   and a node that is not `active` (requirement 2.4) costs nothing but its
@@ -573,6 +583,7 @@ and the schema must carry every one of them.
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
+| `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
@@ -594,6 +605,7 @@ and the schema must carry every one of them.
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
 | `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
+| `schedule.cycle_interval_minutes` | `15` | How often, in minutes, the implementation cycle's crontab line fires within an allowed hour, rendered by `deploy/docker/render-crontab.sh`; `60` reproduces the single-firing-per-hour shape every release before this key carried. |
 | `schedule.excluded_minutes` | `[0]` | Minutes `CYCLE_MINUTE` (env or the per-node hash) may never land on, rendered from `deploy/docker/crontab.tmpl`. Poetic's own value excludes `0` because its hourly sync workflow owns the top of the hour; a deployment with no such conflict ships `[]`. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on. |
 | `schedule.excluded_minutes_reason` | `"poetic's hourly sync workflow owns the top of the hour"` | Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader. |
 | `schedule.review_hour` | `3` | The hour the review tick fires. |
@@ -2366,6 +2378,63 @@ runs unattended.
     When provisioning a host, prove that a cron-style invocation can resolve
     `claude` by running it from a minimal environment (for example with a
     sanitized `PATH` and `HOME`) before relying on scheduled runs.
+39. **Finish-then-continue** (issue #248): a cycle that wins a claim and
+    launches the Implementor may, once it has fully ended, launch another
+    cycle immediately rather than leave the next one to the next cron
+    firing — `lib/chain.sh`. Two conditions, both cheap, both judged from
+    what the cycle already gathered ahead of the Co-Ordinator
+    (`ordered_repos_json`, ready before requirement 3b's fingerprint is
+    even taken):
+    - **Sources remain.** At least one configured repository's `.sources` —
+      already narrowed by back-pressure (2.2a) if it was tripped — is
+      non-empty. This is not a prediction that work remains, only that
+      something is still configured to look at; the chained cycle's own
+      Co-Ordinator, gather and no-op fingerprint (3b) decide for real,
+      cheaply, exactly as an ordinary cron firing would.
+    - **The lineage has room.** This cycle's own place in an unbroken chain
+      of immediate continuations, 1 for the cron-fired original, is still
+      under `max_chained_cycles` (default 3). A chained cycle inherits its
+      place plus one via `AGENT_CYCLE_CHAIN_COUNT`; `max_chained_cycles: 1`
+      disables chaining outright.
+
+    Never chains on `--once` (a human or a test asked for exactly one
+    cycle) or past any stand-down, the switch, or a cycle that selected
+    nothing — all of those end before a claim is ever won, so
+    `chain_eligible` (set only once a claim succeeds) is never true for
+    them. Nor does it chain over an untrapped crash or a signal: the gate
+    is `chain_eligible` *and* this cycle's own `exit_code == 0`, checked in
+    `cleanup` (11) after everything else there has already run — the lock
+    released, the Enabler engaged, `cycle-end` logged, state pushed. Every
+    *ordinary* ending after a won claim (complete, blocked, void, a handled
+    stage failure) exits 0 like a stand-down does, and does still chain: a
+    failed or blocked item must not stall the fleet from picking up a
+    different one sooner. The chained cycle is a genuinely new process —
+    its own cycle id, its own lock acquisition, its own full cleanup —
+    launched with the original argv (`ORIGINAL_ARGV`, captured before flag
+    parsing consumes it), detached (backgrounded, `disown`ed, stdin from
+    `/dev/null`, stdout/stderr appended to the same `cron.log` a cron
+    firing already writes to) so the parent never waits on it and its life
+    does not depend on the parent's — and launched with the default
+    dispositions for `TERM`, `INT` and `HUP` restored, because `cleanup`
+    ignores all three before it spawns (9c) and an *ignored* signal is
+    inherited across both fork and exec into a shell that can never take it
+    back. Without that reset a chained cycle would run deaf to every signal
+    9c's handler exists to catch, and requirement 1's stale-lock takeover
+    would reach it only through the `KILL` that follows its ignored `TERM`
+    — no `attempt-failed`, no `cycle-end`, no claim released.
+17d. **Race-loss observability**: how many candidates a cycle lost to a peer
+    genuinely holding the item (17a's `cause: "held"`, as opposed to
+    `"unreachable"`) before it won its own claim, or — on the cycle that
+    exhausts every candidate — before it stood down. Carried as
+    `race_losses` on the `selection` event and on that stand-down's event.
+    A cycle recovering a race (winning after one or more losses) is
+    healthy contention, not a fault: `scripts/publish-dashboard.sh` and
+    `dashboard/index.html` surface it as an informational "recovered race
+    ×N" badge, on the cycle history, the live-cycle panel and the fleet
+    cards, wherever that cycle's `title`/`source` already render (never a
+    warning colour). Faster cadence and finish-then-continue (39) both
+    raise how often nodes contend for the same item, which is why this
+    became worth watching rather than left to a `claim-lost` grep.
 
 ### The Co-Ordinator (selection only)
 
@@ -6443,6 +6512,45 @@ pull request, run the ones the change touches and any it could regress.
     reviews read that fails is a `warning`, never silence. Confirm the nudge
     comment carries the visible attribution header and both markers
     (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
+39. **Finish-then-continue's chain decision is a pure, tested function of what
+    a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
+    sums `.sources` across every repo, zero when every repo's is empty, summed
+    across repos rather than stopping at the first; `chain_should_continue`
+    chains when at least one source remains and the cycle's own place in its
+    lineage is still under `max_chained_cycles`, stops exactly at and past the
+    cap (including `max_chained_cycles: 1`, which disables chaining outright
+    even on the first cycle), and fails closed (never chains) on a
+    non-numeric `chain_count` or `max_chained_cycles`.
+39a. **The chain only ever launches when it should, and never waits on what it
+    launches.** `test/finish-then-continue.test.sh` passes, against the real
+    `cleanup` block lifted out of `agent-cycle.sh`: `chain_eligible=1` with
+    `exit_code == 0` launches exactly one child, carrying
+    `AGENT_CYCLE_CHAIN_COUNT` incremented from wherever this cycle's own
+    stood and the original argv verbatim (including an empty one, replayed
+    as no argv rather than a stray token); `chain_eligible=0` never launches
+    one, regardless of exit code; `chain_eligible=1` with an untrapped
+    non-zero exit or a signal's 128+n never launches one either; a
+    *handled* ending (exit 0, the same as a stand-down) still does, since
+    the item's own disposition must not stall the fleet from picking up a
+    different one sooner; and the parent's own exit is never delayed by a
+    slow child, confirmed by timing a run against one that sleeps. The
+    launched child inherits **no** ignored signal disposition — asserted by
+    having it report back which of `TERM`, `INT` and `HUP` arrived already
+    ignored, which must be none — so a chained cycle stays killable by
+    requirement 1's takeover and by a container stop.
+39b. **A sub-hourly cycle interval is an explicit cron minute list, correct at
+    every occurrence, and backward-compatible at the boundary.**
+    `test/render-crontab.test.sh` passes: the rendered cycle line lists the
+    node's own minute then every `schedule.cycle_interval_minutes` after it
+    while still under 60, each occurrence *dropped* (not shifted) when it
+    lands on an excluded minute rather than the whole render failing;
+    `cycle_interval_minutes: 60` reproduces the exact single-minute,
+    once-per-hour line every release before the key existed rendered;
+    `cycle_interval_minutes` outside 1..60, non-numeric, or absent-with-no-
+    default all leave the baked crontab untouched, the same fail-safe
+    every other malformed schedule key already gets. `test/doctor.test.sh`
+    passes: the crontab report names the full comma list, not just the
+    first occurrence.
 
 ## Host provisioning (human steps)
 
