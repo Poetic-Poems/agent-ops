@@ -1079,24 +1079,82 @@ gather_abandoned_drafts() {
   fi
 }
 
-# Pre-fetch the ready-but-conflicted PRs this system raised (requirement 3g).
-# Same rationale as gather_abandoned_drafts: its candidacy turns on a transition
+# Pre-fetch the ready-but-conflicted PRs this system raised (requirement 3g),
+# plus Dependabot's own conflicted PRs (requirement 3s, issue #250). Same
+# rationale as gather_abandoned_drafts: its candidacy turns on a transition
 # the open-PR digest does not carry (a PR flips to CONFLICTING a cycle after its
 # base moved, as GitHub recomputes mergeability asynchronously), so the array
 # must be computed here and fed to the fingerprint verbatim for the no-op
 # short-circuit to notice it (see scripts/gather-merge-conflicts.sh and
-# lib/noop-skip.sh).
+# lib/noop-skip.sh). A `bot` candidate gets one more step before either of
+# those: scripts/nudge-dependabot-rebase.sh, which posts a first `@dependabot
+# rebase` request and drops that candidate from the array this cycle — see
+# the comment inside the function below.
 gather_merge_conflicts() {
-  local slug="$1" out safe
+  local slug="$1" out safe nudge_result
   safe="${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" \
         2>"$cycle_dir/merge-conflicts-$safe.err" || true)"
-  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+  if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '[]'
+    return
+  fi
+
+  # The nudge-then-takeover half of Dependabot-conflict handling (requirement
+  # 3s, issue #250): a `bot` candidate this script has never yet asked to
+  # rebase gets that ask now — a real write, so `--dry-run` skips it, exactly
+  # like every other sweep in this cycle. Whatever it drops from the array
+  # (the candidate it just nudged) is dropped from *both* what is stored below
+  # for the fingerprint and what reaches the Co-Ordinator: the first sighting
+  # of a conflict and the first nudge for it happen in the same cycle, so
+  # there is genuinely nothing selectable yet, and the fingerprint should read
+  # that the same way the Co-Ordinator does. The transition still surfaces —
+  # next cycle's gather-merge-conflicts.sh reports `rebase_requested: true`
+  # for the same head, a different array shape from this cycle's, which busts
+  # the fingerprint on its own.
+  if (( DRY_RUN )); then
     printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
     printf '%s' "$out"
-  else
-    printf '[]'
+    return
   fi
+
+  nudge_result="$(printf '%s' "$out" \
+      | "$SCRIPT_DIR/scripts/nudge-dependabot-rebase.sh" "$slug" "$cycle_id" "$node_name" \
+        2>"$cycle_dir/dependabot-nudge-$safe.err" || true)"
+  if [[ -z "$nudge_result" ]] || ! jq -e 'type == "object"' <<<"$nudge_result" >/dev/null 2>&1; then
+    # The nudge step failing is not this array's failure — fall back to the
+    # gatherer's own output rather than losing every candidate in this repo
+    # (including our own, non-bot ones) over one broken write step. Still
+    # drop any bot candidate that has never been nudged (`bot: true`,
+    # `rebase_requested: false`, no `superseded_by`) — the same predicate
+    # nudge-dependabot-rebase.sh itself applies — so a broken nudge step
+    # cannot hand the Co-Ordinator's ordinary-case catch-all an un-nudged
+    # bot branch to force-push (requirement 3s).
+    out="$(jq -c '[.[] | select(
+        ((.bot // false) == true)
+        and ((.rebase_requested // false) == false)
+        and ((.superseded_by // null) == null)
+        | not)]' <<<"$out")"
+    printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
+    printf '%s' "$out"
+    return
+  fi
+
+  while IFS= read -r nudge_action; do
+    [[ -n "$nudge_action" ]] || continue
+    if [[ "$(jq -r '.outcome // ""' <<<"$nudge_action")" == "requested" ]]; then
+      log_event "dependabot-rebase-requested" \
+        "$(jq -c --arg r "$slug" '{repo: $r} + del(.outcome)' <<<"$nudge_action")"
+    else
+      log_event "warning" "$(jq -c --arg r "$slug" \
+        '{detail: ("could not post @dependabot rebase on " + $r + " #" + (.number | tostring))}' \
+        <<<"$nudge_action")"
+    fi
+  done < <(jq -c '.actions[]?' <<<"$nudge_result" 2>/dev/null || true)
+
+  out="$(jq -c '.conflicts' <<<"$nudge_result")"
+  printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
+  printf '%s' "$out"
 }
 
 # Pre-fetch the repo's TECH-DEBT.md when it disagrees with itself (requirement
@@ -3302,15 +3360,22 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_item="$(jq -r '.item // ""' <<<"$cand")"
   c_source="$(jq -r '.source // ""' <<<"$cand")"
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
+  c_takeover="$(jq -r '.takeover // false' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
   claim_attempts=$(( claim_attempts + 1 ))
   claim_rc=0
-  if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" || "$c_source" == "merge-conflicts" ]]; then
+  if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" \
+        || ( "$c_source" == "merge-conflicts" && "$c_takeover" != "true" ) ]]; then
     # No new branch to create — the PR already exists (a human's review round for
     # review-feedback, this system's own stalled draft for abandoned-drafts, a
     # ready-but-conflicted PR of ours for merge-conflicts). The lock is a
     # create-only registry file keyed on the item ref, not a branch create that
     # would 422 against the branch already there.
+    #
+    # A `merge-conflicts` candidate carrying `takeover: true` (requirement 3s,
+    # issue #250) is the one exception: it names Dependabot's PR, not one of
+    # ours, and taking it over means a genuinely new PR on a genuinely new
+    # branch — the ordinary branch-claim path below, same as any fresh item.
     claim_kind="file"; claim_key="$c_item"
     c_branch="$(jq -r '.branch // ""' <<<"$cand")"
     CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$c_item" CLAIM_SOURCE="$c_source" \
