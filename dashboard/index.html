@@ -864,8 +864,26 @@
   // rungs above it lie the same way in the past tense ("Selected", "PR raised"
   // of a cycle still at work), and nothing is lost by replacing them here: how
   // far it has got is what the Item, Stages and PR cells beside it already say.
+  // The "raced" marker (issue #245): a cycle lost at least one claim to a
+  // peer's healthy contention before its outcome above was decided. Beside an
+  // outcome other than "Stood down" it says the cycle *recovered* — claimed
+  // and dispatched the next candidate rather than forfeiting the cycle;
+  // beside "Stood down" it says every candidate raced away, which
+  // `outcomeBadge`'s own "Stood down" text does not distinguish from a
+  // GitHub outage or a fleet switch. A second, small badge rather than
+  // folding this into the outcome badge itself: it is a fact about *how* the
+  // cycle got its outcome, not a different outcome, and the two badges read
+  // in that order left to right.
+  function racedMarker(cy) {
+    if (!cy.raced) return null;
+    var n = cy.race_losses || 0, recovered = cy.outcome !== "stand-down";
+    return el("span", {class:"badge b-amber",
+      title: (recovered ? "recovered after " : "stood down after ") + n +
+             " lost claim" + (n === 1 ? "" : "s") + " to a peer"}, "↻ raced");
+  }
+
   function outcomeCell(cy) {
-    if (cy.ended_at) return outcomeBadge(cy.outcome);
+    if (cy.ended_at) return [ outcomeBadge(cy.outcome), racedMarker(cy) ];
     var n = liveCycleNode(cy);
     // "No clean end" is an accusation, so it is only made where the data can
     // support it. `data.js` from before the fleet strip existed carries no node
