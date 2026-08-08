@@ -548,9 +548,10 @@ holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
 peer); stale peers bordered red and reported as state unknown; click a card to
-filter the cycle list to that node, click again to clear — the filter survives
-refreshes like every other UI state; **live claims** — the registry rows, i.e.
-work no other node will pick up. Both, plus the cycles table's Node column,
+filter the cycle list and the recent log to that node, click again to clear —
+the filter survives refreshes like every other UI state; **live claims** — the
+registry rows, i.e. work no other node will pick up. Both, plus the cycles
+table's Node column,
 appear only once the fleet has more than one node (or a claim exists): a
 single-node page renders exactly as it always did.
 
@@ -609,12 +610,21 @@ since the first runs to sixty rows and the other two to five; recent log;
 `cron.log` tail.
 
 The **recent log** is the newest 80 events, one row each: time, the event as a
-badge, **Node / Repo / Actor**, and the event's own detail. Those three are
-different kinds of answer to "where did this happen" — which machine ran it,
-which repository it was aimed at, which agent was acting — so they are three
-fixed slots read positionally, each carrying a dash when the event does not
-answer it: the middle token is the repository whether or not the other two are
-known. The actor is derived rather than logged, because no event carries an
+badge, **Node**, **Repo**, **Actor**, and the event's own detail. Those three
+columns are different kinds of answer to "where did this happen" — which
+machine ran it, which repository it was aimed at, which agent was acting — so
+each gets its own cell, read positionally, carrying a dash when the event does
+not answer it: the Repo cell is the repository whether or not the other two
+are known. The Node column renders regardless of fleet size, unlike the
+cycles table's own Node column — this one has always carried the node, single
+node included, so nothing about it changes when the fleet has one node. It is
+also, together with the cycles table, subject to the fleet strip's node
+filter: clicking a node card restricts the recent log to that node's events
+too, filtered before the 80-row cap so a node whose events have aged out of
+the fleet-wide newest 80 still shows its own newest ones, with the section
+heading and empty state following the cycles table's own wording ("Recent log
+events — `<node>` only (click its card to clear)" and "No log events from
+`<node>`."). The actor is derived rather than logged, because no event carries an
 `actor` field and each pipeline already records it somewhere else: the
 implementation pipeline's `stage`; `handoff` on `pr-ready`, naming which actor
 took the pull request out of draft; `by` on `unblocked` (and on that event
@@ -874,11 +884,11 @@ number's twins elsewhere on the page.
   progress", never the finished-cycle "Ended"; a cycle with no `cycle-end` and
   no node claiming it reads "No clean end" with fleet data and "Not ended"
   without any; a `needs-refinement` blocked row carries its badge and is
-  removed by the hide filter; and the log tail's Node / Repo / Actor cell
-  answers all three slots positionally — an actor read from `stage`, from `by`
+  removed by the hide filter; and the log tail's Node, Repo and Actor columns
+  answer all three positionally — an actor read from `stage`, from `by`
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
-  keeping its slot rather than letting the repository slide into it. The
+  keeping its own cell rather than letting the repository slide into it. The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
   a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one

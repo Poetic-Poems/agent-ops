@@ -123,18 +123,28 @@ assert_contains "and the idle peer is tagged by name too" \
   "poetic-2" "$out"
 assert_contains "the header summarises how many of the fleet are running" \
   "1 of 4 nodes running" "$out"
-# The log tail's Node / Repo / Actor cell. Three fixed slots read positionally,
-# so what each one is claiming does not depend on how many of them the event
-# happened to carry — the case that used to make the old "Where" column
-# ambiguous, since a lone token could be either the repo or the stage.
-assert_contains "the log tail heads its where-column with all three data" \
+# The log tail's Node, Repo and Actor columns. Three fixed cells read
+# positionally, so what each one is claiming does not depend on how many of
+# them the event happened to carry — the case that used to make the old
+# combined "Where" column ambiguous, since a lone token could be either the
+# repo or the stage. Checked against the tree flattened to one line, same as
+# the tech-debt badge check above: the harness serialises each node on its
+# own line at its own depth, so a cell and its text are only adjacent once
+# the newlines and indentation are gone.
+logflat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
+assert_contains "the log tail heads its three where-columns separately" \
+  "<th> Time <th> Event <th> Node <th> Repo <th> Actor <th> Detail" "$logflat"
+assert_not_contains "and no longer as one combined column" \
   "Node / Repo / Actor" "$out"
 assert_contains "a stage event names the node it ran on and the actor that ran" \
-  "poetic-1 / — / coordinator" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> — <td class="mono muted"> coordinator' \
+  "$logflat"
 assert_contains "an event whose actor is named in 'by' rather than 'stage' still names it" \
-  "poetic-2 / poetic-fiddle / enabler" "$out"
-assert_contains "and a missing node keeps its slot rather than shifting the repo into it" \
-  "— / agent-ops / —" "$out"
+  '<td class="mono muted"> poetic-2 <td class="mono muted"> poetic-fiddle <td class="mono muted"> enabler' \
+  "$logflat"
+assert_contains "and a missing node keeps its own cell rather than shifting the repo into it" \
+  '<td class="mono muted"> — <td class="mono muted"> agent-ops <td class="mono muted"> —' \
+  "$logflat"
 
 # --- Image-drift badges on the fleet strip (#155) ---------------------------
 # poetic-1 (self) is current and gets no badge; poetic-2 predates the check
@@ -235,14 +245,22 @@ out_local="$(render finished.json '{"dashboard.spendMode":"local"}')" || \
 assert_contains "a persisted 'local' choice relabels the card too" \
   "today (local)" "$out_local"
 
+# Same per-cell check as running.json above, against this fixture's own log
+# tail: flattened, since a cell and its text are only adjacent once the
+# newlines and indentation the serialiser inserts are gone.
+finflat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
 assert_contains "the review pipeline's single agent is named as the Project Reviewer" \
-  "ockham-container / poetic / project-reviewer" "$out"
+  '<td class="mono muted"> ockham-container <td class="mono muted"> poetic <td class="mono muted"> project-reviewer' \
+  "$finflat"
 assert_contains "a pr-ready names the actor that took the PR out of draft" \
-  "poetic-1 / — / reviewer" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> — <td class="mono muted"> reviewer' \
+  "$finflat"
 assert_contains "the clone step names no actor, being a stage with no agent in it" \
-  "poetic-1 / agent-ops / —" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> agent-ops <td class="mono muted"> —' \
+  "$finflat"
 assert_contains "and a cycle-level event names neither repo nor actor" \
-  "poetic-1 / — / —" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> — <td class="mono muted"> —' \
+  "$finflat"
 assert_contains "a single-node page's header carries live state itself" \
   "last cycle" "$out"
 assert_not_contains "with no fleet strip to duplicate it" \
