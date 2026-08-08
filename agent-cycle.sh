@@ -1539,11 +1539,25 @@ cleanup() {
   # a cron-fired cycle already writes to, then disowned: this process is
   # about to exit, and nothing here should wait for — or die with — the
   # child.
+  #
+  # Spawned through a subshell that restores the default dispositions first,
+  # which is not decoration: an *ignored* signal is inherited across both fork
+  # and exec, and a shell that starts with a signal already ignored can never
+  # take it back — `trap ... TERM` in the child is silently a no-op for the
+  # rest of its life. The `trap '' TERM INT HUP` at the top of this function
+  # is exactly such an ignore, so a child forked from here would run the whole
+  # of the next cycle deaf to every signal requirement 9c's handler exists to
+  # catch, and requirement 1's stale-lock takeover would find its TERM ignored
+  # and reach the item only through the KILL that follows — no `attempt-failed`,
+  # no `cycle-end`, no claim released. EXIT is reset alongside them so a failed
+  # `exec` cannot re-enter this same handler in the subshell.
   if (( chain_eligible )) && (( exit_code == 0 )); then
     log_event "chained" "$(jq -nc --argjson n "$(( chain_count + 1 ))" --argjson m "$max_chained_cycles" \
       '{depth: $n, max_chained_cycles: $m}')"
-    AGENT_CYCLE_CHAIN_COUNT=$(( chain_count + 1 )) "$SCRIPT_DIR/agent-cycle.sh" "${ORIGINAL_ARGV[@]}" \
-      </dev/null >>"$state_dir/cron.log" 2>&1 &
+    (
+      trap - TERM INT HUP EXIT
+      AGENT_CYCLE_CHAIN_COUNT=$(( chain_count + 1 )) exec "$SCRIPT_DIR/agent-cycle.sh" "${ORIGINAL_ARGV[@]}"
+    ) </dev/null >>"$state_dir/cron.log" 2>&1 &
     disown 2>/dev/null || true
   fi
   exit "$exit_code"

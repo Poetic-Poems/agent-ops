@@ -181,6 +181,49 @@ elapsed=$(( $(date +%s) - start_ts ))
 assert_eq "the parent's own exit is not delayed by a slow child" "0" "$parent_rc"
 assert_eq "and it returns in well under the child's 5s sleep" "1" "$(( elapsed < 3 ))"
 
+# --- The child can still be signalled -------------------------------------------
+# cleanup() ignores TERM/INT/HUP before it spawns (requirement 9c's
+# re-entrancy guard), and an ignored disposition survives both fork and exec:
+# a child inherited into it could never trap those signals again, leaving the
+# whole chained cycle deaf to requirement 1's stale-lock takeover and to a
+# container stop. Assert on what the chained process actually inherits.
+sig_run_dir="$tmp_dir/signals"
+mkdir -p "$sig_run_dir/scripts"
+sig_record="$sig_run_dir/traps.txt"
+cat > "$sig_run_dir/agent-cycle.sh" <<STUB
+#!/usr/bin/env bash
+# A signal ignored on entry cannot be trapped; this records which of the three
+# arrived that way, exactly as a real chained cycle would find them.
+ignored=""
+for s in TERM INT HUP; do
+  [[ "\$(trap -p "\$s")" == *"trap -- '' SIG\$s"* ]] && ignored="\$ignored \$s"
+done
+printf 'ignored:%s\n' "\$ignored" > "$sig_record"
+exit 0
+STUB
+chmod +x "$sig_run_dir/agent-cycle.sh"
+sig_script="$sig_run_dir/run.sh"
+{
+  printf '#!/usr/bin/env bash\nset -uo pipefail\n'
+  printf 'SCRIPT_DIR=%q\n' "$sig_run_dir"
+  printf 'state_dir=%q\n' "$sig_run_dir"
+  printf 'lock_acquired=0\nlock_file=%q\nclone_dir=""\n' "$sig_run_dir/lock.json"
+  printf 'max_chained_cycles=3\nORIGINAL_ARGV=()\n'
+  printf 'log_event() { :; }\nmaybe_run_enabler() { :; }\n'
+  printf '%s\n' "$block"
+  printf 'chain_eligible=1\nchain_count=1\nexit 0\n'
+} > "$sig_script"
+chmod +x "$sig_script"
+
+timeout 10 bash "$sig_script" >/dev/null 2>&1 || true
+waited=0
+while [[ ! -s "$sig_record" ]] && (( waited < 30 )); do
+  sleep 0.1
+  waited=$(( waited + 1 ))
+done
+assert_eq "the chained cycle inherits no ignored signals — it can still be TERMed" \
+  "ignored:" "$(cat "$sig_record" 2>/dev/null || true)"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

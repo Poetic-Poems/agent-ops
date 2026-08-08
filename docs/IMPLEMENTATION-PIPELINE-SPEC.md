@@ -2414,7 +2414,14 @@ runs unattended.
     parsing consumes it), detached (backgrounded, `disown`ed, stdin from
     `/dev/null`, stdout/stderr appended to the same `cron.log` a cron
     firing already writes to) so the parent never waits on it and its life
-    does not depend on the parent's.
+    does not depend on the parent's — and launched with the default
+    dispositions for `TERM`, `INT` and `HUP` restored, because `cleanup`
+    ignores all three before it spawns (9c) and an *ignored* signal is
+    inherited across both fork and exec into a shell that can never take it
+    back. Without that reset a chained cycle would run deaf to every signal
+    9c's handler exists to catch, and requirement 1's stale-lock takeover
+    would reach it only through the `KILL` that follows its ignored `TERM`
+    — no `attempt-failed`, no `cycle-end`, no claim released.
 17d. **Race-loss observability**: how many candidates a cycle lost to a peer
     genuinely holding the item (17a's `cause: "held"`, as opposed to
     `"unreachable"`) before it won its own claim, or — on the cycle that
@@ -6441,7 +6448,11 @@ pull request, run the ones the change touches and any it could regress.
     *handled* ending (exit 0, the same as a stand-down) still does, since
     the item's own disposition must not stall the fleet from picking up a
     different one sooner; and the parent's own exit is never delayed by a
-    slow child, confirmed by timing a run against one that sleeps.
+    slow child, confirmed by timing a run against one that sleeps. The
+    launched child inherits **no** ignored signal disposition — asserted by
+    having it report back which of `TERM`, `INT` and `HUP` arrived already
+    ignored, which must be none — so a chained cycle stays killable by
+    requirement 1's takeover and by a container stop.
 39b. **A sub-hourly cycle interval is an explicit cron minute list, correct at
     every occurrence, and backward-compatible at the boundary.**
     `test/render-crontab.test.sh` passes: the rendered cycle line lists the
