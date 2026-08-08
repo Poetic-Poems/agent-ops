@@ -3273,6 +3273,13 @@ claimed_json=""
 n_cand="$(jq 'length' <<<"$candidates_json")"
 claim_attempts=0
 claim_unreachable=0
+# race_losses (requirement 17d): how many candidates this cycle lost to a
+# peer genuinely holding the item (cause "held" — healthy contention, not an
+# outage). Carried on both the eventual `selection` and the all-claimed
+# `stand-down` below, so a rising rate is visible without cross-referencing
+# `claim-lost` events by hand — the observability finish-then-continue and
+# the faster cadence both raise the concurrent-claim frequency for (#248).
+race_losses=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -3311,7 +3318,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # Opposite operational conditions, so `cause` tells them apart instead of
   # the event wearing one reason for both.
   case "$claim_rc" in
-    3) claim_cause="held" ;;
+    3) claim_cause="held"; race_losses=$(( race_losses + 1 )) ;;
     1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
     *) claim_cause="$claim_rc" ;;
   esac
@@ -3326,8 +3333,8 @@ if [[ -z "$claimed_json" ]]; then
   else
     standdown_reason="every candidate is already claimed elsewhere"
   fi
-  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" \
-    '{reason: $r, candidates: $n}')"
+  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" --argjson rl "$race_losses" \
+    '{reason: $r, candidates: $n, race_losses: $rl}')"
   exit 0
 fi
 
@@ -3335,7 +3342,7 @@ work_order_json="$claimed_json"
 selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
 selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
 selected_branch="$(jq -r '.branch // ""' <<<"$work_order_json")"
-log_event "selection" "$(jq -c '{repo, item, source, model, title, branch}' <<<"$work_order_json")"
+log_event "selection" "$(jq -c --argjson rl "$race_losses" '{repo, item, source, model, title, branch} + {race_losses: $rl}' <<<"$work_order_json")"
 
 # Finish-then-continue (requirement 39): a claim just won is real work, and
 # `ordered_repos_json` — gathered once, ahead of the Co-Ordinator, and

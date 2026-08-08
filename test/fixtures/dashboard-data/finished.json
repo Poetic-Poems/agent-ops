@@ -41,7 +41,7 @@
       "id": "20260731T120000Z-poetic-1-111", "node": "poetic-1",
       "started_at": "@ago:110m", "ended_at": "@ago:100m", "dry_run": false,
       "repo": "Poetic-Poems/agent-ops", "item": "TD-PPagop-26072501", "source": "tech-debt",
-      "title": "fix the thing",
+      "title": "fix the thing", "race_losses": 2,
       "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/200",
       "reason": null, "fail_detail": null, "warning": null, "outcome": "pr-ready",
       "stages": {
