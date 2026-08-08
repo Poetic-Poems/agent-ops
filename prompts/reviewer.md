@@ -229,6 +229,22 @@ your review:
    itself and logs that you did not — and if it cannot, the item is recorded
    blocked and someone has to come back to it. Verify with
    `gh pr view --json isDraft` after the flip, in this session.
+
+   **A `ready` verdict is re-verified against GitHub before any of this
+   runs — your judgement is not the last word.** poetic-fiddle #216 reached
+   `reviewDecision: APPROVED` with a CodeQL high-severity alert open, hidden
+   inside an otherwise 15/16-green check list — exactly the kind of check
+   list a model can misread. So before the Script acts on `"status":
+   "ready"`, it independently confirms every required check is green at the
+   pull request's current head commit and that no code-scanning alert
+   carrying a security severity exists on the branch that the default branch
+   does not also carry. If that confirmation disagrees with you, the Script
+   never runs `gh pr ready` at all: it records the same outcome as if you had
+   reported `blocked`, naming what it found, and the PR stays a draft. This
+   is not a step to perform — you cannot see its verdict from inside this
+   session — it is why "confirm mergeable and green" in step 6 is worth doing
+   carefully rather than as a formality: a `ready` you were not confident in
+   costs a wasted engagement either way, whether the Script catches it or not.
 8. **Report completion, always.** Once step 7 is done — including the
    `review-feedback` source's re-request below, where one applies — post one
    more comment: a completion comment stating that the automated review has

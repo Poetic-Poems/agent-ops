@@ -3218,7 +3218,9 @@ runs unattended.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never
-    approves and never merges.
+    approves and never merges. A `ready` verdict is itself re-verified against
+    GitHub before any of this runs (requirement 31c) — the Reviewer's own
+    confirmation is a model's, and the Script's is not.
 31a. **The handoff is verified, not reported.** Requirement 31 is the pipeline's
     only irreversible outward act, and requirement 32 has the Reviewer *describe*
     it — two different things. Before recording `pr-ready` the Script asks GitHub
@@ -3304,6 +3306,48 @@ runs unattended.
     the model may still do it, the Script asks GitHub whether it happened, and
     where it did not the Script does it. One definition, in `lib/handoff.sh`
     (requirement 34a).
+31c. **A `ready` verdict is confirmed against GitHub before it is acted on, not
+    trusted from the Reviewer.** poetic-fiddle #216 reached
+    `reviewDecision: APPROVED` while a CodeQL high-severity alert ("clear-text
+    logging of sensitive information") sat open, hidden inside an otherwise
+    15/16-green check list — the Reviewer's own instruction to confirm CI is
+    green (requirement 30) is a model reading a check list and judging it, and
+    that judgement is exactly what missed this one. So before requirement 31's
+    draft flip ever runs, the Script asks GitHub directly, through
+    `lib/review-gate.sh`'s `review_gate_verdict` (component 20):
+    - every required status check green at the pull request's *current* head
+      commit (`gh pr checks --required`, asked fresh rather than reused from
+      anything read earlier in the engagement, so a check still catching up to
+      a fix just pushed is never mistaken for one that passed). An empty or
+      unreadable required-check list is treated as failing, never as a vacuous
+      pass — poetic-fiddle #190, a CONFLICTING pull request, reports *no*
+      required checks at all, which is the conflicting-PR-runs-no-CI trap this
+      guards against;
+    - no code-scanning alert carrying a security severity that this pull
+      request's branch carries and the default branch does not — a default
+      branch that already lives with an accepted alert must not freeze every
+      future pull request over debt that is not theirs, so the default
+      branch's own open alerts are read and subtracted before anything is
+      judged "introduced" by this pull request.
+
+    `clean` — requirement 31 proceeds exactly as before. `dirty` — the
+    handoff never runs at all; this is recorded as a Reviewer handback
+    (requirement 32a) naming what the gate found, exactly as though the
+    Reviewer itself had reported `blocked`, and no `gh pr ready` is attempted.
+    `unknown` — the code-scanning read could not be asked at all (no
+    `security_events` permission on this token, code scanning not enabled, an
+    unreachable API): a fact about the node or the repository, not the pull
+    request, so the handoff proceeds and a `warning` is logged instead — the
+    same "could not check is not a failure" contract requirement 24a's Vercel
+    preview check already keeps, applied here so a token missing one
+    permission cannot silently freeze every pull request's handoff fleet-wide.
+    An `unknown` alert read never softens a `dirty` required-check verdict;
+    required checks are asked first and gate on their own.
+
+    #216 itself: the human resolved it directly on the pull request (renaming
+    the flagged constant, commit `8e62ff6`) before this requirement existed to
+    check it, which is itself the confirmation that a script-side gate would
+    have found nothing further to do once that fix landed.
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
@@ -5202,6 +5246,20 @@ What exists, and the requirements each part answers to:
     three actions per call, the overflow reported rather than silent.
     `SWEEP_GH` stubs `gh` for tests. Unit-tested
     (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
+20. `lib/review-gate.sh` implementing requirement 31c: given a pull request
+    URL and the repository's default branch, `review_gate_verdict` prints
+    `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — every required
+    status check green at the current head commit
+    (`review_gate_required_checks`, `gh pr checks --required`, an empty or
+    unreadable list treated as failing rather than vacuously passing) and no
+    code-scanning alert carrying a security severity that the pull request's
+    branch has and the default branch does not (`review_gate_security_alerts`,
+    the base branch's own open alerts subtracted first so inherited debt never
+    blocks a pull request that did not introduce it). An alerts API that
+    cannot be asked at all is `unknown`, never `clean` — the same "could not
+    check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
+    already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
+    (`test/review-gate.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -5944,6 +6002,24 @@ pull request, run the ones the change touches and any it could regress.
    `CHANGES_REQUESTED` and the PR must still be un-mergeable afterwards. A
    re-request that cleared the block would have moved the human gate, not
    rung it.
+8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
+   handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
+   passes: every required check passing is `clean`; a failing required check,
+   an empty required-check list, and an unreadable required-check list are all
+   `dirty`, never a vacuous pass; an open code-scanning alert with a security
+   severity on the pull request's branch is `dirty` unless the same alert
+   number is already open on the default branch, in which case it is `clean`;
+   an alert with no security severity never gates; and an alerts API that
+   cannot be asked at all is `unknown`, never `clean`, and never turns a dirty
+   required-check verdict into anything softer. Then drive a cycle whose
+   Reviewer answers `{"status": "ready"}` against a stubbed `gh` reporting a
+   failing required check: the cycle must record the same outcome as a
+   Reviewer `blocked` verdict (requirement 32a) — an `attempt-failed` naming
+   what the gate found — and must never call `gh pr ready` at all. Assert the
+   `unknown` path separately: the same cycle with the alerts read failing but
+   required checks clean must still complete the handoff, with a `warning`
+   logged rather than a block, so a token missing one permission cannot
+   silently freeze every pull request's handoff fleet-wide.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
