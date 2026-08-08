@@ -3670,8 +3670,8 @@ runs unattended.
       safe where clearing is not — a wrong unvoid costs a cycle every hour until
       someone notices — but it is not free, and requirement 34d is what makes it
       safe enough to keep.
-34d. **Every `item-void` write, from every stage, is corroborated before it is
-    made permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
+34d. **Every `item-void` a stage writes is corroborated before it is made
+    permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
     entry point the Co-Ordinator (requirement 18), the Enabler (requirement
     36a's `void` row) and the Implementor (requirement 9b) all call before
     logging `item-void`; none of the three may write it directly. The rule is
@@ -4162,11 +4162,15 @@ runs unattended.
     object to close, and requirement 34k does nothing with it; a register id
     is instead requirement 34l's concern, immediately below.
 
-    **Only a corroborated void — today, that is all three writers.**
-    `void_json` holds the unresolved `item-void` events of all three writers
-    (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
+    **Only a corroborated void — today, that is the three stage writers.**
+    `void_json` holds the unresolved `item-void` events of all three stage
+    writers (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
     corroborates every one of them before it is logged (issue #243), so each
-    is eligible here. Each candidate still carries its event's `stage`, and
+    is eligible here. It also holds the Script's own pre-flight voids
+    (requirement 34m), and the `stage` gate below excludes them: a pre-flight
+    void closes no GitHub object, so a finishing-source item it voids leaves
+    its pull request open for a human, or for a later corroborated void, to
+    close. Each candidate still carries its event's `stage`, and
     `close-void-github-items.sh` still gates on it — an uncorroborated
     `item-void` must never reach this point, but if one somehow did (a future
     writer that bypassed the guard, a malformed or stageless entry), the gate
