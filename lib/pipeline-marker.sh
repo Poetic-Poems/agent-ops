@@ -64,6 +64,7 @@ pipeline_actor_label() {
     implementor) printf 'Implementor' ;;
     reviewer) printf 'Reviewer' ;;
     enabler) printf 'Enabler' ;;
+    refiner) printf 'Refiner' ;;
     review-script) printf 'Review Script' ;;
     project-reviewer) printf 'Project Reviewer' ;;
     *) printf '%s' "$1" ;;

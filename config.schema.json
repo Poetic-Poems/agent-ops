@@ -369,6 +369,69 @@
         "spec": "How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely \u2014 blocks are still recorded, and the items wait."
       }
     },
+    "refiner_model": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Refiner's model — cheap, because it runs proactively over every unrefined candidate rather than rarely like the Enabler. Empty disables the stage.",
+      "default": "",
+      "x-docs": {
+        "readme": "The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). A cheap model, engaged every cycle there is unrefined work to do. Leave it empty to switch the stage off.",
+        "spec": "The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage.",
+        "value": "`claude-haiku-4-5-20251001`"
+      }
+    },
+    "refined_label": {
+      "$ref": "#/$defs/label",
+      "description": "Projected onto an issue-type item once the Refiner has written it a specification. Empty disables the projection; the log stays the record either way. Must not be `blocked`.",
+      "default": "refined",
+      "x-docs": {
+        "readme": [
+          "Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing.",
+          "The pipeline creates it in each target repo it works, so there is nothing to set up.",
+          "Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record.",
+          "Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source."
+        ],
+        "spec": [
+          "The label the Script projects onto an issue-type item once the Refiner records it `refined` (requirement 39c). One-way and never read back — unlike `needs_refinement_label`'s hand-flag path, there is no hand-applied form of this label: the shared log is the sole record of whether an item is refined, exactly as requirement 34e already establishes for the negative marker.",
+          "Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still reads it (requirement 3h).",
+          "It must not be `blocked`, for the reason given against `enabler_escalation_label`."
+        ]
+      }
+    },
+    "refiner_max_per_engagement": {
+      "description": "How many unrefined items one Refiner engagement takes on. 0 removes the class from engagements while the items remain unrefined.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 5,
+      "x-docs": {
+        "readme": "How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off.",
+        "spec": "How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely."
+      }
+    },
+    "refinement_policy": {
+      "description": "Per-source policy for whether an item must be marked `refined` (or carry a spec the Refiner wrote) before the Co-Ordinator may select it: `required` — never select an unrefined item from this source; `preferred` — rank a refined item ahead of an otherwise-equal unrefined one, but the Co-Ordinator may still select an unrefined item on its own judgement; `exempt` — the source already carries its own specification (a merge conflict, a review comment, a security finding) and the dimension does not apply. A source absent from this object is `exempt`. The Refiner's own candidate gathering only reaches the sources the Script pre-fetches as structured data — `issues`, `security`, `code-quality`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `register-hygiene`; setting a policy for `tech-debt`, `project-review` or `implementation-plan` still shapes the Co-Ordinator's own ranking, but no engagement will proactively write those a specification (TD-PPagop-26080808).",
+      "type": "object",
+      "additionalProperties": false,
+      "default": {
+        "issues": "preferred"
+      },
+      "properties": {
+        "security": { "$ref": "#/$defs/refinementPolicyValue" },
+        "review-feedback": { "$ref": "#/$defs/refinementPolicyValue" },
+        "merge-conflicts": { "$ref": "#/$defs/refinementPolicyValue" },
+        "abandoned-drafts": { "$ref": "#/$defs/refinementPolicyValue" },
+        "failed-runs": { "$ref": "#/$defs/refinementPolicyValue" },
+        "tech-debt": { "$ref": "#/$defs/refinementPolicyValue" },
+        "issues": { "$ref": "#/$defs/refinementPolicyValue" },
+        "implementation-plan": { "$ref": "#/$defs/refinementPolicyValue" },
+        "project-review": { "$ref": "#/$defs/refinementPolicyValue" },
+        "code-quality": { "$ref": "#/$defs/refinementPolicyValue" },
+        "register-hygiene": { "$ref": "#/$defs/refinementPolicyValue" }
+      },
+      "x-docs": {
+        "readme": "Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Only `issues` and the sources fetched as structured data reach the Refiner's own engagement; `tech-debt`, `project-review` and `implementation-plan` still honour a policy in the Co-Ordinator's ranking, but nothing writes them a specification yet.",
+        "spec": "Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement (TD-PPagop-26080808)."
+      }
+    },
     "unvoid_label": {
       "$ref": "#/$defs/label",
       "description": "The label a human applies on GitHub to ask for a void to be reopened. No stage ever applies it, so 'only a human may clear a void' is unchanged; what it gives them is a way to say so from where they are.",
@@ -395,11 +458,14 @@
         },
         "enabler": {
           "$ref": "#/$defs/promptOverride"
+        },
+        "refiner": {
+          "$ref": "#/$defs/promptOverride"
         }
       },
       "x-docs": {
         "readme": "Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides).",
-        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage."
+        "spec": "Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage."
       }
     },
     "pr_label": {
@@ -563,6 +629,18 @@
         }
       }
     },
+    "timeout_refiner": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Override for the Refiner's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
+      "x-docs": {
+        "readme": "Minutes, and an override. As above.",
+        "spec": "As `timeout_coordinator`, for the Refiner — which, spanning repositories, has a single `(refiner, *, model)` cell.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
     "inactivity_coordinator": {
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Co-Ordinator's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
@@ -604,6 +682,18 @@
       "description": "Override for the Enabler's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
         "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
+    "inactivity_refiner": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Override for the Refiner's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
+      "x-docs": {
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
           "readme": "*(unset)*",
@@ -997,6 +1087,11 @@
       "description": "A GitHub label name. Empty, where a key allows it, switches that labelling off.",
       "type": "string",
       "pattern": "^[^,]*$"
+    },
+    "refinementPolicyValue": {
+      "description": "Whether an unrefined item from a source may be selected: never (`required`), only by preference (`preferred`), or the dimension does not apply (`exempt`).",
+      "type": "string",
+      "enum": ["required", "preferred", "exempt"]
     },
     "timeoutMinutes": {
       "description": "A per-stage wall-clock timeout, in whole minutes.",

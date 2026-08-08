@@ -527,3 +527,99 @@ refinement_hand_flag_cleared() {
   [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
   printf '%s' "$out"
 }
+
+# --- The Refiner (requirement 39) --------------------------------------------
+#
+# Everything above this line predates the Refiner and is unchanged by it: a
+# refinement block is still recorded, aged, and cleared exactly as requirement
+# 34e describes, whoever reports it. What follows is the Refiner's own half —
+# finding items nobody has specified yet, before any of that machinery would
+# otherwise engage — and it deliberately reuses `refinement_entry_problem`,
+# `refinement_block_fields`, `refinement_label_add`/`_remove` and
+# `refinement_assignee_project` rather than duplicating them: a Refiner decline
+# is recorded exactly the way a Co-Ordinator's `needs_refinement` report is
+# (requirement 39d), because it is the same kind of block reaching the same
+# escape hatch, just reported by a different stage.
+
+# refiner_policy_value SOURCE POLICY_JSON
+# Print the effective `refinement_policy` (requirement 39a) for SOURCE:
+# "required", "preferred" or "exempt" — the default for any source the
+# configuration's `refinement_policy` object does not name, which is every
+# source until an installation opts one in.
+refiner_policy_value() {
+  local source="$1" policy="${2:-{\}}"
+  jq -r --arg s "$source" '(. // {})[$s] // "exempt"' <<<"$policy" 2>/dev/null || printf 'exempt'
+}
+
+# refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON
+# Print, as a JSON array, every item from this cycle's pre-fetched source
+# arrays — `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
+# `register_hygiene`, `issues`, the same per-repo arrays requirement 3
+# assembles for the Co-Ordinator — that the Refiner may spend an engagement on:
+# its source's policy is not `exempt` (requirement 39a), it carries no
+# refinement yet (REFINEMENTS_JSON, requirement 3h), and it is not already
+# blocked, void, or held by an ordinary implementation claim.
+#
+# Each entry is `{repo, source, item, entry}` — `entry` is the gatherer's own
+# object verbatim (an issue's full thread, a finding's title and severity),
+# because the Refiner needs it to write a specification without a second
+# fetch, the same reason the Co-Ordinator is handed it pre-fetched rather than
+# told to query it.
+#
+# `tech-debt`, `project-review` and `implementation-plan` items are never
+# candidates here, whatever their policy says: the Script does not pre-fetch
+# them as structured data (TD-PPagop-26080808), so there is nothing in
+# REPOS_JSON to offer the Refiner for them. Setting a policy for one of those
+# three still shapes the Co-Ordinator's own ranking; it just finds no
+# engagement here to act on it.
+refiner_candidate_items() {
+  local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
+        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}"
+  jq -c --argjson policy "$policy" --argjson refinements "$refinements" \
+        --argjson blocked "$blocked" --argjson void "$void" --argjson claimed "$claimed" '
+    def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
+    def is_refined($repo; $item):
+      (($refinements // {})[$repo][($item | tostring)] // null) != null;
+    def is_blocked($repo; $item):
+      $blocked | any(((.item // "") | tostring) == ($item | tostring)
+                     and ((.repo // "") == "" or (.repo // "") == $repo));
+    def is_void($repo; $item):
+      $void | any(((.item // "") | tostring) == ($item | tostring)
+                  and ((.repo // "") == "" or (.repo // "") == $repo));
+    def is_claimed($repo; $item):
+      $claimed | any((.repo // "") == $repo
+                     and ((.item // "") | tostring) == ($item | tostring));
+    [ .[] as $r
+      | ($r.slug // "") as $repo
+      | ( ($r.findings // [])[]?, ($r.review_feedback // [])[]?,
+          ($r.abandoned_drafts // [])[]?, ($r.merge_conflicts // [])[]?,
+          ($r.register_hygiene // [])[]?, ($r.issues // [])[]? )
+      | . as $e
+      | ($e.source // "") as $source
+      | ($e.ref // "" | tostring) as $item
+      | select($repo != "" and $source != "" and $item != "")
+      | select(exempt($source) | not)
+      | select(is_refined($repo; $item) | not)
+      | select(is_blocked($repo; $item) | not)
+      | select(is_void($repo; $item) | not)
+      | select(is_claimed($repo; $item) | not)
+      | {repo: $repo, source: $source, item: $item, entry: $e} ]
+  ' <<<"$repos" 2>/dev/null || printf '[]'
+}
+
+# refiner_engagement_set CANDIDATES_JSON MAX
+# Reduce CANDIDATES_JSON to at most MAX entries, sorted by `repo`, `source`
+# then `item` — deterministic, so every node in the fleet reduces to the same
+# set and they contend on the same claims rather than each engaging a
+# different slice of the backlog (the same reasoning as requirement 35d's cap
+# for the Enabler, over a set with no `blocked_ts` to order by instead).
+#
+# MAX of 0 removes the class from engagements entirely: candidates are simply
+# left unrefined and reconsidered next cycle. An unreadable MAX is treated as
+# 0, on the same "not a licence to spend" terms as `refinement_engagement_set`.
+refiner_engagement_set() {
+  local candidates="${1:-[]}" max="${2:-0}"
+  [[ "$max" =~ ^[0-9]+$ ]] || max=0
+  jq -c --argjson max "$max" 'sort_by(.repo, .source, .item) | .[0:$max]' \
+    <<<"$candidates" 2>/dev/null || printf '[]'
+}
