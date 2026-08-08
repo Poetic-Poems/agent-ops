@@ -564,8 +564,14 @@ The strip is rebuilt on every refresh tick alongside the header, not only when
 the body re-renders, because its cards carry running clocks ("since 18m ago")
 and the body deliberately sits still while the data is unchanged.
 Then metric cards (spend today/total — fleet-wide, one shared account —
-failures, reached-ready, back-pressure gauge
-vs `max_open_agent_prs`). The spend-today card's own word "today" is a button:
+failures, reached-ready, back-pressure gauge vs `max_open_agent_prs`. The
+gauge's own figure is the count the pipeline actually trips its cap on —
+draft PRs and ready PRs still `CHANGES_REQUESTED` — with a line underneath
+naming the raw open-PR total and, when it differs, how many of those are
+sitting only in a human's queue (approved, or awaiting a review nothing is
+`CHANGES_REQUESTED`-blocking): a full human queue reads as "waiting on
+human", not as the pipeline sitting idle). The spend-today card's own word
+"today" is a button:
 clicking it cycles the card's label and figure through **today (GMT)** (the
 Publisher's own `spend_today_usd`), **today (local)** and **last 24h** (both
 computed here, from `counts.recent_costs`, against the reader's own clock and

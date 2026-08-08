@@ -1691,6 +1691,7 @@ maybe_run_enabler() {
   local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
   local items_named_json
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
+  local e_void_entry e_void_refusal
   local e_pr_url e_handoff e_refusal e_refined
   local issue_title issue_body_file created number url missing
 
@@ -1966,9 +1967,29 @@ $(jq . <<<"$input")
         ;;
       void)
         # Requirement 9b: "the work is already done" is a void, never an unblock.
-        log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
-          "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
-        release_refinement_label "$e_item" "$e_repo"
+        # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
+        # every stage: the Enabler reads the issue and the PR (requirement 35),
+        # but reading more does not stop a model citing the wrong artefact
+        # inside it — see lib/void-guard.sh's own note on issue #243. `repos`
+        # is passed as `[]`: the Enabler gathers no per-cycle candidate list, so
+        # `void_guard_reason`'s PR-diff check (Co-Ordinator only) simply has
+        # nothing to test against; the citation check needs nothing from it.
+        e_void_entry="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg reason "$e_reason" \
+          --argjson x "$ex" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
+        if e_void_refusal="$(void_guard_reason "$e_void_entry" '[]')"; then
+          log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
+            "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
+          release_refinement_label "$e_item" "$e_repo"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler void refused for ${e_repo:-<no repo>} $e_item — $e_void_refusal; recorded blocked instead" \
+            '{detail: $d}')"
+          log_event "attempt-failed" "$(item_event_fields "enabler" \
+            "void refused ($e_void_refusal). The Enabler's stated reason was: $e_reason" "$e_repo" "$e_item" \
+            "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+              '{unblock_condition: $c}')")"
+          outcome="void-refused"
+        fi
         ;;
       still-blocked)
         # Nothing extra to record: the block stands, and the refreshed condition
@@ -2453,21 +2474,41 @@ fi
 # deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
 # all waiting on the agent, and the one source that could clear them never
 # reached. The cost of deferring is the handful of `gh` calls in step 3.
-# The count is taken in three parts — ready PRs, draft PRs, live claims —
-# because the trip decision needs only the sum, but the logged reason states
-# the split: a ready PR is the human's queue, a draft is work in flight (the
-# Implementor's own claim marker, requirement 23), and which of them filled
-# the gate is what a cap-tuning decision needs to know. Recording it here
-# costs nothing; reconstructing it later means cycle-record archaeology.
+#
+# A ready PR only counts toward the trip when the pipeline itself has a next
+# action on it — `reviewDecision == CHANGES_REQUESTED`, the same "whose turn
+# is it" rule requirement 3c's review-feedback candidate filter uses
+# (scripts/gather-review-feedback.sh), so the two definitions cannot disagree.
+# A ready PR that is approved, or awaiting a first or re-review with nothing
+# currently `CHANGES_REQUESTED`-blocking it, is sitting in the human's queue —
+# the pipeline cannot shrink that by declining to open new work, so counting
+# it against the cap only back-pressures the fleet for a queue it has no lever
+# to drain (agent-ops#246).
+#
+# The count is taken in four parts — ready PRs awaiting a human, ready PRs
+# awaiting the pipeline, draft PRs, live claims — because the trip decision
+# needs only the human-queue-excluded sum, but the logged reason states the
+# full split: a human-queue PR could fill the raw total without ever counting
+# against the cap; a pipeline-turn ready PR is the human's queue answered and
+# now the agent's to act on; a draft is work in flight (the Implementor's own
+# claim marker, requirement 23); an unraised claim is a registry entry whose
+# PR does not yet exist. Which of them filled the gate is what a cap-tuning
+# decision needs to know. Recording it here costs nothing; reconstructing it
+# later means cycle-record archaeology.
 ready_count=0
+human_queue_count=0
 draft_count=0
 while IFS= read -r slug; do
-  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft \
-    --jq '[([.[] | select(.isDraft | not)] | length), ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
-  IFS=$'\t' read -r n_ready n_draft <<<"$counts"
+  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft,reviewDecision \
+    --jq '[([.[] | select(.isDraft | not)] | length),
+           ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
+           ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
+  IFS=$'\t' read -r n_ready n_human n_draft <<<"$counts"
   [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
+  [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
   ready_count=$(( ready_count + n_ready ))
+  human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
@@ -2484,11 +2525,13 @@ while IFS= read -r slug; do
   claim_count=$(( claim_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
-open_count=$(( ready_count + draft_count + claim_count ))
-open_composition="$ready_count ready + $draft_count draft + $claim_count unraised claim(s)"
+pipeline_ready_count=$(( ready_count - human_queue_count ))
+raw_open_count=$(( ready_count + draft_count + claim_count ))
+adjusted_open_count=$(( pipeline_ready_count + draft_count + claim_count ))
+open_composition="$pipeline_ready_count changes-requested + $draft_count draft + $claim_count unraised claim(s) — plus $human_queue_count waiting on human ($raw_open_count raw)"
 
 backpressure_tripped=0
-if (( open_count >= max_open_agent_prs )); then
+if (( adjusted_open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
 fi
 
@@ -2810,9 +2853,9 @@ void_json="$(void_items "$union_log")"
 # excludes whatever a previous cycle already actioned, so this never
 # re-checks (and never re-closes) the same item twice, even if a human
 # reopens the object directly rather than through `unvoid_label`. The event's
-# `stage` travels with each candidate because the sweep acts only on the
-# Co-Ordinator's voids — the one writer requirement 34d corroborates — until
-# WI-7 (#243) corroborates the other two; the gate itself lives in
+# `stage` travels with each candidate because the sweep's corroboration gate
+# keys on it — every writer's `item-void` passes requirement 34d before it is
+# logged (issue #243), so all three are eligible, and the gate itself lives in
 # close-void-github-items.sh (requirement 34a: one definition, at the point
 # of action). Skipped on --dry-run: the sweep closes issues and pull
 # requests.
@@ -2933,7 +2976,7 @@ if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
@@ -2946,7 +2989,7 @@ if (( backpressure_tripped )); then
                                     | .issues = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
+    --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 
@@ -3410,11 +3453,33 @@ impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || tr
 # already-done recommendation be unblocked by the next Co-Ordinator and
 # re-selected indefinitely.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
-  log_item_void "implementor" \
-    "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
-    "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
+  # every stage: the Implementor reads the tree itself (requirement 27b), but
+  # that does not stop a model citing the wrong artefact from it — see
+  # lib/void-guard.sh's own note on issue #243. `repos` is passed as `[]`: the
+  # Implementor gathers no per-cycle candidate list, so `void_guard_reason`'s
+  # PR-diff check (Co-Ordinator only) simply has nothing to test against; the
+  # citation check needs nothing from it.
+  impl_void_entry="$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" \
+    --arg reason "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    --argjson x "$impl_status_json" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
+  if impl_void_refusal="$(void_guard_reason "$impl_void_entry" '[]')"; then
+    log_item_void "implementor" \
+      "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+      "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  else
+    log_event "warning" "$(jq -nc \
+      --arg d "implementor void refused for ${selected_repo:-<no repo>} $selected_item — $impl_void_refusal; recorded blocked instead" \
+      '{detail: $d}')"
+    log_attempt_failed "implementor" \
+      "void refused ($impl_void_refusal). The Implementor's stated reason was: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+      "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+        '{unblock_condition: $c}')"
+  fi
   # A void item has no work, so its claim must not outlive the verdict — the
-  # branch (if untouched) and the registry entry both go.
+  # branch (if untouched) and the registry entry both go. A refused void is
+  # recorded blocked instead, but the claim releases the same way either way:
+  # the Implementor found no PR to raise for this item.
   release_claim no-pr
   exit 0
 fi

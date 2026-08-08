@@ -1936,15 +1936,25 @@
     card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
     card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
     card("Reached ready", String(c.prs_reached_ready || 0));
-    // back-pressure card
-    var openN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+    // back-pressure card — the pipeline itself only trips its cap on draft
+    // PRs and ready PRs still CHANGES_REQUESTED (agent-ops#246); a ready PR
+    // approved or awaiting a human review sits in a queue the pipeline
+    // cannot shrink by waiting, so it is shown as its own figure rather than
+    // folded into "open" as if the pipeline were idle.
+    var rawN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+    var humanQueueN = openPrs.filter(function (p) {
+      return !p.isDraft && p.review_decision !== "CHANGES_REQUESTED";
+    }).length;
+    var adjN = rawN - humanQueueN;
     var gauge = el("div", {class:"gauge"}, el("span", {
-      style: "width:" + (maxN ? Math.min(100, openN/maxN*100) : 0) + "%;background:" + (openN>=maxN && maxN ? "var(--red)" : "var(--accent)")
+      style: "width:" + (maxN ? Math.min(100, adjN/maxN*100) : 0) + "%;background:" + (adjN>=maxN && maxN ? "var(--red)" : "var(--accent)")
     }));
     cards.appendChild(el("div", {class:"card"}, [
       el("div", {class:"k", text:"Open agent PRs"}),
-      el("div", {class:"v"}, [document.createTextNode(openN + " "), el("small", {text:"/ " + maxN + " max"})]),
-      gauge
+      el("div", {class:"v"}, [document.createTextNode(adjN + " "), el("small", {text:"/ " + maxN + " max"})]),
+      gauge,
+      el("small", {class:"muted", text: rawN + " open" +
+        (humanQueueN ? ", " + humanQueueN + " waiting on human" : "")})
     ]));
     app.appendChild(cards);
 

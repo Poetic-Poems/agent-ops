@@ -1084,6 +1084,7 @@ if (( WITH_GITHUB )); then
     prs_json="$(jq -c --arg slug "$slug" --argjson add "$prs" "$PR_JQ"'
       . + ($add | map({
         repo: $slug, number, title, url, isDraft, state, mergeable, mergeStateStatus, headRefName, createdAt,
+        review_decision: (.reviewDecision // ""),
         checks: (.statusCheckRollup | checks_of)
       }))' <<<"$prs_json")"
     # The same fetch, indexed. These entries are this tick's freshest answer for

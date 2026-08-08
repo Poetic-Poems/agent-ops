@@ -111,18 +111,29 @@ assert_eq "the pull request is closed" \
   '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
   "$(jq -c . <<<"$out")"
 
-# --- Case 3b: an uncorroborated void acts on nothing -------------------------------
-# Only the Co-Ordinator's voids pass requirement 34d's guard before they are
-# logged; the Implementor's and the Enabler's are the model's own unexamined
-# verdict, and issue #240 scopes this action to a void that survives
-# corroboration (WI-7, #243). Until that lands, an open issue named by an
-# uncorroborated void must stay exactly as it is — not closed, not read, not
-# marked done.
+# --- Case 3b: every corroborated writer's void is actioned -------------------------
+# Requirement 34d's guard (issue #243) corroborates `item-void` from all three
+# writers before it is ever logged, so the Enabler's and the Implementor's
+# voids are eligible here exactly as the Co-Ordinator's are — the gate is on
+# corroboration, not on which stage wrote it.
 c="$tmp_dir/case3b"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"198","detail":"implementor says already done","stage":"implementor"},
-                  {"item":"pr-205-abandoned-abc123","detail":"enabler retired it","stage":"enabler"},
-                  {"item":"198","detail":"no stage recorded at all"}]')"
-assert_eq "an implementor/enabler/stageless void is never actioned" "" "$out"
+out="$(run "$c" '[{"item":"198","detail":"implementor says already done","stage":"implementor"}]')"
+assert_eq "an implementor void closes the issue" \
+  '{"action":"closed","item":"198","kind":"issue","closed_by":"sweep"}' \
+  "$(jq -c . <<<"$out")"
+
+c="$tmp_dir/case3b-enabler"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"enabler retired it","stage":"enabler"}]')"
+assert_eq "an enabler void closes the pull request" \
+  '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
+  "$(jq -c . <<<"$out")"
+
+# --- Case 3b-ii: a stageless void — no writer this script recognises — acts on nothing
+# `item-void` has never been written without a `stage` in production; this
+# pins the fail-closed default for a malformed or future-unknown entry.
+c="$tmp_dir/case3b-stageless"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"198","detail":"no stage recorded at all"}]')"
+assert_eq "a stageless void is never actioned" "" "$out"
 assert_eq "and gh is never even called for one" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 3c: the corroboration gate must not eat the evidence column --------------
