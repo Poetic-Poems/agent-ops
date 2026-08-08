@@ -170,7 +170,9 @@ run_claude_stage() {
   local out_file="$5"
   jq -nc --argjson env "$STUB_EXAMINED_JSON" '{result: ($env | tostring), session_id: "stub-session"}' \
     > "$out_file"
+  # shellcheck disable=SC2034  # read by the eval'd maybe_run_enabler, not visible here
   stage_gaps_json="null"
+  # shellcheck disable=SC2034
   stage_kill_reason=""
   return "${STUB_RUN_RC:-0}"
 }
@@ -179,22 +181,41 @@ run_claude_stage() {
 mkdir -p "$fake_root/prompts"
 : > "$fake_root/prompts/enabler.md"
 
+# Every one of these is consumed only by the eval'd maybe_run_enabler, which
+# static analysis cannot see into — the same reason test/signal-exit.test.sh
+# disables SC2034 around its own eval'd acquire_lock globals.
+# shellcheck disable=SC2034
 lock_acquired=1
+# shellcheck disable=SC2034
 enabler_allowed=1
+# shellcheck disable=SC2034
 DRY_RUN=0
+# shellcheck disable=SC2034
 limit_hit_this_cycle=0
+# shellcheck disable=SC2034
 enabler_model="claude-test-model"
+# shellcheck disable=SC2034
 PROMPTS_DIR="$fake_root/prompts"
+# shellcheck disable=SC2034
 refinement_max_per_engagement=5
+# shellcheck disable=SC2034
 state_repo=""
 state_dir="$tmp_dir/state"
+# shellcheck disable=SC2034
 node_name="test-node"
+# shellcheck disable=SC2034
 cycle_id="test-cycle"
+# shellcheck disable=SC2034
 prompt_overrides_json="{}"
+# shellcheck disable=SC2034
 stage_backstop_min=1
+# shellcheck disable=SC2034
 stage_inactivity_min=1
+# shellcheck disable=SC2034
 ONCE=0
+# shellcheck disable=SC2034
 enabler_escalation_label="enabler-escalation"
+# shellcheck disable=SC2034
 enabler_assignee="tester"
 SCRIPT_DIR="$fake_root"
 mkdir -p "$state_dir"
@@ -209,6 +230,7 @@ run_case() {
   cycle_dir="$(mktemp -d)"
   calls_log="$cycle_dir/calls.log"
   : > "$calls_log"
+  # shellcheck disable=SC2034  # read only by the eval'd maybe_run_enabler
   enabler_eligible_json="$eligible_json"
   STUB_EXAMINED_JSON="$(jq -nc --argjson e "$examined_json" '{examined: $e}')"
   maybe_run_enabler "$cycle_rc" >/dev/null 2>&1
@@ -369,6 +391,7 @@ assert_eq "still-blocked: the refreshed condition travels on the examined event"
 # escalate: success and a filing failure — the one outcome 36a exempts from
 # ordinary examination accounting
 # ============================================================================
+# shellcheck disable=SC2317  # called between here and its redefinition below, via the eval'd maybe_run_enabler
 create_escalation_issue() { printf '42\thttps://github.com/acme/widgets/issues/42'; return 0; }
 examined='[{"repo":"acme/widgets","item":"TD001","verdict":"escalate","reason":"needs a human call",
             "issue":{"title":"Decide the retry budget","body":"Please decide the retry budget for TD001."}}]'
