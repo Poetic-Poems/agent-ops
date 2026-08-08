@@ -507,6 +507,34 @@ printf '%s' '{"ts":"2026-07-22T10:00:00Z","event":"item-ref' >> "$log"
 assert_eq "a malformed trailing line does not lose the map" "the current spec" \
   "$(refinements_map "$log" | jq -r '."o/r".TD26071901.spec')"
 
+# --- Requirement 39d: a fresher needs-refinement block shadows a refinement ------
+# The Implementor's escape hatch (or a further Refiner decline) says a named
+# specification did not hold up, so a later Co-Ordinator must not be handed it
+# again — but a *later* refinement must still win once someone writes one.
+stale_log="$(mktemp)"
+cat > "$stale_log" <<'EOF'
+{"ts":"2026-08-01T09:00:00Z","cycle":"c1","event":"item-refined","repo":"o/r","item":"88","comment_url":"https://github.com/o/r/issues/88#issuecomment-1"}
+EOF
+assert_eq "before any block, the refinement stands" \
+  "https://github.com/o/r/issues/88#issuecomment-1" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."88".comment_url')"
+
+printf '%s\n' '{"ts":"2026-08-01T10:00:00Z","cycle":"c2","event":"attempt-failed","stage":"implementor","kind":"needs-refinement","repo":"o/r","item":"88","reason":"acceptance criteria do not match the body","unblock_condition":"say which of the two behaviours is wanted"}' >> "$stale_log"
+assert_eq "a fresher needs-refinement block shadows the refinement" "null" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."88" // "null"')"
+
+printf '%s\n' '{"ts":"2026-08-01T11:00:00Z","cycle":"c3","event":"item-refined","repo":"o/r","item":"88","comment_url":"https://github.com/o/r/issues/88#issuecomment-2"}' >> "$stale_log"
+assert_eq "a later refinement clears the shadow and wins" \
+  "https://github.com/o/r/issues/88#issuecomment-2" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."88".comment_url')"
+
+printf '%s\n' '{"ts":"2026-08-01T08:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","kind":"needs-refinement","repo":"o/r","item":"77","reason":"vague","unblock_condition":"…"}' >> "$stale_log"
+printf '%s\n' '{"ts":"2026-08-01T09:00:00Z","cycle":"c1","event":"item-refined","repo":"o/r","item":"77","spec":"written after the block"}' >> "$stale_log"
+assert_eq "a refinement written after an older block is not shadowed by it" \
+  "written after the block" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."77".spec')"
+rm -f "$stale_log"
+
 # --- Requirement 35d: the per-engagement cap -------------------------------------
 # The asymmetry is the point: the backlog of items silently skipped before this
 # existed is unbounded and none of it is urgent, while the ordinary blocked

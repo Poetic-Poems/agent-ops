@@ -239,15 +239,18 @@ assert_eq "…and leaves the threshold to the derivation" \
 # --- 9. The derived lock ----------------------------------------------------------------
 # It must clear the worst case the cycle could draw, which is why it sums the
 # widest backstop each actor could be given rather than the one it will be.
+# Five implementation actors as of the Refiner (requirement 39): coordinator,
+# implementor, reviewer, enabler, refiner — each contributes its widest
+# backstop, plus slack.
 lock_sec="$(stage_budget_lock_seconds "$tk3" '{}' 30 0)"
 assert_eq "the lock clears the summed worst-case backstops plus slack" \
-  "$(( (20 + 150 + 180 + 30 + 30) * 60 ))" "$lock_sec"
+  "$(( (20 + 150 + 180 + 30 + 30 + 30) * 60 ))" "$lock_sec"
 assert_eq "a configured value is a floor, not the answer" \
   "$(( 12 * 3600 ))" "$(stage_budget_lock_seconds "$tk3" '{}' 30 12)"
 assert_eq "…and is ignored when the derivation already exceeds it" \
   "$lock_sec" "$(stage_budget_lock_seconds "$tk3" '{}' 30 1)"
 assert_eq "an empty table still derives a lock, from the priors alone" \
-  "$(( (20 + 150 + 90 + 30 + 30) * 60 ))" "$(stage_budget_lock_seconds '{}' '{}' 30 0)"
+  "$(( (20 + 150 + 90 + 30 + 30 + 30) * 60 ))" "$(stage_budget_lock_seconds '{}' '{}' 30 0)"
 
 # --- 10. Degradation ---------------------------------------------------------------------
 # The caller launches a stage with whatever comes back, so nothing here may
