@@ -399,6 +399,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                     //   spend-today card's GMT/local/24h toggle
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
+               raced, race_losses,          // true/count iff the cycle lost a claim
+                                             //   to a peer's contention (implementation
+                                             //   spec 17a) before its outcome; present
+                                             //   whether or not it recovered
+               standdown_cause,             // "raced" | "unreachable" | null — only on
+                                             //   an outcome of "stand-down"
                stages:{ coordinator|implementor|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
@@ -840,7 +846,14 @@ number's twins elsewhere on the page.
   log tail. And with `cron.log` short and a `cron.log.1` beside it —
   `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
   from both, oldest first, rather than going blank for the tick after a
-  rotation. An item that is blocked *and* void reaches `void[]` and not
+  rotation. A cycle that lost a claim to a peer's contention (`claim-lost`,
+  cause `held`) before a `selection` that names `race_losses` is marked
+  `raced: true` carrying that same count, whichever `outcome` it then reached;
+  one that lost every candidate carries `standdown_cause` — `"raced"` for
+  contention, `"unreachable"` when every loss was a GitHub outage instead —
+  and only a cycle with a `held` loss is marked `raced` at all, a GitHub
+  outage naming no peer to contend with (implementation spec 17a, issue #245).
+  An item that is blocked *and* void reaches `void[]` and not
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty
   the panel that says the pipeline is stuck, which looks exactly like a pipeline
@@ -872,7 +885,11 @@ number's twins elsewhere on the page.
   answers all three slots positionally — an actor read from `stage`, from `by`
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
-  keeping its slot rather than letting the repository slide into it. The
+  keeping its slot rather than letting the repository slide into it. A cycle
+  fixture carrying `raced: true` renders the `↻ raced` badge beside its
+  outcome badge, and no other cycle in that fixture renders it — the marker
+  answers "how did this cycle get its outcome", not a second outcome of its
+  own (issue #245). The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
   a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one
@@ -1106,6 +1123,20 @@ number's twins elsewhere on the page.
   about the pipeline belongs, and leaves untouched every reader that acts on
   them — the limit stand-down, the blocked and void sets — because each keys on
   the event and the item, never on the cycle.
+- **A raced cycle carries a second badge, not a second outcome (issue #245).**
+  Losing a claim to a peer's healthy contention and then claiming the next
+  candidate is not a different outcome from an ordinary first-try
+  selection — the cycle still did whatever `outcome` already says, PR raised
+  or otherwise — so `raced` is not folded into the outcome ladder as a new
+  rung. It is a fact about *how* the cycle got there, rendered as its own
+  small badge beside the outcome badge (`↻ raced`, titled with the loss count
+  and whether the race was recovered or the cycle stood down over it), the
+  same layering the in-flight badge below already uses for "still working"
+  beside a floor reading it does not want to overwrite. A `standdown_cause`
+  of `"raced"` on a stood-down cycle gets the identical badge, for the same
+  reason "Stood down" alone does not say whether the fleet's own contention or
+  a GitHub outage caused it — reading the reason text is not a substitute a
+  glance at the column can make.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape

@@ -83,6 +83,16 @@ assert_contains() {
   fi
 }
 
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 assert_not_contains() {
   local desc="$1" needle="$2" haystack="$3"
   if [[ "$haystack" != *"$needle"* ]]; then
@@ -188,6 +198,12 @@ assert_contains "spend-by-model renders a bar per model" \
   "opus-5" "$out"
 assert_contains "spend-by-actor renders a bar per actor" \
   "implementor" "$out"
+# issue #245: a cycle that recovered from a lost claim carries a second badge
+# beside its outcome, distinct from the outcome badge itself.
+assert_contains "a recovered race is marked, beside its outcome badge" \
+  "raced" "$out"
+assert_eq "and no other cycle in the fixture is marked raced" "1" \
+  "$(grep -o 'raced' <<<"$out" | wc -l)"
 
 # --- #186: the spend-today card's persisted GMT/local/24h toggle -----------------
 # `render`'s optional second argument seeds the harness's localStorage stub, so

@@ -44,6 +44,7 @@
       "title": "fix the thing",
       "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/200",
       "reason": null, "fail_detail": null, "warning": null, "outcome": "pr-ready",
+      "raced": true, "race_losses": 1,
       "stages": {
         "coordinator": {"model": "claude-sonnet-5-20260101", "cost_usd": 0.2, "duration_ms": 45000,
           "num_turns": 4, "is_error": false, "terminal_reason": "end_turn"},

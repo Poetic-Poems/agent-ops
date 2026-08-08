@@ -70,6 +70,9 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/preflight.sh
+# Sourced after work-gone.sh, whose work_gone_clearances it wraps.
+. "$SCRIPT_DIR/lib/preflight.sh"
 # shellcheck source=lib/dependency-gate.sh
 . "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
@@ -3192,6 +3195,11 @@ claimed_json=""
 n_cand="$(jq 'length' <<<"$candidates_json")"
 claim_attempts=0
 claim_unreachable=0
+# Contention losses ("held" — a peer genuinely holds the item) before a win,
+# distinct from `claim_unreachable`: this is what makes the eventual win a
+# *recovered* race rather than an ordinary first-try selection, and the
+# dashboard needs to be able to tell the two apart (issue #245).
+claim_losses_held=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -3230,7 +3238,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # Opposite operational conditions, so `cause` tells them apart instead of
   # the event wearing one reason for both.
   case "$claim_rc" in
-    3) claim_cause="held" ;;
+    3) claim_cause="held"; claim_losses_held=$(( claim_losses_held + 1 )) ;;
     1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
     *) claim_cause="$claim_rc" ;;
   esac
@@ -3240,13 +3248,21 @@ for (( ci = 0; ci < n_cand; ci++ )); do
 done
 
 if [[ -z "$claimed_json" ]]; then
+  # Same test as the reason text below, structured: a fleet-wide dashboard
+  # reader (or any other consumer) needs "why did this cycle stand down?"
+  # without re-parsing prose (issue #245). `raced` means every candidate was
+  # lost to healthy contention (at least one `held`); `unreachable` means
+  # GitHub itself could not be reached for any of them — an outage, not the
+  # fleet politely yielding to itself.
   if (( claim_attempts > 0 && claim_unreachable == claim_attempts )); then
     standdown_reason="GitHub could not be reached for any candidate — this is an outage, not contention"
+    standdown_cause="unreachable"
   else
     standdown_reason="every candidate is already claimed elsewhere"
+    standdown_cause="raced"
   fi
-  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" \
-    '{reason: $r, candidates: $n}')"
+  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" --arg c "$standdown_cause" \
+    '{reason: $r, candidates: $n, cause: $c}')"
   exit 0
 fi
 
@@ -3254,7 +3270,40 @@ work_order_json="$claimed_json"
 selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
 selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
 selected_branch="$(jq -r '.branch // ""' <<<"$work_order_json")"
-log_event "selection" "$(jq -c '{repo, item, source, model, title, branch}' <<<"$work_order_json")"
+selected_source="$(jq -r '.source // ""' <<<"$work_order_json")"
+selected_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
+# `race_losses` is present only when this selection recovered from at least
+# one lost claim (issue #245) — an ordinary first-try selection, still the
+# overwhelming majority, carries nothing new on this event.
+log_event "selection" "$(jq -c --argjson n "$claim_losses_held" \
+  '{repo, item, source, model, title, branch} + (if $n > 0 then {race_losses: $n} else {} end)' \
+  <<<"$work_order_json")"
+
+# --- 5c. Pre-flight already-done check (issue #245) ---
+# Deterministic, no LLM, run before the clone and the Implementor engagement
+# either one is paid for: ask whether the item this cycle just claimed is
+# already done — its register row resolved, its issue closed, or (for a
+# finishing source, whose item is the `pr-<n>-…` shape `lib/work-gone.sh`
+# recognises) its pull request already closed or merged. `source_states_json`
+# already carries every repo this cycle walked, gathered well before the
+# claim, which is all an issue or a finishing source's PR needs; a tech-debt
+# item additionally needs its own fresh register read, because a freshly
+# claimed item was never a member of the blocked set `register_status_json`
+# is scoped to.
+preflight_register_json='{}'
+if [[ "$selected_source" == "tech-debt" ]]; then
+  preflight_register_json="$(jq -nc --arg s "$selected_repo" \
+    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" "$selected_item")" \
+    '{($s): $m}')"
+fi
+preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" \
+  "$source_states_json" "$preflight_register_json")"
+if [[ -n "$preflight_reason" ]]; then
+  log_item_void "preflight" "$preflight_reason" \
+    "$(jq -nc --arg e "$preflight_reason" '{evidence: $e}')"
+  release_claim no-pr
+  exit 0
+fi
 
 # --- 6. Workspace ---
 repo_slug="$(jq -r '.repo' <<<"$work_order_json")"

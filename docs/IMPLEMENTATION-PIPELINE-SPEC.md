@@ -2655,7 +2655,14 @@ runs unattended.
       ("GitHub could not be reached for any candidate — this is an outage,
       not contention"), so a GitHub or token outage does not read as a fleet
       politely yielding to itself. A node that cannot reach GitHub to claim
-      could not have pushed the work either.
+      could not have pushed the work either. This `stand-down` event also
+      carries the same distinction structured, as `cause` — `raced` or
+      `unreachable` — so a reader (the dashboard included) does not have to
+      re-parse the reason text (issue #245). A win that followed one or more
+      `held` losses is a *recovered* race, not an ordinary first-try
+      selection: the `selection` event that names the winning candidate
+      additionally carries `race_losses`, the count of `held` losses that
+      preceded it, present only when it is greater than zero.
     - When `state_repo` is unset (a single-node operation), file claims are
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
@@ -4051,6 +4058,38 @@ runs unattended.
     34f/34g/34i/34k's whole pre-extract window earlier than the ordering
     those requirements are already deliberate about.
 
+34m. **A freshly claimed item gets the same gone-work check, before the
+    Implementor runs, not inside it.** 34i clears a *blocked* item's void
+    without asking anyone, from digests the cycle already gathered; a
+    candidate this cycle just won the claim on has never been blocked, but
+    the question — is this item's work already done? — is identical, and
+    just as often the answer (TD-PPpfid-26072801: merged and register-flipped
+    15 minutes before the review window this fixed opened, then re-selected
+    and re-implemented 21 hours later — a full Implementor engagement to
+    learn what one `gh` read already sitting in the cycle's own gathered
+    state would have said). So, immediately after the claim loop of
+    requirement 17a wins and before the workspace clone, the Script runs
+    `lib/preflight.sh`'s `preflight_done_reason` against the winning
+    candidate alone: `source_states_json` (requirement 3, gathered for every
+    repo the cycle walked, well before the claim) answers it for an `issues`
+    item (closed) and for a finishing source's item (its pull request closed
+    or merged); a `tech-debt` item additionally costs one fresh
+    `gather-register-status.sh` read, scoped to the one item, because a
+    freshly claimed item was never a member of the blocked set
+    `register_status_json` is otherwise scoped to. Every other source is left
+    to the Implementor, exactly as before — this is the three done-signals
+    34i already reads deterministically, reused, not a new one invented for
+    the occasion.
+
+    A hit logs `item-void` (stage `preflight`) with the same reason
+    `work_gone_clearances` would give a blocked item, releases the claim
+    (requirement 17a's release rules) and ends the cycle — no Implementor
+    engagement spent. This needs no corroboration guard of its own
+    (requirement 34d exists to catch a model's fabricated citation, and there
+    is no model in this path to fabricate one): the evidence is read directly
+    off `gh`/the register file, the same ground truth requirement 34d's guard
+    checks a citation against.
+
 ### The Enabler
 
 35. **Engagement.** At the end of a cycle — from the cleanup of requirement 11,
@@ -4741,6 +4780,14 @@ What exists, and the requirements each part answers to:
    above is asked for those and no others. Pure — it reads nothing itself — and
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
+3s. `lib/preflight.sh` implementing requirement 34m's decision:
+   `preflight_done_reason`, which given a repo, an item, the cycle's
+   source-state digests and (for a tech-debt item) its one freshly read
+   register row, wraps them into the one-entry blocked list
+   `work_gone_clearances` (3m) expects and returns its reason, or nothing.
+   Pure — it reads nothing itself, sourced after `lib/work-gone.sh`, whose
+   function it wraps. Unit-tested (`test/preflight.test.sh`); must pass
+   `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
    prints one JSON action object per orphan handled (`recovered`, `released`,
@@ -4761,7 +4808,7 @@ What exists, and the requirements each part answers to:
    (`test/sweep-human-visibility.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
+   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
@@ -6053,6 +6100,15 @@ pull request, run the ones the change touches and any it could regress.
    this repository changes when the ruleset does, so this check is manual
    until a deterministic reader exists (TD-PPagop-26080802 proposes a
    warn-level `doctor.sh` check).
+8n. **A claimed item's gone work is caught before the Implementor runs, not
+   inside it (requirement 34m).** `test/preflight.test.sh` passes:
+   `preflight_done_reason` returns the same reason `work_gone_clearances`
+   would give the same item as a blocked entry — a closed issue, a finishing
+   source's closed-or-merged pull request, a register row read `resolved` —
+   and returns nothing for one still open, for a repo the digest never
+   sampled, and for a tech-debt item whose register row pre-flight never
+   fetched (the register map is fetched fresh, per item, only when the source
+   is `tech-debt`; passing none must decide nothing rather than assume open).
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

@@ -379,6 +379,17 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
           reason: ([ $e[] | select(.event=="none-selected" or .event=="stand-down" or .event=="cycle-skipped") | (.reason // .detail) ] | last),
           fail_detail: ([ $e[] | select(.event=="attempt-failed") | ((.stage // "?") + ": " + (.detail // "")) ] | last),
           warning: ([ $e[] | select(.event=="warning") | .detail ] | last),
+          # Issue #245: whether this cycle lost a claim to healthy contention
+          # before its outcome was decided — a stand-down `cause` of "raced"
+          # (every candidate lost, exit 0 empty-handed) or a `claim-lost`
+          # (cause "held") on a candidate this cycle then moved past to reach
+          # whatever `outcome` below records. `raced` with an `outcome` other
+          # than "stand-down" is a *recovered* race: the fleet contended for
+          # the top candidate and this cycle still did the next one's work,
+          # rather than forfeiting the cycle outright.
+          race_losses: ([ $e[] | select(.event=="claim-lost" and (.cause // "") == "held") ] | length),
+          raced: (([ $e[] | select(.event=="claim-lost" and (.cause // "") == "held") ] | length) > 0),
+          standdown_cause: ([ $e[] | select(.event=="stand-down") | .cause ] | last),
           outcome: (
             if   ($types | any(. == "pr-ready"))       then "pr-ready"
             elif ($types | any(. == "pr-raised"))      then "pr-raised"
