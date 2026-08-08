@@ -82,6 +82,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/label-marker.sh
+. "$SCRIPT_DIR/lib/label-marker.sh"
 # shellcheck source=lib/prompt-overrides.sh
 . "$SCRIPT_DIR/lib/prompt-overrides.sh"
 # shellcheck source=lib/coordinator-brief.sh
@@ -314,6 +316,21 @@ unvoid_label="$(cfg '.unvoid_label')"
 needs_refinement_label="$(cfg '.needs_refinement_label')"
 refinement_max_per_engagement="$(cfg '.refinement_max_per_engagement')"
 [[ "$refinement_max_per_engagement" =~ ^[0-9]+$ ]] || refinement_max_per_engagement=3
+# The Refiner (requirement 39): the positive counterpart of the refinement
+# class above. `refined_label` is a projection too, never read back — there is
+# no hand-applied form of it, unlike `needs_refinement_label` — and empty
+# switches it off without touching the `item-refined` record the Co-Ordinator
+# actually reads (requirement 3h). `refinement_policy` is per-source and read
+# by both the Refiner (which sources it may spend an engagement on) and the
+# Co-Ordinator (which sources it must not select unrefined); an unreadable
+# object is treated as empty, which is "every source exempt" — the same "not a
+# licence to spend" default every threshold here falls back to.
+refiner_model="$(resolve_model_id refiner_model "$(cfg '.refiner_model')")"
+refined_label="$(cfg '.refined_label')"
+refiner_max_per_engagement="$(cfg '.refiner_max_per_engagement')"
+[[ "$refiner_max_per_engagement" =~ ^[0-9]+$ ]] || refiner_max_per_engagement=5
+refinement_policy_json="$(cfg_json '.refinement_policy')"
+jq -e 'type == "object"' <<<"$refinement_policy_json" >/dev/null 2>&1 || refinement_policy_json='{}'
 pr_label="$(cfg '.pr_label')"
 # Read here (rather than left to the Co-Ordinator, which puts it in the work
 # order's `branch`) because requirement 3c's gatherer needs it: a PR is only
@@ -383,7 +400,7 @@ stage_budget_overrides() {
 stage_budget_all_overrides() {
   jq -nc --slurpfile c "$CONFIG_FILE" '
     ($c[0] // {}) as $cfg
-    | ["coordinator", "implementor", "reviewer", "enabler"]
+    | ["coordinator", "implementor", "reviewer", "enabler", "refiner"]
     | map(. as $a
           | {
               key: $a,
@@ -654,6 +671,7 @@ fi
 # failed on, and the same item is free to be re-selected next cycle.
 selected_repo=""
 selected_item=""
+selected_source=""
 # The branch this cycle claimed, alongside them because it answers a question
 # the other two cannot: *which pull request is this*. The Script computed it
 # and pushed it before any stage ran (requirement 17a), so it is the one handle
@@ -828,9 +846,13 @@ release_refinement_label() {
   if (( DRY_RUN )); then return 0; fi
   while IFS=$'\t' read -r t_repo t_num t_label; do
     [[ -n "$t_repo" && -n "$t_num" && -n "$t_label" ]] || continue
-    refinement_label_remove "$t_repo" "$t_num" "$t_label" || log_event "warning" \
-      "$(jq -nc --arg d "could not remove the $t_label label from $t_repo#$t_num — the block is cleared regardless" \
-         '{detail: $d}')"
+    if refinement_label_remove "$t_repo" "$t_num" "$t_label"; then
+      log_event "own-label-action" "$(label_own_action_fields "$t_repo" "$t_num" "$t_label" "remove")"
+    else
+      log_event "warning" \
+        "$(jq -nc --arg d "could not remove the $t_label label from $t_repo#$t_num — the block is cleared regardless" \
+           '{detail: $d}')"
+    fi
   done < <(refinement_label_targets "${blocked_json:-[]}" "$item" "$repo")
   while IFS=$'\t' read -r t_repo t_num t_assignee; do
     [[ -n "$t_repo" && -n "$t_num" && -n "$t_assignee" ]] || continue
@@ -840,91 +862,123 @@ release_refinement_label() {
   done < <(refinement_assignee_targets "${blocked_json:-[]}" "$item" "$repo")
 }
 
-# log_needs_refinement_items WORK_ORDER
-# Record the Co-Ordinator's `needs_refinement` reports as coordinator-stage
-# blocks (requirement 34e).
+# record_needs_refinement_block ENTRY STAGE
+# Record one needs_refinement-shaped ENTRY (`{repo, item, source, reason,
+# missing, evidence}`) as a block attributed to STAGE (requirement 34e).
+# Returns 1 and records nothing but a `warning` when ENTRY fails requirement
+# 34d's completeness bar or the item is already blocked.
+#
+# The single recorder for every stage that can report this class of block —
+# the Co-Ordinator (requirement 16a), the Implementor's escape hatch
+# (requirement 9f), and the Refiner's own decline (requirement 39d). One
+# definition (requirement 34a): three reporters, one recorder, so the label,
+# the assignment and the block's shape can never drift between them.
 #
 # Two entries are dropped rather than recorded, each with a warning, and both
-# refusals are the Script's job rather than the prompt's:
+# refusals are the Script's job rather than the reporting stage's:
 #
 #   - a malformed entry, on requirement 34d's discipline. The fields are what the
 #     Enabler starts from; an entry without them starves the very stage this
 #     path exists to reach.
 #   - a re-report of an item that is *already* blocked. Requirement 34 keys a
 #     block on repo+item and requirement 35a measures the Enabler threshold from
-#     the latest one, so a Co-Ordinator that re-reported the same item every
-#     cycle would push that clock forward hourly and the item would never become
-#     eligible — the same silent starvation this whole path exists to end, with
-#     an event trail that looks like progress. The prompt tells it not to
-#     (exclusion 1 means it never re-evaluates a blocked item anyway); this is
-#     what makes the telling unnecessary.
-log_needs_refinement_items() {
-  local wo="$1" entry repo item reason problem label assignee number
-  while IFS= read -r entry; do
-    if ! problem="$(refinement_entry_problem "$entry")"; then
-      log_event "warning" "$(jq -nc --arg d "co-ordinator needs_refinement entry dropped — it $problem" \
-        '{detail: $d}')"
-      continue
-    fi
-    repo="$(jq -r '.repo // ""' <<<"$entry")"
-    item="$(jq -r '.item // ""' <<<"$entry")"
-    reason="$(jq -r '.reason // "no reason given"' <<<"$entry")"
+#     the latest one, so re-reporting the same item every cycle would push that
+#     clock forward hourly and the item would never become eligible — the same
+#     silent starvation this whole path exists to end, with an event trail that
+#     looks like progress.
+record_needs_refinement_block() {
+  local entry="$1" stage="$2" repo item reason problem label assignee number who
+  who="$(pipeline_actor_label "$stage")"
+  if ! problem="$(refinement_entry_problem "$entry")"; then
+    log_event "warning" "$(jq -nc --arg d "$who needs_refinement entry dropped — it $problem" \
+      '{detail: $d}')"
+    return 1
+  fi
+  repo="$(jq -r '.repo // ""' <<<"$entry")"
+  item="$(jq -r '.item // ""' <<<"$entry")"
+  reason="$(jq -r '.reason // "no reason given"' <<<"$entry")"
 
-    if jq -e --arg r "$repo" --arg i "$item" \
-         'any(.[]?; (.repo // "") == $r and ((.item // "") | tostring) == $i)' \
-         <<<"${blocked_json:-[]}" >/dev/null 2>&1; then
-      log_event "warning" "$(jq -nc \
-        --arg d "co-ordinator reported $repo $item as needing refinement, but it is already blocked — left as it is so the Enabler threshold keeps running" \
-        '{detail: $d}')"
-      continue
-    fi
+  if jq -e --arg r "$repo" --arg i "$item" \
+       'any(.[]?; (.repo // "") == $r and ((.item // "") | tostring) == $i)' \
+       <<<"${blocked_json:-[]}" >/dev/null 2>&1; then
+    log_event "warning" "$(jq -nc \
+      --arg d "$who reported $repo $item as needing refinement, but it is already blocked — left as it is so the Enabler threshold keeps running" \
+      '{detail: $d}')"
+    return 1
+  fi
 
-    # No label or assignment on a dry run, and — because the event records
-    # what was actually applied — neither recorded either, so nothing later
-    # tries to remove something that was never there.
-    label=""
-    assignee=""
-    if ! (( DRY_RUN )); then
-      number="$(refinement_issue_number "$entry")"
-      if [[ -n "$number" ]]; then
-        if [[ -n "$needs_refinement_label" ]]; then
-          if refinement_label_add "$repo" "$number" "$needs_refinement_label"; then
-            label="$needs_refinement_label"
-          else
-            log_event "warning" "$(jq -nc \
-              --arg d "could not apply the $needs_refinement_label label to $repo#$number (does it exist in that repo?) — the block is recorded either way" \
-              '{detail: $d}')"
-          fi
+  # No label or assignment on a dry run, and — because the event records what
+  # was actually applied — neither recorded either, so nothing later tries to
+  # remove something that was never there.
+  label=""
+  assignee=""
+  if ! (( DRY_RUN )); then
+    number="$(refinement_issue_number "$entry")"
+    if [[ -n "$number" ]]; then
+      if [[ -n "$needs_refinement_label" ]]; then
+        if refinement_label_add "$repo" "$number" "$needs_refinement_label"; then
+          label="$needs_refinement_label"
+          log_event "own-label-action" \
+            "$(label_own_action_fields "$repo" "$number" "$needs_refinement_label" "add")"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "could not apply the $needs_refinement_label label to $repo#$number (does it exist in that repo?) — the block is recorded either way" \
+            '{detail: $d}')"
         fi
-        # Requirement 38b: the same projection the label gets, so a
-        # Co-Ordinator-recorded block — "gated on a decision the human has not
-        # made" is exactly what exclusions 5 and 6 report here — reaches the
-        # human's own Assigned-to-me dashboard the moment it is recorded,
-        # rather than waiting for the Enabler's own, much later, escalation.
-        # Through `refinement_assignee_project`, not `refinement_assignee_add`:
-        # an assignment the human made themselves before the block existed is
-        # recorded by neither, so clearing the block never removes it.
-        if [[ -n "$enabler_assignee" ]]; then
-          case "$(refinement_assignee_project "$repo" "$number" "$enabler_assignee")" in
-            added) assignee="$enabler_assignee" ;;
-            present) ;;
-            unrecorded)
-              log_event "warning" "$(jq -nc \
-                --arg d "could not read $repo#$number's assignees — $enabler_assignee was assigned best-effort but not recorded on the block, so clearing it will not unassign them" \
-                '{detail: $d}')"
-              ;;
-            *)
-              log_event "warning" "$(jq -nc \
-                --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
-                '{detail: $d}')"
-              ;;
-          esac
+      fi
+      # Requirement 38b: the same projection the label gets, so a block gated
+      # on a decision the human has not made reaches the human's own
+      # Assigned-to-me dashboard the moment it is recorded, rather than
+      # waiting for the Enabler's own, much later, escalation. Through
+      # `refinement_assignee_project`, not `refinement_assignee_add`: an
+      # assignment the human made themselves before the block existed is
+      # recorded by neither, so clearing the block never removes it.
+      if [[ -n "$enabler_assignee" ]]; then
+        case "$(refinement_assignee_project "$repo" "$number" "$enabler_assignee")" in
+          added) assignee="$enabler_assignee" ;;
+          present) ;;
+          unrecorded)
+            log_event "warning" "$(jq -nc \
+              --arg d "could not read $repo#$number's assignees — $enabler_assignee was assigned best-effort but not recorded on the block, so clearing it will not unassign them" \
+              '{detail: $d}')"
+            ;;
+          *)
+            log_event "warning" "$(jq -nc \
+              --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
+              '{detail: $d}')"
+            ;;
+        esac
+      fi
+      # Requirement 39d: a fresher block supersedes an existing refinement, so
+      # a `refined_label` a prior Refiner engagement left must come off too —
+      # the same consistency `release_refinement_label` keeps for the negative
+      # label, mirrored here for the positive one.
+      if [[ -n "$refined_label" ]] && [[ -n "$number" ]] && jq -e --arg r "$repo" --arg i "$item" \
+           '(.[$r][$i] // null) != null' <<<"${refinements_json:-{\}}" >/dev/null 2>&1; then
+        if refinement_label_remove "$repo" "$number" "$refined_label"; then
+          log_event "own-label-action" \
+            "$(label_own_action_fields "$repo" "$number" "$refined_label" "remove")"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "could not remove the $refined_label label from $repo#$number — the fresher block is recorded regardless" \
+            '{detail: $d}')"
         fi
       fi
     fi
+  fi
 
-    log_event "attempt-failed" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
-      "$(refinement_block_fields "$entry" "$label" "$assignee")")"
+  log_event "attempt-failed" "$(item_event_fields "$stage" "$reason" "$repo" "$item" \
+    "$(refinement_block_fields "$entry" "$label" "$assignee")")"
+  return 0
+}
+
+# log_needs_refinement_items WORK_ORDER
+# Record every one of the Co-Ordinator's `needs_refinement` reports via
+# `record_needs_refinement_block`, attributed to `stage: "coordinator"`.
+log_needs_refinement_items() {
+  local wo="$1" entry
+  while IFS= read -r entry; do
+    record_needs_refinement_block "$entry" "coordinator" || true
   done < <(jq -c '.needs_refinement[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
@@ -1480,6 +1534,9 @@ log_reviewer_handback() {
 # never computed.
 enabler_allowed=0
 enabler_eligible_json='[]'
+# The Refiner's own state (requirement 39), same reasoning and same guard.
+refiner_allowed=0
+refiner_candidates_json='[]'
 limit_hit_this_cycle=0
 
 # --- Cleanup (always runs on exit) ---
@@ -1514,6 +1571,10 @@ cleanup() {
   # requirement 37: whatever happens inside, this cycle's exit code is the one
   # computed above.
   maybe_run_enabler "$exit_code" || true
+  # The Refiner (requirement 39): same one call site, same reasoning, run
+  # after the Enabler so a fleet-limit hit the Enabler's own engagement
+  # triggers this cycle is still visible to the live check below.
+  maybe_run_refiner "$exit_code" || true
   log_event "cycle-end" "$(jq -nc --argjson rc "$exit_code" '{exit_code: $rc}')"
   if [[ "$lock_acquired" == "1" ]]; then
     rm -f "$lock_file"
@@ -2099,6 +2160,234 @@ $(jq . <<<"$input")
       '{detail: $d}')"
   done < <(jq -r --argjson p "$parsed" '
       (($p.examined // []) | map(((.repo // "") + " " + (.item // "")))) as $seen
+      | .[] | ((.repo // "") + " " + (.item // ""))
+      | select(. as $k | $seen | index($k) | not)' <<<"$claimed_json" 2>/dev/null || true)
+  return 0
+}
+
+# refiner_claim_key REPO SOURCE ITEM
+# The fleet's dedup key for one Refiner candidate: stable across cycles for the
+# same item, unlike `enabler_claim_key`'s block-timestamp-scoped key, because
+# there is no block here to re-mint a fresh one from — an item stops being a
+# candidate the moment it is refined or blocked, which is what lets a claim
+# stay stable without ever locking out a legitimately fresh occurrence.
+refiner_claim_key() {
+  local repo="$1" source="$2" item="$3"
+  printf '%s__%s__%s' "${repo//[^A-Za-z0-9._-]/-}" "${source//[^A-Za-z0-9._-]/-}" \
+    "${item//[^A-Za-z0-9._-]/-}"
+}
+
+# maybe_run_refiner CYCLE_EXIT_CODE
+# Engage the Refiner if this cycle should, and translate its verdicts into log
+# events, labels and issue comments. Always returns without disturbing the
+# cycle's outcome — the same contract as `maybe_run_enabler`, and for the same
+# reason: this runs from the exit trap, after the cycle's own result is
+# already decided.
+#
+# Deliberately narrower than the Enabler: no escalation, no void, no handoff.
+# The Refiner has exactly two things to say about an item — `refined` (it
+# wrote a specification) or `needs-refinement` (it could not, and that decline
+# is recorded through the same `record_needs_refinement_block` a Co-Ordinator's
+# own report uses (requirement 39d)) — so there is no verdict here that needs
+# a third power.
+maybe_run_refiner() {
+  local cycle_rc="${1:-1}"
+  local engagement_json='[]' claimed_json='[]' n_eligible=0 n_claimed=0
+  local entry repo source item key live_resume live_epoch input prompt out rc=0 result parsed detail
+  local items_named_json
+  local ex e_repo e_item verdict e_reason claimed_entry e_source outcome extra
+  local e_synthetic e_block_ok e_refined_fields e_number
+
+  # --- Guards, mirroring requirement 35's for the Enabler ---
+  (( lock_acquired )) || return 0
+  (( refiner_allowed )) || return 0
+  (( DRY_RUN )) && return 0
+  [[ "$cycle_rc" == "0" ]] || return 0
+  (( limit_hit_this_cycle )) && return 0
+  [[ -n "$refiner_model" ]] || return 0
+  [[ -f "$PROMPTS_DIR/refiner.md" ]] || return 0
+
+  # Requirement 39b: capped and deterministic, same reasoning as requirement
+  # 35d's cap on the Enabler's refinement class.
+  engagement_json="$(refiner_engagement_set "$refiner_candidates_json" "$refiner_max_per_engagement")"
+  n_eligible="$(jq 'length' <<<"$engagement_json" 2>/dev/null || echo 0)"
+  [[ "$n_eligible" =~ ^[0-9]+$ ]] || n_eligible=0
+  (( n_eligible > 0 )) || return 0
+
+  live_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir" 2>/dev/null || true)"
+  if [[ -n "$live_resume" ]]; then
+    live_epoch="$(date -d "$live_resume" +%s 2>/dev/null || echo 0)"
+    (( live_epoch > $(date +%s) )) && return 0
+  fi
+
+  # --- Claim each item, under the pseudo-slug `refiner` ---
+  for (( i = 0; i < n_eligible; i++ )); do
+    entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$engagement_json" 2>/dev/null || true)"
+    [[ -n "$entry" ]] || continue
+    repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+    source="$(jq -r '.source // ""' <<<"$entry" 2>/dev/null || true)"
+    item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+    [[ -n "$repo" && -n "$source" && -n "$item" ]] || continue
+    key="$(refiner_claim_key "$repo" "$source" "$item")"
+    [[ -n "$key" ]] || continue
+    if CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$item" CLAIM_SOURCE="refiner" \
+         "$SCRIPT_DIR/lib/claim.sh" claim file refiner "$key" \
+         >>"$cycle_dir/claim.log" 2>&1; then
+      claimed_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$claimed_json" 2>/dev/null \
+        || printf '%s' "$claimed_json")"
+    fi
+  done
+  n_claimed="$(jq 'length' <<<"$claimed_json" 2>/dev/null || echo 0)"
+  [[ "$n_claimed" =~ ^[0-9]+$ ]] || n_claimed=0
+  (( n_claimed > 0 )) || return 0
+
+  # --- One engagement over every claimed item ---
+  input="$(jq -nc --argjson items "$claimed_json" --arg lbl "$refined_label" \
+    --arg cycle "$cycle_id" --arg node "$node_name" \
+    '{items: $items, refined_label: $lbl, cycle: $cycle, node: $node}' 2>/dev/null || true)"
+  [[ -n "$input" ]] || return 0
+
+  prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")
+
+## Runtime input for this engagement
+
+\`\`\`json
+$(jq . <<<"$input")
+\`\`\`
+"
+  out="$cycle_dir/refiner.out"
+  # The Refiner spans repositories by construction, so its cell is keyed `*`
+  # (requirement 4f), the same as the Enabler's.
+  stage_budget_apply refiner "*" "$refiner_model"
+  if run_claude_stage refiner "$(( stage_backstop_min * 60 ))" "$refiner_model" "$prompt" "$out" "$cycle_dir" "$(( stage_inactivity_min * 60 ))"; then
+    rc=0
+  else
+    rc=$?
+  fi
+  log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$refiner_model" "$out" "$stage_gaps_json")" \
+    '{stage: "refiner", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+  watchdog_warning="$(stage_watchdog_warning refiner || true)"
+  if [[ -n "$watchdog_warning" ]]; then
+    log_event "warning" "$watchdog_warning"
+  fi
+  (( ONCE )) && dump_stage_output "$out"
+
+  result="$(jq -r '.result // empty' "$out" 2>/dev/null || true)"
+  parsed="$(extract_json_result "$result" 2>/dev/null || true)"
+  if (( rc == 0 )) && [[ -z "$parsed" ]]; then
+    parsed="$(stage_salvage_result refiner "$out" "$refiner_model" "$cycle_dir" || true)"
+  fi
+  if (( rc != 0 )) || [[ -z "$parsed" ]]; then
+    if (( rc == 124 )); then
+      detail="refiner timed out"
+    elif (( rc != 0 )); then
+      detail="refiner exited $rc"
+    else
+      detail="refiner returned an unparseable final message"
+    fi
+    detect_and_log_limit_hit "$out" || true
+    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>/dev/null || echo '[]')"
+    log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
+      --argjson items "$items_named_json" '{detail: $d, items: $items}')"
+    for (( i = 0; i < n_claimed; i++ )); do
+      entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$claimed_json" 2>/dev/null || true)"
+      [[ -n "$entry" ]] || continue
+      repo="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+      source="$(jq -r '.source // ""' <<<"$entry" 2>/dev/null || true)"
+      item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+      key="$(refiner_claim_key "$repo" "$source" "$item")"
+      [[ -n "$key" ]] || continue
+      "$SCRIPT_DIR/lib/claim.sh" expire refiner "$key" >>"$cycle_dir/claim.log" 2>&1 || true
+    done
+    return 0
+  fi
+
+  # --- Verdict loop (requirement 39c/39d) ---
+  while IFS= read -r ex; do
+    [[ -n "$ex" ]] || continue
+    e_repo="$(jq -r '.repo // ""' <<<"$ex")"
+    e_item="$(jq -r '.item // ""' <<<"$ex")"
+    verdict="$(jq -r '.verdict // ""' <<<"$ex")"
+    e_reason="$(jq -r '.reason // "no reason given"' <<<"$ex")"
+
+    claimed_entry="$(jq -c --arg r "$e_repo" --arg i "$e_item" \
+      'map(select((.repo // "") == $r and ((.item // "") | tostring) == $i)) | first // empty' \
+      <<<"$claimed_json" 2>/dev/null || true)"
+    if [[ -z "$claimed_entry" ]]; then
+      log_event "warning" "$(jq -nc --arg d "refiner: a verdict for an item this cycle did not claim ($e_repo $e_item) — ignored" \
+        '{detail: $d}')"
+      continue
+    fi
+    e_source="$(jq -r '.source // ""' <<<"$claimed_entry")"
+    outcome="$verdict"
+    extra='{}'
+
+    case "$verdict" in
+      refined)
+        e_refined_fields="$(refinement_record_fields "$ex")"
+        e_number=""
+        if [[ "$e_source" == "issues" ]]; then
+          e_number="$e_item"
+          if [[ -z "$(jq -r '.comment_url // ""' <<<"$e_refined_fields")" ]]; then
+            log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment — nothing was posted for the Co-Ordinator to find; not recorded as refined" \
+              '{detail: $d}')"
+            outcome="refined-uncorroborated"
+          fi
+        elif [[ -z "$(jq -r '.spec // ""' <<<"$e_refined_fields")" ]]; then
+          log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo $e_item carries no spec — there is nowhere else this item type's specification lives; not recorded as refined" \
+            '{detail: $d}')"
+          outcome="refined-uncorroborated"
+        fi
+        if [[ "$outcome" == "refined" ]]; then
+          log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+            --argjson x "$e_refined_fields" '{repo: $r, item: $i, by: $by} + $x')"
+          if [[ -n "$e_number" && -n "$refined_label" ]] && ! (( DRY_RUN )); then
+            if refinement_label_add "$e_repo" "$e_number" "$refined_label"; then
+              log_event "own-label-action" \
+                "$(label_own_action_fields "$e_repo" "$e_number" "$refined_label" "add")"
+            else
+              log_event "warning" "$(jq -nc \
+                --arg d "could not apply the $refined_label label to $e_repo#$e_number (does it exist in that repo?) — the refinement is recorded either way" \
+                '{detail: $d}')"
+            fi
+          fi
+        fi
+        ;;
+      needs-refinement)
+        e_synthetic="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
+          --arg reason "$e_reason" \
+          --arg missing "$(jq -r '.missing // ""' <<<"$ex")" \
+          --arg evidence "$(jq -r '.evidence // ""' <<<"$ex")" \
+          '{repo: $r, item: $i, source: $s, reason: $reason, missing: $missing, evidence: $evidence}')"
+        if record_needs_refinement_block "$e_synthetic" "refiner"; then
+          e_block_ok=1
+        else
+          e_block_ok=0
+          outcome="needs-refinement-refused"
+        fi
+        extra="$(jq -nc --argjson ok "$e_block_ok" '{recorded: $ok}')"
+        ;;
+      *)
+        outcome="unknown-verdict"
+        log_event "warning" "$(jq -nc --arg d "refiner: unrecognised verdict '$verdict' for $e_repo $e_item — recorded, acted on in no way" \
+          '{detail: $d}')"
+        ;;
+    esac
+
+    log_event "refiner-examined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
+      --arg o "$outcome" --arg d "$e_reason" --argjson x "$extra" \
+      '{repo: $r, item: $i, source: $s, outcome: $o, detail: $d} + $x')"
+  done < <(jq -c '.refined[]? // empty' <<<"$parsed" 2>/dev/null || true)
+
+  # A claimed item the model never mentioned keeps its claim, exactly as the
+  # Enabler's equivalent does, so gc is what eventually retries it.
+  while IFS= read -r detail; do
+    [[ -n "$detail" ]] || continue
+    log_event "warning" "$(jq -nc \
+      --arg d "refiner: no verdict for claimed item $detail — left unrefined until the claim TTL lets a later cycle retry" \
+      '{detail: $d}')"
+  done < <(jq -r --argjson p "$parsed" '
+      (($p.refined // []) | map(((.repo // "") + " " + (.item // "")))) as $seen
       | .[] | ((.repo // "") + " " + (.item // ""))
       | select(. as $k | $seen | index($k) | not)' <<<"$claimed_json" 2>/dev/null || true)
   return 0
@@ -2744,8 +3033,19 @@ fi
 # collide with); then, against the extract as it stands after those new
 # blocks, which hand-flagged blocks this mechanism created have lost their
 # label since — the `unblocked` half of the same requirement.
+#
+# Requirement 39f narrows the *new* half, and only that half: an issue still
+# carrying the label because this system's own removal silently failed is not
+# a human asking for anything, so `label_filter_own_applications` drops it
+# before the "not already blocked" test ever sees it. The `cleared` half below
+# reads the unfiltered list on purpose — it asks which issues have *lost* the
+# label, and an entry filtered out for being our own would read there as a
+# label that had gone, unblocking the very item this rule exists to leave
+# alone.
 if [[ -n "$needs_refinement_label" ]]; then
-  hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_refinements_json" "$(blocked_items "$union_log")")"
+  hand_flagged_not_ours_json="$(label_filter_own_applications "$hand_flagged_refinements_json" \
+    "$(label_own_actions_map "$needs_refinement_label" "$union_log")")"
+  hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_not_ours_json" "$(blocked_items "$union_log")")"
   if [[ "$(jq 'length' <<<"$hand_flag_new_json" 2>/dev/null || echo 0)" != "0" ]]; then
     log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
     while IFS= read -r flag; do
@@ -3004,6 +3304,18 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # cycle and an engagement. Before it, an early exit could not have one.
 enabler_allowed=1
 
+# --- The Refiner's candidate set (requirement 39a) ---
+# Every pre-fetched item this cycle's `ordered_repos_json` carries whose source
+# is not `refinement_policy`-exempt, is not already refined, blocked, void, or
+# claimed. Computed from the same extracts the Enabler's eligible set just
+# used, so a Refiner engagement and an Enabler engagement in the same cycle
+# never disagree about what is already spoken for.
+refiner_candidates_json="$(refiner_candidate_items "$ordered_repos_json" \
+  "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json")"
+# Same reasoning as `enabler_allowed` above, for the same kind of exit-trap
+# engagement.
+refiner_allowed=1
+
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
 # purpose is to throttle new work and stop the human gate silting up — and the
@@ -3124,6 +3436,18 @@ enabler_prompt_sha=""
 [[ -f "$PROMPTS_DIR/enabler.md" ]] \
   && enabler_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" enabler "$prompt_overrides_json")"
 
+# The Refiner's own inputs join the fingerprint for the same reason (requirement
+# 39b): its candidate set turns on the same `refinements`/`blocked`/`void`
+# state the fingerprint already carries, but a `refinement_policy` edit moves
+# none of those and must still bust the no-op short-circuit on its own.
+refiner_config_json="$(jq -nc \
+  --arg m "$refiner_model" --arg lbl "$refined_label" --arg rmax "$refiner_max_per_engagement" \
+  --argjson policy "$refinement_policy_json" \
+  '{refiner_model: $m, refined_label: $lbl, refiner_max_per_engagement: $rmax, refinement_policy: $policy}')"
+refiner_prompt_sha=""
+[[ -f "$PROMPTS_DIR/refiner.md" ]] \
+  && refiner_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")"
+
 noop_input="$(jq -nc \
   --argjson repos "$ordered_repos_json" \
   --argjson states "$source_states_json" \
@@ -3137,6 +3461,9 @@ noop_input="$(jq -nc \
   --arg psha "$coordinator_prompt_sha" \
   --arg esha "$enabler_prompt_sha" \
   --arg wst "$coordinator_sources_table" \
+  --argjson rcand "$refiner_candidates_json" \
+  --argjson rc "$refiner_config_json" \
+  --arg rsha "$refiner_prompt_sha" \
   '{
      repos: [ $repos[] as $r
               | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
@@ -3149,7 +3476,10 @@ noop_input="$(jq -nc \
      coordinator_prompt_sha: $psha,
      enabler_config: $ec,
      enabler_prompt_sha: $esha,
-     coordinator_work_sources_table: $wst
+     coordinator_work_sources_table: $wst,
+     refiner_candidates: $rcand,
+     refiner_config: $rc,
+     refiner_prompt_sha: $rsha
    }')"
 noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 
@@ -3176,9 +3506,10 @@ coordinator_input="$(jq -nc \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
+  --argjson policies "$refinement_policy_json" \
   '{repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
     models: {default: $model_default, trivial: $model_trivial},
-    candidates_max: $cmax}')"
+    candidates_max: $cmax, refinement_policy: $policies}')"
 
 # --- 4. Co-Ordinator stage ---
 # `coordinator_sources_table` (computed above, ahead of the no-op fingerprint
@@ -3357,6 +3688,7 @@ fi
 work_order_json="$claimed_json"
 selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
 selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
+selected_source="$(jq -r '.source // ""' <<<"$work_order_json")"
 selected_branch="$(jq -r '.branch // ""' <<<"$work_order_json")"
 log_event "selection" "$(jq -c --argjson rl "$race_losses" '{repo, item, source, model, title, branch} + {race_losses: $rl}' <<<"$work_order_json")"
 
@@ -3505,6 +3837,36 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
   # recorded blocked instead, but the claim releases the same way either way:
   # the Implementor found no PR to raise for this item.
   release_claim no-pr
+  exit 0
+fi
+
+# The escape hatch (requirement 9f): the Implementor started this item and
+# found the specification it was handed insufficient — not "something in the
+# world is wrong" (that is `blocked`), but "the brief itself does not say
+# enough to build against". Recorded through the same
+# `record_needs_refinement_block` a Co-Ordinator's own `needs_refinement`
+# report uses, attributed to `stage: "implementor"` — which also clears any
+# `refined` mark the item was carrying, since a refinement that led to this is
+# exactly the one requirement 39d says must not stand unexamined.
+if (( impl_rc == 0 )) && [[ "$impl_status" == "needs-refinement" ]]; then
+  impl_nr_entry="$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" --arg s "$selected_source" \
+    --arg reason "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    --arg missing "$(jq -r '.missing // ""' <<<"$impl_status_json")" \
+    --arg evidence "$(jq -r '.evidence // ""' <<<"$impl_status_json")" \
+    '{repo: $r, item: $i, source: $s, reason: $reason, missing: $missing, evidence: $evidence}')"
+  record_needs_refinement_block "$impl_nr_entry" "implementor" || true
+  # No PR exists yet on this path — the Implementor stops before step 2's
+  # claim, exactly like `blocked` without one — so the branch releases with it.
+  if [[ -n "$impl_pr_url" ]]; then
+    gh pr comment "$impl_pr_url" --body "$(pipeline_comment_header script "$node_name")
+
+The Implementor found this item's specification insufficient: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json") Recorded as needing refinement; the pipeline's Refiner will look at it again.
+
+$(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
+    release_claim have-pr
+  else
+    release_claim no-pr
+  fi
   exit 0
 fi
 
