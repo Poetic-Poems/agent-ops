@@ -36,7 +36,8 @@ heading, the Script gives you one JSON object:
         {"source": "issues", "ref": "52", "number": 52, "url": "https://github.com/…/issues/52", "title": "…", "priority": "Medium", "labels": ["enhancement"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…the issue body, verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…every comment, verbatim, oldest first…"}]}
       ],
       "register_hygiene": [
-        {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/tree/main/tech-debt", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE FIELD    TD-PPpoet-26072424.md (resolved: set on an open item)"], "body": "…the whole of the consistency check's output, verbatim…"}
+        {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/tree/main/tech-debt", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE FIELD    TD-PPpoet-26072424.md (resolved: set on an open item)"], "body": "…the whole of the consistency check's output, verbatim…"},
+        {"source": "register-hygiene", "ref": "human-visibility-1a2b3c4d5e6f", "url": "https://github.com/…/pulls", "problems": ["HUMAN VISIBILITY  https://github.com/…/pull/9: could not request review from …"], "body": "…one line per violation the sweep could not heal, verbatim…"}
       ]
     },
     {
@@ -311,14 +312,19 @@ source priority, with no edit to this file:
   severity: maintainability, correctness, style), also in `findings` (entries
   with `source: "code-quality"`). Automated, speculative, and higher-volume than
   curated work, so pick one only when nothing more deliberate qualifies.
-- **register-hygiene** — the repo's tech-debt register failing its own
-  consistency check: an item file whose frontmatter disagrees with its
-  filename, the declared scope, or itself. Handed to you **pre-fetched** in
-  each repo's `register_hygiene` array. **Last in every repo's list**: the repair
-  is deterministic and entirely cosmetic, so it must never outrank substantive
-  work — but a register that lies about what is outstanding misleads every later
-  reader, human and agent alike, so it should not sit unfixed either. See
-  "Register hygiene" below.
+- **register-hygiene** — two unrelated deterministic findings, sharing one
+  source and one pre-fetched `register_hygiene` array: the repo's tech-debt
+  register failing its own consistency check (an item file whose frontmatter
+  disagrees with its filename, the declared scope, or itself), and a
+  human-visibility violation `scripts/sweep-human-visibility.sh` found and
+  could not itself heal. The entry's `ref` prefix tells them apart —
+  `register-hygiene-…` for the first, `human-visibility-…` for the second —
+  and they are separate candidates, repaired by separate pull requests.
+  **Last in every repo's list**: the register repair is deterministic and
+  entirely cosmetic, so it must never outrank substantive work — but a
+  register that lies about what is outstanding misleads every later reader,
+  human and agent alike, so it should not sit unfixed either. See "Register
+  hygiene" below.
 
 The table above always shows each repo's full configured source order.
 Use whatever the Script actually passed you in the runtime input's
@@ -513,13 +519,27 @@ while reading as correct behaviour, and quietly mean no abandoned draft is ever
 finished.
 
 **Register hygiene.** The candidates are the pre-fetched `register_hygiene`
-entries — at most one per repo, because a repo has only one register. Do
-not go looking for these yourself and do not read the register to check: the
-Script has already run the repo's own consistency check (`td-check.pl`, the same
-script that gates the repo's CI and that the Implementor will re-run until it
-passes) and dropped every register that passed. **An entry's presence in this
-array is the candidate test.** If the array is empty, this source has no
-candidates and the register is consistent; there is nothing to verify.
+entries. Do not go looking for these yourself and do not check them: the
+Script has already established each one deterministically. **An entry's
+presence in this array is the candidate test.** If the array is empty, this
+source has no candidates; there is nothing to verify.
+
+The array carries up to two entries per repo, and the `ref` prefix says which
+kind each is. Read the kind first — everything below differs between them:
+
+- `register-hygiene-…` — the register-content entry (at most one per repo,
+  because a repo has only one register). The Script has run the repo's own
+  consistency check (`td-check.pl`, the same script that gates the repo's CI
+  and that the Implementor will re-run until it passes) and dropped every
+  register that passed.
+- `human-visibility-…` — a human-visibility violation the sweep could not
+  heal: a pull request whose review request or idle nudge could not be
+  delivered, or a repo whose open-pull-request listing could not be read, so
+  the human it concerns is not being shown it. Nothing about the tech-debt
+  register is wrong; do not run `td-check.pl` for it and do not treat it as
+  register editing. It has no `blob_sha`.
+
+### A `register-hygiene-…` entry
 
 - `item` is the entry's `ref` (e.g. `register-hygiene-413128de0d60`). Use it
   exactly; it is scoped to the register's current content on purpose (a
@@ -542,6 +562,33 @@ candidates and the register is consistent; there is nothing to verify.
   behaviour change, which is exactly what the trivial tier is for. Say so in
   `model_reason` — that classification is also what makes the Implementor grade
   the finished diff `low` by definition, without deliberating over it.
+
+### A `human-visibility-…` entry
+
+- `item` is the entry's `ref` (e.g. `human-visibility-1a2b3c4d5e6f`). Use it
+  exactly; it is scoped to the set of violations that survived the Script's
+  live re-check, on the same reasoning as the register-content ref above, and
+  is a separate namespace from it — the two never share a block.
+- `context` must paste the entry's `body` **verbatim** and add its `url`.
+  There is no `blob_sha` on this kind; do not invent one and do not carry the
+  other entry's. The body names each violation, the pull request or repo it
+  concerns, and the sweep's own wording for what could not be delivered —
+  that wording is the brief.
+- `acceptance` is: each violation the `body` names no longer holds — the
+  named pull request has a live human review request (or the named repo's
+  open-pull-request listing can be read) — **or**, where the cause is outside
+  the repository and nothing in it can fix it (a token's scopes, an
+  `enabler_assignee` who is not a collaborator, a GitHub outage), the
+  Implementor reports `blocked` naming what it found rather than inventing a
+  repair. Say so explicitly: this is one of the few items whose honest
+  outcome may be that there is nothing in the repo to change.
+- `model` is `models.default`, never `models.trivial`. This is not register
+  editing: diagnosing why a review request or a listing failed means reading
+  `scripts/sweep-human-visibility.sh` and `lib/handoff.sh` and reasoning
+  about GitHub's API and permissions, and any fix changes what runs.
+
+### Both kinds
+
 - **No `branch`**, as for every source but the three finishing ones: the Script
   derives and creates the claim branch (`agent/<ref>`) itself. Nothing exists
   yet here — this is a *starting* source, not a finishing one, so it is subject
@@ -889,8 +936,10 @@ that across:
 Set `model` to the runtime input's `models.trivial` value only when the item
 can be completed without changing any file that affects runtime behaviour —
 documentation, comments, or register/ledger entries only. A `register-hygiene`
-item is always one of those by construction, so it always takes
-`models.trivial`. Otherwise use
+item whose `ref` is `register-hygiene-…` is always one of those by
+construction, so it always takes `models.trivial`; one whose `ref` is
+`human-visibility-…` never is — it is a diagnosis, not an edit — so it takes
+`models.default`. Otherwise use
 `models.default`. Security and code-quality findings always take
 `models.default`: a dependency bump or a code fix changes what runs, even
 when the diff looks small. Record your reasoning in `model_reason`; a future
@@ -973,11 +1022,13 @@ the list, and one strong candidate alone is a perfectly good list.
   improvement prompt (from `04-improvement-prompts.md`) verbatim, plus the
   review folder path and the `R-NN` detail; set `acceptance` to the
   recommendation's *Intended end state*.
-- For a `register-hygiene` entry, `item` is its `ref` (e.g.
-  `register-hygiene-413128de0d60`) and `context` must paste the entry's `body`
-  — the whole of the consistency check's output — verbatim, plus its `url` and
-  `blob_sha`. There is no pull request to carry across: the Script derives the
-  ordinary `agent/<ref>` claim branch as for any other starting source.
+- For a `register-hygiene` entry, `item` is its `ref` and `context` must paste
+  the entry's `body` verbatim, plus its `url` — and, for a
+  `register-hygiene-…` entry only, its `blob_sha` (a `human-visibility-…`
+  entry carries none). There is no pull request to carry across: the Script
+  derives the ordinary `agent/<ref>` claim branch as for any other starting
+  source. See "Register hygiene" above for what differs between the two
+  kinds — the `acceptance` and the `model` are not the same.
 - Do **not** choose a branch name. The Script derives and creates the claim
   branch itself, deterministically — `td/<ID>` for tech-debt (the very lock
   the human claiming workflow in TECH-DEBT.md takes, so agents and humans

@@ -20,10 +20,13 @@
 # array without filtering first.
 #
 # Candidate shape (deliberately comparable to gather-register-hygiene.sh's
-# own, `source: "register-hygiene"` included, so the Co-Ordinator, the branch
-# derivation and the block/void escape hatch all treat it exactly like any
-# other register-hygiene item — no new selectable source, no new prompt or
-# docs wiring):
+# own, `source: "register-hygiene"` included, so the selection walk, the
+# branch derivation and the block/void escape hatch all treat it exactly like
+# any other register-hygiene item — no new selectable source. The shared
+# source is wiring, not meaning: prompts/coordinator.md and
+# prompts/implementor.md split their register-hygiene guidance on the `ref`
+# prefix below, because a work order for this kind carries a different
+# acceptance test, a different model tier and no `blob_sha`):
 #   {
 #     "source": "register-hygiene",
 #     "ref": "human-visibility-1a2b3c4d5e6f",  // scoped to THIS set of violations
@@ -136,7 +139,7 @@ body="$(jq -r '
   + "self-healed by scripts/sweep-human-visibility.sh and have not cleared on "
   + "their own (requirement 38e):\n\n"
   + (map("- " + (if (.pr_url // "") == "" then $r else .pr_url end)
-         + " (first seen " + (.ts // "unknown") + "): " + (.detail // "")) | join("\n"))
+         + " (last logged " + (.ts // "unknown") + "): " + (.detail // "")) | join("\n"))
 ' --arg r "$slug" <<<"$survivors")"
 
 jq -nc \

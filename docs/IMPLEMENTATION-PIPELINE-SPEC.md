@@ -4858,15 +4858,29 @@ runs unattended.
       applies to its own reads.
     - A survivor becomes a candidate shaped like, and carrying, the same
       `source: "register-hygiene"` as `gather-register-hygiene.sh`'s own — so
-      the Co-Ordinator, the branch derivation (`agent/<ref>`) and the
-      block/void escape hatch all treat it identically, with no new
-      Co-Ordinator source, prompt, or docs wiring needed. Its `ref` —
+      the selection walk, the branch derivation (`agent/<ref>`) and the
+      block/void escape hatch all treat it identically, and no new selectable
+      source exists. Its `ref` —
       `human-visibility-<hash>`, a digest of the surviving violations'
       identities and details — is its own namespace, disjoint from
       `register-hygiene-<hash>`: the two candidates describe unrelated facts
       about the repository (a file tree; GitHub's live pull-request state),
       so fixing either never retires a block that still describes the other,
       and a repo may carry both at once (requirement 3i's sources-table note).
+    - **The work order is not the register-content one, and the prompts say
+      so.** Sharing the source is wiring, not meaning: `prompts/coordinator.md`
+      and `prompts/implementor.md` split this source's guidance by `ref`
+      prefix, because everything a work order carries differs between the two
+      kinds. A `human-visibility-<hash>` entry has no `blob_sha`; its
+      `acceptance` is that each named violation no longer holds — or that the
+      Implementor reports `blocked` naming a cause outside the repository (a
+      token's scopes, an `enabler_assignee` who is not a collaborator, a
+      GitHub outage) — never that `td-check.pl` exits 0, which is already true
+      of it; and its `model` is `models.default`, not the `models.trivial`
+      that register-only editing always takes. Without that split the
+      Co-Ordinator would emit an already-satisfied acceptance test, a trivial
+      model tier and a `blob_sha` that does not exist, for a diagnosis of
+      GitHub's API and permissions.
     - Fed to the no-op fingerprint (requirement 3b) for free: it is appended
       into that repo's `register_hygiene` array, already hashed verbatim, so
       no separate fingerprint key is needed.
@@ -4876,7 +4890,7 @@ runs unattended.
     (`ensure_human_reviewer` correctly returns the same `skip` it would for a
     draft or a `CHANGES_REQUESTED`-blocked pull request, so this cannot be told
     apart from those without changing that function's contract for every one
-    of its callers) is tracked as `tech-debt/TD-PPagop-26080901.md`; an issue
+    of its callers) is tracked as `tech-debt/TD-PPagop-26081001.md`; an issue
     human-blocked by a classification other than the two requirement 38b and
     36a cover remains requirement 38d's own, deliberate, scope limit.
 
@@ -4967,10 +4981,13 @@ What exists, and the requirements each part answers to:
    dropped) — carrying a ref scoped to the surviving violations' own
    identities and details (`human-visibility-<hash>`, disjoint from
    `register-hygiene-<hash>`), a `problems` line per violation and a body
-   naming each one and when it was first seen. Shares `source:
+   naming each one and the timestamp of the latest event that carried it
+   (the one the reduction kept). Shares `source:
    "register-hygiene"` with `gather-register-hygiene.sh` (3i above) so the
-   Co-Ordinator, branch derivation and block/void escape hatch treat it
-   identically, with no source, prompt or docs wiring of its own. Called
+   selection walk, branch derivation and block/void escape hatch treat it
+   identically, with no selectable source of its own; the Co-Ordinator's and
+   Implementor's prompts split that source's guidance by `ref` prefix, because
+   the work order the two kinds deserve is not the same one. Called
    alongside `gather-register-hygiene.sh`, and appended to (never replacing)
    that repo's `register_hygiene` array, whenever `human_visibility_violations`
    names that repo. No violations, or none surviving the live re-check, is
