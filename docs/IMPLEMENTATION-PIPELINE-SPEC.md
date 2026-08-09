@@ -421,7 +421,14 @@ register, checked against the convention that register states for itself:
   (`.github/workflows/tech-debt-register.yml`), which fails the pull request
   that would introduce the drift; this source exists for the drift that lands
   anyway — a register that predates the guard, a direct push, a merge that
-  reintroduces it.
+  reintroduces it. A repository can carry a second, disjoint
+  `register-hygiene` candidate at the same time: a human-visibility violation
+  requirement 38c's sweep could not self-heal, read back and re-verified live
+  by `scripts/gather-human-visibility-hygiene.sh` (requirement 38e). It shares
+  this source's selection, branch derivation and block/void escape hatch, but
+  never this candidate's ref or pull request — the two describe unrelated
+  facts (a file tree; GitHub's live pull-request state) and are repaired
+  independently.
 
 The `issues` source is **banded by the issue's own `Priority` field**, so it
 occupies four separate ranks rather than one:
@@ -4051,10 +4058,13 @@ runs unattended.
       (requirement 3), because a Co-Ordinator that sees no findings declines and
       the two agree. Read as a clearing signal the same `[]` says "every alert
       is fixed", so one 403 would clear every alert block on the fleet. A
-      register-hygiene item (`register-hygiene-<hash>`) is excluded for the
-      plainer reason that it has no completion signal to read at all — the
-      register *is* the item, and its file shape is what `register-hygiene`
-      itself repairs. Both remain the Enabler's, exactly as before.
+      register-hygiene item (`register-hygiene-<hash>` or, for a
+      human-visibility violation, `human-visibility-<hash>` — requirement
+      38e) is excluded for the plainer reason that it has no completion
+      signal to read at all — the register, or GitHub's own live
+      pull-request state, *is* the item, and its own re-derivation is what
+      `register-hygiene` itself repairs. Both remain the Enabler's, exactly
+      as before.
     - **It clears, it never voids.** The event is `unblocked`, which requirement
       34 calls the safe direction — a wrongly cleared item becomes a candidate
       again, is offered by no source, and nothing happens. A void is terminal
@@ -4762,8 +4772,10 @@ runs unattended.
     guarantee, made self-healing rather than merely reported: a violation this
     script can fix, it fixes in the same pass, so there is never a gap between
     detection and correction for a human to fall through. What it cannot fix —
-    a listing or a read that fails — is a `warning`, never a silent skip.
-    Skipped on `--dry-run`, like every sweep that writes.
+    a listing or a read that fails — is a `warning`, never a silent skip; and
+    a `warning` that does not clear on its own becomes ordinary selectable
+    work rather than sitting unread in the log (requirement 38e). Skipped on
+    `--dry-run`, like every sweep that writes.
 
     A pull request something is still `CHANGES_REQUESTED`-blocking is left
     entirely alone — the sweep never calls `confirm_review_requested`
@@ -4804,9 +4816,69 @@ runs unattended.
     human can make. What requirements 38a–38c add is continuity (the guarantee
     holds between the moments a model-driven stage would otherwise renew it)
     and one further origin (a Co-Ordinator's own `needs_refinement` report)
-    that previously reached only a label. Nor does a violation the sweep cannot
-    itself heal become selectable work: it is a `warning` and no more, which is
-    the gap `tech-debt/TD-PPagop-26080801.md` records.
+    that previously reached only a label. This scope limit is deliberate and
+    stays a limit: requirement 38e (below) closes the *other* gap 38a–38c left
+    — a violation the sweep finds but cannot itself heal — without extending
+    the guarantee to either of these already-otherwise-handled classes.
+
+38e. **A violation the sweep cannot heal is selectable work, not only a log
+    line.** `scripts/sweep-human-visibility.sh` (requirement 38c) fixes almost
+    every violation it finds in the same pass; what it cannot fix — a `gh`
+    read or the review-request POST itself failing — was, before this
+    requirement, only a `warning` event: no selectable work, nothing tracking
+    whether it recurred, and the human it concerns by definition not looking
+    (tech-debt/TD-PPagop-26080801.md, the gap requirement 38d's scope note
+    names). `scripts/gather-human-visibility-hygiene.sh`, run alongside
+    `scripts/gather-register-hygiene.sh` (requirement 3i) for every configured
+    repo whose `sources` include `register-hygiene`, closes it:
+
+    - `lib/human-visibility-hygiene.sh`'s `human_visibility_violations` reduces
+      the log union (`union_log`) to one entry per identity — a pull request's
+      `pr_url` where the warning named one, the bare `repo` for a listing
+      failure that named none — keeping only the latest event for each,
+      exactly as `blocked_items`/`void_items` (`lib/cycle-state.sh`) keep the
+      latest attempt-failed/item-void per item. A later
+      `human-review-requested` or `human-nudged` event for the same identity —
+      the sweep succeeding next time — clears it; an unrelated warning never
+      does.
+    - The Script appends this cycle's own freshly-logged human-visibility
+      events into `union_log` the moment the sweep (requirement 38c) finishes,
+      the same technique requirement 34j's own reconciliation uses, so a
+      violation this cycle's sweep just found is caught this same cycle rather
+      than sitting one cycle behind its own detection.
+    - For each repo with at least one violation, `gather-human-visibility-hygiene.sh`
+      re-verifies every one live before treating it as a candidate — a listing
+      failure only survives if the listing still fails right now; a pull
+      request only survives if it is still open and not a draft — because the
+      log alone cannot tell a persisting problem from one that has quietly
+      resolved (a repo-level listing success with nothing to act on logs
+      nothing at all; a merged or closed pull request is never visited again
+      either way). An answer this re-check itself cannot get is never read as
+      "resolved" — the violation is kept, the same reasoning the sweep itself
+      applies to its own reads.
+    - A survivor becomes a candidate shaped like, and carrying, the same
+      `source: "register-hygiene"` as `gather-register-hygiene.sh`'s own — so
+      the Co-Ordinator, the branch derivation (`agent/<ref>`) and the
+      block/void escape hatch all treat it identically, with no new
+      Co-Ordinator source, prompt, or docs wiring needed. Its `ref` —
+      `human-visibility-<hash>`, a digest of the surviving violations'
+      identities and details — is its own namespace, disjoint from
+      `register-hygiene-<hash>`: the two candidates describe unrelated facts
+      about the repository (a file tree; GitHub's live pull-request state),
+      so fixing either never retires a block that still describes the other,
+      and a repo may carry both at once (requirement 3i's sources-table note).
+    - Fed to the no-op fingerprint (requirement 3b) for free: it is appended
+      into that repo's `register_hygiene` array, already hashed verbatim, so
+      no separate fingerprint key is needed.
+
+    Left deliberately unaddressed, as adjacent gaps rather than this one: a
+    pull request whose only legal review-request candidate is its own author
+    (`ensure_human_reviewer` correctly returns the same `skip` it would for a
+    draft or a `CHANGES_REQUESTED`-blocked pull request, so this cannot be told
+    apart from those without changing that function's contract for every one
+    of its callers) is tracked as `tech-debt/TD-PPagop-26080901.md`; an issue
+    human-blocked by a classification other than the two requirement 38b and
+    36a cover remains requirement 38d's own, deliberate, scope limit.
 
 ## Components
 
@@ -4885,6 +4957,27 @@ What exists, and the requirements each part answers to:
    `.github/workflows/tech-debt-register.yml` runs the check (argless) on this
    repository's own register on every pull request, the deterministic layer
    that keeps this source's volume near zero.
+3t. `scripts/gather-human-visibility-hygiene.sh` implementing requirement 38e:
+   given a repo slug and this repo's slice of
+   `human_visibility_violations` (`lib/human-visibility-hygiene.sh`, a pure
+   reduction over the log union), prints a JSON array holding at most one
+   candidate — the violations that survive a live re-check (a repo-level
+   listing failure only if the listing still fails; a pull request only if it
+   is still open and not a draft; an unreadable re-check is kept, not
+   dropped) — carrying a ref scoped to the surviving violations' own
+   identities and details (`human-visibility-<hash>`, disjoint from
+   `register-hygiene-<hash>`), a `problems` line per violation and a body
+   naming each one and when it was first seen. Shares `source:
+   "register-hygiene"` with `gather-register-hygiene.sh` (3i above) so the
+   Co-Ordinator, branch derivation and block/void escape hatch treat it
+   identically, with no source, prompt or docs wiring of its own. Called
+   alongside `gather-register-hygiene.sh`, and appended to (never replacing)
+   that repo's `register_hygiene` array, whenever `human_visibility_violations`
+   names that repo. No violations, or none surviving the live re-check, is
+   `[]` (exit 0) — the ordinary answer almost every cycle gets. Regression-
+   tested in `test/gather-human-visibility-hygiene.test.sh` and (the
+   reduction) `test/human-visibility-hygiene.test.sh`; must pass
+   `shellcheck`.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
    prints the JSON array of the repo's candidate issues — open, unassigned,
    not labelled `blocked`, naming no unresolved `Blocked-by:` reference
@@ -5037,6 +5130,10 @@ What exists, and the requirements each part answers to:
    `lib/refinement.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
+   `lib/human-visibility-hygiene.sh` (requirement 38e's
+   `human_visibility_violations`, another pure reader of the union stream,
+   reducing requirement 38c's `warning` events to the identities — pull
+   request or bare repo — still unresolved),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
    requirement 32b; requirement 31b's `confirm_review_requested`, the same
    promise for the round after the first; requirement 38a's
@@ -6649,6 +6746,23 @@ pull request, run the ones the change touches and any it could regress.
     reviews read that fails is a `warning`, never silence. Confirm the nudge
     comment carries the visible attribution header and both markers
     (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
+38e. **A violation the sweep cannot heal is read back and re-verified, not
+    guessed at.** `test/human-visibility-hygiene.test.sh` passes:
+    `human_visibility_violations` keeps a repo-level (empty `pr_url`) warning
+    with nothing to clear it; a later `human-review-requested` or
+    `human-nudged` event clears a same-`pr_url` warning but leaves a
+    different `pr_url`'s or a different sweep's warning untouched; a repeated
+    identity keeps only its latest detail; and a torn log line is skipped, not
+    fatal. `test/gather-human-visibility-hygiene.test.sh` passes against a
+    stubbed `gh`: violations naming a different repo are ignored; a
+    repo-level violation survives only while its listing still fails live and
+    is dropped the moment a fresh listing succeeds; a pull-request violation
+    survives only while it is still open and not a draft, and is dropped once
+    it is merged, closed, or back in draft; an unreadable live re-check keeps
+    the violation rather than dropping it; a repo-level and a pull-request
+    violation for the same repo combine into one candidate; and every
+    surviving candidate carries `source: "register-hygiene"` and a
+    `human-visibility-`-prefixed ref, never `register-hygiene-`.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed
