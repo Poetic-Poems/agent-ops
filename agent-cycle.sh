@@ -3065,16 +3065,26 @@ if [[ -n "$needs_refinement_label" ]]; then
   fi
 
   # Requirement 39f's retry: `label_filter_own_applications` above has already
-  # proven each entry `label_own_stale_applications` returns here to be our
-  # own last action, with no block standing behind it (this item is not in
-  # `hand_flag_new_json`, or it would still be open) — exactly the set
-  # `release_refinement_label`'s own removal attempt failed on. Best-effort,
-  # like every other label write: a second failure costs nothing beyond what
-  # the first already did, and the filter above already keeps the label from
-  # being misread as a fresh flag on any cycle in between.
+  # proven each entry `label_own_stale_applications` returns here to be our own
+  # last action, and the blocked extract it is given here proves the other half
+  # — that no block stands behind the label any more. Both tests are needed,
+  # and the second is the one that keeps this from undoing requirement 34e: a
+  # label the Script applied to an item it blocked one cycle ago is *also* our
+  # own last action, and removing that one would strip the live projection of
+  # an open block off the issue while the human is still being waited on. What
+  # is left after both is exactly the set `release_refinement_label`'s own
+  # removal attempt failed on.
+  #
+  # The extract is read here rather than reused from above so it includes the
+  # hand-flag blocks this cycle just wrote (appended to `union_log` in the
+  # branch above) — an issue whose label earned a block moments ago is not a
+  # stuck one. Best-effort, like every other label write: a second failure
+  # costs nothing beyond what the first already did, and the filter above
+  # already keeps the label from being misread as a fresh flag on any cycle in
+  # between.
   if ! (( DRY_RUN )); then
     hand_flag_stale_json="$(label_own_stale_applications "$hand_flagged_refinements_json" \
-      "$refinement_own_actions_json")"
+      "$refinement_own_actions_json" "$(blocked_items "$union_log")")"
     while IFS=$'\t' read -r stale_repo stale_number; do
       [[ -n "$stale_repo" && -n "$stale_number" ]] || continue
       if refinement_label_remove "$stale_repo" "$stale_number" "$needs_refinement_label"; then

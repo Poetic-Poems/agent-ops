@@ -605,11 +605,18 @@ assert_eq "a stuck label from our own failed removal manufactures no fresh block
   "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$own_map")" '[]')"
 
 # The retry half of requirement 39f: exactly the entry the filter dropped
-# above is what the call site hands back to `refinement_label_remove` for
-# another attempt — `release_refinement_label`'s original removal is what
-# failed to begin with.
+# above, and whose block has gone, is what the call site hands back to
+# `refinement_label_remove` for another attempt — `release_refinement_label`'s
+# original removal is what failed to begin with. The blocked extract is the
+# second half of that test, and the call site passes it for the reason this
+# pair of cases states: while the block is open the label is requirement 34e's
+# live projection of it, and retrying the removal would strip the human's only
+# signal off an issue the pipeline is still waiting on.
 assert_eq "  ... and is exactly the entry the retry composition re-attempts removal on" \
-  "$hand_flagged_compact" "$(label_own_stale_applications "$hand_flagged" "$own_map")"
+  "$hand_flagged_compact" "$(label_own_stale_applications "$hand_flagged" "$own_map" '[]')"
+assert_eq "  ... but not while the block that label projects is still open" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$own_map" \
+       '[{"repo": "o/r", "item": "52", "kind": "needs-refinement"}]')"
 
 # ... but the same issue flagged by a human *after* our own last action is a
 # genuine request, and must still earn its block — and must never be retried,

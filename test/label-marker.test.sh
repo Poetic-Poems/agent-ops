@@ -181,6 +181,33 @@ assert_eq "a malformed candidate list yields an empty array, never a crash" "[]"
 assert_eq "an empty candidate list stays empty" "[]" \
   "$(label_own_stale_applications '[]' "$stuck_map")"
 
+# The blocked extract is the other half of the test, and the one that keeps
+# this from undoing requirement 34e: the label the Script put on an item it
+# blocked is its own last action too, but it is a live projection of that
+# block, not a leftover, and removing it would take the human's only signal
+# off the issue while the block still stands.
+open_block='[{"repo":"o/r","item":"52","kind":"needs-refinement"}]'
+assert_eq "a label whose block is still open is never retried" "[]" \
+  "$(label_own_stale_applications "$candidates" "$stuck_map" "$open_block")"
+assert_eq "  ... and once that block has cleared, the same label is retried" "52" \
+  "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" '[]')")"
+assert_eq "any open block disqualifies it, not only a refinement one" "[]" \
+  "$(label_own_stale_applications "$candidates" "$stuck_map" \
+       '[{"repo":"o/r","item":"52","kind":""}]')"
+assert_eq "another item's block does not shield this one" "52" \
+  "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" \
+       '[{"repo":"o/r","item":"53","kind":"needs-refinement"}]')")"
+assert_eq "another repo's identically-numbered block does not shield it either" "52" \
+  "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" \
+       '[{"repo":"o/other","item":"52","kind":"needs-refinement"}]')")"
+assert_eq "a numeric item id in the blocked extract matches a numeric candidate" "[]" \
+  "$(label_own_stale_applications "$candidates" "$stuck_map" \
+       '[{"repo":"o/r","item":52,"kind":"needs-refinement"}]')"
+assert_eq "a malformed blocked extract has nothing to retry — the safe direction for a write" "[]" \
+  "$(label_own_stale_applications "$candidates" "$stuck_map" 'not json')"
+assert_eq "an empty blocked argument reads as nothing blocked" "52" \
+  "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" '')")"
+
 # The call-site shape under `set -e`.
 (
   set -euo pipefail
@@ -190,7 +217,8 @@ assert_eq "an empty candidate list stays empty" "[]" \
   label_is_own_application 'not json' "o/r" "5" "2026-08-01T09:00:00Z" || true
   c="$(label_filter_own_applications 'not json' 'not json')"
   d="$(label_own_stale_applications 'not json' 'not json')"
-  printf '%s%s' "$c" "$d" >/dev/null
+  e="$(label_own_stale_applications 'not json' 'not json' 'not json')"
+  printf '%s%s%s' "$c" "$d" "$e" >/dev/null
   printf '%s%s' "$a" "$b" >/dev/null
   exit 0
 ) >/dev/null 2>&1
