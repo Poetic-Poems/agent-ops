@@ -15,7 +15,9 @@
 #     "source": "review-feedback",
 #     "ref": "pr-57-review-4718691960",   // stable, and scoped to THIS round
 #     "number": 57,
+#     "pr_number": 57,
 #     "url": "https://github.com/…/pull/57",
+#     "pr_url": "https://github.com/…/pull/57",
 #     "title": "fix(blogger-auth): …",
 #     "branch": "agent/td26071701-…",
 #     "item": "TD26071701",               // the originating item, if inferable
@@ -23,6 +25,15 @@
 #     "reviewed_at": "2026-07-17T01:22:54Z",
 #     "body": "…every review body and inline comment in this round, verbatim…"
 #   }
+#
+# `pr_number`/`pr_url` duplicate `number`/`url` (the other two finishing
+# sources' candidate shapes carry both pairs — see gather-merge-conflicts.sh
+# and gather-abandoned-drafts.sh) so that a reader needing "which PR does this
+# candidate target?" has one field name that means the same thing in all three
+# arrays: the PR-level claim agent-cycle.sh takes alongside the item claim
+# (issue #238) reads `pr_number` from here, and `prompts/implementor.md`'s
+# review-feedback work order already documented carrying `pr_url` before this
+# field existed to satisfy it.
 #
 # ## Why the Script fetches this and not the Co-Ordinator
 #
@@ -274,7 +285,9 @@ while IFS= read -r pr; do
     '{source: "review-feedback",
       ref: $ref,
       number: $pr.number,
+      pr_number: $pr.number,
       url: $pr.url,
+      pr_url: $pr.url,
       title: $pr.title,
       branch: $pr.headRefName,
       item: (if $item == "" then null else $item end),
