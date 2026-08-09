@@ -13,8 +13,21 @@
 #     forever occupying a back-pressure slot while every cycle looks healthy.
 # The `CONFLICTING`-not-`UNKNOWN` gate and the non-draft/ours-by-branch filters are
 # what hold the line; they are asserted here as jq over the same shapes the GitHub
-# API returns, since the gatherer's `gh` calls aren't reachable from a unit test.
-# Keep this in step with the filters in the script.
+# API returns. Keep this in step with the filters in the script.
+#
+# The `bot` half of the rule (requirement 3s, issue #250 — Dependabot's own
+# conflicted PRs, `rebase_requested` and `superseded_by`) is exercised for real,
+# through MERGE_CONFLICTS_GH, further down: unlike the ours-by-label filter
+# above, its logic (lib/dependabot-bump.sh, comment-marker scanning) is enough
+# to be worth invoking the actual script against a stub rather than
+# re-replicating it in jq a second time.
+#
+# Further down still: agent-cycle.sh's own `gather_merge_conflicts` wrapper,
+# lifted straight out of the script (as test/stage-salvage.test.sh already
+# does for its own functions), pinning that its nudge-failure fallback drops a
+# never-nudged bot candidate exactly as scripts/nudge-dependabot-rebase.sh
+# itself would — the third leg of requirement 3s's defence in depth, alongside
+# the write-side drop and prompts/coordinator.md's explicit fourth case.
 #
 # Run directly:
 #
@@ -131,11 +144,183 @@ assert_eq "finishing candidates count review-feedback, merge-conflicts AND aband
 assert_eq "with nothing waiting to finish, the count is 0 and the cycle stands down as before" \
   "0" "$(jq '[.[] | .review_feedback = [] | .merge_conflicts = [] | .abandoned_drafts = []] | [.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
 
+# --- Dependabot candidates: exercised through the real script via a stub gh ---
+#
+# requirement 3s (issue #250): a Dependabot-authored, open, non-draft,
+# CONFLICTING PR is a candidate regardless of label or branch prefix — it is
+# never ours by either signal — and carries `bot: true` plus two fields the
+# `ours` candidates above never carry: `rebase_requested` (a marker comment
+# already on the PR, scoped to this exact head) and `superseded_by` (a newer
+# open Dependabot PR bumping the same dependency).
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+cat > "$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+if [[ "$1 $2" == "pr list" ]]; then
+  for a in "$@"; do
+    if [[ "$a" == "--label" ]]; then cat "$d/ours.json"; exit 0; fi
+    if [[ "$a" == "--author" ]]; then cat "$d/dependabot.json"; exit 0; fi
+  done
+fi
+exit 1
+STUB
+chmod +x "$tmp_dir/gh"
+
+printf '[]\n' > "$tmp_dir/ours.json"
+
+# One conflicted bot PR, never nudged yet, and a newer open bump of the same
+# dependency (no comments at all — the `--label` call above never fetches
+# `comments`, so `ours` candidates are unaffected either way).
+cat > "$tmp_dir/dependabot.json" <<'JSON'
+[
+  {"number": 129, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.8.0",
+   "headRefName": "dependabot/npm_and_yarn/eslint-10.8.0", "baseRefName": "main",
+   "commits": [{"oid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4"}],
+   "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-03T00:48:14Z",
+   "url": "https://github.com/o/r/pull/129", "body": "Bumps eslint from 9.39.5 to 10.8.0.",
+   "comments": []},
+  {"number": 135, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.9.0",
+   "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0", "baseRefName": "main",
+   "commits": [{"oid": "deadbeefcafebabe0000000000000000000000"}],
+   "isDraft": false, "mergeable": "MERGEABLE", "updatedAt": "2026-08-05T00:00:00Z",
+   "url": "https://github.com/o/r/pull/135", "body": "Bumps eslint from 9.39.5 to 10.9.0.",
+   "comments": []},
+  {"number": 170, "title": "chore(ci): bump codeql-action",
+   "headRefName": "dependabot/github_actions/github/codeql-action-4.37.3", "baseRefName": "main",
+   "commits": [{"oid": "1111111111111111111111111111111111111"}],
+   "isDraft": false, "mergeable": "UNKNOWN", "updatedAt": "2026-08-01T00:00:00Z",
+   "url": "https://github.com/o/r/pull/170", "body": "", "comments": []}
+]
+JSON
+
+out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>/dev/null)"
+assert_eq "only the CONFLICTING bot PR is a candidate (#135 MERGEABLE, #170 UNKNOWN are not)" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... marked as a bot candidate" "true" "$(jq -r '.[0].bot' <<<"$out")"
+assert_eq "  ... never yet asked to rebase (no marker comment)" \
+  "false" "$(jq -r '.[0].rebase_requested' <<<"$out")"
+assert_eq "  ... superseded by #135, the newer open bump of the same dependency" \
+  "135" "$(jq -r '.[0].superseded_by' <<<"$out")"
+assert_contains_json() {
+  local desc="$1" needle="$2" haystack="$3"
+  if [[ "$haystack" == *"$needle"* ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected to contain: %s\n     actual:             %s\n' \
+      "$desc" "$needle" "$haystack"
+    failures=$(( failures + 1 ))
+  fi
+}
+assert_contains_json "  ... the pre-formatted evidence cites this PR's own number, not #135's, as 'PR #N'" \
+  "PR #129" "$(jq -r '.[0].superseded_evidence' <<<"$out")"
+assert_eq "  ... and never writes '#135' with a PR/pull-request prefix (would fail void-guard corroboration)" \
+  "0" "$(jq -r '.[0].superseded_evidence' <<<"$out" | grep -ciE '(pr|pull request)[[:space:]]*#135' || true)"
+
+# --- A marker comment scoped to the current head makes it rebase_requested ---
+cat > "$tmp_dir/dependabot.json" <<'JSON'
+[
+  {"number": 129, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.8.0",
+   "headRefName": "dependabot/npm_and_yarn/eslint-10.8.0", "baseRefName": "main",
+   "commits": [{"oid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4"}],
+   "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-03T00:48:14Z",
+   "url": "https://github.com/o/r/pull/129", "body": "Bumps eslint from 9.39.5 to 10.8.0.",
+   "comments": [{"body": "@dependabot rebase\n\n<!-- agent-ops:dependabot-rebase-requested head=c96c8ef9d31a -->"}]}
+]
+JSON
+out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>/dev/null)"
+assert_eq "a marker comment scoped to the current head sets rebase_requested" \
+  "true" "$(jq -r '.[0].rebase_requested' <<<"$out")"
+assert_eq "  ... and with no competing bump this time, it is not superseded" \
+  "null" "$(jq -r '.[0].superseded_by' <<<"$out")"
+
+# --- A marker scoped to a DIFFERENT (stale) head does not count ---
+cat > "$tmp_dir/dependabot.json" <<'JSON'
+[
+  {"number": 129, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.8.0",
+   "headRefName": "dependabot/npm_and_yarn/eslint-10.8.0", "baseRefName": "main",
+   "commits": [{"oid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4"}],
+   "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-03T00:48:14Z",
+   "url": "https://github.com/o/r/pull/129", "body": "Bumps eslint from 9.39.5 to 10.8.0.",
+   "comments": [{"body": "@dependabot rebase\n\n<!-- agent-ops:dependabot-rebase-requested head=000000000000 -->"}]}
+]
+JSON
+out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>/dev/null)"
+assert_eq "a marker scoped to a stale head does not satisfy rebase_requested for the current one" \
+  "false" "$(jq -r '.[0].rebase_requested' <<<"$out")"
+
+rm -rf "$tmp_dir"
+trap - EXIT
+
 # --- The gatherer itself fails safe ---
 
 assert_eq "an unknown repo yields [] and exit 0, never a broken cycle" "[]" \
   "$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "Poetic-Poems/does-not-exist" autonomous-agent 'agent/' 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
+
+# --- agent-cycle.sh's gather_merge_conflicts: the nudge-failure fallback still
+#     drops a never-nudged bot candidate (requirement 3s) ---
+#
+# When nudge-dependabot-rebase.sh itself fails to produce a usable result,
+# gather_merge_conflicts falls back to the gatherer's own array rather than
+# losing every candidate in the repo over one broken write step. That fallback
+# must apply the same drop the nudge step itself would have: a `bot: true`,
+# `rebase_requested: false`, no-`superseded_by` entry is never selectable, and
+# letting one through here would land it in prompts/coordinator.md's
+# ordinary-case catch-all, which force-pushes onto a branch Dependabot owns.
+lift_bash_fn() {
+  awk -v name="$2" '
+    $0 == name "() {" { on = 1 }
+    on               { print }
+    on && /^\}$/      { exit }
+  ' "$1"
+}
+gather_fn="$(lift_bash_fn "$SCRIPT_DIR/agent-cycle.sh" gather_merge_conflicts)"
+if [[ -z "$gather_fn" ]]; then
+  echo "FAIL - could not lift gather_merge_conflicts from agent-cycle.sh"
+  failures=$(( failures + 1 ))
+else
+  fallback_tmp="$(mktemp -d)"
+  mkdir -p "$fallback_tmp/scripts" "$fallback_tmp/cycle"
+
+  cat > "$fallback_tmp/scripts/gather-merge-conflicts.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' '[
+  {"ref": "pr-129-conflict-aaa", "number": 129, "bot": true, "rebase_requested": false, "superseded_by": null},
+  {"ref": "pr-57-conflict-bbb", "number": 57, "bot": false}
+]'
+STUB
+  chmod +x "$fallback_tmp/scripts/gather-merge-conflicts.sh"
+
+  # The nudge step fails outright — the exact condition the fallback exists for.
+  cat > "$fallback_tmp/scripts/nudge-dependabot-rebase.sh" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+exit 1
+STUB
+  chmod +x "$fallback_tmp/scripts/nudge-dependabot-rebase.sh"
+
+  out="$(bash -c "
+    $gather_fn
+    SCRIPT_DIR='$fallback_tmp'
+    cycle_dir='$fallback_tmp/cycle'
+    pr_label=autonomous-agent
+    branch_prefix=agent/
+    cycle_id=test-cycle
+    node_name=test-node
+    DRY_RUN=0
+    log_event() { :; }
+    gather_merge_conflicts o/r
+  ")"
+
+  assert_eq "the fallback drops the never-nudged bot candidate, keeping the ordinary one" \
+    '["pr-57-conflict-bbb"]' "$(jq -c '[.[].ref]' <<<"$out")"
+  assert_eq "  ... and the fingerprint file on disk reflects the same filtered array" \
+    '["pr-57-conflict-bbb"]' "$(jq -c '[.[].ref]' "$fallback_tmp/cycle/merge-conflicts-o_r.json")"
+
+  rm -rf "$fallback_tmp"
+fi
 
 printf '\n'
 if (( failures > 0 )); then
