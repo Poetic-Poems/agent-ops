@@ -216,11 +216,21 @@ def flatten_region($region):
 
 # A note block flattened to the one line a table cell can hold: a paragraph
 # string verbatim, a list'"'"'s items joined `, `, code'"'"'s newlines turned to
-# spaces and wrapped in a backtick span.
+# spaces and wrapped in a backtick span. For code containing backticks, uses
+# CommonMark'"'"'s rule: the widest run of consecutive backticks in the code plus
+# one, as the span'"'"'s delimiter; spaces added if the code starts or ends with
+# a backtick.
 def block_flat:
   if (type) == "string" then .
   elif (type) == "object" and (has("list")) then (.list | join(", "))
-  elif (type) == "object" and (has("code")) then ("`" + (.code | gsub("\n"; " ")) + "`")
+  elif (type) == "object" and (has("code")) then
+    (.code | gsub("\n"; " ")) as $flat_code |
+    ($flat_code | [match("`+"; "g").string | length] | max // 0) as $max_backtick_run |
+    ($max_backtick_run + 1) as $delimiter_count |
+    ([range($delimiter_count) | "`"] | join("")) as $delimiter |
+    (if ($flat_code | startswith("`")) then " " else "" end) as $leading_space |
+    (if ($flat_code | endswith("`")) then " " else "" end) as $trailing_space |
+    $delimiter + $leading_space + $flat_code + $trailing_space + $delimiter
   else error("render-config-table: unrecognised note block: " + (tojson))
   end;
 

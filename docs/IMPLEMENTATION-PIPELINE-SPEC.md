@@ -5326,10 +5326,14 @@ What exists, and the requirements each part answers to:
     fenced example, `lang` optional) — falling back to `description` when the
     key carries no `x-docs` for that audience. A cell holds one line, so every
     block flattens into it: a paragraph verbatim, a list's items joined `, `,
-    code's newlines turned to spaces and wrapped in one backtick span, each
-    block joined to the next by a single space — the same join a plain array
-    of paragraph strings always got, and what a single string (a one-block
-    array) already renders as unchanged.
+    code's newlines turned to spaces and wrapped in a backtick span whose
+    delimiter backs off to the code's own content — the widest run of
+    consecutive backticks already in the code, plus one, the same rule
+    CommonMark itself uses for nesting a code span inside a code span — with
+    a leading and trailing space added if the code starts or ends with a
+    backtick, each block joined to the next by a single space — the same
+    join a plain array of paragraph strings always got, and what a single
+    string (a one-block array) already renders as unchanged.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
     `id=review` … `<!-- config-table:end -->`) in place with no arguments.
     Each region's first two lines, immediately after the start marker, are a
@@ -6154,7 +6158,11 @@ pull request, run the ones the change touches and any it could regress.
    must list the item as blocked rather than void. The negative matters as
    much — assert a well-formed void is still recorded, or the guard has
    quietly abolished a feature requirement 18 depends on to avoid full
-   Implementor runs.
+   Implementor runs. `test/enabler-verdicts.test.sh` passes: driving
+   `maybe_run_enabler` itself with an unevidenced `void` verdict produces the
+   same `attempt-failed`, plus an `enabler-examined` event whose `outcome` is
+   `void-refused` — the Enabler's own guarded path, not only the
+   Co-Ordinator's.
 8d. **A `pr-ready` event means the pull request is not a draft (requirement
    31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
    without calling `gh pr ready`; a draft is flipped and reports `flipped`; a
@@ -6448,7 +6456,12 @@ pull request, run the ones the change touches and any it could regress.
     `unblocked` verdict's `refined_spec` becomes an `item-refined` event that
     reaches the next cycle's `refinements` map, and a void item's does not; and
     a second refinement of an already-refined item is refused unless a human has
-    just closed an escalation about it. Both directions matter here for the same
+    just closed an escalation about it. `test/enabler-verdicts.test.sh` passes:
+    driving `maybe_run_enabler` itself with an `unblocked` verdict on an item
+    carrying `refined_before` produces no `unblocked` and no `item-refined`
+    event, only a `warning` and an `enabler-examined` event whose `outcome` is
+    `refinement-refused`; the same item with reason `issue-closed` is not
+    refused. Both directions matter here for the same
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
@@ -6545,8 +6558,10 @@ pull request, run the ones the change touches and any it could regress.
     `list` block and a paragraph; a paragraph, a `code` block and a
     paragraph, each over the
     cap — flattens to one space-joined table-cell line (the list's items
-    comma-joined, the code's newlines turned to spaces and backtick-wrapped)
-    and, separately, renders as real block Markdown in the Extended notes
+    comma-joined, the code's newlines turned to spaces and backtick-wrapped,
+    backing off to a wider delimiter with padding spaces when the code
+    itself contains a backtick) and, separately, renders as real block
+    Markdown in the Extended notes
     subsection: a blank line between paragraphs, real `- ` list items, a
     real fenced code block, each still blank-line-separated from its
     neighbours; a `list`-only or `code`-only note under the cap degrades the
