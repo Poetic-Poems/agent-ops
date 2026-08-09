@@ -118,6 +118,40 @@ label_filter_own_applications() {
   printf '%s' "$out"
 }
 
+# label_own_stale_applications CANDIDATES_JSON OWN_ACTIONS_JSON
+# Print CANDIDATES_JSON with every entry dropped *except* the ones
+# `label_filter_own_applications` above drops — the complement, expressed in
+# terms of that function so the two can never disagree about which entries
+# are which. Where that function answers "what a human might be asking
+# about", this one answers "what is safe to retry removing": a label this
+# system's own last recorded action was an `add` for, with no later human
+# touch, still present on the issue only because a previous removal attempt
+# (`release_refinement_label`, which tolerates the failure by design) did not
+# take. Requirement 39f's read-back keeps such an entry from being misread as
+# a fresh flag; this is the other half — handing it back so the call site can
+# have another go at the removal itself, rather than leaving the label to sit
+# there meaning nothing until a human notices.
+#
+# Fails safe in the direction a write demands: malformed CANDIDATES_JSON or a
+# malformed OWN_ACTIONS_JSON yields nothing to retry, the same "not ours"
+# default `label_filter_own_applications` uses for reading, because here that
+# default suppresses a GitHub write rather than a block.
+label_own_stale_applications() {
+  local candidates="${1:-[]}" own_map="${2:-{\}}" kept out
+  kept="$(label_filter_own_applications "$candidates" "$own_map")"
+  out="$(jq -nc --argjson c "$candidates" --argjson k "$kept" '
+    ($k | map((.repo // "") + "|" + ((.number // "") | tostring))) as $keep
+    | [ $c[]?
+        | . as $e
+        | (($e.repo // "") + "|" + (($e.number // "") | tostring)) as $key
+        | select(($keep | index($key)) == null) ]' \
+    2>/dev/null || true)"
+  if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    out='[]'
+  fi
+  printf '%s' "$out"
+}
+
 # label_is_own_application OWN_ACTIONS_JSON REPO ITEM LABELLED_AT
 # True (exit 0) when the label's current presence on REPO/ITEM is explained by
 # this system's own last action rather than a human's — the single-item form

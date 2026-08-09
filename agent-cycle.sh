@@ -3046,8 +3046,9 @@ fi
 # label that had gone, unblocking the very item this rule exists to leave
 # alone.
 if [[ -n "$needs_refinement_label" ]]; then
+  refinement_own_actions_json="$(label_own_actions_map "$needs_refinement_label" "$union_log")"
   hand_flagged_not_ours_json="$(label_filter_own_applications "$hand_flagged_refinements_json" \
-    "$(label_own_actions_map "$needs_refinement_label" "$union_log")")"
+    "$refinement_own_actions_json")"
   hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_not_ours_json" "$(blocked_items "$union_log")")"
   if [[ "$(jq 'length' <<<"$hand_flag_new_json" 2>/dev/null || echo 0)" != "0" ]]; then
     log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
@@ -3061,6 +3062,31 @@ if [[ -n "$needs_refinement_label" ]]; then
              "$(jq -r '.labelled_at // ""' <<<"$flag")" "$(jq -r '.url // ""' <<<"$flag")")")"
     done < <(jq -c '.[]' <<<"$hand_flag_new_json" 2>/dev/null || true)
     tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
+  fi
+
+  # Requirement 39f's retry: `label_filter_own_applications` above has already
+  # proven each entry `label_own_stale_applications` returns here to be our
+  # own last action, with no block standing behind it (this item is not in
+  # `hand_flag_new_json`, or it would still be open) — exactly the set
+  # `release_refinement_label`'s own removal attempt failed on. Best-effort,
+  # like every other label write: a second failure costs nothing beyond what
+  # the first already did, and the filter above already keeps the label from
+  # being misread as a fresh flag on any cycle in between.
+  if ! (( DRY_RUN )); then
+    hand_flag_stale_json="$(label_own_stale_applications "$hand_flagged_refinements_json" \
+      "$refinement_own_actions_json")"
+    while IFS=$'\t' read -r stale_repo stale_number; do
+      [[ -n "$stale_repo" && -n "$stale_number" ]] || continue
+      if refinement_label_remove "$stale_repo" "$stale_number" "$needs_refinement_label"; then
+        log_event "own-label-action" \
+          "$(label_own_action_fields "$stale_repo" "$stale_number" "$needs_refinement_label" "remove")"
+      else
+        log_event "warning" \
+          "$(jq -nc --arg d "could not retry removing the $needs_refinement_label label from $stale_repo#$stale_number" \
+             '{detail: $d}')"
+      fi
+    done < <(jq -r '.[] | [(.repo // ""), ((.number // "") | tostring)] | @tsv' \
+               <<<"$hand_flag_stale_json" 2>/dev/null || true)
   fi
 
   hand_flag_cleared_json="$(refinement_hand_flag_cleared "$hand_flagged_refinements_json" "$(blocked_items "$union_log")")"

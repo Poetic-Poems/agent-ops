@@ -604,24 +604,38 @@ own_map="$(label_own_actions_map "needs-refinement" "$own_log")"
 assert_eq "a stuck label from our own failed removal manufactures no fresh block" "[]" \
   "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$own_map")" '[]')"
 
+# The retry half of requirement 39f: exactly the entry the filter dropped
+# above is what the call site hands back to `refinement_label_remove` for
+# another attempt — `release_refinement_label`'s original removal is what
+# failed to begin with.
+assert_eq "  ... and is exactly the entry the retry composition re-attempts removal on" \
+  "$hand_flagged_compact" "$(label_own_stale_applications "$hand_flagged" "$own_map")"
+
 # ... but the same issue flagged by a human *after* our own last action is a
-# genuine request, and must still earn its block.
+# genuine request, and must still earn its block — and must never be retried,
+# since it is not this system's own write to retry.
 human_map="$(label_own_actions_map "needs-refinement" /dev/null)"
 assert_eq "an unrecorded label is still read as the human's own flag" \
   "$hand_flagged_compact" \
   "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$human_map")" '[]')"
+assert_eq "  ... and nothing here is ours to retry removing" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$human_map")"
 printf '%s\n' '{"ts":"2026-07-20T09:00:00Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
 assert_eq "a human re-applying the label after us still earns a block" \
   "$hand_flagged_compact" \
   "$(refinement_hand_flag_new \
        "$(label_filter_own_applications "$hand_flagged" \
             "$(label_own_actions_map "needs-refinement" "$own_log")")" '[]')"
+assert_eq "  ... and again nothing here is ours to retry removing" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$(label_own_actions_map "needs-refinement" "$own_log")")"
 printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"remove"}' >> "$own_log"
 assert_eq "a label still present after a *recorded* removal is not ours to explain" \
   "$hand_flagged_compact" \
   "$(refinement_hand_flag_new \
        "$(label_filter_own_applications "$hand_flagged" \
             "$(label_own_actions_map "needs-refinement" "$own_log")")" '[]')"
+assert_eq "  ... nor ours to retry removing — our last recorded action was the removal itself" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$(label_own_actions_map "needs-refinement" "$own_log")")"
 
 # The `cleared` half must never see the filtered list: it asks which issues
 # have *lost* the label, so an entry dropped for being our own would read

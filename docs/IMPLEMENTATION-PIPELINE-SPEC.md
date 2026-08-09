@@ -5068,6 +5068,24 @@ runs unattended.
     need, on the same "extend what already exists" discipline the rest of
     this file follows.
 
+    **The read-back also retries the removal it just proved is stale.**
+    `lib/label-marker.sh`'s `label_own_stale_applications` is the complement of
+    `label_filter_own_applications`, expressed in terms of it so the two
+    cannot disagree: it returns exactly the candidates the filter drops — the
+    ones this system's own last action explains, with no block standing
+    behind them. After the Co-Ordinator's hand-flag scan filters the `new`
+    half as above, `agent-cycle.sh` passes the same gathered candidates
+    through `label_own_stale_applications` and attempts
+    `refinement_label_remove` again on each one, logging a fresh
+    `own-label-action` (`remove`) on success or a `warning` naming the item on
+    a second failure — the same best-effort contract `release_refinement_label`
+    already has for its own removal. This runs unconditionally whenever
+    `needs_refinement_label` is configured (guarded only by requirement 12's
+    dry-run switch, the same as every other label write), so a stuck label
+    left over from an earlier failed removal is cleared on the next cycle that
+    finds it, rather than sitting on the issue meaning nothing until a human
+    removes it by hand.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -5255,13 +5273,15 @@ What exists, and the requirements each part answers to:
    carries), `label_own_actions_map` (every such event for one label, reduced
    to the latest per repo+item), `label_filter_own_applications` (a gathered
    hand-flag candidate list with the Script's own applications dropped, which
-   is what `agent-cycle.sh` calls) and `label_is_own_application` (the same
-   question for one item, expressed in terms of the filter so the two cannot
-   disagree). A pure reader of the log, on the same "library
-   stays a pure function" boundary `stage_budget_overrides` documents for its
-   own config read — the events themselves are logged at the call site in
-   `agent-cycle.sh`, alongside the `refinement_label_add`/`_remove` calls
-   requirement 39f's writes extend. Unit-tested
+   is what `agent-cycle.sh` calls), `label_own_stale_applications` (the
+   complement — exactly the candidates the filter drops, which is what
+   `agent-cycle.sh` retries `refinement_label_remove` on) and
+   `label_is_own_application` (the same question for one item, expressed in
+   terms of the filter so the two cannot disagree). A pure reader of the log,
+   on the same "library stays a pure function" boundary `stage_budget_overrides`
+   documents for its own config read — the events themselves are logged at the
+   call site in `agent-cycle.sh`, alongside the `refinement_label_add`/`_remove`
+   calls requirement 39f's writes extend. Unit-tested
    (`test/label-marker.test.sh`); must pass `shellcheck`.
 3m. `lib/work-gone.sh` implementing requirement 34i's decision:
    `work_gone_clearances`, which given the open blocked set, the cycle's
@@ -6773,12 +6793,19 @@ pull request, run the ones the change touches and any it could regress.
     nothing to attribute to the Script; `label_filter_own_applications` drops
     exactly those candidates from a gathered list and preserves the rest
     verbatim, dropping none when the own map is empty or malformed.
-    `test/needs-refinement.test.sh` passes cases built on the call site's own
-    composition of the two: a hand-flag scan that finds the label still present
-    after a simulated removal failure, with the own-action log showing the
-    Script's own `add` and nothing since, does not manufacture a fresh block —
-    while a label a human applied after the Script's last action, and one whose
-    removal was recorded as having succeeded, both still do.
+    `label_own_stale_applications` is the exact complement of
+    `label_filter_own_applications` — every candidate the filter keeps or
+    drops is accounted for on the other side, never both — dropping nothing
+    to retry when the own map is empty or malformed, the safe direction for a
+    write. `test/needs-refinement.test.sh` passes cases built on the call
+    site's own composition of the two: a hand-flag scan that finds the label
+    still present after a simulated removal failure, with the own-action log
+    showing the Script's own `add` and nothing since, does not manufacture a
+    fresh block, and that same candidate is exactly what
+    `label_own_stale_applications` hands back for `refinement_label_remove`
+    to retry — while a label a human applied after the Script's last action,
+    and one whose removal was recorded as having succeeded, both still earn
+    their block and neither is ever handed back to retry.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the

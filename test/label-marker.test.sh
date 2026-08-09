@@ -157,6 +157,30 @@ assert_eq "a malformed candidate list yields an empty array, never a crash" "[]"
 assert_eq "an empty candidate list stays empty" "[]" \
   "$(label_filter_own_applications '[]' "$stuck_map")"
 
+# --- label_own_stale_applications --------------------------------------------
+# The complement of `label_filter_own_applications`, expressed in terms of it:
+# exactly the entries that function drops are what a caller may safely retry
+# `refinement_label_remove` on — requirement 39f's retry, not just its
+# read-back.
+stale="$(label_own_stale_applications "$candidates" "$stuck_map")"
+assert_eq "the entry the filter dropped is the one this returns" "1" \
+  "$(jq 'length' <<<"$stale")"
+assert_eq "  ... naming the stuck item, not the untouched one" "52" \
+  "$(jq -r '.[0].number' <<<"$stale")"
+assert_eq "  ... with its gathered fields intact, for the caller to act on" \
+  "warwick" "$(jq -r '.[0].by' <<<"$stale")"
+assert_eq "the filter and its complement partition the list — nothing lost, nothing doubled" \
+  "$(jq 'length' <<<"$candidates")" \
+  "$(( $(jq 'length' <<<"$filtered") + $(jq 'length' <<<"$stale") ))"
+assert_eq "an empty own map has nothing to retry" "[]" \
+  "$(label_own_stale_applications "$candidates" '{}')"
+assert_eq "a malformed own map has nothing to retry — the safe direction for a write" "[]" \
+  "$(label_own_stale_applications "$candidates" 'not json')"
+assert_eq "a malformed candidate list yields an empty array, never a crash" "[]" \
+  "$(label_own_stale_applications 'not json' "$stuck_map")"
+assert_eq "an empty candidate list stays empty" "[]" \
+  "$(label_own_stale_applications '[]' "$stuck_map")"
+
 # The call-site shape under `set -e`.
 (
   set -euo pipefail
@@ -165,7 +189,8 @@ assert_eq "an empty candidate list stays empty" "[]" \
   b="$(label_own_actions_map "needs-refinement" "garbage-not-a-path-either")"
   label_is_own_application 'not json' "o/r" "5" "2026-08-01T09:00:00Z" || true
   c="$(label_filter_own_applications 'not json' 'not json')"
-  printf '%s' "$c" >/dev/null
+  d="$(label_own_stale_applications 'not json' 'not json')"
+  printf '%s%s' "$c" "$d" >/dev/null
   printf '%s%s' "$a" "$b" >/dev/null
   exit 0
 ) >/dev/null 2>&1
