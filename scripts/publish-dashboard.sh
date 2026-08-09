@@ -375,14 +375,28 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
           item:   ([ $e[] | select(.item)  | .item ] | last),
           source: ([ $e[] | select(.event=="selection") | .source ] | last),
           title:  ([ $e[] | select(.event=="selection") | .title ]  | last),
-          # requirement 17d: how many candidates this cycle lost to a peer
-          # before winning its claim — a "recovered race" is race_losses > 0
-          # on a cycle that still went on to select.
-          race_losses: (([ $e[] | select(.event=="selection") | .race_losses ] | last) // 0),
           pr_url: ([ $e[] | select(.pr_url) | .pr_url ] | last),
           reason: ([ $e[] | select(.event=="none-selected" or .event=="stand-down" or .event=="cycle-skipped") | (.reason // .detail) ] | last),
           fail_detail: ([ $e[] | select(.event=="attempt-failed") | ((.stage // "?") + ": " + (.detail // "")) ] | last),
           warning: ([ $e[] | select(.event=="warning") | .detail ] | last),
+          # Issue #245: whether this cycle lost a claim to healthy contention
+          # before its outcome was decided — a stand-down `cause` of "raced"
+          # (every candidate lost, exit 0 empty-handed) or a `claim-lost`
+          # (cause "held") on a candidate this cycle then moved past to reach
+          # whatever `outcome` below records. `raced` with an `outcome` other
+          # than "stand-down" is a *recovered* race: the fleet contended for
+          # the top candidate and this cycle still did the next one's work,
+          # rather than forfeiting the cycle outright.
+          #
+          # `race_losses` (requirement 17d) is counted from those same
+          # `claim-lost` events rather than read off the `selection` event
+          # that also carries it: the two agree wherever a selection happened
+          # at all, and only the count covers the cycle that stood down
+          # having lost every candidate, which has no `selection` event to
+          # read.
+          race_losses: ([ $e[] | select(.event=="claim-lost" and (.cause // "") == "held") ] | length),
+          raced: (([ $e[] | select(.event=="claim-lost" and (.cause // "") == "held") ] | length) > 0),
+          standdown_cause: ([ $e[] | select(.event=="stand-down") | .cause ] | last),
           outcome: (
             if   ($types | any(. == "pr-ready"))       then "pr-ready"
             elif ($types | any(. == "pr-raised"))      then "pr-raised"

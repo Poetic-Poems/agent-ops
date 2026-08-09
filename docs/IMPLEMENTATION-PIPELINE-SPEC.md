@@ -2524,13 +2524,20 @@ runs unattended.
     genuinely holding the item (17a's `cause: "held"`, as opposed to
     `"unreachable"`) before it won its own claim, or — on the cycle that
     exhausts every candidate — before it stood down. Carried as
-    `race_losses` on the `selection` event and on that stand-down's event.
+    `race_losses` on the `selection` event (only when it is greater than
+    zero — 17a) and on that stand-down's event.
     A cycle recovering a race (winning after one or more losses) is
     healthy contention, not a fault: `scripts/publish-dashboard.sh` and
     `dashboard/index.html` surface it as an informational "recovered race
     ×N" badge, on the cycle history, the live-cycle panel and the fleet
     cards, wherever that cycle's `title`/`source` already render (never a
-    warning colour). Faster cadence and finish-then-continue (39) both
+    warning colour). A cycle that lost *every* candidate recovered nothing
+    and never carries that badge; it is marked instead beside its outcome,
+    where the plain "Stood down" verdict cannot say by itself whether the
+    fleet's own contention or a GitHub outage produced it — the same
+    informational colour, and DASHBOARD-SPEC's `raced` / `standdown_cause`
+    is the shape both readings come from. Faster cadence and
+    finish-then-continue (39) both
     raise how often nodes contend for the same item, which is why this
     became worth watching rather than left to a `claim-lost` grep.
 
@@ -2867,7 +2874,14 @@ runs unattended.
       ("GitHub could not be reached for any candidate — this is an outage,
       not contention"), so a GitHub or token outage does not read as a fleet
       politely yielding to itself. A node that cannot reach GitHub to claim
-      could not have pushed the work either.
+      could not have pushed the work either. This `stand-down` event also
+      carries the same distinction structured, as `cause` — `raced` or
+      `unreachable` — so a reader (the dashboard included) does not have to
+      re-parse the reason text (issue #245). A win that followed one or more
+      `held` losses is a *recovered* race, not an ordinary first-try
+      selection: the `selection` event that names the winning candidate
+      additionally carries `race_losses`, the count of `held` losses that
+      preceded it, present only when it is greater than zero.
     - When `state_repo` is unset (a single-node operation), file claims are
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
@@ -3804,12 +3818,19 @@ runs unattended.
       safe where clearing is not — a wrong unvoid costs a cycle every hour until
       someone notices — but it is not free, and requirement 34d is what makes it
       safe enough to keep.
-34d. **Every `item-void` write, from every stage, is corroborated before it is
-    made permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
+34d. **Every `item-void` a stage writes is corroborated before it is made
+    permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
     entry point the Co-Ordinator (requirement 18), the Enabler (requirement
     36a's `void` row) and the Implementor (requirement 9b) all call before
-    logging `item-void`; none of the three may write it directly. Four tests,
-    all on the Script's side of the boundary:
+    logging `item-void`; none of the three may write it directly. The rule is
+    about the three *stages*, and there is exactly one writer outside it: the
+    Script's own pre-flight (requirement 34m), which reads its evidence
+    straight off `gh`, the register file or the cycle's own pre-claim digest
+    — the ground truth the tests below check a stage's citation *against* —
+    and so has nothing for the guard to corroborate it with. Its event
+    carries `stage: preflight` all the same, so a reader auditing the log for
+    guarded voids should not mistake it for a fourth stage evading this
+    requirement. Four tests, all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
       required on every void, and `null`, `""`, whitespace, `{}` and `[]` are
       all absence. An entry without it is not a verdict, it is an opinion.
@@ -4289,11 +4310,15 @@ runs unattended.
     object to close, and requirement 34k does nothing with it; a register id
     is instead requirement 34l's concern, immediately below.
 
-    **Only a corroborated void — today, that is all three writers.**
-    `void_json` holds the unresolved `item-void` events of all three writers
-    (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
+    **Only a corroborated void — today, that is the three stage writers.**
+    `void_json` holds the unresolved `item-void` events of all three stage
+    writers (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
     corroborates every one of them before it is logged (issue #243), so each
-    is eligible here. Each candidate still carries its event's `stage`, and
+    is eligible here. It also holds the Script's own pre-flight voids
+    (requirement 34m), and the `stage` gate below excludes them: a pre-flight
+    void closes no GitHub object, so a finishing-source item it voids leaves
+    its pull request open for a human, or for a later corroborated void, to
+    close. Each candidate still carries its event's `stage`, and
     `close-void-github-items.sh` still gates on it — an uncorroborated
     `item-void` must never reach this point, but if one somehow did (a future
     writer that bypassed the guard, a malformed or stageless entry), the gate
@@ -4359,6 +4384,68 @@ runs unattended.
     register item — everywhere else, nothing. The alternative was moving
     34f/34g/34i/34k's whole pre-extract window earlier than the ordering
     those requirements are already deliberate about.
+
+34m. **A freshly claimed item gets the same gone-work check, before the
+    Implementor runs, not inside it.** 34i clears a *blocked* item's void
+    without asking anyone, from digests the cycle already gathered; a
+    candidate this cycle just won the claim on has never been blocked, but
+    the question — is this item's work already done? — is identical, and
+    just as often the answer (TD-PPpfid-26072801: merged and register-flipped
+    15 minutes before the review window this fixed opened, then re-selected
+    and re-implemented 21 hours later — a full Implementor engagement to
+    learn what one `gh` read already sitting in the cycle's own gathered
+    state would have said). So, immediately after the claim loop of
+    requirement 17a wins and before the workspace clone, the Script runs
+    `lib/preflight.sh`'s `preflight_done_reason` against the winning
+    candidate alone: `source_states_json` (requirement 3, gathered for every
+    repo the cycle walked, well before the claim) answers it for an `issues`
+    item (closed) and for a finishing source's item (its pull request closed
+    or merged); a `tech-debt` item additionally costs one fresh
+    `gather-register-status.sh` read, scoped to the one item, because a
+    freshly claimed item was never a member of the blocked set
+    `register_status_json` is otherwise scoped to. Every other source is left
+    to the Implementor, exactly as before — this is the three done-signals
+    34i already reads deterministically, reused, not a new one invented for
+    the occasion.
+
+    Two more done-signals run alongside `preflight_done_reason`, both cheap
+    enough to cost no clone of their own:
+
+    - **An open pull request already carries the just-claimed branch**, for
+      every item whose id is not a finishing source's own `pr-<n>-…` shape —
+      an `issues` or `tech-debt` item typically, but equally a `security`,
+      `code-quality`, `project-review`, `implementation-plan` or
+      `register-hygiene` one, since the claim mints all of them a branch the
+      same way. The `pr-<n>-…` shape is excluded because the check above
+      already covers it. Read from the
+      same `source_states_json` digest's `open_prs[].h`, gathered before the
+      claim — the "stale claim, a previous cycle's branch/PR already exists"
+      shape a lost-then-recovered claim race (requirement 17a) can produce.
+      `lib/preflight.sh`'s `preflight_open_pr_reason`, called from
+      `preflight_done_reason` itself.
+    - **The claimed branch is already merged into `default_branch`**
+      (`lib/preflight.sh`'s `preflight_branch_merged_reason`): one live
+      `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
+      `identical` or `behind` means every commit on the branch is already an
+      ancestor of `default_branch`, so the draft's work landed some other way
+      while it sat. Run only for `review-feedback`, `merge-conflicts` and
+      `abandoned-drafts` — the three sources whose branch and pull request
+      predate the claim (`lib/preflight.sh`'s
+      `preflight_existing_branch_source`) — and never for an ordinary
+      `issues`/`tech-debt` claim, whose branch the Script has just created at
+      `default_branch`'s own head: comparing it against that same head the
+      moment the claim is won would always read `identical` and void every
+      ordinary claim on its first tick.
+
+    A hit from any of the three logs `item-void` (stage `preflight`) with the
+    reason `work_gone_clearances`, `preflight_open_pr_reason` or
+    `preflight_branch_merged_reason` gives, releases the claim (requirement
+    17a's release rules) and ends the cycle — no Implementor engagement
+    spent. None needs a corroboration guard of its own (requirement 34d
+    exists to catch a model's fabricated citation, and there is no model in
+    this path to fabricate one): the evidence is read directly off
+    `gh`/the register file/the cycle's own pre-claim digest, the same ground
+    truth requirement 34d's guard checks a citation against.
 
 ### The Enabler
 
@@ -5085,6 +5172,24 @@ What exists, and the requirements each part answers to:
    above is asked for those and no others. Pure — it reads nothing itself — and
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
+3s. `lib/preflight.sh` implementing requirement 34m's decision:
+   `preflight_done_reason`, which given a repo, an item, its claim branch, the
+   cycle's source-state digests and (for a tech-debt item) its one freshly
+   read register row, wraps them into the one-entry blocked list
+   `work_gone_clearances` (3m) expects, then — for every item but a finishing
+   source's own `pr-<n>-…`-shaped one — falls back to
+   `preflight_open_pr_reason`, checking
+   the same digest for an open pull request already carrying the claim
+   branch; returns the first reason found, or nothing. `preflight_branch_merged_reason`
+   is the third signal, kept separate because it is impure (one live
+   `gh api compare` call against the target repository) and `preflight_existing_branch_source`
+   is the gate that scopes it to the three sources whose branch predates the
+   claim (review-feedback, merge-conflicts, abandoned-drafts) — see
+   requirement 34m for why an ordinary claim's freshly created branch cannot
+   use this check. `preflight_done_reason` and `preflight_open_pr_reason` are
+   pure — they read nothing themselves — sourced after `lib/work-gone.sh`,
+   whose function `preflight_done_reason` wraps. Unit-tested
+   (`test/preflight.test.sh`); must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
    prints one JSON action object per orphan handled (`recovered`, `released`,
@@ -5105,7 +5210,7 @@ What exists, and the requirements each part answers to:
    (`test/sweep-human-visibility.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
+   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
@@ -5397,10 +5502,14 @@ What exists, and the requirements each part answers to:
     fenced example, `lang` optional) — falling back to `description` when the
     key carries no `x-docs` for that audience. A cell holds one line, so every
     block flattens into it: a paragraph verbatim, a list's items joined `, `,
-    code's newlines turned to spaces and wrapped in one backtick span, each
-    block joined to the next by a single space — the same join a plain array
-    of paragraph strings always got, and what a single string (a one-block
-    array) already renders as unchanged.
+    code's newlines turned to spaces and wrapped in a backtick span whose
+    delimiter backs off to the code's own content — the widest run of
+    consecutive backticks already in the code, plus one, the same rule
+    CommonMark itself uses for nesting a code span inside a code span — with
+    a leading and trailing space added if the code starts or ends with a
+    backtick, each block joined to the next by a single space — the same
+    join a plain array of paragraph strings always got, and what a single
+    string (a one-block array) already renders as unchanged.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
     `id=review` … `<!-- config-table:end -->`) in place with no arguments.
     Each region's first two lines, immediately after the start marker, are a
@@ -6243,7 +6352,11 @@ pull request, run the ones the change touches and any it could regress.
    must list the item as blocked rather than void. The negative matters as
    much — assert a well-formed void is still recorded, or the guard has
    quietly abolished a feature requirement 18 depends on to avoid full
-   Implementor runs.
+   Implementor runs. `test/enabler-verdicts.test.sh` passes: driving
+   `maybe_run_enabler` itself with an unevidenced `void` verdict produces the
+   same `attempt-failed`, plus an `enabler-examined` event whose `outcome` is
+   `void-refused` — the Enabler's own guarded path, not only the
+   Co-Ordinator's.
 8d. **A `pr-ready` event means the pull request is not a draft (requirement
    31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
    without calling `gh pr ready`; a draft is flipped and reports `flipped`; a
@@ -6451,24 +6564,41 @@ pull request, run the ones the change touches and any it could regress.
 8m. **The closing-keyword check blocks, not just reports (requirement
    25a).** The one piece of requirement 25a that no file in this repository
    carries is the repo setting that makes a red check a blocked merge, so
-   it is verified against GitHub directly rather than by any test here:
-
-   ```
-   gh api repos/Poetic-Poems/agent-ops/rulesets/18857310 \
-     --jq '.rules[] | select(.type == "required_status_checks")
-           | .parameters.required_status_checks[]
-           | select(.context == "closing-keyword")'
-   ```
-
-   prints `{"context": "closing-keyword", "integration_id": 15368}` — the
-   context required by the active `default` ruleset targeting the default
-   branch, pinned to the GitHub Actions app. An entry missing entirely means
-   the check reports without blocking, which is the exact gap PR #256's
-   review caught by hand; an entry without the `integration_id` pin can be
-   satisfied by any GitHub App reporting a check of that name. Nothing in
-   this repository changes when the ruleset does, so this check is manual
-   until a deterministic reader exists (TD-PPagop-26080802 proposes a
-   warn-level `doctor.sh` check).
+   `scripts/doctor.sh` verifies it against GitHub directly, in its GitHub
+   section: it resolves this checkout's own slug (`lib/version.sh`'s
+   `agent_ops_version`), reads `gh api repos/<slug>/rulesets`, and for every
+   active branch ruleset whose `conditions.ref_name.include` names
+   `~DEFAULT_BRANCH` (the active `default` ruleset targeting the default
+   branch), warns unless its `required_status_checks` carries an entry with
+   `context: closing-keyword` and `integration_id: 15368` — the GitHub
+   Actions app every other required context is pinned to. A missing entry
+   warns that the check reports without blocking, the exact gap PR #256's
+   review caught by hand; an entry present without the `integration_id` pin
+   warns that any GitHub App reporting a check of that name could satisfy
+   it; no active branch ruleset targeting the default branch at all warns
+   the same way. The check is read-only, warn-level (the pipeline still
+   runs without it) and runs on every `doctor.sh` invocation, so a ruleset
+   drifting back to report-only surfaces on the next run rather than only
+   when a human reads the repo settings by hand (TD-PPagop-26080802).
+8n. **A claimed item's gone work is caught before the Implementor runs, not
+   inside it (requirement 34m).** `test/preflight.test.sh` passes:
+   `preflight_done_reason` returns the same reason `work_gone_clearances`
+   would give the same item as a blocked entry — a closed issue, a finishing
+   source's closed-or-merged pull request, a register row read `resolved` —
+   and returns nothing for one still open, for a repo the digest never
+   sampled, and for a tech-debt item whose register row pre-flight never
+   fetched (the register map is fetched fresh, per item, only when the source
+   is `tech-debt`; passing none must decide nothing rather than assume open).
+   An ordinary issues/tech-debt item whose own claim branch already carries an
+   open pull request in the pre-claim digest reads as already done too, and a
+   finishing source's own `pr-<n>-…`-shaped item never asks that question — it
+   is already answered by the check above. `preflight_branch_merged_reason`
+   reads `identical`/`behind` from a stubbed `gh api compare` as already
+   merged, `diverged`/`ahead` as still live, and an unreadable or failed
+   comparison as deciding nothing; `preflight_existing_branch_source` is true
+   for exactly `review-feedback`, `merge-conflicts` and `abandoned-drafts`,
+   false for every other source (including one that merely contains one of
+   those names as a substring).
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
@@ -6518,7 +6648,12 @@ pull request, run the ones the change touches and any it could regress.
     `unblocked` verdict's `refined_spec` becomes an `item-refined` event that
     reaches the next cycle's `refinements` map, and a void item's does not; and
     a second refinement of an already-refined item is refused unless a human has
-    just closed an escalation about it. Both directions matter here for the same
+    just closed an escalation about it. `test/enabler-verdicts.test.sh` passes:
+    driving `maybe_run_enabler` itself with an `unblocked` verdict on an item
+    carrying `refined_before` produces no `unblocked` and no `item-refined`
+    event, only a `warning` and an `enabler-examined` event whose `outcome` is
+    `refinement-refused`; the same item with reason `issue-closed` is not
+    refused. Both directions matter here for the same
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
@@ -6615,8 +6750,10 @@ pull request, run the ones the change touches and any it could regress.
     `list` block and a paragraph; a paragraph, a `code` block and a
     paragraph, each over the
     cap — flattens to one space-joined table-cell line (the list's items
-    comma-joined, the code's newlines turned to spaces and backtick-wrapped)
-    and, separately, renders as real block Markdown in the Extended notes
+    comma-joined, the code's newlines turned to spaces and backtick-wrapped,
+    backing off to a wider delimiter with padding spaces when the code
+    itself contains a backtick) and, separately, renders as real block
+    Markdown in the Extended notes
     subsection: a blank line between paragraphs, real `- ` list items, a
     real fenced code block, each still blank-line-separated from its
     neighbours; a `list`-only or `code`-only note under the cap degrades the
