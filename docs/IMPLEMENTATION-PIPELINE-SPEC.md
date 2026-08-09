@@ -1490,7 +1490,16 @@ runs unattended.
      own, non-bot ones — over one broken write step, but that fallback drops
      first-sighting entries too, by the same predicate: a broken nudge step
      must never hand the Co-Ordinator an un-nudged `bot: true` candidate
-     either.
+     either. Taking this fallback is itself logged as a `warning` — the
+     per-candidate loop that would otherwise report a failed post never runs
+     on this path, so without one here a nudge step broken outright (missing,
+     crashed, `jq` unavailable) would silently drop every conflicted
+     Dependabot PR in the repo, every cycle, with no signal anywhere that the
+     feature had stopped working. If the fallback's own filter then fails —
+     the gatherer's array contains a non-object element, which only a
+     malformed gatherer output can produce — it degrades to an empty
+     candidate set for the repo, with a second `warning`, rather than
+     aborting the cycle under `set -euo pipefail`.
    - **Still conflicting a cycle later** (`bot: true`, `rebase_requested:
      true`, no `superseded_by`): a **takeover** candidate. The Co-Ordinator
      may select it, but the work order it constructs sets `"takeover": true`
