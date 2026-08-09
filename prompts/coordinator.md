@@ -449,15 +449,78 @@ candidate in this array permanently unselectable, which reads as correct
 behaviour and quietly means no human review is ever answered.
 
 **Merge conflicts.** The candidates are the pre-fetched `merge_conflicts`
-entries, one per PR of ours that is otherwise ready but conflicts with its base.
-Do not go looking for these yourself: the Script has already applied the rule —
-open, non-draft, ours by label on a branch we own, and `mergeable` definitively
-`CONFLICTING` (never the transient `UNKNOWN`) — and dropped anything still
-mergeable or still being computed. **An entry's presence in this array is the
-candidate test.** If the array is empty, this source has no candidates.
+entries, one per PR that is otherwise ready but conflicts with its base — ours,
+or Dependabot's own. Do not go looking for these yourself: the Script has
+already applied the rule — open, non-draft, `mergeable` definitively
+`CONFLICTING` (never the transient `UNKNOWN`), and either ours by label on a
+branch we own, or Dependabot's own — and dropped anything still mergeable or
+still being computed. **An entry's presence in this array is the candidate
+test.** If the array is empty, this source has no candidates.
 
-When you select one, take the **oldest `updated_at` first** (the array is already
-in that order — that PR has been blocked longest), and:
+An entry carrying `bot: true` is Dependabot's own PR, not ours (requirement
+3s, issue #250), and needs one of three different treatments below —
+**never nudged yet**, **superseded**, or **takeover** — before you ever get
+to the ordinary rebase case. Every entry with `bot` absent or `false` follows
+the ordinary case unchanged.
+
+*Never nudged yet (`bot: true`, `rebase_requested: false`, no
+`superseded_by`).* This system has not yet asked Dependabot to rebase this
+PR — that ask is a write the Script's own gather step makes, not something
+you do, and it may simply not have happened yet this cycle. **Skip it: do
+not select it, and do not add it to `voided`.** It is not a candidate of any
+kind — not ours to rebase (it carries neither our label nor our branch
+prefix, so the ordinary case's `git push --force-with-lease` would be a
+force-push onto a branch Dependabot owns), not superseded, and not yet a
+confirmed takeover. It becomes selectable — as a takeover — only once a later
+cycle reports `rebase_requested: true` for the same head.
+
+*Superseded (`bot: true` and `superseded_by` non-null).* A newer open
+Dependabot PR already bumps the same dependency further, so this one has
+nothing left to do. Do **not** select it and do **not** treat it as a
+takeover. Instead add it to `voided`:
+- `item` is the entry's `ref`.
+- `reason`: one line, e.g. "Dependabot PR #<number> is superseded by a newer
+  bump of the same dependency."
+- `evidence`: the entry's own `superseded_evidence` field, **copied
+  verbatim, unedited**. It is pre-formatted for a reason: it cites this PR's
+  own number (`PR #<number>`), which the Script's void corroboration accepts
+  unconditionally for a `pr-<n>-…` item, and names the newer PR only by URL,
+  never as "PR #<n>" — writing your own sentence that names the superseding
+  PR as "PR #135" (or "pull request #135") will be checked against *that*
+  PR's body and branch for this item's id, which it will never carry, and the
+  void will be refused. Use the field exactly as given.
+This closes PR #<number> automatically once the void is recorded
+(`close-void-github-items.sh`, WI-4's act-on-void path) — there is nothing
+further for you or an Implementor to do.
+
+*Takeover (`bot: true`, `rebase_requested: true`, `superseded_by` null).*
+This system already asked Dependabot to rebase this PR (`@dependabot rebase`,
+posted a full cycle ago) and it is still `CONFLICTING` at the same head —
+Dependabot is not going to resolve it. Construct a work order that takes it
+over:
+- `item` is the entry's `ref`, exactly as for the ordinary case.
+- `takeover: true` — set this field. It tells the Script this is *not* a
+  finish of an existing PR: taking over means a brand-new PR on a brand-new
+  branch, so the Script claims and derives `agent/<ref>` for you the ordinary
+  way (requirement 17a), exactly as it would for any fresh item. **Do not**
+  set `branch` yourself — the Script overwrites whatever you put there.
+- `context` must carry the entry's `body` (Dependabot's own PR description)
+  verbatim, plus its `url`, `number`, `branch` (Dependabot's own — name it as
+  such, so the Implementor knows never to check it out or push to it),
+  `base` and `head_sha`. State plainly that Dependabot's own rebase already
+  failed to resolve this within a cycle, so the Implementor's job is to read
+  the bot PR's diff (`gh pr diff <number>`), recreate the same dependency
+  bump on its own new branch, open a draft PR for it, and close the bot's PR
+  referencing the replacement.
+- `acceptance` is: a new PR exists carrying the same dependency bump (same
+  package, same target version) as the bot's PR, mergeable, CI green, left as
+  a **draft** for the Reviewer (this is fresh work, not a finish); the bot's
+  PR (`number`) is closed with a comment naming the replacement.
+- `model` is always `models.default`: this changes code.
+
+*Ordinary case (every other entry, including `bot: false`).* When you select
+one, take the **oldest `updated_at` first** (the array is already in that
+order — that PR has been blocked longest), and:
 
 - `item` is the entry's `ref` (e.g. `pr-57-conflict-1a2b3c4d5e6f`). Use it
   exactly; it is scoped to this PR's current head on purpose, so a later push
@@ -484,7 +547,8 @@ in that order — that PR has been blocked longest), and:
 `merge_conflicts` candidate. As with the other finishing sources, for this source
 the open PR *is* the item. Applying the claim exclusion would make every candidate
 permanently unselectable while reading as correct behaviour, and quietly mean no
-conflicted PR is ever unblocked.
+conflicted PR is ever unblocked. A `bot: true` entry was never excludable on this
+ground in the first place — it carries neither our label nor our branch prefix.
 
 **Abandoned drafts.** The candidates are the pre-fetched `abandoned_drafts`
 entries, one per draft PR of ours that has stalled. Do not go looking for these
@@ -997,7 +1061,14 @@ the list, and one strong candidate alone is a perfectly good list.
 - For a `merge-conflicts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor rebases that existing PR onto its base and resolves
-  the conflict instead of opening one.
+  the conflict instead of opening one. **Exception:** a Dependabot takeover (the
+  entry carries `bot: true` and `rebase_requested: true`, and no
+  `superseded_by`) instead carries `"takeover": true` and omits `branch`
+  entirely — see "Merge conflicts" above. A superseded Dependabot entry
+  (`superseded_by` non-null) never becomes a candidate at all; it belongs in
+  `voided`. A never-nudged Dependabot entry (`bot: true`,
+  `rebase_requested: false`, no `superseded_by`) never becomes a candidate
+  either — skip it, it is not a void.
 - For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor finishes that existing draft PR instead of opening

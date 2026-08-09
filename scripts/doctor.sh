@@ -49,6 +49,8 @@ source "$SCRIPT_DIR/lib/model-id.sh"
 source "$SCRIPT_DIR/lib/labels.sh"
 # shellcheck source=lib/fleet.sh
 source "$SCRIPT_DIR/lib/fleet.sh"
+# shellcheck source=lib/version.sh
+source "$SCRIPT_DIR/lib/version.sh"
 # shellcheck source=lib/stage-budget.sh
 source "$SCRIPT_DIR/lib/stage-budget.sh"
 
@@ -525,6 +527,41 @@ if ((gh_ready)); then
     else
       fail "enabler_assignee @$enabler_assignee is not a GitHub account — its escalations would be raised unassigned, and the pipeline could then select them as work"
     fi
+  fi
+
+  # closing-keyword.yml (requirement 25a) goes red on a non-conforming PR,
+  # but only this repository's own branch ruleset — a setting outside any
+  # file here — turns that red into a blocked merge. A ruleset drifting back
+  # to report-only is invisible to every file this repository carries, which
+  # is exactly the gap PR #256's review fell into (issue #240): the workflow
+  # existed and was green, and the ruleset silently did not require it.
+  # TD-PPagop-26080802, replacing acceptance check 8m's manual `gh api` read.
+  self_repo="$(jq -r '.repo // empty' <<<"$(agent_ops_version "$SCRIPT_DIR")" 2>/dev/null)"
+  if [[ -z "$self_repo" ]]; then
+    skip "closing-keyword ruleset enforcement — cannot determine this repository's own slug (no build-info.json, no git remote)"
+  elif ! rulesets_json="$(gh api "repos/$self_repo/rulesets" 2>/dev/null)"; then
+    skip "closing-keyword ruleset enforcement — repos/$self_repo/rulesets is not reachable with this token"
+  else
+    found_default_ruleset=0
+    while IFS= read -r ruleset_id; do
+      [[ -n "$ruleset_id" ]] || continue
+      ruleset_detail="$(gh api "repos/$self_repo/rulesets/$ruleset_id" 2>/dev/null)" || continue
+      [[ "$(jq -r '(.conditions.ref_name.include // []) | any(. == "~DEFAULT_BRANCH")' <<<"$ruleset_detail" 2>/dev/null)" == "true" ]] \
+        || continue
+      found_default_ruleset=1
+      ruleset_name="$(jq -r '.name' <<<"$ruleset_detail")"
+      required_entry="$(jq -c '[.rules[]? | select(.type == "required_status_checks")
+                                | .parameters.required_status_checks[]?
+                                | select(.context == "closing-keyword")] | .[0] // empty' <<<"$ruleset_detail" 2>/dev/null)"
+      if [[ -z "$required_entry" ]]; then
+        warn "$self_repo's \"$ruleset_name\" branch ruleset does not require \"closing-keyword\" — the check reports without blocking the merge, the exact gap requirement 25a exists to close (issue #240)"
+      elif [[ "$(jq -r '.integration_id' <<<"$required_entry")" != "15368" ]]; then
+        warn "$self_repo's \"$ruleset_name\" branch ruleset requires \"closing-keyword\" without pinning integration_id 15368 — any GitHub App reporting a check of that name could satisfy it"
+      else
+        ok "$self_repo's \"$ruleset_name\" branch ruleset requires \"closing-keyword\", pinned to integration_id 15368 (requirement 25a)"
+      fi
+    done < <(jq -r '.[] | select(.target == "branch" and .enforcement == "active") | .id' <<<"$rulesets_json" 2>/dev/null)
+    ((found_default_ruleset)) || warn "$self_repo has no active branch ruleset targeting the default branch — closing-keyword (requirement 25a) is not enforced by any ruleset"
   fi
 fi
 

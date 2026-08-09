@@ -128,6 +128,12 @@ The work order carries `pr_url`, `pr_number` and `base` alongside the usual
 fields, and `branch` names the existing branch. Your job is narrow: make it
 mergeable again, and nothing more.
 
+**If this work order carries `"takeover": true`, stop here and skip to
+"Dependabot takeover" below instead.** Everything from this point to that
+heading describes rebasing an existing PR of *ours* — a takeover names
+Dependabot's own PR, which this system never rebases or force-pushes, and none
+of the "branch and PR already exist" instructions below apply to it.
+
 - **Do not open a pull request, and do not create a branch.** `git fetch origin`
   and `git checkout` the work order's `branch` (it is on the remote already). The
   PR is already the claim; it has been there since the cycle that raised it.
@@ -166,6 +172,48 @@ mergeable again, and nothing more.
   way and the PR is now redundant), report `void` with evidence: the PR already
   exists, so the "a void item should not have a PR" rule below does not bind, and
   a human can close the stale PR.
+
+#### Dependabot takeover (`"takeover": true`)
+
+The work order's `context` still carries a PR's own description, `url`,
+`number`, `branch`, `base` and `head_sha` — but this time they describe
+**Dependabot's** pull request, not one of ours. This system already asked
+Dependabot to rebase it (`@dependabot rebase`, posted a full cycle ago) and it
+is still `CONFLICTING` at the same head: Dependabot is not going to resolve
+this one itself. Your job is to recreate its bump on a branch of ours and
+retire the bot's PR.
+
+- **This is ordinary new work, not a finish.** Unlike every other case in this
+  section, `branch` here is a **new** branch the Script has already created and
+  claimed for you — the ordinary claim, `agent/<ref>`. Procedure steps 1–2
+  apply exactly as for any fresh item: `git checkout` your claimed branch and
+  open a **draft** pull request before you touch any file.
+- **Read the bot's diff, not its branch.** `gh pr diff <number>` (the work
+  order's `pr_number`) shows exactly what Dependabot changed — which manifest
+  and lockfile lines, from which version to which. Reproduce that same change
+  on your branch. **Never check out or push to the bot's own branch** (the
+  `branch` named in `context`) — it belongs to Dependabot, not to you; taking
+  over in a new PR instead of forcing the bot's is the whole point of this
+  path, and a stray push to its branch defeats it.
+- **Verify like CI does** (Procedure step 4) — the same lint/typecheck/format/
+  test/build the bot's own PR would have needed to pass.
+- **Close the bot's PR once your replacement is up and green:**
+  `gh pr close <number> --comment "…"`, naming your new PR and explaining
+  briefly that Dependabot's own rebase did not resolve the conflict within a
+  cycle, so this system took the bump over. Open the comment with
+  `pipeline_comment_header`'s form and close it with
+  `pipeline_comment_marker`'s, exactly as any other comment this prompt has you
+  post (see "Cycle"/"Node" at the top).
+- **Leave your new PR a draft.** This rejoins the ordinary flow: the Reviewer
+  stage flips it to ready, same as any fresh item.
+- **`acceptance`** is: your branch carries the same dependency bump the bot PR
+  did (same package, same target version), it is mergeable with CI green, and
+  the bot's PR (`number`) is closed referencing yours. There is no tech-debt
+  record or issue to close — a Dependabot bump has neither.
+- If the bot PR turns out to already be resolved on its own — Dependabot
+  quietly rebased it between the last check and now, or a human merged it —
+  report `void`: there is nothing to take over. Since no PR of ours exists yet
+  at that point, the "a void item should not have a PR" rule applies normally.
 
 ### When `source` is `abandoned-drafts`
 
@@ -298,7 +346,10 @@ Both target repos follow these rules:
 *(Steps 1 and 2 do not apply when `source` is `review-feedback`,
 `merge-conflicts`, or `abandoned-drafts` — the branch and the PR already exist.
 Check out the work order's `branch` and go straight to step 3, following the
-matching "When `source` is …" section above.)*
+matching "When `source` is …" section above. **Exception:** a `merge-conflicts`
+work order carrying `"takeover": true` names Dependabot's PR, not one of ours —
+steps 1 and 2 apply to it exactly as to any fresh item; see "Dependabot
+takeover" above.)*
 
 1. **Branch.** The branch named in the work order **already exists on
    origin** — the Script created it at `default_branch`'s head as this
@@ -501,6 +552,10 @@ matching "When `source` is …" section above.)*
    base has moved and the "When `source` is `merge-conflicts`" section above is
    how you resolve it. Afterwards `mergeable` should read true again; leave the PR
    in the **ready** state it was already in, neither drafting nor merging it.
+   *Exception — a Dependabot takeover (`"takeover": true`):* your PR is new, so
+   this step is the ordinary case, not the exception above — verify it the same
+   way any fresh item's PR is verified, and leave it a **draft** for the
+   Reviewer, per "Dependabot takeover" above.
 7. **Grade the complexity, and label the PR with it.** Now that the work is
    done, grade it `low`, `medium` or `high` — against what the diff touches,
    never against how difficult it felt. The misjudged change feels easy, and
