@@ -5221,10 +5221,14 @@ What exists, and the requirements each part answers to:
     fenced example, `lang` optional) — falling back to `description` when the
     key carries no `x-docs` for that audience. A cell holds one line, so every
     block flattens into it: a paragraph verbatim, a list's items joined `, `,
-    code's newlines turned to spaces and wrapped in one backtick span, each
-    block joined to the next by a single space — the same join a plain array
-    of paragraph strings always got, and what a single string (a one-block
-    array) already renders as unchanged.
+    code's newlines turned to spaces and wrapped in a backtick span whose
+    delimiter backs off to the code's own content — the widest run of
+    consecutive backticks already in the code, plus one, the same rule
+    CommonMark itself uses for nesting a code span inside a code span — with
+    a leading and trailing space added if the code starts or ends with a
+    backtick, each block joined to the next by a single space — the same
+    join a plain array of paragraph strings always got, and what a single
+    string (a one-block array) already renders as unchanged.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
     `id=review` … `<!-- config-table:end -->`) in place with no arguments.
     Each region's first two lines, immediately after the start marker, are a
@@ -6421,8 +6425,10 @@ pull request, run the ones the change touches and any it could regress.
     `list` block and a paragraph; a paragraph, a `code` block and a
     paragraph, each over the
     cap — flattens to one space-joined table-cell line (the list's items
-    comma-joined, the code's newlines turned to spaces and backtick-wrapped)
-    and, separately, renders as real block Markdown in the Extended notes
+    comma-joined, the code's newlines turned to spaces and backtick-wrapped,
+    backing off to a wider delimiter with padding spaces when the code
+    itself contains a backtick) and, separately, renders as real block
+    Markdown in the Extended notes
     subsection: a blank line between paragraphs, real `- ` list items, a
     real fenced code block, each still blank-line-separated from its
     neighbours; a `list`-only or `code`-only note under the cap degrades the
