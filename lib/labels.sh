@@ -69,6 +69,8 @@ labels_catalogue() {
                "Raised by the Enabler: a blocked item that needs a human"),
          entry(.needs_refinement_label; "fbca04";
                "Too under-specified to work on; say what done looks like"),
+         entry(.refined_label; "0e8a16";
+               "The Refiner has written this a specification"),
          entry(.unvoid_label; "0e8a16";
                "Apply to ask the pipeline to reconsider an item it voided"),
          entry("blocked"; "d93f0b";

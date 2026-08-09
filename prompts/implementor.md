@@ -652,6 +652,29 @@ described. Do not edit the issue's body to add this; a comment is enough, and
 the item still needs your `reason` and `unblock_condition` above regardless —
 this is in addition to them, not instead.
 
+**If instead the work order itself is the problem** — you started, and the
+brief does not say enough to build against: no acceptance criterion you can
+find, a scope so vague two different implementations would both satisfy it, an
+"acceptance" that contradicts the item's own body — that is not `blocked`.
+`blocked` says something *in the world* is in your way; this says the
+*specification* is. Report `needs-refinement` instead:
+
+```json
+{"status": "needs-refinement", "reason": "one line: why the spec fails the bar", "missing": "what a selectable version would need — acceptance criteria, a scope bound, a reproduction…", "evidence": "what you actually read"}
+```
+
+This is the escape hatch, not a way to avoid a hard item — an item that is
+merely difficult, or where the work itself is large, is still `complete` (or
+`blocked` on something real) once you have done the reading a competent
+Implementor would. Reach for this only when you are certain nobody has written
+down what "done" means here, not when you would simply have preferred more
+detail. The Script records it exactly like a Co-Ordinator's own
+`needs_refinement` report — the item is blocked, a human or the pipeline's own
+Refiner can act on it, and it returns to the pool once they have. If the item
+was carrying a `refined` mark already, this verdict clears it: a refinement
+that led here was not good enough, and the next attempt should not be handed
+the same one unchanged.
+
 If instead there is **no work to do** — the work order's premise is false —
 report `void`, not `blocked`. Overwhelmingly the common case: the item is
 already done on `default_branch`, because it was fixed by a direct commit or

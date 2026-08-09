@@ -314,11 +314,20 @@ open_blocked_items() {
 # exist is worse than none: it would arrive in the Co-Ordinator's input arguing,
 # in detail and in the pipeline's own voice, for an item requirement 34c says
 # must never be selected again.
+#
+# A refinement is also dropped once a *fresher* needs-refinement block stands
+# against the same item — the Implementor's escape hatch (requirement 9f) or a
+# further Refiner decline (requirement 39d) saying the specification it names
+# was tried and found wanting. Comparing timestamps rather than existence alone
+# is what lets the item be refined again afterwards: a later `item-refined`
+# clears an older block exactly the way `unblocked` already does, and this rule
+# must not re-shadow that recovery.
 # shellcheck disable=SC2016  # jq's $set/$clear/$r, not the shell's.
 REFINEMENTS_MAP_JQ='
   def latest_unresolved($set; $clear): '"$LATEST_UNRESOLVED_JQ"';
   . as $all
   | ($all | latest_unresolved("item-void"; "unvoided")) as $void
+  | ($all | latest_unresolved("attempt-failed"; "unblocked")) as $blocked
   | [ $all[]
       | select(.event == "item-refined"
                and (.item // "") != "" and (.repo // "") != "")
@@ -326,6 +335,12 @@ REFINEMENTS_MAP_JQ='
       | select($void
                | any((.item // "") == ($r.item // "")
                      and ((.repo // "") == "" or (.repo // "") == ($r.repo // "")))
+               | not)
+      | select($blocked
+               | any((.kind // "") == "needs-refinement"
+                     and (.item // "") == ($r.item // "")
+                     and ((.repo // "") == "" or (.repo // "") == ($r.repo // ""))
+                     and (((.ts // "") > ($r.ts // ""))))
                | not) ]
   | sort_by(.ts)
   | reduce .[] as $r ({};

@@ -136,14 +136,23 @@ heading, the Script gives you one JSON object:
   describe **no work at all** — the premise was false, almost always because the
   work was already done on the default branch. Skip them, and see "Void items"
   below: unlike `blocked`, **you may never clear these**.
-- `refinements` is what the Enabler has already settled about items that were
-  once too under-specified to select, keyed by repo and then by item. An entry
-  with a `spec` carries the specification itself, because that item type
-  (tech-debt, a review recommendation, a plan task) has no thread to write it
-  into; an entry with a `comment_url` is a pointer to a comment on the issue,
-  where the refinement already lives in the thread you would read anyway. Look
-  the item up here before you decide it is under-specified, and see "Items that
-  have been refined" below for what to do with what you find.
+- `refinements` is what the Enabler or the Refiner has already settled about an
+  item — one that was once too under-specified to select, or one the Refiner
+  wrote a specification for before it ever needed to be — keyed by repo and
+  then by item. An entry with a `spec` carries the specification itself,
+  because that item type (tech-debt, a review recommendation, a plan task) has
+  no thread to write it into; an entry with a `comment_url` is a pointer to a
+  comment on the issue, where the refinement already lives in the thread you
+  would read anyway. Look the item up here before you decide it is
+  under-specified, and see "Items that have been refined" below for what to do
+  with what you find.
+- `refinement_policy` says, per source, whether an unrefined item from it may
+  be selected at all: `"required"` (never), `"preferred"` (rank a refined item
+  ahead of an equivalent unrefined one, but you may still select an unrefined
+  one on your own judgement), or `"exempt"` (the source already carries its own
+  specification — a merge conflict, a review comment — and this dimension does
+  not apply). A source absent from this object is `exempt`. See "Items that
+  have been refined" below for exactly how this shapes ranking.
 - `claimed` is the fleet's active claims, gathered fresh by the Script
   immediately before this cycle: registry entries younger than
   `claim_ttl_hours` (covering both the branch claims ordinary items use and
@@ -752,6 +761,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    meet the bar. Decisions belong to the human; never guess one on their
    behalf, and never treat "I could pick a reasonable default" as grounds to
    proceed. Skip it and **report it** in `needs_refinement`.
+7. Unrefined (absent from `refinements`) from a source whose
+   `refinement_policy` is `"required"` (see "Per-source refinement policy"
+   below). Skip it and move on — **do not** report it in `needs_refinement`:
+   there is nothing wrong with the item and nothing for a human to add, only
+   an engagement the Refiner has not reached yet.
 
 **From the remaining candidates**, rank the qualifying items best-first and
 return up to `candidates_max` of them (see "Output"). Each must be a
@@ -947,8 +961,9 @@ anything — as everywhere else here, you report and the Script writes.
 ## Items that have been refined
 
 When `refinements` names an item you are about to put in a work order, the
-pipeline has already paid an expensive model to work out what it means. Carry
-that across:
+pipeline has already paid a model — the Enabler unblocking it, or the cheaper
+Refiner working it before it was ever a candidate — to work out what it means.
+Carry that across:
 
 - **An entry with a `spec`** — a tech-debt row, a review recommendation, a plan
   task — must be pasted **verbatim** into the work order's `context`, alongside
@@ -960,11 +975,42 @@ that across:
   `issues` rules under "Output"). Just make sure the comment is actually in
   what you paste, and set `acceptance` from it: it is the current instruction,
   later than the body.
-- A refined item is an ordinary candidate in every other respect. Rank it on
-  its merits, and if it *still* reads as under-specified to you, say so in
-  `needs_refinement` — but expect that to be settled by a human rather than by
-  another refinement, because the pipeline refines an item once between human
-  touches.
+- Rank a refined item on its merits, and if it *still* reads as under-specified
+  to you, say so in `needs_refinement` — but expect that to be settled by a
+  human rather than by another refinement, because the pipeline refines an
+  item once between human touches.
+
+## Per-source refinement policy
+
+`refinement_policy` (in the runtime input, described under "What you receive
+at invocation") gates whether an *unrefined* item — one `refinements` names
+nothing for — may reach a work order at all, per its source:
+
+- **`"required"`** — never select it. Skip the item entirely: this is not the
+  under-specification failure "Reporting an under-specified item" describes
+  (there is nothing wrong with the item, and nothing for a human to add), so it
+  does **not** go in `needs_refinement` either — it is simply not yet the
+  Refiner's turn, and reporting it would apply the wrong label to something no
+  one needs to act on. Move to the next candidate.
+- **`"preferred"`** — no hard exclusion, but where two otherwise-equal
+  candidates from the same source compete for a slot, the refined one wins.
+  You may still select an unrefined item on your own judgement — this policy
+  is a thumb on the scale, not a gate — and requirement 34e's ordinary
+  "adequately refined" bar still applies exactly as it does for any candidate:
+  if you cannot tell what "done" would mean, that is `needs_refinement`,
+  unrefined or not.
+- **`"exempt"`**, or a source `refinement_policy` does not name — this
+  dimension does not apply. Rank the item exactly as you always have.
+
+A source's policy binds only what `refinement_policy` says about that source;
+it says nothing about whether the Refiner will ever actually reach an
+unrefined item there (its own engagement only gathers candidates from the
+sources the Script pre-fetches as structured data — `issues`, `security`,
+`code-quality`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`,
+`register-hygiene`). A `"required"` policy on `tech-debt`, `project-review` or
+`implementation-plan` is honoured here exactly the same way, but nothing
+proactively refines those items yet — an installation setting one should know
+its unrefined items there will simply wait.
 
 ## Choosing the Implementor's model
 
