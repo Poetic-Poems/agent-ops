@@ -424,8 +424,17 @@ new_home() {  # new_home <name> -> prints a throwaway node HOME
 
 run_node() {  # run_node <home> <script> [args…]
   local home="$1" script="$2"; shift 2
+  # DASHBOARD_GH_CMD: agent-cycle.sh's --disable/--enable/--clear-limit paths
+  # end in refresh_dashboard(), which shells out to publish-dashboard.sh as a
+  # separate process — TOGGLE_GH's PATH-independent stub reaches every other
+  # `gh` call this section makes, but not that one, since publish-dashboard.sh
+  # resolves `gh` through this seam instead of PATH (see its own PATH comment).
+  # Left unset, that call reaches the real `gh` and the real network the rest
+  # of this section is built to avoid (TD-PPagop-26080701). $stub_bin/gh's
+  # unconditional `exit 1` is exactly the "fail fast" this offline e2e wants.
   env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
     PATH="$stub_bin:$PATH" TOGGLE_GH="$gh_stub" GH_STUB_BACKING="$gh_backing" \
+    DASHBOARD_GH_CMD="$stub_bin/gh" \
     CLAIM_GH=/bin/false STATE_SYNC_REMOTE="$state_remote" \
     GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" \
     "$SCRIPT_DIR/$script" "$@"

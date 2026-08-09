@@ -11,6 +11,11 @@ set -euo pipefail
 ORIGINAL_ARGV=("$@")
 
 # --- PATH: cron's environment is minimal; make sure claude, gh, git, jq resolve. ---
+# Appended, not prepended: an already-resolvable PATH entry — a caller's own
+# shim, e.g. test/toggle.test.sh's offline-e2e stub_bin — must win over these
+# fallbacks, or a subprocess of this script (the 2.1b usage-limit probe is the
+# one that actually does this) silently reaches a real `claude`/`gh` instead
+# of the stub standing in for them (TD-PPagop-26080701).
 nvm_bin=""
 if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
   # shellcheck disable=SC1091
@@ -19,7 +24,7 @@ if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
 fi
 path_dirs=(/usr/local/bin /usr/bin /bin "$HOME/.local/bin" "$HOME/.claude/local")
 [[ -n "$nvm_bin" ]] && path_dirs+=("$nvm_bin")
-PATH="$(IFS=:; echo "${path_dirs[*]}"):$PATH"
+PATH="$PATH:$(IFS=:; echo "${path_dirs[*]}")"
 export PATH
 
 for bin in claude gh git jq sha256sum; do
