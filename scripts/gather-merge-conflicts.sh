@@ -2,17 +2,20 @@
 #
 # gather-merge-conflicts.sh — pre-fetch a repo's pull requests that are otherwise
 # ready for review or ready to merge but blocked by a conflict with their base
-# (requirement 3g).
+# (requirement 3g), plus Dependabot's own conflicted bumps (requirement 3s,
+# issue #250).
 #
 # Given a repo slug, print a JSON array of merge-conflict candidates: open,
-# *non-draft* PRs this system raised whose `mergeable` is definitively
-# CONFLICTING. Each is finished-looking work that a human is (implicitly or
-# explicitly) waiting to land, held up only by the base branch having advanced
-# underneath it — a rebase-and-resolve away from mergeable again.
+# *non-draft* PRs whose `mergeable` is definitively CONFLICTING, and which are
+# either ours (this system raised them) or Dependabot's own. Each is
+# finished-looking work that a human is (implicitly or explicitly) waiting to
+# land, held up only by the base branch having advanced underneath it — a
+# rebase-and-resolve away from mergeable again, or (for Dependabot's own PRs,
+# which this system does not force-push) a bot-aware nudge-then-takeover away.
 #
 # Usage: gather-merge-conflicts.sh <owner/repo> <pr-label> <branch-prefix>
 #
-# Candidate shape:
+# Candidate shape (our own PRs):
 #   {
 #     "source": "merge-conflicts",
 #     "ref": "pr-57-conflict-1a2b3c4d5e6f", // stable, and scoped to THIS head
@@ -26,8 +29,24 @@
 #     "item": "TD26072001",                  // the originating item, if inferable
 #     "head_sha": "1a2b3c4d5e6f…",
 #     "updated_at": "2026-07-24T03:00:00Z",
-#     "body": "…the PR's own description, verbatim…"
+#     "body": "…the PR's own description, verbatim…",
+#     "bot": false
 #   }
+#
+# A Dependabot candidate carries the same shape plus three fields
+# (requirement 3s):
+#   "bot": true,
+#   "rebase_requested": false,   // has this system already asked Dependabot
+#                                 // to rebase THIS head, and it is still
+#                                 // conflicting? (a marker comment, scoped to
+#                                 // the head SHA — see lib/dependabot-bump.sh)
+#   "superseded_by": null        // another open Dependabot PR's number, when
+#                                 // it bumps the same dependency to a newer
+#                                 // version than this one — this PR is moot
+#   "superseded_evidence": null  // present only when superseded_by is —
+#                                 // pre-formatted, corroboration-safe evidence
+#                                 // text a Co-Ordinator can copy verbatim into
+#                                 // a `voided` entry (see the note below)
 #
 # ## Why the Script fetches this and not the Co-Ordinator
 #
@@ -46,25 +65,51 @@
 #
 # ## The candidate rule
 #
-# A PR is a candidate iff all of:
-#   - it is open and **not** a draft. A draft is the Implementor's own claim
-#     marker (requirement 23); a draft's conflict is finished by abandoned-drafts
-#     (which resolves the conflict as part of finishing the draft) if the draft
-#     has gone stale, never here. This source is only for PRs that are otherwise
-#     *ready* — for review or for merge — where the sole blocker is the conflict.
-#   - it carries <pr-label> and its head branch starts with <branch-prefix> (or
-#     `td/`, the tech-debt claim branch) — i.e. this system raised it. The Human
-#     Gate reserves every other branch for humans; force-pushing a rebase onto a
-#     human's PR because it had drifted would be a memorable way to learn that.
-#   - its `mergeable` is exactly `CONFLICTING`. Not `UNKNOWN` — GitHub computes
-#     mergeability asynchronously, so a PR whose base has just moved reports
-#     UNKNOWN for a beat before it resolves to CONFLICTING or MERGEABLE. Treating
-#     UNKNOWN as a conflict would send the Implementor to rebase a PR that may not
-#     even conflict; treating it as a candidate at all is guessing. So UNKNOWN is
-#     skipped and the PR is reconsidered next cycle, by which point GitHub has
-#     settled the answer — and because the candidate array is fingerprinted
-#     (below), the flip to CONFLICTING busts the fingerprint and wakes the cycle
-#     even if nothing else moved.
+# A PR is a candidate iff it is open, **not** a draft, and `mergeable` is
+# exactly `CONFLICTING` (never the transient `UNKNOWN` — GitHub computes
+# mergeability asynchronously, so a PR whose base just moved reads UNKNOWN for
+# a beat; treating that as a conflict would send the Implementor to rebase a
+# PR that may not even conflict), and either:
+#   - **ours**: it carries <pr-label> and its head branch starts with
+#     <branch-prefix> (or `td/`, the tech-debt claim branch) — i.e. this
+#     system raised it. The Human Gate reserves every other branch for
+#     humans; force-pushing a rebase onto a human's branch because it had
+#     drifted would be a memorable way to learn that. Or,
+#   - **Dependabot's own**: its author is `app/dependabot`
+#     (`$DEPENDABOT_LOGIN`, lib/dependabot-bump.sh). Dependabot's branches
+#     carry neither <pr-label> nor <branch-prefix> — they are the bot's, not
+#     ours — so this half of the rule is authorship-based, not label-based.
+#     This system never force-pushes a Dependabot branch (see
+#     scripts/nudge-dependabot-rebase.sh); a `bot` candidate's `branch`
+#     stays the bot's own, informational only.
+#
+# ## Rebase-requested and supersession, for a `bot` candidate
+#
+# `rebase_requested` is read, never written, here: it is true iff a comment
+# already on the PR carries `dependabot_rebase_marker` for *this exact* head
+# SHA (12 hex chars) — the same scoping the `ref` below uses, so a rebase that
+# actually moves the head (successful or not) retires the old marker's
+# relevance and a fresh conflict at the same head still matches the marker
+# already there instead of asking again. scripts/nudge-dependabot-rebase.sh is
+# what posts that comment and only for a candidate this script reports
+# `rebase_requested: false` for — one definition of the rule (requirement
+# 34a), read by one script and acted on by the other.
+#
+# `superseded_by` compares this PR's Dependabot branch against every other
+# open Dependabot PR in the same read (`dependabot_newer_open_pr`,
+# lib/dependabot-bump.sh): same family (dependency + package manager, read off
+# the branch name), strictly newer target version. When set, `superseded_evidence`
+# is pre-formatted so a Co-Ordinator can paste it into a `voided` entry's
+# `evidence` **verbatim** rather than composing its own citation: the guard
+# that corroborates a void (lib/void-guard.sh) treats "PR #N" in evidence text
+# as a claim that PR *implements* the item, and checks the cited PR's body and
+# branch for the item's own id — which the superseding PR will never carry
+# (it is a different, independent bump). Citing this PR's *own* number is what
+# the guard already trusts unconditionally for a `pr-<n>-…` item (its id is
+# minted from that very PR), so the pre-formatted text below cites this PR's
+# number for that reason and names the superseding PR only by URL, never as
+# "PR #N" — precise, not evasive: the claim being corroborated is "this PR
+# (its own number) is superseded", not "that PR did this PR's work".
 #
 # ## Why mergeability must be sampled here, and fed to the fingerprint verbatim
 #
@@ -84,6 +129,13 @@
 # the cycle mergeability resolves to CONFLICTING, and that busts the fingerprint.
 # Same shape as abandoned-drafts' clock-based candidacy. See lib/noop-skip.sh.
 #
+# A `bot` candidate's `rebase_requested` flip (false -> true, the cycle after
+# scripts/nudge-dependabot-rebase.sh posts its comment) is exactly the same
+# kind of transition: no commit lands, `updatedAt` barely moves, but the
+# candidate becomes a *takeover* candidate the Co-Ordinator can select. Reading
+# this array here, unconditionally, every cycle, is what makes both transitions
+# visible to the no-op fingerprint.
+#
 # ## Why the ref is scoped to the head SHA
 #
 # `pr-<n>-conflict-<head-sha>`, not `pr-<n>-conflict`. An item recorded blocked
@@ -102,8 +154,16 @@
 # conflicted PRs contributes `[]`; an API that will not answer contributes `[]`
 # too (the source simply does not fire this cycle) — but note gather-source-state.sh
 # must NOT be so relaxed about the same PRs, for the reason it documents.
+#
+# Environment: MERGE_CONFLICTS_GH overrides `gh` (tests stub it).
 
 set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+GH="${MERGE_CONFLICTS_GH:-gh}"
+
+# shellcheck source=lib/dependabot-bump.sh
+. "$SCRIPT_DIR/lib/dependabot-bump.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -122,24 +182,37 @@ fi
 # exactly (never UNKNOWN — see the header). Heads may be `agent/…` or — for
 # tech-debt items, whose claim branch is the human protocol's own `td/<ID>` —
 # `td/…`; the label filter is the primary "ours" signal either way.
-prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+ours="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
         --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body \
         --jq "[.[] | select(.isDraft | not)
                    | select(.mergeable == \"CONFLICTING\")
                    | select((.headRefName | startswith(\"$branch_prefix\"))
                             or (.headRefName | startswith(\"td/\")))]" \
         || true)"
-if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
-  printf '[]'
-  exit 0
-fi
+jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
+
+# Dependabot's whole active-bump set for this repo, every mergeable state, read
+# once: the CONFLICTING ones below become candidates, and the full set is what
+# decides whether one of them has been superseded by a later bump of the same
+# dependency (lib/dependabot-bump.sh's `dependabot_newer_open_pr`). `comments`
+# is fetched here (and nowhere in the `ours` call above) purely to compute
+# `rebase_requested` — our own PRs have no such field to read.
+dependabot_open="$("$GH" pr list -R "$slug" --state open --author "$DEPENDABOT_LOGIN" \
+        --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body,comments \
+        || true)"
+jq -e 'type == "array"' <<<"$dependabot_open" >/dev/null 2>&1 || dependabot_open='[]'
+
+bot_conflicts="$(jq -c '[.[] | select(.isDraft | not) | select(.mergeable == "CONFLICTING")]' \
+                 <<<"$dependabot_open" 2>/dev/null || echo '[]')"
 
 out='[]'
-while IFS= read -r pr; do
-  [[ -n "$pr" ]] || continue
+
+emit() {  # <pr-json> <bot: true|false>
+  local pr="$1" bot="$2" number head_sha item cand
+  local rebase_requested="false" superseded_by="" superseded_evidence=""
   number="$(jq -r '.number' <<<"$pr")"
   head_sha="$(jq -r '.commits[-1].oid // ""' <<<"$pr")"
-  [[ -n "$head_sha" ]] || continue
+  [[ -n "$head_sha" ]] || return 0
 
   # The originating item, so the Implementor can find the tech-debt entry, issue,
   # or finding this PR came from. Best-effort: a ref in the branch name or body.
@@ -149,11 +222,32 @@ while IFS= read -r pr; do
           | grep -oiE '\b(TD[0-9]{8}|dependabot-alert-[0-9]+|code-scanning-alert-[0-9]+|review-[0-9]{4}-[0-9]{2}-[0-9]{2}-R-?[0-9]+)\b' \
           | head -n1 || true)"
 
+  if [[ "$bot" == "true" ]]; then
+    if jq -e --arg m "$(dependabot_rebase_marker "${head_sha:0:12}")" \
+         '(.comments // []) | any((.body // "") | contains($m))' <<<"$pr" >/dev/null 2>&1; then
+      rebase_requested="true"
+    fi
+    superseded_by="$(dependabot_newer_open_pr "$number" "$(jq -r '.headRefName' <<<"$pr")" "$dependabot_open")"
+    if [[ -n "$superseded_by" ]]; then
+      local sup_url sup_head family version sup_version
+      sup_url="$(jq -r --arg n "$superseded_by" '.[] | select((.number|tostring) == $n) | .url' <<<"$dependabot_open")"
+      sup_head="$(jq -r --arg n "$superseded_by" '.[] | select((.number|tostring) == $n) | .headRefName' <<<"$dependabot_open")"
+      family="$(dependabot_bump_family "$(jq -r '.headRefName' <<<"$pr")")"
+      version="$(dependabot_bump_version "$(jq -r '.headRefName' <<<"$pr")")"
+      sup_version="$(dependabot_bump_version "$sup_head")"
+      superseded_evidence="PR #${number}'s own branch (${family} at ${version}) is superseded: a newer open Dependabot pull request, ${sup_url}, bumps the same dependency to ${sup_version}. Both cannot land — the older bump (this PR) is redundant now that the newer one exists."
+    fi
+  fi
+
   cand="$(jq -nc \
     --argjson pr "$pr" \
     --arg ref "pr-${number}-conflict-${head_sha:0:12}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
+    --argjson bot "$bot" \
+    --argjson rebase_requested "$rebase_requested" \
+    --arg superseded_by "$superseded_by" \
+    --arg superseded_evidence "$superseded_evidence" \
     '{source: "merge-conflicts",
       ref: $ref,
       number: $pr.number,
@@ -166,9 +260,25 @@ while IFS= read -r pr; do
       item: (if $item == "" then null else $item end),
       head_sha: $head_sha,
       updated_at: $pr.updatedAt,
-      body: ($pr.body // "")}')"
+      body: ($pr.body // ""),
+      bot: $bot}
+      + (if $bot then {
+           rebase_requested: $rebase_requested,
+           superseded_by: (if $superseded_by == "" then null else ($superseded_by | tonumber) end),
+           superseded_evidence: (if $superseded_evidence == "" then null else $superseded_evidence end)
+         } else {} end)')"
   out="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$out")"
-done < <(jq -c '.[]' <<<"$prs" 2>/dev/null || true)
+}
+
+while IFS= read -r pr; do
+  [[ -n "$pr" ]] || continue
+  emit "$pr" false
+done < <(jq -c '.[]' <<<"$ours" 2>/dev/null || true)
+
+while IFS= read -r pr; do
+  [[ -n "$pr" ]] || continue
+  emit "$pr" true
+done < <(jq -c '.[]' <<<"$bot_conflicts" 2>/dev/null || true)
 
 # Longest-waiting first: the PR that has been sitting conflicted longest (oldest
 # `updated_at`) goes first, so the work a human has been blocked on longest clears
