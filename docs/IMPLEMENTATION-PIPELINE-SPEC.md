@@ -6053,7 +6053,11 @@ pull request, run the ones the change touches and any it could regress.
    must list the item as blocked rather than void. The negative matters as
    much — assert a well-formed void is still recorded, or the guard has
    quietly abolished a feature requirement 18 depends on to avoid full
-   Implementor runs.
+   Implementor runs. `test/enabler-verdicts.test.sh` passes: driving
+   `maybe_run_enabler` itself with an unevidenced `void` verdict produces the
+   same `attempt-failed`, plus an `enabler-examined` event whose `outcome` is
+   `void-refused` — the Enabler's own guarded path, not only the
+   Co-Ordinator's.
 8d. **A `pr-ready` event means the pull request is not a draft (requirement
    31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
    without calling `gh pr ready`; a draft is flipped and reports `flipped`; a
@@ -6328,7 +6332,12 @@ pull request, run the ones the change touches and any it could regress.
     `unblocked` verdict's `refined_spec` becomes an `item-refined` event that
     reaches the next cycle's `refinements` map, and a void item's does not; and
     a second refinement of an already-refined item is refused unless a human has
-    just closed an escalation about it. Both directions matter here for the same
+    just closed an escalation about it. `test/enabler-verdicts.test.sh` passes:
+    driving `maybe_run_enabler` itself with an `unblocked` verdict on an item
+    carrying `refined_before` produces no `unblocked` and no `item-refined`
+    event, only a `warning` and an `enabler-examined` event whose `outcome` is
+    `refinement-refused`; the same item with reason `issue-closed` is not
+    refused. Both directions matter here for the same
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
