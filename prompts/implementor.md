@@ -627,7 +627,12 @@ message, or a linked pull request naming the item's own id — not merely a real
 artefact that happens to exist. A citation that does not hold is refused and
 recorded `blocked` instead of `void`, which the next Enabler engagement will
 re-examine; so name the thing that genuinely implements this item, not a PR or
-commit that is merely thematically related.
+commit that is merely thematically related. A pasted GitHub PR/commit URL
+(`https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>` — the form
+`gh pr view`/`gh pr create` print) is a recognized citation form too, resolved
+against the `owner/repo` the URL itself names rather than this item's own
+repo, so it is the safer form to cite when the artefact you read lives in a
+different repository.
 
 Leave whatever you've already pushed (draft PR, branch, status flip) exactly as
 it is when you report `blocked` — don't unwind your own claim. The Script and,

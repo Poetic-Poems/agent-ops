@@ -110,34 +110,48 @@ if [[ "$2" == */pulls/*/files ]]; then
   exit 0
 fi
 # A bare `repos/<slug>/pulls/<n>` — the citation guard's own fetch of a cited
-# PR's body and branch, distinct from the `/files` count above.
+# PR's body and branch, distinct from the `/files` count above. A
+# slug-specific fixture (`pr-<slug>-<n>.json`) is tried first, so a test can
+# put the same PR number in two repos and prove each resolves independently;
+# a plain `pr-<n>.json` (no repo distinction) is the fallback every existing
+# fixture already uses.
 if [[ "$2" == */pulls/* ]]; then
+  slug="${2#repos/}"; slug="${slug%%/pulls/*}"
   n="${2##*/pulls/}"
-  f="$d/pr-$n.json"
+  f="$d/pr-${slug//\//_}-$n.json"
+  [[ -f "$f" ]] || f="$d/pr-$n.json"
   [[ -f "$f" ]] || exit 1
   cat "$f"
   exit 0
 fi
-# `repos/<slug>/compare/<sha>...<default_branch>` — ancestry for a cited commit.
+# `repos/<slug>/compare/<sha>...<default_branch>` — ancestry for a cited
+# commit. Same slug-specific-then-plain fallback as the PR fetch above.
 if [[ "$2" == */compare/* ]]; then
+  slug="${2#repos/}"; slug="${slug%%/compare/*}"
   rest="${2##*/compare/}"
   key="${rest//.../_TO_}"
-  f="$d/compare-$key.json"
+  f="$d/compare-${slug//\//_}-$key.json"
+  [[ -f "$f" ]] || f="$d/compare-$key.json"
   [[ -f "$f" ]] || exit 1
   cat "$f"
   exit 0
 fi
 # `repos/<slug>/commits/<sha>/pulls` — PRs GitHub associates with a commit. A
 # missing fixture is an empty list (a real, ordinary answer), not a failure.
+# Same slug-specific-then-plain fallback.
 if [[ "$2" == */commits/*/pulls ]]; then
+  slug="${2#repos/}"; slug="${slug%%/commits/*}"
   sha="${2%/pulls}"; sha="${sha##*/commits/}"
-  f="$d/commit-$sha-pulls"
+  f="$d/commit-${slug//\//_}-$sha-pulls"
+  [[ -f "$f" ]] || f="$d/commit-$sha-pulls"
   [[ -f "$f" ]] && cat "$f"
   exit 0
 fi
 if [[ "$2" == */commits/* ]]; then
+  slug="${2#repos/}"; slug="${slug%%/commits/*}"
   sha="${2##*/commits/}"
-  f="$d/commit-$sha.json"
+  f="$d/commit-${slug//\//_}-$sha.json"
+  [[ -f "$f" ]] || f="$d/commit-$sha.json"
   [[ -f "$f" ]] || exit 1
   cat "$f"
   exit 0
@@ -422,25 +436,58 @@ assert_eq "the real call-site shape survives set -e and bad input" "0" "$?"
 # `'[]'` rather than $REPOS, exactly as those two call sites do.
 
 # --- void_evidence_cited_pr_numbers / void_evidence_cited_commit_shas ---------
+# Both extractors now take a DEFAULT_SLUG and return `slug#number`/`slug#sha`
+# pairs — the bare forms resolve against DEFAULT_SLUG (possibly empty), a URL
+# citation always carries its own owner/repo regardless of DEFAULT_SLUG.
 assert_eq "a PR citation is extracted" \
-  "232" "$(void_evidence_cited_pr_numbers "PR #232 implemented all five rewrites")"
+  "Poetic-Poems/poetic#232" \
+  "$(void_evidence_cited_pr_numbers "PR #232 implemented all five rewrites" "Poetic-Poems/poetic")"
 assert_eq "a 'pull request' citation is extracted" \
-  "235" "$(void_evidence_cited_pr_numbers "pull request #235 landed it")"
+  "Poetic-Poems/poetic#235" \
+  "$(void_evidence_cited_pr_numbers "pull request #235 landed it" "Poetic-Poems/poetic")"
 assert_eq "a bare issue reference is not a PR citation" \
-  "" "$(void_evidence_cited_pr_numbers "confirmed via #123 that nothing remains")"
+  "" "$(void_evidence_cited_pr_numbers "confirmed via #123 that nothing remains" "Poetic-Poems/poetic")"
 assert_eq "multiple PR citations are deduped and sorted" \
-  "$(printf '92\n232\n')" "$(void_evidence_cited_pr_numbers "see PR #232 and pr#92, also PR #92")"
+  "$(printf 'Poetic-Poems/poetic#232\nPoetic-Poems/poetic#92\n')" \
+  "$(void_evidence_cited_pr_numbers "see PR #232 and pr#92, also PR #92" "Poetic-Poems/poetic")"
 assert_eq "no citation at all extracts nothing" \
-  "" "$(void_evidence_cited_pr_numbers "the ledger row is already marked resolved")"
+  "" "$(void_evidence_cited_pr_numbers "the ledger row is already marked resolved" "Poetic-Poems/poetic")"
+assert_eq "a bare citation with no default slug still prints, with an empty slug" \
+  "#232" "$(void_evidence_cited_pr_numbers "PR #232 implemented it" "")"
+assert_eq "a GitHub PR URL is extracted with its own owner/repo" \
+  "Poetic-Poems/agent-ops#281" \
+  "$(void_evidence_cited_pr_numbers \
+    "see https://github.com/Poetic-Poems/agent-ops/pull/281 for the fix" "Poetic-Poems/poetic")"
+assert_eq "a PR URL from a different repo than DEFAULT_SLUG keeps its own slug" \
+  "Poetic-Poems/poetic-fiddle#40" \
+  "$(void_evidence_cited_pr_numbers \
+    "https://github.com/Poetic-Poems/poetic-fiddle/pull/40 landed it" "Poetic-Poems/poetic")"
+assert_eq "a PR URL needs no default slug at all" \
+  "Poetic-Poems/agent-ops#281" \
+  "$(void_evidence_cited_pr_numbers "https://github.com/Poetic-Poems/agent-ops/pull/281" "")"
 
 assert_eq "a 'commit <sha>' citation is extracted" \
-  "aad1405b" "$(void_evidence_cited_commit_shas "landed as commit aad1405b on main")"
+  "Poetic-Poems/poetic#aad1405b" \
+  "$(void_evidence_cited_commit_shas "landed as commit aad1405b on main" "Poetic-Poems/poetic")"
 assert_eq "a 'ref@sha' citation is extracted" \
-  "aad1405" "$(void_evidence_cited_commit_shas "main@aad1405 has the fix")"
+  "Poetic-Poems/poetic#aad1405" \
+  "$(void_evidence_cited_commit_shas "main@aad1405 has the fix" "Poetic-Poems/poetic")"
 assert_eq "an all-letter hex word with no digit is not a SHA citation" \
-  "" "$(void_evidence_cited_commit_shas "the commit deadbeef is a placeholder word")"
+  "" "$(void_evidence_cited_commit_shas "the commit deadbeef is a placeholder word" "Poetic-Poems/poetic")"
 assert_eq "no citation at all extracts nothing" \
-  "" "$(void_evidence_cited_commit_shas "the ledger row is already marked resolved")"
+  "" "$(void_evidence_cited_commit_shas "the ledger row is already marked resolved" "Poetic-Poems/poetic")"
+assert_eq "a bare commit citation with no default slug still prints, with an empty slug" \
+  "#aad1405b" "$(void_evidence_cited_commit_shas "commit aad1405b landed it" "")"
+assert_eq "a GitHub commit URL is extracted with its own owner/repo" \
+  "Poetic-Poems/agent-ops#30aa46f69ec8" \
+  "$(void_evidence_cited_commit_shas \
+    "see https://github.com/Poetic-Poems/agent-ops/commit/30aa46f69ec8 for the fix" \
+    "Poetic-Poems/poetic")"
+assert_eq "a commit URL from a different repo than DEFAULT_SLUG keeps its own slug" \
+  "Poetic-Poems/poetic-fiddle#1a2b3c4" \
+  "$(void_evidence_cited_commit_shas \
+    "https://github.com/Poetic-Poems/poetic-fiddle/commit/1a2b3c4 landed it" \
+    "Poetic-Poems/poetic")"
 
 # --- void_pr_matches_item: the exact shape of the shipped defect --------------
 # #224's Co-Ordinator voided it citing "PR #232 implemented all five rewrites".
@@ -545,6 +592,47 @@ assert_eq "evidence with no citation at all has nothing to corroborate this way"
 out="$(void_citation_reason '{"item": "224", "evidence": "PR #232 implemented it"}' "")"; rc=$?
 assert_eq "a PR citation with no repo to check it against is refused" "1" "$rc"
 assert_contains "  ... saying so" "names no repo" "$out"
+
+# --- void_citation_reason: URL citations, resolved against their own repo -----
+# The point of this item (TD-PPagop-26080806): PR #232 means something
+# different in each repo. Poetic-Poems/poetic's own #232 (fixture above)
+# implements item 221, not 224. A second, distinct #232 in
+# Poetic-Poems/poetic-fiddle genuinely implements 224. A URL citation must
+# resolve against the repo the URL itself names, never against the entry's
+# `repo` — otherwise the second #232 would be tested against the first repo's
+# PR and wrongly refused, or the first against the second's and wrongly
+# accepted.
+printf '{"body": "Closes #224 in poetic-fiddle.", "head": {"ref": "agent/224"}}' \
+  >"$tmp_dir/pr-Poetic-Poems_poetic-fiddle-232.json"
+
+entry_224_url_good='{"item": "224", "repo": "Poetic-Poems/poetic",
+  "reason": "the five rewrites are already merged",
+  "evidence": "see https://github.com/Poetic-Poems/poetic-fiddle/pull/232 for the fix"}'
+assert_eq "a PR URL citation resolves against its own repo, not the entry's" \
+  "0" "$(void_citation_reason "$entry_224_url_good" "Poetic-Poems/poetic"; echo $?)"
+
+entry_224_url_wrong_repo='{"item": "224", "repo": "Poetic-Poems/poetic",
+  "reason": "the five rewrites are already merged",
+  "evidence": "see https://github.com/Poetic-Poems/poetic/pull/232 for the fix"}'
+out="$(void_citation_reason "$entry_224_url_wrong_repo" "Poetic-Poems/poetic")"; rc=$?
+assert_eq "  ... so the same PR number in the entry's own (wrong) repo is still refused" "1" "$rc"
+assert_contains "  ... as a fabrication" "fabricated citation" "$out"
+
+assert_eq "  ... and a PR URL citation needs no entry repo at all to resolve" \
+  "0" "$(void_citation_reason '{"item": "224",
+    "evidence": "https://github.com/Poetic-Poems/poetic-fiddle/pull/232 fixed it"}' ""; echo $?)"
+
+# The same shape holds for a cited commit.
+printf 'main' >"$tmp_dir/repo-Poetic-Poems_poetic-fiddle"
+printf '{"status": "ahead"}' >"$tmp_dir/compare-Poetic-Poems_poetic-fiddle-cccccc1_TO_main.json"
+printf '{"commit": {"message": "fix(sync): add timeouts (224)"}}' \
+  >"$tmp_dir/commit-Poetic-Poems_poetic-fiddle-cccccc1.json"
+
+entry_224_commit_url_good='{"item": "224", "repo": "Poetic-Poems/poetic",
+  "reason": "already fixed",
+  "evidence": "https://github.com/Poetic-Poems/poetic-fiddle/commit/cccccc1 has it"}'
+assert_eq "a commit URL citation resolves against its own repo, not the entry's" \
+  "0" "$(void_citation_reason "$entry_224_commit_url_good" "Poetic-Poems/poetic"; echo $?)"
 
 # --- void_guard_reason: the acceptance criteria, verbatim -----------------------
 # "a void citing an unrelated-but-real PR is rejected; a void citing the

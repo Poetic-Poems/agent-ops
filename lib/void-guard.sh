@@ -80,12 +80,19 @@
 #      No amount of model confidence survives that. (Co-Ordinator only — it is
 #      the only stage with a gathered candidate list to test against.)
 #   3. **A cited PR or commit must actually be about this item** (issue #243).
-#      Evidence naming "PR #N" or a commit SHA is fetched live and checked for
-#      the item id in the PR's body/branch, or the commit's message/associated
-#      PRs — see `void_citation_reason` below. This is what requirement 34d was
-#      missing before #243: a citation that merely *exists* is not
-#      corroboration, and it is checked the same way for every stage, since it
-#      needs nothing but the API and the citation itself.
+#      Evidence naming "PR #N" or a commit SHA — or a GitHub PR/commit URL
+#      (`https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>`),
+#      the form `gh pr view`/`gh pr create` print and so the one a model is
+#      most likely to paste — is fetched live and checked for the item id in
+#      the PR's body/branch, or the commit's message/associated PRs — see
+#      `void_citation_reason` below. A bare "PR #N"/SHA citation resolves
+#      against the entry's own `repo`, as before; a URL citation carries its
+#      own `owner/repo` and is resolved against *that*, never against the
+#      entry's `repo`, so a citation of another repository's PR is not tested
+#      against the wrong repository. This is what requirement 34d was missing
+#      before #243: a citation that merely *exists* is not corroboration, and
+#      it is checked the same way for every stage, since it needs nothing but
+#      the API and the citation itself.
 #
 # ## What a refused void becomes
 #
@@ -306,33 +313,75 @@ void_text_names_item() {
   grep -qiE "\\b$(void_item_regex "$item")\\b" <<<"$text" 2>/dev/null
 }
 
-# void_evidence_cited_pr_numbers EVIDENCE_TEXT
-# Print, one per line, every PR number the free-text evidence names as "PR
-# #123" or "pull request #123" (case-insensitive). This is deliberately
-# narrower than "any `#N` in the text" — an evidence sentence citing an issue
-# ("confirmed via #123 that…") is not a claim about a pull request, and
-# treating it as one would refuse legitimate voids on a coincidence. Prints
-# nothing when the text cites none.
+# void_evidence_cited_pr_numbers EVIDENCE_TEXT DEFAULT_SLUG
+# Print, one per line as `<owner/repo>#<number>`, every PR the free-text
+# evidence cites — as "PR #123" or "pull request #123" (case-insensitive,
+# bare form, resolved against DEFAULT_SLUG — the entry's own repo, exactly as
+# before this took a slug at all), or as a GitHub PR URL
+# (`https://github.com/<owner>/<repo>/pull/<n>`, the form `gh pr view`/`gh pr
+# create` print, and so the one a model pasting evidence is most likely to
+# use), which carries its own `owner/repo` and is resolved against *that*
+# regardless of DEFAULT_SLUG. A bare citation is still printed even when
+# DEFAULT_SLUG is empty — as `#123`, an empty slug — so the caller can still
+# report the "entry names no repo" refusal it always has; see
+# `void_citation_reason`.
+#
+# The bare form is deliberately narrower than "any `#N` in the text" — an
+# evidence sentence citing an issue ("confirmed via #123 that…") is not a
+# claim about a pull request, and treating it as one would refuse legitimate
+# voids on a coincidence. Prints nothing when the text cites none.
 void_evidence_cited_pr_numbers() {
-  local text="$1" matches
-  matches="$(grep -oiE '(pr|pull request)[[:space:]]*#[0-9]+' <<<"$text" 2>/dev/null || true)"
-  grep -oE '[0-9]+' <<<"$matches" 2>/dev/null | sort -un || true
+  local text="$1" default_slug="$2" line num slug
+  {
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      num="$(grep -oE '[0-9]+' <<<"$line")"
+      printf '%s#%s\n' "$default_slug" "$num"
+    done < <(grep -oiE '(pr|pull request)[[:space:]]*#[0-9]+' <<<"$text" 2>/dev/null || true)
+
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      slug="$(sed -E 's#^https://github\.com/([^/]+/[^/]+)/pull/.*#\1#' <<<"$line")"
+      num="$(sed -E 's#.*/pull/([0-9]+)$#\1#' <<<"$line")"
+      printf '%s#%s\n' "$slug" "$num"
+    done < <(grep -oE 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/pull/[0-9]+' <<<"$text" 2>/dev/null || true)
+  } | sort -u
 }
 
-# void_evidence_cited_commit_shas EVIDENCE_TEXT
-# Print, one per line, every commit-like hex string the free-text evidence
-# cites as "commit <sha>" or "<ref>@<sha>" (the shape this repository's own
-# void evidence already uses — see the `main@aad1405` example above). Requires
-# 7-40 lowercase hex characters including at least one digit, so an ordinary
-# hex-looking word ("cafebabe", "deadbeef") with no digit in it is not
-# mistaken for a SHA.
+# void_evidence_cited_commit_shas EVIDENCE_TEXT DEFAULT_SLUG
+# Print, one per line as `<owner/repo>#<sha>`, every commit the free-text
+# evidence cites — as "commit <sha>" or "<ref>@<sha>" (the shape this
+# repository's own void evidence already uses — see the `main@aad1405`
+# example above; bare form, resolved against DEFAULT_SLUG, exactly as before
+# this took a slug at all), or as a GitHub commit URL
+# (`https://github.com/<owner>/<repo>/commit/<sha>`, the form `gh` itself
+# prints), which carries its own `owner/repo` and is resolved against *that*
+# regardless of DEFAULT_SLUG. A bare citation is still printed even when
+# DEFAULT_SLUG is empty — as `#<sha>` — so the caller can still report the
+# "entry names no repo" refusal it always has; see `void_citation_reason`.
+#
+# The bare form requires 7-40 lowercase hex characters including at least one
+# digit, so an ordinary hex-looking word ("cafebabe", "deadbeef") with no
+# digit in it is not mistaken for a SHA.
 void_evidence_cited_commit_shas() {
-  local text="$1" by_word by_at
+  local text="$1" default_slug="$2" by_word by_at line sha slug
   by_word="$(grep -oiE 'commit[[:space:]]+[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null \
     | grep -oE '[0-9a-f]{7,40}$' 2>/dev/null || true)"
   by_at="$(grep -oE '@[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null \
     | grep -oE '[0-9a-f]{7,40}$' 2>/dev/null || true)"
-  printf '%s\n%s\n' "$by_word" "$by_at" | grep -E '[0-9]' 2>/dev/null | sort -u || true
+  {
+    while IFS= read -r sha; do
+      [[ -n "$sha" ]] || continue
+      printf '%s#%s\n' "$default_slug" "$sha"
+    done < <(printf '%s\n%s\n' "$by_word" "$by_at" | grep -E '[0-9]' 2>/dev/null || true)
+
+    while IFS= read -r line; do
+      [[ -n "$line" ]] || continue
+      slug="$(sed -E 's#^https://github\.com/([^/]+/[^/]+)/commit/.*#\1#' <<<"$line")"
+      sha="$(sed -E 's#.*/commit/([0-9a-f]+)$#\1#' <<<"$line")"
+      printf '%s#%s\n' "$slug" "$sha"
+    done < <(grep -oiE 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/commit/[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null || true)
+  } | sort -u
 }
 
 # void_pr_matches_item SLUG NUM ITEM
@@ -452,41 +501,52 @@ void_commit_matches_item() {
 # citation is resolved live against the API — so a stage that never gathered
 # candidates in the first place gets the same check.
 #
+# The extractors return `slug#number`/`slug#sha` pairs: a bare "PR #N"/SHA
+# citation carries REPO_SLUG (possibly empty), while a URL citation carries
+# the `owner/repo` the URL itself names. Each pair is resolved against its
+# own slug, never against REPO_SLUG — a cross-repo URL citation would
+# otherwise be tested against the wrong repository, and REPO_SLUG is only
+# what a *bare* citation falls back to.
+#
 # Prints nothing and returns 0 when the evidence cites no PR or commit at all
 # (nothing to corroborate this way; the presence/resolvable rules above are
 # what govern free prose), or when every citation it does make checks out.
 # Prints a one-line reason and returns 1 the moment one citation does not —
 # a partly-fabricated citation is a fabricated citation.
 void_citation_reason() {
-  local entry="$1" repo="$2" item evidence_text num sha reason
+  local entry="$1" repo="$2" item evidence_text pair slug num sha reason
 
   item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
   evidence_text="$(void_entry_evidence "$entry")"
   [[ -n "$item" && -n "$evidence_text" ]] || return 0
 
-  while IFS= read -r num; do
-    [[ -n "$num" ]] || continue
-    if [[ -z "$repo" ]]; then
+  while IFS= read -r pair; do
+    [[ -n "$pair" ]] || continue
+    slug="${pair%%#*}"
+    num="${pair##*#}"
+    if [[ -z "$slug" ]]; then
       printf 'evidence cites PR #%s to corroborate against, but the entry names no repo' "$num"
       return 1
     fi
-    if ! reason="$(void_pr_matches_item "$repo" "$num" "$item")"; then
+    if ! reason="$(void_pr_matches_item "$slug" "$num" "$item")"; then
       printf '%s' "$reason"
       return 1
     fi
-  done < <(void_evidence_cited_pr_numbers "$evidence_text")
+  done < <(void_evidence_cited_pr_numbers "$evidence_text" "$repo")
 
-  while IFS= read -r sha; do
-    [[ -n "$sha" ]] || continue
-    if [[ -z "$repo" ]]; then
+  while IFS= read -r pair; do
+    [[ -n "$pair" ]] || continue
+    slug="${pair%%#*}"
+    sha="${pair##*#}"
+    if [[ -z "$slug" ]]; then
       printf 'evidence cites commit %s to corroborate against, but the entry names no repo' "$sha"
       return 1
     fi
-    if ! reason="$(void_commit_matches_item "$repo" "$sha" "$item")"; then
+    if ! reason="$(void_commit_matches_item "$slug" "$sha" "$item")"; then
       printf '%s' "$reason"
       return 1
     fi
-  done < <(void_evidence_cited_commit_shas "$evidence_text")
+  done < <(void_evidence_cited_commit_shas "$evidence_text" "$repo")
 
   return 0
 }

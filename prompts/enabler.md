@@ -270,7 +270,10 @@ verdict is to undo.
   item — its body, branch, message, or a linked pull request naming the item's
   own id — not merely a real artefact that exists. A citation that does not
   hold is refused and recorded blocked instead, so name the thing that really
-  implements this item.
+  implements this item. A pasted GitHub PR/commit URL is a recognized citation
+  form too, and is resolved against the `owner/repo` the URL itself names
+  rather than this item's own repo — the form to reach for when what you read
+  lives in another repository.
 
 An item you genuinely cannot settle is `still-blocked` with an honest reason.
 Never invent a verdict to look decisive; a wrong `void` needs a human to undo
