@@ -6370,24 +6370,22 @@ pull request, run the ones the change touches and any it could regress.
 8m. **The closing-keyword check blocks, not just reports (requirement
    25a).** The one piece of requirement 25a that no file in this repository
    carries is the repo setting that makes a red check a blocked merge, so
-   it is verified against GitHub directly rather than by any test here:
-
-   ```
-   gh api repos/Poetic-Poems/agent-ops/rulesets/18857310 \
-     --jq '.rules[] | select(.type == "required_status_checks")
-           | .parameters.required_status_checks[]
-           | select(.context == "closing-keyword")'
-   ```
-
-   prints `{"context": "closing-keyword", "integration_id": 15368}` — the
-   context required by the active `default` ruleset targeting the default
-   branch, pinned to the GitHub Actions app. An entry missing entirely means
-   the check reports without blocking, which is the exact gap PR #256's
-   review caught by hand; an entry without the `integration_id` pin can be
-   satisfied by any GitHub App reporting a check of that name. Nothing in
-   this repository changes when the ruleset does, so this check is manual
-   until a deterministic reader exists (TD-PPagop-26080802 proposes a
-   warn-level `doctor.sh` check).
+   `scripts/doctor.sh` verifies it against GitHub directly, in its GitHub
+   section: it resolves this checkout's own slug (`lib/version.sh`'s
+   `agent_ops_version`), reads `gh api repos/<slug>/rulesets`, and for every
+   active branch ruleset whose `conditions.ref_name.include` names
+   `~DEFAULT_BRANCH` (the active `default` ruleset targeting the default
+   branch), warns unless its `required_status_checks` carries an entry with
+   `context: closing-keyword` and `integration_id: 15368` — the GitHub
+   Actions app every other required context is pinned to. A missing entry
+   warns that the check reports without blocking, the exact gap PR #256's
+   review caught by hand; an entry present without the `integration_id` pin
+   warns that any GitHub App reporting a check of that name could satisfy
+   it; no active branch ruleset targeting the default branch at all warns
+   the same way. The check is read-only, warn-level (the pipeline still
+   runs without it) and runs on every `doctor.sh` invocation, so a ruleset
+   drifting back to report-only surfaces on the next run rather than only
+   when a human reads the repo settings by hand (TD-PPagop-26080802).
 8n. **A claimed item's gone work is caught before the Implementor runs, not
    inside it (requirement 34m).** `test/preflight.test.sh` passes:
    `preflight_done_reason` returns the same reason `work_gone_clearances`
