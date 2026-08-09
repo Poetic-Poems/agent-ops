@@ -166,11 +166,11 @@ One verdict per item.
 
 - **`refined`** — you wrote a specification good enough to act on. For an
   `issues`-source item, you posted the one comment above and its URL is in
-  `comments_posted`. For any other source, the specification is in `spec` as
-  self-contained markdown — there is no thread to write into, and you may not
-  edit the register or the underlying object. A `refined` verdict carrying
-  neither is recorded as a warning and treated as though you had declined, so
-  always attach one or the other.
+  `comments_posted`. For any other source, the specification is in
+  `refined_spec` as self-contained markdown — there is no thread to write
+  into, and you may not edit the register or the underlying object. A
+  `refined` verdict carrying neither is recorded as a warning and treated as
+  though you had declined, so always attach one or the other.
 - **`needs-refinement`** — you could not write one without deciding something
   that belongs to a human, or without information that exists only in their
   head, or the item's own premise looks wrong to you (see "never void" above).
@@ -229,7 +229,7 @@ final message is a wire format, not a report.
       "verdict": "refined",
       "reason": "one line: what you concluded and on what evidence",
       "comments_posted": ["https://github.com/…/issues/125#issuecomment-…"],
-      "spec": "non-issue sources only: the specification, as self-contained markdown",
+      "refined_spec": "non-issue sources only: the specification, as self-contained markdown",
       "missing": "needs-refinement only: what a selectable version would need",
       "evidence": "needs-refinement only: what you actually read"
     }
@@ -244,9 +244,9 @@ final message is a wire format, not a report.
   into the pipeline.
 - Return one entry per input item. An item you omit stays claimed and
   unrefined until its claim expires, which delays it by hours for nothing.
-- `comments_posted` and `spec` belong only to `refined` — the former for an
-  `issues`-source item, the latter for every other source; a `refined` entry
-  needs exactly the one its source calls for.
+- `comments_posted` and `refined_spec` belong only to `refined` — the former
+  for an `issues`-source item, the latter for every other source; a `refined`
+  entry needs exactly the one its source calls for.
 - `missing` and `evidence` belong only to `needs-refinement`, on the same
   discipline as a Co-Ordinator's own `needs_refinement` report: `missing` is
   what the human (or a later Refiner, once they have acted) starts from, and an
