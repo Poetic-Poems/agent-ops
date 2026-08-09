@@ -15,9 +15,11 @@
 # the dashboard renders it as a link with the record behind it.
 #
 # Sourced by scripts/state-sync.sh (which publishes the answer in each node's
-# heartbeat, so every node's dashboard can report every node's version) and by
-# scripts/publish-dashboard.sh (which reads our own directly). Both need the
-# same answer, so the derivation lives here rather than in either of them.
+# heartbeat, so every node's dashboard can report every node's version), by
+# scripts/publish-dashboard.sh (which reads our own directly), and by
+# scripts/doctor.sh (which uses .repo alone, to know which repository's own
+# branch ruleset to check — requirement 25a). All three need the same
+# answer, so the derivation lives here rather than in any of them.
 
 # The pull request a squash-merge subject names: this repository merges every
 # change as `<conventional commit subject> (#N)`, so the trailing `(#N)` of the
