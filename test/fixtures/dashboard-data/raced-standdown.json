@@ -1,0 +1,60 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementor": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 1, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [
+    {
+      "id": "20260731T140000Z-poetic-1-140",
+      "node": "poetic-1",
+      "started_at": "@ago:20m",
+      "ended_at": "@ago:19m",
+      "outcome": "stand-down",
+      "repo": "Poetic-Poems/agent-ops",
+      "item": null,
+      "source": null,
+      "title": null,
+      "pr_url": null,
+      "reason": "every candidate is already claimed elsewhere",
+      "fail_detail": null,
+      "warning": null,
+      "total_cost_usd": 0.04,
+      "limit_hit": false,
+      "raced": true,
+      "race_losses": 3,
+      "standdown_cause": "raced",
+      "stages": {
+        "coordinator": {"model": "claude-sonnet-5-20260101", "cost_usd": 0.04, "duration_ms": 32000,
+          "num_turns": 3, "is_error": false, "terminal_reason": "end_turn"}
+      }
+    }
+  ],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {},
+    "inputs": {}
+  },
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}

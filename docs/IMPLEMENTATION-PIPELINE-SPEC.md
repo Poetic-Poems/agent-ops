@@ -2426,13 +2426,20 @@ runs unattended.
     genuinely holding the item (17a's `cause: "held"`, as opposed to
     `"unreachable"`) before it won its own claim, or — on the cycle that
     exhausts every candidate — before it stood down. Carried as
-    `race_losses` on the `selection` event and on that stand-down's event.
+    `race_losses` on the `selection` event (only when it is greater than
+    zero — 17a) and on that stand-down's event.
     A cycle recovering a race (winning after one or more losses) is
     healthy contention, not a fault: `scripts/publish-dashboard.sh` and
     `dashboard/index.html` surface it as an informational "recovered race
     ×N" badge, on the cycle history, the live-cycle panel and the fleet
     cards, wherever that cycle's `title`/`source` already render (never a
-    warning colour). Faster cadence and finish-then-continue (39) both
+    warning colour). A cycle that lost *every* candidate recovered nothing
+    and never carries that badge; it is marked instead beside its outcome,
+    where the plain "Stood down" verdict cannot say by itself whether the
+    fleet's own contention or a GitHub outage produced it — the same
+    informational colour, and DASHBOARD-SPEC's `raced` / `standdown_cause`
+    is the shape both readings come from. Faster cadence and
+    finish-then-continue (39) both
     raise how often nodes contend for the same item, which is why this
     became worth watching rather than left to a `claim-lost` grep.
 

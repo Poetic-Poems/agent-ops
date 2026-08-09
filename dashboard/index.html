@@ -873,11 +873,13 @@
   // GitHub outage or a fleet switch. A second, small badge rather than
   // folding this into the outcome badge itself: it is a fact about *how* the
   // cycle got its outcome, not a different outcome, and the two badges read
-  // in that order left to right.
+  // in that order left to right. Blue, never amber: implementation spec 17d
+  // makes contention informational rather than a fault, and amber on this
+  // page is the colour of something that wants acting on.
   function racedMarker(cy) {
     if (!cy.raced) return null;
     var n = cy.race_losses || 0, recovered = cy.outcome !== "stand-down";
-    return el("span", {class:"badge b-amber",
+    return el("span", {class:"badge b-blue", style:"margin-left:6px",
       title: (recovered ? "recovered after " : "stood down after ") + n +
              " lost claim" + (n === 1 ? "" : "s") + " to a peer"}, "↻ raced");
   }
@@ -1226,10 +1228,16 @@
           // requirement 17d: this cycle lost the claim race for one or more
           // higher-ranked candidates before winning a lower one — healthy
           // contention recovered from, not a fault, so an informational
-          // badge rather than an amber/red one.
-          cy.race_losses ? el("span", {class:"badge b-blue", style:"margin-left:6px",
-            title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
-            text: "recovered race ×" + cy.race_losses}) : null ]),
+          // badge rather than an amber/red one. The word is "recovered", so
+          // the stand-down is excluded explicitly: `race_losses` counts the
+          // cycle's `claim-lost` events, and a cycle that lost *every*
+          // candidate has a count without a claim behind it. That one is
+          // named by `racedMarker` beside its outcome instead, which says
+          // stood-down and recovered apart.
+          (cy.race_losses && cy.outcome !== "stand-down")
+            ? el("span", {class:"badge b-blue", style:"margin-left:6px",
+                title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
+                text: "recovered race ×" + cy.race_losses}) : null ]),
         el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         // The number, not the word "PR": it is the same identifier the rest of

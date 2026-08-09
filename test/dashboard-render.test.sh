@@ -231,6 +231,21 @@ assert_contains "a recovered race is marked, beside its outcome badge" \
   "raced" "$out"
 assert_eq "and no other cycle in the fixture is marked raced" "1" \
   "$(grep -o 'raced' <<<"$out" | wc -l)"
+assert_contains "a recovered race also names its count where the item renders" \
+  "recovered race ×2" "$out"
+
+# --- raced-standdown.json: a cycle that lost every candidate (issue #245) ------
+# `race_losses` counts this cycle's `claim-lost` events, so a cycle that never
+# won a claim carries one too. It is marked raced — that is what its "Stood
+# down" badge cannot say on its own — but it recovered nothing, and the
+# "recovered race ×N" badge must not appear on it.
+sd="$(render raced-standdown.json)" || { printf 'FAIL - raced-standdown.json did not render:\n%s\n' "$sd"; exit 1; }
+assert_contains "a cycle that lost every candidate still reads as stood down" \
+  "Stood down" "$sd"
+assert_contains "and is marked raced, which 'Stood down' alone does not say" \
+  "raced" "$sd"
+assert_not_contains "but is never called a recovered race" \
+  "recovered race" "$sd"
 
 # --- #186: the spend-today card's persisted GMT/local/24h toggle -----------------
 # `render`'s optional second argument seeds the harness's localStorage stub, so

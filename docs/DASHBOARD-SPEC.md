@@ -905,7 +905,10 @@ number's twins elsewhere on the page.
   cycle fixture carrying `raced: true` renders the `↻ raced` badge beside its
   outcome badge, and no other cycle in that fixture renders it — the marker
   answers "how did this cycle get its outcome", not a second outcome of its
-  own (issue #245). The
+  own (issue #245); it also renders the "recovered race ×N" badge naming the
+  count, while a separate fixture of a cycle that lost *every* candidate
+  (`raced: true`, `standdown_cause: "raced"`, outcome `stand-down`) carries
+  the `↻ raced` marker and never that one, having recovered nothing. The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
   a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one
@@ -1157,7 +1160,14 @@ number's twins elsewhere on the page.
   of `"raced"` on a stood-down cycle gets the identical badge, for the same
   reason "Stood down" alone does not say whether the fleet's own contention or
   a GitHub outage caused it — reading the reason text is not a substitute a
-  glance at the column can make.
+  glance at the column can make. Blue, like the "recovered race ×N" badge
+  beside the item and for implementation spec 17d's reason: contention is the
+  fleet working, and amber on this page is reserved for what wants acting on.
+  The two badges do not say the same thing twice, either: `race_losses` is a
+  count of this cycle's own `claim-lost` events, so a cycle that lost every
+  candidate carries one without ever having claimed anything, and "recovered
+  race" is withheld from it — an outcome of `stand-down` is exactly the case
+  the word "recovered" would be false of.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape
