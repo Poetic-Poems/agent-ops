@@ -2893,10 +2893,10 @@ runs unattended.
       the Co-Ordinator having copied a field: a gate that engages only when the
       model remembered would silently reopen the very failure this closes. Only
       a ref of none of those shapes yields no number, and then no PR-keyed claim
-      is taken. Losing it means a peer
-      already holds this PR — under whatever ref won there — so the item claim
-      just won is released (nothing was pushed under it) and selection falls
-      through to the next candidate exactly as a lost item claim would. Winning
+      is taken. Losing it means a peer already holds this PR — under whatever
+      ref won there — so the item claim just won is released (nothing was
+      pushed under it) and selection falls through to the next candidate
+      exactly as a lost item claim would. Winning
       it holds both claims until the cycle ends; release drops both. This is
       what makes the exclusion real fleet-wide and race-safe — requirement 3p's
       candidate filter is a cost-saving visibility layer over the same fact, not
