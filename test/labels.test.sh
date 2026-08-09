@@ -102,7 +102,7 @@ config() { jq "${1:-.}" "$SCRIPT_DIR/config.json" > "$tmp/config.json"; }
 #     rather than from this library. ---
 config
 assert_eq "the target role wants every label the pipeline applies" \
-  "autonomous-agent enabler-escalation needs-refinement unvoided blocked complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "the review role wants only the review pull request's label" \
   "project-review" \
@@ -120,7 +120,7 @@ assert_eq "a renamed label is created under the name the config gives it" \
 
 # An empty label is the documented way to switch a projection off. Creating one
 # anyway would put a label in the repository that nothing will ever apply.
-config '.needs_refinement_label = "" | .unvoid_label = ""'
+config '.needs_refinement_label = "" | .unvoid_label = "" | .refined_label = ""'
 assert_eq "a label switched off by an empty value is not created" \
   "autonomous-agent enabler-escalation blocked complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
@@ -136,7 +136,7 @@ config
 reset_stub
 out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "an empty repository gets every label, each reported created" \
-  "autonomous-agent enabler-escalation needs-refinement unvoided blocked complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked complexity:low complexity:medium complexity:high" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "and every line reports a creation" "" \
   "$(grep -v '^created' <<<"$out")"
@@ -148,7 +148,7 @@ assert_eq "a second pass over the same repository reports nothing" "" "$out"
 reset_stub autonomous-agent blocked complexity:low complexity:medium complexity:high
 out="$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | labels_ensure "Owner/repo")"
 assert_eq "a partly-labelled repository gets only what it is missing" \
-  "enabler-escalation needs-refinement unvoided" \
+  "enabler-escalation needs-refinement refined unvoided" \
   "$(cut -f2 <<<"$out" | tr '\n' ' ' | sed 's/ $//')"
 
 # GitHub compares label names case-insensitively, so a differently-cased match
@@ -175,7 +175,7 @@ rc=$?
 assert_eq "a label the token may not create is reported failed" \
   "failed	unvoided" "$(grep '^failed' <<<"$out")"
 assert_eq "and the labels either side of it are still created" \
-  "autonomous-agent enabler-escalation needs-refinement blocked complexity:low complexity:medium complexity:high" \
+  "autonomous-agent enabler-escalation needs-refinement refined blocked complexity:low complexity:medium complexity:high" \
   "$(grep '^created' <<<"$out" | cut -f2 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "and one refused create does not fail the pass" "0" "$rc"
 

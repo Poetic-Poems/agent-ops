@@ -47,6 +47,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/refinement.sh
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/label-marker.sh
+. "$SCRIPT_DIR/lib/label-marker.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -507,6 +509,34 @@ printf '%s' '{"ts":"2026-07-22T10:00:00Z","event":"item-ref' >> "$log"
 assert_eq "a malformed trailing line does not lose the map" "the current spec" \
   "$(refinements_map "$log" | jq -r '."o/r".TD26071901.spec')"
 
+# --- Requirement 39d: a fresher needs-refinement block shadows a refinement ------
+# The Implementor's escape hatch (or a further Refiner decline) says a named
+# specification did not hold up, so a later Co-Ordinator must not be handed it
+# again — but a *later* refinement must still win once someone writes one.
+stale_log="$(mktemp)"
+cat > "$stale_log" <<'EOF'
+{"ts":"2026-08-01T09:00:00Z","cycle":"c1","event":"item-refined","repo":"o/r","item":"88","comment_url":"https://github.com/o/r/issues/88#issuecomment-1"}
+EOF
+assert_eq "before any block, the refinement stands" \
+  "https://github.com/o/r/issues/88#issuecomment-1" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."88".comment_url')"
+
+printf '%s\n' '{"ts":"2026-08-01T10:00:00Z","cycle":"c2","event":"attempt-failed","stage":"implementor","kind":"needs-refinement","repo":"o/r","item":"88","reason":"acceptance criteria do not match the body","unblock_condition":"say which of the two behaviours is wanted"}' >> "$stale_log"
+assert_eq "a fresher needs-refinement block shadows the refinement" "null" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."88" // "null"')"
+
+printf '%s\n' '{"ts":"2026-08-01T11:00:00Z","cycle":"c3","event":"item-refined","repo":"o/r","item":"88","comment_url":"https://github.com/o/r/issues/88#issuecomment-2"}' >> "$stale_log"
+assert_eq "a later refinement clears the shadow and wins" \
+  "https://github.com/o/r/issues/88#issuecomment-2" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."88".comment_url')"
+
+printf '%s\n' '{"ts":"2026-08-01T08:00:00Z","cycle":"c0","event":"attempt-failed","stage":"coordinator","kind":"needs-refinement","repo":"o/r","item":"77","reason":"vague","unblock_condition":"…"}' >> "$stale_log"
+printf '%s\n' '{"ts":"2026-08-01T09:00:00Z","cycle":"c1","event":"item-refined","repo":"o/r","item":"77","spec":"written after the block"}' >> "$stale_log"
+assert_eq "a refinement written after an older block is not shadowed by it" \
+  "written after the block" \
+  "$(refinements_map "$stale_log" | jq -r '."o/r"."77".spec')"
+rm -f "$stale_log"
+
 # --- Requirement 35d: the per-engagement cap -------------------------------------
 # The asymmetry is the point: the backlog of items silently skipped before this
 # existed is unbounded and none of it is urgent, while the ordinary blocked
@@ -562,6 +592,65 @@ assert_eq "a closed issue earns nothing, even freshly labelled" "[]" \
 assert_eq "another repo's identically-numbered issue is untouched by this one's block" \
   "$hand_flagged_compact" "$(refinement_hand_flag_new "$hand_flagged" \
        '[{"repo": "o/other", "item": "52", "kind": ""}]')"
+
+# Requirement 39f: the scan the Script actually runs is the composition of
+# `label_filter_own_applications` and `refinement_hand_flag_new`, in that
+# order. The case it exists for is a block that cleared correctly but whose
+# label removal silently failed: the label is still present, no block is open,
+# and without the filter that reads exactly like a human asking for one.
+own_log="$tmp_dir/own-label-actions.jsonl"
+printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
+own_map="$(label_own_actions_map "needs-refinement" "$own_log")"
+assert_eq "a stuck label from our own failed removal manufactures no fresh block" "[]" \
+  "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$own_map")" '[]')"
+
+# The retry half of requirement 39f: exactly the entry the filter dropped
+# above, and whose block has gone, is what the call site hands back to
+# `refinement_label_remove` for another attempt — `release_refinement_label`'s
+# original removal is what failed to begin with. The blocked extract is the
+# second half of that test, and the call site passes it for the reason this
+# pair of cases states: while the block is open the label is requirement 34e's
+# live projection of it, and retrying the removal would strip the human's only
+# signal off an issue the pipeline is still waiting on.
+assert_eq "  ... and is exactly the entry the retry composition re-attempts removal on" \
+  "$hand_flagged_compact" "$(label_own_stale_applications "$hand_flagged" "$own_map" '[]')"
+assert_eq "  ... but not while the block that label projects is still open" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$own_map" \
+       '[{"repo": "o/r", "item": "52", "kind": "needs-refinement"}]')"
+
+# ... but the same issue flagged by a human *after* our own last action is a
+# genuine request, and must still earn its block — and must never be retried,
+# since it is not this system's own write to retry.
+human_map="$(label_own_actions_map "needs-refinement" /dev/null)"
+assert_eq "an unrecorded label is still read as the human's own flag" \
+  "$hand_flagged_compact" \
+  "$(refinement_hand_flag_new "$(label_filter_own_applications "$hand_flagged" "$human_map")" '[]')"
+assert_eq "  ... and nothing here is ours to retry removing" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$human_map")"
+printf '%s\n' '{"ts":"2026-07-20T09:00:00Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
+assert_eq "a human re-applying the label after us still earns a block" \
+  "$hand_flagged_compact" \
+  "$(refinement_hand_flag_new \
+       "$(label_filter_own_applications "$hand_flagged" \
+            "$(label_own_actions_map "needs-refinement" "$own_log")")" '[]')"
+assert_eq "  ... and again nothing here is ours to retry removing" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$(label_own_actions_map "needs-refinement" "$own_log")")"
+printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"remove"}' >> "$own_log"
+assert_eq "a label still present after a *recorded* removal is not ours to explain" \
+  "$hand_flagged_compact" \
+  "$(refinement_hand_flag_new \
+       "$(label_filter_own_applications "$hand_flagged" \
+            "$(label_own_actions_map "needs-refinement" "$own_log")")" '[]')"
+assert_eq "  ... nor ours to retry removing — our last recorded action was the removal itself" "[]" \
+  "$(label_own_stale_applications "$hand_flagged" "$(label_own_actions_map "needs-refinement" "$own_log")")"
+
+# The `cleared` half must never see the filtered list: it asks which issues
+# have *lost* the label, so an entry dropped for being our own would read
+# there as a label that had gone and unblock the item.
+printf '%s\n' '{"ts":"2026-07-28T09:00:01Z","event":"own-label-action","repo":"o/r","item":"52","label":"needs-refinement","action":"add"}' > "$own_log"
+assert_eq "the unfiltered list keeps a hand-flagged block standing" "[]" \
+  "$(refinement_hand_flag_cleared "$hand_flagged" \
+       '[{"repo": "o/r", "item": "52", "kind": "needs-refinement", "hand_flagged": true}]')"
 
 fields="$(refinement_hand_flag_fields "o/r" 52 needs-refinement warwick \
   "2026-07-28T09:00:00Z" "https://github.com/o/r/issues/52")"
