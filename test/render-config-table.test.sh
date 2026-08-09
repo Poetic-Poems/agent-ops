@@ -186,6 +186,10 @@ cat > "$tmp/config.schema.json" <<'JSON'
       "description": "Upsilon description.",
       "x-docs": { "readme": [ { "code": "echo hi\necho bye" } ] }
     },
+    "psi": {
+      "description": "Psi description.",
+      "x-docs": { "readme": [ { "code": "echo `foo` bar\necho `baz`" } ] }
+    },
     "phi": {
       "description": "Phi description.",
       "x-docs": { "readme": "Phi description leading in with prose before the link, so the truncation cut lands exactly inside it now: lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem [the Diff article](https://en.wikipedia.org/wiki/Diff_(command)) ipsum dolor sit amet consectetur adipiscing elit sed do eiusmod tempor incididunt ut labore et dolore magna aliqua." }
@@ -596,6 +600,14 @@ assert_contains "upsilon's short code note degrades to a backtick span in the ce
 assert_not_contains "a short list note (tau) gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `tau`'
 # shellcheck disable=SC2016
 assert_not_contains "a short code note (upsilon) gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `upsilon`'
+
+# --- psi: a code block with backticks inside stays under the cap and renders
+#     with double backticks as the delimiter (CommonMark rule: widest backtick
+#     run + 1, here 1+1=2). The cell renders no Extended notes subsection. ---
+# shellcheck disable=SC2016
+assert_contains "psi's code note with backticks renders with double-backtick delimiter" "$main_region" '| `psi` | *(required)* | ``echo `foo` bar echo `baz` `` |'
+# shellcheck disable=SC2016
+assert_not_contains "psi's short code note gets no Extended notes subsection" "$main_notes_region" '### Extended notes: `psi`'
 
 # --- --check stays clean on the freshly rewritten tree, including the notes
 #     regions, and stays a no-op on a second render ---
