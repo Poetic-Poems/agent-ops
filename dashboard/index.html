@@ -864,8 +864,28 @@
   // rungs above it lie the same way in the past tense ("Selected", "PR raised"
   // of a cycle still at work), and nothing is lost by replacing them here: how
   // far it has got is what the Item, Stages and PR cells beside it already say.
+  // The "raced" marker (issue #245): a cycle lost at least one claim to a
+  // peer's healthy contention before its outcome above was decided. Beside an
+  // outcome other than "Stood down" it says the cycle *recovered* — claimed
+  // and dispatched the next candidate rather than forfeiting the cycle;
+  // beside "Stood down" it says every candidate raced away, which
+  // `outcomeBadge`'s own "Stood down" text does not distinguish from a
+  // GitHub outage or a fleet switch. A second, small badge rather than
+  // folding this into the outcome badge itself: it is a fact about *how* the
+  // cycle got its outcome, not a different outcome, and the two badges read
+  // in that order left to right. Blue, never amber: implementation spec 17d
+  // makes contention informational rather than a fault, and amber on this
+  // page is the colour of something that wants acting on.
+  function racedMarker(cy) {
+    if (!cy.raced) return null;
+    var n = cy.race_losses || 0, recovered = cy.outcome !== "stand-down";
+    return el("span", {class:"badge b-blue", style:"margin-left:6px",
+      title: (recovered ? "recovered after " : "stood down after ") + n +
+             " lost claim" + (n === 1 ? "" : "s") + " to a peer"}, "↻ raced");
+  }
+
   function outcomeCell(cy) {
-    if (cy.ended_at) return outcomeBadge(cy.outcome);
+    if (cy.ended_at) return [ outcomeBadge(cy.outcome), racedMarker(cy) ];
     var n = liveCycleNode(cy);
     // "No clean end" is an accusation, so it is only made where the data can
     // support it. `data.js` from before the fleet strip existed carries no node
@@ -1208,10 +1228,16 @@
           // requirement 17d: this cycle lost the claim race for one or more
           // higher-ranked candidates before winning a lower one — healthy
           // contention recovered from, not a fault, so an informational
-          // badge rather than an amber/red one.
-          cy.race_losses ? el("span", {class:"badge b-blue", style:"margin-left:6px",
-            title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
-            text: "recovered race ×" + cy.race_losses}) : null ]),
+          // badge rather than an amber/red one. The word is "recovered", so
+          // the stand-down is excluded explicitly: `race_losses` counts the
+          // cycle's `claim-lost` events, and a cycle that lost *every*
+          // candidate has a count without a claim behind it. That one is
+          // named by `racedMarker` beside its outcome instead, which says
+          // stood-down and recovered apart.
+          (cy.race_losses && cy.outcome !== "stand-down")
+            ? el("span", {class:"badge b-blue", style:"margin-left:6px",
+                title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
+                text: "recovered race ×" + cy.race_losses}) : null ]),
         el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         // The number, not the word "PR": it is the same identifier the rest of

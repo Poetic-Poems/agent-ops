@@ -1162,6 +1162,51 @@ assert_eq "it is listed as void instead, with its evidence" "merged in #144" \
 assert_eq "and the blocks either side of it are untouched" "2" \
   "$(jq '.blocked | length' <<<"$zdata")"
 
+# --- Recovered and pure race losses are distinguished (issue #245) ---------------
+# A cycle that loses its first candidate to a peer but wins the next one must
+# not look like an ordinary first-try selection, and a cycle that loses every
+# candidate must say whether that was contention or a GitHub outage — both
+# read from the claim-lost/stand-down events alone, no new stage envelope
+# needed.
+w="$(new_home nodeW)"
+wlog="$w/.local/state/poetic-agents/log.jsonl"
+w_recovered="${today_day}T040000Z-recovered"
+w_raced="${today_day}T050000Z-raced"
+w_unreachable="${today_day}T060000Z-unreachable"
+{
+  # Recovered: one held loss, then a selection that names it, then real work.
+  printf '{"ts":"2026-07-28T00:00:00Z","cycle":"%s","node":"nodeW","event":"cycle-start"}\n' "$w_recovered"
+  printf '{"ts":"2026-07-28T00:00:01Z","cycle":"%s","node":"nodeW","event":"claim-lost","repo":"o/a","item":"1","branch":"td/1","rc":3,"cause":"held"}\n' "$w_recovered"
+  printf '{"ts":"2026-07-28T00:00:02Z","cycle":"%s","node":"nodeW","event":"selection","repo":"o/a","item":"2","source":"tech-debt","model":"m","title":"t","branch":"td/2","race_losses":1}\n' "$w_recovered"
+  printf '{"ts":"2026-07-28T00:00:03Z","cycle":"%s","node":"nodeW","event":"pr-raised","repo":"o/a","pr_url":"https://github.com/o/a/pull/9"}\n' "$w_recovered"
+  printf '{"ts":"2026-07-28T00:00:04Z","cycle":"%s","node":"nodeW","event":"cycle-end"}\n' "$w_recovered"
+  # Stood down after every candidate raced away.
+  printf '{"ts":"2026-07-28T01:00:00Z","cycle":"%s","node":"nodeW","event":"cycle-start"}\n' "$w_raced"
+  printf '{"ts":"2026-07-28T01:00:01Z","cycle":"%s","node":"nodeW","event":"claim-lost","repo":"o/a","item":"3","branch":"td/3","rc":3,"cause":"held"}\n' "$w_raced"
+  printf '{"ts":"2026-07-28T01:00:02Z","cycle":"%s","node":"nodeW","event":"stand-down","reason":"every candidate is already claimed elsewhere","candidates":1,"cause":"raced"}\n' "$w_raced"
+  printf '{"ts":"2026-07-28T01:00:03Z","cycle":"%s","node":"nodeW","event":"cycle-end"}\n' "$w_raced"
+  # Stood down over a GitHub outage — no contention to report.
+  printf '{"ts":"2026-07-28T02:00:00Z","cycle":"%s","node":"nodeW","event":"cycle-start"}\n' "$w_unreachable"
+  printf '{"ts":"2026-07-28T02:00:01Z","cycle":"%s","node":"nodeW","event":"claim-lost","repo":"o/a","item":"4","branch":"td/4","rc":1,"cause":"unreachable"}\n' "$w_unreachable"
+  printf '{"ts":"2026-07-28T02:00:02Z","cycle":"%s","node":"nodeW","event":"stand-down","reason":"GitHub could not be reached for any candidate — this is an outage, not contention","candidates":1,"cause":"unreachable"}\n' "$w_unreachable"
+  printf '{"ts":"2026-07-28T02:00:03Z","cycle":"%s","node":"nodeW","event":"cycle-end"}\n' "$w_unreachable"
+} > "$wlog"
+run_publish "$w"
+wdata="$(data_of "$w")"
+cycle_field() {  # cycle_field <data> <cid> <field>
+  jq -r --arg c "$2" --arg f "$3" '.cycles[] | select(.id==$c) | .[$f]' <<<"$1"
+}
+assert_eq "a recovered race is marked raced" "true" "$(cycle_field "$wdata" "$w_recovered" raced)"
+assert_eq "carrying the loss count that recovered" "1" "$(cycle_field "$wdata" "$w_recovered" race_losses)"
+assert_eq "and its outcome still reads as real work, not a stand-down" "pr-raised" \
+  "$(cycle_field "$wdata" "$w_recovered" outcome)"
+assert_eq "a pure race loss stands down raced" "raced" "$(cycle_field "$wdata" "$w_raced" standdown_cause)"
+assert_eq "and is marked raced too" "true" "$(cycle_field "$wdata" "$w_raced" raced)"
+assert_eq "an outage stands down unreachable, not raced" "unreachable" \
+  "$(cycle_field "$wdata" "$w_unreachable" standdown_cause)"
+assert_eq "and is not marked raced — no peer held anything" "false" \
+  "$(cycle_field "$wdata" "$w_unreachable" raced)"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"
