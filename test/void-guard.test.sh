@@ -488,6 +488,16 @@ assert_eq "a commit URL from a different repo than DEFAULT_SLUG keeps its own sl
   "$(void_evidence_cited_commit_shas \
     "https://github.com/Poetic-Poems/poetic-fiddle/commit/1a2b3c4 landed it" \
     "Poetic-Poems/poetic")"
+# The URL's SHA is taken in either case, and — the point of the assertion —
+# the pattern that matches it and the expression that extracts it agree on
+# that. When they did not, an upper-case SHA matched the pattern but not the
+# extraction, and the pair came back carrying the whole URL where its sha
+# belonged, refusing an honest citation with an unreadable reason.
+assert_eq "an upper-case SHA in a commit URL is extracted as the SHA, not the whole URL" \
+  "Poetic-Poems/agent-ops#30AA46F69EC8" \
+  "$(void_evidence_cited_commit_shas \
+    "see https://github.com/Poetic-Poems/agent-ops/commit/30AA46F69EC8 for the fix" \
+    "Poetic-Poems/poetic")"
 
 # --- void_pr_matches_item: the exact shape of the shipped defect --------------
 # #224's Co-Ordinator voided it citing "PR #232 implemented all five rewrites".

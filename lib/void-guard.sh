@@ -362,7 +362,12 @@ void_evidence_cited_pr_numbers() {
 #
 # The bare form requires 7-40 lowercase hex characters including at least one
 # digit, so an ordinary hex-looking word ("cafebabe", "deadbeef") with no
-# digit in it is not mistaken for a SHA.
+# digit in it is not mistaken for a SHA. The URL form needs neither rule — a
+# `/commit/` path is already unambiguous — and so takes the SHA in either
+# case, which the pattern and the extraction below must agree on: a grep that
+# matched `/commit/<UPPERCASE>` while the extraction did not would yield a
+# pair whose "sha" was the whole URL, and refuse an honest citation with an
+# unreadable reason.
 void_evidence_cited_commit_shas() {
   local text="$1" default_slug="$2" by_word by_at line sha slug
   by_word="$(grep -oiE 'commit[[:space:]]+[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null \
@@ -378,9 +383,9 @@ void_evidence_cited_commit_shas() {
     while IFS= read -r line; do
       [[ -n "$line" ]] || continue
       slug="$(sed -E 's#^https://github\.com/([^/]+/[^/]+)/commit/.*#\1#' <<<"$line")"
-      sha="$(sed -E 's#.*/commit/([0-9a-f]+)$#\1#' <<<"$line")"
+      sha="$(sed -E 's#.*/commit/([0-9a-fA-F]+)$#\1#' <<<"$line")"
       printf '%s#%s\n' "$slug" "$sha"
-    done < <(grep -oiE 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/commit/[0-9a-f]{7,40}\b' <<<"$text" 2>/dev/null || true)
+    done < <(grep -oE 'https://github\.com/[^/[:space:]]+/[^/[:space:]]+/commit/[0-9a-fA-F]{7,40}\b' <<<"$text" 2>/dev/null || true)
   } | sort -u
 }
 
