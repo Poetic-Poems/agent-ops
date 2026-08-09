@@ -49,6 +49,13 @@
 # no-op and there is nothing left that puts the PR back in front of the human.
 # See its own comment for what that cost.
 #
+# `ensure_human_reviewer` is the same promise again, for the case neither of
+# the above covers: a ready pull request with nobody's review currently
+# blocking it — first-round, or already approved — where the human still has
+# not been *asked*, only auto-subscribed by CODEOWNERS and then dropped from
+# the queue the moment they answered (requirement 38 in
+# docs/IMPLEMENTATION-PIPELINE-SPEC.md).
+#
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail` and a library that re-sets options silently
 # changes its caller.
@@ -226,6 +233,46 @@ _handoff_blocking_reviewers() {
     | unique | .[]' <<<"$lines" 2>/dev/null || return 1
 }
 
+# _handoff_known_reviewers SLUG NUMBER
+# Print, one per line, the login of every non-bot account that has ever
+# submitted a review on this pull request — any state, not only
+# `CHANGES_REQUESTED` as `_handoff_blocking_reviewers` reads. Returns
+# non-zero, printing nothing, on the same "could not ask" terms as the other
+# `_handoff_*` readers.
+#
+# This is `ensure_human_reviewer`'s answer to a fact `_handoff_blocking_
+# reviewers` never had to face: GitHub will not let a pull request's author
+# approve it or request changes on it, so a `CHANGES_REQUESTED` reviewer can
+# never be the author, but a review target chosen from *config* can be — on
+# this system's own pull requests, they routinely are the same account (see
+# `ensure_human_reviewer`). Whoever has already reviewed this pull request is
+# in almost every case a login CODEOWNERS itself picked, without this file ever
+# reading CODEOWNERS or knowing a second account exists behind one human's
+# approvals.
+#
+# "Almost every": a `COMMENT` review *is* open to the author, so this list can
+# contain them, and `ensure_human_reviewer` filters them out of it rather than
+# trusting the reviews list to have done so.
+_handoff_known_reviewers() {
+  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" lines
+  lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
+            --jq '.[] | select(.submitted_at != null)
+                      | {login: .user.login,
+                         bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]")))}' \
+            2>/dev/null)" || return 1
+  jq -s -r '[.[] | select(.bot | not) | .login] | unique | .[]' <<<"$lines" 2>/dev/null || return 1
+}
+
+# _handoff_pr_author SLUG NUMBER
+# Print the login of the pull request's author, or return non-zero, printing
+# nothing, when GitHub could not be asked.
+_handoff_pr_author() {
+  local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" login
+  login="$("$gh_bin" api "repos/$slug/pulls/$number" --jq '.user.login // empty' 2>/dev/null)" \
+    || return 1
+  printf '%s' "$login"
+}
+
 # confirm_review_requested PR_URL
 # Ensure the humans who asked for changes have been asked to look again, and
 # say what that took.
@@ -340,6 +387,161 @@ confirm_review_requested() {
     return 1
   fi
   if [[ -n "$(comm -23 <(sort -u <<<"$blocking") <(sort -u <<<"$pending"))" ]]; then
+    printf 'failed\t%s' "$joined"
+    return 1
+  fi
+
+  printf 'requested\t%s' "$joined"
+  return 0
+}
+
+# ensure_human_reviewer PR_URL ASSIGNEE
+# Ensure a live review request is on a pull request whose next reviewer
+# action belongs to a human, for the case `confirm_review_requested` does not
+# cover: nobody's `CHANGES_REQUESTED` is blocking it, so there is no blocking
+# reviewer to re-request from, and yet the pull request may still be sitting
+# exactly where a human needs to look — a first review nobody has given, or
+# an approval nobody has acted on since.
+#
+# This is agent-ops#242's poetic-fiddle #170: approved, green, and idle for
+# 6.8 days, because CODEOWNERS' review request is consumed the moment the
+# review is submitted and nothing ever asks again. Requesting review from
+# someone who has already approved clears nothing they said — GitHub does not
+# treat it as withdrawing the approval — it only puts the pull request back in
+# the `pulls/review-requested` queue, which is the one dashboard a human
+# actually watches. That is the whole point: this is a visibility nudge
+# wearing the review-request mechanism, not a second review being solicited.
+#
+# The target is `_handoff_known_reviewers` (whoever has ever reviewed this
+# pull request, in any state) before it is ever ASSIGNEE. That order matters
+# on this system's own pull requests specifically: they are authored under
+# the same account `enabler_assignee` routinely names (issue assignment has
+# no such conflict; PR review does), and GitHub will refuse a review request
+# aimed at a pull request's own author with a 422. CODEOWNERS already solved
+# this once, automatically, the moment the pull request went ready — it never
+# proposes the author as a reviewer of their own change — so reading who it
+# already picked is both correct and one API call, where re-deriving the same
+# answer from CODEOWNERS' file and org membership would be many. ASSIGNEE is
+# the fallback for the one case that leaves nobody to read: a pull request
+# CODEOWNERS never touched at all (no matching rule, or the repo does not use
+# one).
+#
+# Either way the author is struck off the candidates before anything is asked,
+# never asked-for-and-refused: a 422 is not a transient failure worth warning
+# about every cycle, it is a fact about the configuration that will not change
+# tomorrow, and one invalid login fails the whole POST rather than its own
+# entry. That filter is what makes `known` safe to trust — a `COMMENT` review
+# is open to a pull request's author, so the reviews list can name them (see
+# `_handoff_known_reviewers`) — and it is why ASSIGNEE equal to the author is a
+# `skip` rather than an attempt.
+#
+# Prints one of:
+#   skip       PR_URL is empty, the PR is a draft, something is already
+#               `CHANGES_REQUESTED`-blocking it (confirm_review_requested's
+#               job, not this one's), or the only candidate target is the
+#               pull request's own author.
+#   already    every candidate target already has a pending review request.
+#   requested  this call asked, and GitHub now shows it pending.
+#   failed     the request could not be read, or did not take.
+#
+# Exit status is 0 for `skip`, `already` and `requested`, 1 for `failed` — the
+# same convention as `confirm_review_requested`, so callers can share one
+# `case` shape across both.
+ensure_human_reviewer() {
+  local url="${1:-}" assignee="${2:-}" gh_bin="${HANDOFF_GH:-gh}"
+  local parts slug number draft blocking known author targets pending
+  local missing joined
+  local -a args=()
+
+  if [[ -z "$url" ]]; then
+    printf 'skip'
+    return 0
+  fi
+  if ! parts="$(_handoff_pr_parts "$url")"; then
+    printf 'failed'
+    return 1
+  fi
+  IFS=$'\t' read -r slug number <<<"$parts"
+
+  if ! draft="$(_handoff_draft_flag "$url")"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ "$draft" == "true" ]]; then
+    printf 'skip'
+    return 0
+  fi
+
+  if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ -n "$blocking" ]]; then
+    printf 'skip'
+    return 0
+  fi
+
+  if ! known="$(_handoff_known_reviewers "$slug" "$number")"; then
+    printf 'failed'
+    return 1
+  fi
+  if ! author="$(_handoff_pr_author "$slug" "$number")"; then
+    printf 'failed'
+    return 1
+  fi
+
+  # The author is not a legal review target whichever list proposed them, so
+  # the filter is applied to both. GitHub refuses `APPROVE` and
+  # `REQUEST_CHANGES` from a pull request's own author but accepts a `COMMENT`
+  # review — and a Reviewer's findings may be filed exactly that way
+  # (`prompts/reviewer.md` offers `gh pr review --comment`), under the same
+  # account that raised the pull request. One such review would otherwise put
+  # the author into `known`, and the POST below 422s as a whole when any one
+  # login on it is invalid: it would add *nobody*, not everybody-but-the-author,
+  # switching requirement 38a's guarantee off on precisely the pull requests
+  # this system raises.
+  if [[ -n "$known" && -n "$author" ]]; then
+    known="$(grep -Fxv -e "$author" <<<"$known" || true)"
+  fi
+
+  if [[ -n "$known" ]]; then
+    targets="$known"
+  elif [[ -n "$assignee" && "$assignee" != "$author" ]]; then
+    targets="$assignee"
+  else
+    printf 'skip'
+    return 0
+  fi
+
+  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
+                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+    printf 'failed'
+    return 1
+  fi
+
+  joined="$(paste -sd, <<<"$targets")"
+  missing="$(comm -23 <(sort -u <<<"$targets") <(sort -u <<<"$pending"))"
+  if [[ -z "$missing" ]]; then
+    printf 'already\t%s' "$joined"
+    return 0
+  fi
+
+  while IFS= read -r login; do
+    [[ -n "$login" ]] && args+=(-f "reviewers[]=$login")
+  done <<<"$missing"
+
+  # Same non-answer as `confirm_review_requested`'s POST: the exit status is
+  # not the answer because a request that lands can still be raced away by a
+  # concurrent submitted review. Re-reading the pending list is the answer.
+  "$gh_bin" api -X POST "repos/$slug/pulls/$number/requested_reviewers" \
+    "${args[@]}" >/dev/null 2>&1 || true
+
+  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
+                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+    printf 'failed'
+    return 1
+  fi
+  if [[ -n "$(comm -23 <(sort -u <<<"$targets") <(sort -u <<<"$pending"))" ]]; then
     printf 'failed\t%s' "$joined"
     return 1
   fi

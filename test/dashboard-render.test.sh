@@ -83,6 +83,16 @@ assert_contains() {
   fi
 }
 
+assert_eq() {
+  local desc="$1" expected="$2" actual="$3"
+  if [[ "$expected" == "$actual" ]]; then
+    printf 'ok   - %s\n' "$desc"
+  else
+    printf 'FAIL - %s\n     expected: %s\n     actual:   %s\n' "$desc" "$expected" "$actual"
+    failures=$(( failures + 1 ))
+  fi
+}
+
 assert_not_contains() {
   local desc="$1" needle="$2" haystack="$3"
   if [[ "$haystack" != *"$needle"* ]]; then
@@ -123,18 +133,28 @@ assert_contains "and the idle peer is tagged by name too" \
   "poetic-2" "$out"
 assert_contains "the header summarises how many of the fleet are running" \
   "1 of 4 nodes running" "$out"
-# The log tail's Node / Repo / Actor cell. Three fixed slots read positionally,
-# so what each one is claiming does not depend on how many of them the event
-# happened to carry — the case that used to make the old "Where" column
-# ambiguous, since a lone token could be either the repo or the stage.
-assert_contains "the log tail heads its where-column with all three data" \
+# The log tail's Node, Repo and Actor columns. Three fixed cells read
+# positionally, so what each one is claiming does not depend on how many of
+# them the event happened to carry — the case that used to make the old
+# combined "Where" column ambiguous, since a lone token could be either the
+# repo or the stage. Checked against the tree flattened to one line, same as
+# the tech-debt badge check above: the harness serialises each node on its
+# own line at its own depth, so a cell and its text are only adjacent once
+# the newlines and indentation are gone.
+logflat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
+assert_contains "the log tail heads its three where-columns separately" \
+  "<th> Time <th> Event <th> Node <th> Repo <th> Actor <th> Detail" "$logflat"
+assert_not_contains "and no longer as one combined column" \
   "Node / Repo / Actor" "$out"
 assert_contains "a stage event names the node it ran on and the actor that ran" \
-  "poetic-1 / — / coordinator" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> — <td class="mono muted"> coordinator' \
+  "$logflat"
 assert_contains "an event whose actor is named in 'by' rather than 'stage' still names it" \
-  "poetic-2 / poetic-fiddle / enabler" "$out"
-assert_contains "and a missing node keeps its slot rather than shifting the repo into it" \
-  "— / agent-ops / —" "$out"
+  '<td class="mono muted"> poetic-2 <td class="mono muted"> poetic-fiddle <td class="mono muted"> enabler' \
+  "$logflat"
+assert_contains "and a missing node keeps its own cell rather than shifting the repo into it" \
+  '<td class="mono muted"> — <td class="mono muted"> agent-ops <td class="mono muted"> —' \
+  "$logflat"
 
 # --- Image-drift badges on the fleet strip (#155) ---------------------------
 # poetic-1 (self) is current and gets no badge; poetic-2 predates the check
@@ -173,6 +193,23 @@ assert_contains "the open-PR panel renders the pull request" \
   "fix the thing" "$out"
 assert_contains "with its checks summarised" \
   "checks pass" "$out"
+# requirement 17d / #248: a cycle whose selection carried race_losses shows
+# the recovered-race badge in the cycle history, and a cycle with none does
+# not — the second and third cycles in this fixture carry no race_losses at
+# all, so an absent field must render nothing, not a badge for zero losses.
+assert_contains "a cycle that recovered a lost claim race shows the badge" \
+  "recovered race ×2" "$out"
+assert_contains "coloured informational, not a warning — healthy contention, not a fault" \
+  'class="badge b-blue"' "$out"
+# Back-pressure gauge (agent-ops#246): 3 open agent PRs, one of them
+# (#200) a ready PR with no reviewDecision — waiting on a human, not the
+# pipeline — so the gauge's own figure is 2 (the draft plus the
+# changes-requested PR) against max_open_agent_prs, with the raw open
+# total and the human-queue count shown alongside it.
+assert_contains "the back-pressure gauge trips on the adjusted count, not the raw total" \
+  "/ 3 max" "$out"
+assert_contains "and names the raw open total and the human-queue count beside it" \
+  "3 open, 1 waiting on human" "$out"
 # Single-quoted: these are literal rendered dollar amounts, not shell
 # expansions, so the SC2016 the pinned linter raises on them is a false
 # positive.
@@ -188,6 +225,27 @@ assert_contains "spend-by-model renders a bar per model" \
   "opus-5" "$out"
 assert_contains "spend-by-actor renders a bar per actor" \
   "implementor" "$out"
+# issue #245: a cycle that recovered from a lost claim carries a second badge
+# beside its outcome, distinct from the outcome badge itself.
+assert_contains "a recovered race is marked, beside its outcome badge" \
+  "raced" "$out"
+assert_eq "and no other cycle in the fixture is marked raced" "1" \
+  "$(grep -o 'raced' <<<"$out" | wc -l)"
+assert_contains "a recovered race also names its count where the item renders" \
+  "recovered race ×2" "$out"
+
+# --- raced-standdown.json: a cycle that lost every candidate (issue #245) ------
+# `race_losses` counts this cycle's `claim-lost` events, so a cycle that never
+# won a claim carries one too. It is marked raced — that is what its "Stood
+# down" badge cannot say on its own — but it recovered nothing, and the
+# "recovered race ×N" badge must not appear on it.
+sd="$(render raced-standdown.json)" || { printf 'FAIL - raced-standdown.json did not render:\n%s\n' "$sd"; exit 1; }
+assert_contains "a cycle that lost every candidate still reads as stood down" \
+  "Stood down" "$sd"
+assert_contains "and is marked raced, which 'Stood down' alone does not say" \
+  "raced" "$sd"
+assert_not_contains "but is never called a recovered race" \
+  "recovered race" "$sd"
 
 # --- #186: the spend-today card's persisted GMT/local/24h toggle -----------------
 # `render`'s optional second argument seeds the harness's localStorage stub, so
@@ -218,14 +276,22 @@ out_local="$(render finished.json '{"dashboard.spendMode":"local"}')" || \
 assert_contains "a persisted 'local' choice relabels the card too" \
   "today (local)" "$out_local"
 
+# Same per-cell check as running.json above, against this fixture's own log
+# tail: flattened, since a cell and its text are only adjacent once the
+# newlines and indentation the serialiser inserts are gone.
+finflat="$(tr '\n' ' ' <<<"$out" | tr -s ' ')"
 assert_contains "the review pipeline's single agent is named as the Project Reviewer" \
-  "ockham-container / poetic / project-reviewer" "$out"
+  '<td class="mono muted"> ockham-container <td class="mono muted"> poetic <td class="mono muted"> project-reviewer' \
+  "$finflat"
 assert_contains "a pr-ready names the actor that took the PR out of draft" \
-  "poetic-1 / — / reviewer" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> — <td class="mono muted"> reviewer' \
+  "$finflat"
 assert_contains "the clone step names no actor, being a stage with no agent in it" \
-  "poetic-1 / agent-ops / —" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> agent-ops <td class="mono muted"> —' \
+  "$finflat"
 assert_contains "and a cycle-level event names neither repo nor actor" \
-  "poetic-1 / — / —" "$out"
+  '<td class="mono muted"> poetic-1 <td class="mono muted"> — <td class="mono muted"> —' \
+  "$finflat"
 assert_contains "a single-node page's header carries live state itself" \
   "last cycle" "$out"
 assert_not_contains "with no fleet strip to duplicate it" \

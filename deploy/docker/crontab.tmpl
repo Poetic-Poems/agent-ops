@@ -6,6 +6,15 @@
 # hash of NODE_NAME by default, CYCLE_MINUTE in .env to choose, drawn only
 # from the minutes schedule.excluded_minutes does not rule out.
 #
+# @CYCLE_MINUTE@ is a comma-separated minute list, not a single minute
+# (issue #248, "faster heartbeat"): the node's own minute, then every
+# schedule.cycle_interval_minutes after it within the hour, each occurrence
+# dropped if it lands on an excluded minute. cron's minute field accepts
+# such a list natively. cycle_interval_minutes=60 collapses this back to
+# the single-minute, once-per-hour shape every release before it carried.
+# An idle firing stays cheap: lib/noop-skip.sh short-circuits before the
+# Co-Ordinator runs when nothing a fingerprint covers has changed.
+#
 # Everything not a placeholder is documented in the baked crontab, which is
 # also the fallback whenever this template cannot be rendered.
 

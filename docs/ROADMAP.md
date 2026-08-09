@@ -43,6 +43,7 @@ says why.
 | D12 | Model providers | **Not limited to the Claude family.** Customers choose the model for each actor from any supported provider. Claude is the first-supported and reference provider; how non-Claude providers are executed (the substrate question) is parked in Open questions with a decide-by gate. |
 | D13 | Product name | **Pullwright.** Decided July 2026, ahead of its Phase 1 gate; the GitHub organisation ([github.com/Pullwright](https://github.com/Pullwright)) is created and the namespace secured. |
 | D14 | Efficiency | **Per-container efficiency is an explicit product goal from the start.** Decided August 2026. Every container is held to budgets for CPU load, memory footprint, disk usage, and bandwidth, alongside — never at the expense of — quality and speed of delivery. Where these pull against each other, the trade-off is a calculated decision recorded in the change that makes it, never an accident discovered on a bill. Kubernetes requests and limits (Phase 2) become one enforcement mechanism, but the budgets exist whatever the control plane. |
+| D15 | Tech-debt management | **The tech-debt management framework is part of the offering.** Decided August 2026. The per-item register proven across the Poetic repositories — append-only item files, scope-coded ID grammar, `td/<id>` claim locking, allocation/lookup/validation tooling, CI enforcement, drift-synced copies in consumer repositories — ships with the suite, on the same compounding logic as D7: the register is already one of the sources the pipeline works down. Canonical tooling today lives in `Poetic-Poems/poetic`; productisation moves it into the product repository. |
 
 ## End state
 
@@ -63,6 +64,10 @@ chooses:
   at both tiers, Reviewer at both tiers, Enabler) from any supported
   provider — not only the Claude family — plus schedules, work sources,
   prompts, and repo conventions.
+- Tech-debt management built in (D15): the per-item register, its tooling
+  and CI guards ship with the product, race-safe for concurrent human and
+  agent writers, and the pipeline works registers down as an ordinary
+  source.
 - Several supported hosting options.
 - Source-available, under a marketable product name.
 
@@ -160,6 +165,13 @@ Pullwright organisation and carries its licence.
 - [ ] Create the product repository in the Pullwright organisation (the
       name and org exist — D13); move the pipeline; reduce agent-ops to
       consumer config + deployment (D8). *[interactive]*
+- [ ] Adopt the tech-debt management framework into the product (D15): move
+      the canonical register tooling out of `Poetic-Poems/poetic` into the
+      product repository (consumer repositories keep drift-synced copies),
+      and close the known allocation gap — atomic, collision-proof ID
+      reservation via the `td/<id>` ref-push lock the claiming workflow
+      already uses (`Poetic-Poems/poetic` register item TD-PPpoet-26080801).
+      *[interactive]*
 - [ ] Select and apply the source-available licence (D5). *[interactive]*
 
 ## Phase 2 — Zero-touch fleet

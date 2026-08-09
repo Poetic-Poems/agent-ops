@@ -33,6 +33,12 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 DOCTOR="$SCRIPT_DIR/scripts/doctor.sh"
+# shellcheck source=lib/version.sh
+source "$SCRIPT_DIR/lib/version.sh"
+# The same slug doctor.sh's own ruleset check resolves for itself — derived
+# rather than hardcoded, so this suite is not the thing that breaks when this
+# checkout's remote (or a built image's stamp) differs from the usual one.
+self_repo="$(jq -r '.repo // empty' <<<"$(agent_ops_version "$SCRIPT_DIR")" 2>/dev/null)"
 CONFIG="$SCRIPT_DIR/config.json"
 
 tmp="$(mktemp -d)"
@@ -69,12 +75,14 @@ assert_not_contains() {
 }
 
 # --- The stubbed gh -------------------------------------------------------
-# Two endpoints doctor.sh's new checks reach: `repos/<slug>` (write access +
+# Four endpoints doctor.sh's new checks reach: `repos/<slug>` (write access +
 # archived, this suite's STUB_REPO_JSON piped through the *real* jq — the
 # same filter doctor.sh passes to --jq — so what is under test is doctor.sh's
-# reaction to gh's shape, not a hand-rolled restatement of it) and
-# `repos/<slug>/labels`, answered empty so the pre-existing label check
-# neither fails nor adds noise this suite has to filter around. `auth
+# reaction to gh's shape, not a hand-rolled restatement of it), `repos/<slug>/
+# labels`, answered empty so the pre-existing label check neither fails nor
+# adds noise this suite has to filter around, and `repos/<slug>/rulesets` +
+# `repos/<slug>/rulesets/<id>` (STUB_RULESETS_JSON, STUB_RULESET_DETAIL_JSON —
+# the closing-keyword ruleset-drift check, TD-PPagop-26080802). `auth
 # status`, `api user` and `--version` are what the rest of doctor.sh's
 # GitHub/Toolchain sections call regardless of what this suite is testing.
 stub_bin="$tmp/bin"
@@ -100,6 +108,16 @@ case "$1" in
     case "$endpoint" in
       user) printf '"stub-user"\n' ;;
       repos/*/labels) printf '' ;;
+      repos/*/rulesets/*)
+        [[ "${STUB_RULESET_DETAIL_FAIL:-0}" != "1" ]] || exit 1
+        detail_json="${STUB_RULESET_DETAIL_JSON:-}"
+        [[ -n "$detail_json" ]] || detail_json='{}'
+        printf '%s' "$detail_json" | jq -c "$jq_filter" ;;
+      repos/*/rulesets)
+        [[ "${STUB_RULESETS_FAIL:-0}" != "1" ]] || exit 1
+        rulesets_json="${STUB_RULESETS_JSON:-}"
+        [[ -n "$rulesets_json" ]] || rulesets_json='[]'
+        printf '%s' "$rulesets_json" | jq -c "$jq_filter" ;;
       repos/*)
         # Not `${STUB_REPO_JSON:-{}}` — bash's brace-matching for a `${VAR:-…}`
         # default gets confused when the default text itself contains braces,
@@ -226,6 +244,49 @@ out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},
 assert_contains "state_repo unwritable is reported with its own wording" \
   "[fail] $slug is readable but not writable with this token" "$out"
 
+# --- closing-keyword ruleset drift (requirement 25a, TD-PPagop-26080802) ---
+# doctor.sh resolves its own repository's slug via lib/version.sh, not from
+# config.repos, so every case below fires regardless of what $base_config
+# names — hence no per-case config file, just run_doctor with the ruleset
+# stubs set. A non-branch or non-active ruleset in the list is included in
+# every fixture to confirm it is filtered out rather than merely absent.
+noise_ruleset='{"id":1,"target":"tag","enforcement":"active"},{"id":2,"target":"branch","enforcement":"disabled"}'
+
+if [[ -z "$self_repo" ]]; then
+  printf 'skip - closing-keyword ruleset drift cases (could not resolve this checkout'\''s own repo slug)\n'
+else
+  run_doctor \
+    STUB_RULESETS_JSON="[$noise_ruleset,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+    STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"closing-keyword","integration_id":15368}]}}]}'
+  assert_contains "closing-keyword required and pinned to 15368 is ok" \
+    "[ ok ] $self_repo's \"default\" branch ruleset requires \"closing-keyword\", pinned to integration_id 15368" "$out"
+
+  run_doctor \
+    STUB_RULESETS_JSON="[$noise_ruleset,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+    STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"shellcheck","integration_id":15368}]}}]}'
+  assert_contains "closing-keyword absent from required_status_checks is a warn, naming requirement 25a's gap" \
+    "[warn] $self_repo's \"default\" branch ruleset does not require \"closing-keyword\" — the check reports without blocking the merge" "$out"
+
+  run_doctor \
+    STUB_RULESETS_JSON="[$noise_ruleset,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+    STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"closing-keyword","integration_id":99999}]}}]}'
+  assert_contains "closing-keyword required but unpinned is a warn — any app of that name could satisfy it" \
+    "[warn] $self_repo's \"default\" branch ruleset requires \"closing-keyword\" without pinning integration_id 15368" "$out"
+
+  run_doctor STUB_RULESETS_JSON="[$noise_ruleset]"
+  assert_contains "no active branch ruleset targets the default branch — a warn, not a fail" \
+    "[warn] $self_repo has no active branch ruleset targeting the default branch" "$out"
+
+  run_doctor STUB_RULESETS_FAIL=1
+  assert_contains "the rulesets endpoint being unreachable is a skip, not a fail" \
+    "[skip] closing-keyword ruleset enforcement — repos/$self_repo/rulesets is not reachable with this token" "$out"
+
+  run_doctor \
+    STUB_RULESETS_JSON="[$noise_ruleset,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+    STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"closing-keyword","integration_id":15368}]}}]}'
+  assert_eq "and a fully-enforced ruleset does not fail doctor.sh" "0" "$rc"
+fi
+
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'
@@ -244,13 +305,14 @@ assert_not_contains "and is not reported as a failure" "[fail] claude" "$out"
 # --- The rendered crontab ---------------------------------------------------
 
 # CYCLE_MINUTE=1 makes the cycle (and therefore review) minute deterministic —
-# 1, plus base_config's schedule.review_offset_minutes (29), past
+# 1, repeating every base_config's schedule.cycle_interval_minutes (15) —
+# 1,16,31,46 — plus base_config's schedule.review_offset_minutes (29), past
 # schedule.review_hour (3) — so the report's minute math is checked exactly,
 # not just for the presence of expected substrings.
 run_doctor CYCLE_MINUTE=1
 assert_contains "a successful render reports the node name" "node " "$out"
-assert_contains "and the cycle minute CYCLE_MINUTE asks for" \
-  "cycle at minute 1 past" "$out"
+assert_contains "and the cycle minute(s) CYCLE_MINUTE asks for, every cycle_interval_minutes" \
+  "cycle at minute(s) 1,16,31,46 past" "$out"
 assert_contains "and the review minute derived from cycle + review_offset_minutes" \
   "review at 30 past 3:00" "$out"
 assert_contains "and the heartbeat cadence" "heartbeat every 5 min" "$out"

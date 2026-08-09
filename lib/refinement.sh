@@ -2,9 +2,9 @@
 #
 # lib/refinement.sh — under-specification as a class of block: what the
 # Co-Ordinator must produce to report one, what the Script records, which items
-# the label is projected onto, how a human's own hand-applied label is read
-# back, and how many refinements one Enabler engagement takes on (requirements
-# 16a, 34e, 34g, 35d, 36b).
+# the label and the assignment are projected onto, how a human's own
+# hand-applied label is read back, and how many refinements one Enabler
+# engagement takes on (requirements 16a, 34e, 34g, 35d, 36b, 38b).
 #
 # ## The gap this closes
 #
@@ -16,6 +16,15 @@
 # non-answer hourly, and the one person who could fix it never learning the item
 # was starving. The failure has this system's signature shape: nothing looks
 # broken.
+#
+# A label alone turned out to be half the fix: agent-ops#203 was exactly this
+# shape and labelled correctly, yet sat invisible because nothing assigned it
+# — a human's Assigned-to-me dashboard is what they actually watch, and a
+# label matches nothing there. Requirement 38b closes that second half: the
+# same projection the label gets (applied when the block is recorded, removed
+# when it clears) now also assigns `enabler_assignee`, so a Co-Ordinator's
+# `needs_refinement` report reaches the human's own dashboard the moment it is
+# recorded, not only once the Enabler later escalates it.
 #
 # ## Why a block rather than a new state
 #
@@ -144,29 +153,33 @@ refinement_issue_number() {
          then ((.item // "") | tostring) else empty end' <<<"$1" 2>/dev/null || true
 }
 
-# refinement_block_fields ENTRY_JSON [LABEL]
+# refinement_block_fields ENTRY_JSON [LABEL] [ASSIGNEE]
 # Print the extra fields the `attempt-failed` event carries for this block
 # (requirement 34e): the `kind` marker, the entry's `missing` promoted to
 # `unblock_condition` — it is exactly what a later Co-Ordinator or the Enabler
 # reads to judge whether the item has since become selectable — the `evidence`
 # and the reporting `source`, plus `needs_refinement_label` when the Script
-# actually managed to apply the label.
+# actually managed to apply the label, and `needs_refinement_assignee` when it
+# actually managed to assign the issue (requirement 38b).
 #
-# The label is recorded on the event, not assumed from config, because it is
-# what a later cycle removes: a label the Script did not apply is one it must
-# not claim to have removed, and config may have changed in between.
+# The label and the assignee are recorded on the event, not assumed from
+# config, because they are what a later cycle removes: a label or an
+# assignment the Script did not apply is one it must not claim to have
+# removed, and config may have changed in between.
 #
 # `$lbl`, not `$label`: `label` is a jq keyword, and a program that fails to
 # compile here would silently record a block with no fields at all — the same
 # trap `maybe_run_enabler` documents at its own jq call.
 refinement_block_fields() {
-  local entry="$1" label="${2:-}"
-  jq -nc --argjson e "$entry" --arg kind "$REFINEMENT_BLOCK_KIND" --arg lbl "$label" '
+  local entry="$1" label="${2:-}" assignee="${3:-}"
+  jq -nc --argjson e "$entry" --arg kind "$REFINEMENT_BLOCK_KIND" \
+    --arg lbl "$label" --arg asn "$assignee" '
     {kind: $kind,
      unblock_condition: ($e.missing // ""),
      evidence: ($e.evidence // ""),
      source: ($e.source // "")}
-    + (if $lbl == "" then {} else {needs_refinement_label: $lbl} end)' \
+    + (if $lbl == "" then {} else {needs_refinement_label: $lbl} end)
+    + (if $asn == "" then {} else {needs_refinement_assignee: $asn} end)' \
     2>/dev/null || printf '{}'
 }
 
@@ -195,6 +208,25 @@ refinement_label_targets() {
     | unique | .[]' <<<"$blocked" 2>/dev/null || true
 }
 
+# refinement_assignee_targets BLOCKED_JSON ITEM [REPO]
+# Print, one per line as `<repo>\t<number>\t<assignee>`, every open refinement
+# block for ITEM whose event records a projected assignment (requirement 38b).
+# Same shape and the same reasoning as `refinement_label_targets` — read that
+# comment for why REPO empty matches every repo.
+refinement_assignee_targets() {
+  local blocked="$1" item="$2" repo="${3:-}"
+  jq -r --arg it "$item" --arg repo "$repo" --arg kind "$REFINEMENT_BLOCK_KIND" '
+    [ .[]?
+      | select((.kind // "") == $kind)
+      | select($it != "" and (((.item // "") | tostring) == $it))
+      | select((.repo // "") != "")
+      | select($repo == "" or (.repo // "") == $repo)
+      | select((.needs_refinement_assignee // "") != "")
+      | select(((.item // "") | tostring) | test("^[0-9]+$"))
+      | "\(.repo)\t\(.item)\t\(.needs_refinement_assignee)" ]
+    | unique | .[]' <<<"$blocked" 2>/dev/null || true
+}
+
 # refinement_label_add REPO NUMBER LABEL
 # refinement_label_remove REPO NUMBER LABEL
 # Project the label onto an issue, or take it off again. Return non-zero when
@@ -211,6 +243,91 @@ refinement_label_remove() {
   local repo="$1" number="$2" label="$3" gh_bin="${REFINEMENT_GH:-gh}"
   [[ -n "$repo" && -n "$number" && -n "$label" ]] || return 1
   "$gh_bin" issue edit "$number" -R "$repo" --remove-label "$label" >/dev/null 2>&1
+}
+
+# refinement_assignee_add REPO NUMBER ASSIGNEE
+# refinement_assignee_remove REPO NUMBER ASSIGNEE
+# Assign `enabler_assignee` to the issue behind a Co-Ordinator-recorded block,
+# or take the assignment off again — the other half of requirement 38b's
+# guarantee that "gated on a decision the human has not made" is never left as
+# invisible as agent-ops#203 was (labelled, unassigned, absent from
+# Assigned-to-me) before it was fixed by hand. Same failure contract as the
+# label functions above: a repo where the assignee is not a valid collaborator
+# is the practical failure mode, and the caller records the block regardless —
+# losing the projection costs a human's dashboard, losing the block would cost
+# the item its escape path.
+refinement_assignee_add() {
+  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}"
+  [[ -n "$repo" && -n "$number" && -n "$assignee" ]] || return 1
+  "$gh_bin" issue edit "$number" -R "$repo" --add-assignee "$assignee" >/dev/null 2>&1
+}
+
+refinement_assignee_remove() {
+  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}"
+  [[ -n "$repo" && -n "$number" && -n "$assignee" ]] || return 1
+  "$gh_bin" issue edit "$number" -R "$repo" --remove-assignee "$assignee" >/dev/null 2>&1
+}
+
+# refinement_assignee_project REPO NUMBER ASSIGNEE
+# Put ASSIGNEE on the issue iff they are not already there, and say whether
+# the resulting assignment is this projection's to remove later. This — not
+# `refinement_assignee_add` — is what `log_needs_refinement_items` calls,
+# because `gh issue edit --add-assignee` succeeds as a no-op on an issue
+# already assigned: an unconditional add-and-record would later let
+# `release_refinement_label` take an assignment off that a human had made for
+# their own reasons before the block ever existed. Requirement 38b's whole
+# purpose is that Assigned-to-me is the list the human actually watches, and
+# a false *removal* from it costs more than any stale label does.
+#
+# The label deliberately keeps its unconditional lifecycle, and the asymmetry
+# is a decision, not an oversight: `needs-refinement` is this system's own
+# vocabulary — a hand-applied instance is itself read back as a report
+# (requirement 34g), so label and block state are convergent by design and
+# taking the label off a clearing block is correct whoever applied it. An
+# assignment is a general-purpose signal that predates and outlives this
+# mechanism; a pre-existing one is the human's own statement about the issue,
+# and not this projection's to withdraw.
+#
+# Prints one word:
+#   added       ASSIGNEE was absent and is now on the issue — record them as
+#               `needs_refinement_assignee`, so the block's clearing takes
+#               the assignment off again.
+#   present     ASSIGNEE was already on the issue. Nothing is touched and
+#               nothing must be recorded.
+#   unrecorded  the assignee list could not be read, so the add was attempted
+#               best-effort but must not be recorded — over-holding an
+#               assignment is a cosmetic fault on an issue the human was
+#               genuinely wanted on; removing one that may have pre-existed
+#               is the defect this function exists to prevent.
+#   failed      the list was readable, ASSIGNEE was absent, and the add would
+#               not take (not a collaborator on that repo is the practical
+#               case) — same contract as `refinement_label_add`: the caller
+#               records the block regardless.
+#
+# Exit status is 0 for `added` and `present` (the projection is healthy),
+# 1 for `unrecorded` and `failed`.
+refinement_assignee_project() {
+  local repo="$1" number="$2" assignee="$3" gh_bin="${REFINEMENT_GH:-gh}" existing
+  if [[ -z "$repo" || -z "$number" || -z "$assignee" ]]; then
+    printf 'failed'
+    return 1
+  fi
+  if ! existing="$("$gh_bin" issue view "$number" -R "$repo" --json assignees \
+                     --jq '.assignees[].login' 2>/dev/null)"; then
+    refinement_assignee_add "$repo" "$number" "$assignee" || true
+    printf 'unrecorded'
+    return 1
+  fi
+  if grep -qxF "$assignee" <<<"$existing"; then
+    printf 'present'
+    return 0
+  fi
+  if refinement_assignee_add "$repo" "$number" "$assignee"; then
+    printf 'added'
+    return 0
+  fi
+  printf 'failed'
+  return 1
 }
 
 # refinement_engagement_set ELIGIBLE_JSON MAX

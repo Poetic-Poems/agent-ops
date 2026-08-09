@@ -437,6 +437,199 @@ assert_eq "  ... and neither reached the API" "0" "$(posts)"
 ) >/dev/null 2>&1
 assert_eq "confirm_review_requested's call-site shape survives set -e" "0" "$?"
 
+# --- ensure_human_reviewer: the case confirm_review_requested has nobody for ---
+# (requirement 38a). poetic-fiddle #170: approved, green, idle 6.8 days, nobody
+# ever asked again once the review that approved it consumed the request that
+# put it in front of a human. `confirm_review_requested` correctly answers
+# `none` here — nothing is CHANGES_REQUESTED — which is exactly the case this
+# function exists to cover.
+#
+# The stub answers everything `ensure_human_reviewer` reads:
+#   $tmp_dir/draft     "true" | "false" | "error" — same as confirm_pr_ready's
+#   $tmp_dir/reviews   the reviews array, verbatim JSON (as above)
+#   $tmp_dir/pending   the requested_reviewers logins, one per line
+#   $tmp_dir/author    the pull request author's login
+#   $tmp_dir/post      "works" | "silent" — whether the POST changes `pending`
+#   $tmp_dir/api-fail  the path fragment whose GET should fail, if any
+#   $tmp_dir/posts     one line per POST, recording its arguments
+cat >"$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+fail="$(cat "$d/api-fail" 2>/dev/null || true)"
+if [[ "$1 $2" == "pr view" ]]; then
+  flag="$(cat "$d/draft")"
+  [[ "$flag" == "error" ]] && exit 1
+  printf '%s' "$flag"
+  exit 0
+fi
+if [[ "$1 $2" == "api -X" ]]; then
+  printf '%s\n' "$*" >>"$d/posts"
+  if [[ "$(cat "$d/post")" == "works" ]]; then
+    for a in "$@"; do
+      [[ "$a" == reviewers\[\]=* ]] && printf '%s\n' "${a#reviewers[]=}" >>"$d/pending"
+    done
+    sort -u -o "$d/pending" "$d/pending"
+  fi
+  exit 0
+fi
+path="$2"
+[[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
+if [[ "$path" == *"/reviews" ]]; then
+  jq -c '.[] | select(.submitted_at != null)
+             | {login: .user.login,
+                bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
+                state: .state}' "$d/reviews"
+elif [[ "$*" == *"user.login"* ]]; then
+  cat "$d/author"
+else
+  while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\n' "$l"; done <"$d/pending"
+fi
+STUB
+chmod +x "$tmp_dir/gh"
+
+reset_human_stub() {  # <draft-flag> <post-behaviour>
+  printf '%s' "$1" >"$tmp_dir/draft"
+  printf '%s' "$2" >"$tmp_dir/post"
+  : >"$tmp_dir/pending"; : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
+  printf 'warwickallen\n' >"$tmp_dir/author"
+}
+
+# The ordinary case: CODEOWNERS already resolved the review to someone who is
+# not the author (it never proposes the author), that person approved, and the
+# approval consumed their request. Re-request them — never ASSIGNEE, whose only
+# job here is the fallback for a pull request nobody has ever reviewed.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review Warwick-Allen APPROVED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "an approved-but-idle PR re-requests its own approver" \
+  "$(printf 'requested\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... naming that reviewer, not the assignee" "1" \
+  "$(grep -c -- '-f reviewers\[\]=Warwick-Allen' "$tmp_dir/posts")"
+assert_eq "  ... and never the assignee, who is the PR's own author here" "0" \
+  "$(grep -c -- '-f reviewers\[\]=warwickallen' "$tmp_dir/posts")"
+
+# Already pending: nothing to do, and it must say so rather than re-asking.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "an already-pending request is reported, not repeated" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... without posting" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# Nobody has ever reviewed this pull request — CODEOWNERS never fired, or the
+# repo has none. ASSIGNEE is the only candidate left, and it is not the author.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'octocat\n' >"$tmp_dir/author"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "with nobody known, ASSIGNEE is the fallback" \
+  "$(printf 'requested\twarwickallen')" "$out"
+
+# The collision this function exists to avoid a 422 on: nobody has ever
+# reviewed, and ASSIGNEE is also the pull request's own author — exactly this
+# system's own pull requests, authored and comment-attributed under one
+# account while a human reviews under another. GitHub refuses a review request
+# aimed at an author; asking is not attempted at all, and it is not a warning-
+# worthy `failed` either, because the configuration will say the same thing
+# again next cycle.
+review_n=0
+reset_human_stub false works
+set_reviews
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "ASSIGNEE equal to the author is a skip, not a 422 attempt" "skip" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# The author in the reviews list, which GitHub does permit: `APPROVE` and
+# `REQUEST_CHANGES` are closed to a pull request's author but `COMMENT` is not,
+# and the Reviewer stage may file its findings exactly that way, under the same
+# account that raised the pull request. The POST 422s as a whole when any one
+# login on it is invalid — it would add nobody at all, including the human who
+# actually approved — so the author must be struck off before anything is
+# asked.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review warwickallen COMMENTED)" "$(review Warwick-Allen APPROVED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "the author's own COMMENT review is never a request target" \
+  "$(printf 'requested\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... asking only for the reviewer who is not the author" "0" \
+  "$(grep -c -- '-f reviewers\[\]=warwickallen' "$tmp_dir/posts")"
+assert_eq "  ... in one POST" "1" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# The same, with nobody else on the list: striking the author off leaves no
+# candidate at all, and ASSIGNEE is the author too, so it is a skip — not a
+# request GitHub would refuse, and not a `failed` worth warning about.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review warwickallen COMMENTED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "an author-only reviews list leaves nobody to ask" "skip" "$out"
+assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# CHANGES_REQUESTED still blocking: confirm_review_requested's job, not this
+# one's — this function must stay out of the way rather than also requesting a
+# review from ASSIGNEE alongside it.
+review_n=0
+reset_human_stub false works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "something CHANGES_REQUESTED-blocking is left to confirm_review_requested" \
+  "skip" "$out"
+assert_eq "  ... without posting" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# A draft has no review to request at all.
+reset_human_stub true works
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a draft pull request is skipped" "skip" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# An empty ASSIGNEE with nobody known is a skip too — there is nobody to name.
+review_n=0
+reset_human_stub false works
+set_reviews
+out="$(ensure_human_reviewer "$URL" "")"; rc=$?
+assert_eq "no assignee and no known reviewer is a skip" "skip" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# The POST that reports success and changes nothing.
+review_n=0
+reset_human_stub false silent
+set_reviews "$(review Warwick-Allen APPROVED)"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a request that does not take is a failure" \
+  "$(printf 'failed\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+# The silent direction: "could not ask" must never resolve to "skip" or "none".
+review_n=0
+reset_human_stub false works
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf '/reviews' >"$tmp_dir/api-fail"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "unreadable reviews are a failure, never an assumed skip" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+review_n=0
+reset_human_stub false works
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'pulls/111' >"$tmp_dir/api-fail"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "an unreadable pending list is a failure" "failed" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+reset_human_stub true works
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+out2="$(ensure_human_reviewer "" "warwickallen")"; rc2=$?
+assert_eq "an empty PR url is a skip, not a failure" "skip" "$out2"
+assert_eq "  ... and exits 0" "0" "$rc2"
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'

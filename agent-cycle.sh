@@ -5,6 +5,11 @@
 
 set -euo pipefail
 
+# Captured before the flag loop below consumes it with `shift`: finish-then-
+# continue (requirement 39) re-launches this same script with the same
+# arguments a chained cycle later, and by then "$@" is long gone.
+ORIGINAL_ARGV=("$@")
+
 # --- PATH: cron's environment is minimal; make sure claude, gh, git, jq resolve. ---
 nvm_bin=""
 if [[ -s "$HOME/.nvm/nvm.sh" ]]; then
@@ -64,12 +69,17 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/git-identity.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
+# shellcheck source=lib/review-gate.sh
+. "$SCRIPT_DIR/lib/review-gate.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/unvoid-label.sh
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/preflight.sh
+# Sourced after work-gone.sh, whose work_gone_clearances it wraps.
+. "$SCRIPT_DIR/lib/preflight.sh"
 # shellcheck source=lib/dependency-gate.sh
 . "$SCRIPT_DIR/lib/dependency-gate.sh"
 # shellcheck source=lib/refinement.sh
@@ -85,6 +95,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 # shellcheck source=lib/labels.sh
 . "$SCRIPT_DIR/lib/labels.sh"
+# shellcheck source=lib/chain.sh
+. "$SCRIPT_DIR/lib/chain.sh"
 
 usage() {
   cat <<'EOF'
@@ -429,6 +441,7 @@ limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
+max_chained_cycles="$(cfg '.max_chained_cycles')"
 # How long a draft PR this system raised may sit untouched before it counts as
 # abandoned and finishing it becomes selectable work (requirement 3e). Comfortably
 # beyond a whole cycle, so a draft merely being worked never qualifies.
@@ -860,17 +873,20 @@ log_recheck_clean_items() {
 # issue that never had it, or leave on an issue after the key changed.
 
 # release_refinement_label ITEM [REPO]
-# Take the projected label off the issue behind ITEM, if this item's refinement
-# block put one there. Called wherever a block clears — the Co-Ordinator's own
-# re-check, an Enabler `unblocked`, and a `void` from either — because the
-# label's lifecycle mirrors the block's and nothing else would ever take it off.
+# Take the projected label, and the projected assignment (requirement 38b),
+# off the issue behind ITEM, if this item's refinement block put them there.
+# Called wherever a block clears — the Co-Ordinator's own re-check, an Enabler
+# `unblocked`, and a `void` from either — because the label's and the
+# assignment's lifecycles mirror the block's and nothing else would ever take
+# them off.
 #
 # Reads the blocked extract this cycle computed *before* the Co-Ordinator ran,
 # which is the correct one: the block being cleared is by definition one that was
-# open when the cycle started. Best-effort throughout — a stale label is a
-# cosmetic fault on an issue, and no reason to disturb a cycle recording state.
+# open when the cycle started. Best-effort throughout — a stale label or
+# assignment is a cosmetic fault on an issue, and no reason to disturb a cycle
+# recording state.
 release_refinement_label() {
-  local item="$1" repo="${2:-}" t_repo t_num t_label
+  local item="$1" repo="${2:-}" t_repo t_num t_label t_assignee
   [[ -n "$item" ]] || return 0
   # A dry run changes nothing in any repository (requirement 12). It still logs
   # the verdicts on this path, as it always has, but a label is an outward act.
@@ -884,6 +900,12 @@ release_refinement_label() {
       "$(jq -nc --arg d "could not remove the $t_label label from $t_repo#$t_num — the block is cleared regardless" \
          '{detail: $d}')"
   done < <(refinement_label_targets "${blocked_json:-[]}" "$item" "$repo")
+  while IFS=$'\t' read -r t_repo t_num t_assignee; do
+    [[ -n "$t_repo" && -n "$t_num" && -n "$t_assignee" ]] || continue
+    refinement_assignee_remove "$t_repo" "$t_num" "$t_assignee" || log_event "warning" \
+      "$(jq -nc --arg d "could not unassign $t_assignee from $t_repo#$t_num — the block is cleared regardless" \
+         '{detail: $d}')"
+  done < <(refinement_assignee_targets "${blocked_json:-[]}" "$item" "$repo")
 }
 
 # log_needs_refinement_items WORK_ORDER
@@ -905,7 +927,7 @@ release_refinement_label() {
 #     (exclusion 1 means it never re-evaluates a blocked item anyway); this is
 #     what makes the telling unnecessary.
 log_needs_refinement_items() {
-  local wo="$1" entry repo item reason problem label number
+  local wo="$1" entry repo item reason problem label assignee number
   while IFS= read -r entry; do
     if ! problem="$(refinement_entry_problem "$entry")"; then
       log_event "warning" "$(jq -nc --arg d "co-ordinator needs_refinement entry dropped — it $problem" \
@@ -925,25 +947,52 @@ log_needs_refinement_items() {
       continue
     fi
 
-    # No label on a dry run, and — because the event records what was actually
-    # applied — no label recorded either, so nothing later tries to remove one
-    # that was never there.
+    # No label or assignment on a dry run, and — because the event records
+    # what was actually applied — neither recorded either, so nothing later
+    # tries to remove something that was never there.
     label=""
-    if [[ -n "$needs_refinement_label" ]] && ! (( DRY_RUN )); then
+    assignee=""
+    if ! (( DRY_RUN )); then
       number="$(refinement_issue_number "$entry")"
       if [[ -n "$number" ]]; then
-        if refinement_label_add "$repo" "$number" "$needs_refinement_label"; then
-          label="$needs_refinement_label"
-        else
-          log_event "warning" "$(jq -nc \
-            --arg d "could not apply the $needs_refinement_label label to $repo#$number (does it exist in that repo?) — the block is recorded either way" \
-            '{detail: $d}')"
+        if [[ -n "$needs_refinement_label" ]]; then
+          if refinement_label_add "$repo" "$number" "$needs_refinement_label"; then
+            label="$needs_refinement_label"
+          else
+            log_event "warning" "$(jq -nc \
+              --arg d "could not apply the $needs_refinement_label label to $repo#$number (does it exist in that repo?) — the block is recorded either way" \
+              '{detail: $d}')"
+          fi
+        fi
+        # Requirement 38b: the same projection the label gets, so a
+        # Co-Ordinator-recorded block — "gated on a decision the human has not
+        # made" is exactly what exclusions 5 and 6 report here — reaches the
+        # human's own Assigned-to-me dashboard the moment it is recorded,
+        # rather than waiting for the Enabler's own, much later, escalation.
+        # Through `refinement_assignee_project`, not `refinement_assignee_add`:
+        # an assignment the human made themselves before the block existed is
+        # recorded by neither, so clearing the block never removes it.
+        if [[ -n "$enabler_assignee" ]]; then
+          case "$(refinement_assignee_project "$repo" "$number" "$enabler_assignee")" in
+            added) assignee="$enabler_assignee" ;;
+            present) ;;
+            unrecorded)
+              log_event "warning" "$(jq -nc \
+                --arg d "could not read $repo#$number's assignees — $enabler_assignee was assigned best-effort but not recorded on the block, so clearing it will not unassign them" \
+                '{detail: $d}')"
+              ;;
+            *)
+              log_event "warning" "$(jq -nc \
+                --arg d "could not assign $enabler_assignee to $repo#$number — the block is recorded either way" \
+                '{detail: $d}')"
+              ;;
+          esac
         fi
       fi
     fi
 
     log_event "attempt-failed" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
-      "$(refinement_block_fields "$entry" "$label")")"
+      "$(refinement_block_fields "$entry" "$label" "$assignee")")"
   done < <(jq -c '.needs_refinement[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
@@ -1126,9 +1175,9 @@ gather_merge_conflicts() {
 # candidacy with no commit to the target repo at all (see
 # scripts/gather-register-hygiene.sh and lib/noop-skip.sh).
 gather_register_hygiene() {
-  local slug="$1" branch="$2" out safe
+  local slug="$1" branch="$2" void="${3:-[]}" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-register-hygiene.sh" "$slug" "$branch" \
+  out="$("$SCRIPT_DIR/scripts/gather-register-hygiene.sh" "$slug" "$branch" "$void" \
         2>"$cycle_dir/register-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/register-hygiene-$safe.json"
@@ -1504,6 +1553,18 @@ limit_hit_this_cycle=0
 # --- Cleanup (always runs on exit) ---
 lock_acquired=0
 clone_dir=""
+# Finish-then-continue (requirement 39): set true only once this cycle has
+# won a claim and is about to run the Implementor. Initialised here, ahead
+# of the trap, for the same reason lock_acquired is: a cycle that stands
+# down or fails before ever reaching that point still runs cleanup, and an
+# unset variable read under `set -u` inside a trap would abort it part-way.
+#
+# chain_count is this cycle's own place in its lineage, 1 for the cron-fired
+# original — AGENT_CYCLE_CHAIN_COUNT is how a chained child learns it is not
+# the original; garbage or absent both mean "the original".
+chain_eligible=0
+chain_count="${AGENT_CYCLE_CHAIN_COUNT:-1}"
+[[ "$chain_count" =~ ^[0-9]+$ && "$chain_count" -ge 1 ]] || chain_count=1
 cleanup() {
   local exit_code=$?
   # A signal landing mid-cleanup must not re-enter the handler over a cycle
@@ -1536,6 +1597,38 @@ cleanup() {
   # gh call here must never affect the cycle's outcome or exit code.
   if [[ -x "$SCRIPT_DIR/scripts/publish-dashboard.sh" ]]; then
     timeout 120 "$SCRIPT_DIR/scripts/publish-dashboard.sh" >/dev/null 2>&1 || true
+  fi
+  # Finish-then-continue (requirement 39), last of all: a chained cycle is a
+  # brand-new process with its own cycle id, its own lock acquisition and its
+  # own full cleanup, so it must not start until this one has released
+  # everything above — the lock first of all, or it would just log
+  # `cycle-skipped` and exit. Gated on `exit_code == 0` too: `chain_eligible`
+  # is decided at claim time (requirement 17a) and nothing past that point
+  # may turn a real success into a chain off of a genuine failure. Detached
+  # with input from /dev/null and both streams appended to the same cron.log
+  # a cron-fired cycle already writes to, then disowned: this process is
+  # about to exit, and nothing here should wait for — or die with — the
+  # child.
+  #
+  # Spawned through a subshell that restores the default dispositions first,
+  # which is not decoration: an *ignored* signal is inherited across both fork
+  # and exec, and a shell that starts with a signal already ignored can never
+  # take it back — `trap ... TERM` in the child is silently a no-op for the
+  # rest of its life. The `trap '' TERM INT HUP` at the top of this function
+  # is exactly such an ignore, so a child forked from here would run the whole
+  # of the next cycle deaf to every signal requirement 9c's handler exists to
+  # catch, and requirement 1's stale-lock takeover would find its TERM ignored
+  # and reach the item only through the KILL that follows — no `attempt-failed`,
+  # no `cycle-end`, no claim released. EXIT is reset alongside them so a failed
+  # `exec` cannot re-enter this same handler in the subshell.
+  if (( chain_eligible )) && (( exit_code == 0 )); then
+    log_event "chained" "$(jq -nc --argjson n "$(( chain_count + 1 ))" --argjson m "$max_chained_cycles" \
+      '{depth: $n, max_chained_cycles: $m}')"
+    (
+      trap - TERM INT HUP EXIT
+      AGENT_CYCLE_CHAIN_COUNT=$(( chain_count + 1 )) exec "$SCRIPT_DIR/agent-cycle.sh" "${ORIGINAL_ARGV[@]}"
+    ) </dev/null >>"$state_dir/cron.log" 2>&1 &
+    disown 2>/dev/null || true
   fi
   exit "$exit_code"
 }
@@ -1717,6 +1810,7 @@ maybe_run_enabler() {
   local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
   local items_named_json
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
+  local e_void_entry e_void_refusal
   local e_pr_url e_handoff e_refusal e_refined
   local issue_title issue_body_file created number url missing
 
@@ -1958,11 +2052,27 @@ $(jq . <<<"$input")
                     --arg d "enabler completed the handoff on $e_pr_url, but review could not be re-requested from ${e_rereview_who:-the reviewer} — they will not see it in their review queue" \
                     '{detail: $d, pr_url: $u}')"
                 fi
+
+                # Requirement 38, same as the Reviewer's own handoff site
+                # above — this path exists precisely so the two cannot drift.
+                e_human_reviewer_state=""
+                if [[ "$e_rereview_state" == "none" && -n "$enabler_assignee" ]]; then
+                  e_human_reviewer_state="$(ensure_human_reviewer "$e_pr_url" "$enabler_assignee")" || true
+                  if [[ "$e_human_reviewer_state" == "failed" ]]; then
+                    log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" \
+                      --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from $enabler_assignee — it will not appear in their review queue" \
+                      '{detail: $d, pr_url: $u, reviewers: [$a]}')"
+                  fi
+                fi
+
                 log_event "pr-ready" "$(jq -nc --arg u "$e_pr_url" --arg h "$e_handoff" \
                   --arg rr "$e_rereview_state" --arg w "$e_rereview_who" \
+                  --arg hr "$e_human_reviewer_state" --arg ha "$enabler_assignee" \
                   '{pr_url: $u, handoff: "enabler", state: $h}
                    + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
-                   + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
+                   + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
+                   + (if $hr == "" or $hr == "skip" then {}
+                      else {human_review_requested: $hr, human_reviewer: $ha} end)')"
                 ;;
               *)
                 log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
@@ -1976,9 +2086,29 @@ $(jq . <<<"$input")
         ;;
       void)
         # Requirement 9b: "the work is already done" is a void, never an unblock.
-        log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
-          "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
-        release_refinement_label "$e_item" "$e_repo"
+        # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
+        # every stage: the Enabler reads the issue and the PR (requirement 35),
+        # but reading more does not stop a model citing the wrong artefact
+        # inside it — see lib/void-guard.sh's own note on issue #243. `repos`
+        # is passed as `[]`: the Enabler gathers no per-cycle candidate list, so
+        # `void_guard_reason`'s PR-diff check (Co-Ordinator only) simply has
+        # nothing to test against; the citation check needs nothing from it.
+        e_void_entry="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg reason "$e_reason" \
+          --argjson x "$ex" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
+        if e_void_refusal="$(void_guard_reason "$e_void_entry" '[]')"; then
+          log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
+            "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
+          release_refinement_label "$e_item" "$e_repo"
+        else
+          log_event "warning" "$(jq -nc \
+            --arg d "enabler void refused for ${e_repo:-<no repo>} $e_item — $e_void_refusal; recorded blocked instead" \
+            '{detail: $d}')"
+          log_event "attempt-failed" "$(item_event_fields "enabler" \
+            "void refused ($e_void_refusal). The Enabler's stated reason was: $e_reason" "$e_repo" "$e_item" \
+            "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+              '{unblock_condition: $c}')")"
+          outcome="void-refused"
+        fi
         ;;
       still-blocked)
         # Nothing extra to record: the block stands, and the refreshed condition
@@ -2391,6 +2521,69 @@ if ! (( DRY_RUN )); then
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
 fi
 
+# 2.1c Post-merge closing-keyword sweep (requirement 17c) — the backstop for
+# requirement 25a's CI check: a merged, `pr_label`-labelled pull request that
+# named an issue (the `agent-ops:closes-issue` marker, requirement 23b) but
+# never carried a real closing keyword leaves that issue open forever, to be
+# re-selected and re-voided by every cycle that reaches it (issue #240; PR
+# #206's "Implements #198" kept #198 open three days after its own fix
+# merged). Cheap and bounded — scripts/sweep-closed-issues.sh examines only
+# the most recently updated merged PRs per repo — and idempotent by
+# construction: it only ever acts on an issue GitHub itself still reports
+# open. Fleet-wide like 2.1a/2.1b, regardless of --repo. Skipped on
+# --dry-run: the sweep closes issues.
+if ! (( DRY_RUN )); then
+  while IFS= read -r sweep_slug; do
+    [[ -n "$sweep_slug" ]] || continue
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        closed) log_event "issue-closed-post-merge" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        deferred|warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
+          '{detail: ("closed-issue sweep (" + $r + "): " + (del(.repo) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-closed-issues.sh" "$sweep_slug" "$node_name" "$cycle_id" \
+               2>>"$cycle_dir/closed-issue-sweep.err" || true)
+  done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+fi
+
+# 2.1d Human-visibility sweep (requirement 38) — the periodic half of the same
+# guarantee requirement 38a keeps at the moment of handoff: every open, ready
+# pull request this system raised gets a live review request whether or not
+# any stage touched it this cycle, and an approved, mergeable, green one idle
+# past `human_nudge_idle_hours` gets one nudge comment. Fleet-wide like the
+# sweeps above and for the same reason — a review request or a comment either
+# lands or it does not, so two nodes sweeping at once cost nothing but a
+# redundant read. Skipped on --dry-run: the sweep requests reviews and posts
+# comments.
+#
+# Its actions get their own event names rather than borrowing `pr-ready`, for
+# the same reason 2.1b's do: the Publisher's outcome ladder reads `pr-ready` as
+# "this cycle got a pull request to ready" and ranks it above every other
+# reading, so a sweep that re-asked for a review on some other repo's
+# long-since-ready pull request would rewrite the outcome of a cycle that stood
+# down or selected nothing.
+if ! (( DRY_RUN )); then
+  while IFS= read -r sweep_slug; do
+    [[ -n "$sweep_slug" ]] || continue
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        human-review-requested) log_event "human-review-requested" \
+          "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        nudged) log_event "human-nudged" "$(jq -c --arg r "$sweep_slug" \
+          '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
+          '{detail: ("human-visibility sweep (" + $r + "): " + (del(.action) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-human-visibility.sh" "$sweep_slug" "$cycle_id" "$node_name" \
+               2>>"$cycle_dir/human-visibility-sweep.err" || true)
+  done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+fi
+
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
 #
 # The stand-down is *deferred* rather than taken here (requirement 2.2a). Back-
@@ -2400,21 +2593,41 @@ fi
 # deadlock the pipeline exactly when it is most stuck: max_open_agent_prs PRs
 # all waiting on the agent, and the one source that could clear them never
 # reached. The cost of deferring is the handful of `gh` calls in step 3.
-# The count is taken in three parts — ready PRs, draft PRs, live claims —
-# because the trip decision needs only the sum, but the logged reason states
-# the split: a ready PR is the human's queue, a draft is work in flight (the
-# Implementor's own claim marker, requirement 23), and which of them filled
-# the gate is what a cap-tuning decision needs to know. Recording it here
-# costs nothing; reconstructing it later means cycle-record archaeology.
+#
+# A ready PR only counts toward the trip when the pipeline itself has a next
+# action on it — `reviewDecision == CHANGES_REQUESTED`, the same "whose turn
+# is it" rule requirement 3c's review-feedback candidate filter uses
+# (scripts/gather-review-feedback.sh), so the two definitions cannot disagree.
+# A ready PR that is approved, or awaiting a first or re-review with nothing
+# currently `CHANGES_REQUESTED`-blocking it, is sitting in the human's queue —
+# the pipeline cannot shrink that by declining to open new work, so counting
+# it against the cap only back-pressures the fleet for a queue it has no lever
+# to drain (agent-ops#246).
+#
+# The count is taken in four parts — ready PRs awaiting a human, ready PRs
+# awaiting the pipeline, draft PRs, live claims — because the trip decision
+# needs only the human-queue-excluded sum, but the logged reason states the
+# full split: a human-queue PR could fill the raw total without ever counting
+# against the cap; a pipeline-turn ready PR is the human's queue answered and
+# now the agent's to act on; a draft is work in flight (the Implementor's own
+# claim marker, requirement 23); an unraised claim is a registry entry whose
+# PR does not yet exist. Which of them filled the gate is what a cap-tuning
+# decision needs to know. Recording it here costs nothing; reconstructing it
+# later means cycle-record archaeology.
 ready_count=0
+human_queue_count=0
 draft_count=0
 while IFS= read -r slug; do
-  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft \
-    --jq '[([.[] | select(.isDraft | not)] | length), ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
-  IFS=$'\t' read -r n_ready n_draft <<<"$counts"
+  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft,reviewDecision \
+    --jq '[([.[] | select(.isDraft | not)] | length),
+           ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
+           ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
+  IFS=$'\t' read -r n_ready n_human n_draft <<<"$counts"
   [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
+  [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
   ready_count=$(( ready_count + n_ready ))
+  human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
@@ -2431,11 +2644,13 @@ while IFS= read -r slug; do
   claim_count=$(( claim_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
-open_count=$(( ready_count + draft_count + claim_count ))
-open_composition="$ready_count ready + $draft_count draft + $claim_count unraised claim(s)"
+pipeline_ready_count=$(( ready_count - human_queue_count ))
+raw_open_count=$(( ready_count + draft_count + claim_count ))
+adjusted_open_count=$(( pipeline_ready_count + draft_count + claim_count ))
+open_composition="$pipeline_ready_count changes-requested + $draft_count draft + $claim_count unraised claim(s) — plus $human_queue_count waiting on human ($raw_open_count raw)"
 
 backpressure_tripped=0
-if (( open_count >= max_open_agent_prs )); then
+if (( adjusted_open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
 fi
 
@@ -2752,6 +2967,90 @@ fi
 
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
+
+# 34k: act on void. A void already stops the item being selected again
+# (requirement 34c), but nothing before this touched the GitHub object it
+# names, so an obsolete draft PR or a superseded issue stayed open — visible
+# to every human and re-derived void by cycle after cycle (issue #240;
+# poetic-fiddle #190/#214 were re-derived void on 7+ separate cycles, never
+# closed). Only the two id shapes that name a GitHub object at all — a bare
+# issue number, or `pr-<n>-…` — are in scope; a register id, a review ref or
+# a plan task id names nothing this can close. `void_object_closed_items`
+# excludes whatever a previous cycle already actioned, so this never
+# re-checks (and never re-closes) the same item twice, even if a human
+# reopens the object directly rather than through `unvoid_label`. The event's
+# `stage` travels with each candidate because the sweep's corroboration gate
+# keys on it — every writer's `item-void` passes requirement 34d before it is
+# logged (issue #243), so all three are eligible, and the gate itself lives in
+# close-void-github-items.sh (requirement 34a: one definition, at the point
+# of action). Skipped on --dry-run: the sweep closes issues and pull
+# requests.
+if ! (( DRY_RUN )); then
+  void_object_closed_json="$(void_object_closed_items "$union_log")"
+  void_close_candidates_json="$(jq -nc --argjson void "$void_json" --argjson closed "$void_object_closed_json" \
+    --arg issue_re "$WORK_GONE_ISSUE_RE" --arg pr_re "$WORK_GONE_PR_RE" '
+    ($closed | map(.repo + " " + .item)) as $done
+    | [ $void[]
+        | select((.repo // "") != "" and (.item // "") != "")
+        | select((.item | test($issue_re)) or (.item | test($pr_re)))
+        | select((.repo + " " + .item) as $k | ($done | index($k)) == null) ]
+  ' 2>/dev/null || echo '[]')"
+  while IFS= read -r vslug; do
+    [[ -n "$vslug" ]] || continue
+    repo_candidates_json="$(jq -c --arg r "$vslug" '[ .[] | select(.repo == $r)
+      | {item, detail, evidence, stage} ]' <<<"$void_close_candidates_json" 2>/dev/null || echo '[]')"
+    while IFS= read -r sweep_action; do
+      [[ -n "$sweep_action" ]] || continue
+      case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
+        closed) log_event "void-object-closed" \
+          "$(jq -c --arg r "$vslug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        deferred|warning) log_event "warning" "$(jq -c --arg r "$vslug" \
+          '{detail: ("act-on-void sweep (" + $r + "): " + (del(.repo) | tostring))}' \
+          <<<"$sweep_action")" ;;
+      esac
+    done < <(printf '%s' "$repo_candidates_json" \
+               | timeout 120 "$SCRIPT_DIR/scripts/close-void-github-items.sh" "$vslug" "$node_name" "$cycle_id" \
+                 2>>"$cycle_dir/void-close-sweep.err" || true)
+  done < <(jq -r '[.[].repo] | unique[]' <<<"$void_close_candidates_json" 2>/dev/null || true)
+fi
+
+# Register rows, requirement 34l — the other half of acting on a void: a void
+# item shaped like a tech-debt register id (issue #240) names a file, not a
+# GitHub object, so close-void-github-items.sh above leaves it untouched
+# entirely — this instead re-derives that repo's register-hygiene candidate
+# with the void evidence folded in (gather-register-hygiene.sh's VOIDED STATUS
+# problem class), so the ordinary register-hygiene Implementor flow flips
+# the row exactly as it repairs any other frontmatter drift. Only for repos
+# that actually have a void register item — everywhere else costs nothing
+# beyond the one jq read below. This necessarily re-fetches the register (a
+# second read this cycle, alongside the plain one the loop at "3. Repo
+# ordering" already took) because that earlier pass runs before void_json
+# exists to hand it; the alternative is reordering the cycle around a state
+# read this is the only consumer of.
+void_register_ids_json="$(work_gone_register_ids "$void_json")"
+while IFS= read -r vr_slug; do
+  [[ -n "$vr_slug" ]] || continue
+  vr_branch="$(jq -r --arg s "$vr_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+    <<<"$ordered_repos_json" 2>/dev/null || true)"
+  [[ -n "$vr_branch" ]] || continue
+  vr_candidates_json="$(jq -c --argjson void "$void_json" --arg r "$vr_slug" \
+    --argjson ids "$(jq -c --arg s "$vr_slug" '.[$s] // []' <<<"$void_register_ids_json")" \
+    -n '[ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
+          | {item, detail, evidence} ]' 2>/dev/null || echo '[]')"
+  vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" "$vr_candidates_json")"
+  # Only ever *adds* to what the first pass found. gather_register_hygiene
+  # fails safe to `[]`, and this second read can fail where the first
+  # succeeded — a rate limit, a network blip, a branch moved between the two.
+  # Overwriting on that answer would delete a genuine register-hygiene
+  # candidate the cycle already holds, on no evidence at all; the whole point
+  # of this pass is a superset of the first, so an empty result is the one
+  # answer it can never mean.
+  [[ "$(jq 'length' <<<"$vr_hygiene_json" 2>/dev/null || echo 0)" != "0" ]] || continue
+  ordered_repos_json="$(jq -c --arg r "$vr_slug" --argjson rh "$vr_hygiene_json" \
+    'map(if .slug == $r then .register_hygiene = $rh else . end)' \
+    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
+
 # The third extract (requirement 3h): what a previous Enabler engagement
 # specified for an item nobody had specified well enough to work on. For an
 # issue the refinement is a comment and travels in the thread the Co-Ordinator
@@ -2854,7 +3153,7 @@ if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
@@ -2867,7 +3166,7 @@ if (( backpressure_tripped )); then
                                     | .issues = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $open_count open agent PRs >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
+    --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 
@@ -3116,6 +3415,15 @@ claimed_json=""
 n_cand="$(jq 'length' <<<"$candidates_json")"
 claim_attempts=0
 claim_unreachable=0
+# race_losses (requirement 17d): how many candidates this cycle lost to a
+# peer genuinely holding the item (cause "held" — healthy contention, not an
+# outage), distinct from `claim_unreachable`. Carried on both the eventual
+# `selection` (only when it recovered from a loss — issue #245) and the
+# all-claimed `stand-down` below, so a rising rate is visible without
+# cross-referencing `claim-lost` events by hand — the observability
+# finish-then-continue and the faster cadence both raise the concurrent-claim
+# frequency for (#248).
+race_losses=0
 for (( ci = 0; ci < n_cand; ci++ )); do
   cand="$(jq -c --argjson i "$ci" '.[$i]' <<<"$candidates_json")"
   c_repo="$(jq -r '.repo // ""' <<<"$cand")"
@@ -3191,7 +3499,7 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   # be counted as one, or a fleet-wide outage during the second claim would
   # stand down reporting contention that never happened.
   case "$claim_rc" in
-    3) claim_cause="held" ;;
+    3) claim_cause="held"; race_losses=$(( race_losses + 1 )) ;;
     1) claim_cause="unreachable"; claim_unreachable=$(( claim_unreachable + 1 )) ;;
     *) claim_cause="$claim_rc" ;;
   esac
@@ -3204,13 +3512,22 @@ for (( ci = 0; ci < n_cand; ci++ )); do
 done
 
 if [[ -z "$claimed_json" ]]; then
+  # Same test as the reason text below, structured: a fleet-wide dashboard
+  # reader (or any other consumer) needs "why did this cycle stand down?"
+  # without re-parsing prose (issue #245). `raced` means every candidate was
+  # lost to healthy contention (at least one `held`); `unreachable` means
+  # GitHub itself could not be reached for any of them — an outage, not the
+  # fleet politely yielding to itself.
   if (( claim_attempts > 0 && claim_unreachable == claim_attempts )); then
     standdown_reason="GitHub could not be reached for any candidate — this is an outage, not contention"
+    standdown_cause="unreachable"
   else
     standdown_reason="every candidate is already claimed elsewhere"
+    standdown_cause="raced"
   fi
-  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" \
-    '{reason: $r, candidates: $n}')"
+  log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" --arg c "$standdown_cause" \
+    --argjson rl "$race_losses" \
+    '{reason: $r, candidates: $n, cause: $c, race_losses: $rl}')"
   exit 0
 fi
 
@@ -3218,7 +3535,62 @@ work_order_json="$claimed_json"
 selected_repo="$(jq -r '.repo // ""' <<<"$work_order_json")"
 selected_item="$(jq -r '.item // ""' <<<"$work_order_json")"
 selected_branch="$(jq -r '.branch // ""' <<<"$work_order_json")"
-log_event "selection" "$(jq -c '{repo, item, source, model, title, branch}' <<<"$work_order_json")"
+selected_source="$(jq -r '.source // ""' <<<"$work_order_json")"
+selected_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
+# `race_losses` is present only when this selection recovered from at least
+# one lost claim (issue #245) — an ordinary first-try selection, still the
+# overwhelming majority, carries nothing new on this event.
+log_event "selection" "$(jq -c --argjson n "$race_losses" \
+  '{repo, item, source, model, title, branch} + (if $n > 0 then {race_losses: $n} else {} end)' \
+  <<<"$work_order_json")"
+
+# Finish-then-continue (requirement 39): a claim just won is real work, and
+# `ordered_repos_json` — gathered once, ahead of the Co-Ordinator, and
+# untouched since — is cheap evidence of whether more might be waiting
+# (lib/chain.sh). `--once` is a human or a test asking for exactly one
+# cycle, not an unattended tick, so it never chains regardless. The next
+# chained cycle runs its own Co-Ordinator, with its own fresh gather and its
+# own no-op fingerprint, so this is only ever a cheap "was it worth asking
+# again", never a prediction of what that cycle will find. Set before the
+# pre-flight check below so that even a cycle that voids out here — real
+# work, just none of it left to do — still chains rather than wasting the
+# rest of its tick.
+if ! (( ONCE )) && chain_should_continue "$chain_count" "$max_chained_cycles" "$ordered_repos_json"; then
+  chain_eligible=1
+fi
+
+# --- 5c. Pre-flight already-done check (issue #245) ---
+# Deterministic, no LLM, run before the clone and the Implementor engagement
+# either one is paid for: ask whether the item this cycle just claimed is
+# already done — its register row resolved, its issue closed, its
+# work-order branch already merged, an open PR already carrying that branch,
+# or (for a finishing source, whose item is the `pr-<n>-…` shape
+# `lib/work-gone.sh` recognises) its pull request already closed or merged.
+# `source_states_json` already carries every repo this cycle walked, gathered
+# well before the claim, which is all an issue, a finishing source's PR or the
+# stale-open-PR check needs; a tech-debt item additionally needs its own
+# fresh register read, because a freshly claimed item was never a member of
+# the blocked set `register_status_json` is scoped to.
+preflight_register_json='{}'
+if [[ "$selected_source" == "tech-debt" ]]; then
+  preflight_register_json="$(jq -nc --arg s "$selected_repo" \
+    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" "$selected_item")" \
+    '{($s): $m}')"
+fi
+preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
+  "$source_states_json" "$preflight_register_json")"
+# The ancestry check is the one live `gh` call in this section (lib/preflight.sh's
+# header explains why it is gated to the three sources whose branch predates the
+# claim), so it only runs when the cheaper, pure checks above found nothing.
+if [[ -z "$preflight_reason" ]] && preflight_existing_branch_source "$selected_source"; then
+  preflight_reason="$(preflight_branch_merged_reason "$selected_repo" "$selected_default_branch" "$selected_branch")"
+fi
+if [[ -n "$preflight_reason" ]]; then
+  log_item_void "preflight" "$preflight_reason" \
+    "$(jq -nc --arg e "$preflight_reason" '{evidence: $e}')"
+  release_claim no-pr
+  exit 0
+fi
 
 # --- 6. Workspace ---
 repo_slug="$(jq -r '.repo' <<<"$work_order_json")"
@@ -3325,11 +3697,33 @@ impl_status="$(jq -r '.status // empty' <<<"$impl_status_json" 2>/dev/null || tr
 # already-done recommendation be unblocked by the next Co-Ordinator and
 # re-selected indefinitely.
 if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
-  log_item_void "implementor" \
-    "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
-    "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  # Requirement 34d, extended by issue #243 from the Co-Ordinator alone to
+  # every stage: the Implementor reads the tree itself (requirement 27b), but
+  # that does not stop a model citing the wrong artefact from it — see
+  # lib/void-guard.sh's own note on issue #243. `repos` is passed as `[]`: the
+  # Implementor gathers no per-cycle candidate list, so `void_guard_reason`'s
+  # PR-diff check (Co-Ordinator only) simply has nothing to test against; the
+  # citation check needs nothing from it.
+  impl_void_entry="$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" \
+    --arg reason "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+    --argjson x "$impl_status_json" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
+  if impl_void_refusal="$(void_guard_reason "$impl_void_entry" '[]')"; then
+    log_item_void "implementor" \
+      "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+      "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"
+  else
+    log_event "warning" "$(jq -nc \
+      --arg d "implementor void refused for ${selected_repo:-<no repo>} $selected_item — $impl_void_refusal; recorded blocked instead" \
+      '{detail: $d}')"
+    log_attempt_failed "implementor" \
+      "void refused ($impl_void_refusal). The Implementor's stated reason was: $(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
+      "$(jq -nc --arg c "Establish from the repository itself whether this item describes any remaining work." \
+        '{unblock_condition: $c}')"
+  fi
   # A void item has no work, so its claim must not outlive the verdict — the
-  # branch (if untouched) and the registry entry both go.
+  # branch (if untouched) and the registry entry both go. A refused void is
+  # recorded blocked instead, but the claim releases the same way either way:
+  # the Implementor found no PR to raise for this item.
   release_claim no-pr
   exit 0
 fi
@@ -3447,6 +3841,26 @@ fi
 
 rev_status="$(jq -r '.status // empty' <<<"$rev_status_json")"
 if [[ "$rev_status" == "ready" ]]; then
+  # Requirement 31c (agent-ops#249): a Reviewer's "ready" is a model reading a
+  # check list, exactly the judgement that missed poetic-fiddle #216's CodeQL
+  # alert hidden inside an otherwise-green list. Before any handoff mechanism
+  # runs, ask GitHub directly, the same "confirm, don't trust" shape requirement
+  # 31a already applies to the draft flag itself.
+  gate_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
+  gate_result="$(review_gate_verdict "$impl_pr_url" "$gate_default_branch")" || true
+  gate_word=""; gate_reason=""
+  IFS=$'\t' read -r gate_word gate_reason <<<"$gate_result" || true
+  if [[ "$gate_word" == "dirty" ]]; then
+    log_reviewer_handback \
+      "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $gate_reason" \
+      "$impl_pr_url" "Get every required check green and clear the named security-severity code-scanning alert, then let the Reviewer re-examine it."
+    exit 0
+  fi
+  if [[ "$gate_word" == "unknown" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
+      '{detail: ("could not confirm " + $u + " carries no new security-severity code-scanning alert: " + $d), pr_url: $u}')"
+  fi
+
   # Requirement 31a: the verdict is the Reviewer's — it is the only actor that
   # read the diff — but the handoff is a fact about the PR, and asking GitHub
   # costs one field. `pr-ready` now means the PR is not a draft, not that
@@ -3499,11 +3913,31 @@ if [[ "$rev_status" == "ready" ]]; then
       --arg d "changes requested on $impl_pr_url are answered, but review could not be re-requested from ${rereview_who:-the reviewer} — they will not see it in their review queue" \
       '{detail: $d, pr_url: $u} + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
   fi
+
+  # Requirement 38: nothing's `CHANGES_REQUESTED` above means there is no
+  # blocking reviewer to re-request from — but the pull request may still be
+  # exactly where a human needs to look (a first review, or an approval
+  # nobody has acted on). `ensure_human_reviewer` asks GitHub the same way
+  # `confirm_review_requested` did, targeted at `enabler_assignee` instead of
+  # a blocking reviewer set.
+  human_reviewer_state=""
+  if [[ "$rereview_state" == "none" && -n "$enabler_assignee" ]]; then
+    human_reviewer_state="$(ensure_human_reviewer "$impl_pr_url" "$enabler_assignee")" || true
+    if [[ "$human_reviewer_state" == "failed" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" \
+        --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from $enabler_assignee — it will not appear in their review queue" \
+        '{detail: $d, pr_url: $u, reviewers: [$a]}')"
+    fi
+  fi
+
   log_event "pr-ready" "$(jq -nc --arg u "$impl_pr_url" --arg h "$handoff_by" \
     --arg rr "$rereview_state" --arg w "$rereview_who" \
+    --arg hr "$human_reviewer_state" --arg ha "$enabler_assignee" \
     '{pr_url: $u, handoff: $h}
      + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
-     + (if $w == "" then {} else {reviewers: ($w | split(","))} end)')"
+     + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
+     + (if $hr == "" or $hr == "skip" then {}
+        else {human_review_requested: $hr, human_reviewer: $ha} end)')"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —

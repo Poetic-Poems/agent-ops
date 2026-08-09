@@ -379,6 +379,24 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
           reason: ([ $e[] | select(.event=="none-selected" or .event=="stand-down" or .event=="cycle-skipped") | (.reason // .detail) ] | last),
           fail_detail: ([ $e[] | select(.event=="attempt-failed") | ((.stage // "?") + ": " + (.detail // "")) ] | last),
           warning: ([ $e[] | select(.event=="warning") | .detail ] | last),
+          # Issue #245: whether this cycle lost a claim to healthy contention
+          # before its outcome was decided — a stand-down `cause` of "raced"
+          # (every candidate lost, exit 0 empty-handed) or a `claim-lost`
+          # (cause "held") on a candidate this cycle then moved past to reach
+          # whatever `outcome` below records. `raced` with an `outcome` other
+          # than "stand-down" is a *recovered* race: the fleet contended for
+          # the top candidate and this cycle still did the next one's work,
+          # rather than forfeiting the cycle outright.
+          #
+          # `race_losses` (requirement 17d) is counted from those same
+          # `claim-lost` events rather than read off the `selection` event
+          # that also carries it: the two agree wherever a selection happened
+          # at all, and only the count covers the cycle that stood down
+          # having lost every candidate, which has no `selection` event to
+          # read.
+          race_losses: ([ $e[] | select(.event=="claim-lost" and (.cause // "") == "held") ] | length),
+          raced: (([ $e[] | select(.event=="claim-lost" and (.cause // "") == "held") ] | length) > 0),
+          standdown_cause: ([ $e[] | select(.event=="stand-down") | .cause ] | last),
           outcome: (
             if   ($types | any(. == "pr-ready"))       then "pr-ready"
             elif ($types | any(. == "pr-raised"))      then "pr-raised"
@@ -663,7 +681,8 @@ status_json="$(jq -n \
           repo:   ([ .[] | select(.event=="selection") | .repo ]   | last),
           item:   ([ .[] | select(.event=="selection") | .item ]   | last),
           source: ([ .[] | select(.event=="selection") | .source ] | last),
-          title:  ([ .[] | select(.event=="selection") | .title ]  | last)
+          title:  ([ .[] | select(.event=="selection") | .title ]  | last),
+          race_losses: (([ .[] | select(.event=="selection") | .race_losses ] | last) // 0)
         } end
       ),
       # The newest FINISHED cycle the FLEET ran, not the newest this node ran:
@@ -874,7 +893,8 @@ node_live_json="$(jq -c '
             repo:   ([ $c[] | select(.event == "selection") | .repo ]   | last),
             item:   ([ $c[] | select(.event == "selection") | .item ]   | last),
             source: ([ $c[] | select(.event == "selection") | .source ] | last),
-            title:  ([ $c[] | select(.event == "selection") | .title ]  | last) }
+            title:  ([ $c[] | select(.event == "selection") | .title ]  | last),
+            race_losses: (([ $c[] | select(.event == "selection") | .race_losses ] | last) // 0) }
       end;
   map(select((.node // "") != "")) | group_by(.node)
   | map({key: .[0].node, value: live_of}) | from_entries' "$events_file")"
@@ -1073,6 +1093,7 @@ if (( WITH_GITHUB )); then
     prs_json="$(jq -c --arg slug "$slug" --argjson add "$prs" "$PR_JQ"'
       . + ($add | map({
         repo: $slug, number, title, url, isDraft, state, mergeable, mergeStateStatus, headRefName, createdAt,
+        review_decision: (.reviewDecision // ""),
         checks: (.statusCheckRollup | checks_of)
       }))' <<<"$prs_json")"
     # The same fetch, indexed. These entries are this tick's freshest answer for

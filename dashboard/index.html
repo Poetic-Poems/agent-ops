@@ -682,7 +682,7 @@
   // 5-second refresh never collapses what they were reading.
   var expanded = Object.create(null);     // cycle id -> true while its detail row is open
   var openDetails = Object.create(null);  // "cycle/stage/kind" -> true for open <details>
-  var nodeFilter = null;                  // node name while the cycle list is filtered to one node
+  var nodeFilter = null;                  // node name while the cycle list and the recent log are filtered to one node
   var hideRefinement = false;             // true while needs-refinement blocks are hidden from the blocked list
   var voidShowAll = false;                // true while the void list shows past its first VOID_ROWS rows
   var voidOpen = Object.create(null);     // "repo/item/row" -> true while that void row shows its full text
@@ -741,6 +741,11 @@
     if (cur.repo)   { sep(); what.appendChild(el("span", {class:"mono", text: cur.repo.split("/")[1]})); }
     if (cur.source) { what.appendChild(document.createTextNode(" ")); what.appendChild(sourceTag(cur.source)); }
     if (label)      what.appendChild(document.createTextNode(" " + (label.length > 70 ? label.slice(0,69) + "…" : label)));
+    if (cur.race_losses) {
+      what.appendChild(el("span", {class:"badge b-blue", style:"margin-left:6px",
+        title: cur.race_losses + " candidate(s) lost to a peer before this claim landed",
+        text: "recovered race ×" + cur.race_losses}));
+    }
     return what;
   }
 
@@ -859,8 +864,28 @@
   // rungs above it lie the same way in the past tense ("Selected", "PR raised"
   // of a cycle still at work), and nothing is lost by replacing them here: how
   // far it has got is what the Item, Stages and PR cells beside it already say.
+  // The "raced" marker (issue #245): a cycle lost at least one claim to a
+  // peer's healthy contention before its outcome above was decided. Beside an
+  // outcome other than "Stood down" it says the cycle *recovered* — claimed
+  // and dispatched the next candidate rather than forfeiting the cycle;
+  // beside "Stood down" it says every candidate raced away, which
+  // `outcomeBadge`'s own "Stood down" text does not distinguish from a
+  // GitHub outage or a fleet switch. A second, small badge rather than
+  // folding this into the outcome badge itself: it is a fact about *how* the
+  // cycle got its outcome, not a different outcome, and the two badges read
+  // in that order left to right. Blue, never amber: implementation spec 17d
+  // makes contention informational rather than a fault, and amber on this
+  // page is the colour of something that wants acting on.
+  function racedMarker(cy) {
+    if (!cy.raced) return null;
+    var n = cy.race_losses || 0, recovered = cy.outcome !== "stand-down";
+    return el("span", {class:"badge b-blue", style:"margin-left:6px",
+      title: (recovered ? "recovered after " : "stood down after ") + n +
+             " lost claim" + (n === 1 ? "" : "s") + " to a peer"}, "↻ raced");
+  }
+
   function outcomeCell(cy) {
-    if (cy.ended_at) return outcomeBadge(cy.outcome);
+    if (cy.ended_at) return [ outcomeBadge(cy.outcome), racedMarker(cy) ];
     var n = liveCycleNode(cy);
     // "No clean end" is an accusation, so it is only made where the data can
     // support it. `data.js` from before the fleet strip existed carries no node
@@ -1060,8 +1085,8 @@
   // the readout the header used to carry alone, back when a node and the
   // pipeline were the same thing; with a fleet there is no single "what is it
   // doing", so the question is answered per node here and only summarised up
-  // top. Clicking a card filters the cycle list to that node; clicking it
-  // again clears the filter.
+  // top. Clicking a card filters the cycle list and the recent log to that
+  // node; clicking it again clears the filter.
   function fleetStrip() {
     var wrap = el("div", {class:"cards fleet", id:"fleetstrip"});
     fleetNodes().forEach(function (n) { wrap.appendChild(nodeCard(n)); });
@@ -1082,7 +1107,7 @@
     // before it the stage's own timeout is the only one that can fire at all.
     var doubt = livenessDoubt(n) || nodeStageOverrun(n);
     var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
-                          title: nodeFilter === n.node ? "click to show every node's cycles" : "click to filter cycles to " + n.node});
+                          title: nodeFilter === n.node ? "click to show every node's cycles and log events" : "click to filter cycles and log events to " + n.node});
     card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]));
 
     var state = el("div", {class:"state"});
@@ -1199,7 +1224,20 @@
         el("td", {}, sourceTag(cy.source)),
         el("td", {class:"wrap roomy"}, [
           cy.repo ? el("span", {class:"mono muted", text: cy.repo.split("/")[1] + " "}) : null,
-          esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")) ]),
+          esc(cy.title || cy.item || cy.reason || (cy.dry_run ? "(dry run)" : "")),
+          // requirement 17d: this cycle lost the claim race for one or more
+          // higher-ranked candidates before winning a lower one — healthy
+          // contention recovered from, not a fault, so an informational
+          // badge rather than an amber/red one. The word is "recovered", so
+          // the stand-down is excluded explicitly: `race_losses` counts the
+          // cycle's `claim-lost` events, and a cycle that lost *every*
+          // candidate has a count without a claim behind it. That one is
+          // named by `racedMarker` beside its outcome instead, which says
+          // stood-down and recovered apart.
+          (cy.race_losses && cy.outcome !== "stand-down")
+            ? el("span", {class:"badge b-blue", style:"margin-left:6px",
+                title: cy.race_losses + " candidate(s) lost to a peer before this claim landed",
+                text: "recovered race ×" + cy.race_losses}) : null ]),
         el("td", {class:"stages"}, stageCells),
         el("td", {class:"mono", text: cy.total_cost_usd ? usd(cy.total_cost_usd) : "—"}),
         // The number, not the word "PR": it is the same identifier the rest of
@@ -1696,32 +1734,31 @@
     if (ev === "pr-ready" && e.handoff && e.handoff !== "script") return e.handoff;
     return null;
   }
-  // "Where" used to run the repo and the stage together, unlabelled and each
-  // present only when the event carried it — so a one-token cell could be
-  // either, and the node that ran it (the fleet's first question) was not
-  // there at all. The three are different kinds of answer, so they are three
-  // fixed slots read positionally, with a dash for whatever the event does not
-  // carry: the middle token is the repository whether or not the other two are
-  // known.
-  function whereText(e) {
-    var actor = eventActor(e);
-    return [ e.node || "—",
-             e.repo ? e.repo.split("/")[1] : "—",
-             actor || "—" ].join(" / ");
-  }
+  // "Where" used to run the repo and the stage together in one cell,
+  // unlabelled and each present only when the event carried it — so a
+  // one-token cell could be either, and the node that ran it (the fleet's
+  // first question) was not there at all. The three are different kinds of
+  // answer, so they get one column each, with a dash for whatever the event
+  // does not carry — the Repo cell is the repository whether or not the
+  // other two are known.
   function logPanel() {
-    var evs = (D.log_tail || []).slice(0, 80);
-    if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No log events."}));
+    var evs = D.log_tail || [];
+    if (nodeFilter) evs = evs.filter(function (e) { return e.node === nodeFilter; });
+    evs = evs.slice(0, 80);
+    if (!evs.length) return el("div", {class:"panel"}, el("div", {class:"empty",
+      text: nodeFilter ? "No log events from " + nodeFilter + "." : "No log events."}));
     var rows = evs.map(function (e) {
       var extra = e.reason || e.detail || e.cause || e.title || e.pr_url || e.resume_at || "";
       return el("tr", {}, [
         el("td", {class:"muted mono", text: fmtTime(e.ts)}),
         el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: e.event})),
-        el("td", {class:"mono muted", text: whereText(e)}),
+        el("td", {class:"mono muted", text: e.node || "—"}),
+        el("td", {class:"mono muted", text: e.repo ? e.repo.split("/")[1] : "—"}),
+        el("td", {class:"mono muted", text: eventActor(e) || "—"}),
         el("td", {class:"wrap muted", text: esc(extra)})
       ]);
     });
-    return tableOf(["Time","Event","Node / Repo / Actor","Detail"], rows);
+    return tableOf(["Time","Event","Node","Repo","Actor","Detail"], rows);
   }
   function cronPanel() {
     var lines = D.cron_tail || [];
@@ -1918,15 +1955,25 @@
     card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
     card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
     card("Reached ready", String(c.prs_reached_ready || 0));
-    // back-pressure card
-    var openN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+    // back-pressure card — the pipeline itself only trips its cap on draft
+    // PRs and ready PRs still CHANGES_REQUESTED (agent-ops#246); a ready PR
+    // approved or awaiting a human review sits in a queue the pipeline
+    // cannot shrink by waiting, so it is shown as its own figure rather than
+    // folded into "open" as if the pipeline were idle.
+    var rawN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+    var humanQueueN = openPrs.filter(function (p) {
+      return !p.isDraft && p.review_decision !== "CHANGES_REQUESTED";
+    }).length;
+    var adjN = rawN - humanQueueN;
     var gauge = el("div", {class:"gauge"}, el("span", {
-      style: "width:" + (maxN ? Math.min(100, openN/maxN*100) : 0) + "%;background:" + (openN>=maxN && maxN ? "var(--red)" : "var(--accent)")
+      style: "width:" + (maxN ? Math.min(100, adjN/maxN*100) : 0) + "%;background:" + (adjN>=maxN && maxN ? "var(--red)" : "var(--accent)")
     }));
     cards.appendChild(el("div", {class:"card"}, [
       el("div", {class:"k", text:"Open agent PRs"}),
-      el("div", {class:"v"}, [document.createTextNode(openN + " "), el("small", {text:"/ " + maxN + " max"})]),
-      gauge
+      el("div", {class:"v"}, [document.createTextNode(adjN + " "), el("small", {text:"/ " + maxN + " max"})]),
+      gauge,
+      el("small", {class:"muted", text: rawN + " open" +
+        (humanQueueN ? ", " + humanQueueN + " waiting on human" : "")})
     ]));
     app.appendChild(cards);
 
@@ -1966,7 +2013,8 @@
       "All three charts cover the same transcripts — every actor of both pipelines, " +
       "across every node, since one Claude account pays for the fleet."}));
 
-    app.appendChild(sectionOf("Recent log events", logPanel()));
+    app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
+      logPanel()));
     app.appendChild(sectionOf("cron.log (tail)", cronPanel()));
 
     window.scrollTo(0, y);

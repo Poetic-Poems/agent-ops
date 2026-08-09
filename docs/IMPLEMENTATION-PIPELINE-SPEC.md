@@ -157,24 +157,34 @@ a node updates by pulling a new image rather than by pulling a branch.
   environment when it names a minute `schedule.excluded_minutes` does not
   rule out, else a stable hash of `NODE_NAME` onto whichever minutes that
   exclusion list leaves standing — deterministic, needing no coordination,
-  and never one of the excluded minutes. The cycle fires every hour named by
-  `schedule.cycle_hours` (`*` by default); the review runs at
-  `schedule.review_offset_minutes` past `CYCLE_MINUTE` (mod 60), at
-  `schedule.review_hour`, keeping one node's two heavy pipelines maximally
-  apart. Why: every active node spends one Claude account and pushes to the
-  same repositories; the claims (17a) make simultaneous firing *correct*, the
-  offsets make it *cheap*. Excluding minutes at all is a per-deployment
-  choice, not logic this renderer carries: `schedule.excluded_minutes` is
-  configuration, and poetic's own `config.json` excludes `0` because its
-  hourly sync workflow owns the top of the hour, recording that reason in
-  `schedule.excluded_minutes_reason` — a deployment with no such conflict
-  ships an empty list. An invalid or excluded `CYCLE_MINUTE` warns loudly and
-  uses the hash — a typo must not silently land a node on an excluded minute
-  — and any render failure (including a missing or malformed `config.json`)
-  leaves the baked crontab, a valid schedule, byte-untouched
-  (`test/render-crontab.test.sh` pins all of this). The offsets therefore
-  arrive with the image alone; setting `CYCLE_MINUTE` explicitly requires the
-  compose file that maps it.
+  and never one of the excluded minutes. The cycle fires every
+  `schedule.cycle_interval_minutes` (15 by default; issue #248, "faster
+  heartbeat") from that minute, within every hour named by
+  `schedule.cycle_hours` (`*` by default), as an explicit cron minute list
+  (`base`, `base+interval`, `base+2×interval`, …, each occurrence dropped
+  rather than shifted if it lands on an excluded minute) —
+  `cycle_interval_minutes=60` reproduces the single-firing-per-hour shape
+  every release before it carried. A firing that finds nothing changed
+  costs a fingerprint comparison and no Co-Ordinator call at all (3b), so a
+  faster interval raises the fleet's pickup responsiveness without raising
+  its idle spend. The review runs at `schedule.review_offset_minutes` past
+  the node's *base* minute (mod 60, not the interval list — the review
+  stays hourly), at `schedule.review_hour`, keeping one node's two heavy
+  pipelines maximally apart. Why: every active node spends one Claude
+  account and pushes to the same repositories; the claims (17a) make
+  simultaneous firing *correct*, the offsets make it *cheap*. Excluding
+  minutes at all is a per-deployment choice, not logic this renderer
+  carries: `schedule.excluded_minutes` is configuration, and poetic's own
+  `config.json` excludes `0` because its hourly sync workflow owns the top
+  of the hour, recording that reason in `schedule.excluded_minutes_reason`
+  — a deployment with no such conflict ships an empty list. An invalid or
+  excluded `CYCLE_MINUTE` warns loudly and uses the hash — a typo must not
+  silently land a node on an excluded minute — and any render failure
+  (including a missing or malformed `config.json`, or a
+  `schedule.cycle_interval_minutes` outside 1..60) leaves the baked
+  crontab, a valid schedule, byte-untouched (`test/render-crontab.test.sh`
+  pins all of this). The offsets therefore arrive with the image alone;
+  setting `CYCLE_MINUTE` explicitly requires the compose file that maps it.
 - Nothing host-specific and nothing secret is baked in. `GH_TOKEN`, the Claude
   credentials volume, `NODE_NAME` and `AGENT_OPS_ROLE` all arrive at run time,
   and a node that is not `active` (requirement 2.4) costs nothing but its
@@ -571,10 +581,12 @@ and the schema must carry every one of them.
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
-| `max_open_agent_prs` | `8` | Back-pressure: total open PRs (draft or ready) carrying `pr_label`, across all repos, plus live claim-registry entries (requirement 2.2). |
+| `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
+| `max_chained_cycles` | `3` | Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining. |
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
+| `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -593,6 +605,7 @@ and the schema must carry every one of them.
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
 | `dashboard_refresh_seconds` | `5` | How often an open dashboard tab reloads to pick up freshly-written data (`docs/DASHBOARD-SPEC.md`). Match it to the heartbeat cadence: a shorter interval re-reads a file nothing has rewritten, a longer one shows a cycle that has already moved on. |
 | `schedule.cycle_hours` | `*` | The hour field of the implementation cycle's crontab line, rendered by `deploy/docker/render-crontab.sh`; `*` is every hour. |
+| `schedule.cycle_interval_minutes` | `15` | How often, in minutes, the implementation cycle's crontab line fires within an allowed hour, rendered by `deploy/docker/render-crontab.sh`; `60` reproduces the single-firing-per-hour shape every release before this key carried. |
 | `schedule.excluded_minutes` | `[0]` | Minutes `CYCLE_MINUTE` (env or the per-node hash) may never land on, rendered from `deploy/docker/crontab.tmpl`. Poetic's own value excludes `0` because its hourly sync workflow owns the top of the hour; a deployment with no such conflict ships `[]`. Excluding every minute of the hour is a misconfiguration the renderer refuses rather than spinning on. |
 | `schedule.excluded_minutes_reason` | `"poetic's hourly sync workflow owns the top of the hour"` | Free text recording *why* `excluded_minutes` excludes what it does; read by nothing, kept for the next reader. |
 | `schedule.review_hour` | `3` | The hour the review tick fires. |
@@ -865,26 +878,42 @@ runs unattended.
       coordination is needed, because a registry delete is sha-guarded and a
       claim branch is deleted only if unmoved and PR-less, so the worst race
       outcome is a no-op.
-   2. *Back-pressure*: if the number of open PRs labelled `pr_label` across
-      all configured repos (drafts included), **plus the live claim-registry
-      entries for those repos** (requirement 17a — work a node has claimed
-      but not yet surfaced as a PR; each entry is dropped the moment its PR
-      exists), is ≥ `max_open_agent_prs`, stand down. This is the primary
-      throttle on both spend and on the human gate silting up. The count is
-      approximate by design: N nodes can pass it simultaneously, so the
-      stated bound is `max_open_agent_prs + (nodes − 1)`, transient.
+   2. *Back-pressure*: if the number of draft PRs labelled `pr_label`, plus
+      the ready PRs labelled `pr_label` whose `reviewDecision` is
+      `CHANGES_REQUESTED`, across all configured repos, **plus the live
+      claim-registry entries for those repos** (requirement 17a — work a
+      node has claimed but not yet surfaced as a PR; each entry is dropped
+      the moment its PR exists), is ≥ `max_open_agent_prs`, stand down. This
+      is the primary throttle on both spend and on the human gate silting
+      up. The count is approximate by design: N nodes can pass it
+      simultaneously, so the stated bound is `max_open_agent_prs +
+      (nodes − 1)`, transient.
+
+      A ready PR whose `reviewDecision` is **not** `CHANGES_REQUESTED` —
+      approved, or awaiting a first or re-review with nothing currently
+      `CHANGES_REQUESTED`-blocking it — does not count. Its next action
+      belongs to a human, and the pipeline cannot shrink a full human queue
+      by declining to open new work; counting it would only back-pressure
+      the fleet for a queue it has no lever to drain (agent-ops#246). This is
+      the same "whose turn is it" rule requirement 3c's review-feedback
+      candidate filter uses (`scripts/gather-review-feedback.sh`), read here
+      rather than re-derived, so the two definitions cannot disagree.
 
       The logged reason — of the stand-down here and of the restriction
-      warning in 2.2a — states the count's composition:
-      `(N ready + N draft + N unraised claim(s))`. A ready PR is the human's
-      queue; a draft is work in flight (the Implementor's own claim marker,
-      requirement 23); an unraised claim is a registry entry whose PR does
-      not yet exist. Whether the cap stood the fleet down because the queue
-      was genuinely full, or fired early on in-flight work, is exactly what
-      a cap-tuning decision needs — and it must be readable from the log
-      line alone, because the PRs behind a historical count are merged or
-      closed by the time anyone asks, leaving cycle-record archaeology as
-      the only other answer.
+      warning in 2.2a — states the count's full composition:
+      `(N changes-requested + N draft + N unraised claim(s) — plus N waiting
+      on human (N raw))`. A changes-requested PR is a human's review
+      answered and now the pipeline's turn; a draft is work in flight (the
+      Implementor's own claim marker, requirement 23); an unraised claim is
+      a registry entry whose PR does not yet exist; the human-queue count is
+      the ready PRs excluded from the trip, and the raw total is what the
+      count would have been before that exclusion. Whether the cap stood the
+      fleet down because the queue was genuinely full, or fired early on
+      in-flight work, or would have tripped only on PRs already waiting on a
+      human, is exactly what a cap-tuning decision needs — and it must be
+      readable from the log line alone, because the PRs behind a historical
+      count are merged or closed by the time anyone asks, leaving
+      cycle-record archaeology as the only other answer.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
@@ -2169,9 +2198,12 @@ runs unattended.
      Co-Ordinator is expected to re-check these and clear them (`unblocked`)
      when the impediment lifts.
    - **`void`** — there is no work: the premise is false, almost always
-     because the item is already done on `default_branch`. Record `item-void`
-     with the stage's `reason` and `evidence`. **No agent may ever clear it**;
-     only a human, by appending `unvoided` to the log by hand.
+     because the item is already done on `default_branch`. Pass the stage's
+     `reason` and `evidence` through requirement 34d's shared corroboration
+     guard first; record `item-void` only if it passes, `attempt-failed`
+     (outcome `void-refused`) if it does not. **No agent may ever clear a
+     recorded void**; only a human, by appending `unvoided` to the log by
+     hand.
    The failure mode if you merge them is specific, silent, and was found in
    production rather than in review. An already-done recommendation is filed
    as `blocked`. The next Co-Ordinator, obeying its standing instruction to
@@ -2371,6 +2403,70 @@ runs unattended.
     When provisioning a host, prove that a cron-style invocation can resolve
     `claude` by running it from a minimal environment (for example with a
     sanitized `PATH` and `HOME`) before relying on scheduled runs.
+39. **Finish-then-continue** (issue #248): a cycle that wins a claim and
+    launches the Implementor may, once it has fully ended, launch another
+    cycle immediately rather than leave the next one to the next cron
+    firing — `lib/chain.sh`. Two conditions, both cheap, both judged from
+    what the cycle already gathered ahead of the Co-Ordinator
+    (`ordered_repos_json`, ready before requirement 3b's fingerprint is
+    even taken):
+    - **Sources remain.** At least one configured repository's `.sources` —
+      already narrowed by back-pressure (2.2a) if it was tripped — is
+      non-empty. This is not a prediction that work remains, only that
+      something is still configured to look at; the chained cycle's own
+      Co-Ordinator, gather and no-op fingerprint (3b) decide for real,
+      cheaply, exactly as an ordinary cron firing would.
+    - **The lineage has room.** This cycle's own place in an unbroken chain
+      of immediate continuations, 1 for the cron-fired original, is still
+      under `max_chained_cycles` (default 3). A chained cycle inherits its
+      place plus one via `AGENT_CYCLE_CHAIN_COUNT`; `max_chained_cycles: 1`
+      disables chaining outright.
+
+    Never chains on `--once` (a human or a test asked for exactly one
+    cycle) or past any stand-down, the switch, or a cycle that selected
+    nothing — all of those end before a claim is ever won, so
+    `chain_eligible` (set only once a claim succeeds) is never true for
+    them. Nor does it chain over an untrapped crash or a signal: the gate
+    is `chain_eligible` *and* this cycle's own `exit_code == 0`, checked in
+    `cleanup` (11) after everything else there has already run — the lock
+    released, the Enabler engaged, `cycle-end` logged, state pushed. Every
+    *ordinary* ending after a won claim (complete, blocked, void, a handled
+    stage failure) exits 0 like a stand-down does, and does still chain: a
+    failed or blocked item must not stall the fleet from picking up a
+    different one sooner. The chained cycle is a genuinely new process —
+    its own cycle id, its own lock acquisition, its own full cleanup —
+    launched with the original argv (`ORIGINAL_ARGV`, captured before flag
+    parsing consumes it), detached (backgrounded, `disown`ed, stdin from
+    `/dev/null`, stdout/stderr appended to the same `cron.log` a cron
+    firing already writes to) so the parent never waits on it and its life
+    does not depend on the parent's — and launched with the default
+    dispositions for `TERM`, `INT` and `HUP` restored, because `cleanup`
+    ignores all three before it spawns (9c) and an *ignored* signal is
+    inherited across both fork and exec into a shell that can never take it
+    back. Without that reset a chained cycle would run deaf to every signal
+    9c's handler exists to catch, and requirement 1's stale-lock takeover
+    would reach it only through the `KILL` that follows its ignored `TERM`
+    — no `attempt-failed`, no `cycle-end`, no claim released.
+17d. **Race-loss observability**: how many candidates a cycle lost to a peer
+    genuinely holding the item (17a's `cause: "held"`, as opposed to
+    `"unreachable"`) before it won its own claim, or — on the cycle that
+    exhausts every candidate — before it stood down. Carried as
+    `race_losses` on the `selection` event (only when it is greater than
+    zero — 17a) and on that stand-down's event.
+    A cycle recovering a race (winning after one or more losses) is
+    healthy contention, not a fault: `scripts/publish-dashboard.sh` and
+    `dashboard/index.html` surface it as an informational "recovered race
+    ×N" badge, on the cycle history, the live-cycle panel and the fleet
+    cards, wherever that cycle's `title`/`source` already render (never a
+    warning colour). A cycle that lost *every* candidate recovered nothing
+    and never carries that badge; it is marked instead beside its outcome,
+    where the plain "Stood down" verdict cannot say by itself whether the
+    fleet's own contention or a GitHub outage produced it — the same
+    informational colour, and DASHBOARD-SPEC's `raced` / `standdown_cause`
+    is the shape both readings come from. Faster cadence and
+    finish-then-continue (39) both
+    raise how often nodes contend for the same item, which is why this
+    became worth watching rather than left to a `claim-lost` grep.
 
 ### The Co-Ordinator (selection only)
 
@@ -2720,7 +2816,14 @@ runs unattended.
       ("GitHub could not be reached for any candidate — this is an outage,
       not contention"), so a GitHub or token outage does not read as a fleet
       politely yielding to itself. A node that cannot reach GitHub to claim
-      could not have pushed the work either.
+      could not have pushed the work either. This `stand-down` event also
+      carries the same distinction structured, as `cause` — `raced` or
+      `unreachable` — so a reader (the dashboard included) does not have to
+      re-parse the reason text (issue #245). A win that followed one or more
+      `held` losses is a *recovered* race, not an ordinary first-try
+      selection: the `selection` event that names the winning candidate
+      additionally carries `race_losses`, the count of `held` losses that
+      preceded it, present only when it is greater than zero.
     - When `state_repo` is unset (a single-node operation), file claims are
       vacuously won and the registry is skipped; branch claims still work.
     - `--dry-run` claims nothing. `--once` claims exactly like an unattended
@@ -2756,6 +2859,41 @@ runs unattended.
     identical to the empty orphan, so its ref can be deleted mid-run — the
     Implementor's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
+17c. **The post-merge closing-keyword sweep.** Requirement 25a's CI check
+    stops a *new* pull request from merging without a real closing keyword;
+    this is the backstop for what already got through — a PR merged before
+    that check existed, or one that merged some other way — and for the
+    ordinary lag between a fix landing and the issue it was meant to close
+    actually closing. After the orphan-branch sweep (17b), every cycle runs
+    `scripts/sweep-closed-issues.sh` over each configured repo: for every
+    merged, `pr_label`-labelled pull request naming an issue `N` GitHub
+    still reports open, it closes that issue with a comment citing the merge
+    as evidence (the PR number, its merge commit) instead of leaving the
+    tombstone that keeps a finished item selectable forever (issue #240;
+    PR #206's "Implements #198" left #198 open for three days after its own
+    fix merged, selected and voided twice in the meantime). A merged PR
+    names its issue by the `<!-- agent-ops:closes-issue item=N -->` marker
+    (requirement 23b), or — when the marker is missing — by a head branch of
+    exactly `agent/<N>`, the same Script-minted anchor requirement 25a's CI
+    check reads, so one forgotten prompt instruction cannot blind the CI
+    check and this sweep on the same PR.
+    An issue GitHub reports `state_reason: "reopened"` is exempt: somebody
+    reopened it after a close, and "still open" alone cannot tell that apart
+    from "never closed". Without the exemption the sweep would re-close, on
+    the hour and with a fresh comment each time, exactly the issue a human
+    deliberately put back — the same answer requirement 34k's
+    `void-object-closed` record gives on the other sweep, spelled here with
+    no record of our own to keep, because the re-open is GitHub's record of
+    it. The skip is reported as a warning, never silent.
+
+    Bounded to the most recently updated merged pull requests per repo, and
+    idempotent by construction — it only ever acts on an issue GitHub itself
+    still reports open and not reopened, so re-running it costs nothing once
+    the backlog is cleared. Actions are capped per run (three per repo per cycle, the
+    overflow reported, never silent), logged as `issue-closed-post-merge`
+    events, and every node may sweep concurrently: GitHub's own issue-close
+    is idempotent, so the worst race outcome is two nodes both finding
+    nothing left to do. Skipped on `--dry-run`.
 18. When it skips a blocked item, it may cheaply verify whether the recorded
     blocker still holds; if the blocker is demonstrably gone, it reports
     that in its final message so the Script can append an `unblocked` event,
@@ -2977,6 +3115,16 @@ runs unattended.
     the claim (and, once merged, the completion) is visible to any other cycle
     scanning PRs — there is no register entry and the review folder is not
     modified.
+23b. **Stamps an issue-sourced draft PR with a machine-readable marker naming
+    the issue it claims to close.** `<!-- agent-ops:closes-issue item=N -->`
+    (`lib/pipeline-marker.sh`'s convention extended to this one new purpose:
+    an invisible, greppable fact in the PR body), where `N` is the work
+    order's `item`. This is what requirement 25a's deterministic check and
+    requirement 17c's post-merge sweep both key on — neither reads prose, so
+    "Implements #N" is invisible to both, which is exactly the shape of the
+    defect requirement 25a exists to close (issue #240; PR #206 wrote
+    "Implements #198" and #198 stayed open three days after its own fix
+    merged).
 23a. **Pushes at checkpoints, not only at the claim and at the end.** Once the
     draft PR exists, the Implementor commits and pushes again at each
     meaningful checkpoint — a passing test, a completed file, a finished
@@ -3028,8 +3176,9 @@ runs unattended.
 25. Updates the originating record: the tech-debt record marked `resolved` —
     its `status:` frontmatter flipped (with `resolved:` and `ref:` filled in)
     and its body left in place, the file never deleted or renamed; issues
-    linked with a closing keyword in the PR body; implementation-plan task
-    marked done.
+    linked with a real GitHub closing keyword (`Closes`/`Fixes`/`Resolves
+    #N`) naming the same `N` as requirement 23b's marker; implementation-plan
+    task marked done.
     For `security`/`code-quality` findings, no register flip applies — GitHub
     closes a Dependabot or code-scanning alert automatically once the fix
     lands on the default branch and is re-scanned — so the PR body names the
@@ -3048,7 +3197,8 @@ runs unattended.
     discipline, and without it a tidy-up destroys information. The problem
     labels the work order carries are BAD NAME, BAD FRONTMATTER, MISSING
     FIELD, BAD FIELD, BAD STATUS, BAD SCOPE, NO SCOPE, ID MISMATCH, DATE
-    MISMATCH, STALE FIELD or DUPLICATE ID:
+    MISMATCH, STALE FIELD or DUPLICATE ID — all `td-check.pl`'s own — and
+    VOIDED STATUS, which is not (requirement 34l):
     - Most are one-line frontmatter corrections, made to match the facts —
       the pull request its `ref:` names, the filename, the `scope:` declared
       in `TECH-DEBT.md` — never the other way round. Where the facts are not
@@ -3058,16 +3208,61 @@ runs unattended.
       following the `ref:` and confirming the fix has landed before the
       status itself is flipped to `resolved`, or the resolution fields
       cleared and the item left open.
+    - A **VOIDED STATUS** (requirement 34l: the fleet's void log records the
+      item done, the file still says `open`/`in-progress`) is judged by
+      following the void's own evidence, carried in the work order's `body`,
+      and confirming the change did land on the default branch — usually
+      under some other item's pull request, which is why the row was never
+      flipped. If it did, `status:` is flipped to `resolved` with `resolved:`
+      and `ref:` filled from that evidence; if it did not, the row is left
+      exactly as it is and the Implementor's `notes` say why.
     - An item file is **never deleted or renamed** once on the default
       branch — the directory is an append-only set and CI enforces it — and
-      nothing is touched beyond what the check flags: item files are
-      permanent records, not a place to re-word titles or tidy accepted
-      frontmatter.
+      nothing is touched beyond what the work order's problem lines flag:
+      item files are permanent records, not a place to re-word titles or
+      tidy accepted frontmatter.
 
     The pull request is pure register housekeeping — the register and
     nothing else — and argless `perl scripts/td-check.pl` exits 0 before the
     item is complete, the same check the target repo's own CI will run on
-    the PR.
+    the PR. That checker is the whole acceptance only for its own labels: it
+    reads each file against itself, its filename and the declared scope, so
+    it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
+    one, the item is complete only once that row is flipped or the
+    Implementor has said why the evidence did not hold up.
+25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
+    trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
+    `scripts/check-closing-keyword.sh` against the PR body and head branch
+    on every `pull_request` event, and two anchors decide what the body owes:
+
+    - **The marker.** Every `<!-- agent-ops:closes-issue item=N -->` marker
+      (requirement 23b) in the body fails the check, naming the missing
+      number, unless the body also carries a real closing keyword for that
+      same `N`.
+    - **The branch.** A head branch of exactly `agent/<N>` — the name the
+      Script itself mints for an issue-sourced work order
+      (`claim_branch_for`) and for nothing else, since no other source
+      yields a purely numeric item (`lib/work-gone.sh`) — requires both the
+      marker for `N` and the closing keyword for `N` to be *present*. This
+      anchor is the one no model writes: a marker-only check passes
+      trivially on the PR whose Implementor forgot the marker, which is the
+      same silent prompt-skip that motivated issue #240, whereas the branch
+      name was fixed by the Script before the Implementor ever ran.
+
+    A PR with no marker on any other branch — every non-issue source —
+    passes; the check has nothing to say about a PR with nothing to close.
+    This is what makes requirement 25's "Implements #198" failure (issue
+    #240) structurally impossible to repeat unnoticed: the pull request
+    itself goes red, in front of the human who reviews it, rather than
+    depending on a model that has already been asked once and skipped it.
+    The `closing-keyword` check must also be listed in the repository
+    ruleset's required status checks — a repo setting, not a workflow file —
+    so red blocks the merge rather than merely reporting, and pinned there
+    to the GitHub Actions app (`integration_id` 15368), as every other
+    required context is, so no other integration can satisfy the requirement
+    by reporting a check of the same name. Acceptance check 8m is how that
+    setting is verified, it being the one piece of requirement 25a no file
+    in this repository carries.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -3172,7 +3367,9 @@ runs unattended.
 31. Confirms CI is passing (`gh pr checks`) and the PR is mergeable, then
     marks it ready for review (`gh pr ready`), and where a human's review is
     what blocks it, requests a fresh one from them (requirement 31b). It never
-    approves and never merges.
+    approves and never merges. A `ready` verdict is itself re-verified against
+    GitHub before any of this runs (requirement 31c) — the Reviewer's own
+    confirmation is a model's, and the Script's is not.
 31a. **The handoff is verified, not reported.** Requirement 31 is the pipeline's
     only irreversible outward act, and requirement 32 has the Reviewer *describe*
     it — two different things. Before recording `pr-ready` the Script asks GitHub
@@ -3258,6 +3455,48 @@ runs unattended.
     the model may still do it, the Script asks GitHub whether it happened, and
     where it did not the Script does it. One definition, in `lib/handoff.sh`
     (requirement 34a).
+31c. **A `ready` verdict is confirmed against GitHub before it is acted on, not
+    trusted from the Reviewer.** poetic-fiddle #216 reached
+    `reviewDecision: APPROVED` while a CodeQL high-severity alert ("clear-text
+    logging of sensitive information") sat open, hidden inside an otherwise
+    15/16-green check list — the Reviewer's own instruction to confirm CI is
+    green (requirement 30) is a model reading a check list and judging it, and
+    that judgement is exactly what missed this one. So before requirement 31's
+    draft flip ever runs, the Script asks GitHub directly, through
+    `lib/review-gate.sh`'s `review_gate_verdict` (component 20):
+    - every required status check green at the pull request's *current* head
+      commit (`gh pr checks --required`, asked fresh rather than reused from
+      anything read earlier in the engagement, so a check still catching up to
+      a fix just pushed is never mistaken for one that passed). An empty or
+      unreadable required-check list is treated as failing, never as a vacuous
+      pass — poetic-fiddle #190, a CONFLICTING pull request, reports *no*
+      required checks at all, which is the conflicting-PR-runs-no-CI trap this
+      guards against;
+    - no code-scanning alert carrying a security severity that this pull
+      request's branch carries and the default branch does not — a default
+      branch that already lives with an accepted alert must not freeze every
+      future pull request over debt that is not theirs, so the default
+      branch's own open alerts are read and subtracted before anything is
+      judged "introduced" by this pull request.
+
+    `clean` — requirement 31 proceeds exactly as before. `dirty` — the
+    handoff never runs at all; this is recorded as a Reviewer handback
+    (requirement 32a) naming what the gate found, exactly as though the
+    Reviewer itself had reported `blocked`, and no `gh pr ready` is attempted.
+    `unknown` — the code-scanning read could not be asked at all (no
+    `security_events` permission on this token, code scanning not enabled, an
+    unreachable API): a fact about the node or the repository, not the pull
+    request, so the handoff proceeds and a `warning` is logged instead — the
+    same "could not check is not a failure" contract requirement 24a's Vercel
+    preview check already keeps, applied here so a token missing one
+    permission cannot silently freeze every pull request's handoff fleet-wide.
+    An `unknown` alert read never softens a `dirty` required-check verdict;
+    required checks are asked first and gate on their own.
+
+    #216 itself: the human resolved it directly on the pull request (renaming
+    the flagged constant, commit `8e62ff6`) before this requirement existed to
+    check it, which is itself the confirmation that a script-side gate would
+    have found nothing further to do once that fix landed.
 32. Ends with a single JSON object:
     `{"status": "ready" | "blocked", "pr_url": …, "fixes_applied": […], "comments_left": n, "ci": "passing" | …}`,
     plus `reason` — one line naming what is wrong — on `blocked`, which becomes
@@ -3316,7 +3555,10 @@ runs unattended.
     `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
-    `enabler-examined`, `escalated`, `labels-ensured`, `limit-hit`,
+    `enabler-examined`, `escalated`, `crash-loop-escalated`,
+    `labels-ensured`, `limit-hit`, `limit-cleared`,
+    `orphan-branch-recovered`, `orphan-branch-released`,
+    `issue-closed-post-merge`, `void-object-closed`,
     `disabled`, `enabled`, `salvage`,
     `warning`, `cycle-end`. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
@@ -3503,52 +3745,86 @@ runs unattended.
       safe where clearing is not — a wrong unvoid costs a cycle every hour until
       someone notices — but it is not free, and requirement 34d is what makes it
       safe enough to keep.
-34d. **A Co-Ordinator void is corroborated before it is made permanent.** The
-    Co-Ordinator is the one void author that never opens the repository: the
-    Implementor reads the tree (requirement 27b) and the Enabler reads the issue
-    and the pull request (requirement 35), while the Co-Ordinator is given a JSON
-    digest of candidates and nothing else. An assertion about the default branch,
-    made by the only actor that never looks at the default branch, is the
-    assertion to check. Three tests, all on the Script's side of the boundary:
+34d. **Every `item-void` a stage writes is corroborated before it is made
+    permanent.** `void_guard_reason` in `lib/void-guard.sh` is the one
+    entry point the Co-Ordinator (requirement 18), the Enabler (requirement
+    36a's `void` row) and the Implementor (requirement 9b) all call before
+    logging `item-void`; none of the three may write it directly. The rule is
+    about the three *stages*, and there is exactly one writer outside it: the
+    Script's own pre-flight (requirement 34m), which reads its evidence
+    straight off `gh`, the register file or the cycle's own pre-claim digest
+    — the ground truth the tests below check a stage's citation *against* —
+    and so has nothing for the guard to corroborate it with. Its event
+    carries `stage: preflight` all the same, so a reader auditing the log for
+    guarded voids should not mistake it for a fourth stage evading this
+    requirement. Four tests, all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
-      required on every `voided` entry, and `null`, `""`, whitespace, `{}` and
-      `[]` are all absence. An entry without it is not a verdict, it is an
-      opinion.
-    - **A resolvable citation must resolve.** The PR-diff test below only fires
-      when the item has an open pull request among this cycle's candidates —
-      the finishing sources. Most voids have no such candidate: a tech-debt item
-      with no PR open, a review recommendation, a `failed-runs` entry. For
-      those, `evidence` shaped `{ref, path, expect: "present"|"absent",
-      pattern}` names a specific claim about a specific file at a specific ref —
-      "the fix is on `main`", "the register says resolved" — and the guard
-      fetches `repos/<slug>/contents/<path>?ref=<ref>` and tests it: `expect:
-      "absent"` holds iff GitHub answers `404 Not Found`, `expect: "present"`
-      holds iff the fetch succeeds and, when `pattern` is given, the decoded
-      content matches it. Only that one answer establishes absence: a fetch
-      that fails any other way — rate limited, unauthenticated, no network, a
-      `ref` GitHub cannot resolve — has established nothing, and reads as the
-      unreadable pull request below does, not as the absence it was asked
-      about. A citation that does not fit the shape at all is free text, and is
-      accepted on the presence test alone, as it always was — the guard tests
-      what it can test, not a shape every claim must take. A citation that does
-      fit the shape but does not resolve — the fetch fails, or the
-      presence/absence/pattern does not hold, or the entry names no repo to
-      resolve it against — is refused the same way an unrefuted PR diff is
-      below.
-    - **This cycle's own candidates must not refute it.** Where the voided
-      repo+item matches a gathered candidate carrying a `pr_number`, the guard
-      reads that PR's changed files: a non-empty diff against its base means the
-      change is by definition not on the base, whatever anyone asserts. The
-      candidates tested are the ones the Co-Ordinator was given, so a void can
-      never be refused over something it could not have seen. A PR the API will
-      not answer for counts as uncorroborated, not as innocent.
+      required on every void, and `null`, `""`, whitespace, `{}` and `[]` are
+      all absence. An entry without it is not a verdict, it is an opinion.
+    - **A resolvable citation must resolve.** `evidence` shaped `{ref, path,
+      expect: "present"|"absent", pattern}` names a specific claim about a
+      specific file at a specific ref — "the fix is on `main`", "the register
+      says resolved" — and the guard fetches `repos/<slug>/contents/<path>?ref=<ref>`
+      and tests it: `expect: "absent"` holds iff GitHub answers `404 Not
+      Found`, `expect: "present"` holds iff the fetch succeeds and, when
+      `pattern` is given, the decoded content matches it. Only that one answer
+      establishes absence: a fetch that fails any other way — rate limited,
+      unauthenticated, no network, a `ref` GitHub cannot resolve — has
+      established nothing, and reads as the unreadable pull request below
+      does, not as the absence it was asked about. A citation that does not
+      fit the shape at all is free text, and is accepted on the presence test
+      alone, as it always was — the guard tests what it can test, not a shape
+      every claim must take. A citation that does fit the shape but does not
+      resolve — the fetch fails, the presence/absence/pattern does not hold,
+      or the entry names no repo to resolve it against — is refused the same
+      way an unrefuted PR diff is below.
+    - **A cited PR or commit must actually be about this item.** Evidence
+      naming "PR #N" or "pull request #N" is fetched live
+      (`repos/<slug>/pulls/<n>`) and checked for the item id, as a whole word,
+      in its body or its head branch — the same two places the gatherers read
+      to associate a PR with an item in the first place. Evidence naming a
+      commit ("commit `<sha>`" or "`<ref>@<sha>`") is checked two ways: the
+      commit must be an ancestor of the repository's default branch
+      (`repos/<slug>/compare/<sha>...<default_branch>`, `status` `identical`
+      or `ahead`), and either its own message or a pull request GitHub
+      associates with it (`repos/<slug>/commits/<sha>/pulls`) must name the
+      item the same way a cited PR does. One item shape is decided by its id
+      alone, with no fetch: a finishing-source item **is** a pull request —
+      requirements 3e, 3g and 23 mint its id as `pr-<n>-abandoned-<head-sha>`,
+      `pr-<n>-review-<review-id>` or `pr-<n>-conflict-<head-sha>` — so a
+      citation of pull request `<n>` corroborates item `pr-<n>-…` by the id's
+      own construction, while any other pull request is tested as usual.
+      Nothing writes that synthetic id into the pull request's body or branch,
+      so without this the test would refuse the one citation these items can
+      honestly make, on exactly the sources the candidate test below
+      corroborates best. Evidence citing neither a PR nor a commit is
+      untouched by this test — the two tests above are what govern free prose.
+      This is what a citation that merely *exists* was missing: the shipped
+      defect that motivated it (below) cited a PR that was real, open, and
+      entirely unrelated to the item being voided.
+    - **This cycle's own candidates must not refute it (Co-Ordinator only).**
+      Where the voided repo+item matches a gathered candidate carrying a
+      `pr_number`, the guard reads that PR's changed files: a non-empty diff
+      against its base means the change is by definition not on the base,
+      whatever anyone asserts. The candidates tested are the ones the
+      Co-Ordinator was given, so a void can never be refused over something it
+      could not have seen. A PR the API will not answer for counts as
+      uncorroborated, not as innocent. The Enabler and the Implementor gather
+      no per-cycle candidate list, so they call the same guard with `repos:
+      []`; this one test simply has nothing to run, and every other test above
+      applies to them exactly as it does to the Co-Ordinator.
 
     A refused void is recorded `attempt-failed` — blocked, not void — plus a
-    `warning` naming the refusal. Blocked is the clearable twin: the Co-Ordinator
-    still skips the item so nothing churns, and requirement 35a makes it
-    Enabler-eligible, so an actor that *can* read the tree adjudicates. If the
-    item really is done the Enabler voids it properly, with evidence. The
-    pipeline reaches the same answer; it may not reach it by assertion.
+    `warning` naming the refusal, with `stage` set to whichever of the three
+    wrote it. Blocked is the clearable twin: the stage still skips the item so
+    nothing churns, and requirement 35a makes it Enabler-eligible, so an actor
+    that *can* read the tree adjudicates. If the item really is done, a later
+    engagement voids it properly, with evidence that survives corroboration.
+    The pipeline reaches the same answer; it may not reach it by assertion. A
+    refusal from the Enabler's own `void` verdict is recorded with the outcome
+    `void-refused` on its `enabler-examined` event (requirement 36a) — an
+    ordinary examination, not `escalation-failed`'s exemption, since the
+    engagement did reach a verdict; it was simply not corroborated.
 
     Not a prompt instruction, and the distinction matters: "be certain" is
     already in `prompts/coordinator.md` twice, and the Co-Ordinator that voided
@@ -3563,6 +3839,17 @@ runs unattended.
     fingerprint (requirement 3b) then matched, and three nodes stood down hourly
     on a repository with outstanding work. That is the shape of the failure this
     guards: not a wrong answer, but a silent one.
+
+    The citation test above closes a second, distinct shape of the same
+    failure: a Co-Ordinator voided an issue citing "PR #232 implemented all
+    five rewrites" — #232 was real and mergeable, but it was a different
+    issue's PR; the actual fix had landed in a different pull request
+    entirely. Every test that existed before the citation test passed, because
+    none of them had ever asked whether the cited PR was *about the item being
+    voided*. Reading more of the repository does not fix this by itself — the
+    Enabler and the Implementor already read more than the Co-Ordinator does,
+    and carried the same gap regardless — only checking the citation does,
+    which is why the guard is shared rather than duplicated per stage.
 
 34e. **Under-specification is a class of block, not a parallel state.** Each
     well-formed `needs_refinement` entry (requirement 16a) is recorded by the
@@ -3922,6 +4209,170 @@ runs unattended.
     spending nothing new); the comment becomes part of the thread this
     convention already reads, so a human — or the Co-Ordinator, next time it
     is asked to select this item — can adopt it verbatim.
+34k. **Act on void: close the GitHub object a void names.** A void
+    (requirement 34c) already stops the item being selected again, but
+    nothing before this touched the *object* it is about — an obsolete draft
+    pull request or a superseded issue stayed open on GitHub, visible to
+    every human and to every tool that reads the repository rather than this
+    pipeline's own log, and kept being re-derived void by cycle after cycle
+    with nothing ever said to it (issue #240; poetic-fiddle #190/#214 were
+    re-derived void on 7+ separate cycles and never closed). Void tombstones
+    are private state, and the world they describe was never corrected.
+
+    So, in the same pre-extract window as 34f/34g/34i, against `void_json`
+    (the full void set — an already-void item needs no unblocking, but it
+    still names an object that may need closing), the Script asks
+    `scripts/close-void-github-items.sh` to close it, for the two id shapes
+    that name a GitHub object at all (the same shapes requirement 34i's own
+    work-gone rule reads, from the one definition in `lib/work-gone.sh`):
+
+    - **an issue** (a bare number) — closed, with a comment carrying the
+      void's own `detail` (the reason) and `evidence`, iff GitHub still
+      reports it open;
+    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
+      closed the same way, iff still open.
+
+    Every other void shape — a tech-debt register id, a project-review ref,
+    an implementation-plan task id — names something that is not a GitHub
+    object to close, and requirement 34k does nothing with it; a register id
+    is instead requirement 34l's concern, immediately below.
+
+    **Only a corroborated void — today, that is the three stage writers.**
+    `void_json` holds the unresolved `item-void` events of all three stage
+    writers (Co-Ordinator, Enabler, Implementor), and requirement 34d's guard
+    corroborates every one of them before it is logged (issue #243), so each
+    is eligible here. It also holds the Script's own pre-flight voids
+    (requirement 34m), and the `stage` gate below excludes them: a pre-flight
+    void closes no GitHub object, so a finishing-source item it voids leaves
+    its pull request open for a human, or for a later corroborated void, to
+    close. Each candidate still carries its event's `stage`, and
+    `close-void-github-items.sh` still gates on it — an uncorroborated
+    `item-void` must never reach this point, but if one somehow did (a future
+    writer that bypassed the guard, a malformed or stageless entry), the gate
+    is what stops it closing a live issue on an unexamined claim. An
+    ineligible void is left exactly as a register id is — unprocessed and
+    unmarked, so nothing stops a later pass acting on it once it is
+    corroborated. The one-shot rule immediately below is the second,
+    independent bound — recovery rather than precondition — and a human's
+    plain re-open wins permanently.
+
+    **Acted on at most once, ever — deliberately not tied to the void
+    clearing.** `void_object_closed_items` (`lib/cycle-state.sh`) is the set
+    of `{repo, item}` pairs a `void-object-closed` event already names; the
+    Script excludes them from every future pass, regardless of what happens
+    to the object afterwards. This is not the same safety margin as 34d's
+    corroboration — it exists because closing is an action with a visible,
+    somewhat blunt side effect (a comment on someone's issue), and a human
+    who simply reopens the object, without going through the sanctioned
+    `unvoid_label` route (34f) that actually clears the void, must not have
+    it closed on them again next cycle. `unvoid_label` remains the only way
+    to make the *void* itself go away; this only ever runs once regardless.
+
+    Bounded and idempotent: three actions per repo per cycle (the overflow
+    reported, never silent, same as every other sweep here), and a `gh` read
+    before every close means the worst outcome of two nodes racing is both
+    finding nothing left to do. Skipped on `--dry-run`.
+34l. **Register rows, voided.** A void naming a tech-debt register id
+    (`lib/work-gone.sh`'s `WORK_GONE_REGISTER_RE`) names a file, not a
+    GitHub object — 34k's own close has nothing to do with it. But the same
+    defect it exists to close applies just as much here: the fleet's void
+    log already knows the item is done, most often because the fix landed
+    some way other than that item's own claim branch, and the register file
+    still says `status: open`, advertising unfinished work forever
+    (TD-PPpfid-26071901, voided in July, still `open` months later; issue
+    #240).
+
+    So, for every repo `work_gone_register_ids` names against `void_json`
+    (the same shared function requirement 34i's clearance rule already
+    calls, applied here to the void set instead of the blocked one), the
+    Script re-derives that repo's register-hygiene candidate —
+    `scripts/gather-register-hygiene.sh`, called a second time this cycle,
+    now with the void items and their evidence — and replaces the entry
+    requirement 3i's own pre-fetch loop already built for it in the
+    Co-Ordinator's runtime input. The replacement only ever happens on a
+    non-empty answer: this pass is a superset of the first by construction,
+    so an empty result means the second read failed where the first
+    succeeded, and overwriting on it would delete a candidate the cycle
+    already holds on no evidence at all. The gatherer's own `VOIDED STATUS` problem
+    class (a second, disjoint source of candidacy layered on top of
+    `td-check.pl`'s internal-consistency rules, never fed back into the
+    byte-identical upstream checker) is what makes this a candidate at all
+    when `td-check.pl` alone would find the file fine. The repair travels
+    through the ordinary register-hygiene Implementor flow (prompts/
+    implementor.md's "Register hygiene" procedure) exactly as any other
+    frontmatter drift — flipping `status:` to `resolved` with the void's own
+    evidence as `ref:`, or clearing stray resolution fields, whichever the
+    facts support — never a write this pipeline makes directly against a
+    protected default branch.
+
+    Re-fetching the register a second time per repo (rather than reordering
+    the cycle so requirement 3i's own pass already had `void_json`) costs
+    one extra tarball read, and only for a repo that actually has a void
+    register item — everywhere else, nothing. The alternative was moving
+    34f/34g/34i/34k's whole pre-extract window earlier than the ordering
+    those requirements are already deliberate about.
+
+34m. **A freshly claimed item gets the same gone-work check, before the
+    Implementor runs, not inside it.** 34i clears a *blocked* item's void
+    without asking anyone, from digests the cycle already gathered; a
+    candidate this cycle just won the claim on has never been blocked, but
+    the question — is this item's work already done? — is identical, and
+    just as often the answer (TD-PPpfid-26072801: merged and register-flipped
+    15 minutes before the review window this fixed opened, then re-selected
+    and re-implemented 21 hours later — a full Implementor engagement to
+    learn what one `gh` read already sitting in the cycle's own gathered
+    state would have said). So, immediately after the claim loop of
+    requirement 17a wins and before the workspace clone, the Script runs
+    `lib/preflight.sh`'s `preflight_done_reason` against the winning
+    candidate alone: `source_states_json` (requirement 3, gathered for every
+    repo the cycle walked, well before the claim) answers it for an `issues`
+    item (closed) and for a finishing source's item (its pull request closed
+    or merged); a `tech-debt` item additionally costs one fresh
+    `gather-register-status.sh` read, scoped to the one item, because a
+    freshly claimed item was never a member of the blocked set
+    `register_status_json` is otherwise scoped to. Every other source is left
+    to the Implementor, exactly as before — this is the three done-signals
+    34i already reads deterministically, reused, not a new one invented for
+    the occasion.
+
+    Two more done-signals run alongside `preflight_done_reason`, both cheap
+    enough to cost no clone of their own:
+
+    - **An open pull request already carries the just-claimed branch**, for
+      every item whose id is not a finishing source's own `pr-<n>-…` shape —
+      an `issues` or `tech-debt` item typically, but equally a `security`,
+      `code-quality`, `project-review`, `implementation-plan` or
+      `register-hygiene` one, since the claim mints all of them a branch the
+      same way. The `pr-<n>-…` shape is excluded because the check above
+      already covers it. Read from the
+      same `source_states_json` digest's `open_prs[].h`, gathered before the
+      claim — the "stale claim, a previous cycle's branch/PR already exists"
+      shape a lost-then-recovered claim race (requirement 17a) can produce.
+      `lib/preflight.sh`'s `preflight_open_pr_reason`, called from
+      `preflight_done_reason` itself.
+    - **The claimed branch is already merged into `default_branch`**
+      (`lib/preflight.sh`'s `preflight_branch_merged_reason`): one live
+      `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
+      `identical` or `behind` means every commit on the branch is already an
+      ancestor of `default_branch`, so the draft's work landed some other way
+      while it sat. Run only for `review-feedback`, `merge-conflicts` and
+      `abandoned-drafts` — the three sources whose branch and pull request
+      predate the claim (`lib/preflight.sh`'s
+      `preflight_existing_branch_source`) — and never for an ordinary
+      `issues`/`tech-debt` claim, whose branch the Script has just created at
+      `default_branch`'s own head: comparing it against that same head the
+      moment the claim is won would always read `identical` and void every
+      ordinary claim on its first tick.
+
+    A hit from any of the three logs `item-void` (stage `preflight`) with the
+    reason `work_gone_clearances`, `preflight_open_pr_reason` or
+    `preflight_branch_merged_reason` gives, releases the claim (requirement
+    17a's release rules) and ends the cycle — no Implementor engagement
+    spent. None needs a corroboration guard of its own (requirement 34d
+    exists to catch a model's fabricated citation, and there is no model in
+    this path to fabricate one): the evidence is read directly off
+    `gh`/the register file/the cycle's own pre-claim digest, the same ground
+    truth requirement 34d's guard checks a citation against.
 
 ### The Enabler
 
@@ -4169,7 +4620,7 @@ runs unattended.
     | Verdict | The Script does |
     |---|---|
     | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft. On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
-    | `void` | logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e |
+    | `void` | corroborated by requirement 34d's shared guard; on success logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e; on refusal logs `attempt-failed` and a `warning` instead, with outcome `void-refused` |
     | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
     | any | logs `enabler-examined` with `repo`, `item`, `blocked_ts`, `outcome` and `detail` |
@@ -4292,6 +4743,161 @@ runs unattended.
     item stays blocked and the log is the only place a stage that routinely
     omits items would ever become visible.
 
+38. **Human-visibility.** Work genuinely waiting on the human must be visible
+    to the human — on `github.com/pulls/review-requested` for a pull request,
+    on Assigned-to-me for an issue — not merely recorded in the pipeline's own
+    log. A 2026-08-07 pipeline-flow review found neither guarantee held: no
+    currently-open pull request carried a live review request (every prior
+    request had been consumed by a submitted review), and the one genuine
+    human-decision block in this repository (#203) was unassigned, so it never
+    appeared on Assigned-to-me either.
+
+38a. **A ready pull request's live review request is kept, not only made
+    once.** `lib/handoff.sh`'s `ensure_human_reviewer(pr_url, assignee)`
+    covers the case `confirm_review_requested` (requirement 31b) does not:
+    nobody's `CHANGES_REQUESTED` is blocking the pull request, so there is no
+    blocking reviewer to re-request from, and yet the human may still not have
+    been *asked* — a first review nobody has given, or an approval nobody has
+    acted on since (poetic-fiddle #170: approved, green, and idle 6.8 days,
+    because CODEOWNERS' request is consumed the moment the review is
+    submitted and nothing asks again). Requesting review from someone who has
+    already approved withdraws nothing they said; it only puts the pull
+    request back in the one queue a human actually watches.
+
+    The target is whoever has ever reviewed the pull request, in any state
+    (`_handoff_known_reviewers`), before it is ever `assignee`
+    (`enabler_assignee`). That order is load-bearing, not stylistic: this
+    system's own pull requests are authored under the same account
+    `enabler_assignee` routinely names — issue assignment has no such
+    conflict, pull-request review does — and GitHub refuses a review request
+    aimed at a pull request's own author with a 422. CODEOWNERS already solved
+    that once, automatically, the moment the pull request went ready; reading
+    who it already picked is both correct and one API call. `assignee` is the
+    fallback for a pull request CODEOWNERS never touched at all.
+
+    The author is struck off the candidates whichever list proposed them,
+    before anything is asked, and a request left with no candidate is a `skip`
+    rather than an attempt: a 422 is not a transient failure worth a `warning`
+    every cycle, it is a fact about the configuration that will not change
+    tomorrow, and one invalid login fails the whole POST rather than its own
+    entry — so an unfiltered author would take the real reviewer down with it.
+    The filter applies to the reviews list too, not only to `assignee`:
+    GitHub closes `APPROVE` and `REQUEST_CHANGES` to a pull request's author
+    but leaves `COMMENT` open to them, and a Reviewer's own findings may be
+    filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
+    them — under the account that raised the pull request.
+
+    Called from both places `confirm_review_requested` already is — the
+    Reviewer's own handoff and the Enabler's `complete_handoff` — whenever
+    that call answers `none`, and from the periodic sweep of requirement 38c
+    below, so the guarantee holds whether or not any stage touches the pull
+    request in a given cycle. A `failed` result is a `warning` on the
+    `pr-ready` event, on the same terms requirement 31b's own re-request
+    failure is: the pull request is finished and visible, only a notification
+    is missing.
+
+38b. **A Co-Ordinator-recorded block gated on a human decision is assigned,
+    not only labelled.** Requirement 34e projects the `needs-refinement` label
+    onto the issue behind a `needs_refinement` report, but a label matches
+    nothing on Assigned-to-me — agent-ops#203 was exactly this shape (labelled
+    correctly, invisible regardless) until fixed by hand. `lib/refinement.sh`'s
+    `refinement_assignee_add`/`refinement_assignee_remove` mirror the label's
+    lifecycle: `log_needs_refinement_items` assigns `enabler_assignee`
+    to the issue alongside the label, recording it as
+    `needs_refinement_assignee` on the block's `attempt-failed` event (mirrored
+    by `refinement_block_fields`'s third argument) so `release_refinement_label`
+    can take the assignment off again — via `refinement_assignee_targets`, read
+    from the block record exactly as `refinement_label_targets` is — the moment
+    the block clears, by the same three paths that already release the label.
+    Best-effort, like the label: a failed assignment is a `warning`, and the
+    block is recorded regardless.
+
+    The mirror stops one step short of the label's, on purpose. The
+    assignment goes on through `refinement_assignee_project`, which reads the
+    issue's assignees before writing: an assignment already there — the
+    human's own, made for their own reasons before the block existed — is
+    left exactly as found and recorded as nothing, because `gh issue edit
+    --add-assignee` succeeds as a no-op on an assigned issue, and an
+    assignment recorded off the back of that no-op would be *removed* when
+    the block cleared — a false removal from the very list this requirement
+    exists to keep accurate, silently and by the pipeline's hand. The label
+    keeps its unconditional lifecycle and the asymmetry is deliberate:
+    `needs-refinement` is this system's own vocabulary, convergent with block
+    state by design (a hand-applied instance is itself read back as a report,
+    requirement 34g), where an assignment is a general-purpose signal the
+    projection only borrows. An unreadable assignee list assigns best-effort
+    but records nothing, with a `warning` saying so — over-holding an
+    assignment is cosmetic; removing one that may have pre-existed is the
+    defect the read exists to prevent.
+
+38c. **An idle, approved pull request is nudged, not left silent.** For every
+    open, non-draft, `pr_label`-carrying pull request in every configured
+    repository — fleet-wide, like the sweeps of requirements 17b and 34i,
+    regardless of `--repo` — `scripts/sweep-human-visibility.sh` runs once per
+    cycle and, per pull request:
+
+    - where nothing is `CHANGES_REQUESTED`-blocking it, ensures
+      `ensure_human_reviewer` (requirement 38a, kept continuously rather than
+      only at the moment of handoff);
+    - where the pull request is `APPROVED`, `MERGEABLE`, every check
+      genuinely green (an empty `statusCheckRollup` is excluded explicitly —
+      that is CI not having run, not CI having passed), and has been since
+      before `human_nudge_idle_hours` ago, posts one nudge comment naming
+      `enabler_assignee` — unless one is already there, which a
+      `<!-- agent-ops:human-nudge -->` marker comment makes idempotent rather
+      than merely time-windowed. `human_nudge_idle_hours` of `0` disables the
+      nudge only; the review-request self-heal above is unconditional.
+
+    This *is* the periodic, deterministic audit of requirement 38's own
+    guarantee, made self-healing rather than merely reported: a violation this
+    script can fix, it fixes in the same pass, so there is never a gap between
+    detection and correction for a human to fall through. What it cannot fix —
+    a listing or a read that fails — is a `warning`, never a silent skip.
+    Skipped on `--dry-run`, like every sweep that writes.
+
+    A pull request something is still `CHANGES_REQUESTED`-blocking is left
+    entirely alone — the sweep never calls `confirm_review_requested`
+    (requirement 31b), and the omission is deliberate. That function's
+    contract assumes the judgement "these changes answer the review", which
+    only the Reviewer's `ready` verdict supplies (requirement 31b's one call
+    site), and the sweep has none to offer: re-requesting without it inverts
+    the queue — the human is asked to re-look at a pull request whose next
+    actor is the pipeline — and, because requirement 3c's candidate rule
+    reads a review-requested timeline event as the round having been
+    *answered* (`scripts/gather-review-feedback.sh`, the
+    events-not-timestamps fix), it would also drop the pull request out of
+    the Implementor's own review-feedback selection while the human's
+    `CHANGES_REQUESTED` sat unanswered — PR #205's silent-starvation failure
+    reintroduced hourly and fleet-wide. The case this leaves unhealed (a
+    `ready`-verdict re-request lost to a crash between the push and the
+    request) is recorded as deferred work in
+    `tech-debt/TD-PPagop-26080804.md`: healing it correctly needs
+    requirement 3c's answered-from-events predicate shared out of its
+    script, so the sweep can tell an answered round from an unanswered one.
+
+    The Script logs what the sweep did under the sweep's own event names —
+    `human-review-requested` and `human-nudged`, each
+    carrying the `repo` swept and the `pr_url` acted on — exactly as
+    requirement 17b's sweep logs `orphan-branch-recovered` /
+    `orphan-branch-released`, and deliberately not as `pr-ready`. A sweep
+    action is not a handoff: the Publisher's outcome ladder
+    (`docs/DASHBOARD-SPEC.md`) reads a `pr-ready` anywhere in a cycle as "this
+    cycle got a pull request to ready" and ranks it above every other reading,
+    so a `pr-ready` logged for a re-request on some other repository's
+    long-since-ready pull request would rewrite the recorded outcome of a cycle
+    that stood down or selected nothing.
+
+38d. **Scope note.** Requirement 38 does not extend the same guarantee to
+    every conceivable class of human-blocked work — an `escalate` verdict
+    (requirement 36a) was already assigned and labelled before this
+    requirement existed, and remains the canonical path for a decision only a
+    human can make. What requirements 38a–38c add is continuity (the guarantee
+    holds between the moments a model-driven stage would otherwise renew it)
+    and one further origin (a Co-Ordinator's own `needs_refinement` report)
+    that previously reached only a label. Nor does a violation the sweep cannot
+    itself heal become selectable work: it is a `warning` and no more, which is
+    the gap `tech-debt/TD-PPagop-26080801.md` records.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -4347,14 +4953,20 @@ What exists, and the requirements each part answers to:
    `CONFLICTING`), each carrying the PR's body verbatim, its base, and a
    head-SHA-scoped ref. Fails safe to `[]` (exit 0). Must pass `shellcheck`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
-   repo slug and default branch, prints a JSON array holding at most one
-   candidate — the repo's per-item tech-debt register, when
-   `scripts/td-check.pl` says it disagrees with itself — carrying a ref
-   scoped to the register's identity (a digest of the `tech-debt/` tree SHA
-   and the policy blob SHA), the register's URL, the `tech-debt/` tree SHA as
-   the blob SHA, the problem lines, and the checker's output verbatim. A repo
-   with no `tech-debt` tree prints `[]` silently; an API failure prints `[]`
-   with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0).
+   repo slug, default branch and (requirement 34l) an optional JSON array of
+   this repo's void register-shaped candidates, prints a JSON array holding
+   at most one candidate — the repo's per-item tech-debt register, when
+   `scripts/td-check.pl` says it disagrees with itself, or when a named void
+   candidate's file still carries `status: open`/`in-progress` (the
+   `VOIDED STATUS` problem class, this script's own, layered on top of and
+   never fed back into `td-check.pl`) — carrying a ref scoped to the
+   register's identity (a digest of the `tech-debt/` tree SHA and the policy
+   blob SHA), the register's URL, the `tech-debt/` tree SHA as the blob SHA,
+   the problem lines (both classes combined), and a body holding the
+   checker's output verbatim plus a section naming each `VOIDED STATUS`
+   item's void evidence. A repo with no `tech-debt` tree prints `[]`
+   silently; an API failure prints `[]` with `gh`'s diagnosis on stderr.
+   Fails safe to `[]` (exit 0).
    Its candidate rule is regression-tested in `test/register-hygiene.test.sh`;
    must pass `shellcheck`. `scripts/td-check.pl` is a byte-identical copy of
    the canonical script in `Poetic-Poems/poetic`, held here (as this
@@ -4458,7 +5070,8 @@ What exists, and the requirements each part answers to:
    filesystem-CAS stub (`test/claim.test.sh`); must pass `shellcheck`.
 3h. `lib/refinement.sh` implementing the refinement class: requirement 16a's
    well-formedness bar for a `needs_refinement` entry, requirement 34e's block
-   fields and label projection (`REFINEMENT_GH` substitutes a stub for tests,
+   fields and label projection and requirement 38b's assignment projection
+   beside it (`REFINEMENT_GH` substitutes a stub for tests,
    following `CLAIM_GH`), requirement 35d's per-engagement cap, and requirement
    36b's `item-refined` payload and thrash guard. Sourced after
    `lib/void-guard.sh`, whose `entry_field_text` it shares rather than keeping a
@@ -4473,6 +5086,24 @@ What exists, and the requirements each part answers to:
    above is asked for those and no others. Pure — it reads nothing itself — and
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
+3s. `lib/preflight.sh` implementing requirement 34m's decision:
+   `preflight_done_reason`, which given a repo, an item, its claim branch, the
+   cycle's source-state digests and (for a tech-debt item) its one freshly
+   read register row, wraps them into the one-entry blocked list
+   `work_gone_clearances` (3m) expects, then — for every item but a finishing
+   source's own `pr-<n>-…`-shaped one — falls back to
+   `preflight_open_pr_reason`, checking
+   the same digest for an open pull request already carrying the claim
+   branch; returns the first reason found, or nothing. `preflight_branch_merged_reason`
+   is the third signal, kept separate because it is impure (one live
+   `gh api compare` call against the target repository) and `preflight_existing_branch_source`
+   is the gate that scopes it to the three sources whose branch predates the
+   claim (review-feedback, merge-conflicts, abandoned-drafts) — see
+   requirement 34m for why an ordinary claim's freshly created branch cannot
+   use this check. `preflight_done_reason` and `preflight_open_pr_reason` are
+   pure — they read nothing themselves — sourced after `lib/work-gone.sh`,
+   whose function `preflight_done_reason` wraps. Unit-tested
+   (`test/preflight.test.sh`); must pass `shellcheck`.
 3n. `scripts/sweep-orphan-branches.sh` implementing requirement 17b's sweep:
    given a repo slug, examines every `td/*` and `<branch_prefix>*` ref and
    prints one JSON action object per orphan handled (`recovered`, `released`,
@@ -4480,14 +5111,27 @@ What exists, and the requirements each part answers to:
    unanswered question; `SWEEP_GH` stubs `gh` and `AGENT_OPS_CONFIG`
    overrides the config for tests. Unit-tested
    (`test/sweep-orphan-branches.test.sh`); must pass `shellcheck`.
+3r. `scripts/sweep-human-visibility.sh` implementing requirement 38c's sweep:
+   given a repo slug (and, for the nudge comment's header and marker, a cycle
+   id and a node name), examines every open, non-draft, `pr_label`-carrying
+   pull request and prints one JSON action object per pull request it acted on
+   (`human-review-requested`, `nudged`, `warning`) for the
+   Script to log under those same names. Fail-safe on every unanswered
+   question — a read it cannot make is a `warning`, never an assumed clean
+   answer; `SWEEP_GH` stubs `gh` (and is passed through as `HANDOFF_GH`, since
+   the sweep's decisions are `lib/handoff.sh`'s) and `AGENT_OPS_CONFIG`
+   overrides the config for tests. Unit-tested
+   (`test/sweep-human-visibility.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/model-id.sh`,
+   `lib/refinement.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
    requirement 32b; requirement 31b's `confirm_review_requested`, the same
-   promise for the round after the first; and requirement 9's
+   promise for the round after the first; requirement 38a's
+   `ensure_human_reviewer`, the same promise again where nobody's review is
+   blocking at all; and requirement 9's
    `pr_url_for_branch`, which names the pull request on a claimed branch when
    the stage that opened it named nothing; `HANDOFF_GH` substitutes a stub for
    tests),
@@ -4772,10 +5416,14 @@ What exists, and the requirements each part answers to:
     fenced example, `lang` optional) — falling back to `description` when the
     key carries no `x-docs` for that audience. A cell holds one line, so every
     block flattens into it: a paragraph verbatim, a list's items joined `, `,
-    code's newlines turned to spaces and wrapped in one backtick span, each
-    block joined to the next by a single space — the same join a plain array
-    of paragraph strings always got, and what a single string (a one-block
-    array) already renders as unchanged.
+    code's newlines turned to spaces and wrapped in a backtick span whose
+    delimiter backs off to the code's own content — the widest run of
+    consecutive backticks already in the code, plus one, the same rule
+    CommonMark itself uses for nesting a code span inside a code span — with
+    a leading and trailing space added if the code starts or ends with a
+    backtick, each block joined to the next by a single space — the same
+    join a plain array of paragraph strings always got, and what a single
+    string (a one-block array) already renders as unchanged.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
     `id=review` … `<!-- config-table:end -->`) in place with no arguments.
     Each region's first two lines, immediately after the start marker, are a
@@ -4830,6 +5478,61 @@ What exists, and the requirements each part answers to:
     Regression-tested end to end, against the shipped script copied into a
     scratch fixture repository rather than a reimplementation of its logic,
     in `test/render-config-table.test.sh`; must pass `shellcheck`.
+17. `scripts/check-closing-keyword.sh` and `.github/workflows/closing-keyword.yml`
+    implementing requirement 25a: given a pull request body, extracts every
+    `<!-- agent-ops:closes-issue item=N -->` marker (requirement 23b) and
+    exits non-zero, naming the missing number, for any that has no matching
+    GitHub closing keyword (`close(s|d)`, `fix(es|ed)`, `resolve(s|d)`,
+    case-insensitive, a word of its own, immediately followed by `#N`) in the
+    same body — "unclosed #N" and "discloses #N" contain a keyword and close
+    nothing, exactly as they do to GitHub's own parser. A body
+    with no marker passes trivially. The workflow runs on every
+    `pull_request` event, passing the body through `env:` rather than
+    interpolating it into the step directly, so an attacker-controlled title
+    or body from a fork PR cannot inject shell. Unit-tested
+    (`test/check-closing-keyword.test.sh`); must pass `shellcheck`.
+18. `scripts/sweep-closed-issues.sh` implementing requirement 17c's sweep:
+    given a repo slug, a node name and a cycle id, lists that repo's merged
+    `pr_label`-labelled pull requests (bounded to the most recently updated),
+    and for each carrying an `agent-ops:closes-issue` marker whose named
+    issue is still open and not `state_reason: "reopened"`, closes it with a
+    `pipeline_comment_header`/
+    `pipeline_comment_marker`-wrapped comment citing the merge as evidence,
+    printing one JSON action per outcome (`closed`, `deferred`, `warning`)
+    for the Script to log. Capped at three actions per repo per call, the
+    overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
+    Unit-tested (`test/sweep-closed-issues.test.sh`); must pass `shellcheck`.
+19. `scripts/close-void-github-items.sh` implementing requirement 34k: given
+    a repo slug, a node name, a cycle id and (on stdin) that repo's void
+    candidates already filtered to the id shapes `lib/work-gone.sh` defines
+    (a bare issue number, `pr-<n>-…`) and to what
+    `void_object_closed_items` has not already processed, closes each still-
+    open object with a comment carrying the void's `detail`/`evidence`,
+    printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
+    `"already"` — `deferred`, `warning`) for the Script to log as
+    `void-object-closed`. Any other id shape is left untouched. Capped at
+    three actions per call, the overflow reported rather than silent.
+    `SWEEP_GH` stubs `gh` for tests. Unit-tested
+    (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
+20. `lib/review-gate.sh` implementing requirement 31c: given a pull request
+    URL and the repository's default branch, `review_gate_verdict` prints
+    `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — every required
+    status check green at the current head commit
+    (`review_gate_required_checks`, `gh pr checks --required`, an empty or
+    unreadable list treated as failing rather than vacuously passing) and no
+    code-scanning alert carrying a security severity that the pull request's
+    branch has and the default branch does not (`review_gate_security_alerts`,
+    the base branch's own open alerts subtracted first so inherited debt never
+    blocks a pull request that did not introduce it). The pull request's
+    alerts are read on its **merge** ref (`refs/pull/<n>/merge`) — the ref its
+    `pull_request`-triggered analysis runs against, and so the only one GitHub
+    files a pull request's alerts under; `refs/pull/<n>/head` carries no
+    analysis and answers with an empty list and a 200, which is
+    indistinguishable from a clean pull request. An alerts API that
+    cannot be asked at all is `unknown`, never `clean` — the same "could not
+    check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
+    already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
+    (`test/review-gate.test.sh`); must pass `shellcheck`.
 
 ## Acceptance checks
 
@@ -5528,12 +6231,28 @@ pull request, run the ones the change touches and any it could regress.
    whose repo+item matches a gathered candidate whose PR still changes files is
    refused naming that PR; a PR the API will not answer for is refused as
    uncorroborated; and an evidenced entry with an empty PR diff, or with no PR
-   to check at all, is allowed. Then drive it end to end: a Co-Ordinator
-   returning a `voided` entry the guard refuses must produce an `attempt-failed`
-   for that item and **no** `item-void`, and the next cycle must list the item as
-   blocked rather than void. The negative matters as much — assert a well-formed
-   void is still recorded, or the guard has quietly abolished a feature
-   requirement 18 depends on to avoid full Implementor runs.
+   to check at all, is allowed. Assert the citation test directly: an entry
+   citing a real, fetchable PR whose body and branch name neither one mentions
+   the voided item is refused as a fabricated citation; the identical entry
+   citing the pull request that genuinely implements the item is allowed; and
+   the same shape holds for a cited commit — refused when it is not an
+   ancestor of the default branch, or when it is but neither its message nor
+   any pull request associated with it names the item, and allowed when one of
+   those does. Assert the finishing sources are not caught by it: an item
+   `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
+   request `<n>` is allowed on the id alone, while the same item citing a
+   different pull request is refused. Assert it runs with `repos: []` exactly
+   as the Enabler's and the Implementor's calls do. Then drive it end to end: a
+   Co-Ordinator returning a `voided` entry the guard refuses must produce an
+   `attempt-failed` for that item and **no** `item-void`, and the next cycle
+   must list the item as blocked rather than void. The negative matters as
+   much — assert a well-formed void is still recorded, or the guard has
+   quietly abolished a feature requirement 18 depends on to avoid full
+   Implementor runs. `test/enabler-verdicts.test.sh` passes: driving
+   `maybe_run_enabler` itself with an unevidenced `void` verdict produces the
+   same `attempt-failed`, plus an `enabler-examined` event whose `outcome` is
+   `void-refused` — the Enabler's own guarded path, not only the
+   Co-Ordinator's.
 8d. **A `pr-ready` event means the pull request is not a draft (requirement
    31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
    without calling `gh pr ready`; a draft is flipped and reports `flipped`; a
@@ -5560,6 +6279,28 @@ pull request, run the ones the change touches and any it could regress.
    `CHANGES_REQUESTED` and the PR must still be un-mergeable afterwards. A
    re-request that cleared the block would have moved the human gate, not
    rung it.
+8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
+   handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
+   passes: every required check passing is `clean`; a failing required check,
+   an empty required-check list, and an unreadable required-check list are all
+   `dirty`, never a vacuous pass; an open code-scanning alert with a security
+   severity on the pull request's branch is `dirty` unless the same alert
+   number is already open on the default branch, in which case it is `clean`;
+   an alert with no security severity never gates; the pull request's alerts
+   are read on `refs/pull/<n>/merge` and never on `refs/pull/<n>/head`
+   (asserted on the ref the stubbed `gh` is actually asked for, because the
+   head ref answers with an empty list and a 200 — a silent `clean` that
+   leaves every other assertion here passing); and an alerts API that
+   cannot be asked at all is `unknown`, never `clean`, and never turns a dirty
+   required-check verdict into anything softer. Then drive a cycle whose
+   Reviewer answers `{"status": "ready"}` against a stubbed `gh` reporting a
+   failing required check: the cycle must record the same outcome as a
+   Reviewer `blocked` verdict (requirement 32a) — an `attempt-failed` naming
+   what the gate found — and must never call `gh pr ready` at all. Assert the
+   `unknown` path separately: the same cycle with the alerts read failing but
+   required checks clean must still complete the handoff, with a `warning`
+   logged rather than a block, so a token missing one permission cannot
+   silently freeze every pull request's handoff fleet-wide.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
@@ -5664,6 +6405,96 @@ pull request, run the ones the change touches and any it could regress.
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.
+8j. **A corroborated void closes the GitHub object it names, exactly once
+   (requirement 34k).** `test/close-void-github-items.test.sh` passes against
+   a stubbed `gh`: an open issue or an open, obsolete pull request named by a
+   void from any of the three writers — Co-Ordinator, Enabler, Implementor,
+   all corroborated by requirement 34d (issue #243) — is closed with a
+   comment carrying the void's own evidence; a void carrying no `stage` at
+   all is left entirely alone with no API call made, the fail-closed default
+   for an entry no writer this script recognises corroborated; an object
+   already closed is reported (`closed_by: "already"`) rather than touched
+   again; a shape naming no GitHub object (a register id) is left entirely
+   alone; a void carrying no reason still reaches the comment with its
+   evidence intact; and the per-call action cap defers rather than floods.
+   `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
+   once a `void-object-closed` event exists for an item, it is excluded from
+   every later pass — asserted by driving the same item through the extract
+   twice and confirming the second call still yields the recorded set, the
+   fact that stops the sweep re-closing an object a human has since reopened
+   by hand rather than through `unvoid_label`.
+8k. **A void'd register row becomes a candidate even when `td-check.pl` finds
+   nothing wrong (requirement 34l).** `test/register-hygiene.test.sh`'s void
+   section passes against the shipped `scripts/gather-register-hygiene.sh`
+   and a real `td-check.pl` run: a consistent register stays `[]` until a
+   void names one of its `open` items, at which point exactly one candidate
+   appears carrying a `VOIDED STATUS` problem line quoting the void's own
+   reason; a void naming an item already `resolved` adds nothing; a void
+   naming a file that does not exist adds nothing; and a genuinely drifted
+   register's own `td-check.pl` problems and a `VOIDED STATUS` problem
+   coexist in the same one candidate rather than competing.
+8l. **A closing keyword is enforced, not requested (requirements 23b, 25a,
+   17c).** `test/check-closing-keyword.test.sh` passes: a PR body with no
+   `agent-ops:closes-issue` marker and no `agent/<N>` head branch always
+   passes; a marker with no matching closing keyword for the same number
+   fails, naming it; an `agent/<N>` head branch with no marker for `N` fails
+   naming the marker, and with no keyword for `N` fails naming the number —
+   presence is demanded by the branch anchor, not requested of the prompt —
+   while a non-numeric agent branch (`agent/td…`, `agent/register-hygiene-…`)
+   and a `td/` branch demand nothing; a keyword for the *wrong* number does
+   not satisfy a marker (`Closes #199` does not satisfy `item=198`); every
+   recognised keyword form (`Closes`/`Fixes`/`Resolves`, past tense, a colon,
+   case-insensitive, Markdown emphasis around it) passes; a word merely
+   ending in a keyword ("unclosed #198", "discloses #77") does not; and
+   multiple markers on one body are checked independently — one satisfied
+   marker never excuses another. `test/sweep-closed-issues.test.sh` passes against a stubbed
+   `gh`: a merged, marker-carrying pull request whose issue is still open is
+   closed with the merge cited as evidence; a merged, markerless pull
+   request whose head branch is `agent/<N>` closes issue `N` the same way,
+   the branch cited as the anchor instead of the marker; an issue GitHub
+   already closed (or a PR with neither marker nor numeric agent branch) is
+   left untouched, with no extra API call made for the unnamed case; an
+   issue GitHub reports `state_reason: "reopened"` is left alone and the
+   skip reported, so a human's re-open is never undone on the hour; and the
+   per-call action cap defers rather than floods.
+8m. **The closing-keyword check blocks, not just reports (requirement
+   25a).** The one piece of requirement 25a that no file in this repository
+   carries is the repo setting that makes a red check a blocked merge, so
+   `scripts/doctor.sh` verifies it against GitHub directly, in its GitHub
+   section: it resolves this checkout's own slug (`lib/version.sh`'s
+   `agent_ops_version`), reads `gh api repos/<slug>/rulesets`, and for every
+   active branch ruleset whose `conditions.ref_name.include` names
+   `~DEFAULT_BRANCH` (the active `default` ruleset targeting the default
+   branch), warns unless its `required_status_checks` carries an entry with
+   `context: closing-keyword` and `integration_id: 15368` — the GitHub
+   Actions app every other required context is pinned to. A missing entry
+   warns that the check reports without blocking, the exact gap PR #256's
+   review caught by hand; an entry present without the `integration_id` pin
+   warns that any GitHub App reporting a check of that name could satisfy
+   it; no active branch ruleset targeting the default branch at all warns
+   the same way. The check is read-only, warn-level (the pipeline still
+   runs without it) and runs on every `doctor.sh` invocation, so a ruleset
+   drifting back to report-only surfaces on the next run rather than only
+   when a human reads the repo settings by hand (TD-PPagop-26080802).
+8n. **A claimed item's gone work is caught before the Implementor runs, not
+   inside it (requirement 34m).** `test/preflight.test.sh` passes:
+   `preflight_done_reason` returns the same reason `work_gone_clearances`
+   would give the same item as a blocked entry — a closed issue, a finishing
+   source's closed-or-merged pull request, a register row read `resolved` —
+   and returns nothing for one still open, for a repo the digest never
+   sampled, and for a tech-debt item whose register row pre-flight never
+   fetched (the register map is fetched fresh, per item, only when the source
+   is `tech-debt`; passing none must decide nothing rather than assume open).
+   An ordinary issues/tech-debt item whose own claim branch already carries an
+   open pull request in the pre-claim digest reads as already done too, and a
+   finishing source's own `pr-<n>-…`-shaped item never asks that question — it
+   is already answered by the check above. `preflight_branch_merged_reason`
+   reads `identical`/`behind` from a stubbed `gh api compare` as already
+   merged, `diverged`/`ahead` as still live, and an unreadable or failed
+   comparison as deciding nothing; `preflight_existing_branch_source` is true
+   for exactly `review-feedback`, `merge-conflicts` and `abandoned-drafts`,
+   false for every other source (including one that merely contains one of
+   those names as a substring).
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
@@ -5713,7 +6544,12 @@ pull request, run the ones the change touches and any it could regress.
     `unblocked` verdict's `refined_spec` becomes an `item-refined` event that
     reaches the next cycle's `refinements` map, and a void item's does not; and
     a second refinement of an already-refined item is refused unless a human has
-    just closed an escalation about it. Both directions matter here for the same
+    just closed an escalation about it. `test/enabler-verdicts.test.sh` passes:
+    driving `maybe_run_enabler` itself with an `unblocked` verdict on an item
+    carrying `refined_before` produces no `unblocked` and no `item-refined`
+    event, only a `warning` and an `enabler-examined` event whose `outcome` is
+    `refinement-refused`; the same item with reason `issue-closed` is not
+    refused. Both directions matter here for the same
     reason as requirement 35a's rule: too eager and two models re-specify each
     other's work forever, too shy and the item starves exactly as it did before
     any of this existed.
@@ -5810,8 +6646,10 @@ pull request, run the ones the change touches and any it could regress.
     `list` block and a paragraph; a paragraph, a `code` block and a
     paragraph, each over the
     cap — flattens to one space-joined table-cell line (the list's items
-    comma-joined, the code's newlines turned to spaces and backtick-wrapped)
-    and, separately, renders as real block Markdown in the Extended notes
+    comma-joined, the code's newlines turned to spaces and backtick-wrapped,
+    backing off to a wider delimiter with padding spaces when the code
+    itself contains a backtick) and, separately, renders as real block
+    Markdown in the Extended notes
     subsection: a blank line between paragraphs, real `- ` list items, a
     real fenced code block, each still blank-line-separated from its
     neighbours; a `list`-only or `code`-only note under the cap degrades the
@@ -5864,6 +6702,82 @@ pull request, run the ones the change touches and any it could regress.
     and returns 0, an unlistable repository returns 1 having created nothing
     and claimed no failures it did not observe, and a guarded call survives a
     total failure under `set -e`.
+
+38. **Human-visibility (requirements 38a–38c).** `test/handoff.test.sh` passes:
+    `ensure_human_reviewer` re-requests review from whoever has ever reviewed
+    the pull request (any state) in preference to `assignee`; falls back to
+    `assignee` only when nobody ever has; strikes the pull request's own author
+    off both lists before asking, so an author's `COMMENT` review on their own
+    pull request neither becomes a request target nor 422s the request for the
+    human beside them, and an author-only reviews list is a `skip`; `skip`s
+    while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
+    pull request is a draft; and an unreadable reviews list or pending list is
+    `failed`, never an assumed `skip`. `test/needs-refinement.test.sh` passes:
+    `refinement_block_fields`'s third argument records `needs_refinement_assignee`
+    independent of the label argument; `refinement_assignee_add`/`_remove` each
+    make one `gh issue edit --add-assignee`/`--remove-assignee` call and fail
+    when the assignee is not a collaborator, the same way the label functions
+    fail when the label does not exist; `refinement_assignee_project` reads
+    the issue's assignees before writing — a pre-existing assignment is
+    `present` (untouched, unrecorded), an absent one is added and `added`,
+    an unreadable list is applied best-effort but `unrecorded`, and a
+    non-collaborator is `failed`; and `refinement_assignee_targets`
+    finds exactly the assigned issue, scoped by repo the same way
+    `refinement_label_targets` is, surviving a void the same way. `test/sweep-human-visibility.test.sh`
+    passes against a stubbed `gh`: a pull request with nothing blocking it and
+    no known reviewer yet is both re-requested (from the approver) and, when
+    also approved, mergeable, green and idle past `human_nudge_idle_hours`,
+    nudged in the same pass; a `CHANGES_REQUESTED`-blocked pull request has
+    no review request made for it and is never nudged — the sweep never
+    calls `confirm_review_requested` (requirement 38c's design note), and
+    the nudge's own `reviewDecision == APPROVED` gate holds it off; a pull
+    request nudged once already is not nudged
+    again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
+    approved pull request is never nudged, and neither is one with an empty
+    check rollup; `human_nudge_idle_hours: 0` disables the nudge while leaving
+    the review-request self-heal unconditional; and a listing, a view, or a
+    reviews read that fails is a `warning`, never silence. Confirm the nudge
+    comment carries the visible attribution header and both markers
+    (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
+39. **Finish-then-continue's chain decision is a pure, tested function of what
+    a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
+    sums `.sources` across every repo, zero when every repo's is empty, summed
+    across repos rather than stopping at the first; `chain_should_continue`
+    chains when at least one source remains and the cycle's own place in its
+    lineage is still under `max_chained_cycles`, stops exactly at and past the
+    cap (including `max_chained_cycles: 1`, which disables chaining outright
+    even on the first cycle), and fails closed (never chains) on a
+    non-numeric `chain_count` or `max_chained_cycles`.
+39a. **The chain only ever launches when it should, and never waits on what it
+    launches.** `test/finish-then-continue.test.sh` passes, against the real
+    `cleanup` block lifted out of `agent-cycle.sh`: `chain_eligible=1` with
+    `exit_code == 0` launches exactly one child, carrying
+    `AGENT_CYCLE_CHAIN_COUNT` incremented from wherever this cycle's own
+    stood and the original argv verbatim (including an empty one, replayed
+    as no argv rather than a stray token); `chain_eligible=0` never launches
+    one, regardless of exit code; `chain_eligible=1` with an untrapped
+    non-zero exit or a signal's 128+n never launches one either; a
+    *handled* ending (exit 0, the same as a stand-down) still does, since
+    the item's own disposition must not stall the fleet from picking up a
+    different one sooner; and the parent's own exit is never delayed by a
+    slow child, confirmed by timing a run against one that sleeps. The
+    launched child inherits **no** ignored signal disposition — asserted by
+    having it report back which of `TERM`, `INT` and `HUP` arrived already
+    ignored, which must be none — so a chained cycle stays killable by
+    requirement 1's takeover and by a container stop.
+39b. **A sub-hourly cycle interval is an explicit cron minute list, correct at
+    every occurrence, and backward-compatible at the boundary.**
+    `test/render-crontab.test.sh` passes: the rendered cycle line lists the
+    node's own minute then every `schedule.cycle_interval_minutes` after it
+    while still under 60, each occurrence *dropped* (not shifted) when it
+    lands on an excluded minute rather than the whole render failing;
+    `cycle_interval_minutes: 60` reproduces the exact single-minute,
+    once-per-hour line every release before the key existed rendered;
+    `cycle_interval_minutes` outside 1..60, non-numeric, or absent-with-no-
+    default all leave the baked crontab untouched, the same fail-safe
+    every other malformed schedule key already gets. `test/doctor.test.sh`
+    passes: the crontab report names the full comma list, not just the
+    first occurrence.
 
 ## Host provisioning (human steps)
 
@@ -6329,4 +7243,5 @@ confident, recurring no-op.
 | One state carrying two meanings, where an agent can reason its way out of it | "Blocked" meant both *something is in the way* and *there is nothing to do*. The Co-Ordinator is told to clear blockers that have lifted; it checked an already-done item, correctly found nothing in its way, and logged `unblocked` — returning it to the pool to be rediscovered forever. Every component obeyed its spec exactly. The fix for the previous row *created* this one, and it took a live cycle to see. | Split the states (requirement 9b): `blocked` is clearable by an agent, `void` only by a human. Test that the clear for one cannot fire on the other. **The tell:** if the same fact that ought to make a state permanent is also grounds for clearing it, the state is wrong. Ask of every agent-clearable state: what would the agent have to believe to clear this, and is that belief the reason it exists? |
 | A staleness clock reset by the system's own housekeeping | `abandoned-drafts` (requirement 3e) measured a draft's staleness from `updatedAt`, which moves for anything at all. On poetic#92 a label edit deferred detection by a full `abandoned_draft_after_hours`, and — the sharper case — the Enabler's own comment correctly diagnosing the stall reset the clock in the same breath it cleared the block, deferring the very recovery it had just enabled. Filtering by comment author could not fix it: every pipeline write happens under the same GitHub account a human also comments as. | Ask "would *this system itself* ever produce this signal, and does that mean what a human producing it would mean?" before trusting a timestamp as "somebody is on it" (TD26072605). Where the answer differs, stamp what you write (`lib/pipeline-marker.sh`'s invisible marker) so the reader can tell its own hand from a human's, and discount your own bookkeeping (label edits) unconditionally. Same shape as "a change-detection digest that tracks churn instead of meaning" above, but the churn here is the system talking to itself. |
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
+| A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |

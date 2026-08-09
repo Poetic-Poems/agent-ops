@@ -75,6 +75,29 @@ requested", the cycle restricts itself to review feedback rather than standing
 down, so it can always dig itself out. It still can't open a new PR while the
 gate is full.
 
+## Staying in front of you
+
+The re-request above covers the round *after* the first — but a first-round PR
+and an already-approved one can go quiet too, and neither is a `CHANGES_REQUESTED`
+the pipeline knows to answer:
+
+- **Every ready PR keeps a live review request, not just the one CODEOWNERS made
+  at the start.** Once your review is submitted — approving or not — that
+  request is consumed, and nothing else asks you again. Every cycle, whether or
+  not it touches that PR through any other stage, checks and re-asks whoever
+  already reviewed it (preferring them over a fixed name, since the pipeline's
+  own PRs are authored as `warwickallen` and GitHub refuses a review request
+  aimed at a PR's own author). This is what poetic-fiddle #170 was missing:
+  approved, green, and sitting for 6.8 days because nothing ever asked again.
+- **An approved, mergeable, green PR idle for `human_nudge_idle_hours` (default
+  24) gets one nudge comment**, `@`-mentioning you, once — not repeated, and not
+  instead of the live review request above, which keeps working regardless.
+- **A GitHub issue the pipeline reports as needing your decision is assigned to
+  you**, not only labelled — the same pattern that already resolves an Enabler
+  escalation in 1–2 hours, extended to the Co-Ordinator's own `needs_refinement`
+  reports so a genuinely human-blocked issue never sits invisible on your
+  Assigned-to-me the way #203 briefly did.
+
 ## Issue priority
 
 An open issue's place in the queue is its **`Priority`** field — GitHub's own
@@ -265,10 +288,12 @@ Keys:
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
-| `max_open_agent_prs` | `8` | Back-pressure limit: total open agent PRs (draft or ready) across both repos. |
+| `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
+| `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus however many it chains immediately, instead of each waiting for the next cron firing, while sources already gathered are still non-empty. `1` disables chaining. |
 | `claim_ttl_hours` | `6` | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
+| `human_nudge_idle_hours` | `24` | Hours an approved, green pull request may sit idle — nothing left for the pipeline to do, only a merge click nobody was asked for — before `scripts/sweep-human-visibility.sh` posts one nudge comment naming `enabler_assignee`. `0` disables the nudge; the sweep still keeps a live review request on every such PR regardless (see [Configuration](#configuration) → `enabler_assignee`). |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issue is filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. |
@@ -287,6 +312,7 @@ Keys:
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
 | `dashboard_refresh_seconds` | `5` | Seconds. How often an open dashboard tab reloads to pick up freshly-written data, matching the [heartbeat](#keep-it-fresh) cadence. Untick the page's *auto-refresh* box to pause it while reading. |
 | `schedule.cycle_hours` | `*` | The hour field of the containerised node's implementation-cycle crontab line (`deploy/docker/render-crontab.sh`); `*` means every hour. |
+| `schedule.cycle_interval_minutes` | `15` | Minutes between implementation-cycle firings within an allowed hour (the no-op short-circuit keeps an idle firing cheap); `60` fires once per hour, as every release before this key existed. |
 | `schedule.excluded_minutes` | `[0]` | Minutes the per-node `CYCLE_MINUTE` (env or hash) may never land on. This repo's own config excludes `0` because poetic's hourly sync workflow owns the top of the hour; a fresh install with no such conflict should ship `[]`. |
 | `schedule.excluded_minutes_reason` | see `config.json` | Free-text note on *why* `excluded_minutes` excludes what it does — documentation only, read by nobody. |
 | `schedule.review_hour` | `3` | The hour the containerised node's review tick fires. |
@@ -845,8 +871,11 @@ Leave `state_repo` out of `config.json` and none of this happens at all.
 ## Skipping no-op cycles
 
 The Co-Ordinator costs the same to say "nothing to do" as it does to select
-work — about 2½ minutes of Haiku, reading both repos. On a quiet week that was
-24 identical answers a day, all of them paid for.
+work — about 2½ minutes of Haiku, reading both repos. Firing every
+`schedule.cycle_interval_minutes` (15 by default; see [Configuration](#configuration)) instead
+of once an hour is only affordable because of this check: without it, a quiet
+week would be a Co-Ordinator call roughly every 15 minutes, all of them paid
+for, purely to hear "nothing changed" again.
 
 So before launching it, the Script fingerprints everything the Co-Ordinator's
 verdict depends on: each repo's head commit, its pre-fetched findings, its open
@@ -1024,8 +1053,9 @@ never happened, and you were never told it was waiting on you.
 
 Now the Co-Ordinator reports such an item, and the Script records it as blocked
 with what is missing. Nothing else changes about that cycle. If the item is a
-GitHub issue it also picks up the `needs-refinement` label, so you can see the
-same thing the pipeline can:
+GitHub issue it also picks up the `needs-refinement` label — and is assigned to
+you, so it shows up on Assigned-to-me and not only in a label filter — so you
+can see the same thing the pipeline can:
 
 ```bash
 gh issue list -R Poetic-Poems/poetic --label needs-refinement

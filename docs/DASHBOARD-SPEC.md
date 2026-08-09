@@ -399,6 +399,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                     //   spend-today card's GMT/local/24h toggle
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
+               raced, race_losses,          // true/count iff the cycle lost a claim
+                                             //   to a peer's contention (implementation
+                                             //   spec 17a) before its outcome; present
+                                             //   whether or not it recovered
+               standdown_cause,             // "raced" | "unreachable" | null — only on
+                                             //   an outcome of "stand-down"
                stages:{ coordinator|implementor|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
@@ -548,9 +554,10 @@ holds a newer build and an amber `modified` one on a checkout with uncommitted
 work, and how
 fresh that answer is: read live for our own row, "as of its last push" for a
 peer); stale peers bordered red and reported as state unknown; click a card to
-filter the cycle list to that node, click again to clear — the filter survives
-refreshes like every other UI state; **live claims** — the registry rows, i.e.
-work no other node will pick up. Both, plus the cycles table's Node column,
+filter the cycle list and the recent log to that node, click again to clear —
+the filter survives refreshes like every other UI state; **live claims** — the
+registry rows, i.e. work no other node will pick up. Both, plus the cycles
+table's Node column,
 appear only once the fleet has more than one node (or a claim exists): a
 single-node page renders exactly as it always did.
 
@@ -558,8 +565,14 @@ The strip is rebuilt on every refresh tick alongside the header, not only when
 the body re-renders, because its cards carry running clocks ("since 18m ago")
 and the body deliberately sits still while the data is unchanged.
 Then metric cards (spend today/total — fleet-wide, one shared account —
-failures, reached-ready, back-pressure gauge
-vs `max_open_agent_prs`). The spend-today card's own word "today" is a button:
+failures, reached-ready, back-pressure gauge vs `max_open_agent_prs`. The
+gauge's own figure is the count the pipeline actually trips its cap on —
+draft PRs and ready PRs still `CHANGES_REQUESTED` — with a line underneath
+naming the raw open-PR total and, when it differs, how many of those are
+sitting only in a human's queue (approved, or awaiting a review nothing is
+`CHANGES_REQUESTED`-blocking): a full human queue reads as "waiting on
+human", not as the pipeline sitting idle). The spend-today card's own word
+"today" is a button:
 clicking it cycles the card's label and figure through **today (GMT)** (the
 Publisher's own `spend_today_usd`), **today (local)** and **last 24h** (both
 computed here, from `counts.recent_costs`, against the reader's own clock and
@@ -603,12 +616,21 @@ since the first runs to sixty rows and the other two to five; recent log;
 `cron.log` tail.
 
 The **recent log** is the newest 80 events, one row each: time, the event as a
-badge, **Node / Repo / Actor**, and the event's own detail. Those three are
-different kinds of answer to "where did this happen" — which machine ran it,
-which repository it was aimed at, which agent was acting — so they are three
-fixed slots read positionally, each carrying a dash when the event does not
-answer it: the middle token is the repository whether or not the other two are
-known. The actor is derived rather than logged, because no event carries an
+badge, **Node**, **Repo**, **Actor**, and the event's own detail. Those three
+columns are different kinds of answer to "where did this happen" — which
+machine ran it, which repository it was aimed at, which agent was acting — so
+each gets its own cell, read positionally, carrying a dash when the event does
+not answer it: the Repo cell is the repository whether or not the other two
+are known. The Node column renders regardless of fleet size, unlike the
+cycles table's own Node column — this one has always carried the node, single
+node included, so nothing about it changes when the fleet has one node. It is
+also, together with the cycles table, subject to the fleet strip's node
+filter: clicking a node card restricts the recent log to that node's events
+too, filtered before the 80-row cap so a node whose events have aged out of
+the fleet-wide newest 80 still shows its own newest ones, with the section
+heading and empty state following the cycles table's own wording ("Recent log
+events — `<node>` only (click its card to clear)" and "No log events from
+`<node>`."). The actor is derived rather than logged, because no event carries an
 `actor` field and each pipeline already records it somewhere else: the
 implementation pipeline's `stage`; `handoff` on `pr-ready`, naming which actor
 took the pull request out of draft; `by` on `unblocked` (and on that event
@@ -840,7 +862,14 @@ number's twins elsewhere on the page.
   log tail. And with `cron.log` short and a `cron.log.1` beside it —
   `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
   from both, oldest first, rather than going blank for the tick after a
-  rotation. An item that is blocked *and* void reaches `void[]` and not
+  rotation. A cycle that lost a claim to a peer's contention (`claim-lost`,
+  cause `held`) before a `selection` that names `race_losses` is marked
+  `raced: true` carrying that same count, whichever `outcome` it then reached;
+  one that lost every candidate carries `standdown_cause` — `"raced"` for
+  contention, `"unreachable"` when every loss was a GitHub outage instead —
+  and only a cycle with a `held` loss is marked `raced` at all, a GitHub
+  outage naming no peer to contend with (implementation spec 17a, issue #245).
+  An item that is blocked *and* void reaches `void[]` and not
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty
   the panel that says the pipeline is stuck, which looks exactly like a pipeline
@@ -868,11 +897,18 @@ number's twins elsewhere on the page.
   progress", never the finished-cycle "Ended"; a cycle with no `cycle-end` and
   no node claiming it reads "No clean end" with fleet data and "Not ended"
   without any; a `needs-refinement` blocked row carries its badge and is
-  removed by the hide filter; and the log tail's Node / Repo / Actor cell
-  answers all three slots positionally — an actor read from `stage`, from `by`
+  removed by the hide filter; and the log tail's Node, Repo and Actor columns
+  answer all three positionally — an actor read from `stage`, from `by`
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
-  keeping its slot rather than letting the repository slide into it. The
+  keeping its own cell rather than letting the repository slide into it. A
+  cycle fixture carrying `raced: true` renders the `↻ raced` badge beside its
+  outcome badge, and no other cycle in that fixture renders it — the marker
+  answers "how did this cycle get its outcome", not a second outcome of its
+  own (issue #245); it also renders the "recovered race ×N" badge naming the
+  count, while a separate fixture of a cycle that lost *every* candidate
+  (`raced: true`, `standdown_cause: "raced"`, outcome `stand-down`) carries
+  the `↻ raced` marker and never that one, having recovered nothing. The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
   a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one
@@ -882,7 +918,12 @@ number's twins elsewhere on the page.
   keyless renders no badge and no note anywhere on the page. A node behind an
   image published longer ago than `image_behind_grace_hours` carries an
   **image behind** badge naming the registry commit, while one whose registry
-  check failed carries **image unverified** instead (#155). A source marked
+  check failed carries **image unverified** instead (#155). A cycle whose
+  `selection` carried `race_losses` (implementation spec 17d, #248) shows a
+  blue **recovered race ×N** badge beside its title in the cycle history —
+  informational, not a warning, since losing a claim race and then winning a
+  later one is the claims (17a) working as designed — while a cycle with no
+  `race_losses` at all shows none. A source marked
   `failed` in `github.inputs[<slug>].state` (TD-PPagop-26080201) renders a
   "couldn't read" marker in place of its count, a source marked
   `answered_404` (a repo with no tech-debt register) still renders an
@@ -1106,6 +1147,27 @@ number's twins elsewhere on the page.
   about the pipeline belongs, and leaves untouched every reader that acts on
   them — the limit stand-down, the blocked and void sets — because each keys on
   the event and the item, never on the cycle.
+- **A raced cycle carries a second badge, not a second outcome (issue #245).**
+  Losing a claim to a peer's healthy contention and then claiming the next
+  candidate is not a different outcome from an ordinary first-try
+  selection — the cycle still did whatever `outcome` already says, PR raised
+  or otherwise — so `raced` is not folded into the outcome ladder as a new
+  rung. It is a fact about *how* the cycle got there, rendered as its own
+  small badge beside the outcome badge (`↻ raced`, titled with the loss count
+  and whether the race was recovered or the cycle stood down over it), the
+  same layering the in-flight badge below already uses for "still working"
+  beside a floor reading it does not want to overwrite. A `standdown_cause`
+  of `"raced"` on a stood-down cycle gets the identical badge, for the same
+  reason "Stood down" alone does not say whether the fleet's own contention or
+  a GitHub outage caused it — reading the reason text is not a substitute a
+  glance at the column can make. Blue, like the "recovered race ×N" badge
+  beside the item and for implementation spec 17d's reason: contention is the
+  fleet working, and amber on this page is reserved for what wants acting on.
+  The two badges do not say the same thing twice, either: `race_losses` is a
+  count of this cycle's own `claim-lost` events, so a cycle that lost every
+  candidate carries one without ever having claimed anything, and "recovered
+  race" is withheld from it — an outcome of `stand-down` is exactly the case
+  the word "recovered" would be false of.
 - **Distinct classes of data are distinguished by shape, not colour alone.**
   Source tags are outlined and square; outcome badges are filled pills. Both
   are colour-coded, and the two sit side by side, so without the shape

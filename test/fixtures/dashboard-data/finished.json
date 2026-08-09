@@ -41,9 +41,10 @@
       "id": "20260731T120000Z-poetic-1-111", "node": "poetic-1",
       "started_at": "@ago:110m", "ended_at": "@ago:100m", "dry_run": false,
       "repo": "Poetic-Poems/agent-ops", "item": "TD-PPagop-26072501", "source": "tech-debt",
-      "title": "fix the thing",
+      "title": "fix the thing", "race_losses": 2,
       "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/200",
       "reason": null, "fail_detail": null, "warning": null, "outcome": "pr-ready",
+      "raced": true,
       "stages": {
         "coordinator": {"model": "claude-sonnet-5-20260101", "cost_usd": 0.2, "duration_ms": 45000,
           "num_turns": 4, "is_error": false, "terminal_reason": "end_turn"},
@@ -88,9 +89,17 @@
     "ok": true, "fetched_at": "@ago:1m",
     "prs": [
       {"repo": "Poetic-Poems/agent-ops", "number": 200, "url": "https://github.com/Poetic-Poems/agent-ops/pull/200",
-        "title": "fix the thing", "isDraft": false,
+        "title": "fix the thing", "isDraft": false, "review_decision": "",
         "checks": {"total": 3, "failed": 0, "pending": 0},
-        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:100m"}
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:100m"},
+      {"repo": "Poetic-Poems/agent-ops", "number": 201, "url": "https://github.com/Poetic-Poems/agent-ops/pull/201",
+        "title": "answer the review", "isDraft": false, "review_decision": "CHANGES_REQUESTED",
+        "checks": {"total": 2, "failed": 0, "pending": 0},
+        "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY", "createdAt": "@ago:50m"},
+      {"repo": "Poetic-Poems/agent-ops", "number": 202, "url": "https://github.com/Poetic-Poems/agent-ops/pull/202",
+        "title": "a draft still in flight", "isDraft": true, "review_decision": "",
+        "checks": {"total": 0, "failed": 0, "pending": 0},
+        "mergeable": "", "mergeStateStatus": "", "createdAt": "@ago:10m"}
     ],
     "pr_index": {
       "Poetic-Poems/agent-ops#200": {"state": "OPEN", "is_draft": false, "title": "fix the thing",

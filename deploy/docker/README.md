@@ -376,9 +376,13 @@ whole purpose of the fetch: a lesson any node learned spares the rest.
 
 ### Changing when a node's cycles run
 
-A node's implementation cycle fires at one minute of every hour, and that
-minute is the node's own: `CYCLE_MINUTE` in `.env` when it is set, otherwise a
-stable hash of `NODE_NAME`. The crontab is rendered at every container start —
+A node's implementation cycle fires every `schedule.cycle_interval_minutes`
+(15 by default) within an allowed hour, starting from the node's own minute:
+`CYCLE_MINUTE` in `.env` when it is set, otherwise a stable hash of
+`NODE_NAME`. An idle firing stays cheap — `lib/noop-skip.sh` short-circuits
+before the Co-Ordinator runs when nothing a fingerprint covers has changed —
+so this is not four times the spend, only four times the chances to notice
+work sooner. The crontab is rendered at every container start —
 `entrypoint.sh` runs `render-crontab.sh`, which fills `crontab.tmpl` from
 `config.json`'s `schedule` block and this one variable — so the minute belongs
 to the node's `.env`, not to the image, and moving it is the same two steps as
@@ -396,7 +400,7 @@ actually rendered, which is the only answer that counts:
 
 ```bash
 docker compose exec scheduler grep -E 'agent-cycle|review-cycle' /app/deploy/docker/crontab
-docker compose logs scheduler | grep render-crontab   # node <name>: cycle at minute N …
+docker compose logs scheduler | grep render-crontab   # node <name>: cycle at minute(s) N,N+15,… …
 ```
 
 Two things decide what minute you may ask for:

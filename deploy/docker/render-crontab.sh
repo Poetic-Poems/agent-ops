@@ -68,6 +68,7 @@ excluded_minutes="$(cfg_json '.schedule.excluded_minutes')"
 review_hour="$(cfg '.schedule.review_hour')"
 review_offset="$(cfg '.schedule.review_offset_minutes')"
 cycle_hours="$(cfg '.schedule.cycle_hours')"
+cycle_interval="$(cfg '.schedule.cycle_interval_minutes')"
 heartbeat_minutes="$(cfg '.schedule.heartbeat_minutes')"
 push_minutes="$(cfg '.schedule.state_sync_push_minutes')"
 fetch_minutes="$(cfg '.schedule.state_sync_fetch_minutes')"
@@ -75,6 +76,11 @@ rotation_minute="$(cfg '.schedule.log_rotation_minute')"
 
 if ! jq -e 'type == "array" and all(.[]; type == "number")' <<<"$excluded_minutes" >/dev/null 2>&1; then
   say "ERROR: $config's schedule.excluded_minutes is not an array of numbers — the baked schedule stays"
+  exit 1
+fi
+
+if ! [[ "$cycle_interval" =~ ^[0-9]+$ ]] || (( cycle_interval < 1 || cycle_interval > 60 )); then
+  say "ERROR: $config's schedule.cycle_interval_minutes is not an integer in 1..60 — the baked schedule stays"
   exit 1
 fi
 
@@ -114,6 +120,22 @@ if [[ -z "$cycle_minute" ]]; then
 fi
 review_minute=$(( (cycle_minute + review_offset) % 60 ))
 
+# The implementation cycle fires every schedule.cycle_interval_minutes past
+# cycle_minute within an allowed hour (issue #248, "faster heartbeat"):
+# cycle_minute, cycle_minute+interval, cycle_minute+2*interval, ... while
+# still under 60, each occurrence dropped (not shifted) if it lands on an
+# excluded minute — cycle_minute itself never is, so the list is never
+# empty. cron's minute field accepts an explicit comma list exactly like
+# this, so no step-syntax gymnastics are needed. cycle_interval=60
+# reproduces the historical one-firing-per-hour shape exactly, since the
+# second occurrence (cycle_minute+60) is already >= 60.
+cycle_minutes="$cycle_minute"
+m=$(( cycle_minute + cycle_interval ))
+while (( m < 60 )); do
+  is_excluded "$m" || cycle_minutes="$cycle_minutes,$m"
+  m=$(( m + cycle_interval ))
+done
+
 if [[ ! -f "$tmpl" ]]; then
   say "ERROR: template $tmpl is missing — the baked schedule stays"
   exit 1
@@ -121,7 +143,7 @@ fi
 
 tmp="$(mktemp "$out.XXXXXX" 2>/dev/null)" || { say "ERROR: cannot write beside $out — the baked schedule stays"; exit 1; }
 if ! sed \
-      -e "s#@CYCLE_MINUTE@#$cycle_minute#g" \
+      -e "s#@CYCLE_MINUTE@#$cycle_minutes#g" \
       -e "s#@CYCLE_HOURS@#$cycle_hours#g" \
       -e "s#@REVIEW_MINUTE@#$review_minute#g" \
       -e "s#@REVIEW_HOUR@#$review_hour#g" \
@@ -140,5 +162,5 @@ if grep -q '@[A-Z_]\{1,\}@' "$tmp"; then
   exit 1
 fi
 mv -f "$tmp" "$out"
-say "node $node: cycle at minute $cycle_minute past $cycle_hours, review at $review_minute past $review_hour:00"
+say "node $node: cycle at minute(s) $cycle_minutes past $cycle_hours (every ${cycle_interval}m), review at $review_minute past $review_hour:00"
 exit 0

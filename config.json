@@ -34,8 +34,10 @@
   "branch_prefix": "agent/",
   "max_open_agent_prs": 8,
   "candidates_max": 3,
+  "max_chained_cycles": 3,
   "claim_ttl_hours": 6,
   "abandoned_draft_after_hours": 4,
+  "human_nudge_idle_hours": 24,
   "enabler_after_coordinator_cycles": 3,
   "enabler_recheck_hours": 72,
   "enabler_escalation_label": "enabler-escalation",
@@ -51,6 +53,7 @@
   "dashboard_refresh_seconds": 5,
   "schedule": {
     "cycle_hours": "*",
+    "cycle_interval_minutes": 15,
     "excluded_minutes": [0],
     "excluded_minutes_reason": "poetic's hourly sync workflow owns the top of the hour",
     "review_hour": 3,
