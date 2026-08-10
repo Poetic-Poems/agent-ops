@@ -301,6 +301,7 @@ exit 1
 STUB
   chmod +x "$fallback_tmp/scripts/nudge-dependabot-rebase.sh"
 
+  log_capture="$fallback_tmp/log_event.calls"
   out="$(bash -c "
     $gather_fn
     SCRIPT_DIR='$fallback_tmp'
@@ -310,7 +311,7 @@ STUB
     cycle_id=test-cycle
     node_name=test-node
     DRY_RUN=0
-    log_event() { :; }
+    log_event() { printf '%s\t%s\n' \"\$1\" \"\${2:-}\" >> '$log_capture'; }
     gather_merge_conflicts o/r
   ")"
 
@@ -318,8 +319,66 @@ STUB
     '["pr-57-conflict-bbb"]' "$(jq -c '[.[].ref]' <<<"$out")"
   assert_eq "  ... and the fingerprint file on disk reflects the same filtered array" \
     '["pr-57-conflict-bbb"]' "$(jq -c '[.[].ref]' "$fallback_tmp/cycle/merge-conflicts-o_r.json")"
+  assert_eq "  ... and a wholly-broken nudge step is logged as a warning, not silent" \
+    "1" "$(grep -c '^warning	' "$log_capture" || true)"
 
   rm -rf "$fallback_tmp"
+fi
+
+# --- ...and that fallback's own filter degrades rather than aborting the
+#     cycle when the gatherer's output is array-shaped but its elements are
+#     not objects (requirement 3s) ---
+#
+# `out` is only validated as `type == "array"` before the nudge step runs;
+# `.bot` on a non-object element is a `jq` error, which a bare assignment
+# under `set -euo pipefail` (agent-cycle.sh's own mode) would let abort the
+# whole cycle. This can only be reached on the already-broken-nudge-step path
+# above, so it is exercised the same way, with the gatherer stub returning a
+# malformed array instead.
+if [[ -z "$gather_fn" ]]; then
+  echo "FAIL - could not lift gather_merge_conflicts from agent-cycle.sh"
+  failures=$(( failures + 1 ))
+else
+  malformed_tmp="$(mktemp -d)"
+  mkdir -p "$malformed_tmp/scripts" "$malformed_tmp/cycle"
+
+  cat > "$malformed_tmp/scripts/gather-merge-conflicts.sh" <<'STUB'
+#!/usr/bin/env bash
+printf '%s' '["not-an-object"]'
+STUB
+  chmod +x "$malformed_tmp/scripts/gather-merge-conflicts.sh"
+
+  cat > "$malformed_tmp/scripts/nudge-dependabot-rebase.sh" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+exit 1
+STUB
+  chmod +x "$malformed_tmp/scripts/nudge-dependabot-rebase.sh"
+
+  log_capture="$malformed_tmp/log_event.calls"
+  out="$(bash -c "
+    set -euo pipefail
+    $gather_fn
+    SCRIPT_DIR='$malformed_tmp'
+    cycle_dir='$malformed_tmp/cycle'
+    pr_label=autonomous-agent
+    branch_prefix=agent/
+    cycle_id=test-cycle
+    node_name=test-node
+    DRY_RUN=0
+    log_event() { printf '%s\t%s\n' \"\$1\" \"\${2:-}\" >> '$log_capture'; }
+    gather_merge_conflicts o/r
+  ")"
+  exit_status=$?
+
+  assert_eq "a malformed-but-array gatherer output does not abort the cycle" "0" "$exit_status"
+  assert_eq "  ... and yields [] rather than a half-filtered guess" "[]" "$out"
+  assert_eq "  ... and the fingerprint file on disk agrees" \
+    "[]" "$(jq -c '.' "$malformed_tmp/cycle/merge-conflicts-o_r.json")"
+  assert_eq "  ... and both the broken-nudge-step and the filter failure are logged" \
+    "2" "$(grep -c '^warning	' "$log_capture" || true)"
+
+  rm -rf "$malformed_tmp"
 fi
 
 printf '\n'

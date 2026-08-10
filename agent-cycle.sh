@@ -1256,12 +1256,26 @@ gather_merge_conflicts() {
     # `rebase_requested: false`, no `superseded_by`) — the same predicate
     # nudge-dependabot-rebase.sh itself applies — so a broken nudge step
     # cannot hand the Co-Ordinator's ordinary-case catch-all an un-nudged
-    # bot branch to force-push (requirement 3s).
-    out="$(jq -c '[.[] | select(
+    # bot branch to force-push (requirement 3s). A wholly-broken nudge step
+    # reaches no other log: it returns before the per-candidate loop below,
+    # so without this, a permanently broken step would silently skip every
+    # conflicted Dependabot PR, every cycle, forever (requirement 3s).
+    log_event "warning" "$(jq -cn --arg r "$slug" \
+      '{detail: ("nudge-dependabot-rebase.sh produced no usable result for " + $r + " — falling back to the gatherer'"'"'s own read")}')"
+    # `out` is only validated as `type == "array"` above, not that its elements
+    # are objects — `.bot` on a non-object element is a `jq` error under
+    # `set -euo pipefail`, and this is the one path where a malformed-but-array
+    # gatherer output meets an already-broken nudge step. Degrade to an empty
+    # array rather than aborting the cycle over it (requirement 3s).
+    if ! out="$(jq -c '[.[] | select(
         ((.bot // false) == true)
         and ((.rebase_requested // false) == false)
         and ((.superseded_by // null) == null)
-        | not)]' <<<"$out")"
+        | not)]' <<<"$out" 2>"$cycle_dir/merge-conflicts-filter-$safe.err")"; then
+      log_event "warning" "$(jq -cn --arg r "$slug" \
+        '{detail: ("could not filter un-nudged Dependabot candidates for " + $r + " — malformed gatherer output; dropping all candidates for this repo this cycle")}')"
+      out='[]'
+    fi
     printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
     printf '%s' "$out"
     return
