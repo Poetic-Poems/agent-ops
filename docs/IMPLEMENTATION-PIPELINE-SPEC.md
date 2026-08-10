@@ -3990,29 +3990,40 @@ runs unattended.
       or the entry names no repo to resolve it against — is refused the same
       way an unrefuted PR diff is below.
     - **A cited PR or commit must actually be about this item.** Evidence
-      naming "PR #N" or "pull request #N" is fetched live
-      (`repos/<slug>/pulls/<n>`) and checked for the item id, as a whole word,
-      in its body or its head branch — the same two places the gatherers read
-      to associate a PR with an item in the first place. Evidence naming a
-      commit ("commit `<sha>`" or "`<ref>@<sha>`") is checked two ways: the
-      commit must be an ancestor of the repository's default branch
+      naming "PR #N" or "pull request #N" (bare form, resolved against the
+      entry's own `repo`) or the URL `https://github.com/<owner>/<repo>/pull/<n>`
+      (the form `gh pr view`/`gh pr create` print, resolved against the
+      `owner/repo` the URL itself names, never against the entry's `repo`) is
+      fetched live (`repos/<slug>/pulls/<n>`, `<slug>` being whichever of
+      those two resolved it) and checked for the item id, as a whole word, in
+      its body or its head branch — the same two places the gatherers read to
+      associate a PR with an item in the first place. Evidence naming a
+      commit ("commit `<sha>`" or "`<ref>@<sha>`", bare form, resolved against
+      the entry's own `repo`) or the URL
+      `https://github.com/<owner>/<repo>/commit/<sha>` (resolved against the
+      URL's own `owner/repo`) is checked two ways: the commit must be an
+      ancestor of the repository's default branch
       (`repos/<slug>/compare/<sha>...<default_branch>`, `status` `identical`
       or `ahead`), and either its own message or a pull request GitHub
       associates with it (`repos/<slug>/commits/<sha>/pulls`) must name the
-      item the same way a cited PR does. One item shape is decided by its id
-      alone, with no fetch: a finishing-source item **is** a pull request —
-      requirements 3e, 3g and 23 mint its id as `pr-<n>-abandoned-<head-sha>`,
-      `pr-<n>-review-<review-id>` or `pr-<n>-conflict-<head-sha>` — so a
-      citation of pull request `<n>` corroborates item `pr-<n>-…` by the id's
-      own construction, while any other pull request is tested as usual.
-      Nothing writes that synthetic id into the pull request's body or branch,
-      so without this the test would refuse the one citation these items can
-      honestly make, on exactly the sources the candidate test below
-      corroborates best. Evidence citing neither a PR nor a commit is
-      untouched by this test — the two tests above are what govern free prose.
-      This is what a citation that merely *exists* was missing: the shipped
-      defect that motivated it (below) cited a PR that was real, open, and
-      entirely unrelated to the item being voided.
+      item the same way a cited PR does. A bare citation with no `repo` to
+      resolve it against is refused naming the citation, exactly as before —
+      a URL citation is unaffected, since it carries its own `owner/repo`
+      regardless of whether the entry names one. One item shape is decided by
+      its id alone, with no fetch: a finishing-source item **is** a pull
+      request — requirements 3e, 3g and 23 mint its id as
+      `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>` or
+      `pr-<n>-conflict-<head-sha>` — so a citation of pull request `<n>`
+      corroborates item `pr-<n>-…` by the id's own construction, while any
+      other pull request is tested as usual. Nothing writes that synthetic id
+      into the pull request's body or branch, so without this the test would
+      refuse the one citation these items can honestly make, on exactly the
+      sources the candidate test below corroborates best. Evidence citing
+      neither a PR nor a commit is untouched by this test — the two tests
+      above are what govern free prose. This is what a citation that merely
+      *exists* was missing: the shipped defect that motivated it (below)
+      cited a PR that was real, open, and entirely unrelated to the item
+      being voided.
     - **This cycle's own candidates must not refute it (Co-Ordinator only).**
       Where the voided repo+item matches a gathered candidate carrying a
       `pr_number`, the guard reads that PR's changed files: a non-empty diff
@@ -6743,7 +6754,13 @@ pull request, run the ones the change touches and any it could regress.
    the same shape holds for a cited commit — refused when it is not an
    ancestor of the default branch, or when it is but neither its message nor
    any pull request associated with it names the item, and allowed when one of
-   those does. Assert the finishing sources are not caught by it: an item
+   those does. Assert the URL forms resolve identically: a
+   `https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>` citation
+   is checked the same way as its bare-form equivalent, and — the case a bare
+   citation cannot express — a URL naming a *different* repository from the
+   entry's own `repo` is resolved against the URL's own `owner/repo`, not the
+   entry's, so a PR number that would match in the wrong repository is not
+   corroboration. Assert the finishing sources are not caught by it: an item
    `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
    request `<n>` is allowed on the id alone, while the same item citing a
    different pull request is refused. Assert it runs with `repos: []` exactly

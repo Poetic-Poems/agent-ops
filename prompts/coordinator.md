@@ -900,7 +900,11 @@ of its linked pull requests — the same way the gatherers associate a PR with a
 item in the first place. A real, mergeable PR that happens to exist is not
 enough if it belongs to a different item; that citation is refused exactly like
 an unrefuted diff above, so make sure the artefact you name is actually the one
-that implements this item, not merely one that exists.
+that implements this item, not merely one that exists. A pasted GitHub PR/commit
+URL (`https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>`) is
+recognized the same way — it is resolved against the `owner/repo` the URL
+itself names, not against this item's own repo, so a URL is the safer form to
+paste when what you read genuinely lives in another repository.
 
 ## Reporting an under-specified item
 
