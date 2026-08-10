@@ -1675,22 +1675,28 @@ runs unattended.
    would arrive in the Co-Ordinator's input arguing, in the pipeline's own voice
    and in detail, for an item requirement 34c says must never be selected again.
 3o. **Claim visibility (issue #175).** The Co-Ordinator's runtime input carries
-   a `claimed` array — `{repo, item, age_hours}` — alongside `blocked`, `void`
-   and `refinements`, gathered fresh by the Script for every repo it is about
-   to walk, immediately before the Co-Ordinator launches. It is the union of
-   two independent sources, deduped by repo+item:
+   a `claimed` array — `{repo, item, age_hours}`, plus `pr_number` where the
+   claim is known to target one (issue #238; see requirement 17a's PR-keyed
+   claim) — alongside `blocked`, `void` and `refinements`, gathered fresh by the
+   Script for every repo it is about to walk, immediately before the
+   Co-Ordinator launches. It is the union of two independent sources, deduped by
+   repo+item:
 
    - every claim-registry entry younger than `claim_ttl_hours` for that repo
      (`lib/claim.sh claims`) — the only source for a *file* claim, since
      `review-feedback`, `merge-conflicts` and `abandoned-drafts` finish an
-     existing PR and mint no branch; `age_hours` is the entry's exact age; and
+     existing PR and mint no branch; `age_hours` is the entry's exact age, and
+     `pr_number` rides along when the underlying registry entry recorded one —
+     which, for the three finishing sources, is always, once requirement 17a's
+     PR-keyed claim exists alongside the item-keyed one; and
    - every live `td/*`/`<branch_prefix>*` branch on the target repository
      itself (`lib/claim.sh branches`), which still catches a claim the
      registry missed — `state_repo` unset, or a best-effort registry write
      that failed — with `age_hours` reported as `null` when no registry entry
-     backs it. This runs after the claim gc (2.1a) has already swept anything
-     past the TTL that was left untouched, so a live branch found here is
-     either still fresh or has real work pushed to it — either way it
+     backs it, and no `pr_number` at all: a branch name carries no PR number,
+     only an item ref. This runs after the claim gc (2.1a) has already swept
+     anything past the TTL that was left untouched, so a live branch found here
+     is either still fresh or has real work pushed to it — either way it
      belongs in the list, and needs no separate TTL check of its own.
 
    Before this existed, exclusion 3's second half (a live claim branch is a
@@ -1711,6 +1717,25 @@ runs unattended.
    issue number, an alert ref, a register-hygiene or project-review ref — none
    of which contain a character `claim_branch_for`'s sanitiser would have
    touched, so there is nothing lossy to recover from.
+3p. **PR-level candidate exclusion (issue #238).** The three finishing sources'
+   ref-per-round/per-head-SHA item refs (requirements 3c, 3e, 3g) mean a peer's
+   claim on a PR under one round's or one head's ref is invisible to exclusion
+   16's ordinary repo+item lookup against `claimed` the moment a fresh review
+   round or a fresh push mints a *different* ref for the *same* PR — which is
+   how PR #205 was worked by three nodes at once on 2026-08-07 (one poetic-2
+   Co-Ordinator run even *saw* a peer's claim on the PR and reasoned past it,
+   because the item ref genuinely didn't match). Deterministic code closes this,
+   not a comparison added to the Co-Ordinator's own judgement calls: for each
+   repo, before its `review_feedback`, `merge_conflicts` and `abandoned_drafts`
+   arrays are assembled into the runtime input, the Script drops any candidate
+   whose `pr_number` appears among that repo's freshly gathered `claimed` set's
+   `pr_number` values. A PR already excluded this way never reaches the
+   Co-Ordinator's input at all, so there is nothing left for it to reason past.
+
+   This is a visibility layer, not the hard gate — a claim taken after this
+   filter ran (a peer's cycle overlapping this one) is still possible, and
+   requirement 17a's PR-keyed claim is what actually excludes it, fleet-wide,
+   the same create-only way every other claim does.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -2777,7 +2802,14 @@ runs unattended.
       an open PR whose branch or body already references the same alert
       (`ref`, alert URL, or the affected package/rule); for a `project-review`
       recommendation, an open PR whose branch or body references its ref
-      (`review-<date>-R-NN`);
+      (`review-<date>-R-NN`); for the three finishing sources, whose own
+      ref-per-round/per-head-SHA item refs would otherwise dodge this bullet's
+      repo+item lookup, requirement 3p has already dropped any candidate whose
+      `pr_number` matches a peer's claim from `review_feedback`,
+      `merge_conflicts` and `abandoned_drafts` before this runtime input was
+      assembled — there is nothing left in those arrays for this exclusion to
+      apply to, deterministically, rather than a comparison added to this
+      judgement call;
     - a `project-review` recommendation that is already **done** — a *merged*
       PR references its ref (`review-<date>-R-NN`) — or that is already owned
       by a higher-priority source: the review mirrors debt-shaped
@@ -2907,11 +2939,39 @@ runs unattended.
       from the same head-SHA-scoped ref, so two nodes racing to take over the
       *same* Dependabot PR compute the identical branch name and contend on
       that single `POST /git/refs` instead — one claim, not two.
+    - **The PR-keyed claim (issue #238).** A round- or head-SHA-scoped item claim
+      excludes nothing about a peer working the *same* PR under a *different*
+      round's or head's ref — the mechanism that let PR #205 be worked by three
+      nodes at once. So immediately after winning a finishing-source item claim
+      taken via the file-claim path above — every `review-feedback` and
+      `abandoned-drafts` work order, and every `merge-conflicts` work order
+      except a takeover, which contends on its branch claim instead — the
+      Script takes a second, separate file claim keyed `pr-<number>` (same
+      repository, same create-only primitive) *before* handing the work order
+      onward. The number is the candidate's own `pr_number` where it carries a
+      usable one, and otherwise the one its **item ref** embeds — all three
+      finishing sources mint refs shaped `pr-<n>-review-<id>`,
+      `pr-<n>-conflict-<sha>` and `pr-<n>-abandoned-<sha>` (requirements 3c, 3e,
+      3g), so the Script derives it deterministically rather than depending on
+      the Co-Ordinator having copied a field: a gate that engages only when the
+      model remembered would silently reopen the very failure this closes. Only
+      a ref of none of those shapes yields no number, and then no PR-keyed claim
+      is taken. Losing it means a peer already holds this PR — under whatever
+      ref won there — so the item claim just won is released (nothing was
+      pushed under it) and selection falls through to the next candidate
+      exactly as a lost item claim would. Winning
+      it holds both claims until the cycle ends; release drops both. This is
+      what makes the exclusion real fleet-wide and race-safe — requirement 3p's
+      candidate filter is a cost-saving visibility layer over the same fact, not
+      a substitute for it, since a peer's claim taken after 3p's filter ran is
+      still possible and only this second create-only write actually arbitrates
+      it.
     - Every won claim also writes a best-effort **registry entry** at
       `claims/<repo>/<key>.json` in the state repository — the lock is the
       ref or file above; the registry is what back-pressure counts (2.2)
-      and what gc sweeps — recording the base SHA, node, cycle, item and
-      timestamp.
+      and what gc sweeps — recording the base SHA, node, cycle, item, source,
+      timestamp and, for a finishing-source claim (either the item-keyed or the
+      PR-keyed one), the `pr_number` it targets (requirement 3o).
     - *Release*: an open PR supersedes the claim — the registry entry is
       dropped the moment `pr-raised` is logged, and the branch lives on as
       the PR's head. Every path that ends the cycle without a PR (a void
@@ -2919,7 +2979,10 @@ runs unattended.
       stage failure or timeout)
       releases fully; a claim branch is deleted **only** when it still
       points at the SHA the claim recorded and no open PR uses it — pushed
-      work is never deleted. Entries older than `claim_ttl_hours` are swept
+      work is never deleted. The PR-keyed claim above is always a registry-only
+      file claim (there is no ref for it to keep or delete), so it releases the
+      same way on every path — alongside the item-keyed claim, never on its own.
+      Entries older than `claim_ttl_hours` are swept
       by `lib/claim.sh gc` under the same only-if-untouched rule (a node
       that died mid-cycle must not hold its item forever); every cycle runs
       the sweep at start (2.1a), so a dead node's claims outlive it by at
@@ -2931,6 +2994,12 @@ runs unattended.
       contention, the work is being done, just not by this node) or
       `unreachable` for its rc 1 (GitHub could not be reached at all,
       fail-closed: no work is being done by anyone), any other rc verbatim.
+      A miss on the PR-keyed claim above rather than on the item claim reads
+      `pr-held` instead of `held` — the same healthy contention, named apart so
+      a reader can tell which of the two claims a peer holds — and carries the
+      `pr_claim_key` it contended on. It renames `held` only: a PR-keyed claim
+      that came back `unreachable` is an outage like any other and is counted
+      as one.
       A cycle whose every candidate is lost stands down with reason "every
       candidate is already claimed elsewhere" — unless every miss was
       `unreachable`, in which case the reason instead names the outage
@@ -3720,7 +3789,9 @@ runs unattended.
     first cycle and then not again unless a label is deleted or the token
     cannot create one. A `claim-lost` names the repo, item and branch of
     the candidate the Script failed to claim, plus a `cause` — `held` when a
-    peer node won it, `unreachable` when GitHub could not be reached, or the
+    peer node won it, `pr-held` when a peer holds the pull request it targets
+    under some other item ref (and then also `pr_claim_key`, the `pr-<number>`
+    key contended on), `unreachable` when GitHub could not be reached, or the
     raw exit code otherwise (requirement 17a); `selection` carries the
     claimed `branch`. A `pr-ready` carries `handoff` — `reviewer`, `script` or
     `enabler` — naming who took the PR out of draft (requirements 31a, 32b);
@@ -3928,29 +3999,40 @@ runs unattended.
       or the entry names no repo to resolve it against — is refused the same
       way an unrefuted PR diff is below.
     - **A cited PR or commit must actually be about this item.** Evidence
-      naming "PR #N" or "pull request #N" is fetched live
-      (`repos/<slug>/pulls/<n>`) and checked for the item id, as a whole word,
-      in its body or its head branch — the same two places the gatherers read
-      to associate a PR with an item in the first place. Evidence naming a
-      commit ("commit `<sha>`" or "`<ref>@<sha>`") is checked two ways: the
-      commit must be an ancestor of the repository's default branch
+      naming "PR #N" or "pull request #N" (bare form, resolved against the
+      entry's own `repo`) or the URL `https://github.com/<owner>/<repo>/pull/<n>`
+      (the form `gh pr view`/`gh pr create` print, resolved against the
+      `owner/repo` the URL itself names, never against the entry's `repo`) is
+      fetched live (`repos/<slug>/pulls/<n>`, `<slug>` being whichever of
+      those two resolved it) and checked for the item id, as a whole word, in
+      its body or its head branch — the same two places the gatherers read to
+      associate a PR with an item in the first place. Evidence naming a
+      commit ("commit `<sha>`" or "`<ref>@<sha>`", bare form, resolved against
+      the entry's own `repo`) or the URL
+      `https://github.com/<owner>/<repo>/commit/<sha>` (resolved against the
+      URL's own `owner/repo`) is checked two ways: the commit must be an
+      ancestor of the repository's default branch
       (`repos/<slug>/compare/<sha>...<default_branch>`, `status` `identical`
       or `ahead`), and either its own message or a pull request GitHub
       associates with it (`repos/<slug>/commits/<sha>/pulls`) must name the
-      item the same way a cited PR does. One item shape is decided by its id
-      alone, with no fetch: a finishing-source item **is** a pull request —
-      requirements 3e, 3g and 23 mint its id as `pr-<n>-abandoned-<head-sha>`,
-      `pr-<n>-review-<review-id>` or `pr-<n>-conflict-<head-sha>` — so a
-      citation of pull request `<n>` corroborates item `pr-<n>-…` by the id's
-      own construction, while any other pull request is tested as usual.
-      Nothing writes that synthetic id into the pull request's body or branch,
-      so without this the test would refuse the one citation these items can
-      honestly make, on exactly the sources the candidate test below
-      corroborates best. Evidence citing neither a PR nor a commit is
-      untouched by this test — the two tests above are what govern free prose.
-      This is what a citation that merely *exists* was missing: the shipped
-      defect that motivated it (below) cited a PR that was real, open, and
-      entirely unrelated to the item being voided.
+      item the same way a cited PR does. A bare citation with no `repo` to
+      resolve it against is refused naming the citation, exactly as before —
+      a URL citation is unaffected, since it carries its own `owner/repo`
+      regardless of whether the entry names one. One item shape is decided by
+      its id alone, with no fetch: a finishing-source item **is** a pull
+      request — requirements 3e, 3g and 23 mint its id as
+      `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>` or
+      `pr-<n>-conflict-<head-sha>` — so a citation of pull request `<n>`
+      corroborates item `pr-<n>-…` by the id's own construction, while any
+      other pull request is tested as usual. Nothing writes that synthetic id
+      into the pull request's body or branch, so without this the test would
+      refuse the one citation these items can honestly make, on exactly the
+      sources the candidate test below corroborates best. Evidence citing
+      neither a PR nor a commit is untouched by this test — the two tests
+      above are what govern free prose. This is what a citation that merely
+      *exists* was missing: the shipped defect that motivated it (below)
+      cited a PR that was real, open, and entirely unrelated to the item
+      being voided.
     - **This cycle's own candidates must not refute it (Co-Ordinator only).**
       Where the voided repo+item matches a gathered candidate carrying a
       `pr_number`, the guard reads that PR's changed files: a non-empty diff
@@ -4692,6 +4774,28 @@ runs unattended.
     engagement that spent itself on old vagueness would make the pipeline slower
     at exactly the thing the Enabler exists for. Items over the cap are not lost:
     they are blocked, and they arrive at a later engagement.
+35e. **A stale merge-conflict or abandoned-draft ref is dropped before it
+    reaches eligibility (issue #238).** `merge-conflicts` and `abandoned-drafts`
+    ids are scoped to the head SHA they were detected at (requirements 3e, 3g)
+    precisely so a later push mints a fresh ref that no old block covers — but
+    the old ref itself is never cleared, only superseded, so left alone it would
+    sit `enabler_eligible` forever: eligible every time its recheck clock came
+    round, examined, and voided as stale, at full engagement price, on a repeat
+    schedule. (`pr-205-conflict-305ca060016d` did exactly this — claimed and
+    voided three minutes later, after the PR's head had already moved twice.)
+
+    Before `enabler_allowed` is set, every eligible entry whose `item` matches
+    `pr-<n>-conflict-<sha>` or `pr-<n>-abandoned-<sha>` is tested against this
+    cycle's own freshly gathered `merge_conflicts`/`abandoned_drafts` arrays
+    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirement
+    3g): if that exact ref is not among them — the head moved again, or the PR
+    resolved outright — the entry is dropped, and the drop is logged
+    (`enabler-stale-refs-skipped`) rather than silent. No other blocked item kind
+    is touched: a tech-debt id, an issue number, or a review-feedback round has
+    no such re-detectable "current" state to compare against, and none of their
+    refs match the pattern. A jq failure leaves the eligible set unfiltered — this
+    is a cost saving, never the correctness gate; the Enabler still voids a stale
+    item it does reach, exactly as it always has.
 36. **The Enabler's powers.** It may read anything through `gh` — issues, PRs,
     reviews, checks, runs, alerts, file contents — and reads an issue or PR as
     its **whole thread** (requirement 14a's rule, for the same reason and with
@@ -6659,7 +6763,13 @@ pull request, run the ones the change touches and any it could regress.
    the same shape holds for a cited commit — refused when it is not an
    ancestor of the default branch, or when it is but neither its message nor
    any pull request associated with it names the item, and allowed when one of
-   those does. Assert the finishing sources are not caught by it: an item
+   those does. Assert the URL forms resolve identically: a
+   `https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>` citation
+   is checked the same way as its bare-form equivalent, and — the case a bare
+   citation cannot express — a URL naming a *different* repository from the
+   entry's own `repo` is resolved against the URL's own `owner/repo`, not the
+   entry's, so a PR number that would match in the wrong repository is not
+   corroboration. Assert the finishing sources are not caught by it: an item
    `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
    request `<n>` is allowed on the id alone, while the same item citing a
    different pull request is refused. Assert it runs with `repos: []` exactly

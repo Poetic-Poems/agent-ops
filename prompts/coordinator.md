@@ -56,7 +56,8 @@ heading, the Script gives you one JSON object:
     }
   },
   "claimed": [
-    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2}
+    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2},
+    {"repo": "org/repo-a", "item": "pr-57-review-4718691960", "age_hours": 0, "pr_number": 57}
   ],
   "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}
 }
@@ -158,9 +159,16 @@ heading, the Script gives you one JSON object:
   the file claims `review-feedback`, `merge-conflicts` and `abandoned-drafts`
   use) unioned with every live `td/*`/`agent/*` claim branch on each target
   repository — whichever peer node holds an item, however it holds it. Each
-  entry is `{"repo": "…", "item": "…", "age_hours": N}` (`age_hours` is
-  `null` when only a live branch, not a registry entry, is behind it). Treat
-  a fresh entry as a claim under exclusion 3 below — this is exactly the live
+  entry is `{"repo": "…", "item": "…", "age_hours": N}`, plus `pr_number` when
+  the claim is known to target one (`age_hours` is `null` when only a live
+  branch, not a registry entry, is behind it — a branch carries no PR number
+  either). You should not need to read `pr_number` yourself: it is what the
+  Script used to pre-filter `review_feedback`, `merge_conflicts` and
+  `abandoned_drafts` below (see "Review feedback" etc.) before you ever saw
+  them, so a candidate whose PR a peer already claimed under a different round
+  or head is simply absent from those arrays, not something you compare
+  against `claimed` by hand. Treat a fresh `claimed` entry as a claim under
+  exclusion 3 below — this is exactly the live
   `gh`/`git` check that exclusion used to ask you to perform yourself, now
   pre-fetched so there is nothing to query.
 - `models` is `config.json`'s `implementor_model_default` and
@@ -440,7 +448,9 @@ already in that order — the human has been waiting longest on it), and:
 - `model` is always `models.default`: answering a review changes code.
 - `branch` is the entry's existing `branch` — **not** a new one. This is the
   one source where the branch and the PR already exist; the Implementor pushes
-  to them rather than creating anything.
+  to them rather than creating anything. As with merge-conflicts and
+  abandoned-drafts, carry the entry's `pr_url` and `pr_number` into the work
+  order too.
 
 **Never** treat "the PR is open" as a reason to skip a `review_feedback`
 candidate. That is the ordinary claim rule (exclusion 3), and it does not apply
@@ -713,7 +723,15 @@ referencing that review; match `R-NN` refs against it. When you select one,
    "Review feedback", "Merge conflicts", and "Abandoned drafts"). For
    `abandoned-drafts` the Script has already checked the draft is stale and ours,
    and for `merge-conflicts` that the PR is ours and conflicting, so an open PR of
-   ours is a candidate there, not a claim to skip.
+   ours is a candidate there, not a claim to skip. A *peer's* claim on that same
+   PR is a different matter and does apply — but you will not find one to check:
+   the Script has already dropped any of these three sources' own candidates
+   whose PR a peer holds under a different round or head ref before it ever
+   reached you (issue #238's `pr_number` filter — see "What you receive"
+   above). Do not re-derive this yourself by comparing `review_feedback`,
+   `merge_conflicts` or `abandoned_drafts` candidates against `claimed` — it is
+   already done, and the one time a Co-Ordinator tried to do it by eye it
+   reasoned past a peer's claim because the item ref legitimately didn't match.
    For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
@@ -882,7 +900,11 @@ of its linked pull requests — the same way the gatherers associate a PR with a
 item in the first place. A real, mergeable PR that happens to exist is not
 enough if it belongs to a different item; that citation is refused exactly like
 an unrefuted diff above, so make sure the artefact you name is actually the one
-that implements this item, not merely one that exists.
+that implements this item, not merely one that exists. A pasted GitHub PR/commit
+URL (`https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>`) is
+recognized the same way — it is resolved against the `owner/repo` the URL
+itself names, not against this item's own repo, so a URL is the safer form to
+paste when what you read genuinely lives in another repository.
 
 ## Reporting an under-specified item
 
