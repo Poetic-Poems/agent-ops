@@ -60,6 +60,7 @@ STAGE_BUDGET_PRIORS='{
   "implementor":      {"backstop": 150, "inactivity": 10},
   "reviewer":         {"backstop": 90,  "inactivity": 10},
   "enabler":          {"backstop": 30,  "inactivity": 10},
+  "refiner":          {"backstop": 30,  "inactivity": 10},
   "project-reviewer": {"backstop": 150, "inactivity": 10}
 }'
 
@@ -426,7 +427,7 @@ stage_budget_resolve() {
 # stage_budget_lock_seconds TABLE OVERRIDES_JSON SLACK_MIN [CONFIGURED_HOURS]
 # The cycle lock must outlast a cycle that runs every stage to its limits, and
 # every stage limit now moves. So the lock is *derived* from the backstops in
-# force rather than asserted against them: the sum, over the four
+# force rather than asserted against them: the sum, over the five
 # implementation actors, of the largest backstop each could be given this
 # cycle, plus slack — in whole seconds, and never less than whatever the
 # configuration asked for.
@@ -451,7 +452,7 @@ stage_budget_lock_seconds() {
   out="$(jq -nr --argjson t "$table" --argjson o "$overrides" \
       --argjson priors "$STAGE_BUDGET_PRIORS" \
       --argjson slack "$slack" --argjson configured "$configured" '
-    ["coordinator", "implementor", "reviewer", "enabler"]
+    ["coordinator", "implementor", "reviewer", "enabler", "refiner"]
     | map(. as $a
           | [ ($priors[$a].backstop // 0),
               ($o[$a].backstop // empty),

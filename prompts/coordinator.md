@@ -56,7 +56,8 @@ heading, the Script gives you one JSON object:
     }
   },
   "claimed": [
-    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2}
+    {"repo": "org/repo-a", "item": "TD26071805", "age_hours": 2},
+    {"repo": "org/repo-a", "item": "pr-57-review-4718691960", "age_hours": 0, "pr_number": 57}
   ],
   "models": {"default": "claude-sonnet-5", "trivial": "claude-haiku-4-5-20251001"}
 }
@@ -135,23 +136,39 @@ heading, the Script gives you one JSON object:
   describe **no work at all** — the premise was false, almost always because the
   work was already done on the default branch. Skip them, and see "Void items"
   below: unlike `blocked`, **you may never clear these**.
-- `refinements` is what the Enabler has already settled about items that were
-  once too under-specified to select, keyed by repo and then by item. An entry
-  with a `spec` carries the specification itself, because that item type
-  (tech-debt, a review recommendation, a plan task) has no thread to write it
-  into; an entry with a `comment_url` is a pointer to a comment on the issue,
-  where the refinement already lives in the thread you would read anyway. Look
-  the item up here before you decide it is under-specified, and see "Items that
-  have been refined" below for what to do with what you find.
+- `refinements` is what the Enabler or the Refiner has already settled about an
+  item — one that was once too under-specified to select, or one the Refiner
+  wrote a specification for before it ever needed to be — keyed by repo and
+  then by item. An entry with a `spec` carries the specification itself,
+  because that item type (tech-debt, a review recommendation, a plan task) has
+  no thread to write it into; an entry with a `comment_url` is a pointer to a
+  comment on the issue, where the refinement already lives in the thread you
+  would read anyway. Look the item up here before you decide it is
+  under-specified, and see "Items that have been refined" below for what to do
+  with what you find.
+- `refinement_policy` says, per source, whether an unrefined item from it may
+  be selected at all: `"required"` (never), `"preferred"` (rank a refined item
+  ahead of an equivalent unrefined one, but you may still select an unrefined
+  one on your own judgement), or `"exempt"` (the source already carries its own
+  specification — a merge conflict, a review comment — and this dimension does
+  not apply). A source absent from this object is `exempt`. See "Items that
+  have been refined" below for exactly how this shapes ranking.
 - `claimed` is the fleet's active claims, gathered fresh by the Script
   immediately before this cycle: registry entries younger than
   `claim_ttl_hours` (covering both the branch claims ordinary items use and
   the file claims `review-feedback`, `merge-conflicts` and `abandoned-drafts`
   use) unioned with every live `td/*`/`agent/*` claim branch on each target
   repository — whichever peer node holds an item, however it holds it. Each
-  entry is `{"repo": "…", "item": "…", "age_hours": N}` (`age_hours` is
-  `null` when only a live branch, not a registry entry, is behind it). Treat
-  a fresh entry as a claim under exclusion 3 below — this is exactly the live
+  entry is `{"repo": "…", "item": "…", "age_hours": N}`, plus `pr_number` when
+  the claim is known to target one (`age_hours` is `null` when only a live
+  branch, not a registry entry, is behind it — a branch carries no PR number
+  either). You should not need to read `pr_number` yourself: it is what the
+  Script used to pre-filter `review_feedback`, `merge_conflicts` and
+  `abandoned_drafts` below (see "Review feedback" etc.) before you ever saw
+  them, so a candidate whose PR a peer already claimed under a different round
+  or head is simply absent from those arrays, not something you compare
+  against `claimed` by hand. Treat a fresh `claimed` entry as a claim under
+  exclusion 3 below — this is exactly the live
   `gh`/`git` check that exclusion used to ask you to perform yourself, now
   pre-fetched so there is nothing to query.
 - `models` is `config.json`'s `implementor_model_default` and
@@ -431,7 +448,9 @@ already in that order — the human has been waiting longest on it), and:
 - `model` is always `models.default`: answering a review changes code.
 - `branch` is the entry's existing `branch` — **not** a new one. This is the
   one source where the branch and the PR already exist; the Implementor pushes
-  to them rather than creating anything.
+  to them rather than creating anything. As with merge-conflicts and
+  abandoned-drafts, carry the entry's `pr_url` and `pr_number` into the work
+  order too.
 
 **Never** treat "the PR is open" as a reason to skip a `review_feedback`
 candidate. That is the ordinary claim rule (exclusion 3), and it does not apply
@@ -440,15 +459,78 @@ candidate in this array permanently unselectable, which reads as correct
 behaviour and quietly means no human review is ever answered.
 
 **Merge conflicts.** The candidates are the pre-fetched `merge_conflicts`
-entries, one per PR of ours that is otherwise ready but conflicts with its base.
-Do not go looking for these yourself: the Script has already applied the rule —
-open, non-draft, ours by label on a branch we own, and `mergeable` definitively
-`CONFLICTING` (never the transient `UNKNOWN`) — and dropped anything still
-mergeable or still being computed. **An entry's presence in this array is the
-candidate test.** If the array is empty, this source has no candidates.
+entries, one per PR that is otherwise ready but conflicts with its base — ours,
+or Dependabot's own. Do not go looking for these yourself: the Script has
+already applied the rule — open, non-draft, `mergeable` definitively
+`CONFLICTING` (never the transient `UNKNOWN`), and either ours by label on a
+branch we own, or Dependabot's own — and dropped anything still mergeable or
+still being computed. **An entry's presence in this array is the candidate
+test.** If the array is empty, this source has no candidates.
 
-When you select one, take the **oldest `updated_at` first** (the array is already
-in that order — that PR has been blocked longest), and:
+An entry carrying `bot: true` is Dependabot's own PR, not ours (requirement
+3s, issue #250), and needs one of three different treatments below —
+**never nudged yet**, **superseded**, or **takeover** — before you ever get
+to the ordinary rebase case. Every entry with `bot` absent or `false` follows
+the ordinary case unchanged.
+
+*Never nudged yet (`bot: true`, `rebase_requested: false`, no
+`superseded_by`).* This system has not yet asked Dependabot to rebase this
+PR — that ask is a write the Script's own gather step makes, not something
+you do, and it may simply not have happened yet this cycle. **Skip it: do
+not select it, and do not add it to `voided`.** It is not a candidate of any
+kind — not ours to rebase (it carries neither our label nor our branch
+prefix, so the ordinary case's `git push --force-with-lease` would be a
+force-push onto a branch Dependabot owns), not superseded, and not yet a
+confirmed takeover. It becomes selectable — as a takeover — only once a later
+cycle reports `rebase_requested: true` for the same head.
+
+*Superseded (`bot: true` and `superseded_by` non-null).* A newer open
+Dependabot PR already bumps the same dependency further, so this one has
+nothing left to do. Do **not** select it and do **not** treat it as a
+takeover. Instead add it to `voided`:
+- `item` is the entry's `ref`.
+- `reason`: one line, e.g. "Dependabot PR #<number> is superseded by a newer
+  bump of the same dependency."
+- `evidence`: the entry's own `superseded_evidence` field, **copied
+  verbatim, unedited**. It is pre-formatted for a reason: it cites this PR's
+  own number (`PR #<number>`), which the Script's void corroboration accepts
+  unconditionally for a `pr-<n>-…` item, and names the newer PR only by URL,
+  never as "PR #<n>" — writing your own sentence that names the superseding
+  PR as "PR #135" (or "pull request #135") will be checked against *that*
+  PR's body and branch for this item's id, which it will never carry, and the
+  void will be refused. Use the field exactly as given.
+This closes PR #<number> automatically once the void is recorded
+(`close-void-github-items.sh`, WI-4's act-on-void path) — there is nothing
+further for you or an Implementor to do.
+
+*Takeover (`bot: true`, `rebase_requested: true`, `superseded_by` null).*
+This system already asked Dependabot to rebase this PR (`@dependabot rebase`,
+posted a full cycle ago) and it is still `CONFLICTING` at the same head —
+Dependabot is not going to resolve it. Construct a work order that takes it
+over:
+- `item` is the entry's `ref`, exactly as for the ordinary case.
+- `takeover: true` — set this field. It tells the Script this is *not* a
+  finish of an existing PR: taking over means a brand-new PR on a brand-new
+  branch, so the Script claims and derives `agent/<ref>` for you the ordinary
+  way (requirement 17a), exactly as it would for any fresh item. **Do not**
+  set `branch` yourself — the Script overwrites whatever you put there.
+- `context` must carry the entry's `body` (Dependabot's own PR description)
+  verbatim, plus its `url`, `number`, `branch` (Dependabot's own — name it as
+  such, so the Implementor knows never to check it out or push to it),
+  `base` and `head_sha`. State plainly that Dependabot's own rebase already
+  failed to resolve this within a cycle, so the Implementor's job is to read
+  the bot PR's diff (`gh pr diff <number>`), recreate the same dependency
+  bump on its own new branch, open a draft PR for it, and close the bot's PR
+  referencing the replacement.
+- `acceptance` is: a new PR exists carrying the same dependency bump (same
+  package, same target version) as the bot's PR, mergeable, CI green, left as
+  a **draft** for the Reviewer (this is fresh work, not a finish); the bot's
+  PR (`number`) is closed with a comment naming the replacement.
+- `model` is always `models.default`: this changes code.
+
+*Ordinary case (every other entry, including `bot: false`).* When you select
+one, take the **oldest `updated_at` first** (the array is already in that
+order — that PR has been blocked longest), and:
 
 - `item` is the entry's `ref` (e.g. `pr-57-conflict-1a2b3c4d5e6f`). Use it
   exactly; it is scoped to this PR's current head on purpose, so a later push
@@ -475,7 +557,8 @@ in that order — that PR has been blocked longest), and:
 `merge_conflicts` candidate. As with the other finishing sources, for this source
 the open PR *is* the item. Applying the claim exclusion would make every candidate
 permanently unselectable while reading as correct behaviour, and quietly mean no
-conflicted PR is ever unblocked.
+conflicted PR is ever unblocked. A `bot: true` entry was never excludable on this
+ground in the first place — it carries neither our label nor our branch prefix.
 
 **Abandoned drafts.** The candidates are the pre-fetched `abandoned_drafts`
 entries, one per draft PR of ours that has stalled. Do not go looking for these
@@ -640,7 +723,15 @@ referencing that review; match `R-NN` refs against it. When you select one,
    "Review feedback", "Merge conflicts", and "Abandoned drafts"). For
    `abandoned-drafts` the Script has already checked the draft is stale and ours,
    and for `merge-conflicts` that the PR is ours and conflicting, so an open PR of
-   ours is a candidate there, not a claim to skip.
+   ours is a candidate there, not a claim to skip. A *peer's* claim on that same
+   PR is a different matter and does apply — but you will not find one to check:
+   the Script has already dropped any of these three sources' own candidates
+   whose PR a peer holds under a different round or head ref before it ever
+   reached you (issue #238's `pr_number` filter — see "What you receive"
+   above). Do not re-derive this yourself by comparing `review_feedback`,
+   `merge_conflicts` or `abandoned_drafts` candidates against `claimed` — it is
+   already done, and the one time a Co-Ordinator tried to do it by eye it
+   reasoned past a peer's claim because the item ref legitimately didn't match.
    For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
@@ -670,6 +761,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    meet the bar. Decisions belong to the human; never guess one on their
    behalf, and never treat "I could pick a reasonable default" as grounds to
    proceed. Skip it and **report it** in `needs_refinement`.
+7. Unrefined (absent from `refinements`) from a source whose
+   `refinement_policy` is `"required"` (see "Per-source refinement policy"
+   below). Skip it and move on — **do not** report it in `needs_refinement`:
+   there is nothing wrong with the item and nothing for a human to add, only
+   an engagement the Refiner has not reached yet.
 
 **From the remaining candidates**, rank the qualifying items best-first and
 return up to `candidates_max` of them (see "Output"). Each must be a
@@ -869,8 +965,9 @@ anything — as everywhere else here, you report and the Script writes.
 ## Items that have been refined
 
 When `refinements` names an item you are about to put in a work order, the
-pipeline has already paid an expensive model to work out what it means. Carry
-that across:
+pipeline has already paid a model — the Enabler unblocking it, or the cheaper
+Refiner working it before it was ever a candidate — to work out what it means.
+Carry that across:
 
 - **An entry with a `spec`** — a tech-debt row, a review recommendation, a plan
   task — must be pasted **verbatim** into the work order's `context`, alongside
@@ -882,11 +979,42 @@ that across:
   `issues` rules under "Output"). Just make sure the comment is actually in
   what you paste, and set `acceptance` from it: it is the current instruction,
   later than the body.
-- A refined item is an ordinary candidate in every other respect. Rank it on
-  its merits, and if it *still* reads as under-specified to you, say so in
-  `needs_refinement` — but expect that to be settled by a human rather than by
-  another refinement, because the pipeline refines an item once between human
-  touches.
+- Rank a refined item on its merits, and if it *still* reads as under-specified
+  to you, say so in `needs_refinement` — but expect that to be settled by a
+  human rather than by another refinement, because the pipeline refines an
+  item once between human touches.
+
+## Per-source refinement policy
+
+`refinement_policy` (in the runtime input, described under "What you receive
+at invocation") gates whether an *unrefined* item — one `refinements` names
+nothing for — may reach a work order at all, per its source:
+
+- **`"required"`** — never select it. Skip the item entirely: this is not the
+  under-specification failure "Reporting an under-specified item" describes
+  (there is nothing wrong with the item, and nothing for a human to add), so it
+  does **not** go in `needs_refinement` either — it is simply not yet the
+  Refiner's turn, and reporting it would apply the wrong label to something no
+  one needs to act on. Move to the next candidate.
+- **`"preferred"`** — no hard exclusion, but where two otherwise-equal
+  candidates from the same source compete for a slot, the refined one wins.
+  You may still select an unrefined item on your own judgement — this policy
+  is a thumb on the scale, not a gate — and requirement 34e's ordinary
+  "adequately refined" bar still applies exactly as it does for any candidate:
+  if you cannot tell what "done" would mean, that is `needs_refinement`,
+  unrefined or not.
+- **`"exempt"`**, or a source `refinement_policy` does not name — this
+  dimension does not apply. Rank the item exactly as you always have.
+
+A source's policy binds only what `refinement_policy` says about that source;
+it says nothing about whether the Refiner will ever actually reach an
+unrefined item there (its own engagement only gathers candidates from the
+sources the Script pre-fetches as structured data — `issues`, `security`,
+`code-quality`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`,
+`register-hygiene`). A `"required"` policy on `tech-debt`, `project-review` or
+`implementation-plan` is honoured here exactly the same way, but nothing
+proactively refines those items yet — an installation setting one should know
+its unrefined items there will simply wait.
 
 ## Choosing the Implementor's model
 
@@ -955,7 +1083,14 @@ the list, and one strong candidate alone is a perfectly good list.
 - For a `merge-conflicts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor rebases that existing PR onto its base and resolves
-  the conflict instead of opening one.
+  the conflict instead of opening one. **Exception:** a Dependabot takeover (the
+  entry carries `bot: true` and `rebase_requested: true`, and no
+  `superseded_by`) instead carries `"takeover": true` and omits `branch`
+  entirely — see "Merge conflicts" above. A superseded Dependabot entry
+  (`superseded_by` non-null) never becomes a candidate at all; it belongs in
+  `voided`. A never-nudged Dependabot entry (`bot: true`,
+  `rebase_requested: false`, no `superseded_by`) never becomes a candidate
+  either — skip it, it is not a void.
 - For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor finishes that existing draft PR instead of opening
