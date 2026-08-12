@@ -794,6 +794,19 @@
         }
       }
     },
+    "limit_escalate_after_hours": {
+      "description": "Hours an automatic usage-limit stand-down may run, aged from the first limit-hit of the current freeze, before the Script files an escalation issue (label `enabler_escalation_label`, assignee `enabler_assignee`, in `crash_loop_repo`). 0 turns the escalation off. Manual stand-downs never escalate.",
+      "type": "number",
+      "minimum": 0,
+      "default": 24,
+      "x-docs": {
+        "readme": "Hours. How long an automatic usage-limit stand-down may run before an escalation issue is filed; `0` turns it off. A manual stand-down never escalates.",
+        "spec": "The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it.",
+        "value": {
+          "spec": "24 h"
+        }
+      }
+    },
     "disable_default_ttl": {
       "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
       "type": "number",

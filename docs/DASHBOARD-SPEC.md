@@ -163,6 +163,12 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   banner already covers it — the setting node writes both levels), and the
   fleet-wide usage-limit stand-down (shown when the local log union has not
   caught up — a standby with no state yet, or a hit seconds old elsewhere).
+  Both banners name the flag's `actor` (falling back to the older `by` /
+  `node` fields on records that predate it) and its `kind` (requirement 2,
+  #244) — whose decision the stand-down is, and whether it was a decision at
+  all: a `manual` limit record renders in the operator's voice ("set by …
+  (manual)", never probed, `--clear-limit` lifts it early) rather than the
+  detector's estimated-retry phrasing.
 - **`disabled.json`** — the switch (requirement 2.3), read through
   `lib/toggle.sh`: the same code the pipelines gate on, so the dashboard cannot
   disagree with them about whether cycles are meant to be running (requirement
@@ -174,8 +180,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   renders a quiet one: no cycles, no PRs, no failures, no errors. Without the
   banner, a switch someone set on Tuesday is indistinguishable from a week with
   nothing to do — which is how it goes unnoticed until Friday. Show the reason,
-  who set it, and its expiry (or that it has none and needs `--enable`), since
-  those are precisely the questions an operator has next.
+  who set it (`actor`, falling back to `by`), its kind, and its expiry (or that
+  it has none and needs `--enable`), since those are precisely the questions an
+  operator has next.
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what

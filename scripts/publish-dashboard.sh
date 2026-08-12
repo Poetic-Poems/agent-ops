@@ -670,6 +670,8 @@ switch_json="$(jq -nc --argjson d "$switch_disabled" --argjson s "$switch_state"
   '{disabled: $d,
     reason: ($s.record.reason // ""),
     by: ($s.record.by // ""),
+    actor: ($s.record.actor // ""),
+    kind: ($s.record.kind // "manual"),
     since: ($s.record.disabled_at // ""),
     expires_at: ($s.record.expires_at // null)}')"
 
