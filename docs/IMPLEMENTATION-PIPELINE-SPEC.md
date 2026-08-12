@@ -582,6 +582,7 @@ and the schema must carry every one of them.
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
+| `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
@@ -3945,14 +3946,19 @@ runs unattended.
     `crash-loop-escalated`,
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
-    `issue-closed-post-merge`, `void-object-closed`,
+    `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
     `disabled`, `enabled`, `salvage`,
     `warning`, `cycle-end`. A `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
     `warning` whose `detail` names the same repo and number instead, since
-    nothing was requested and the retry is automatic next cycle. A `salvage` event (requirement 9e) carries the
+    nothing was requested and the retry is automatic next cycle. A
+    `void-retired` event (requirement 34n) carries the `repo` and `item` of
+    the void entry it retired from the extract, the `void_ts` of the verdict
+    it settled, and `by` — `object-closed` or `register-resolved` — the
+    actioned signal that qualified it; it is a fact with no clearing event,
+    read back by `void_retired_items`. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
     `failed` — plus `exit_code` when the resume itself did not exit 0. It is
     written for every resume the Script actually starts, success or not,
@@ -4379,6 +4385,23 @@ runs unattended.
     void, a maintainer applied a label called `unvoided` to the pull request and
     nothing read it — the item stayed void, the fleet stood down hourly, and the
     label sat there looking like the action had been taken.
+
+    Requirement 34n adds a second, coarser way back that is deliberately
+    *not* this one — and it is a ratified change of position, not an
+    oversight. While a void is still being carried, a plain reopen of the
+    closed object changes nothing, exactly as this requirement records: the
+    label is the only voice a human has. But once the void has *retired* from
+    the extract (actioned and `void_retire_after_days` old), reopening the
+    closed object is enough by itself: nothing in the extract suppresses the
+    item any longer, so the reopened object is simply gathered as a fresh,
+    ordinary candidate — the same outcome a genuine `unvoided` would have
+    produced. The two mechanisms knowingly part company there: 34k's sweep
+    still declines to re-close an object it once closed, and the audited
+    label route, with its `ts`-ordering rule, remains the only exit *before*
+    retirement. The judgement ratified is that a human reopening an issue
+    whose void has been settled, actioned and stale for a month is
+    unambiguously asking for the work back, and demanding the label on top
+    of the reopen would be ceremony with no added authority.
 34g. **A human's own hand-applied label is a report, not a state.** Requirement
     34e's projection is deliberately one-way for the block *it* creates: the
     label mirrors what the Co-Ordinator already reported, and nothing reads it
@@ -4815,6 +4838,124 @@ runs unattended.
     with an open pull request) and is kept as defence in depth: it is cheap,
     pure, and the state it names — however it arose — is one this cycle must
     not spend an Implementor on either way.
+34n. **A void that is both actioned and old retires from the extract.**
+    Requirement 34c's only exit from void is a human's hand-appended
+    `unvoided` — deliberately, since nothing else may reason its way out of a
+    terminal state — so the *set* nothing ever leaves grows by one entry for
+    every item ever voided, forever. On 2026-08-12 it reached 122 entries and
+    133,615 bytes, past `MAX_ARG_STRLEN` (131,072 bytes): every node's cycle
+    died at `execve` with `Argument list too long`, before the Co-Ordinator
+    ever ran, for roughly two hours across the fleet (issue #309). Requirement
+    4g's stdin-only delivery is what stops that failure recurring; this is
+    what stops the growth that caused it, by retiring an entry once holding
+    onto it no longer buys anything.
+
+    An entry retires once it is both:
+
+    - **actioned** — the same two facts requirements 34k and 34l already
+      establish, read again for the void set the way requirement 34i already
+      reads the register one for the blocked set: an issue or pull request
+      GitHub itself reports closed (`void_object_closed_items`, the set
+      requirement 34k's sweep already maintains), or a tech-debt register row
+      whose own file on the default branch says `status: resolved` or
+      `status: not-debt` — requirement 34i's own "the work is gone"
+      statuses, read for the still-unretired void register ids by a further
+      `scripts/gather-register-status.sh` call per repo, alongside the one
+      requirement 34i already makes for that repo's blocked ones — the
+      recorded subtraction below is what keeps that residue, and so the
+      per-cycle read, bounded. A void of
+      any other shape — a project-review ref, an implementation-plan task id,
+      a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
+      `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
+      defined for it at all, since 34k's sweep acts only on the bare-issue
+      and `pr-<n>-…` shapes and 34l's register pass only on register ids, so
+      a void of those kinds is never actioned and never retires on this rule
+      alone; and
+    - **old** — its `item-void` event's own `ts` is at least
+      `void_retire_after_days` old (default 30; `0` disables retirement
+      outright).
+
+    A retirement, once decided, is **recorded**: a `void-retired` event per
+    entry — `{repo, item, void_ts, by}`, `by` naming the actioned signal
+    (`object-closed` or `register-resolved`) — a fact rather than a state,
+    exactly as requirement 34k's `void-object-closed` is: nothing clears it.
+    The next cycle reads the recorded set back (`void_retired_items`,
+    `lib/cycle-state.sh`) and subtracts it from the extract
+    (`subtract_retired_voids`) the moment `void_items` has produced it —
+    before the 34k sweep, the 34l register pass, and this requirement's own
+    evidence-gathering. Two bounds follow that re-deciding retirement from
+    scratch each cycle would not give: the per-cycle GitHub cost is
+    proportional to the *unretired residue*, never to every void ever filed —
+    an id whose retirement is on the log is never asked about again — and the
+    extract stays bounded even on a cycle whose register read fails, because
+    the subtraction needs nothing but the log. The subtraction is ts-ordered
+    like every clearing rule here: a `void-retired` event masks only an
+    `item-void` older than itself, so an item voided afresh after its
+    retirement re-enters the extract on the new verdict's own terms. On
+    `--dry-run` nothing is recorded — the mark is durable state, like the
+    34k sweep it mirrors — while the in-memory narrowing still applies, so a
+    dry run sees the extract a real cycle would.
+
+    `retire_void_items` (`lib/cycle-state.sh`) is the one implementation,
+    called once, immediately after requirement 34l's register-hygiene pass
+    and before anything downstream reads `void_json`: the Script reassigns
+    `void_json` to its answer rather than introducing a second name, so the
+    Refiner's candidate filter, the no-op fingerprint and the Co-Ordinator's
+    own input all see the bounded set with nothing to remember. Every earlier
+    reader this same cycle — the 34k sweep and the 34l register-hygiene pass,
+    both running against the extract with recorded retirements already
+    subtracted, and `unvoid_clearances_json`, which reads `void_items`
+    directly and so still reaches a retired-but-void item — needs nothing
+    from the narrower set this call produces: 34k's own closed-object gate
+    already skips a closed item on its own account, and 34l's repair has
+    nothing left to do once a row already reads `resolved`/`not-debt`, which
+    is a precondition retirement itself requires. (Narrowing before 34l is
+    also what stops a repo whose void register ids have all retired paying a
+    register fetch every cycle forever.)
+
+    **This changes what one cycle hands somebody, never what counts as
+    void.** Requirement 34c is untouched, and so is every internal reader
+    that recomputes void straight off the log instead of calling
+    `void_items` — `open_blocked_items` (34h), `enabler_eligible_items`
+    (35a), `refinements_map` (3h), and the monitoring dashboard's own void
+    table — each its own copy of the shared `LATEST_UNRESOLVED_JQ` rule
+    (requirement 34a), unbounded and unaffected. A retired item therefore
+    never resurfaces as blocked (open_blocked_items still subtracts it from
+    the raw, ever-growing void set) and the dashboard's void count is
+    unchanged; only the payload this one cycle goes on to hand the
+    Co-Ordinator, the Refiner and the no-op fingerprint shrinks. A retired
+    entry's only remaining trace is the `item-void` event itself, still on
+    the log forever, and the closed GitHub object or resolved register row
+    the retirement rule required before it would act — which is also why a
+    human reopening that object later behaves exactly as intended even
+    without the `unvoid_label` route of requirement 34f: 34f's own rule binds
+    a clearance to "void recorded *before* the label", and a retired void
+    has nothing left in the extract for a label to clear — the reopened
+    object simply becomes a fresh, ordinary candidate the next time a source
+    gathers it, the same outcome a genuine `unvoided` would have produced.
+
+    Fails safe in the direction requirement 34d already established for void
+    itself: `void_retire_after_days` of `0`, or unset, disables retirement
+    and every entry stays — and takes the register read with it, so an
+    installation that has switched retirement off pays nothing for the
+    evidence retirement would have needed; an `item-void` event with no
+    parseable `ts`, or a malformed `void_json`/actioned set of any kind, is
+    never retired. `0` also stops the recorded subtraction: the
+    `void-retired` facts stay on the log but stop masking, so the extract
+    returns to the full raw set while retirement is off — an operator's kill
+    switch if retirement ever misbehaves — and resumes masking, with nothing
+    re-queried, when it is switched back on. The
+    failure mode this leaves is one more cycle carrying an entry that was
+    ready to go — never a void quietly reopened.
+
+    As defence in depth alongside requirement 4g's stdin delivery — which is
+    what actually keeps this from reaching `MAX_ARG_STRLEN` again, since
+    retirement only bounds the steady state and stdin removed the argv limit
+    entirely — the Script logs a `warning` naming the byte size and entry
+    count whenever `void_json` is still over 100,000 bytes after retirement:
+    a live signal that retirement itself has fallen behind (a burst of new
+    voids, `void_retire_after_days` set too high, or 34k/34l failing to
+    action items), well before any cap could bite.
 
 ### The Enabler
 
@@ -7280,6 +7421,28 @@ pull request, run the ones the change touches and any it could regress.
    for exactly `review-feedback`, `merge-conflicts` and `abandoned-drafts`,
    false for every other source (including one that merely contains one of
    those names as a substring).
+8o. **A void that is both actioned and old drops out of the extract; every
+   other one does not (requirement 34n).** `test/cycle-state.test.sh`'s
+   `retire_void_items` section passes: an entry whose `{repo, item}` is in
+   the actioned set and whose `ts` is at least `void_retire_after_days` old
+   is dropped; the same entry with a younger `ts` is kept; an old entry
+   *not* in the actioned set is kept; an entry with no parseable `ts` is kept
+   regardless of the actioned set; `void_retire_after_days` of `0` returns
+   every entry unchanged, including old, actioned ones; and malformed input
+   (either JSON argument) returns the original `void_json` verbatim rather
+   than raising. The recorded half holds too: `void_retired_items` returns
+   one `{repo, item, ts}` per pair — the latest `ts` — dropping repoless and
+   itemless events, and `subtract_retired_voids` drops exactly the entries
+   whose recorded retirement post-dates the void's own `ts` (an item voided
+   afresh after its retirement stays in the extract), returning its input
+   verbatim when either argument is malformed, while `void_items` over the
+   same log still reports the retired entry — the raw set the dashboard and
+   requirement 34c read. `test/cycle-state.test.sh`'s `open_blocked_items`,
+   `enabler_eligible_items` and `refinements_map` sections keep asserting
+   against the *raw*, unretired void/blocked pairing (`LATEST_UNRESOLVED_JQ`)
+   with no retirement arguments in sight, pinning that retirement is a
+   property of the extract a caller requests, never of the shared
+   blocked/void definition those three read directly off the log.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
@@ -8169,3 +8332,4 @@ confident, recurring no-op.
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
 | A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
+| A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |

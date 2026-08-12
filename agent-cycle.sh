@@ -315,6 +315,13 @@ fi
 # requirement 34c's "only a human may clear a void" is unchanged; what this
 # gives them is a way to say it from where they actually are.
 unvoid_label="$(cfg '.unvoid_label')"
+# How old a fully-actioned void must be before it is dropped from the extract
+# (requirement 34n). `0` disables retirement, which is also what an
+# unparseable value falls back to — never retiring is the safe direction, an
+# unbounded extract being the cost this requirement exists to bound rather
+# than a correctness risk on its own.
+void_retire_after_days="$(cfg '.void_retire_after_days')"
+[[ "$void_retire_after_days" =~ ^[0-9]+$ ]] || void_retire_after_days=0
 # The refinement class (requirements 34e, 35d). The label is a projection onto
 # issue-type items and nothing reads it back, so an empty value switches the
 # projection off without touching the log mechanism that actually carries the
@@ -1460,10 +1467,16 @@ gather_source_state() {
 # per repo: the ids come from the blocked extract, so it runs only for a repo
 # that has blocked register items — which is usually none of them, at no cost.
 # An unreadable answer is `{}`, and `{}` clears nothing.
+#
+# PURPOSE names the asking pass — `blocked` (requirement 34i), `void`
+# (requirement 34n) or `selected` (the pre-flight read) — and lands in the
+# diagnostic filenames, because three passes can ask about the same repo in
+# one cycle and a shared name means the last writer silently discards the
+# other two's evidence.
 gather_register_status() {
-  local slug="$1" branch="$2" out safe
-  shift 2
-  safe="${slug//\//_}"
+  local slug="$1" branch="$2" purpose="$3" out safe
+  shift 3
+  safe="$purpose-${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-register-status.sh" "$slug" "$branch" "$@" \
         2>"$cycle_dir/register-status-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
@@ -3422,7 +3435,7 @@ while IFS=$'\t' read -r reg_slug reg_ids; do
     <<<"$ordered_repos_json" 2>/dev/null || true)"
   [[ -n "$reg_branch" ]] || continue
   # shellcheck disable=SC2086  # $reg_ids is a deliberate word-split id list.
-  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" $reg_ids)"
+  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" blocked $reg_ids)"
   register_status_json="$(jq -c --arg s "$reg_slug" --argjson m "$reg_map" '. + {($s): $m}' \
     <<<"$register_status_json" 2>/dev/null || printf '%s' "$register_status_json")"
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
@@ -3513,6 +3526,36 @@ fi
 
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
+
+# Requirement 34n's memory, applied the moment the extract exists: every pair
+# an earlier cycle already retired (a `void-retired` event on the log — a
+# fact, not a state, exactly as `void-object-closed` is) is subtracted here,
+# before the 34k sweep, the 34l register pass and 34n's own evidence-gathering
+# below ever see the set. Two bounds follow that re-deciding retirement from
+# scratch each cycle would not give: the register read below runs only over
+# the *unretired* residue, so an id retired once is never asked about again —
+# per-cycle GitHub cost proportional to what is still live, not to every void
+# ever filed — and the extract stays bounded even on a cycle whose register
+# read fails, because this subtraction needs nothing but the log. The
+# subtraction is ts-ordered (`subtract_retired_voids`): an item voided afresh
+# after its old verdict retired re-enters on the new verdict's own terms.
+#
+# Neither pass between here and 34n loses anything to the narrowing: 34k's
+# closed-object gate already skips every issue- or PR-shaped id a retirement
+# could cover (a closed object is what actioned it), and 34l's register repair
+# has nothing to do once a row reads `resolved`/`not-debt`, which retirement
+# itself required first — narrowing before 34l is what stops a repo whose
+# void register ids are all retired paying a register fetch forever. The 34f
+# label route is computed further up, from `void_items` directly, so a human's
+# `unvoided` still reaches a retired-but-void item.
+#
+# Gated on the same switch as retirement itself: `0` must restore the full,
+# unretired extract — the recorded facts stay on the log, but stop masking —
+# so an operator has a kill switch if retirement ever misbehaves, and flipping
+# it back re-masks from the log with nothing re-queried.
+if (( void_retire_after_days > 0 )); then
+  void_json="$(subtract_retired_voids "$void_json" "$(void_retired_items "$union_log")")"
+fi
 
 # 34k: act on void. A void already stops the item being selected again
 # (requirement 34c), but nothing before this touched the GitHub object it
@@ -3609,6 +3652,136 @@ while IFS= read -r vr_slug; do
     'map(if .slug == $r then .register_hygiene = $rh else . end)' \
     <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
 done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
+
+# Requirement 34n: retire every void entry that is both fully actioned and
+# old enough out of `void_json` before anything else reads it — from here on
+# `void_json` *is* the bounded extract, reassigned rather than shadowed under
+# a new name so every consumer below (the Refiner's candidate filter, the
+# no-op fingerprint, the Co-Ordinator's own input) sees it with nothing to
+# remember. This is what stops the extract growing without bound: on
+# 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN`
+# — because nothing before this requirement ever retired an entry once it was
+# actioned; the only way one left the set at all was a human's hand-appended
+# `unvoided` (issue #309).
+#
+# The 34k sweep and the 34l register-hygiene pass above saw the extract with
+# *recorded* retirements already subtracted (the block where `void_json` is
+# first computed), but not the ones this block is about to decide — and
+# neither needs those either, being already safe to run against an
+# item this rule would go on to retire — 34k's own `void_object_closed_items`
+# gate already skips a closed object, and 34l's register-hygiene repair has
+# nothing left to do once the row already reads `resolved`/`not-debt`, which
+# is exactly the state this rule requires before it will retire a register
+# void at all. `unvoid_clearances_json`, computed earlier from `void_items`
+# directly, is unaffected for the same reason `void_items` itself is: neither
+# this reassignment nor requirement 34c's own semantics change — a void stays
+# void forever, on the raw log, for every reader that recomputes it there
+# (`open_blocked_items`, `enabler_eligible_items`, `refinements_map`, and the
+# monitoring dashboard's own use of `void_items`). Retirement narrows only
+# what this one cycle goes on to hand somebody, never what counts as void.
+#
+# "Actioned" is the same two facts requirements 34k and 34l already
+# establish, read again for the void set the way requirement 34i already
+# reads the register one for the blocked set: an issue or pull request GitHub
+# itself confirms closed (`void_object_closed_items`, re-read here — a pure
+# function over the union log already in memory, costing no `gh` call at
+# all), or a tech-debt register row whose own file says `status: resolved` or
+# `status: not-debt` — 34i's own "the work is gone" statuses, which do cost a
+# read: a further `gather_register_status` call per repo with still-unretired
+# void register ids, alongside the one 34i already makes for that repo's
+# blocked ones — the recorded subtraction above is what keeps that residue,
+# and so this read, bounded. A
+# void of any other shape — a project-review ref, an implementation-plan task
+# id, a `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
+# `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
+# defined for it at all (34k and 34l act on none of those shapes), so a void
+# of those kinds is never actioned and never retires on this rule alone.
+#
+# Each entry this block retires is recorded as a `void-retired` event —
+# `{repo, item, void_ts, by}`, a fact rather than a state exactly as
+# `void-object-closed` is (requirement 34k) — which is what makes the
+# decision durable: the subtraction where `void_json` is first computed reads
+# those events back, so a settled id is never re-evidenced or re-decided, and
+# the register read here stays proportional to the unretired residue instead
+# of growing by one id per void ever retired. The recording is skipped on
+# --dry-run, like the 34k sweep itself — it is a durable mark on the log —
+# while the in-memory narrowing still applies, so a dry run sees the extract
+# a real one would.
+#
+# All of it is behind the `> 0` gate, because the register read is the whole
+# cost of this requirement and `void_retire_after_days` of `0` disables the
+# requirement: an installation that has switched retirement off must not go
+# on paying for the evidence retirement would have needed.
+if (( void_retire_after_days > 0 )); then
+  void_register_status_json='{}'
+  while IFS=$'\t' read -r vrs_slug vrs_ids; do
+    [[ -n "$vrs_slug" && -n "$vrs_ids" ]] || continue
+    vrs_branch="$(jq -r --arg s "$vrs_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+      <<<"$ordered_repos_json" 2>/dev/null || true)"
+    [[ -n "$vrs_branch" ]] || continue
+    # shellcheck disable=SC2086  # $vrs_ids is a deliberate word-split id list.
+    vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" void $vrs_ids)"
+    void_register_status_json="$(jq -c --arg s "$vrs_slug" --argjson m "$vrs_map" '. + {($s): $m}' \
+      <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")"
+  done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+           <<<"$void_register_ids_json" 2>/dev/null || true)
+
+  # The closed set grows with every void ever actioned, so it arrives on
+  # stdin, never in argv (requirement 4g), and is intersected with the
+  # extract's own pairs before it travels any further: retirement can only
+  # drop what is in the extract, so the intersection loses nothing and is
+  # what keeps `void_actioned_json` — which does ride an --argjson below —
+  # bounded by the unretired residue rather than by history. `by` names the
+  # actioned signal, for the `void-retired` event to carry.
+  # shellcheck disable=SC2016  # jq's $void/$closed/$reg et al., not the shell's.
+  void_actioned_json="$(jq -c -n --argjson reg "$void_register_status_json" '
+    input as $void | input as $closed
+    | ($void | map((.repo // "") + "|" + (.item // ""))) as $pairs
+    | ($closed
+       | map(select((.repo + "|" + .item) as $k | ($pairs | index($k)) != null)
+             | {repo, item, by: "object-closed"})) as $closed_here
+    | ($reg | to_entries | map(.key as $repo | .value | to_entries[]
+       | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
+       | {repo: $repo, item: .key, by: "register-resolved"})) as $reg_done
+    | $closed_here + $reg_done' \
+    <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>/dev/null || echo '[]')"
+
+  void_json_before_retire="$void_json"
+  void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
+
+  if ! (( DRY_RUN )); then
+    # Both extracts on stdin (requirement 4g); a retire_void_items failure
+    # returns its input verbatim, so before == after and nothing is recorded.
+    # shellcheck disable=SC2016  # jq's $before/$after/$actioned et al.
+    void_retired_now_json="$(jq -c -n --argjson actioned "$void_actioned_json" '
+      input as $before | input as $after
+      | ($after | map((.repo // "") + "|" + (.item // ""))) as $kept
+      | [ $before[]
+          | ((.repo // "") + "|" + (.item // "")) as $k
+          | select(($kept | index($k)) == null)
+          | {repo, item, void_ts: .ts,
+             by: (($actioned | map(select(((.repo // "") + "|" + (.item // "")) == $k))
+                   | first | .by) // "actioned")} ]' \
+      <<<"$void_json_before_retire"$'\n'"$void_json" 2>/dev/null || echo '[]')"
+    while IFS= read -r void_retired_entry; do
+      [[ -n "$void_retired_entry" ]] || continue
+      log_event "void-retired" "$void_retired_entry"
+    done < <(jq -c '.[]' <<<"$void_retired_now_json" 2>/dev/null || true)
+  fi
+fi
+
+# Defence in depth alongside requirement 4g's stdin-only delivery (which is
+# what actually stops this reaching `MAX_ARG_STRLEN` again — retirement bounds
+# the steady state, not any one cycle's worst case): a `warning`, well under
+# the 131072-byte cap, if the extract stays large enough after retirement to
+# be worth a human's attention.
+void_json_bytes="$(printf '%s' "$void_json" | wc -c)"
+if (( void_json_bytes > 100000 )); then
+  log_event "warning" "$(jq -nc \
+    --argjson n "$(jq 'length' <<<"$void_json" 2>/dev/null || echo 0)" --argjson b "$void_json_bytes" \
+    '{detail: ("void extract is " + ($b | tostring) + " bytes across " + ($n | tostring)
+               + " entries after retirement — approaching the 131072-byte MAX_ARG_STRLEN cap; check void_retire_after_days and whether requirements 34k/34l are actioning items")}')"
+fi
 
 # The third extract (requirement 3h): what a previous Enabler engagement
 # specified for an item nobody had specified well enough to work on. For an
@@ -4226,7 +4399,7 @@ fi
 preflight_register_json='{}'
 if [[ "$selected_source" == "tech-debt" ]]; then
   preflight_register_json="$(jq -nc --arg s "$selected_repo" \
-    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" "$selected_item")" \
+    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" selected "$selected_item")" \
     '{($s): $m}')"
 fi
 preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
