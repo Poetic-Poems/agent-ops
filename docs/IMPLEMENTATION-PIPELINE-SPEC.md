@@ -4837,12 +4837,16 @@ runs unattended.
       requirement 34k's sweep already maintains), or a tech-debt register row
       whose own file on the default branch says `status: resolved` or
       `status: not-debt` — requirement 34i's own "the work is gone"
-      statuses, read here for the void register ids the same
-      `scripts/gather-register-status.sh` call requirement 34i already makes
-      for the blocked ones. A void shaped like a project-review ref or an
-      implementation-plan task id has no such signal defined for it — 34k and
-      34l both act on neither shape — so a void of either kind is never
-      actioned and never retires on this rule alone; and
+      statuses, read for the void register ids by a further
+      `scripts/gather-register-status.sh` call per repo, alongside the one
+      requirement 34i already makes for that repo's blocked ones. A void of
+      any other shape — a project-review ref, an implementation-plan task id,
+      a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
+      `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
+      defined for it at all, since 34k's sweep acts only on the bare-issue
+      and `pr-<n>-…` shapes and 34l's register pass only on register ids, so
+      a void of those kinds is never actioned and never retires on this rule
+      alone; and
     - **old** — its `item-void` event's own `ts` is at least
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
@@ -4883,8 +4887,11 @@ runs unattended.
 
     Fails safe in the direction requirement 34d already established for void
     itself: `void_retire_after_days` of `0`, or unset, disables retirement
-    and every entry stays; an `item-void` event with no parseable `ts`, or a
-    malformed `void_json`/actioned set of any kind, is never retired. The
+    and every entry stays — and takes the register read with it, so an
+    installation that has switched retirement off pays nothing for the
+    evidence retirement would have needed; an `item-void` event with no
+    parseable `ts`, or a malformed `void_json`/actioned set of any kind, is
+    never retired. The
     failure mode this leaves is one more cycle carrying an entry that was
     ready to go — never a void quietly reopened.
 

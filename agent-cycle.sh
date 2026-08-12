@@ -3647,34 +3647,45 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # establish, read again for the void set the way requirement 34i already
 # reads the register one for the blocked set: an issue or pull request GitHub
 # itself confirms closed (`void_object_closed_items`, re-read here — a pure
-# function over the union log already in memory, not a second `gh` call), or
-# a tech-debt register row whose own file says `status: resolved` or
-# `status: not-debt` — 34i's own "the work is gone" statuses. A void shaped
-# like a project-review ref or an implementation-plan task id has no such
-# signal defined for it at all (34k and 34l both act on neither shape), so
-# void of either kind is never actioned and never retires on this rule alone.
-void_register_status_json='{}'
-while IFS=$'\t' read -r vrs_slug vrs_ids; do
-  [[ -n "$vrs_slug" && -n "$vrs_ids" ]] || continue
-  vrs_branch="$(jq -r --arg s "$vrs_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
-    <<<"$ordered_repos_json" 2>/dev/null || true)"
-  [[ -n "$vrs_branch" ]] || continue
-  # shellcheck disable=SC2086  # $vrs_ids is a deliberate word-split id list.
-  vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" $vrs_ids)"
-  void_register_status_json="$(jq -c --arg s "$vrs_slug" --argjson m "$vrs_map" '. + {($s): $m}' \
-    <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")"
-done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
-         <<<"$void_register_ids_json" 2>/dev/null || true)
+# function over the union log already in memory, costing no `gh` call at
+# all), or a tech-debt register row whose own file says `status: resolved` or
+# `status: not-debt` — 34i's own "the work is gone" statuses, which do cost a
+# read: a further `gather_register_status` call per repo with void register
+# ids, alongside the one 34i already makes for that repo's blocked ones. A
+# void of any other shape — a project-review ref, an implementation-plan task
+# id, a `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
+# `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
+# defined for it at all (34k and 34l act on none of those shapes), so a void
+# of those kinds is never actioned and never retires on this rule alone.
+#
+# All of it is behind the `> 0` gate, because the register read is the whole
+# cost of this requirement and `void_retire_after_days` of `0` disables the
+# requirement: an installation that has switched retirement off must not go
+# on paying for the evidence retirement would have needed.
+if (( void_retire_after_days > 0 )); then
+  void_register_status_json='{}'
+  while IFS=$'\t' read -r vrs_slug vrs_ids; do
+    [[ -n "$vrs_slug" && -n "$vrs_ids" ]] || continue
+    vrs_branch="$(jq -r --arg s "$vrs_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+      <<<"$ordered_repos_json" 2>/dev/null || true)"
+    [[ -n "$vrs_branch" ]] || continue
+    # shellcheck disable=SC2086  # $vrs_ids is a deliberate word-split id list.
+    vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" $vrs_ids)"
+    void_register_status_json="$(jq -c --arg s "$vrs_slug" --argjson m "$vrs_map" '. + {($s): $m}' \
+      <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")"
+  done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+           <<<"$void_register_ids_json" 2>/dev/null || true)
 
-void_actioned_json="$(jq -c -n \
-  --argjson closed "$(void_object_closed_items "$union_log")" \
-  --argjson reg "$void_register_status_json" '
-  ($reg | to_entries | map(.key as $repo | .value | to_entries[]
-     | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
-     | {repo: $repo, item: .key})) as $reg_done
-  | $closed + $reg_done' 2>/dev/null || echo '[]')"
+  void_actioned_json="$(jq -c -n \
+    --argjson closed "$(void_object_closed_items "$union_log")" \
+    --argjson reg "$void_register_status_json" '
+    ($reg | to_entries | map(.key as $repo | .value | to_entries[]
+       | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
+       | {repo: $repo, item: .key})) as $reg_done
+    | $closed + $reg_done' 2>/dev/null || echo '[]')"
 
-void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
+  void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
+fi
 
 # Defence in depth alongside requirement 4g's stdin-only delivery (which is
 # what actually stops this reaching `MAX_ARG_STRLEN` again — retirement bounds
