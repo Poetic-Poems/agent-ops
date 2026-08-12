@@ -1201,9 +1201,28 @@
 
   // ---------- cycles panel ----------
   function cyclesPanel(cycles) {
+    var body = cyclesTable(cycles);
+    // The no-op ticks the Publisher held out of the detail list (#271): the
+    // stand-down short-circuits and lock-held skips that would otherwise fill
+    // the MAX_CYCLES slots under the */15 cadence. One aggregate line, not
+    // rows — and fleet-wide, so it is withheld while the list is filtered to
+    // one node rather than shown against a list it does not describe.
+    var agg = D.noop_ticks;
+    if (nodeFilter || !agg || !agg.total) return body;
+    var parts = [];
+    if (agg.standdown) parts.push(agg.standdown + " stood down");
+    if (agg.skipped) parts.push(agg.skipped + " lock-held skip" + (agg.skipped === 1 ? "" : "s"));
+    return el("div", {}, [body, el("div", {class:"muted", style:"margin-top:6px", text:
+      "+ " + agg.total + " no-op tick" + (agg.total === 1 ? "" : "s") + " held out of this list — " +
+      parts.join(", ") + (agg.last_ts ? "; newest " + fmtAgo(agg.last_ts) : "")})]);
+  }
+
+  function cyclesTable(cycles) {
     if (nodeFilter) cycles = cycles.filter(function (cy) { return cy.node === nodeFilter; });
     if (!cycles.length) return el("div", {class:"panel"}, el("div", {class:"empty",
-      text: nodeFilter ? "No cycles from " + nodeFilter + " in the fleet window." : "No cycles recorded yet."}));
+      text: nodeFilter ? "No cycles from " + nodeFilter + " in the fleet window."
+          : (D.noop_ticks && D.noop_ticks.total) ? "No substantive cycles in the fleet window."
+          : "No cycles recorded yet."}));
     var showNode = fleetVisible();
     var rows = [];
     cycles.forEach(function (cy, i) {
