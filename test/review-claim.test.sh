@@ -10,11 +10,22 @@
 # reintroduced here.
 #
 # Offline throughout: `gh` and `claude` on PATH fail fast (the skip-guards
-# degrade to "proceed", the clone fails, no model ever runs), the claim goes
-# through CLAIM_GH to the same filesystem-CAS stub test/claim.test.sh uses,
-# TOGGLE_GH fails like an unreachable state repo (fleet flags fall back to
-# enabled), and the cleanup push lands in a local bare repository. Run
-# directly:
+# degrade to "proceed", no model ever runs), `CLONE_GIT=/bin/false` fails the
+# clone, the claim goes through CLAIM_GH to the same filesystem-CAS stub
+# test/claim.test.sh uses, TOGGLE_GH fails like an unreachable state repo
+# (fleet flags fall back to enabled), and the cleanup push lands in a local
+# bare repository.
+#
+# The clone gets its own seam rather than riding on the `gh` shim, and that is
+# the whole reason `lib/repo-clone.sh` is a function. While the pipeline ran
+# `gh repo clone`, the fail-fast `gh` on PATH failed the clone as a side
+# effect; when it became `git clone` (to stop paying GraphQL for a repository
+# resolve), nothing on PATH stood in the way and the clone reached the network
+# — so these four assertions passed on a machine without egress and failed on
+# both CI runners, which is the worst way round for a test to be wrong. A test
+# that needs a step to fail must be the thing that fails it.
+#
+# Run directly:
 #
 #   ./test/review-claim.test.sh
 #
@@ -121,8 +132,8 @@ exit 1
 STUB
 chmod +x "$stub_bin/gh"
 
-# --- Fail-fast PATH shims: the skip-guards degrade to "proceed", the clone
-# --- fails, and no model can ever launch.
+# --- Fail-fast PATH shims: the skip-guards degrade to "proceed" and no model
+# --- can ever launch. The clone is failed separately, via CLONE_GIT below.
 fail_bin="$tmp_dir/fail-bin"
 mkdir -p "$fail_bin"
 printf '#!/usr/bin/env bash\nexit 1\n' > "$fail_bin/gh"
@@ -147,6 +158,7 @@ run_review() {  # run_review <home> <claim-gh> [env…] — real review-cycle.sh
   env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
     PATH="$fail_bin:$PATH" TOGGLE_GH=/bin/false \
     CLAIM_GH="$claim_gh" GH_STUB_DIR="$GH_STUB_DIR" \
+    CLONE_GIT=/bin/false \
     AGENT_OPS_CONFIG="$claim_config" \
     STATE_SYNC_REMOTE="$state_remote" \
     GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" "$@" \

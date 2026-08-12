@@ -57,6 +57,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Rate-limit-aware `gh`: sourcing this wraps every `gh` call below so a
+# refusal GitHub will lift in seconds is waited out rather than degrading
+# this source to nothing. See lib/github-limit.sh.
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
 CONFIG_FILE="${AGENT_OPS_CONFIG:-$SCRIPT_DIR/config.json}"
 SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 GH="${SWEEP_GH:-gh}"

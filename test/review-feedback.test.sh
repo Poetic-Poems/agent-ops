@@ -48,7 +48,7 @@ assert_eq() {
 
 # --- The PR filter: which PRs are even ours to answer? ---
 
-# The shape `gh pr list --json number,title,headRefName,commits,isDraft,reviewDecision,url,body`
+# The shape `gh pr list --json number,title,headRefName,headRefOid,isDraft,reviewDecision,url,body`
 # returns. One of each kind we must accept or reject.
 prs='[
   {"number": 57, "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "headRefName": "agent/td1-fix"},

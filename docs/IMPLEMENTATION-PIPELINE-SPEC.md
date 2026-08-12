@@ -608,6 +608,9 @@ and the schema must carry every one of them.
 | `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `limit_escalate_after_hours` | 24 h | The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it. |
+| `github_min_core_budget` | 300 points | The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from a `/rate_limit` call that is itself exempt from the limits it reports. `0` disables the floor. |
+| `github_min_graphql_budget` | 100 points | The `graphql` floor of the GitHub API budget check (requirement 2.0). Separate from `github_min_core_budget` because GitHub meters the two pools independently and either can be the binding one — on 2026-08-12 the fleet exhausted `graphql` with 96% of its `core` hour unspent. `0` disables the floor. |
+| `github_retry_max_wait_seconds` | 60 s | The per-call wait bound of the `gh` wrapper (requirement 2.0a). A secondary rate limit waits a fixed fallback, a primary one waits until GitHub's stated reset, and either is abandoned if it exceeds this — the cycle holds a lock and runs on a `cycle_interval_minutes` tick, so a wrapper that waited out a primary limit would collide with the next tick. `0` turns retrying off. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
@@ -822,6 +825,53 @@ runs unattended.
    one implementation each script calls, so the Script's refusal and
    `doctor.sh`'s `fail` can never drift on what counts as a fault.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
+   0. *GitHub API budget*: before any other check, read `GET /rate_limit` and
+      stand the cycle down when either metered pool is below its floor —
+      `core` below `github_min_core_budget`, or `graphql` below
+      `github_min_graphql_budget`. Either floor set to `0` turns that
+      resource's check off; both at `0` turns the check off entirely. The
+      `stand-down` event carries the binding resource, its remaining points,
+      and `resume_at` — which is GitHub's own stated reset, never an estimate,
+      so unlike a usage-limit stand-down (1b) nothing probes it and nothing
+      needs to. When both pools are below their floors the one resetting
+      **later** binds, so the stand-down covers both.
+
+      First, because it is the only free check: `/rate_limit` is exempt from
+      the limits it reports, and every check below it can spend money — 1b's
+      probe most literally. What it prevents is not a failed `gh` call but
+      the cycle those calls sit inside. On 2026-08-12 an exhausted GraphQL
+      budget read to the pipeline as a quiet GitHub: every gatherer degraded
+      to `[]` (the `[]`-on-error trap in the Gotchas table), the Co-Ordinator
+      engaged on that digest and selected an item, the claim was taken, and
+      the cycle died at the clone with `GraphQL: API rate limit already
+      exceeded`. Everything before the clone was spent answering a question
+      GitHub answers for free.
+
+      A `/rate_limit` call that cannot be read is **not** a stand-down. An
+      unreadable meter is no evidence about the budget, and a node that cannot
+      reach it could not have run a cycle anyway; whatever call meets the real
+      fault will report it. Standing down here would give a network blip the
+      same face as an exhausted account.
+
+   0a. *A refusal shorter than the cycle is waited out, not reported.* The two
+      GitHub limits divide by how far away their reset is, and this is the near
+      half. `lib/github-limit.sh` defines a `gh` shell function that shadows the
+      binary for every script sourcing it: a call GitHub refuses for rate
+      reasons is retried once, after waiting until the stated reset (a primary
+      limit) or a fixed short fallback (a secondary limit, for which GitHub
+      states no reset anywhere `gh` surfaces). A wait longer than
+      `github_retry_max_wait_seconds`, or than twice that across one process,
+      is not taken at all — the cycle holds a lock and runs on a
+      `cycle_interval_minutes` tick, so waiting out a primary limit inside one
+      would collide with the next tick. That case belongs to 2.0, not here.
+
+      The binary is reached with `command gh`, so a test's `PATH` stub is still
+      what runs. A call invoked through `timeout`, `env` or `xargs` bypasses
+      the wrapper, which is why `scripts/publish-dashboard.sh` — every call of
+      which is deliberately under `timeout` to hold the heartbeat's window — is
+      unaffected. stdout is buffered and emitted once the call is finished
+      with, so a retried `gh api --paginate` cannot emit its early pages twice.
+
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
       is as fresh as the last state-sync fetch; `fleet/limit.json` on the
@@ -976,6 +1026,20 @@ runs unattended.
       readable from the log line alone, because the PRs behind a historical
       count are merged or closed by the time anyone asks, leaving
       cycle-record archaeology as the only other answer.
+
+      The listing behind the count asks for `GITHUB_PR_LIST_LIMIT` pull
+      requests (`lib/github-limit.sh`) rather than inheriting `gh`'s
+      undeclared default of 30, and a response that came back **at** that cap
+      trips the gate on its own — with a `warning` naming the repository, and
+      the composition suffixed to say the figures are floors. `gh` gives no
+      signal that it truncated, so a capped listing simply produces low
+      counts, and low counts open a gate whose purpose is to stay shut. Note
+      that nothing bounds the listing at `max_open_agent_prs`: a pull request
+      waiting in the human's merge queue carries `pr_label` and is
+      deliberately excluded from the sum above, so a repository can hold
+      arbitrarily many open labelled PRs while the sum stays small. Of the two
+      ways to be wrong here, deferring a cycle that could have run is
+      recoverable next cycle and opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
@@ -1391,11 +1455,19 @@ runs unattended.
    - **Only branches under `branch_prefix`.** The Human Gate reserves every
      other branch for humans; "they asked for changes" is not licence to push to
      a colleague's PR.
+   - **The head SHA comes from `headRefOid`, not from the `commits`
+     collection.** Reading `commits[-1].oid` cost 31 GraphQL points a call
+     against a repository with three open pull requests — `gh` requests
+     `commits(last: 100)` for each of the `--limit` slots, and GitHub charges
+     for nodes asked for rather than nodes returned — where the scalar field
+     costs 1. The listing is bounded at `GITHUB_PR_LIST_LIMIT`
+     (`lib/github-limit.sh`) rather than inheriting `gh`'s undeclared default
+     of 30, and says on stderr when the response came back at that cap; here
+     truncation can only mean a review round is not offered this cycle.
    - Fails safe to `[]` (exit 0). But show `gh`'s stderr: a rejected `--json`
-     field name (`headRefOid` does not exist in every `gh`) otherwise degrades
-     to an empty array indistinguishable from "nothing is under review", and the
-     source silently never fires. That cost a debugging round when this was
-     built.
+     field name otherwise degrades to an empty array indistinguishable from
+     "nothing is under review", and the source silently never fires. That cost
+     a debugging round when this was built.
 3e. **Abandoned-drafts pre-fetch.** For each configured repo whose `sources`
    include `abandoned-drafts`, run `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
@@ -1438,18 +1510,41 @@ runs unattended.
      resets the clock **not at all**, never partially — the Enabler's own verdict
      already reaches selection as an `unblocked`/`still-blocked` event
      (requirement 18), so a partial reset would add nothing.
+   - **The head commit arrives as `headRefOid` plus one REST call, never as
+     the `commits` collection.** The listing asks for the head sha as a scalar
+     field, and the head commit's `committedDate` — which the clock above
+     needs and a sha alone does not give — is fetched per surviving candidate
+     from `GET /repos/<slug>/commits/<sha>`, reading `.commit.committer.date`
+     (REST's spelling of GraphQL's `committedDate`; `.commit.author.date` is
+     the other one and would be the wrong field). Asking a listing for
+     `commits` cost 31 GraphQL points a call against a repository with three
+     open pull requests, because `gh` requests `commits(last: 100)` for each
+     of the `--limit` slots and GitHub charges for nodes asked for rather than
+     nodes returned; the same listing with `headRefOid` measures 1. A PR whose
+     head-commit date cannot be read is excluded this cycle, loudly on stderr,
+     under the same uncomputable-activity rule as a capped collection.
    - **A nested collection at `gh`'s cap is missing evidence, not evidence.**
      `gh pr list` does not paginate the collections this computation reads —
-     `commits`, `reviews` and `comments` each arrive capped at 100 items, with
-     `comments` oldest-first — so at the cap the newest activity may be absent,
-     and at the commits cap `commits[-1]` is not the head. A PR with any
-     collection at the cap is excluded this cycle, loudly on stderr: the same
-     uncomputable-activity treatment as the missing-commit case below, chosen
-     over paginating per candidate because the failure it guards against is the
-     dangerous direction (a live human conversation past the cap misread as
-     silence) while the cost is the safe one — a stalled draft that has somehow
-     accumulated 100 of anything waits for a human, and on this system's own
-     drafts such a PR is an anomaly worth a human's eye anyway.
+     `reviews` and `comments` each arrive capped at 100 items, with `comments`
+     oldest-first — so at the cap the newest activity may be absent. A PR with
+     either collection at the cap is excluded this cycle, loudly on stderr:
+     the same uncomputable-activity treatment as the unreadable-head-commit
+     case above, chosen over paginating per candidate because the failure it
+     guards against is the dangerous direction (a live human conversation past
+     the cap misread as silence) while the cost is the safe one — a stalled
+     draft that has somehow accumulated 100 of anything waits for a human, and
+     on this system's own drafts such a PR is an anomaly worth a human's eye
+     anyway. `commits` needed the same guard while it was read, because at its
+     cap `commits[-1]` was the hundredth commit rather than the head;
+     `headRefOid` is the head at any branch length, so that clause has no
+     counterpart here and is not missing.
+   - **The listing itself is bounded and its truncation is noticed.** It asks
+     for `GITHUB_PR_LIST_LIMIT` pull requests (`lib/github-limit.sh`) rather
+     than inheriting `gh`'s undeclared default of 30, and says on stderr when
+     the response came back at that cap. Unlike the back-pressure gate of
+     requirement 2.2, where the same truncation is dangerous, here it can only
+     mean a draft is not offered for recovery this cycle — the safe direction
+     every other exclusion in this source takes.
    - **Ready PRs are not ours to touch here.** A non-draft PR is finished work
      waiting on the human; answering it is `review-feedback`'s job, and
      force-pushing it would violate the Human Gate. Only drafts qualify.
@@ -1466,10 +1561,10 @@ runs unattended.
      must exist for the fingerprint anyway, so it gets one definition
      (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
-     3c. A PR whose real activity cannot be computed (no commit — should never
-     happen — or a collection at the cap, above) is excluded rather than treated
-     as maximally stale: the dangerous direction is stealing live work, not
-     leaving a stalled draft one more cycle. `shellcheck`-clean.
+     3c. A PR whose real activity cannot be computed (an unreadable head-commit
+     date — should never happen — or a collection at the cap, above) is excluded
+     rather than treated as maximally stale: the dangerous direction is stealing
+     live work, not leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
    include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
    <pr_label> <branch_prefix>` and attach the array to that repo's entry as
@@ -2346,6 +2441,22 @@ runs unattended.
    workspace; the Script must refuse (assert) to launch a stage whose
    working directory is outside `workspace_root`. The user's own clones
    under `~/Code` are never touched.
+
+   The clone goes through `lib/repo-clone.sh`'s `clone_repo`, which runs `git
+   clone`, not `gh repo clone`. Both fetch the same objects over the same
+   transport, but `gh` first resolves the repository through a GraphQL query,
+   which is billed against the API budget — and this step is the last thing a
+   cycle does before the Implementor, with the Co-Ordinator engagement and the
+   claim already paid for. On 2026-08-12T20:52Z that query is where a cycle
+   died: `GraphQL: API rate limit already exceeded`, having spent everything
+   and produced nothing. Git's own transport is not rate-limited, so this step
+   cannot fail that way. Authentication is unchanged —
+   `deploy/docker/entrypoint.sh` runs `gh auth setup-git`, so the credential
+   helper serves this HTTPS remote exactly as it serves the push that follows.
+   `review-cycle.sh` clones through the same function, so the two cannot
+   diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
+   its own right, because a test that wants the clone to fail can no longer get
+   that from a fail-fast `gh` on `PATH`.
 6a. **The pipeline creates its own labels.** Before launching the Implementor,
    the Script ensures every label this system applies exists in the selected
    repository, creating only those that are absent: `pr_label`,
@@ -5726,12 +5837,12 @@ What exists, and the requirements each part answers to:
 3f. `scripts/gather-abandoned-drafts.sh` implementing requirement 3e: given a
    repo slug, PR label, branch prefix and staleness threshold, prints the JSON
    array of this system's own abandoned draft PRs (open, draft, ours, whose last
-   real activity — commits, and the reviews and comments not carrying
+   real activity — the head commit, and the reviews and comments not carrying
    `lib/pipeline-marker.sh`'s marker — is untouched past the threshold), each
-   carrying the draft PR's body verbatim and a head-SHA-scoped ref. A PR any of
-   whose nested collections `gh pr list` returned at its 100-item cap is
-   excluded for the cycle rather than judged on possibly-incomplete activity
-   (requirement 3e). Its
+   carrying the draft PR's body verbatim and a head-SHA-scoped ref. A PR either
+   of whose nested collections `gh pr list` returned at its 100-item cap, or
+   whose head-commit date could not be read, is excluded for the cycle rather
+   than judged on possibly-incomplete activity (requirement 3e). Its
    candidate rule is regression-tested in `test/abandoned-drafts.test.sh`. Fails
    safe to `[]` (exit 0). Must pass `shellcheck`. Sources
    `lib/pipeline-marker.sh`, which implements the write side of the same
@@ -5982,6 +6093,17 @@ What exists, and the requirements each part answers to:
    overrides the config for tests. Unit-tested
    (`test/sweep-human-visibility.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
+   `lib/github-limit.sh` (requirement 2.0's `github_limit_snapshot`,
+   `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
+   wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
+   `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
+   three callers — the back-pressure gate and the two PR-listing gatherers —
+   must agree on what a truncated page is even though they treat one
+   differently. Sourced by both cycle scripts, `lib/claim.sh` and every
+   `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
+   `test/github-limit.test.sh`),
+   `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
+   pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
@@ -6799,6 +6921,19 @@ pull request, run the ones the change touches and any it could regress.
    prints `[]` and exits 0 — a missing repo, a disabled feature, an API error, or
    an unparseable threshold never aborts the cycle. Its candidate rule is
    regression-tested in `test/abandoned-drafts.test.sh`.
+2i. **The GitHub API budget gates the cycle, and a short refusal is waited
+   out.** `test/github-limit.test.sh` passes: `github_limit_verdict` returns
+   `ok` above both floors, `exhausted` naming the binding resource below
+   either, the **later**-resetting resource when both are below, and `unknown`
+   — never `exhausted` — for a snapshot that is missing, empty or unparseable;
+   `github_limit_kind` tells a secondary refusal from a primary one and both
+   from an ordinary failure; `github_limit_wait_plan` waits until a stated
+   reset, refuses a reset beyond the per-call bound, clamps to what is left of
+   the process budget and returns nothing once that budget is spent; and
+   `github_pr_list_truncated` fires exactly at the cap. The wrapper itself is
+   exercised against a stub `gh`: a rate-limited call is retried once and its
+   stdout emitted exactly once, a non-rate-limit failure is returned
+   unretried, and `gh`'s own stderr reaches the caller either way.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,
@@ -8314,6 +8449,8 @@ confident, recurring no-op.
 
 | Trap | What it looks like when it bites | Build it this way instead |
 |---|---|---|
+| A `--json` field that is cheap to type and expensive to fetch | `gh pr list --json commits` cost 31 GraphQL points a call against a repository with **three** open pull requests, because `gh` asks for `commits(last: 100)` in each of the `--limit` slots and GitHub charges for nodes requested, not returned. Two gatherers × three repos × two nodes × four cycles an hour was most of the 5,000-point hourly budget, and the fleet exhausted it on 2026-08-12 — after which every work source read as empty and the pipeline looked idle rather than blocked. | Ask for the scalar (`headRefOid`, not `commits[-1].oid`) and fetch the rest from REST per candidate, where the budget is thousands. Measure a call's real cost — bracket it with `gh api rate_limit`, which is itself exempt — rather than assuming that a listing of three items costs three items' worth. |
+| A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting in the human's merge queue carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
 | A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
 | The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
 | A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementor exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |

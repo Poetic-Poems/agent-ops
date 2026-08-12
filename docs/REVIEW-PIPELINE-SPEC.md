@@ -395,7 +395,14 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       shared by all Poetic repositories: every agent works in its own
       dedicated fresh clone taken from the tip of the default branch before
       commencing any changes. (A full clone — the review examines git
-      history.) Assert the working
+      history.) The clone goes through `lib/repo-clone.sh`'s `clone_repo`, the
+      same function the implementation pipeline's requirement 6 uses: `git
+      clone`, because `gh repo clone` resolves the repository through a
+      GraphQL query that is billed against the API budget, and git's own
+      transport is not rate-limited. `gh auth setup-git` in
+      `deploy/docker/entrypoint.sh` authenticates the HTTPS remote, and
+      `CLONE_GIT` substitutes a stub for tests. Assert
+      the working
       directory is under `workspace_root` before launching any stage
       (requirement 6). The user's own clones under `~/Code` are never touched.
    2. *Inject the skill.* Copy this repository's

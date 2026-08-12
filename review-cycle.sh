@@ -50,6 +50,13 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# Rate-limit-aware `gh`: sourcing this wraps every `gh` call below so a refusal
+# GitHub will lift in seconds is waited out rather than failing the call. A
+# different system from the Claude usage limits above; see lib/github-limit.sh.
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/repo-clone.sh
+. "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
@@ -602,7 +609,13 @@ fi
 # Echoes the reason to skip (a non-empty string) or nothing (proceed).
 skip_reason() {
   local slug="$1" default_branch="$2" open_prs recent_date days
-  open_prs="$(gh pr list -R "$slug" --state open --label "$pr_label" --json number --jq 'length' 2>/dev/null || echo 0)"
+  # `--limit 1`, because the test below is "is there one?", not "how many?".
+  # Left unstated, `gh` asks for 30 and GitHub bills for the slots requested
+  # rather than the rows returned (lib/github-limit.sh). Truncation is not a
+  # risk in either form here — a listing capped at any positive number still
+  # answers this question correctly — so the smallest listing that can answer
+  # it is the right one.
+  open_prs="$(gh pr list -R "$slug" --state open --label "$pr_label" --limit 1 --json number --jq 'length' 2>/dev/null || echo 0)"
   if [[ "$open_prs" =~ ^[0-9]+$ ]] && (( open_prs > 0 )); then
     printf 'an open %s PR already exists' "$pr_label"
     return 0
@@ -748,7 +761,10 @@ review_one() {
 
   clone_dir="$workspace_root/${review_id}-${safe}"
   assert_in_workspace "$clone_dir"
-  if ! gh repo clone "$slug" "$clone_dir" -- --quiet 2>"$review_dir/clone-$safe.err"; then
+  # `clone_repo` (lib/repo-clone.sh), shared with agent-cycle.sh's workspace
+  # step: `git clone`, because `gh repo clone` resolves the repository through
+  # a billed GraphQL query first and git's transport is not rate-limited.
+  if ! clone_repo "$slug" "$clone_dir" 2>"$review_dir/clone-$safe.err"; then
     log_event "review-attempt-failed" "$(jq -nc --arg r "$slug" --arg d "$(cat "$review_dir/clone-$safe.err")" '{repo: $r, stage: "workspace", detail: $d}')"
     release_review_claim "$slug" "$branch" "$safe" no-pr
     rm -rf "$clone_dir"; clone_dir=""

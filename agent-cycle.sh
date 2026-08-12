@@ -48,6 +48,13 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# GitHub's rate limits, which are a different system from the Claude usage
+# limits above. Sourcing this also wraps every `gh` call this script makes —
+# see the wrapper's header for what that does and does not cover.
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/repo-clone.sh
+. "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
@@ -474,6 +481,23 @@ disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
 # person who set one does not need to be paged about their own decision.
 limit_escalate_after_hours="$(cfg '.limit_escalate_after_hours')"
 [[ "$limit_escalate_after_hours" =~ ^[0-9]+$ ]] || limit_escalate_after_hours=24
+# The GitHub API budget a cycle must find before it is worth starting one
+# (requirement 2.0). Two floors because GitHub meters two pools separately and
+# either can be the binding one — on 2026-08-12 the fleet exhausted `graphql`
+# while `core` still had 96% of its hour left. Either set to 0 turns that
+# resource's floor off; both at 0 turns the check off entirely.
+github_min_core_budget="$(cfg '.github_min_core_budget')"
+[[ "$github_min_core_budget" =~ ^[0-9]+$ ]] || github_min_core_budget=0
+github_min_graphql_budget="$(cfg '.github_min_graphql_budget')"
+[[ "$github_min_graphql_budget" =~ ^[0-9]+$ ]] || github_min_graphql_budget=0
+# How long lib/github-limit.sh's `gh` wrapper may wait out a single refusal,
+# and how long this whole process may spend waiting across all of them. Read
+# here and exported so the gatherers and sweeps this cycle launches are
+# governed by the installation's number rather than the library's default.
+GITHUB_LIMIT_MAX_WAIT_SECONDS="$(cfg '.github_retry_max_wait_seconds')"
+[[ "$GITHUB_LIMIT_MAX_WAIT_SECONDS" =~ ^[0-9]+$ ]] || GITHUB_LIMIT_MAX_WAIT_SECONDS=60
+GITHUB_LIMIT_TOTAL_WAIT_SECONDS=$(( GITHUB_LIMIT_MAX_WAIT_SECONDS * 2 ))
+export GITHUB_LIMIT_MAX_WAIT_SECONDS GITHUB_LIMIT_TOTAL_WAIT_SECONDS
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
 max_chained_cycles="$(cfg '.max_chained_cycles')"
@@ -2832,6 +2856,43 @@ CRASH_LOOP_BODY
 fi
 
 # --- 2. Stand-down checks ---
+# 2.0 GitHub API budget (requirement 2.0). First of the stand-down checks
+# because it is the only free one: `GET /rate_limit` is exempt from the limits
+# it reports, so asking costs nothing, and every check below it — the
+# usage-limit probe most of all — can spend real money.
+#
+# What this prevents is not the failed `gh` call. It is the cycle of
+# 2026-08-12T20:52Z, which read a rate-limited GitHub as a quiet one: every
+# gatherer degraded to `[]`, the Co-Ordinator engaged on that digest and chose
+# an item, the claim was taken, and the cycle then died at the clone with
+# `GraphQL: API rate limit already exceeded`. All of that is downstream of a
+# question GitHub would have answered for free before the first token was
+# spent.
+#
+# `unknown` — the meter itself unreadable — is deliberately not a stand-down.
+# It is no evidence about the budget, and a node that cannot reach
+# `/rate_limit` could not have run a cycle anyway; the failure it does have
+# will be reported by whatever call meets it. Standing down here would invent
+# a way for a network blip to look like an exhausted account.
+if (( github_min_core_budget > 0 || github_min_graphql_budget > 0 )); then
+  IFS=$'\t' read -r gh_budget_verdict gh_budget_resource gh_budget_remaining gh_budget_reset_at \
+    < <(github_limit_verdict "$(github_limit_snapshot || true)" \
+          "$github_min_core_budget" "$github_min_graphql_budget")
+  if [[ "$gh_budget_verdict" == "exhausted" ]]; then
+    if [[ "$gh_budget_resource" == "core" ]]; then
+      gh_budget_floor="$github_min_core_budget"
+    else
+      gh_budget_floor="$github_min_graphql_budget"
+    fi
+    log_event "stand-down" "$(jq -nc --arg r "$(github_limit_describe \
+      "$gh_budget_resource" "$gh_budget_remaining" "$gh_budget_floor" "$gh_budget_reset_at")" \
+      --arg res "$gh_budget_resource" --arg rem "$gh_budget_remaining" \
+      --arg until "$gh_budget_reset_at" \
+      '{reason: $r, github_resource: $res, github_remaining: $rem, resume_at: $until}')"
+    exit 0
+  fi
+fi
+
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
 # so a limit any node hit stands this one down too). Two carriers of the same
 # signal, and the later resume wins: the log union is as fresh as the last
@@ -3118,18 +3179,39 @@ fi
 # PR does not yet exist. Which of them filled the gate is what a cap-tuning
 # decision needs to know. Recording it here costs nothing; reconstructing it
 # later means cycle-record archaeology.
+#
+# The listing's page size is stated (`GITHUB_PR_LIST_LIMIT`, lib/github-limit.sh)
+# rather than left to `gh`'s undeclared default of 30, and a response that came
+# back at it is treated as a trip. This is the one place in the pipeline where
+# a truncated listing is actively dangerous: `gh` gives no signal that it
+# capped, so the counts below would simply be low, and low counts open a gate
+# whose whole purpose is to stay shut. Note that the raw listing is not bounded
+# by `max_open_agent_prs` — a pull request waiting in the human's merge queue
+# carries `pr_label` and is deliberately excluded from the sum — so a repo can
+# genuinely hold more open labelled PRs than the cap, and the cap is no
+# guarantee the page was big enough.
 ready_count=0
 human_queue_count=0
 draft_count=0
+listing_truncated=0
 while IFS= read -r slug; do
-  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft,reviewDecision \
+  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --limit "$GITHUB_PR_LIST_LIMIT" --json isDraft,reviewDecision \
     --jq '[([.[] | select(.isDraft | not)] | length),
            ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
-           ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
-  IFS=$'\t' read -r n_ready n_human n_draft <<<"$counts"
+           ([.[] | select(.isDraft)] | length),
+           length] | @tsv' 2>/dev/null)" || counts=''
+  IFS=$'\t' read -r n_ready n_human n_draft n_total <<<"$counts"
   [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
   [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
+  [[ "$n_total" =~ ^[0-9]+$ ]] || n_total=0
+  if github_pr_list_truncated "$n_total"; then
+    listing_truncated=1
+    log_event "warning" "$(jq -nc --arg r "$slug" --arg l "$GITHUB_PR_LIST_LIMIT" --arg d \
+      "back-pressure: $slug's open labelled pull requests came back at the ${GITHUB_PR_LIST_LIMIT}-item listing cap, so the count below is a floor, not a total; treating back-pressure as tripped rather than counting a truncated page" \
+      '{repo: $r, limit: $l, detail: $d}')"
+  fi
   ready_count=$(( ready_count + n_ready ))
   human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
@@ -3156,6 +3238,14 @@ open_composition="$pipeline_ready_count changes-requested + $draft_count draft +
 backpressure_tripped=0
 if (( adjusted_open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
+fi
+# A truncated listing trips the gate on its own, whatever the visible sum came
+# to: the counts are a floor and the real total is unknown, and of the two ways
+# to be wrong — deferring a cycle that could have run, or opening work past a
+# cap that was already full — only the first is recoverable next cycle.
+if (( listing_truncated )); then
+  backpressure_tripped=1
+  open_composition="$open_composition — at least one repo's listing was truncated, so these are floors"
 fi
 
 # --- 2b. Git identity ---
@@ -4438,7 +4528,12 @@ impl_model="$(jq -r '.model' <<<"$work_order_json")"
 
 clone_dir="$workspace_root/$cycle_id"
 assert_in_workspace "$clone_dir"
-if ! gh repo clone "$repo_slug" "$clone_dir" -- --quiet 2>"$cycle_dir/clone.err"; then
+# `clone_repo` (lib/repo-clone.sh) — `git clone`, not `gh repo clone`, because
+# `gh` resolves the repository through a GraphQL query that is billed against
+# the API budget, and this is the last step before the cycle's expensive stage.
+# That file holds the full reasoning and the `CLONE_GIT` test seam; both
+# pipelines clone through it so they cannot diverge.
+if ! clone_repo "$repo_slug" "$clone_dir" 2>"$cycle_dir/clone.err"; then
   log_event "attempt-failed" "$(jq -nc --arg d "$(cat "$cycle_dir/clone.err")" '{stage: "workspace", detail: $d}')"
   # The claim was taken before the clone; a cycle that ends here must not
   # keep holding the item (requirement 17a's release rules).

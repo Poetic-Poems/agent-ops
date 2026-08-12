@@ -141,19 +141,22 @@
 # abandoned drafts contributes `[]`; an API that will not answer contributes `[]`
 # too (the source simply does not fire this cycle) — but note gather-source-state.sh
 # must NOT be so relaxed about the same PRs, for the reason it documents. A PR
-# whose real activity cannot be computed (no commit — should never happen, but a
-# malformed API response is not licence to guess) is excluded rather than treated
-# as maximally stale: the dangerous direction here is stealing live work, not
-# leaving a genuinely stalled draft for one more cycle. A PR any of whose nested
-# collections came back at `gh pr list`'s 100-item cap is excluded the same way
-# (see the note at the fetch below): a capped response may be missing the newest
-# activity, and incomplete data is not licence to guess either.
+# whose real activity cannot be computed (its head commit's date could not be
+# read — should never happen, but a malformed API response is not licence to
+# guess) is excluded rather than treated as maximally stale: the dangerous
+# direction here is stealing live work, not leaving a genuinely stalled draft
+# for one more cycle. A PR either of whose nested collections came back at `gh
+# pr list`'s 100-item cap is excluded the same way (see the note at the fetch
+# below): a capped response may be missing the newest activity, and incomplete
+# data is not licence to guess either.
 
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -179,8 +182,8 @@ if [[ -z "$cutoff" ]]; then
   exit 0
 fi
 
-# Every open, agent-raised draft PR under our branch prefix, with the commits,
-# reviews and comments needed to compute last-real-activity ourselves — the raw
+# Every open, agent-raised draft PR under our branch prefix, with the reviews
+# and comments needed to compute last-real-activity ourselves — the raw
 # `updatedAt` cannot be trusted as a pre-filter here (a label edit or a marker
 # comment can hold it recent while the PR is genuinely stalled), so every
 # candidate PR's full activity has to be fetched and judged, not just the ones
@@ -192,34 +195,59 @@ fi
 # Heads may be `agent/…` or — for tech-debt items, whose claim branch is the
 # human protocol's own `td/<ID>` — `td/…`; the label filter is the primary
 # "ours" signal either way.
-prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
-        --json number,title,headRefName,commits,isDraft,updatedAt,url,body,comments,reviews \
-        --jq "[.[] | select(.isDraft)
-                   | select((.headRefName | startswith(\"$branch_prefix\"))
-                            or (.headRefName | startswith(\"td/\")))]" \
+#
+# `headRefOid`, not the whole `commits` collection. Asking for `commits` cost
+# 31 GraphQL points per call against a repository with three open pull requests
+# — `gh` requests `commits(last: 100)` for each of the `--limit` slots and
+# GitHub charges for nodes asked for, not nodes returned — and two gatherers on
+# two nodes paying it every 15 minutes was most of the 5,000-point hourly
+# budget the fleet exhausted on 2026-08-12. The same listing with `headRefOid`
+# measures 1 point. The head commit's *date*, which the staleness clock below
+# needs and a sha alone does not give, is fetched per candidate from REST
+# instead — one core request each, against a budget that has thousands spare.
+all_prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+        --limit "$GITHUB_PR_LIST_LIMIT" \
+        --json number,title,headRefName,headRefOid,isDraft,updatedAt,url,body,comments,reviews \
         || true)"
+if [[ -z "$all_prs" ]] || ! jq -e 'type == "array"' <<<"$all_prs" >/dev/null 2>&1; then
+  printf '[]'
+  exit 0
+fi
+
+# A listing at the cap may be missing entries (lib/github-limit.sh). Here the
+# loss is a draft that is simply not offered for recovery this cycle, which is
+# the same safe direction as every other exclusion in this file — so it is said
+# out loud and the run continues.
+if github_pr_list_truncated "$(jq 'length' <<<"$all_prs")"; then
+  echo "gather-abandoned-drafts: $slug: the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a draft beyond it is not offered this cycle" >&2
+fi
+
+prs="$(jq -c "[.[] | select(.isDraft)
+                   | select((.headRefName | startswith(\"$branch_prefix\"))
+                            or (.headRefName | startswith(\"td/\")))]" <<<"$all_prs" 2>/dev/null || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
   printf '[]'
   exit 0
 fi
 
 # `gh pr list` does not paginate the nested collections this computation reads:
-# `commits`, `reviews` and `comments` each arrive capped at 100 items
-# (`GH_DEBUG=api` shows `comments(first: 100)`; only `gh pr view` special-cases
-# comment pagination), and `comments` is served oldest-first — so a collection
-# at the cap may be missing the *newest* entries, and at the commits cap
-# `.commits[-1]` is the hundredth commit, not the head. Last-real-activity
-# computed from such a response would be an old date wearing a current one's
-# face — exactly the misread the header names as the dangerous direction, an
-# actively-discussed draft judged abandoned. So each PR is flagged `at_cap`
-# here, and the computation below treats a flagged PR's activity as
-# uncomputable: excluded this cycle, like the missing-commit case, never judged
-# on data known to be incomplete. Said out loud on stderr because the exclusion
-# also defers a PR that may be genuinely abandoned — and 100 of anything on one
-# of this system's own drafts is an anomaly worth a human's eye anyway
-# (requirement 3e).
-prs="$(jq -c '[.[] | . + {at_cap: ((((.commits  // []) | length) >= 100)
-                                or (((.reviews  // []) | length) >= 100)
+# `reviews` and `comments` each arrive capped at 100 items (`GH_DEBUG=api`
+# shows `comments(first: 100)`; only `gh pr view` special-cases comment
+# pagination), and `comments` is served oldest-first — so a collection at the
+# cap may be missing the *newest* entries. Last-real-activity computed from
+# such a response would be an old date wearing a current one's face — exactly
+# the misread the header names as the dangerous direction, an actively-discussed
+# draft judged abandoned. So each PR is flagged `at_cap` here, and the
+# computation below treats a flagged PR's activity as uncomputable: excluded
+# this cycle, like the missing-commit case, never judged on data known to be
+# incomplete. Said out loud on stderr because the exclusion also defers a PR
+# that may be genuinely abandoned — and 100 of anything on one of this system's
+# own drafts is an anomaly worth a human's eye anyway (requirement 3e).
+#
+# `commits` used to be checked here too, because at its cap `.commits[-1]` was
+# the hundredth commit rather than the head. `headRefOid` is the head whatever
+# the branch's length, so that clause has no counterpart and is not missing.
+prs="$(jq -c '[.[] | . + {at_cap: ((((.reviews  // []) | length) >= 100)
                                 or (((.comments // []) | length) >= 100))}]' \
         <<<"$prs" 2>/dev/null || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
@@ -231,6 +259,40 @@ if [[ -n "$capped" ]]; then
   echo "gather-abandoned-drafts: $slug $capped: a nested collection is at gh's 100-item cap, so last real activity cannot be computed; excluded this cycle" >&2
 fi
 
+# The head commit's `committedDate`, one REST call per draft still in the
+# running. GraphQL's `Commit.committedDate` is REST's `.commit.committer.date`
+# — the committer's timestamp, which is what a force-push re-stamps and what
+# the clock below has always read; `.commit.author.date` is the other one and
+# would be the wrong field.
+#
+# A PR whose head commit cannot be read gets a null, and the computation below
+# drops it exactly as it drops an `at_cap` one. That guard is load-bearing and
+# not a formality: without it a failed fetch would leave the PR's activity to
+# be decided by its reviews and comments alone, so a draft a human pushed to
+# five minutes ago — but never commented on — would read as untouched since its
+# last review and be handed to an Implementor to force-push over. Skipped
+# entirely for `at_cap` PRs, which are excluded regardless, so a truncated
+# response costs no calls.
+head_dates='{}'
+while IFS= read -r pr_number; do
+  [[ -n "$pr_number" ]] || continue
+  pr_sha="$(jq -r --argjson n "$pr_number" '.[] | select(.number == $n) | .headRefOid // ""' <<<"$prs")"
+  [[ -n "$pr_sha" ]] || continue
+  committed_at="$(gh api "repos/$slug/commits/$pr_sha" --jq '.commit.committer.date // empty' 2>/dev/null || true)"
+  [[ -n "$committed_at" ]] || continue
+  head_dates="$(jq -c --arg k "$pr_number" --arg v "$committed_at" '. + {($k): $v}' <<<"$head_dates")"
+done < <(jq -r '.[] | select(.at_cap | not) | .number' <<<"$prs" 2>/dev/null || true)
+prs="$(jq -c --argjson dates "$head_dates" \
+  '[.[] | . + {head_committed_at: ($dates[(.number | tostring)] // null)}]' <<<"$prs" 2>/dev/null || true)"
+if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
+  printf '[]'
+  exit 0
+fi
+undated="$(jq -r '[.[] | select((.at_cap | not) and .head_committed_at == null) | "#\(.number)"] | join(" ")' <<<"$prs" 2>/dev/null || true)"
+if [[ -n "$undated" ]]; then
+  echo "gather-abandoned-drafts: $slug $undated: the head commit's date could not be read, so last real activity cannot be computed; excluded this cycle" >&2
+fi
+
 # Last-real-activity, then the cutoff: the latest of the head commit's
 # `committedDate`, every review's `submittedAt` and every comment's
 # `createdAt`, *excepting* any review or comment whose body carries our own
@@ -238,17 +300,17 @@ fi
 # and `gh pr review --comment` are two ways of writing the same note and the
 # Reviewer may use either, so a marker that only worked in one of them would
 # leave the pipeline resetting its own clock through the other. A PR with no
-# computable activity — no commit, or flagged `at_cap` above — is dropped
-# rather than treated as infinitely stale, and the explicit `!= null` guard
-# below is what does the dropping — do not remove it as redundant. jq sorts
-# `null` *below* every string, so a null activity satisfies
+# computable activity — no readable head-commit date, or flagged `at_cap`
+# above — is dropped rather than treated as infinitely stale, and the explicit
+# `!= null` guards below are what do the dropping — do not remove either as
+# redundant. jq sorts `null` *below* every string, so a null activity satisfies
 # `$activity < $cutoff` on its own: without the guard a malformed API response
 # would make the PR look maximally stale and this source would hand a human's
 # live work to an Implementor to force-push over.
 prs="$(jq -c --arg cutoff "$cutoff" --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" '
   [.[]
-   | (if .at_cap then null
-      else (([ (.commits[-1].committedDate // empty) ]
+   | (if .at_cap or .head_committed_at == null then null
+      else (([ .head_committed_at ]
              + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
              + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
             | max)
@@ -264,7 +326,7 @@ out='[]'
 while IFS= read -r pr; do
   [[ -n "$pr" ]] || continue
   number="$(jq -r '.number' <<<"$pr")"
-  head_sha="$(jq -r '.commits[-1].oid // ""' <<<"$pr")"
+  head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || continue
 
   # The originating item, so the Implementor can find the tech-debt entry, issue,

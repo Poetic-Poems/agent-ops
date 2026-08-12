@@ -42,87 +42,100 @@ assert_eq() {
 
 # --- The candidate filter: which draft PRs are ours to finish? ---
 
-# The shape `gh pr list --json
-# number,title,headRefName,commits,isDraft,updatedAt,url,body,comments,reviews`
+# The shape the gatherer works on: what `gh pr list --json
+# number,title,headRefName,headRefOid,isDraft,updatedAt,url,body,comments,reviews`
 # returns (the `--label` filter is applied by gh, so every row here already
-# carries pr_label). `cutoff` is `now − stale-hours`; a PR is abandoned when its
-# **last real activity** — not its raw `updatedAt` — is older than it.
+# carries pr_label), with `head_committed_at` annotated onto each row from the
+# one REST call the gatherer makes per surviving candidate — `GET
+# /repos/<slug>/commits/<headRefOid>`, read as `.commit.committer.date`.
+#
+# The listing no longer asks for the whole `commits` collection. It cost 31
+# GraphQL points a call against a repository with three open pull requests —
+# `gh` requests `commits(last: 100)` in each of the `--limit` slots and GitHub
+# charges for nodes asked for, not returned — and that is how the fleet
+# exhausted its hourly budget on 2026-08-12. The head sha now arrives as the
+# scalar `headRefOid` for 1 point, and the head commit's date, which this
+# computation needs and a sha alone does not give, comes from REST.
+#
+# `cutoff` is `now − stale-hours`; a PR is abandoned when its **last real
+# activity** — not its raw `updatedAt` — is older than it.
 cutoff='2026-07-24T09:00:00Z'
 marker='<!-- agent-ops:pipeline-comment'
 # shellcheck disable=SC2016  # the backtick in #94's fixture body is literal Markdown, not command substitution
 prs='[
   {"number": 80, "isDraft": true,  "headRefName": "agent/td1-fix",
-   "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a1"}], "reviews": [], "comments": []},
+   "head_committed_at": "2026-07-24T03:00:00Z", "headRefOid": "a1", "reviews": [], "comments": []},
   {"number": 81, "isDraft": false, "headRefName": "agent/td2-fix",
-   "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a2"}], "reviews": [], "comments": []},
+   "head_committed_at": "2026-07-24T03:00:00Z", "headRefOid": "a2", "reviews": [], "comments": []},
   {"number": 82, "isDraft": true,  "headRefName": "agent/td3-fix",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a3"}], "reviews": [],
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a3", "reviews": [],
    "comments": [{"createdAt": "2026-07-24T11:00:00Z", "body": "still working on this"}]},
   {"number": 83, "isDraft": true,  "headRefName": "feature/a-humans-branch",
-   "commits": [{"committedDate": "2026-07-24T03:00:00Z", "oid": "a4"}], "reviews": [], "comments": []},
+   "head_committed_at": "2026-07-24T03:00:00Z", "headRefOid": "a4", "reviews": [], "comments": []},
   {"number": 84, "isDraft": true,  "headRefName": "td/TD26072001",
-   "commits": [{"committedDate": "2026-07-24T01:00:00Z", "oid": "a5"}], "reviews": [], "comments": []},
+   "head_committed_at": "2026-07-24T01:00:00Z", "headRefOid": "a5", "reviews": [], "comments": []},
   {"number": 85, "isDraft": true,  "headRefName": "agent/label-edit-only",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a6"}], "reviews": [], "comments": []},
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a6", "reviews": [], "comments": []},
   {"number": 86, "isDraft": true,  "headRefName": "agent/marker-comment-only",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a7"}], "reviews": [],
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a7", "reviews": [],
    "comments": [{"createdAt": "2026-07-28T21:00:00Z",
                  "body": "Autonomous agent (implementor) stopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}]},
   {"number": 87, "isDraft": true,  "headRefName": "agent/human-comment-recent",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a8"}], "reviews": [],
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a8", "reviews": [],
    "comments": [{"createdAt": "2026-07-28T21:00:00Z", "body": "any update on this?"}]},
   {"number": 88, "isDraft": true,  "headRefName": "agent/human-review-recent",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "a9"}],
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "a9",
    "reviews": [{"submittedAt": "2026-07-28T21:00:00Z"}], "comments": []},
   {"number": 89, "isDraft": true,  "headRefName": "agent/marker-review-only",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b1"}],
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "b1",
    "reviews": [{"submittedAt": "2026-07-28T21:00:00Z",
                 "body": "Flagging a design choice for the human reviewer. <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 -->"}],
    "comments": []},
   {"number": 94, "isDraft": true,  "headRefName": "agent/marker-comment-with-actor",
-   "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b6"}], "reviews": [],
+   "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "b6", "reviews": [],
    "comments": [{"createdAt": "2026-07-28T21:00:00Z",
                  "body": "**Implementor** · autonomous pipeline · node `poetic-1`\n\nStopped on this PR: … <!-- agent-ops:pipeline-comment cycle=20260728T210000Z-node-1-99 actor=implementor -->"}]}
 ]'
 
 # gh's nested collections arrive capped at 100 items, unpaginated, and
 # `comments` oldest-first — so a collection at exactly the cap may be missing
-# the newest activity, and at the commits cap `[-1]` is not the head. These
-# fixtures are appended with jq because writing a hundred rows out longhand
-# would bury the point. Every date *visible* on #90–#92 is stale; the point is
-# that at the cap what is visible cannot be trusted, so the PR must not be
-# judged at all. #93 is the boundary contrast: one under the cap, the data is
-# complete, and judgement resumes.
+# the newest activity. These fixtures are appended with jq because writing a
+# hundred rows out longhand would bury the point. Every date *visible* on
+# #90–#91 is stale; the point is that at the cap what is visible cannot be
+# trusted, so the PR must not be judged at all. #92 is the other way the same
+# thing happens — a head commit whose date could not be read, which the
+# gatherer leaves as a null `head_committed_at`. #93 is the boundary contrast:
+# one under the cap, the data is complete, and judgement resumes.
 prs="$(jq -c '
   . + [{"number": 90, "isDraft": true, "headRefName": "agent/comments-at-cap",
-        "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b2"}], "reviews": [],
+        "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "b2", "reviews": [],
         "comments": [range(100) | {"createdAt": "2026-07-20T01:00:00Z", "body": "old chatter"}]},
        {"number": 91, "isDraft": true, "headRefName": "agent/reviews-at-cap",
-        "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b3"}],
+        "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "b3",
         "reviews": [range(100) | {"submittedAt": "2026-07-20T01:00:00Z", "body": "old review"}],
         "comments": []},
-       {"number": 92, "isDraft": true, "headRefName": "agent/commits-at-cap",
-        "commits": [range(100) | {"committedDate": "2026-07-20T00:00:00Z", "oid": "b4"}],
+       {"number": 92, "isDraft": true, "headRefName": "agent/head-commit-unreadable",
+        "head_committed_at": null, "headRefOid": "b4",
         "reviews": [], "comments": []},
        {"number": 93, "isDraft": true, "headRefName": "agent/comments-under-cap",
-        "commits": [{"committedDate": "2026-07-20T00:00:00Z", "oid": "b5"}], "reviews": [],
+        "head_committed_at": "2026-07-20T00:00:00Z", "headRefOid": "b5", "reviews": [],
         "comments": [range(99) | {"createdAt": "2026-07-20T01:00:00Z", "body": "old chatter"}]}]' <<<"$prs")"
 
 # Mirrors the computation in scripts/gather-abandoned-drafts.sh: the
-# draft/branch filter first, then last-real-activity (latest commit, or review
-# or comment not carrying the marker) against the cutoff — unless any nested
-# collection is at gh's 100-item cap, in which case activity is uncomputable
-# and the PR is excluded outright.
+# draft/branch filter first, then last-real-activity (the head commit's date,
+# or a review or comment not carrying the marker) against the cutoff — unless
+# either nested collection is at gh's 100-item cap or the head commit's date
+# could not be read, in which case activity is uncomputable and the PR is
+# excluded outright.
 candidate_filter() {
   jq -c --arg cutoff "$cutoff" --arg marker "$marker" \
     '[.[] | select(.isDraft)
           | select((.headRefName | startswith("agent/"))
                    or (.headRefName | startswith("td/")))
-          | (if ((((.commits  // []) | length) >= 100)
-                 or (((.reviews  // []) | length) >= 100)
-                 or (((.comments // []) | length) >= 100))
-             then null
-             else (([ (.commits[-1].committedDate // empty) ]
+          | (((((.reviews  // []) | length) >= 100)
+              or (((.comments // []) | length) >= 100))) as $at_cap
+          | (if $at_cap or .head_committed_at == null then null
+             else (([ .head_committed_at ]
                     + [ (.reviews // [])[] | select((.body // "") | contains($marker) | not) | .submittedAt ]
                     + [ (.comments // [])[] | select((.body // "") | contains($marker) | not) | .createdAt ])
                    | max)
@@ -206,22 +219,30 @@ assert_eq "a marked review and an unmarked one at the same timestamp differ" \
 
 # --- gh's nested-collection cap: at-cap data is missing data ---
 #
-# `gh pr list` caps `commits`, `reviews` and `comments` at 100 items each,
-# unpaginated, and `comments` arrives oldest-first — so on a PR past the cap
-# the response holds the *oldest* writes and the newest are absent. Every date
-# visible on #90–#92 is stale, and each would be a candidate if judged; the
-# rule is that at the cap the PR is not judged at all, because a human's
-# comment posted yesterday could be precisely the entry the cap cut off — and
-# stealing that draft is the failure the script's header names as the one to
-# avoid. #92 is the same rule for commits, where `[-1]` at the cap is the
-# hundredth commit, not the head. The exclusion is deliberate and costs
-# something real: a genuinely abandoned draft carrying 100 of anything waits
-# for a human instead of being auto-finished. That is the safe direction.
+# `gh pr list` caps `reviews` and `comments` at 100 items each, unpaginated,
+# and `comments` arrives oldest-first — so on a PR past the cap the response
+# holds the *oldest* writes and the newest are absent. Every date visible on
+# #90–#92 is stale, and each would be a candidate if judged; the rule is that
+# at the cap the PR is not judged at all, because a human's comment posted
+# yesterday could be precisely the entry the cap cut off — and stealing that
+# draft is the failure the script's header names as the one to avoid. The
+# exclusion is deliberate and costs something real: a genuinely abandoned draft
+# carrying 100 of anything waits for a human instead of being auto-finished.
+# That is the safe direction.
+#
+# #92 is the same rule reached the other way. `commits` needed a cap check of
+# its own while it was read, because at the cap `commits[-1]` was the hundredth
+# commit rather than the head; `headRefOid` is the head at any branch length,
+# so that clause is gone. What replaces it is the failure the REST head-commit
+# fetch can have: an unreadable date, left as null. The guard is load-bearing —
+# jq sorts null below every string, so without it #92's activity would be null,
+# `null < $cutoff` would hold, and a draft a human pushed to minutes ago would
+# be handed to an Implementor to force-push over.
 assert_eq "comments at gh's 100-item cap: the newest may be missing, so the PR is never judged" \
   "false" "$(is_candidate 90)"
 assert_eq "reviews at the cap are excluded the same way" \
   "false" "$(is_candidate 91)"
-assert_eq "commits at the cap: [-1] is not the head, so the PR is excluded too" \
+assert_eq "an unreadable head-commit date excludes the PR, never reads as maximally stale" \
   "false" "$(is_candidate 92)"
 assert_eq "one under the cap, the data is complete and the draft is judged normally" \
   "true" "$(is_candidate 93)"
