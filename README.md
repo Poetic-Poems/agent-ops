@@ -289,6 +289,7 @@ Keys:
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Only `issues` and the sources fetched as structured data reach the Refiner's own engagement; `tech-debt`, `project-review` and `implementation-plan` still honour a policy in the Co-Ordinator's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked`. |
+| `void_retire_after_days` | `30` days | Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
@@ -967,6 +968,19 @@ Both are listed on the dashboard. The void list only ever grows, so it is shown
 short: the ten newest rows, each three lines tall, with **See more** at the foot
 of the table for the older ones and any row opening to its full reason when you
 click it. The heading counts every void item however few rows are showing.
+
+The dashboard's own list — and the item's void mark itself — never shrink; what
+does is the copy the pipeline hands the Co-Ordinator each cycle. Once a void is
+both settled — its issue or pull request closed, or its tech-debt row read
+`resolved`/`not-debt` — and `void_retire_after_days` old (30 by default), it
+drops out of that copy: there is nothing left for the pipeline to keep
+repeating to itself about an item everyone has already finished with. `0`
+switches this off. A retirement is recorded in the pipeline's own log, so a
+settled verdict is never re-checked against GitHub — and once an item has
+retired, reopening its closed issue or pull request is enough by itself to
+put it back in front of the pipeline as a fresh, ordinary candidate; the
+`unvoided` label below is the route that works while the void is still being
+carried.
 
 To reopen a void item — you believe the work has genuinely regressed, or the
 verdict was wrong — **label any issue or pull request that names the item with

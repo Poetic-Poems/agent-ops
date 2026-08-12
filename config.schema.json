@@ -441,6 +441,20 @@
         "spec": "The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's \"only a human may clear a void\" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`."
       }
     },
+    "void_retire_after_days": {
+      "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 30,
+      "x-docs": {
+        "readme": "Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement.",
+        "spec": "How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item.",
+        "value": {
+          "readme": "`30` days",
+          "spec": "30 d"
+        }
+      }
+    },
     "prompt_overrides": {
       "description": "Per-installation prompt extension or replacement, so house rules survive an update instead of forking prompts/. A relative path resolves against `state_dir`. Absent, or a stage absent from it, reproduces the shipped prompt byte for byte.",
       "type": "object",
