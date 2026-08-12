@@ -101,16 +101,19 @@
 # the branch name), strictly newer target version. When set, `superseded_evidence`
 # is pre-formatted so a Co-Ordinator can paste it into a `voided` entry's
 # `evidence` **verbatim** rather than composing its own citation: the guard
-# that corroborates a void (lib/void-guard.sh) treats "PR #N" in evidence text
-# as a claim that PR *implements* the item, and checks the cited PR's body and
-# branch for the item's own id — which the superseding PR will never carry
-# (it is a different, independent bump). Citing this PR's *own* number is what
-# the guard trusts on the id alone for a `pr-<n>-…` item cited in the entry's
-# own repo, as a bare citation always is (its id is minted from that very
-# PR), so the pre-formatted text below cites this PR's
-# number for that reason and names the superseding PR only by URL, never as
-# "PR #N" — precise, not evasive: the claim being corroborated is "this PR
-# (its own number) is superseded", not "that PR did this PR's work".
+# that corroborates a void (lib/void-guard.sh) treats "PR #N" — bare, or as a
+# `.../pull/N` URL, either one resolved live (issue #300) — as a claim that PR
+# *implements* the item, and checks its body and branch for the item's own id
+# — which the superseding PR will never carry (it is a different, independent
+# bump). Citing this PR's *own* number is what the guard trusts on the id
+# alone for a `pr-<n>-…` item cited in the entry's own repo, as a bare
+# citation always is (its id is minted from that very PR), so the
+# pre-formatted text below cites this PR's number for that reason and names
+# the superseding PR only by its branch name — neither "PR #N" nor a
+# `.../pull/N` URL, both of which the guard would fetch live and refuse, since
+# a different, independent bump never carries this item's id — precise, not
+# evasive: the claim being corroborated is "this PR (its own number) is
+# superseded", not "that PR did this PR's work".
 #
 # ## Why mergeability must be sampled here, and fed to the fingerprint verbatim
 #
@@ -230,13 +233,12 @@ emit() {  # <pr-json> <bot: true|false>
     fi
     superseded_by="$(dependabot_newer_open_pr "$number" "$(jq -r '.headRefName' <<<"$pr")" "$dependabot_open")"
     if [[ -n "$superseded_by" ]]; then
-      local sup_url sup_head family version sup_version
-      sup_url="$(jq -r --arg n "$superseded_by" '.[] | select((.number|tostring) == $n) | .url' <<<"$dependabot_open")"
+      local sup_head family version sup_version
       sup_head="$(jq -r --arg n "$superseded_by" '.[] | select((.number|tostring) == $n) | .headRefName' <<<"$dependabot_open")"
       family="$(dependabot_bump_family "$(jq -r '.headRefName' <<<"$pr")")"
       version="$(dependabot_bump_version "$(jq -r '.headRefName' <<<"$pr")")"
       sup_version="$(dependabot_bump_version "$sup_head")"
-      superseded_evidence="PR #${number}'s own branch (${family} at ${version}) is superseded: a newer open Dependabot pull request, ${sup_url}, bumps the same dependency to ${sup_version}. Both cannot land — the older bump (this PR) is redundant now that the newer one exists."
+      superseded_evidence="PR #${number}'s own branch (${family} at ${version}) is superseded: a newer open Dependabot pull request on branch ${sup_head} bumps ${family} to ${sup_version}. Both cannot land — the older bump (this PR) is redundant now that the newer one exists."
     fi
   fi
 

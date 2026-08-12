@@ -217,6 +217,10 @@ assert_contains_json "  ... the pre-formatted evidence cites this PR's own numbe
   "PR #129" "$(jq -r '.[0].superseded_evidence' <<<"$out")"
 assert_eq "  ... and never writes '#135' with a PR/pull-request prefix (would fail void-guard corroboration)" \
   "0" "$(jq -r '.[0].superseded_evidence' <<<"$out" | grep -ciE '(pr|pull request)[[:space:]]*#135' || true)"
+assert_eq "  ... and never writes #135's URL either (issue #300: the guard now resolves URL citations live too)" \
+  "0" "$(jq -r '.[0].superseded_evidence' <<<"$out" | grep -c 'https://github.com/o/r/pull/135' || true)"
+assert_contains_json "  ... naming #135 by its branch name instead, which the guard's extractors do not match" \
+  "dependabot/npm_and_yarn/eslint-10.9.0" "$(jq -r '.[0].superseded_evidence' <<<"$out")"
 
 # --- A marker comment scoped to the current head makes it rebase_requested ---
 cat > "$tmp_dir/dependabot.json" <<'JSON'

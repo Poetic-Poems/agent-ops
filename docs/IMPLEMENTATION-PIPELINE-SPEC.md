@@ -1524,12 +1524,13 @@ runs unattended.
      `voided` entry. It names this PR's own number as "PR #N" (which
      `lib/void-guard.sh`'s `void_pr_matches_item` trusts on the id alone for a
      `pr-<n>-…` item cited in the entry's own repo, as a bare citation always
-     is — the id is minted from that very PR) and the superseding
-     PR only by URL, never as "PR #M" (which the guard would fetch and refuse,
-     since a different, independent bump will never carry this item's id in
-     its own body or branch). This is the one piece of free-text evidence in
-     the whole pipeline a writer must not compose itself — see the "Dependabot's
-     own conflicted PRs" entry in Design decisions.
+     is — the id is minted from that very PR) and the superseding PR only by
+     its branch name — never as "PR #M" and never by its URL (both of which
+     the guard resolves live and would refuse, since a different, independent
+     bump will never carry this item's id in its own body or branch). This is
+     the one piece of free-text evidence in the whole pipeline a writer must
+     not compose itself — see the "Dependabot's own conflicted PRs" entry in
+     Design decisions.
 
    The write side is `scripts/nudge-dependabot-rebase.sh` (requirement 3s
    continued below); the read side above computes every field fresh each
@@ -7658,17 +7659,22 @@ requirements above, which state only what is.
   nudged or taken over, through the *existing* act-on-void path
   (`close-void-github-items.sh`, WI-4) rather than a new closing mechanism —
   the one piece of care that path needed was the evidence text: void
-  corroboration (`lib/void-guard.sh`) reads "PR #N" in evidence as a claim
-  that PR *implements* the item, and would fetch a cited superseding PR and
-  correctly refuse it (a different, independent bump will never carry the
-  superseded item's id). So `gather-merge-conflicts.sh` pre-formats the
-  evidence itself, citing the superseded PR's *own* number — which the guard
-  trusts on the id alone for a `pr-<n>-…` item cited in the entry's own repo,
-  as a bare citation always is (issue #290) — and naming the
-  superseding PR only by URL. A Co-Ordinator composing its own sentence
-  naming "PR #135" instead would have every such void refused, silently,
-  forever; pre-formatting the one sentence that must not vary was cheaper
-  than teaching every future writer the distinction.
+  corroboration (`lib/void-guard.sh`) reads "PR #N" — bare, or as a
+  `.../pull/N` URL — in evidence as a claim that PR *implements* the item,
+  fetches whichever form a cited superseding PR uses, and correctly refuses
+  it (a different, independent bump will never carry the superseded item's
+  id). So `gather-merge-conflicts.sh` pre-formats the evidence itself, citing
+  the superseded PR's *own* number — which the guard trusts on the id alone
+  for a `pr-<n>-…` item cited in the entry's own repo, as a bare citation
+  always is (issue #290) — and naming the superseding PR only by its branch
+  name, never as "PR #M" and never by URL (issue #300: PR #281 taught the
+  guard to resolve a URL citation live too, so citing the superseding PR by
+  URL started failing the same live body/branch test a bare "PR #M" always
+  did — the branch name is the one description of it neither extractor
+  matches at all). A Co-Ordinator composing its own sentence naming "PR #135"
+  instead would have every such void refused, silently, forever;
+  pre-formatting the one sentence that must not vary was cheaper than
+  teaching every future writer the distinction.
 - **The void guard's finishing-source id shortcut is slug-gated, and an entry
   naming no repo falls through rather than refuses.** PR #281 made URL
   citations resolve against the `owner/repo` the URL itself names, which
