@@ -36,7 +36,8 @@
 #
 # The inputs, and what covers each:
 #
-#   tech-debt, implementation-plan, project-review, code | head_sha
+#   implementation-plan, project-review, code             | head_sha
+#   tech-debt                                            | tech_debt (verbatim)
 #   security, code-quality                               | findings (verbatim)
 #   review-feedback                                      | review_feedback (verbatim)
 #   merge-conflicts                                      | merge_conflicts (verbatim)
@@ -122,6 +123,16 @@
 # here samples. Without this line a violation appearing, or quietly
 # resolving, would sit unnoticed behind a matching fingerprint until the
 # forced recheck.
+#
+# `tech_debt` (requirement 3t, issue #310) is hashed verbatim for the same
+# weaker-but-still-real reason as `register_hygiene`: an item's `status:`
+# frontmatter changes only on a commit to the target repo, which already moves
+# `head_sha`, so there is no transition here that `head_sha` alone would sleep
+# through. It is hashed anyway for uniformity, and because this array is what
+# lets requirement 3t's machine corroboration compare the Co-Ordinator's verdict
+# against the Script's own eligible count — a fingerprint that dropped this
+# array could match an old none-selected event from before a blocked or void
+# item's exclusion changed which items were even offered.
 #
 # `issues` (the pre-fetched array of requirement 3j) is hashed verbatim, and
 # it is the only cover for one real transition: an *edit* to an existing
@@ -229,6 +240,7 @@ NOOP_CANON_JQ='
         abandoned_drafts: (.abandoned_drafts // []),
         register_hygiene: (.register_hygiene // []),
         human_visibility: (.human_visibility // []),
+        tech_debt: (.tech_debt // []),
         issues_prefetched: (.issues // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),
