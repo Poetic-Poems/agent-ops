@@ -87,6 +87,7 @@ fi
 # it reads, executes it under the same `set -euo pipefail` agent-cycle.sh runs
 # under, and prints the resulting `ordered_repos_json` followed by a `--` line
 # and one line per slug the gatherer was called with (in call order).
+# shellcheck disable=SC2016  # The harness's own `$1`/`$2`/`$ordered_repos_json`, written out literally for it to expand, not this shell's.
 run_block() {
   local violations="$1" repos="$2" gathered="$3" harness="$tmp_dir/harness.sh"
   : > "$tmp_dir/calls"
