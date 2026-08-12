@@ -46,8 +46,15 @@
 # non-zero status, because the caller is a cycle under `set -e` that is about to
 # record state, and a torn request must not be what stops it.
 unvoid_clearances() {
-  local requests="${1:-[]}" voids="${2:-[]}" out
-  out="$(jq -nc --argjson reqs "$requests" --argjson voids "$voids" '
+  local requests="${1:-[]}" voids="${2:-[]}" out docs
+  # Both arrays arrive on stdin, one document per line, never in argv
+  # (requirement 4g): the void extract is unbounded, and past MAX_ARG_STRLEN
+  # an `--argjson` delivery makes this call fail into its `|| true` — the
+  # label silently stops working fleet-wide, which is this file's own
+  # "escape hatch nobody can reach" defect all over again.
+  docs="$requests"$'\n'"$voids"
+  out="$(jq -nc '
+    input as $reqs | input as $voids |
     [ $reqs[]
       | . as $r
       | ($r.items // [])[]
@@ -63,7 +70,7 @@ unvoid_clearances() {
             number: ($r.number // null),
             void_ts: (.ts // ""), void_reason: (.detail // "")})
     ]
-    | unique_by(.repo + "|" + .item)' 2>/dev/null || true)"
+    | unique_by(.repo + "|" + .item)' <<<"$docs" 2>/dev/null || true)"
   [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
   printf '%s' "$out"
 }
