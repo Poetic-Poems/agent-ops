@@ -384,7 +384,9 @@ def cycle_obj($cid; $ev; $manifest_idx; $cap):
           # before its outcome was decided — a stand-down `cause` of "raced"
           # (every candidate lost, exit 0 empty-handed) or a `claim-lost`
           # (cause "held") on a candidate this cycle then moved past to reach
-          # whatever `outcome` below records. `raced` with an `outcome` other
+          # whatever `outcome` below records. A `claim-skipped` (cause
+          # "pre-claimed", spec 17a) is deliberately neither: no peer raced
+          # this cycle for anything, so it must not light this badge. `raced` with an `outcome` other
           # than "stand-down" is a *recovered* race: the fleet contended for
           # the top candidate and this cycle still did the next one's work,
           # rather than forfeiting the cycle outright.
@@ -466,7 +468,8 @@ tab="$(printf '\t')"
 # is what keeps data.js near its single-node size, and the aggregate must not
 # grow with what it counts. The match is those exact event shapes: a cycle
 # that logged anything else — a `claim-lost` race (17d's badge lives on that
-# row), an `unvoided`, a kill that cost it its `cycle-end` — carries
+# row), a `claim-skipped` (a pre-claimed stand-down is a selection defect,
+# not a no-op), an `unvoided`, a kill that cost it its `cycle-end` — carries
 # information and keeps its row.
 noop_cycles_file="$work_tmp/noop-cycles.json"
 jq -c --arg re "$cycle_id_re" '

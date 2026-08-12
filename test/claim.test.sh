@@ -56,13 +56,15 @@ d="${GH_STUB_DIR:?}"
 
 if [[ "${1:-}" == "pr" ]]; then printf '%s\n' "${GH_STUB_PRS:-0}"; exit 0; fi
 
-method=GET; path=""; jqf=""; declare -A f=()
+method=GET; path=""; jqf=""; slurp=0; declare -A f=()
 args=("$@")
 for (( i=0; i<${#args[@]}; i++ )); do
   case "${args[i]}" in
     -X)   method="${args[i+1]}"; (( i++ )) ;;
     -f)   kv="${args[i+1]}"; f["${kv%%=*}"]="${kv#*=}"; (( i++ )) ;;
     --jq) jqf="${args[i+1]}"; (( i++ )) ;;
+    --paginate) ;;
+    --slurp) slurp=1 ;;
     repos/*) path="${args[i]}" ;;
   esac
 done
@@ -125,6 +127,9 @@ case "$method $path" in
       && find . -type f 2>/dev/null | sed 's|^\./||' | grep "^${prefix}" \
       | jq -R '{ref: ("refs/heads/" + .)}' | jq -sc '.')"
     [[ -n "$out" ]] || out='[]'
+    # --slurp wraps each page's array in an outer array, exactly as gh does;
+    # the stub is a single page, so the wrap is one level deep.
+    (( slurp )) && out="[$out]"
     emit "$out"; exit 0 ;;
 esac
 exit 1

@@ -1808,6 +1808,32 @@ runs unattended.
    filter ran (a peer's cycle overlapping this one) is still possible, and
    requirement 17a's PR-keyed claim is what actually excludes it, fleet-wide,
    the same create-only way every other claim does.
+3q. **Item-level candidate exclusion.** The same deterministic-code-not-
+   model-judgement decision as 3p, extended from PR numbers to item refs and
+   from the three finishing sources to every array the Script pre-fetches:
+   for each repo, before its `issues`, `findings`, `register_hygiene`,
+   `review_feedback`, `merge_conflicts` and `abandoned_drafts` arrays are
+   assembled into the runtime input, the Script drops any entry whose `ref`
+   — the exact string a claim on that item is keyed on, minted by every
+   gather script by construction — appears among that repo's freshly
+   gathered `claimed` items. What remains of the prompt's claimed-item
+   exclusion is only the sources the Co-Ordinator derives itself (tech-debt,
+   project-review, failed-runs, implementation-plan), which have no
+   pre-fetched array to filter.
+
+   The incident that makes this a requirement rather than a tidy-up: on
+   2026-08-09 a Co-Ordinator read four issues as "claimed in the live
+   branches" — the `claimed` array had done its job perfectly — then
+   reasoned that claimed items still make good alternates because the
+   Script's claim is atomic anyway, ranked three of them, and the cycle
+   lost all three claims and stood down, repeatedly, across most of a day.
+   Visibility was never the gap; the judgement step was. An item filtered
+   out before the model sees it cannot be reasoned past.
+
+   Like 3p, this is a visibility layer, not the hard gate: requirement 17a's
+   atomic claim still arbitrates anything that lands in the gather-to-claim
+   window, and 17a's pre-claim skip is the same principle applied on the
+   claim side for the derived sources this filter cannot reach.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -2663,10 +2689,20 @@ runs unattended.
       disables chaining outright.
 
     Never chains on `--once` (a human or a test asked for exactly one
-    cycle) or past any stand-down, the switch, or a cycle that selected
-    nothing — all of those end before a claim is ever won, so
-    `chain_eligible` (set only once a claim succeeds) is never true for
-    them. Nor does it chain over an untrapped crash or a signal: the gate
+    cycle) or past any stand-down before the claim section, the switch, or
+    a cycle that selected nothing — all of those end before a claim is ever
+    attempted, so `chain_eligible` is never true for them. One stand-down
+    *inside* the claim section does chain, under the same two conditions
+    above: the `raced` stand-down (17a), where every attempted claim was
+    lost to a peer. That cycle's Co-Ordinator engagement bought the
+    knowledge that the fleet is busy, not that it is done — and the
+    winners' claims, invisible when this cycle gathered, are exactly what
+    the chained cycle's fresh gather and requirement 3q's filters see, so
+    the continuation is routed to the next-best item instead of the same
+    fight. The `unreachable` and `pre-claimed` stand-downs never chain: a
+    fresh cycle against the same outage, or the same selection defect,
+    buys a second engagement and the same empty-handed ending.
+    Nor does it chain over an untrapped crash or a signal: the gate
     is `chain_eligible` *and* this cycle's own `exit_code == 0`, checked in
     `cleanup` (11) after everything else there has already run — the lock
     released, the Enabler engaged, `cycle-end` logged, state pushed. Every
@@ -2692,7 +2728,13 @@ runs unattended.
     `"unreachable"`) before it won its own claim, or — on the cycle that
     exhausts every candidate — before it stood down. Carried as
     `race_losses` on the `selection` event (only when it is greater than
-    zero — 17a) and on that stand-down's event.
+    zero — 17a) and on that stand-down's event. Candidates skipped as
+    pre-claimed (17a's `claim-skipped`) are deliberately *not* race
+    losses and never inflate this count: a loss knowable from the cycle's
+    own gather is a selection defect wearing contention's clothes, and
+    folding it in would make the fleet look busier against itself than it
+    is — the miscounting that let a day of one Co-Ordinator re-proposing
+    four already-claimed issues read as healthy racing.
     A cycle recovering a race (winning after one or more losses) is
     healthy contention, not a fault: `scripts/publish-dashboard.sh` and
     `dashboard/index.html` surface it as an informational "recovered race
@@ -3066,6 +3108,17 @@ runs unattended.
       that died mid-cycle must not hold its item forever); every cycle runs
       the sweep at start (2.1a), so a dead node's claims outlive it by at
       most the TTL plus one cycle interval.
+    - A candidate this cycle's own gather already saw claimed is **skipped
+      without an attempt**: the Script checks each candidate's repo+item
+      (raw, and in its branch-sanitised form) against the claims gathered
+      for requirement 3o before spending a claim call on it, logs
+      `claim-skipped` with `cause: "pre-claimed"`, and moves to the next
+      candidate. The attempt would lose anyway — but a loss knowable from
+      data already in hand is not contention, it is the Co-Ordinator
+      proposing claimed work (requirement 3q closes the pre-fetched
+      sources; this closes the derived ones), and counting it as a race
+      would corrupt the contention signal 17d exists to keep honest. Skips
+      count toward neither `claim_attempts` nor `race_losses`.
     - Claims **fail closed** per candidate: any outcome other than a won
       claim (a lost race, or GitHub unreachable) moves to the next
       candidate. Each miss logs `claim-lost` with a `cause` — `held` for
@@ -3085,10 +3138,19 @@ runs unattended.
       ("GitHub could not be reached for any candidate — this is an outage,
       not contention"), so a GitHub or token outage does not read as a fleet
       politely yielding to itself. A node that cannot reach GitHub to claim
-      could not have pushed the work either. This `stand-down` event also
-      carries the same distinction structured, as `cause` — `raced` or
-      `unreachable` — so a reader (the dashboard included) does not have to
-      re-parse the reason text (issue #245). A win that followed one or more
+      could not have pushed the work either. A cycle that attempted nothing
+      at all because every candidate was skipped as pre-claimed stands down
+      with reason "every candidate was already claimed before this cycle's
+      Co-Ordinator ran — skipped without an attempt". This `stand-down`
+      event also carries the same three-way distinction structured, as
+      `cause` — `raced`, `unreachable` or `pre-claimed` — so a reader (the
+      dashboard included) does not have to re-parse the reason text (issue
+      #245), plus `claim_skips` whenever any candidate was skipped, whatever
+      the cause. A `raced` stand-down chains another selection cycle under
+      requirement 39's ordinary bounds; `unreachable` and `pre-claimed`
+      never chain — re-running into the same outage or the same selection
+      defect buys a second Co-Ordinator engagement and the same ending.
+      A win that followed one or more
       `held` losses is a *recovered* race, not an ordinary first-try
       selection: the `selection` event that names the winning candidate
       additionally carries `race_losses`, the count of `held` losses that
@@ -3843,7 +3905,8 @@ runs unattended.
     appended only by the Script (agents report via their final messages; the
     Script translates those into log events). The lock in requirement 1
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
-    `stand-down`, `selection`, `claim-lost`, `none-selected`, `stage-start`,
+    `stand-down`, `selection`, `claim-lost`, `claim-skipped`, `none-selected`,
+    `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
