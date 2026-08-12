@@ -339,24 +339,30 @@ matching "When `source` is …" section above.)*
      cycle scanning PRs. There is no ledger to flip and no issue to comment on;
      do **not** modify the review folder — it is a point-in-time record.
    - **Register hygiene** (`source` of `register-hygiene`): the work order's
-     branch is the ordinary `agent/<item>` — `agent/register-hygiene-…` or
-     `agent/human-visibility-…`, depending on which of this source's two
-     kinds the item is — already pushed on your behalf. Name the ref (`item`)
-     in the PR body, along with the problem lines from `context`, so the claim
-     is visible to any other cycle scanning open PRs. There is no record to
-     flip and no issue to comment on: the item *is* the inconsistency, or the
-     violation, not an entry in a register.
+     branch is the ordinary `agent/<item>` — `agent/register-hygiene-…` —
+     already pushed on your behalf. Name the ref (`item`) in the PR body,
+     along with the problem lines from `context`, so the claim is visible to
+     any other cycle scanning open PRs. There is no record to flip and no
+     issue to comment on: the item *is* the register inconsistency, not an
+     entry in it.
+   - **Human visibility** (`source` of `human-visibility`): the work order's
+     branch is the ordinary `agent/<item>` — `agent/human-visibility-…` —
+     already pushed on your behalf. Name the ref (`item`) in the PR body,
+     along with the problem lines from `context`, so the claim is visible to
+     any other cycle scanning open PRs. There is no record to flip and no
+     issue to comment on: the item *is* the violation, not an entry in a
+     register.
 
-     A `human-visibility-…` item is **not** register editing and
-     `td-check.pl` has nothing to say about it. It reports that a human was
-     not shown a pull request — a review request or an idle nudge that could
-     not be delivered, or a repo whose open-pull-request listing could not be
-     read. Diagnose the named failure (start at
-     `scripts/sweep-human-visibility.sh` and `lib/handoff.sh`) and fix it if
-     the cause is in this repository. If it is not — a token's scopes, an
-     `enabler_assignee` who is not a collaborator, a GitHub outage since
-     passed — say so and report `blocked` with what you found. Do not invent
-     a repair, and do not close the item by making the symptom unobservable.
+     This is **not** register editing and `td-check.pl` has nothing to say
+     about it. It reports that a human was not shown a pull request — a
+     review request or an idle nudge that could not be delivered, or a repo
+     whose open-pull-request listing could not be read. Diagnose the named
+     failure (start at `scripts/sweep-human-visibility.sh` and
+     `lib/handoff.sh`) and fix it if the cause is in this repository. If it
+     is not — a token's scopes, an `enabler_assignee` who is not a
+     collaborator, a GitHub outage since passed — say so and report
+     `blocked` with what you found. Do not invent a repair, and do not close
+     the item by making the symptom unobservable.
    - Immediately after the PR exists, record its URL where the Script can
      always find it even if this session ends before your final message
      does: `echo "<pr-url>" > .git/agent-ops-pr-url`. `.git/` is never part
@@ -440,6 +446,10 @@ matching "When `source` is …" section above.)*
      fixed. Deliver exactly what the improvement prompt and `acceptance`
      describe; if the prompt turns out to depend on a decision only a human
      can make, report `"status": "blocked"` rather than guessing.
+   - Human visibility: there is no ledger to flip and no issue to comment
+     on — the violation itself is the item. Once your fix (or your diagnosis
+     that the cause lies outside the repository) lands, there is nothing
+     further to close.
    - Register hygiene: there is no originating record to close — the register
      itself is the item — but the repair has a discipline, and skipping it turns
      a tidy-up into a loss of information. The problem labels in `context`

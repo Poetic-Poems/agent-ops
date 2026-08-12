@@ -2,24 +2,32 @@
 #
 # test/gather-human-visibility-hygiene.test.sh — regression test for
 # scripts/gather-human-visibility-hygiene.sh (requirement 38e): turning a
-# still-live human-visibility violation into an ordinary `register-hygiene`
+# still-live human-visibility violation into an ordinary `human-visibility`
 # candidate, or dropping one a live re-check shows has already resolved.
 #
-# Three behaviours are asserted, and each fails silently if broken:
+# The behaviours asserted, each failing silently if broken:
 #
 #   - **No violations handed in is `[]`.** The ordinary answer almost every
 #     cycle gets — a repo with nothing recently logged against it.
 #   - **A violation that still reproduces live becomes exactly one candidate**,
-#     `source: "register-hygiene"` (so it is selected, branched and escaped
-#     exactly like the register-content candidate gather-register-hygiene.sh
-#     emits), with its own `human-visibility-<hash>` ref, never
-#     `register-hygiene-<hash>` — the two must never collide or share a block.
-#   - **A violation a live re-check shows has resolved is dropped**: a
-#     repo-level listing failure whose listing now succeeds, or a pull request
-#     that has since merged, closed, or gone to draft. An unreadable re-check
-#     is the one exception — kept, not dropped, on the same "never guess a
-#     read it could not make was clean" reasoning `sweep-human-visibility.sh`
-#     itself uses.
+#     `source: "human-visibility"` (its own source, issue #284's decision 2 —
+#     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
+#   - **The two warning classes are told apart (issue #284's decision 1).** A
+#     `could not request review from …` violation clears only once a human
+#     review is live or already given (`reviewRequests` non-empty, or
+#     `reviewDecision` of `APPROVED`/`CHANGES_REQUESTED`); a
+#     `could not post the idle nudge comment` violation — logged only against
+#     an already-`APPROVED` pull request — clears only once the
+#     `agent-ops:human-nudge` marker comment actually appears, never merely
+#     because the pull request is approved. Using the request-class check for
+#     both would silently drop every nudge-class warning on sight; this
+#     confirms it does not.
+#   - **A pull-request violation of any class is dropped once merged, closed
+#     or back in draft**, and a repo-level listing failure is dropped only
+#     once the listing itself succeeds live.
+#   - **An unreadable live re-check, or an unrecognised warning shape, keeps
+#     the violation** — the same "never guess a read it could not make was
+#     clean" reasoning `sweep-human-visibility.sh` itself uses.
 #
 # The script is run for real against a stubbed `gh`, so what is asserted is
 # the shipped script rather than a copy of its logic.
@@ -55,8 +63,11 @@ assert_eq() {
 #
 # `$STUB_LIST_RC` steers whether the repo-level listing re-check still fails
 # (nonzero) or now succeeds (0, the default). `$STUB_PR_STATE`/`$STUB_PR_DRAFT`
-# steer a named pull request's live state; `$STUB_VIEW_RC` set nonzero makes
-# the re-check itself unreadable, the fail-safe case.
+# steer a named pull request's live open/draft state; `$STUB_REVIEW_DECISION`
+# and `$STUB_REVIEW_REQUESTS` (nonzero means a pending request exists) steer
+# the request-class check; `$STUB_NUDGE_MARKER` (`yes`/`no`) steers whether
+# the nudge marker comment is present; `$STUB_VIEW_RC` set nonzero makes the
+# re-check itself unreadable, the fail-safe case.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -67,7 +78,12 @@ case "${1:-} ${2:-}" in
     ;;
   "pr view")
     (( "${STUB_VIEW_RC:-0}" == 0 )) || exit "$STUB_VIEW_RC"
-    printf '%s\t%s\n' "${STUB_PR_STATE:-OPEN}" "${STUB_PR_DRAFT:-false}"
+    reqs="[]"
+    [[ "${STUB_REVIEW_REQUESTS:-0}" == "0" ]] || reqs='[{"login":"reviewer"}]'
+    comments="[]"
+    [[ "${STUB_NUDGE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:human-nudge -->"}]'
+    printf '{"state":"%s","isDraft":%s,"reviewDecision":"%s","reviewRequests":%s,"comments":%s}\n' \
+      "${STUB_PR_STATE:-OPEN}" "${STUB_PR_DRAFT:-false}" "${STUB_REVIEW_DECISION:-}" "$reqs" "$comments"
     ;;
   *)
     echo "stub gh: unexpected call: $*" >&2
@@ -79,7 +95,9 @@ chmod +x "$tmp_dir/bin/gh"
 export PATH="$tmp_dir/bin:$PATH"
 
 repo_level='[{"repo":"o/a","pr_url":"","detail":"could not list o/a'"'"'s open pull requests — sweeping nothing","ts":"2026-08-08T01:00:00Z"}]'
-pr_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not request review from foo","ts":"2026-08-08T02:00:00Z"}]'
+request_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not request review from foo","ts":"2026-08-08T02:00:00Z"}]'
+nudge_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the idle nudge comment","ts":"2026-08-08T02:00:00Z"}]'
+unknown_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s state — skipping the idle check","ts":"2026-08-08T02:00:00Z"}]'
 
 # --- No input is [] ----------------------------------------------------------
 out="$(STUB_LIST_RC=0 "$GATHER" "o/a")"
@@ -88,14 +106,14 @@ out="$(STUB_LIST_RC=0 "$GATHER" "o/a" '[]')"
 assert_eq "an empty array is []" "[]" "$out"
 
 # --- Violations for a different repo are ignored ----------------------------
-out="$(STUB_LIST_RC=0 "$GATHER" "o/other" "$pr_level")"
+out="$(STUB_LIST_RC=0 "$GATHER" "o/other" "$request_level")"
 assert_eq "violations naming a different repo are ignored" "[]" "$out"
 
 # --- A repo-level violation whose listing still fails survives -------------
 out="$(STUB_LIST_RC=1 "$GATHER" "o/a" "$repo_level")"
 assert_eq "a still-failing listing survives" "1" "$(jq 'length' <<<"$out")"
-assert_eq "  ... source is register-hygiene" "register-hygiene" "$(jq -r '.[0].source' <<<"$out")"
-assert_eq "  ... ref is scoped to human-visibility, not register-hygiene" \
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
+assert_eq "  ... ref is human-visibility-prefixed" \
   "human-visibility-" "$(jq -r '.[0].ref' <<<"$out" | grep -o '^human-visibility-')"
 assert_eq "  ... names the repo in its problem line" \
   "1" "$(jq -r '.[0].problems | map(select(startswith("HUMAN VISIBILITY  o/a:"))) | length' <<<"$out")"
@@ -104,31 +122,68 @@ assert_eq "  ... names the repo in its problem line" \
 out="$(STUB_LIST_RC=0 "$GATHER" "o/a" "$repo_level")"
 assert_eq "a resolved listing is dropped" "[]" "$out"
 
-# --- A pull-request violation that is still open and not draft survives ----
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" "$pr_level")"
-assert_eq "a still-open, non-draft pull request survives" "1" "$(jq 'length' <<<"$out")"
-assert_eq "  ... naming the pull request" \
-  "https://github.com/o/a/pull/9" "$(jq -r '.[0].problems[0]' <<<"$out" | grep -o 'https://[^:]*')"
+# --- could_not_request: no live request and no review is still live --------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation with no live request survives" "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
-# --- A merged pull request is dropped ---------------------------------------
-out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" "$pr_level")"
+# --- could_not_request: a pending review request clears it -----------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=1 \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation with a pending request is dropped" "[]" "$out"
+
+# --- could_not_request: an approval clears it, even with no pending request
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation on an approved pull request is dropped" "[]" "$out"
+
+# --- could_not_request: changes-requested also proves the request worked ---
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUESTED STUB_REVIEW_REQUESTS=0 \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation on a changes-requested pull request is dropped" "[]" "$out"
+
+# --- could_not_post_nudge: absent marker survives, even though APPROVED ----
+# The pull request a nudge warning is logged against is always APPROVED (the
+# nudge's own gate) — asserting this survives is what proves the request-class
+# check is not being reused here; a shared check would drop it immediately.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+        STUB_NUDGE_MARKER=no "$GATHER" "o/a" "$nudge_level")"
+assert_eq "a nudge-class violation with no marker comment survives despite APPROVED" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_post_nudge: the marker comment appearing clears it ----------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+        STUB_NUDGE_MARKER=yes "$GATHER" "o/a" "$nudge_level")"
+assert_eq "a nudge-class violation is dropped once the marker comment appears" "[]" "$out"
+
+# --- An unrecognised warning shape survives while open and not draft -------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" "$unknown_level")"
+assert_eq "an unrecognised warning shape survives while open and not draft" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- A merged pull request is dropped regardless of class ------------------
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" "$request_level")"
 assert_eq "a merged pull request is dropped" "[]" "$out"
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" "$nudge_level")"
+assert_eq "a merged pull request is dropped (nudge class)" "[]" "$out"
 
 # --- A closed pull request is dropped ---------------------------------------
-out="$(STUB_PR_STATE=CLOSED STUB_PR_DRAFT=false "$GATHER" "o/a" "$pr_level")"
+out="$(STUB_PR_STATE=CLOSED STUB_PR_DRAFT=false "$GATHER" "o/a" "$request_level")"
 assert_eq "a closed pull request is dropped" "[]" "$out"
 
 # --- A pull request now back in draft is dropped ----------------------------
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=true "$GATHER" "o/a" "$pr_level")"
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=true "$GATHER" "o/a" "$request_level")"
 assert_eq "a draft pull request is dropped" "[]" "$out"
 
 # --- An unreadable re-check keeps the violation, fail-safe -----------------
-out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" "$pr_level")"
+out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" "$request_level")"
 assert_eq "an unreadable re-check keeps the violation" "1" "$(jq 'length' <<<"$out")"
 
 # --- A repo-level and a pull-request violation for the same repo combine ---
-both="$(jq -c -n --argjson a "$repo_level" --argjson b "$pr_level" '$a + $b')"
-out="$(STUB_LIST_RC=1 STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" "$both")"
+both="$(jq -c -n --argjson a "$repo_level" --argjson b "$request_level" '$a + $b')"
+out="$(STUB_LIST_RC=1 STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        "$GATHER" "o/a" "$both")"
 assert_eq "a repo-level and a pull-request violation combine into one candidate" \
   "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... with two problem lines" "2" "$(jq -r '.[0].problems | length' <<<"$out")"

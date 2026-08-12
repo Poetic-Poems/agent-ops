@@ -19,16 +19,14 @@
 # different repo are ignored, so a caller may hand this the whole fleet-wide
 # array without filtering first.
 #
-# Candidate shape (deliberately comparable to gather-register-hygiene.sh's
-# own, `source: "register-hygiene"` included, so the selection walk, the
-# branch derivation and the block/void escape hatch all treat it exactly like
-# any other register-hygiene item — no new selectable source. The shared
-# source is wiring, not meaning: prompts/coordinator.md and
-# prompts/implementor.md split their register-hygiene guidance on the `ref`
-# prefix below, because a work order for this kind carries a different
-# acceptance test, a different model tier and no `blob_sha`):
+# Candidate shape — its own source (issue #284's decision 2), not a
+# register-hygiene ref-prefix split: a violation here means finished work is
+# invisible to the human whose merge everything waits on, the same
+# "finishing beats starting" class `review-feedback`, `merge-conflicts` and
+# `abandoned-drafts` are, which register-hygiene's cosmetic-repair rationale
+# does not describe:
 #   {
-#     "source": "register-hygiene",
+#     "source": "human-visibility",
 #     "ref": "human-visibility-1a2b3c4d5e6f",  // scoped to THIS set of violations
 #     "url": "https://github.com/owner/repo/pulls",
 #     "problems": ["HUMAN VISIBILITY  https://github.com/…/pull/9: could not request review from foo"],
@@ -47,13 +45,57 @@
 # it again to log anything at all, one way or the other.
 #
 # So every violation handed in is re-checked against GitHub's live state before
-# it becomes a candidate: a repo-level listing failure only survives if the
-# listing still fails right now; a pull-request violation only survives if that
-# pull request is still open and not a draft. An answer this script cannot get
-# — `gh` itself unreachable for the re-check — is not read as "resolved": the
+# it becomes a candidate, read-only throughout (issue #284's decision 1: never
+# `confirm_review_requested` or `ensure_human_reviewer`, which POST) — a
+# repo-level listing failure only survives if the listing still fails right
+# now; a pull-request violation only survives if that pull request is still
+# open and not a draft, *and* its own warning class's own live signal still
+# says the violation holds (below). An answer this script cannot get — `gh`
+# itself unreachable for the re-check — is not read as "resolved": the
 # violation is kept, on the same reasoning `sweep-human-visibility.sh` itself
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
+#
+# ## Two warning classes, told apart
+#
+# `sweep-human-visibility.sh` logs two different per-pull-request warnings —
+# "could not request review from …" (the review-request POST itself failed)
+# and "could not post the idle nudge comment" (the nudge comment POST itself
+# failed) — and they clear on two different live facts. A single shared check
+# would get one of them wrong: every pull request a nudge warning is logged
+# against is, by the nudge's own gate, already `APPROVED` — so a check that
+# only asks "has a human reviewed this" would read every nudge-class warning
+# as resolved the moment it is created, silently dropping it before anyone
+# ever saw the nudge that failed to post. So each class re-verifies its own
+# claim:
+#
+#   could_not_request      — a read-only "is a human review currently
+#                             requested (or already given)" check: `gh pr
+#                             view --json reviewDecision,reviewRequests`.
+#                             `reviewRequests` non-empty means a request is
+#                             live right now; `reviewDecision` of `APPROVED`
+#                             or `CHANGES_REQUESTED` means a review already
+#                             happened, which only a request already granted
+#                             could have produced — either is the violation
+#                             resolving itself, the same two facts
+#                             `ensure_human_reviewer` (`lib/handoff.sh`)
+#                             itself reasons from, read rather than acted on.
+#   could_not_post_nudge   — did the nudge comment land after all: `gh pr
+#                             view --json comments`, searched for the
+#                             `<!-- agent-ops:human-nudge -->` marker
+#                             `sweep-human-visibility.sh` itself posts and
+#                             checks for idempotency.
+#   (anything else)         — a warning this script does not recognise (e.g.
+#                             "could not read the pull request's state —
+#                             skipping the idle check", or a future warning
+#                             shape) has no live signal of its own to check,
+#                             so it is kept for as long as the pull request
+#                             stays open and not a draft — the same fail-safe
+#                             default an unreadable re-check gets.
+#
+# A pull request that has since merged, closed, or gone back to draft drops
+# every class's violation regardless — none of the above can matter to a
+# human on a pull request nobody is being asked to look at any more.
 #
 # ## The ref
 #
@@ -63,12 +105,7 @@
 # gather-register-hygiene.sh's own ref is scoped to the register's identity
 # (requirement 3i): a block recorded against one set of violations must not
 # swallow a later, disjoint set, while re-detecting the *same* set keeps the
-# same ref and stays correctly blocked. Deliberately its own namespace,
-# disjoint from `register-hygiene-<hash>` (the register-content ref
-# gather-register-hygiene.sh mints): the two scripts' candidates are unrelated
-# facts about the repository — one about a file tree, this one about GitHub's
-# live PR state — and folding them into one ref would mean fixing either one
-# retires a block that still describes the other.
+# same ref and stays correctly blocked.
 #
 # Fails safe: always prints a valid JSON array and exits 0. No violations
 # handed in, or none surviving the live re-check, is `[]` — the ordinary
@@ -84,6 +121,67 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 jq -e 'type == "array"' <<<"$violations_json" >/dev/null 2>&1 || violations_json='[]'
+
+# _warning_class DETAIL
+# Classify a sweep warning's detail text into the live check that resolves
+# it. Prefix/substring matched against the two fixed shapes
+# sweep-human-visibility.sh's own `warn` calls produce; anything else is
+# `unknown`.
+_warning_class() {
+  case "$1" in
+    "could not request review from"*) printf 'could_not_request' ;;
+    *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
+    *) printf 'unknown' ;;
+  esac
+}
+
+# _pr_violation_survives PR_URL DETAIL
+# Print `keep` or `drop` for one pull-request-level violation, read-only
+# throughout. `drop` only on a definite live answer that it no longer holds;
+# an unreadable pull request is `keep`, the same fail-safe default the header
+# note describes.
+_pr_violation_survives() {
+  local pr_url="$1" detail="$2" class json state draft decision requests has_marker
+  class="$(_warning_class "$detail")"
+
+  json="$(gh pr view "$pr_url" \
+            --json state,isDraft,reviewDecision,reviewRequests,comments 2>/dev/null)" || true
+  if [[ -z "$json" ]]; then
+    printf 'keep'
+    return
+  fi
+
+  state="$(jq -r '.state // ""' <<<"$json" 2>/dev/null || true)"
+  draft="$(jq -r '.isDraft // false' <<<"$json" 2>/dev/null || true)"
+  if [[ "$state" != "OPEN" || "$draft" != "false" ]]; then
+    printf 'drop'
+    return
+  fi
+
+  case "$class" in
+    could_not_request)
+      decision="$(jq -r '.reviewDecision // ""' <<<"$json" 2>/dev/null || true)"
+      requests="$(jq -r '(.reviewRequests // []) | length' <<<"$json" 2>/dev/null || echo 0)"
+      if [[ "$decision" == "APPROVED" || "$decision" == "CHANGES_REQUESTED" || "$requests" != "0" ]]; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    could_not_post_nudge)
+      has_marker="$(jq -r '(.comments // []) | any((.body // "") | test("agent-ops:human-nudge"))' \
+                     <<<"$json" 2>/dev/null || echo false)"
+      if [[ "$has_marker" == "true" ]]; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    *)
+      printf 'keep'
+      ;;
+  esac
+}
 
 mine="$(jq -c --arg r "$slug" '[.[] | select((.repo // "") == $r)]' <<<"$violations_json" 2>/dev/null || echo '[]')"
 if [[ "$(jq 'length' <<<"$mine" 2>/dev/null || echo 0)" == "0" ]]; then
@@ -109,15 +207,8 @@ while IFS= read -r v; do
     survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
     continue
   fi
-  pr_state="$(gh pr view "$pr_url" --json state,isDraft \
-                --jq '(.state) + "\t" + (.isDraft | tostring)' 2>/dev/null || true)"
-  if [[ -z "$pr_state" ]]; then
-    # Could not be read at all — kept, not dropped; see the header note.
-    survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
-    continue
-  fi
-  IFS=$'\t' read -r pr_open pr_draft <<<"$pr_state"
-  if [[ "$pr_open" == "OPEN" && "$pr_draft" == "false" ]]; then
+  detail="$(jq -r '.detail // ""' <<<"$v")"
+  if [[ "$(_pr_violation_survives "$pr_url" "$detail")" == "keep" ]]; then
     survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
   fi
 done < <(jq -c '.[]' <<<"$mine" 2>/dev/null || true)
@@ -147,7 +238,7 @@ jq -nc \
   --arg url "$url" \
   --argjson problems "$problems" \
   --arg body "$body" \
-  '[{source: "register-hygiene",
+  '[{source: "human-visibility",
      ref: $ref,
      url: $url,
      problems: $problems,
