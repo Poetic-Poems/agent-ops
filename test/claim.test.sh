@@ -56,19 +56,25 @@ d="${GH_STUB_DIR:?}"
 
 if [[ "${1:-}" == "pr" ]]; then printf '%s\n' "${GH_STUB_PRS:-0}"; exit 0; fi
 
-method=GET; path=""; jqf=""; declare -A f=()
+method=GET; path=""; jqf=""; slurp=0; declare -A f=()
 args=("$@")
 for (( i=0; i<${#args[@]}; i++ )); do
   case "${args[i]}" in
-    -X)   method="${args[i+1]}"; (( i++ )) ;;
-    -f)   kv="${args[i+1]}"; f["${kv%%=*}"]="${kv#*=}"; (( i++ )) ;;
-    --jq) jqf="${args[i+1]}"; (( i++ )) ;;
-    repos/*) path="${args[i]}" ;;
+    -X)       method="${args[i+1]}"; (( i++ )) ;;
+    -f)       kv="${args[i+1]}"; f["${kv%%=*}"]="${kv#*=}"; (( i++ )) ;;
+    --jq)     jqf="${args[i+1]}"; (( i++ )) ;;
+    --slurp)  slurp=1 ;;
+    repos/*)  path="${args[i]}" ;;
   esac
 done
 
-emit() {  # apply --jq the way gh would
-  if [[ -n "$jqf" ]]; then jq -r "$jqf" <<<"$1"; else printf '%s\n' "$1"; fi
+emit() {  # apply --jq the way gh would; --slurp wraps the (single, in this
+          # stub) page in an outer array first, exactly as real `gh
+          # --paginate --slurp` collects one element per page before the
+          # filter runs once over the lot.
+  local data="$1"
+  (( slurp )) && data="[$data]"
+  if [[ -n "$jqf" ]]; then jq -r "$jqf" <<<"$data"; else printf '%s\n' "$data"; fi
 }
 
 case "$method $path" in
@@ -119,6 +125,11 @@ case "$method $path" in
     p="$d/contents/${path#*/contents/}"
     rm -f "$p"; exit 0 ;;
   "GET "*/git/matching-refs/heads/*)
+    # Logged verbatim so the pagination test below can assert do_branches
+    # actually asks for every page rather than trusting the first (issue #304)
+    # — this stub always answers in one response, so what matters here is the
+    # flags the caller sent, not multi-page cursoring.
+    printf '%s\n' "${args[*]}" >> "$d/matching-refs-calls.log"
     slug="${path#repos/}"; slug="${slug%%/git/*}"
     prefix="${path#*/git/matching-refs/heads/}"
     out="$(cd "$d/refs/$slug" 2>/dev/null \
@@ -275,11 +286,29 @@ assert_eq "claims excludes an entry older than claim_ttl_hours (the staleness es
   "$(jq '[.[] | select(.item == "TD-OLD")] | length' <<<"$claims_out")"
 
 # --- branches: live td/*, <branch_prefix>* refs on the target repo (issue #175) ------
+rm -f "$GH_STUB_DIR/matching-refs-calls.log"
 branches_out="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" branches Poetic-Poems/poetic 2>/dev/null)"
 assert_eq "branches lists the live td/ claim branch, registry entry or not" "1" \
   "$(jq '[.[] | select(. == "td/TD-CLAIMS-1")] | length' <<<"$branches_out")"
 assert_eq "branches is not TTL-filtered — the ref alone is the signal" "1" \
   "$(jq '[.[] | select(. == "td/TD-OLD")] | length' <<<"$branches_out")"
+
+# --- branches paginates (issue #304): a listing beyond one page must not be ---------
+# silently invisible. This stub always answers in a single response, so what is
+# checked is that do_branches actually asks `gh api` to walk every page and
+# collect them (`--paginate --slurp`) rather than trusting the first — the same
+# flags a real multi-page `matching-refs` listing needs to be seen in full.
+calls_log="$(cat "$GH_STUB_DIR/matching-refs-calls.log" 2>/dev/null || true)"
+assert_eq "branches requests every page of the td/ listing" "1" \
+  "$([[ "$calls_log" == *"--paginate"* ]] && echo 1 || echo 0)"
+assert_eq "…and slurps them into one array before filtering" "1" \
+  "$([[ "$calls_log" == *"--slurp"* ]] && echo 1 || echo 0)"
+# With multiple refs present (td/TD-CLAIMS-1 and td/TD-OLD, both seeded
+# above), the slurp-shaped filter must still recover every one of them, not
+# just the first — proof the `.[][]` filter matches the `--slurp`-wrapped
+# shape and does not silently degrade to `[]` against it.
+assert_eq "the slurped listing still recovers every live branch, not just the first" "1" \
+  "$(( $(jq 'length' <<<"$branches_out") >= 2 ? 1 : 0 ))"
 
 # --- expire: a discarded engagement's tombstone is backdated, not released ---------
 # (issue #237) — an Enabler-style file claim under the pseudo-slug `enabler`.

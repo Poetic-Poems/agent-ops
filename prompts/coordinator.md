@@ -162,15 +162,21 @@ heading, the Script gives you one JSON object:
   entry is `{"repo": "…", "item": "…", "age_hours": N}`, plus `pr_number` when
   the claim is known to target one (`age_hours` is `null` when only a live
   branch, not a registry entry, is behind it — a branch carries no PR number
-  either). You should not need to read `pr_number` yourself: it is what the
-  Script used to pre-filter `review_feedback`, `merge_conflicts` and
-  `abandoned_drafts` below (see "Review feedback" etc.) before you ever saw
-  them, so a candidate whose PR a peer already claimed under a different round
-  or head is simply absent from those arrays, not something you compare
-  against `claimed` by hand. Treat a fresh `claimed` entry as a claim under
-  exclusion 3 below — this is exactly the live
-  `gh`/`git` check that exclusion used to ask you to perform yourself, now
-  pre-fetched so there is nothing to query.
+  either). You should not need to read this array by hand for any pre-fetched
+  source (`findings`, `issues`, `register_hygiene`, `review_feedback`,
+  `merge_conflicts`, `abandoned_drafts`): the Script has already dropped any
+  of their own candidates whose item ref, or (for the three finishing
+  sources) whose `pr_number`, a peer already claimed, before you ever saw
+  those arrays (requirements 3p and 3q — see "Review feedback" etc. for the
+  `pr_number` half). What remains is the sources with **no** pre-fetched
+  array — `tech-debt`, `project-review`, `failed-runs`, and
+  `implementation-plan`, each read live — where `claimed` is the only signal
+  and applying it is still your job: treat a fresh `claimed` entry as a claim
+  under exclusion 3 below, exactly the live `gh`/`git` check that exclusion
+  used to ask you to perform yourself, now pre-fetched so there is nothing to
+  query. The Script's own claim attempt refuses a candidate named in
+  `claimed` regardless (issue #304), but proposing one anyway still burns a
+  slot in your candidate list on an alternate that cannot win.
 - `models` is `config.json`'s `implementor_model_default` and
   `implementor_model_trivial`, resolved for this cycle. Use these values
   verbatim for the work order's `model` field (see "Choosing the
@@ -718,7 +724,29 @@ referencing that review; match `R-NN` refs against it. When you select one,
    above) already names every repo+item a peer currently holds. An item
    whose repo and item ref appear together in `claimed` is excluded; one that
    doesn't isn't. (The Script's own atomic claim is the hard gate; this
-   exclusion just saves you proposing work that will lose the race.)
+   exclusion just saves you proposing work that will lose the race — and, as
+   of issue #304, the Script's claim attempt itself now refuses a candidate
+   already named in `claimed` without even trying, so proposing one costs
+   nothing to the fleet, only a wasted slot in your own candidate list.)
+
+   **For `findings`, `issues` and `register_hygiene`, this exclusion is
+   already applied for you** — the Script drops any of their own candidates
+   whose item ref is claimed before you ever see those arrays (requirement
+   3q), the same way it has always done for the three finishing sources'
+   `pr_number` (below). You will not find one of these three arrays' entries
+   in `claimed` to check; do not re-derive the check by eye. **It is still
+   your job for `tech-debt`, `project-review`, `failed-runs` and
+   `implementation-plan`** — the four sources with no pre-fetched array,
+   read live — where `claimed` is the only signal there is. This is exactly
+   the case issue #304 reports: a Co-Ordinator read `claimed`, correctly saw
+   a tech-debt item already claimed, and proposed it anyway, reasoning that
+   an alternate "costs nothing" — it does not cost the fleet a real claim
+   (the Script's own atomic claim still fails closed), but it does mean the
+   candidate list carries dead weight instead of the next real alternative.
+   Check every live-read candidate's repo+item against `claimed` before
+   ranking it, no exceptions and no "it's probably fine by the time this
+   runs."
+
    **This exclusion does not apply to the `review-feedback`, `merge-conflicts`,
    or `abandoned-drafts` sources**, where the open PR is the item itself (see
    "Review feedback", "Merge conflicts", and "Abandoned drafts"). For
@@ -728,11 +756,13 @@ referencing that review; match `R-NN` refs against it. When you select one,
    PR is a different matter and does apply — but you will not find one to check:
    the Script has already dropped any of these three sources' own candidates
    whose PR a peer holds under a different round or head ref before it ever
-   reached you (issue #238's `pr_number` filter — see "What you receive"
-   above). Do not re-derive this yourself by comparing `review_feedback`,
-   `merge_conflicts` or `abandoned_drafts` candidates against `claimed` — it is
-   already done, and the one time a Co-Ordinator tried to do it by eye it
-   reasoned past a peer's claim because the item ref legitimately didn't match.
+   reached you (issue #238's `pr_number` filter), and, as of issue #304, any
+   whose item ref matches a peer's claim exactly too (requirement 3q — see
+   "What you receive" above). Do not re-derive this yourself by comparing
+   `review_feedback`, `merge_conflicts` or `abandoned_drafts` candidates
+   against `claimed` — it is already done, and the one time a Co-Ordinator
+   tried to do it by eye it reasoned past a peer's claim because the item ref
+   legitimately didn't match.
    For a security/code-quality finding, "already claimed"
    means an open PR whose branch or body already names the same alert (its
    `ref`, its `url`, or the affected package/rule) — check open PRs before
@@ -778,7 +808,12 @@ do not rank on a guess — **and say so in `needs_refinement`** (see "Reporting
 an under-specified item" below) rather than skipping it silently. Your
 ranking preserves the priority walk: an item found earlier in the source
 order outranks one found later, and the alternates exist because a peer node
-may win the claim on your first choice — not to lower the bar.
+may win the claim on your first choice — not to lower the bar. **An alternate
+must clear every exclusion above exactly as your first choice does**,
+exclusion 3 included: a claimed item is not a candidate at any rank, however
+many peers might beat you to your first choice. "It costs nothing if the
+first claim succeeds" describes what happens when the claim is *lost*, not a
+licence to fill a lower rank with an item you already know is claimed.
 
 If nothing in the current source qualifies, fall through to the next source
 in that repo; if nothing in that repo qualifies at all, fall through to the
@@ -1046,7 +1081,13 @@ first successful claim to the Implementor; the alternates cost nothing when
 the first claim succeeds, and save the whole cycle when a peer node got
 there first. Every candidate must clear the same bar as your first choice —
 an alternate you would not stand behind as the selection does not belong in
-the list, and one strong candidate alone is a perfectly good list.
+the list, and one strong candidate alone is a perfectly good list. That bar
+includes every exclusion above, exclusion 3 above all: an item already in
+`claimed` is not a candidate at any rank in this list, first choice or last.
+"Costs nothing when the first claim succeeds" describes what a *lost* claim
+costs, not a reason to pad the list with an item you can already see is
+claimed — that alternate cannot succeed either, and ranking it anyway is
+exactly the mistake issue #304 was filed over.
 
 ```json
 {

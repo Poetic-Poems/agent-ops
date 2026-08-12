@@ -425,7 +425,7 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                              //   to a peer's contention (implementation
                                              //   spec 17a) before its outcome; present
                                              //   whether or not it recovered
-               standdown_cause,             // "raced" | "unreachable" | null — only on
+               standdown_cause,             // "raced" | "unreachable" | "pre-claimed" | null — only on
                                              //   an outcome of "stand-down"
                stages:{ coordinator|implementor|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
@@ -906,10 +906,13 @@ number's twins elsewhere on the page.
   rotation. A cycle that lost a claim to a peer's contention (`claim-lost`,
   cause `held`) before a `selection` that names `race_losses` is marked
   `raced: true` carrying that same count, whichever `outcome` it then reached;
-  one that lost every candidate carries `standdown_cause` — `"raced"` for
-  contention, `"unreachable"` when every loss was a GitHub outage instead —
-  and only a cycle with a `held` loss is marked `raced` at all, a GitHub
-  outage naming no peer to contend with (implementation spec 17a, issue #245).
+  one that lost or skipped every candidate carries `standdown_cause` —
+  `"raced"` for contention, `"unreachable"` when every attempted loss was a
+  GitHub outage instead, or `"pre-claimed"` when nothing was even attempted
+  (every candidate was already in this cycle's own fresh claimed set,
+  implementation spec 17a's pre-claim skip) — and only a cycle with a `held`
+  loss is marked `raced` at all, a GitHub outage or an unattempted candidate
+  naming no peer to contend with (implementation spec 17a, issues #245, #304).
   An item that is blocked *and* void reaches `void[]` and not
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty

@@ -1808,6 +1808,48 @@ runs unattended.
    filter ran (a peer's cycle overlapping this one) is still possible, and
    requirement 17a's PR-keyed claim is what actually excludes it, fleet-wide,
    the same create-only way every other claim does.
+3q. **Item-ref candidate exclusion, every pre-fetched source (issue #304).**
+   Requirement 3p closes the gap where a peer's claim on the *same PR* is
+   invisible because the item ref changed; it does nothing about the plainer
+   case — a peer's claim under the *same* ref a fresh gather would mint again,
+   for any pre-fetched source, findings and issues and register-hygiene
+   included, not only the three finishing sources. That plainer case is what
+   actually recurred: `claimed` carried the exact items a Co-Ordinator went on
+   to propose, at the same ref, and it reasoned past the array rather than
+   past a ref mismatch (cycle `20260809T040600Z-ockham-container-7884` and
+   five further attempts the same day, each proposing agent-ops issues #238,
+   #245, #247 and #250 while `claimed` already named every one of them,
+   because its own alternates guidance read as licence to rank a known-claimed
+   item "since alternates cost nothing"). Exclusion 16's ordinary repo+item
+   lookup against `claimed` was, for these sources, a judgement call like any
+   other — and a judgement call is exactly the shape of thing this system has
+   already learned, from issue #238 itself, gets reasoned past eventually.
+
+   The fix is the same move issue #238 made, generalised to every pre-fetched
+   array rather than the three finishing sources' `pr_number` alone: for each
+   repo, before its `findings`, `issues`, `register_hygiene`, `review_feedback`,
+   `merge_conflicts` and `abandoned_drafts` arrays are assembled into the
+   runtime input, the Script drops any candidate whose own `ref` appears among
+   that repo's freshly gathered `claimed` set's `item` values
+   (`exclude_claimed_refs` in `agent-cycle.sh`, applied alongside
+   `exclude_claimed_prs` for the three finishing sources — complementary, not
+   redundant, since a ref-exact match and a `pr_number` match catch different
+   cases). Every gatherer already mints `ref` as the exact claim key
+   (`claim_branch_for`'s inverse, requirement 3o), so no per-source translation
+   is needed. A claimed item never reaches the Co-Ordinator's input at all
+   under this path, so there is nothing left for it to reason past — the same
+   guarantee 3p makes for the PR-level case, extended to the ref-level one.
+
+   This still does not cover `tech-debt`, `project-review`, `failed-runs` or
+   `implementation-plan`: none of the four has a pre-fetched array to filter
+   (requirements 3k, 15, and "The Co-Ordinator" section 14), so the
+   Co-Ordinator's own repo+item lookup against `claimed` remains the only
+   check for them, and remains a judgement call it must still apply itself
+   (`prompts/coordinator.md` exclusion 3). Requirement 17a's pre-claim skip is
+   the deterministic backstop for exactly that residual case: it cannot
+   prevent the Co-Ordinator from proposing a claimed item from one of these
+   four sources, but it does stop the Script from ever attempting a doomed
+   claim on one.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -2637,12 +2679,13 @@ runs unattended.
     `claude` by running it from a minimal environment (for example with a
     sanitized `PATH` and `HOME`) before relying on scheduled runs.
 39. **Finish-then-continue** (issue #248): a cycle that wins a claim and
-    launches the Implementor may, once it has fully ended, launch another
-    cycle immediately rather than leave the next one to the next cron
-    firing — `lib/chain.sh`. Two conditions, both cheap, both judged from
-    what the cycle already gathered ahead of the Co-Ordinator
-    (`ordered_repos_json`, ready before requirement 3b's fingerprint is
-    even taken):
+    launches the Implementor, **or** stands down with every attempted claim
+    lost to genuine contention (`standdown_cause: "raced"`, issue #304), may,
+    once it has fully ended, launch another cycle immediately rather than
+    leave the next one to the next cron firing — `lib/chain.sh`. Two
+    conditions, both cheap, both judged from what the cycle already gathered
+    ahead of the Co-Ordinator (`ordered_repos_json`, ready before requirement
+    3b's fingerprint is even taken):
     - **Sources remain.** At least one configured repository's `.sources` —
       already narrowed by back-pressure (2.2a) if it was tripped — is
       non-empty. This counts enabled source *categories*, not items, and is
@@ -2663,11 +2706,24 @@ runs unattended.
       disables chaining outright.
 
     Never chains on `--once` (a human or a test asked for exactly one
-    cycle) or past any stand-down, the switch, or a cycle that selected
-    nothing — all of those end before a claim is ever won, so
-    `chain_eligible` (set only once a claim succeeds) is never true for
-    them. Nor does it chain over an untrapped crash or a signal: the gate
-    is `chain_eligible` *and* this cycle's own `exit_code == 0`, checked in
+    cycle). Past a stand-down, it chains **only** for `standdown_cause:
+    "raced"` — every attempted claim lost to a peer genuinely holding the
+    item, so the peer's own claim is now visible to a fresh gather and a
+    chained cycle can route straight to the next-best candidate instead of
+    idling out the rest of the tick (17a's `chain_should_continue` call at
+    the stand-down site, gated the same way as below: never on `--once`, and
+    bounded by the same two conditions). `standdown_cause: "unreachable"`
+    never chains — a GitHub outage means nobody could have pushed the work
+    either, so nothing about the fleet's claims has changed for a fresh
+    gather to find — and neither does `standdown_cause: "pre-claimed"`
+    (17a's pre-claim skip, issue #304): nothing was even attempted, so
+    chaining would just re-ask the identical question with an identical
+    answer. Nor does it chain past the switch or a cycle that selected
+    nothing — both end before a claim is ever attempted, so
+    `chain_eligible` (set only once a claim succeeds, or a stand-down
+    qualifies as above) is never true for them. Nor does it chain over an
+    untrapped crash or a signal: the gate is `chain_eligible` *and* this
+    cycle's own `exit_code == 0`, checked in
     `cleanup` (11) after everything else there has already run — the lock
     released, the Enabler engaged, `cycle-end` logged, state pushed. Every
     *ordinary* ending after a won claim (complete, blocked, void, a handled
@@ -3066,6 +3122,26 @@ runs unattended.
       that died mid-cycle must not hold its item forever); every cycle runs
       the sweep at start (2.1a), so a dead node's claims outlive it by at
       most the TTL plus one cycle interval.
+    - **The pre-claim skip (issue #304).** Before attempting a claim at all,
+      the Script checks the candidate's repo+item against `fleet_claimed_json`
+      — this cycle's own fresh gather (requirement 3o), from before the
+      Co-Ordinator ever ran. A match skips the attempt entirely: `claim-skipped`
+      is logged with `cause: "pre-claimed"`, and the candidate counts toward
+      neither `claim_attempts` nor `race_losses`. Requirement 3q has already
+      dropped a claimed candidate from every pre-fetched source's own array
+      before the Co-Ordinator's input was assembled, so in ordinary operation
+      this only ever fires for a candidate from one of the four sources with no
+      pre-fetched array — `tech-debt`, `project-review`, `failed-runs`,
+      `implementation-plan` — where the Co-Ordinator reads live and can still
+      propose an item its own `claimed` input already named, exactly the
+      failure issue #304 reports: a Co-Ordinator that read `claimed` correctly
+      and reasoned past it anyway, on the strength of "an alternate costs
+      nothing when the first claim succeeds." Keeping this candidate out of
+      `claim_attempts` is what keeps `race_losses` and the `raced` stand-down
+      cause below meaning genuine contention: a candidate skipped here never
+      contended with anyone, and folding it into either count would blur a
+      selection defect into the same signal as a healthy fleet racing for the
+      same real work.
     - Claims **fail closed** per candidate: any outcome other than a won
       claim (a lost race, or GitHub unreachable) moves to the next
       candidate. Each miss logs `claim-lost` with a `cause` — `held` for
@@ -3079,16 +3155,21 @@ runs unattended.
       `pr_claim_key` it contended on. It renames `held` only: a PR-keyed claim
       that came back `unreachable` is an outage like any other and is counted
       as one.
-      A cycle whose every candidate is lost stands down with reason "every
-      candidate is already claimed elsewhere" — unless every miss was
-      `unreachable`, in which case the reason instead names the outage
-      ("GitHub could not be reached for any candidate — this is an outage,
-      not contention"), so a GitHub or token outage does not read as a fleet
-      politely yielding to itself. A node that cannot reach GitHub to claim
-      could not have pushed the work either. This `stand-down` event also
-      carries the same distinction structured, as `cause` — `raced` or
-      `unreachable` — so a reader (the dashboard included) does not have to
-      re-parse the reason text (issue #245). A win that followed one or more
+      A cycle whose every candidate is lost or skipped stands down with one of
+      three causes, tested in this order: **`pre-claimed`** when nothing was
+      even attempted (every candidate was skipped by the pre-claim check
+      above) — reason "every candidate was already claimed by this cycle's own
+      gather — no claim attempted", a selection defect made visible under its
+      own name rather than dressed as racing; **`unreachable`** when at least
+      one candidate was attempted and every attempt's miss was `unreachable` —
+      reason naming the outage ("GitHub could not be reached for any candidate
+      — this is an outage, not contention"), so a GitHub or token outage does
+      not read as a fleet politely yielding to itself; otherwise **`raced`** —
+      reason "every candidate is already claimed elsewhere". A node that
+      cannot reach GitHub to claim could not have pushed the work either. This
+      `stand-down` event also carries the cause structured (issue #245;
+      `pre-claimed` added by issue #304) so a reader (the dashboard included)
+      does not have to re-parse the reason text. A win that followed one or more
       `held` losses is a *recovered* race, not an ordinary first-try
       selection: the `selection` event that names the winning candidate
       additionally carries `race_losses`, the count of `held` losses that
@@ -6859,7 +6940,44 @@ pull request, run the ones the change touches and any it could regress.
    fingerprint, and an empty `claimed` array canonicalises identically to an
    absent key, so a claim ageing back out of the array changes it too — the
    same silent-stall shape `abandoned_drafts` and `merge_conflicts` close for
-   their own transitions.
+   their own transitions. `branches` also paginates: `test/claim.test.sh`
+   asserts `do_branches`'s own `gh api` calls carry both `--paginate` and
+   `--slurp`, and that the slurp-shaped filter still recovers every live
+   branch seeded in the fixture, not just the first — the regression for a
+   listing beyond one page being silently invisible (issue #304).
+7d. **A known-claimed item is never proposed at any rank, and a Co-Ordinator
+   that proposes one anyway costs the fleet nothing (issue #304).**
+   `test/claimed-item-exclusion.test.sh` passes, against `exclude_claimed_refs`,
+   `is_pre_claimed` and `standdown_cause_for` lifted whole out of
+   `agent-cycle.sh`: `exclude_claimed_refs` drops a candidate whose `ref`
+   appears in the claimed-refs set regardless of its position in the input
+   array (the regression for "proposed at any rank"), leaves an unclaimed
+   candidate and a candidate with no `ref` untouched, and degrades to passing
+   its input through unfiltered on malformed JSON on either side; the same
+   filter is proven to apply identically to an `issues` candidate and a
+   `register-hygiene` candidate, not only the three finishing sources'
+   `pr_number`-keyed ones. `is_pre_claimed` reads true only for the exact
+   repo+item pair in the fleet's claimed set — a claimed item under a
+   *different* repo, or a different item in a claimed repo, reads false — and
+   degrades to false (never a false positive) on malformed input.
+   `standdown_cause_for` returns `"pre-claimed"` at zero attempts even when
+   `claim_unreachable == claim_attempts` would vacuously hold, `"unreachable"`
+   only once at least one candidate was attempted and every attempted miss
+   was an outage, and `"raced"` otherwise. `test/standdown-chain.test.sh`
+   passes, against the stand-down block itself lifted out of
+   `agent-cycle.sh`: a `pre-claimed` or `unreachable` stand-down never sets
+   `chain_eligible`, however much room the lineage has; a `raced` stand-down
+   sets it exactly when `chain_should_continue` would (room in the lineage,
+   sources remaining) and never under `--once`; and a stand-down mixing
+   pre-claim-skipped and genuinely lost candidates still reads `raced` and
+   still chains, proving the skip does not mask real contention behind it.
+   `test/publish-dashboard.test.sh` covers the reader's side: a stand-down
+   fixture carrying only `claim-skipped` events (no `claim-lost`) reads
+   `standdown_cause: "pre-claimed"`, is never marked `raced` (nothing was
+   attempted, let alone lost to a peer), and — carrying more than the bare
+   `cycle-start`/`stand-down`/`cycle-end` no-op shape — keeps its own row
+   rather than folding into `noop_ticks`, the same way a `raced` stand-down's
+   `claim-lost` events already do.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
@@ -7499,7 +7617,10 @@ pull request, run the ones the change touches and any it could regress.
     lineage is still under `max_chained_cycles`, stops exactly at and past the
     cap (including `max_chained_cycles: 1`, which disables chaining outright
     even on the first cycle), and fails closed (never chains) on a
-    non-numeric `chain_count` or `max_chained_cycles`.
+    non-numeric `chain_count` or `max_chained_cycles`. Acceptance check 7d
+    covers the other caller of this same function — the raced stand-down
+    site, issue #304 — where `chain_should_continue` decides whether that
+    stand-down sets `chain_eligible` too.
 39a. **The chain only ever launches when it should, and never waits on what it
     launches.** `test/finish-then-continue.test.sh` passes, against the real
     `cleanup` block lifted out of `agent-cycle.sh`: `chain_eligible=1` with

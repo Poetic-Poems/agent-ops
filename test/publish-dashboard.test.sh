@@ -1234,6 +1234,7 @@ wlog="$w/.local/state/poetic-agents/log.jsonl"
 w_recovered="${today_day}T040000Z-recovered"
 w_raced="${today_day}T050000Z-raced"
 w_unreachable="${today_day}T060000Z-unreachable"
+w_preclaimed="${today_day}T070000Z-preclaimed"
 {
   # Recovered: one held loss, then a selection that names it, then real work.
   printf '{"ts":"2026-07-28T00:00:00Z","cycle":"%s","node":"nodeW","event":"cycle-start"}\n' "$w_recovered"
@@ -1251,6 +1252,13 @@ w_unreachable="${today_day}T060000Z-unreachable"
   printf '{"ts":"2026-07-28T02:00:01Z","cycle":"%s","node":"nodeW","event":"claim-lost","repo":"o/a","item":"4","branch":"td/4","rc":1,"cause":"unreachable"}\n' "$w_unreachable"
   printf '{"ts":"2026-07-28T02:00:02Z","cycle":"%s","node":"nodeW","event":"stand-down","reason":"GitHub could not be reached for any candidate — this is an outage, not contention","candidates":1,"cause":"unreachable"}\n' "$w_unreachable"
   printf '{"ts":"2026-07-28T02:00:03Z","cycle":"%s","node":"nodeW","event":"cycle-end"}\n' "$w_unreachable"
+  # Stood down with every candidate pre-claimed (issue #304) — nothing was
+  # even attempted, so this is a selection defect, not contention: no
+  # claim-lost event at all, only claim-skipped ones.
+  printf '{"ts":"2026-07-28T03:00:00Z","cycle":"%s","node":"nodeW","event":"cycle-start"}\n' "$w_preclaimed"
+  printf '{"ts":"2026-07-28T03:00:01Z","cycle":"%s","node":"nodeW","event":"claim-skipped","repo":"o/a","item":"5","source":"tech-debt","cause":"pre-claimed"}\n' "$w_preclaimed"
+  printf '{"ts":"2026-07-28T03:00:02Z","cycle":"%s","node":"nodeW","event":"stand-down","reason":"every candidate was already claimed by this cycle'"'"'s own gather — no claim attempted","candidates":1,"cause":"pre-claimed"}\n' "$w_preclaimed"
+  printf '{"ts":"2026-07-28T03:00:03Z","cycle":"%s","node":"nodeW","event":"cycle-end"}\n' "$w_preclaimed"
 } > "$wlog"
 run_publish "$w"
 wdata="$(data_of "$w")"
@@ -1267,8 +1275,13 @@ assert_eq "an outage stands down unreachable, not raced" "unreachable" \
   "$(cycle_field "$wdata" "$w_unreachable" standdown_cause)"
 assert_eq "and is not marked raced — no peer held anything" "false" \
   "$(cycle_field "$wdata" "$w_unreachable" raced)"
-# All three cycles carry a `claim-lost` beyond the bare no-op shape, so #271's
-# filter must leave every one of them its detail row and count none of them.
+assert_eq "a stand-down with nothing attempted reads pre-claimed, not raced (#304)" "pre-claimed" \
+  "$(cycle_field "$wdata" "$w_preclaimed" standdown_cause)"
+assert_eq "and is not marked raced — nothing was attempted, let alone lost to a peer" "false" \
+  "$(cycle_field "$wdata" "$w_preclaimed" raced)"
+# All four cycles carry a `claim-lost` or `claim-skipped` beyond the bare
+# no-op shape, so #271's filter must leave every one of them its detail row
+# and count none of them.
 assert_eq "a stand-down that carries more than the no-op shape is never aggregated" "0" \
   "$(jq -r '.noop_ticks.total' <<<"$wdata")"
 

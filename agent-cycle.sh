@@ -836,6 +836,31 @@ exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
     <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
 }
 
+# Requirement 3q/issue #304: drop any pre-fetched candidate whose own item ref
+# is one a peer already holds a claim on, before it ever reaches the
+# Co-Ordinator's input — the generalisation of requirement 3p's PR-level
+# filter (above) to every pre-fetched source, not only the three finishing
+# ones. Every gatherer mints `ref` as the exact claim key (issue #175's
+# `claim_branch_for`/`gather_claimed` inverse pair), so this needs no
+# per-source translation: an `issues`, `findings` or `register_hygiene`
+# candidate whose `ref` matches an item this cycle's own fresh gather already
+# saw claimed is dropped the same deterministic way a claimed PR is. This is
+# what closes issue #304 — a Co-Ordinator reading `claimed` correctly and
+# still ranking a known-claimed item as a candidate, because exclusion 3 was
+# left to its own per-candidate judgement rather than applied in code. Applied
+# to the three finishing sources too, alongside exclude_claimed_prs above: a
+# ref-exact match is a case that filter cannot catch (it only ever compares
+# `pr_number`), so the two are complementary, not redundant. Malformed input
+# degrades to passing the array through unfiltered, exactly like
+# exclude_claimed_prs.
+exclude_claimed_refs() {  # <candidates-json> <claimed-item-refs-json>
+  local candidates="$1" claimed_refs="${2:-[]}"
+  jq -e 'type == "array"' <<<"$claimed_refs" >/dev/null 2>&1 || claimed_refs='[]'
+  jq -c --argjson claimed "$claimed_refs" \
+    '[.[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
+    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+}
+
 # Requirement 17a/issue #238: which PR a finishing-source candidate targets, for
 # the PR-keyed claim below to key on. The candidate's own `pr_number` when it
 # carries a usable one — prompts/coordinator.md requires it on all three
@@ -855,6 +880,43 @@ pr_number_for_candidate() {  # <candidate-json> <item-ref>
     printf '%s' "$n"
   elif [[ "$2" =~ ^pr-([0-9]+)- ]]; then
     printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# Requirement 17a/issue #304: the claim loop's pre-claim skip test, factored
+# out of the loop so it is exercised the same way any other deterministic
+# exclusion here is — directly, not by driving the whole loop. True iff this
+# candidate's repo+item already appears in this cycle's own fresh
+# `fleet_claimed_json` (requirement 3o) gathered ahead of the Co-Ordinator.
+# Requirement 3q has already dropped a claimed candidate from every
+# pre-fetched source's own array before the Co-Ordinator's input was
+# assembled, so in practice this only ever matches a candidate from one of
+# the four live-read sources with no such array to filter (tech-debt,
+# project-review, failed-runs, implementation-plan) — exactly the shape
+# issue #304 reports: a Co-Ordinator that read `claimed` correctly and
+# proposed the item anyway. Malformed `fleet_claimed_json` degrades to "not
+# claimed" (the loop proceeds to attempt the claim, which then fails closed
+# on its own terms) rather than skipping every candidate on bad input.
+is_pre_claimed() {  # <repo> <item> <fleet-claimed-json>
+  local repo="$1" item="$2" claimed="${3:-[]}"
+  jq -e --arg r "$repo" --arg i "$item" \
+    'any(.[]; .repo == $r and .item == $i)' <<<"$claimed" >/dev/null 2>&1
+}
+
+# Requirement 17a/issue #304: which cause a stand-down (every candidate lost
+# or skipped) carries, structured rather than left to prose a reader would
+# have to re-parse (issue #245; `pre-claimed` added by issue #304). Order
+# matters: `pre-claimed` (nothing was even attempted) is checked first, since
+# `claim_unreachable == claim_attempts` is vacuously true at zero attempts and
+# would otherwise misreport a selection defect as an outage.
+standdown_cause_for() {  # <claim_attempts> <claim_unreachable>
+  local attempts="$1" unreachable="$2"
+  if (( attempts == 0 )); then
+    printf 'pre-claimed'
+  elif (( unreachable == attempts )); then
+    printf 'unreachable'
+  else
+    printf 'raced'
   fi
 }
 
@@ -3148,34 +3210,49 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # apply itself, which is exactly the step a Co-Ordinator run "saw" a peer's
   # claim on PR #205 and reasoned past because the item ref didn't match.
   claimed_pr_numbers_json="$(jq -c '[.[] | select(has("pr_number")) | .pr_number]' <<<"$repo_claimed_json")"
+  # Requirement 3q/issue #304: this repo's freshly claimed item refs — every
+  # pre-fetched source's own candidates are filtered against it below, exactly
+  # as requirement 3p filters the three finishing sources' candidates against
+  # `claimed_pr_numbers_json` above. Complementary to that PR-level filter,
+  # not a replacement for it: a ref-exact match catches a claim under this
+  # cycle's own item ref, which the PR-level filter (matching on `pr_number`
+  # alone) does not need to and does not try to.
+  claimed_item_refs_json="$(jq -c '[.[].item]' <<<"$repo_claimed_json")"
   # Pre-fetch security/code-quality findings only when this repo lists either
   # source, so a repo that opts out of them costs no gh calls.
   findings="[]"
   if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
-    findings="$(gather_findings "$slug")"
+    findings="$(exclude_claimed_refs "$(gather_findings "$slug")" "$claimed_item_refs_json")"
   fi
   review_feedback="[]"
   if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
-    review_feedback="$(exclude_claimed_prs "$(gather_review_feedback "$slug")" "$claimed_pr_numbers_json")"
+    review_feedback="$(exclude_claimed_prs \
+      "$(exclude_claimed_refs "$(gather_review_feedback "$slug")" "$claimed_item_refs_json")" \
+      "$claimed_pr_numbers_json")"
   fi
   abandoned_drafts="[]"
   if jq -e 'any(.[]; . == "abandoned-drafts")' <<<"$sources" >/dev/null 2>&1; then
-    abandoned_drafts="$(exclude_claimed_prs "$(gather_abandoned_drafts "$slug")" "$claimed_pr_numbers_json")"
+    abandoned_drafts="$(exclude_claimed_prs \
+      "$(exclude_claimed_refs "$(gather_abandoned_drafts "$slug")" "$claimed_item_refs_json")" \
+      "$claimed_pr_numbers_json")"
   fi
   merge_conflicts="[]"
   if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
-    merge_conflicts="$(exclude_claimed_prs "$(gather_merge_conflicts "$slug")" "$claimed_pr_numbers_json")"
+    merge_conflicts="$(exclude_claimed_prs \
+      "$(exclude_claimed_refs "$(gather_merge_conflicts "$slug")" "$claimed_item_refs_json")" \
+      "$claimed_pr_numbers_json")"
   fi
   register_hygiene="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
-    register_hygiene="$(gather_register_hygiene "$slug" "$default_branch")"
+    register_hygiene="$(exclude_claimed_refs "$(gather_register_hygiene "$slug" "$default_branch")" \
+      "$claimed_item_refs_json")"
   fi
   # The issues source is one source at four ranks (`issues:urgent` …
   # `issues:low`, requirement 15e), so any band in `sources` warrants the one
   # fetch — the band is per issue, not per fetch.
   issues="[]"
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
-    issues="$(gather_issues "$slug")"
+    issues="$(exclude_claimed_refs "$(gather_issues "$slug")" "$claimed_item_refs_json")"
   fi
   # The implementation-plan source's path is per-repo config, never a path
   # fixed in the prompt (issue #77): echo it into the runtime-input entry only
@@ -3938,6 +4015,12 @@ if (( DRY_RUN )); then
   exit 0
 fi
 
+# `claimed_json` above (requirement 3o) is the fleet's claims for every repo
+# this cycle walked; kept under its own name before the claim loop reuses
+# `claimed_json` for the winning candidate below, so the pre-claim skip
+# (requirement 17a/issue #304) still has it to check a derived-source
+# candidate against.
+fleet_claimed_json="$claimed_json"
 claimed_json=""
 n_cand="$(jq 'length' <<<"$candidates_json")"
 claim_attempts=0
@@ -3959,6 +4042,18 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   c_db="$(jq -r '.default_branch // "main"' <<<"$cand")"
   c_takeover="$(jq -r '.takeover // false' <<<"$cand")"
   [[ -n "$c_repo" && -n "$c_item" ]] || continue
+  # Requirement 17a/issue #304: a candidate whose repo+item this cycle's own
+  # fresh gather already saw claimed skips the attempt entirely instead of
+  # making a doomed API call. Excluded from claim_attempts and race_losses so
+  # the "raced" stand-down cause below, and the fleet's ↻ raced badge it
+  # drives, keep meaning genuine contention rather than a selection defect
+  # dressed as racing (see is_pre_claimed's own comment above for why this
+  # only ever fires in practice for a source with no pre-fetched array).
+  if is_pre_claimed "$c_repo" "$c_item" "$fleet_claimed_json"; then
+    log_event "claim-skipped" "$(jq -nc --arg r "$c_repo" --arg i "$c_item" --arg s "$c_source" \
+      '{repo: $r, item: $i, source: $s, cause: "pre-claimed"}')"
+    continue
+  fi
   claim_attempts=$(( claim_attempts + 1 ))
   claim_rc=0
   pr_claim_lost=0
@@ -4046,22 +4141,33 @@ for (( ci = 0; ci < n_cand; ci++ )); do
 done
 
 if [[ -z "$claimed_json" ]]; then
-  # Same test as the reason text below, structured: a fleet-wide dashboard
-  # reader (or any other consumer) needs "why did this cycle stand down?"
-  # without re-parsing prose (issue #245). `raced` means every candidate was
-  # lost to healthy contention (at least one `held`); `unreachable` means
-  # GitHub itself could not be reached for any of them — an outage, not the
-  # fleet politely yielding to itself.
-  if (( claim_attempts > 0 && claim_unreachable == claim_attempts )); then
-    standdown_reason="GitHub could not be reached for any candidate — this is an outage, not contention"
-    standdown_cause="unreachable"
-  else
-    standdown_reason="every candidate is already claimed elsewhere"
-    standdown_cause="raced"
-  fi
+  # A fleet-wide dashboard reader (or any other consumer) needs "why did this
+  # cycle stand down?" without re-parsing prose (issue #245).
+  # standdown_cause_for's own comment above states the three causes and their
+  # test order. `pre-claimed` is a selection defect, not contention, and named
+  # apart so it is never mistaken for either of the other two.
+  standdown_cause="$(standdown_cause_for "$claim_attempts" "$claim_unreachable")"
+  case "$standdown_cause" in
+    pre-claimed) standdown_reason="every candidate was already claimed by this cycle's own gather — no claim attempted" ;;
+    unreachable) standdown_reason="GitHub could not be reached for any candidate — this is an outage, not contention" ;;
+    *)           standdown_reason="every candidate is already claimed elsewhere" ;;
+  esac
   log_event "stand-down" "$(jq -nc --argjson n "$n_cand" --arg r "$standdown_reason" --arg c "$standdown_cause" \
     --argjson rl "$race_losses" \
     '{reason: $r, candidates: $n, cause: $c, race_losses: $rl}')"
+  # Requirement 39/issue #304: a stand-down whose cause is genuine contention
+  # ("raced") still means real work exists — the peer's claim that beat this
+  # cycle is now visible to a fresh gather, so chain into a new selection
+  # cycle rather than idling out the rest of the tick, exactly as a won claim
+  # does above. "unreachable" never chains (an outage means nobody could have
+  # pushed the work either) and "pre-claimed" never chains (nothing was even
+  # attempted, so nothing about the fleet's claims has changed since this
+  # cycle's own gather ran) — chaining on either would just repeat the same
+  # non-answer.
+  if [[ "$standdown_cause" == "raced" ]] && ! (( ONCE )) \
+     && chain_should_continue "$chain_count" "$max_chained_cycles" "$ordered_repos_json"; then
+    chain_eligible=1
+  fi
   exit 0
 fi
 

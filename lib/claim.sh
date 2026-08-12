@@ -300,15 +300,21 @@ do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours, pr_numbe
 }
 
 do_branches() {  # <target-slug> -> JSON array of live td/*, <branch_prefix>* branch names
+  # `--paginate --slurp`: a `matching-refs` listing beyond one page (100 refs)
+  # was silently invisible — `--jq` alone applies only to the first page, so
+  # a live claim branch past it read as absent from claim visibility entirely
+  # (issue #304). `--slurp` collects every page into one outer array (one
+  # element per page, even when there is only one) before the filter runs
+  # once over the lot, hence `.[][]` below rather than `.[]`.
   local slug="$1" prefix td_refs pfx_refs
-  td_refs="$("$GH" api "repos/$slug/git/matching-refs/heads/td/" \
-    --jq '[.[].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
+  td_refs="$("$GH" api "repos/$slug/git/matching-refs/heads/td/" --paginate --slurp \
+    --jq '[.[][] | .ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
   [[ -n "$td_refs" ]] || td_refs='[]'
   prefix="$branch_prefix"
   pfx_refs='[]'
   if [[ "$prefix" != "td/" ]]; then
-    pfx_refs="$("$GH" api "repos/$slug/git/matching-refs/heads/$prefix" \
-      --jq '[.[].ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
+    pfx_refs="$("$GH" api "repos/$slug/git/matching-refs/heads/$prefix" --paginate --slurp \
+      --jq '[.[][] | .ref | ltrimstr("refs/heads/")]' 2>/dev/null)"
     [[ -n "$pfx_refs" ]] || pfx_refs='[]'
   fi
   jq -c -n --argjson a "$td_refs" --argjson b "$pfx_refs" '$a + $b' 2>/dev/null || echo '[]'
