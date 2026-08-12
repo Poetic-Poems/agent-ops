@@ -807,6 +807,45 @@
         }
       }
     },
+    "github_min_core_budget": {
+      "description": "GitHub REST (`core`) rate-limit points a cycle must find remaining before it is worth starting. Below this the Script stands the cycle down at requirement 2.0, before any model token is spent, until GitHub's stated reset. `0` turns this resource's floor off.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 300,
+      "x-docs": {
+        "readme": "GitHub REST points a cycle must have left before it starts. `0` turns the check off for this resource.",
+        "spec": "The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from a `/rate_limit` call that is itself exempt from the limits it reports. `0` disables the floor.",
+        "value": {
+          "spec": "300 points"
+        }
+      }
+    },
+    "github_min_graphql_budget": {
+      "description": "GitHub GraphQL rate-limit points a cycle must find remaining before it is worth starting. Metered separately from `core` and, in practice, the one that runs out first. `0` turns this resource's floor off.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 100,
+      "x-docs": {
+        "readme": "GitHub GraphQL points a cycle must have left before it starts. `0` turns the check off for this resource.",
+        "spec": "The `graphql` floor of the GitHub API budget check (requirement 2.0). Separate from `github_min_core_budget` because GitHub meters the two pools independently and either can be the binding one — on 2026-08-12 the fleet exhausted `graphql` with 96% of its `core` hour unspent. `0` disables the floor.",
+        "value": {
+          "spec": "100 points"
+        }
+      }
+    },
+    "github_retry_max_wait_seconds": {
+      "description": "How long `lib/github-limit.sh`'s `gh` wrapper may wait out a single rate-limit refusal before giving up on that call. A whole process may spend twice this across all of its calls. Bounded well below the cycle interval: a wait longer than this is the budget check's problem, not a retry's.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 60,
+      "x-docs": {
+        "readme": "Seconds. How long a single `gh` call may wait out a rate-limit refusal before failing; a process may spend twice this in total. `0` turns retrying off.",
+        "spec": "The per-call wait bound of the `gh` wrapper (requirement 2.0a). A secondary rate limit waits a fixed fallback, a primary one waits until GitHub's stated reset, and either is abandoned if it exceeds this — the cycle holds a lock and runs on a `cycle_interval_minutes` tick, so a wrapper that waited out a primary limit would collide with the next tick. `0` turns retrying off.",
+        "value": {
+          "spec": "60 s"
+        }
+      }
+    },
     "disable_default_ttl": {
       "description": "Hours `--disable` lasts when `--for` does not say. Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one.",
       "type": "number",
