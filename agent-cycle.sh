@@ -4015,9 +4015,11 @@ fi
 # Deterministic, no LLM, run before the clone and the Implementor engagement
 # either one is paid for: ask whether the item this cycle just claimed is
 # already done — its register row resolved, its issue closed, its
-# work-order branch already merged, an open PR already carrying that branch,
-# or (for a finishing source, whose item is the `pr-<n>-…` shape
-# `lib/work-gone.sh` recognises) its pull request already closed or merged.
+# work-order branch already merged, or (for a finishing source, whose item is
+# the `pr-<n>-…` shape `lib/work-gone.sh` recognises) its pull request
+# already closed or merged — and, separately, whether it should be *deferred*
+# because an open PR already carries the just-claimed branch (a non-terminal
+# signal; see below).
 # `source_states_json` already carries every repo this cycle walked, gathered
 # well before the claim, which is all an issue, a finishing source's PR or the
 # stale-open-PR check needs; a tech-debt item additionally needs its own
@@ -4040,6 +4042,21 @@ fi
 if [[ -n "$preflight_reason" ]]; then
   log_item_void "preflight" "$preflight_reason" \
     "$(jq -nc --arg e "$preflight_reason" '{evidence: $e}')"
+  release_claim no-pr
+  exit 0
+fi
+# The stale-open-PR signal defers rather than voids (requirement 34m; #279):
+# it is the one pre-flight fact that can become false again — that pull
+# request may close unmerged tomorrow — and its usual cause is the digest's
+# own staleness, sampled before the Co-Ordinator engagement. A void is
+# terminal (requirement 34h), so the claim is released and the item left for
+# a later cycle's fresh digest instead.
+preflight_defer="$(preflight_defer_reason "$selected_repo" "$selected_item" "$selected_branch" \
+  "$source_states_json")"
+if [[ -n "$preflight_defer" ]]; then
+  log_event "warning" "$(jq -nc \
+    --arg d "pre-flight deferred $selected_repo $selected_item — $preflight_defer; claim released, the item is re-judged against a fresh digest next cycle" \
+    '{detail: $d}')"
   release_claim no-pr
   exit 0
 fi
