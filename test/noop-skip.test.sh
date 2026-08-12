@@ -59,6 +59,7 @@ base_input() {
       "sources": ["security", "review-feedback", "tech-debt", "issues"],
       "findings": [{"ref": "dependabot-alert-1", "severity": "high"}],
       "review_feedback": [],
+      "tech_debt": [{"ref": "TD-PPtest-26071501", "id": "TD-PPtest-26071501", "status": "open"}],
       "state": {
         "slug": "o/one", "ok": true, "head_sha": "aaa111",
         "issues": [{"n": 7, "u": "2026-07-16T09:00:00Z", "l": ["bug"], "a": "", "p": "Medium"}],
@@ -126,6 +127,9 @@ assert_eq "an input predating the Enabler keys matches one carrying them empty" 
 assert_eq "an input predating the work-sources table matches one carrying it empty" \
   "$(fp_with 'del(.coordinator_work_sources_table)')" \
   "$(fp_with '.coordinator_work_sources_table = ""')"
+assert_eq "a repo entry predating tech_debt matches one carrying it empty" \
+  "$(fp_with 'del(.repos[0].tech_debt)')" \
+  "$(fp_with '.repos[0].tech_debt = []')"
 
 # A green workflow running again on a schedule reaches the same conclusion
 # under a new run id, and changes no candidate. `poetic` schedules
@@ -155,14 +159,21 @@ assert_ne() {
   fi
 }
 
-# tech-debt, implementation-plan, project-review and the code itself: all
-# file-backed, none can change without the head SHA changing.
+# implementation-plan, project-review and the code itself: all file-backed,
+# none can change without the head SHA changing.
 assert_ne "a commit on the default branch changes the fingerprint" \
   "$(fp_with '.repos[0].head_sha = "ccc333" | .repos[0].state.head_sha = "ccc333"')"
 assert_ne "a new security finding changes the fingerprint" \
   "$(fp_with '.repos[0].findings += [{"ref": "dependabot-alert-2", "severity": "critical"}]')"
 assert_ne "a re-rated finding changes the fingerprint" \
   "$(fp_with '.repos[0].findings[0].severity = "critical"')"
+# Requirement 3t: tech_debt is hashed verbatim, belt-and-braces alongside
+# head_sha, so that requirement 3t's own machine corroboration always has an
+# eligible count that matches what the fingerprint saw.
+assert_ne "a newly eligible tech-debt item changes the fingerprint" \
+  "$(fp_with '.repos[0].tech_debt += [{"ref": "TD-PPtest-26071502", "id": "TD-PPtest-26071502", "status": "open"}]')"
+assert_ne "a tech-debt item leaving the eligible set changes the fingerprint" \
+  "$(fp_with '.repos[0].tech_debt = []')"
 assert_ne "a new issue changes the fingerprint" \
   "$(fp_with '.repos[1].state.issues += [{"n": 9, "u": "2026-07-17T10:00:00Z", "l": [], "a": "", "p": "Medium"}]')"
 # Requirement 16.4: a label or an assignment is what decides whether an issue

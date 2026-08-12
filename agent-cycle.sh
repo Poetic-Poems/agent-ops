@@ -920,6 +920,43 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
   ' <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
 }
 
+# Requirement 3t's machine corroboration: which of this cycle's eligible
+# tech-debt items (ELIGIBLE_JSON, `{repo, item}` entries — the Script's own
+# post-exclusion `tech_debt` arrays, flattened) a `selected: false`
+# WORK_ORDER_JSON left completely unaccounted for. A bar-clearing item may be
+# declined without being selected only two ways: reported in
+# `needs_refinement` (source "tech-debt") or voided this same cycle — the same
+# two the prompt's own "Reporting an under-specified item" and "Void items"
+# sections give every source. `refinement_policy.tech-debt == "required"` is a
+# third, legitimate silent skip (requirement 39a: an unrefined item there is
+# never selectable, so the Co-Ordinator owes it no report), which is why this
+# returns `[]` unconditionally under that policy rather than flagging every
+# eligible item as unaccounted.
+#
+# Any entry this prints is evidence the Co-Ordinator's verdict did not
+# actually engage with the band it is declining — exactly the shape of the
+# incident this requirement exists for (issue #310), where the stated reason
+# ("requires per-item evaluation…", "heavily voided or blocked") was
+# demonstrably false against data the Script itself had already filtered.
+# Malformed input degrades to `[]` — silence, not a false positive — on the
+# same fail-open terms as exclude_claimed_items and
+# exclude_blocked_or_void_items above.
+tech_debt_unaccounted_items() {  # <work-order-json> <eligible-json> <refinement-policy-json>
+  local work_order="$1" eligible="${2:-[]}" policy="${3:-{\}}"
+  jq -e 'type == "array"' <<<"$eligible" >/dev/null 2>&1 || eligible='[]'
+  jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
+  jq -c --argjson eligible "$eligible" --argjson policy "$policy" '
+    (($policy["tech-debt"] // "exempt") == "required") as $required
+    | if $required then []
+      else
+        ((((.needs_refinement // []) | map(select((.source // "") == "tech-debt")
+                                            | {repo, item: (.item | tostring)}))
+          + ((.voided // []) | map({repo, item: (.item | tostring)})))) as $accounted
+        | ($eligible - $accounted)
+      end
+    ' <<<"$work_order" 2>/dev/null || echo '[]'
+}
+
 # Whether a candidate the Co-Ordinator returned is one this same cycle's own
 # gather already saw claimed (requirement 17a). The claim attempt below would
 # lose anyway — GitHub still arbitrates — but a loss that was knowable from
@@ -4405,33 +4442,13 @@ if [[ "$selected" != "true" ]]; then
   reason="$(jq -r '.reason // "no reason given"' <<<"$work_order_json")"
 
   # --- 5a. Tech-debt verdict corroboration (requirement 3t, issue #310) ---
-  # A `selected: false` verdict owes an account of every item the Script's own
-  # pre-filter says was eligible (open, unclaimed, unblocked, not void) — it
-  # must have either been reported in `needs_refinement` (source "tech-debt",
-  # requirement 16a) or voided this same cycle (requirement 34c), because
-  # those are the only two ways a bar-clearing item may be declined without
-  # being selected. The one exception is `refinement_policy.tech-debt ==
-  # "required"`: an unrefined item there is silently skippable by design (see
-  # prompts/coordinator.md, "Per-source refinement policy") and needs no
-  # report. Any eligible item that clears none of those is evidence the
-  # Co-Ordinator's verdict did not actually account for the band it is
-  # declining — exactly the shape of the incident this requirement exists for,
-  # where the stated reason ("requires per-item evaluation...", "heavily
-  # voided or blocked") was demonstrably false against data the Script itself
-  # had already filtered.
+  # See tech_debt_unaccounted_items's own comment above for the rule; only
+  # worth computing at all when the Script found something eligible to check
+  # the verdict against.
   td_unaccounted_json="[]"
   if (( eligible_tech_debt_total > 0 )); then
-    td_unaccounted_json="$(jq -c --argjson eligible "$eligible_tech_debt_json" \
-      --argjson policy "$refinement_policy_json" '
-      (($policy["tech-debt"] // "exempt") == "required") as $required
-      | if $required then []
-        else
-          ((((.needs_refinement // []) | map(select((.source // "") == "tech-debt")
-                                              | {repo, item: (.item | tostring)}))
-            + ((.voided // []) | map({repo, item: (.item | tostring)})))) as $accounted
-          | ($eligible - $accounted)
-        end
-      ' <<<"$work_order_json" 2>/dev/null || echo '[]')"
+    td_unaccounted_json="$(tech_debt_unaccounted_items "$work_order_json" \
+      "$eligible_tech_debt_json" "$refinement_policy_json")"
   fi
   td_unaccounted_n="$(jq 'length' <<<"$td_unaccounted_json" 2>/dev/null || echo 0)"
 
