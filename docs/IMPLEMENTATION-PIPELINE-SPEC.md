@@ -606,6 +606,7 @@ and the schema must carry every one of them.
 | `lock_stale_after` | *(unset)* | A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the four actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point — an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on. |
 | `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
+| `limit_escalate_after_hours` | 24 h | The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
@@ -862,6 +863,24 @@ runs unattended.
       estimate, and `--status` reports the stand-down alongside the switch.
       Both answer "why is nothing happening?", and a status that knew only
       about the switch is how a stale cooldown went a day unexplained.
+
+      Every `limit-hit` event and `fleet/limit.json` record carries `kind:
+      "auto"`, `actor` (the detecting node — `limit-hit` events also keep
+      logging it as the event's own `node`), and `evidence` — the API's own
+      response, truncated to 400 characters (the structured
+      `rate_limit_info` object where the runner supplied one, else the first
+      matching limit line of the transcript). An extension of the flag is
+      therefore always accompanied by the fresh observation that justified
+      it, because the only writer is the detector responding to a hit. A
+      record whose `kind` is `manual` only ever enters `fleet/limit.json` by
+      an operator's hand: it is honoured as written until its `resume_at`
+      passes or `--clear-limit` lifts it, is never probed (1b) and never
+      escalates (1c), and its stand-down reason names its `actor` and says it
+      is manual. A record with no `kind` reads as `auto` — every record this
+      system has ever written was a detector's. `limit-cleared` events record
+      their own `actor` and `kind` (`manual` for `--clear-limit`, `auto` for
+      the probe), so the log distinguishes a human lifting a stand-down from
+      the system retiring one.
    1b. *An estimated stand-down probes its own exit.* When the governing
       record's `reset_known` is false, `resume_at` is this system's invented
       time and carries no information about the limit — so before standing
@@ -890,6 +909,30 @@ runs unattended.
       earlier is the one spend that buys nothing), and `--dry-run` never
       probes (a cycle that promises to change nothing must not write
       `limit-cleared`, and a verdict it would have to ignore is pure cost).
+      Nor is a `kind: manual` record ever probed: it is an operator's
+      decision, not a detector's inference, and no probe verdict is evidence
+      about whether the human still means it — a probe must never clear a
+      deliberate human stand-down (#244).
+   1c. *A long-running automatic freeze escalates; a manual stand-down never
+      pages.* While an automatic stand-down holds, the Script ages it from
+      `limit_standdown_since` (`lib/limit-detect.sh`: the `ts` of the first
+      `limit-hit` after the last `limit-cleared` in the union — the start of
+      the current freeze, not its latest extension). Once that age reaches
+      `limit_escalate_after_hours` (0 disables the check), it files an
+      escalation issue in `crash_loop_repo` — label
+      `enabler_escalation_label`, assignee `enabler_assignee`, body carrying
+      the governing record and the item ref `usage-limit-freeze:<since>` —
+      through the same duplicate-guarded `create_escalation_issue` the
+      Enabler and the crash-loop check use, and logs
+      `limit-freeze-escalated` with the issue and the freeze's start. That
+      event in the union is what makes the escalation once-per-freeze: a
+      cycle that finds one for the current freeze's start does not file
+      again, and the open-issue guard catches the cross-node race the union
+      has not yet carried. A failed filing logs a `warning` and retries next
+      cycle. Skipped on `--dry-run`, when `crash_loop_repo` or
+      `enabler_assignee` is unset, and always for `kind: manual` — the
+      operator who set a manual stand-down does not need to be paged about
+      their own decision.
    1a. *Claim GC*: run `lib/claim.sh gc` (requirement 17a) — best-effort,
       skipped on `--dry-run` — so registry entries a dead node left behind
       are swept before back-pressure counts them. Every node runs it; no
@@ -975,6 +1018,17 @@ runs unattended.
    timestamp, an alternative to `--for`'s relative duration; with both given,
    the later of the two deadlines wins and a warning names which. Transitions
    are logged (`disabled`, `enabled`).
+
+   The record carries `actor` and `kind` alongside `by` and `reason` (#244).
+   `actor` is `toggle_actor` (`lib/toggle.sh`): `NODE_NAME` when set, else
+   the invoking user at this host, falling through `id -un` to the numeric
+   uid — never `unknown`, because an unattributable flag is what let a
+   deliberate operator stand-down read as a runaway automatic freeze. `kind`
+   is `manual` for everything this entry point writes — an operator's or
+   agent's decision, honoured until its expiry or `--enable`, never probed
+   and never auto-cleared. A `--disable` issued while a switch is already set
+   is an extension of the earlier decision, and the `disabled` event records
+   the superseded record as `extends` rather than presenting a fresh stop.
 
    **Why it exists.** Both cron pipelines execute code out of the agent-ops
    working tree. An agent editing `agent-cycle.sh`, `lib/` or `prompts/` is
@@ -6219,6 +6273,18 @@ pull request, run the ones the change touches and any it could regress.
    `fleet/disabled.json` and both real pipelines on node B stand down
    naming the fleet switch, `--enable` on A genuinely removes the flag, and
    a `fleet/limit.json` published by A stands B down until its `resume_at`.
+   The same file covers requirement 2.3's actor/kind fields and requirement
+   2's kind gates (#244): a disable record carries `kind: manual` and a
+   non-empty `actor` that is never `unknown` (`NODE_NAME` when set, the
+   user otherwise, `id -un` with no `USER` at all); the published
+   `fleet/disabled.json` names the setting node as its actor; a limit flag
+   published with evidence carries `kind: auto`, its node as `actor`, and
+   the evidence; a hand-written `kind: manual` `fleet/limit.json` stands a
+   node down with a reason naming its actor and the manual kind, is not
+   probed (no probe note in the reason) and is not cleared; and an
+   automatic freeze older than `limit_escalate_after_hours` attempts the
+   1c escalation (offline, where `gh` fails fast, the attempt is the logged
+   `warning` naming the freeze's start).
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
@@ -6360,7 +6426,10 @@ pull request, run the ones the change touches and any it could regress.
    stated reset as a known one, maps a seven-day limit to the weekly class and
    a five-hour one to `other`, falls back exactly as the prose path does when
    no reset is stated, and declines rather than guessing on an empty,
-   unparseable or non-object record.
+   unparseable or non-object record; and `limit_standdown_since` names the
+   first hit of the current freeze — the earliest `limit-hit` with no later
+   `limit-cleared` — printing nothing on an empty stream, on one whose last
+   limit event is a `limit-cleared`, and never a hit from before that clear.
    `test/doctor.test.sh` passes: `--offline` reports the stream-flushing
    probe skipped rather than running it, so the suite never spends.
 1k4. **Both stage caps derive themselves, and in the safe direction
