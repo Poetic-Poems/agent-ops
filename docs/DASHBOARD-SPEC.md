@@ -119,7 +119,8 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   because the cap is what protects `data.js`'s size and the aggregate must
   not grow with what it counts. A cycle that logged anything beyond those
   shapes keeps its row: a raced stand-down (`claim-lost`, 17d's badge), a
-  hand-appended `unvoided` sharing its id, or a kill that cost it its
+  pre-claimed one (`claim-skipped` — a selection defect, implementation spec
+  17a), a hand-appended `unvoided` sharing its id, or a kill that cost it its
   `cycle-end` all carry information a count would bury.
 
   Its **`log.jsonl` is also what says whether that peer is working, and on
@@ -425,8 +426,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                              //   to a peer's contention (implementation
                                              //   spec 17a) before its outcome; present
                                              //   whether or not it recovered
-               standdown_cause,             // "raced" | "unreachable" | null — only on
-                                             //   an outcome of "stand-down"
+               standdown_cause,             // "raced" | "unreachable" | "pre-claimed"
+                                             //   | null — only on an outcome of
+                                             //   "stand-down"
                stages:{ coordinator|implementor|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
@@ -907,9 +909,13 @@ number's twins elsewhere on the page.
   cause `held`) before a `selection` that names `race_losses` is marked
   `raced: true` carrying that same count, whichever `outcome` it then reached;
   one that lost every candidate carries `standdown_cause` — `"raced"` for
-  contention, `"unreachable"` when every loss was a GitHub outage instead —
-  and only a cycle with a `held` loss is marked `raced` at all, a GitHub
-  outage naming no peer to contend with (implementation spec 17a, issue #245).
+  contention, `"unreachable"` when every loss was a GitHub outage instead,
+  `"pre-claimed"` when nothing was ever attempted because the cycle's own
+  gather had already seen every candidate claimed (implementation spec 17a's
+  `claim-skipped`) — and only a cycle with a `held` loss is marked `raced` at
+  all: a GitHub outage names no peer to contend with, and a pre-claimed
+  skip was never contention in the first place, so neither shape may wear
+  contention's badge (implementation spec 17a, issue #245).
   An item that is blocked *and* void reaches `void[]` and not
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty
@@ -949,7 +955,11 @@ number's twins elsewhere on the page.
   own (issue #245); it also renders the "recovered race ×N" badge naming the
   count, while a separate fixture of a cycle that lost *every* candidate
   (`raced: true`, `standdown_cause: "raced"`, outcome `stand-down`) carries
-  the `↻ raced` marker and never that one, having recovered nothing. A
+  the `↻ raced` marker and never that one, having recovered nothing; and a
+  third, of a cycle that skipped every candidate as pre-claimed
+  (`raced: false`, `standdown_cause: "pre-claimed"`), renders as an ordinary
+  stood-down row wearing neither race badge — a selection defect contends
+  with nobody. A
   fixture whose `noop_ticks` counts more filtered ticks than the forty slots
   hold (issue #271) renders its substantive cycles as ordinary rows plus the
   one summary line — the total, the stood-down/lock-held-skip split and the
@@ -1226,7 +1236,12 @@ number's twins elsewhere on the page.
   of `"raced"` on a stood-down cycle gets the identical badge, for the same
   reason "Stood down" alone does not say whether the fleet's own contention or
   a GitHub outage caused it — reading the reason text is not a substitute a
-  glance at the column can make. Blue, like the "recovered race ×N" badge
+  glance at the column can make. A `standdown_cause` of `"pre-claimed"`
+  deliberately gets no badge: no peer raced this cycle for anything — its
+  Co-Ordinator proposed work the gather had already seen claimed — and the
+  row's reason text names that defect; its `claim-skipped` events are also
+  what keep the row out of the `noop_ticks` aggregate, so the shape stays
+  visible in the history rather than being counted away. Blue, like the "recovered race ×N" badge
   beside the item and for implementation spec 17d's reason: contention is the
   fleet working, and amber on this page is reserved for what wants acting on.
   The two badges do not say the same thing twice, either: `race_losses` is a

@@ -15,6 +15,18 @@
 #     nodes at once: a Co-Ordinator "saw" a peer's claim and reasoned past it
 #     because the item ref didn't match).
 #
+# Requirement 3q extends the same decision from PR numbers to item refs, and
+# requirement 17a applies it again on the claim side, so this suite also
+# covers:
+#
+#   - exclude_claimed_items: every pre-fetched source's array is filtered by
+#     claimed item ref before the Co-Ordinator sees it (the failure mode of
+#     2026-08-09: a Co-Ordinator read four issues as claimed and ranked
+#     three of them as alternates anyway).
+#   - candidate_preclaimed: the claim loop's own pre-claim check — a
+#     candidate the cycle's gather already saw claimed is skipped without
+#     spending a claim attempt on a foregone conclusion.
+#
 # test/claim.test.sh covers the underlying claim primitive (two item refs on
 # one PR, only one PR-level claim survives); test/enabler-eligibility.test.sh
 # covers enabler_eligible_items itself. This is the third leg: the Script's
@@ -60,6 +72,8 @@ extract_function() {  # extract_function <name>
 
 gather_claimed_src="$(extract_function gather_claimed)"
 exclude_claimed_prs_src="$(extract_function exclude_claimed_prs)"
+exclude_claimed_items_src="$(extract_function exclude_claimed_items)"
+candidate_preclaimed_src="$(extract_function candidate_preclaimed)"
 pr_number_for_candidate_src="$(extract_function pr_number_for_candidate)"
 
 if [[ "$gather_claimed_src" != *"gather_claimed()"* ]]; then
@@ -70,6 +84,14 @@ if [[ "$exclude_claimed_prs_src" != *"exclude_claimed_prs()"* ]]; then
   printf 'FAIL - could not extract exclude_claimed_prs from agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$exclude_claimed_items_src" != *"exclude_claimed_items()"* ]]; then
+  printf 'FAIL - could not extract exclude_claimed_items from agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
+if [[ "$candidate_preclaimed_src" != *"candidate_preclaimed()"* ]]; then
+  printf 'FAIL - could not extract candidate_preclaimed from agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
 if [[ "$pr_number_for_candidate_src" != *"pr_number_for_candidate()"* ]]; then
   printf 'FAIL - could not extract pr_number_for_candidate from agent-cycle.sh (renamed or moved?)\n'
   exit 1
@@ -77,6 +99,8 @@ fi
 
 eval "$gather_claimed_src"
 eval "$exclude_claimed_prs_src"
+eval "$exclude_claimed_items_src"
+eval "$candidate_preclaimed_src"
 eval "$pr_number_for_candidate_src"
 
 # --- The stub gh (same filesystem CAS as test/claim.test.sh) -------------------
@@ -86,13 +110,15 @@ cat > "$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 d="${GH_STUB_DIR:?}"
-method=GET; path=""; jqf=""; declare -A f=()
+method=GET; path=""; jqf=""; slurp=0; declare -A f=()
 args=("$@")
 for (( i=0; i<${#args[@]}; i++ )); do
   case "${args[i]}" in
     -X)   method="${args[i+1]}"; (( i++ )) ;;
     -f)   kv="${args[i+1]}"; f["${kv%%=*}"]="${kv#*=}"; (( i++ )) ;;
     --jq) jqf="${args[i+1]}"; (( i++ )) ;;
+    --paginate) ;;
+    --slurp) slurp=1 ;;
     repos/*) path="${args[i]}" ;;
   esac
 done
@@ -116,7 +142,8 @@ case "$method $path" in
     [[ -f "$p" ]] || exit 1
     emit "{\"sha\":\"stubsha\",\"content\":\"$(cat "$p")\"}"; exit 0 ;;
   "GET "*/git/matching-refs/heads/*)
-    emit '[]'; exit 0 ;;
+    # --slurp wraps each page's array in an outer array, exactly as gh does.
+    if (( slurp )); then emit '[[]]'; else emit '[]'; fi; exit 0 ;;
 esac
 exit 1
 STUB
@@ -176,6 +203,54 @@ claimed_prs="$(jq -c '[.[] | select(has("pr_number")) | .pr_number]' <<<"$claime
 end_to_end="$(exclude_claimed_prs '[{"ref": "pr-77-conflict-deadbeefcafe", "pr_number": 77}]' "$claimed_prs")"
 assert_eq "gather_claimed's pr_number is exactly what excludes a fresh candidate on the same PR" "0" \
   "$(jq 'length' <<<"$end_to_end")"
+
+# --- exclude_claimed_items: the item-ref filter over every pre-fetched array (3q) --
+item_candidates='[
+  {"ref": "238", "number": 238},
+  {"ref": "247", "number": 247},
+  {"ref": "register-hygiene-422a6ef41c6f"},
+  {"title": "no ref at all"}
+]'
+item_filtered="$(exclude_claimed_items "$item_candidates" '["247", "register-hygiene-422a6ef41c6f"]')"
+assert_eq "exclude_claimed_items drops every candidate whose ref a peer holds" "2" \
+  "$(jq 'length' <<<"$item_filtered")"
+assert_eq "…keeping the unclaimed issue" "1" \
+  "$(jq '[.[] | select(.ref == "238")] | length' <<<"$item_filtered")"
+assert_eq "…and a candidate with no ref at all (never filtered on)" "1" \
+  "$(jq '[.[] | select(.title == "no ref at all")] | length' <<<"$item_filtered")"
+assert_eq "an empty claimed-item set filters nothing" "4" \
+  "$(jq 'length' <<<"$(exclude_claimed_items "$item_candidates" '[]')")"
+assert_eq "a malformed claimed-item set degrades to passing the array through" "4" \
+  "$(jq 'length' <<<"$(exclude_claimed_items "$item_candidates" 'not json')")"
+
+# --- exclude_claimed_items feeding straight off gather_claimed's own output ----
+# The 2026-08-09 shape end-to-end: the peer's claim branch alone (registry or
+# not) is what keeps the issue out of the Co-Ordinator's input.
+claimed_items="$(jq -c '[.[].item]' <<<"$claimed_out")"
+issues_after="$(exclude_claimed_items '[{"ref": "TD1", "number": 1}, {"ref": "TD2", "number": 2}]' "$claimed_items")"
+assert_eq "gather_claimed's item ref is exactly what excludes a candidate on the same item" "1" \
+  "$(jq 'length' <<<"$issues_after")"
+assert_eq "…and the survivor is the unclaimed one" "TD2" \
+  "$(jq -r '.[0].ref' <<<"$issues_after")"
+
+# --- candidate_preclaimed: the claim loop's own pre-claim check (17a) -----------
+claims_fixture='[
+  {"repo": "o/r", "item": "247", "age_hours": 2},
+  {"repo": "o/r", "item": "finding-tls-verify", "age_hours": null}
+]'
+rc=0; candidate_preclaimed "o/r" "247" "$claims_fixture" || rc=$?
+assert_eq "a candidate whose repo+item the gather saw claimed is pre-claimed" "0" "$rc"
+rc=0; candidate_preclaimed "other/repo" "247" "$claims_fixture" || rc=$?
+assert_eq "the same item ref on a different repo is not" "1" "$rc"
+rc=0; candidate_preclaimed "o/r" "250" "$claims_fixture" || rc=$?
+assert_eq "an unclaimed item is not pre-claimed" "1" "$rc"
+# The sanitised-form match: a claim derived from a branch name has already
+# been through claim_branch_for's character flattening, so the raw item ref
+# the Co-Ordinator returns must still hit it.
+rc=0; candidate_preclaimed "o/r" "finding tls/verify" "$claims_fixture" || rc=$?
+assert_eq "a claim recorded in branch-sanitised form still matches the raw ref" "0" "$rc"
+rc=0; candidate_preclaimed "o/r" "247" 'not json' || rc=$?
+assert_eq "malformed claims JSON fails open — the atomic claim stays the gate" "1" "$rc"
 
 # --- pr_number_for_candidate: the PR-keyed claim's key never depends on the model --
 # The claim in the selection loop is the hard gate (requirement 17a), so it must

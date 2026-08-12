@@ -167,7 +167,12 @@ heading, the Script gives you one JSON object:
   `abandoned_drafts` below (see "Review feedback" etc.) before you ever saw
   them, so a candidate whose PR a peer already claimed under a different round
   or head is simply absent from those arrays, not something you compare
-  against `claimed` by hand. Treat a fresh `claimed` entry as a claim under
+  against `claimed` by hand. The same is true of every pre-fetched array's
+  item refs: the Script drops any `issues`, `findings`, `register_hygiene`,
+  `review_feedback`, `merge_conflicts` or `abandoned_drafts` entry whose
+  `ref` appears in `claimed` before you see it, so `claimed` is yours to
+  apply only to the sources you derive yourself (see exclusion 3 below).
+  Treat a fresh `claimed` entry as a claim under
   exclusion 3 below — this is exactly the live
   `gh`/`git` check that exclusion used to ask you to perform yourself, now
   pre-fetched so there is nothing to query.
@@ -719,6 +724,15 @@ referencing that review; match `R-NN` refs against it. When you select one,
    whose repo and item ref appear together in `claimed` is excluded; one that
    doesn't isn't. (The Script's own atomic claim is the hard gate; this
    exclusion just saves you proposing work that will lose the race.)
+   For every pre-fetched source's array — `issues`, `findings`,
+   `register_hygiene` and the three finishing sources — the Script has
+   already applied this half deterministically: a candidate whose `ref` a
+   peer holds never reaches you at all, so what remains yours here is only
+   the sources you derive yourself (tech-debt, project-review, failed-runs,
+   implementation-plan). Excluded means excluded *at every rank*: a claimed
+   item is not an alternate either, and the Script skips any candidate it
+   already saw claimed without attempting the claim, logging the skip as a
+   selection defect rather than a race.
    **This exclusion does not apply to the `review-feedback`, `merge-conflicts`,
    or `abandoned-drafts` sources**, where the open PR is the item itself (see
    "Review feedback", "Merge conflicts", and "Abandoned drafts"). For
@@ -778,7 +792,15 @@ do not rank on a guess — **and say so in `needs_refinement`** (see "Reporting
 an under-specified item" below) rather than skipping it silently. Your
 ranking preserves the priority walk: an item found earlier in the source
 order outranks one found later, and the alternates exist because a peer node
-may win the claim on your first choice — not to lower the bar.
+may win the claim on your first choice — not to lower the bar. Alternates
+guard against claims that land *after* this input was gathered, never
+against ones already in `claimed`: an item `claimed` names is excluded from
+the ranking entirely (exclusion 3), as a primary and as an alternate alike.
+"The Script will attempt the claim atomically anyway" is not a reason to
+rank one — the one time a Co-Ordinator ranked three items it had itself
+read as claimed, every claim lost and the cycle was forfeited. If every
+otherwise-qualifying item is claimed, that is `"selected": false`, not a
+list of foregone conclusions.
 
 If nothing in the current source qualifies, fall through to the next source
 in that repo; if nothing in that repo qualifies at all, fall through to the
@@ -1046,7 +1068,11 @@ first successful claim to the Implementor; the alternates cost nothing when
 the first claim succeeds, and save the whole cycle when a peer node got
 there first. Every candidate must clear the same bar as your first choice —
 an alternate you would not stand behind as the selection does not belong in
-the list, and one strong candidate alone is a perfectly good list.
+the list, and one strong candidate alone is a perfectly good list. Every
+candidate must also clear every *exclusion* your first choice must — an
+item `claimed` names is not a candidate at any rank (exclusion 3), and the
+Script now skips such a candidate without even attempting the claim,
+logging it as a selection defect rather than a race.
 
 ```json
 {
