@@ -509,12 +509,12 @@
       }
     },
     "max_chained_cycles": {
-      "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementor) and the sources it already gathered that cycle are still non-empty and non-excluded. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
+      "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementor). The remaining-sources gate counts enabled source categories, not items, and back-pressure never empties it, so in practice a productive cycle chains to this cap regardless of remaining work. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
       "type": "integer",
       "minimum": 1,
       "default": 3,
       "x-docs": {
-        "readme": "The most cycles that may run back-to-back in one lineage — the cron-fired original plus however many it chains immediately, instead of each waiting for the next cron firing, while sources already gathered are still non-empty. `1` disables chaining.",
+        "readme": "The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining.",
         "spec": "Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining."
       }
     },
