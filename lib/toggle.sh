@@ -22,8 +22,16 @@
 #     "disabled_at": "2026-07-17T09:00:00Z",
 #     "expires_at":  "2026-07-17T13:00:00Z",   // null means "until --enable"
 #     "by":          "wallen@host pid 4242",
-#     "reason":      "editing lib/toggle.sh"
+#     "reason":      "editing lib/toggle.sh",
+#     "actor":       "wallen@host",            // toggle_actor — never "unknown"
+#     "kind":        "manual"                  // manual | auto (requirement 2.3)
 #   }
+#
+# `actor` and `kind` exist because a reader of a stand-down flag must be able
+# to tell an operator's deliberate stop from a detector's inference: a probe
+# may clear an automatic stand-down early, and must never clear a manual one
+# (#244 — the 2026-08-05 operator stand-down whose actor read as a bare
+# container id was initially misread as a runaway automatic freeze).
 #
 # It lives in `state_dir`, not in the repo, for two reasons: the repo is the
 # thing being edited (a switch tracked in git would arrive and depart with
@@ -63,6 +71,24 @@ _toggle_iso() {
 # Print the path of the switch record.
 toggle_file() {
   printf '%s' "$1/disabled.json"
+}
+
+# toggle_actor
+# The identity a stand-down record carries as `actor`: NODE_NAME when set (a
+# node acting), else the invoking user at this host. Falls through `id -un`
+# and finally the numeric uid rather than ever printing "unknown" — an
+# actorless flag is unattributable, and attribution is what tells a manual
+# stand-down from an automatic one.
+toggle_actor() {
+  if [[ -n "${NODE_NAME:-}" ]]; then
+    printf '%s' "$NODE_NAME"
+    return 0
+  fi
+  local u
+  u="${USER:-}"
+  [[ -n "$u" ]] || u="$(id -un 2>/dev/null || true)"
+  [[ -n "$u" ]] || u="uid-$(id -u 2>/dev/null || echo '?')"
+  printf '%s@%s' "$u" "$(hostname 2>/dev/null || echo '?')"
 }
 
 # toggle_parse_ttl SPEC DEFAULT_HOURS
@@ -239,20 +265,28 @@ _toggle_eval() {
   jq -nc --argjson r "$rec" '{state: "disabled", record: $r}'
 }
 
-# toggle_disable STATE_DIR REASON TTL_SPEC DEFAULT_HOURS BY
+# toggle_disable STATE_DIR REASON TTL_SPEC DEFAULT_HOURS BY [ACTOR] [KIND]
 # Set the switch and print the record written. Returns 64 if TTL_SPEC does not
 # parse (nothing is written in that case — a half-set switch is worse than
 # none, since the operator believes the pipeline is down and it is not).
+# ACTOR defaults through toggle_actor and KIND to `manual` — the only kind a
+# switch set by this entry point can be; `auto` is reserved for a detector
+# that writes its own evidence-bearing record.
 toggle_disable() {
-  local state_dir="$1" reason="$2" spec="$3" default_hours="$4" by="$5" f exp rc
+  local state_dir="$1" reason="$2" spec="$3" default_hours="$4" by="$5"
+  local actor="${6:-}" kind="${7:-manual}" f exp rc
+  [[ -n "$actor" ]] || actor="$(toggle_actor)"
   exp="$(toggle_parse_ttl "$spec" "$default_hours")" || { rc=$?; return "$rc"; }
   mkdir -p "$state_dir"
   f="$(toggle_file "$state_dir")"
   jq -n --arg at "$(_toggle_iso)" --arg exp "$exp" --arg by "$by" --arg r "$reason" \
+    --arg actor "$actor" --arg kind "$kind" \
     '{disabled_at: $at,
       expires_at: (if $exp == "" then null else $exp end),
       by: $by,
-      reason: $r}' > "$f"
+      reason: $r,
+      actor: $actor,
+      kind: $kind}' > "$f"
   jq -c '.' "$f"
 }
 
@@ -489,12 +523,19 @@ fleet_limit_resume_at() {
   return 0
 }
 
-# fleet_limit_publish STATE_REPO STATE_DIR RESUME_AT CLASS RESET_KNOWN NODE
+# fleet_limit_publish STATE_REPO STATE_DIR RESUME_AT CLASS RESET_KNOWN NODE [EVIDENCE]
 # Publish a usage-limit stand-down, extend-only: a flag already resuming at
 # or after RESUME_AT is left alone. Two attempts — re-read between them — so
 # losing the CAS to a peer publishing the same limit converges instead of
 # failing. Returns non-zero only when the flag could not be written at all;
 # the caller logs that and relies on the log union to carry the signal.
+#
+# The record carries `kind: "auto"` and `actor` (the node), because every
+# writer of this flag is a detector responding to an observed limit — and
+# EVIDENCE is that observation (the API's own response, truncated), so an
+# extension is always accompanied by the fresh evidence that justified it
+# (requirement 2; #244). A `kind: "manual"` record only ever enters this file
+# by an operator's hand, and nothing here writes or extends one.
 #
 # Extend-only has exactly one exception, and it is not a write: a human
 # lifting the stand-down through `agent-cycle.sh --clear-limit`, which deletes
@@ -503,13 +544,20 @@ fleet_limit_resume_at() {
 # extend-only exists to prevent.
 fleet_limit_publish() {
   local repo="$1" state_dir="$2" resume_at="$3" class="$4" reset_known="$5" node="$6"
+  local evidence="${7:-}"
   local new_epoch body cur cur_at cur_epoch
   [[ -n "$repo" ]] || return 0
   new_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
   (( new_epoch > 0 )) || return 0
+  # Bounded: the flag is one small file the whole fleet re-reads every cycle,
+  # and the first line of a limit message identifies it; a whole transcript
+  # would not identify it better.
+  evidence="${evidence:0:400}"
   body="$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson k "${reset_known:-false}" \
-    --arg n "$node" --arg ts "$(_toggle_iso)" \
-    '{resume_at: $r, class: $c, reset_known: $k, node: $n, ts: $ts}')"
+    --arg n "$node" --arg ts "$(_toggle_iso)" --arg e "$evidence" \
+    '{resume_at: $r, class: $c, reset_known: $k, node: $n, ts: $ts,
+      kind: "auto", actor: $n,
+      evidence: (if $e == "" then null else $e end)}')"
   for _ in 1 2; do
     cur="$(fleet_flag_fetch "$repo" "$state_dir" limit)"
     if [[ -n "$cur" ]]; then
