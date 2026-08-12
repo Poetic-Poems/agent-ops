@@ -7174,6 +7174,35 @@ pull request, run the ones the change touches and any it could regress.
     absent from `refinement_policy` is treated as exempt; `refiner_engagement_set`
     caps the result deterministically by `(repo, source, item)` and treats an
     unreadable `MAX` as `0`.
+39c. **The Refiner's verdicts are recorded as stated, driving the real switch
+    (requirements 39c, 39d, 39e).** `test/refiner-verdicts.test.sh` passes:
+    driving `maybe_run_refiner` itself — lifted verbatim from `agent-cycle.sh`,
+    with the real `lib/refinement.sh` sourced — a `refined` verdict on an
+    `issues`-source item carrying `comments_posted` produces exactly one
+    `item-refined` with `by: "refiner"` and the `comment_url`, plus the
+    `refined_label` add logged as an `own-label-action`; a non-issue item's
+    `refined` verdict carrying `refined_spec` records the spec itself, with
+    no `comment_url` and no label write. The degradation is asserted from
+    both of its directions: an `issues` verdict with no comment, and a
+    non-issue verdict whose payload names `spec` instead of `refined_spec` —
+    the exact field-name mismatch between `prompts/refiner.md` and
+    `refinement_record_fields` that PR #283's review caught by hand — earn a
+    `warning` and a `refiner-examined` with outcome `refined-uncorroborated`
+    and **no** `item-refined`, and the shipped prompt is asserted to name
+    `refined_spec` (never a bare `spec` field), so the prompt and the
+    consumer cannot silently drift apart again. A `needs-refinement` decline
+    is recorded through `record_needs_refinement_block` as an
+    `attempt-failed` attributed `stage: "refiner"` carrying the label and
+    assignee projections, while a decline with `missing` empty and one for
+    an item already blocked are refused (`recorded: 0`) with a `warning` and
+    no second block; an unrecognised verdict earns a `warning` and outcome
+    `unknown-verdict`, acted on in no way. Requirement 39e's containment:
+    a verdict for an item the cycle never claimed is discarded with a
+    `warning` and no `refiner-examined` at all, a claimed item the envelope
+    never mentions is warned about by name and left claimed, and an
+    engagement that exits non-zero or returns an unparseable final message
+    (its salvage resume also failing) records no verdict events at all,
+    expires every claim, and still returns 0.
 39f. **Own-label-action memory stops a failed removal reopening a block
     (requirement 39f).** `test/label-marker.test.sh` passes:
     `label_own_actions_map` reduces to the latest action per repo+item+label;
