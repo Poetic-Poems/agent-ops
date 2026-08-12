@@ -5021,9 +5021,10 @@ What exists, and the requirements each part answers to:
    `human_visibility_violations` names that repo, and assigned to that
    repo's own `human_visibility` array. No violations, or none surviving the
    live re-check, is `[]` (exit 0) — the ordinary answer almost every cycle
-   gets. Regression-tested in `test/gather-human-visibility-hygiene.test.sh`
-   and (the reduction) `test/human-visibility-hygiene.test.sh`; must pass
-   `shellcheck`.
+   gets. Regression-tested in `test/gather-human-visibility-hygiene.test.sh`,
+   (the reduction) `test/human-visibility-hygiene.test.sh` and (the Script's
+   own gate and assignment between the two) `test/human-visibility-wiring.test.sh`;
+   must pass `shellcheck`.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
    prints the JSON array of the repo's candidate issues — open, unassigned,
    not labelled `blocked`, naming no unresolved `Blocked-by:` reference
@@ -6818,6 +6819,15 @@ pull request, run the ones the change touches and any it could regress.
     violation for the same repo combine into one candidate; and every
     surviving candidate carries `source: "human-visibility"` and a
     `human-visibility-`-prefixed ref, never `register-hygiene-`.
+    `test/human-visibility-wiring.test.sh` passes against the block lifted
+    verbatim out of `agent-cycle.sh` — the gate and the assignment that join
+    the reduction to the gatherer, which neither test either side of it can
+    reach: a repo whose `sources` list `human-visibility` is gated in and its
+    entry's `human_visibility` array carries the candidate; a repo whose
+    `sources` omit it is left at `[]` with the gatherer never called for it;
+    each repo is handed its own slice of the violations rather than the
+    fleet-wide array; and a re-check that drops everything, or a cycle with no
+    violations at all, still leaves every entry a valid `[]`.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed

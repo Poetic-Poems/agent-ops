@@ -3037,7 +3037,7 @@ if [[ "$(jq 'length' <<<"$human_visibility_json" 2>/dev/null || echo 0)" != "0" 
   while IFS= read -r hv_slug; do
     [[ -n "$hv_slug" ]] || continue
     jq -e --arg r "$hv_slug" \
-      'any(.[]; .slug == $r and (.sources // [] | any(.; . == "human-visibility")))' \
+      'any(.[]; .slug == $r and ((.sources // []) | any(.[]; . == "human-visibility")))' \
       <<<"$ordered_repos_json" >/dev/null 2>&1 || continue
     hv_candidates_json="$(jq -c --arg r "$hv_slug" '[.[] | select(.repo == $r)]' <<<"$human_visibility_json")"
     hv_finding_json="$(gather_human_visibility_hygiene "$hv_slug" "$hv_candidates_json")"
