@@ -1467,10 +1467,16 @@ gather_source_state() {
 # per repo: the ids come from the blocked extract, so it runs only for a repo
 # that has blocked register items — which is usually none of them, at no cost.
 # An unreadable answer is `{}`, and `{}` clears nothing.
+#
+# PURPOSE names the asking pass — `blocked` (requirement 34i), `void`
+# (requirement 34n) or `selected` (the pre-flight read) — and lands in the
+# diagnostic filenames, because three passes can ask about the same repo in
+# one cycle and a shared name means the last writer silently discards the
+# other two's evidence.
 gather_register_status() {
-  local slug="$1" branch="$2" out safe
-  shift 2
-  safe="${slug//\//_}"
+  local slug="$1" branch="$2" purpose="$3" out safe
+  shift 3
+  safe="$purpose-${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-register-status.sh" "$slug" "$branch" "$@" \
         2>"$cycle_dir/register-status-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
@@ -3429,7 +3435,7 @@ while IFS=$'\t' read -r reg_slug reg_ids; do
     <<<"$ordered_repos_json" 2>/dev/null || true)"
   [[ -n "$reg_branch" ]] || continue
   # shellcheck disable=SC2086  # $reg_ids is a deliberate word-split id list.
-  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" $reg_ids)"
+  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" blocked $reg_ids)"
   register_status_json="$(jq -c --arg s "$reg_slug" --argjson m "$reg_map" '. + {($s): $m}' \
     <<<"$register_status_json" 2>/dev/null || printf '%s' "$register_status_json")"
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
@@ -3520,6 +3526,36 @@ fi
 
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
+
+# Requirement 34n's memory, applied the moment the extract exists: every pair
+# an earlier cycle already retired (a `void-retired` event on the log — a
+# fact, not a state, exactly as `void-object-closed` is) is subtracted here,
+# before the 34k sweep, the 34l register pass and 34n's own evidence-gathering
+# below ever see the set. Two bounds follow that re-deciding retirement from
+# scratch each cycle would not give: the register read below runs only over
+# the *unretired* residue, so an id retired once is never asked about again —
+# per-cycle GitHub cost proportional to what is still live, not to every void
+# ever filed — and the extract stays bounded even on a cycle whose register
+# read fails, because this subtraction needs nothing but the log. The
+# subtraction is ts-ordered (`subtract_retired_voids`): an item voided afresh
+# after its old verdict retired re-enters on the new verdict's own terms.
+#
+# Neither pass between here and 34n loses anything to the narrowing: 34k's
+# closed-object gate already skips every issue- or PR-shaped id a retirement
+# could cover (a closed object is what actioned it), and 34l's register repair
+# has nothing to do once a row reads `resolved`/`not-debt`, which retirement
+# itself required first — narrowing before 34l is what stops a repo whose
+# void register ids are all retired paying a register fetch forever. The 34f
+# label route is computed further up, from `void_items` directly, so a human's
+# `unvoided` still reaches a retired-but-void item.
+#
+# Gated on the same switch as retirement itself: `0` must restore the full,
+# unretired extract — the recorded facts stay on the log, but stop masking —
+# so an operator has a kill switch if retirement ever misbehaves, and flipping
+# it back re-masks from the log with nothing re-queried.
+if (( void_retire_after_days > 0 )); then
+  void_json="$(subtract_retired_voids "$void_json" "$(void_retired_items "$union_log")")"
+fi
 
 # 34k: act on void. A void already stops the item being selected again
 # (requirement 34c), but nothing before this touched the GitHub object it
@@ -3628,9 +3664,10 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # actioned; the only way one left the set at all was a human's hand-appended
 # `unvoided` (issue #309).
 #
-# Nothing computed above this point sees the narrower set, and none of it
-# needs to: the 34k sweep and the 34l register-hygiene pass above both ran
-# against the full extract, and both are already safe to run again against an
+# The 34k sweep and the 34l register-hygiene pass above saw the extract with
+# *recorded* retirements already subtracted (the block where `void_json` is
+# first computed), but not the ones this block is about to decide — and
+# neither needs those either, being already safe to run against an
 # item this rule would go on to retire — 34k's own `void_object_closed_items`
 # gate already skips a closed object, and 34l's register-hygiene repair has
 # nothing left to do once the row already reads `resolved`/`not-debt`, which
@@ -3650,13 +3687,26 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # function over the union log already in memory, costing no `gh` call at
 # all), or a tech-debt register row whose own file says `status: resolved` or
 # `status: not-debt` — 34i's own "the work is gone" statuses, which do cost a
-# read: a further `gather_register_status` call per repo with void register
-# ids, alongside the one 34i already makes for that repo's blocked ones. A
+# read: a further `gather_register_status` call per repo with still-unretired
+# void register ids, alongside the one 34i already makes for that repo's
+# blocked ones — the recorded subtraction above is what keeps that residue,
+# and so this read, bounded. A
 # void of any other shape — a project-review ref, an implementation-plan task
 # id, a `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
 # `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
 # defined for it at all (34k and 34l act on none of those shapes), so a void
 # of those kinds is never actioned and never retires on this rule alone.
+#
+# Each entry this block retires is recorded as a `void-retired` event —
+# `{repo, item, void_ts, by}`, a fact rather than a state exactly as
+# `void-object-closed` is (requirement 34k) — which is what makes the
+# decision durable: the subtraction where `void_json` is first computed reads
+# those events back, so a settled id is never re-evidenced or re-decided, and
+# the register read here stays proportional to the unretired residue instead
+# of growing by one id per void ever retired. The recording is skipped on
+# --dry-run, like the 34k sweep itself — it is a durable mark on the log —
+# while the in-memory narrowing still applies, so a dry run sees the extract
+# a real one would.
 #
 # All of it is behind the `> 0` gate, because the register read is the whole
 # cost of this requirement and `void_retire_after_days` of `0` disables the
@@ -3670,21 +3720,54 @@ if (( void_retire_after_days > 0 )); then
       <<<"$ordered_repos_json" 2>/dev/null || true)"
     [[ -n "$vrs_branch" ]] || continue
     # shellcheck disable=SC2086  # $vrs_ids is a deliberate word-split id list.
-    vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" $vrs_ids)"
+    vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" void $vrs_ids)"
     void_register_status_json="$(jq -c --arg s "$vrs_slug" --argjson m "$vrs_map" '. + {($s): $m}' \
       <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")"
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$void_register_ids_json" 2>/dev/null || true)
 
-  void_actioned_json="$(jq -c -n \
-    --argjson closed "$(void_object_closed_items "$union_log")" \
-    --argjson reg "$void_register_status_json" '
-    ($reg | to_entries | map(.key as $repo | .value | to_entries[]
+  # The closed set grows with every void ever actioned, so it arrives on
+  # stdin, never in argv (requirement 4g), and is intersected with the
+  # extract's own pairs before it travels any further: retirement can only
+  # drop what is in the extract, so the intersection loses nothing and is
+  # what keeps `void_actioned_json` — which does ride an --argjson below —
+  # bounded by the unretired residue rather than by history. `by` names the
+  # actioned signal, for the `void-retired` event to carry.
+  # shellcheck disable=SC2016  # jq's $void/$closed/$reg et al., not the shell's.
+  void_actioned_json="$(jq -c -n --argjson reg "$void_register_status_json" '
+    input as $void | input as $closed
+    | ($void | map((.repo // "") + "|" + (.item // ""))) as $pairs
+    | ($closed
+       | map(select((.repo + "|" + .item) as $k | ($pairs | index($k)) != null)
+             | {repo, item, by: "object-closed"})) as $closed_here
+    | ($reg | to_entries | map(.key as $repo | .value | to_entries[]
        | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
-       | {repo: $repo, item: .key})) as $reg_done
-    | $closed + $reg_done' 2>/dev/null || echo '[]')"
+       | {repo: $repo, item: .key, by: "register-resolved"})) as $reg_done
+    | $closed_here + $reg_done' \
+    <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>/dev/null || echo '[]')"
 
+  void_json_before_retire="$void_json"
   void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
+
+  if ! (( DRY_RUN )); then
+    # Both extracts on stdin (requirement 4g); a retire_void_items failure
+    # returns its input verbatim, so before == after and nothing is recorded.
+    # shellcheck disable=SC2016  # jq's $before/$after/$actioned et al.
+    void_retired_now_json="$(jq -c -n --argjson actioned "$void_actioned_json" '
+      input as $before | input as $after
+      | ($after | map((.repo // "") + "|" + (.item // ""))) as $kept
+      | [ $before[]
+          | ((.repo // "") + "|" + (.item // "")) as $k
+          | select(($kept | index($k)) == null)
+          | {repo, item, void_ts: .ts,
+             by: (($actioned | map(select(((.repo // "") + "|" + (.item // "")) == $k))
+                   | first | .by) // "actioned")} ]' \
+      <<<"$void_json_before_retire"$'\n'"$void_json" 2>/dev/null || echo '[]')"
+    while IFS= read -r void_retired_entry; do
+      [[ -n "$void_retired_entry" ]] || continue
+      log_event "void-retired" "$void_retired_entry"
+    done < <(jq -c '.[]' <<<"$void_retired_now_json" 2>/dev/null || true)
+  fi
 fi
 
 # Defence in depth alongside requirement 4g's stdin-only delivery (which is
@@ -4316,7 +4399,7 @@ fi
 preflight_register_json='{}'
 if [[ "$selected_source" == "tech-debt" ]]; then
   preflight_register_json="$(jq -nc --arg s "$selected_repo" \
-    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" "$selected_item")" \
+    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" selected "$selected_item")" \
     '{($s): $m}')"
 fi
 preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \

@@ -3946,14 +3946,19 @@ runs unattended.
     `crash-loop-escalated`,
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
-    `issue-closed-post-merge`, `void-object-closed`,
+    `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
     `disabled`, `enabled`, `salvage`,
     `warning`, `cycle-end`. A `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
     `warning` whose `detail` names the same repo and number instead, since
-    nothing was requested and the retry is automatic next cycle. A `salvage` event (requirement 9e) carries the
+    nothing was requested and the retry is automatic next cycle. A
+    `void-retired` event (requirement 34n) carries the `repo` and `item` of
+    the void entry it retired from the extract, the `void_ts` of the verdict
+    it settled, and `by` — `object-closed` or `register-resolved` — the
+    actioned signal that qualified it; it is a fact with no clearing event,
+    read back by `void_retired_items`. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
     `failed` — plus `exit_code` when the resume itself did not exit 0. It is
     written for every resume the Script actually starts, success or not,
@@ -4380,6 +4385,23 @@ runs unattended.
     void, a maintainer applied a label called `unvoided` to the pull request and
     nothing read it — the item stayed void, the fleet stood down hourly, and the
     label sat there looking like the action had been taken.
+
+    Requirement 34n adds a second, coarser way back that is deliberately
+    *not* this one — and it is a ratified change of position, not an
+    oversight. While a void is still being carried, a plain reopen of the
+    closed object changes nothing, exactly as this requirement records: the
+    label is the only voice a human has. But once the void has *retired* from
+    the extract (actioned and `void_retire_after_days` old), reopening the
+    closed object is enough by itself: nothing in the extract suppresses the
+    item any longer, so the reopened object is simply gathered as a fresh,
+    ordinary candidate — the same outcome a genuine `unvoided` would have
+    produced. The two mechanisms knowingly part company there: 34k's sweep
+    still declines to re-close an object it once closed, and the audited
+    label route, with its `ts`-ordering rule, remains the only exit *before*
+    retirement. The judgement ratified is that a human reopening an issue
+    whose void has been settled, actioned and stale for a month is
+    unambiguously asking for the work back, and demanding the label on top
+    of the reopen would be ceremony with no added authority.
 34g. **A human's own hand-applied label is a report, not a state.** Requirement
     34e's projection is deliberately one-way for the block *it* creates: the
     label mirrors what the Co-Ordinator already reported, and nothing reads it
@@ -4837,9 +4859,11 @@ runs unattended.
       requirement 34k's sweep already maintains), or a tech-debt register row
       whose own file on the default branch says `status: resolved` or
       `status: not-debt` — requirement 34i's own "the work is gone"
-      statuses, read for the void register ids by a further
+      statuses, read for the still-unretired void register ids by a further
       `scripts/gather-register-status.sh` call per repo, alongside the one
-      requirement 34i already makes for that repo's blocked ones. A void of
+      requirement 34i already makes for that repo's blocked ones — the
+      recorded subtraction below is what keeps that residue, and so the
+      per-cycle read, bounded. A void of
       any other shape — a project-review ref, an implementation-plan task id,
       a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
       `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
@@ -4851,18 +4875,43 @@ runs unattended.
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
 
+    A retirement, once decided, is **recorded**: a `void-retired` event per
+    entry — `{repo, item, void_ts, by}`, `by` naming the actioned signal
+    (`object-closed` or `register-resolved`) — a fact rather than a state,
+    exactly as requirement 34k's `void-object-closed` is: nothing clears it.
+    The next cycle reads the recorded set back (`void_retired_items`,
+    `lib/cycle-state.sh`) and subtracts it from the extract
+    (`subtract_retired_voids`) the moment `void_items` has produced it —
+    before the 34k sweep, the 34l register pass, and this requirement's own
+    evidence-gathering. Two bounds follow that re-deciding retirement from
+    scratch each cycle would not give: the per-cycle GitHub cost is
+    proportional to the *unretired residue*, never to every void ever filed —
+    an id whose retirement is on the log is never asked about again — and the
+    extract stays bounded even on a cycle whose register read fails, because
+    the subtraction needs nothing but the log. The subtraction is ts-ordered
+    like every clearing rule here: a `void-retired` event masks only an
+    `item-void` older than itself, so an item voided afresh after its
+    retirement re-enters the extract on the new verdict's own terms. On
+    `--dry-run` nothing is recorded — the mark is durable state, like the
+    34k sweep it mirrors — while the in-memory narrowing still applies, so a
+    dry run sees the extract a real cycle would.
+
     `retire_void_items` (`lib/cycle-state.sh`) is the one implementation,
     called once, immediately after requirement 34l's register-hygiene pass
     and before anything downstream reads `void_json`: the Script reassigns
     `void_json` to its answer rather than introducing a second name, so the
     Refiner's candidate filter, the no-op fingerprint and the Co-Ordinator's
     own input all see the bounded set with nothing to remember. Every earlier
-    reader of the full extract this same cycle — the 34k sweep, the 34l
-    register-hygiene pass, `unvoid_clearances_json` — already ran against it
-    and needs nothing from the narrower one: 34k's own closed-object gate
+    reader this same cycle — the 34k sweep and the 34l register-hygiene pass,
+    both running against the extract with recorded retirements already
+    subtracted, and `unvoid_clearances_json`, which reads `void_items`
+    directly and so still reaches a retired-but-void item — needs nothing
+    from the narrower set this call produces: 34k's own closed-object gate
     already skips a closed item on its own account, and 34l's repair has
     nothing left to do once a row already reads `resolved`/`not-debt`, which
-    is a precondition retirement itself requires.
+    is a precondition retirement itself requires. (Narrowing before 34l is
+    also what stops a repo whose void register ids have all retired paying a
+    register fetch every cycle forever.)
 
     **This changes what one cycle hands somebody, never what counts as
     void.** Requirement 34c is untouched, and so is every internal reader
@@ -4891,7 +4940,11 @@ runs unattended.
     installation that has switched retirement off pays nothing for the
     evidence retirement would have needed; an `item-void` event with no
     parseable `ts`, or a malformed `void_json`/actioned set of any kind, is
-    never retired. The
+    never retired. `0` also stops the recorded subtraction: the
+    `void-retired` facts stay on the log but stop masking, so the extract
+    returns to the full raw set while retirement is off — an operator's kill
+    switch if retirement ever misbehaves — and resumes masking, with nothing
+    re-queried, when it is switched back on. The
     failure mode this leaves is one more cycle carrying an entry that was
     ready to go — never a void quietly reopened.
 
@@ -7377,7 +7430,14 @@ pull request, run the ones the change touches and any it could regress.
    regardless of the actioned set; `void_retire_after_days` of `0` returns
    every entry unchanged, including old, actioned ones; and malformed input
    (either JSON argument) returns the original `void_json` verbatim rather
-   than raising. `test/cycle-state.test.sh`'s `open_blocked_items`,
+   than raising. The recorded half holds too: `void_retired_items` returns
+   one `{repo, item, ts}` per pair — the latest `ts` — dropping repoless and
+   itemless events, and `subtract_retired_voids` drops exactly the entries
+   whose recorded retirement post-dates the void's own `ts` (an item voided
+   afresh after its retirement stays in the extract), returning its input
+   verbatim when either argument is malformed, while `void_items` over the
+   same log still reports the retired entry — the raw set the dashboard and
+   requirement 34c read. `test/cycle-state.test.sh`'s `open_blocked_items`,
    `enabler_eligible_items` and `refinements_map` sections keep asserting
    against the *raw*, unretired void/blocked pairing (`LATEST_UNRESOLVED_JQ`)
    with no retirement arguments in sight, pinning that retirement is a

@@ -391,6 +391,64 @@ assert_eq "a void old enough to retire is still void, not blocked, on the raw lo
 assert_eq "…and still the one entry void_items reports, unretired" \
   "7" "$(void_items "$log" | jq -r '.[].item')"
 
+# --- void_retired_items + subtract_retired_voids (requirement 34n's memory) ---
+# `void-retired` is a fact like `void-object-closed`, with one addition: the
+# latest ts per pair is kept, because the subtraction is ts-ordered — an item
+# voided afresh *after* its old verdict retired must re-enter the extract.
+cat > "$log" <<'EOF'
+{"ts":"2026-08-01T00:00:00Z","event":"void-retired","repo":"o/r","item":"1","void_ts":"2026-06-01T00:00:00Z","by":"object-closed"}
+{"ts":"2026-08-05T00:00:00Z","event":"void-retired","repo":"o/r","item":"1","void_ts":"2026-06-01T00:00:00Z","by":"object-closed"}
+{"ts":"2026-08-01T00:00:00Z","event":"void-retired","repo":"o/r","item":"2","void_ts":"2026-05-01T00:00:00Z","by":"register-resolved"}
+{"ts":"2026-08-01T00:00:00Z","event":"void-retired","repo":"o/other","item":"1","void_ts":"2026-05-01T00:00:00Z","by":"object-closed"}
+{"ts":"2026-08-01T00:00:00Z","event":"void-retired","item":"repoless"}
+{"ts":"2026-08-01T00:00:00Z","event":"void-retired","repo":"o/r"}
+{"ts":"2026-08-01T00:00:00Z","event":"item-void","repo":"o/r","item":"unrelated","detail":"not a retirement"}
+EOF
+assert_eq "void_retired_items: one record per pair, repoless and itemless dropped" \
+  "3" "$(void_retired_items "$log" | jq 'length')"
+assert_eq "void_retired_items: the latest ts per pair wins" \
+  "2026-08-05T00:00:00Z" \
+  "$(void_retired_items "$log" | jq -r '.[] | select(.repo == "o/r" and .item == "1") | .ts')"
+assert_eq "void_retired_items: a missing or empty log is an empty set" \
+  "[]" "$(void_retired_items /nonexistent/log.jsonl)"
+
+retired_one='[{"repo":"o/r","item":"1","ts":"2026-08-01T00:00:00Z"}]'
+void_masked='[{"ts":"2026-06-01T00:00:00Z","repo":"o/r","item":"1","detail":"voided before retirement"}]'
+void_revoided='[{"ts":"2026-08-10T00:00:00Z","repo":"o/r","item":"1","detail":"voided afresh after retirement"}]'
+void_other_repo='[{"ts":"2026-06-01T00:00:00Z","repo":"o/else","item":"1","detail":"same id, different repo"}]'
+
+assert_eq "subtract_retired_voids: a pair retired after its void ts is dropped" \
+  "0" "$(subtract_retired_voids "$void_masked" "$retired_one" | jq 'length')"
+assert_eq "subtract_retired_voids: a fresh item-void after the retirement is kept" \
+  "1" "$(subtract_retired_voids "$void_revoided" "$retired_one" | jq 'length')"
+assert_eq "subtract_retired_voids: the match is repo-scoped, same-id other-repo voids are kept" \
+  "1" "$(subtract_retired_voids "$void_other_repo" "$retired_one" | jq 'length')"
+assert_eq "subtract_retired_voids: an empty retired set subtracts nothing" \
+  "$(jq -c . <<<"$void_masked")" "$(subtract_retired_voids "$void_masked" "[]" | jq -c .)"
+assert_eq "subtract_retired_voids: malformed void_json is returned verbatim rather than raising" \
+  "not valid json" "$(subtract_retired_voids "not valid json" "$retired_one")"
+assert_eq "subtract_retired_voids: a malformed retired set fails safe to no subtraction" \
+  "$(jq -c . <<<"$void_masked")" "$(subtract_retired_voids "$void_masked" "not valid json" | jq -c .)"
+
+# Round-trip on one log: the raw void definition never learns about
+# retirement — void_items still reports the entry (the dashboard's view, and
+# what keeps requirement 34c intact) — while the extract a caller builds by
+# subtracting the recorded set no longer carries it, until a fresh verdict
+# post-dates the retirement and re-enters on its own terms.
+cat > "$log" <<'EOF'
+{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"8","detail":"already done"}
+{"ts":"2026-07-01T00:00:00Z","event":"void-retired","repo":"o/r","item":"8","void_ts":"2026-06-01T00:00:00Z","by":"object-closed"}
+EOF
+assert_eq "round-trip: void_items still reports a retired item, unretired" \
+  "8" "$(void_items "$log" | jq -r '.[].item')"
+assert_eq "round-trip: the recorded subtraction removes it from the extract" \
+  "0" "$(subtract_retired_voids "$(void_items "$log")" "$(void_retired_items "$log")" | jq 'length')"
+cat >> "$log" <<'EOF'
+{"ts":"2026-07-15T00:00:00Z","event":"item-void","stage":"enabler","repo":"o/r","item":"8","detail":"voided again after the object was reopened"}
+EOF
+assert_eq "round-trip: a fresh verdict after the retirement re-enters the extract" \
+  "1" "$(subtract_retired_voids "$(void_items "$log")" "$(void_retired_items "$log")" | jq 'length')"
+
 # --- open_blocked_items (requirement 34h) ---
 # Where the two states meet, void wins. The shape is not exotic: `item-void`
 # clears no block, so every `void` verdict the Enabler reaches leaves the

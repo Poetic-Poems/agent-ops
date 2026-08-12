@@ -972,7 +972,12 @@ both settled — its issue or pull request closed, or its tech-debt row read
 `resolved`/`not-debt` — and `void_retire_after_days` old (30 by default), it
 drops out of that copy: there is nothing left for the pipeline to keep
 repeating to itself about an item everyone has already finished with. `0`
-switches this off.
+switches this off. A retirement is recorded in the pipeline's own log, so a
+settled verdict is never re-checked against GitHub — and once an item has
+retired, reopening its closed issue or pull request is enough by itself to
+put it back in front of the pipeline as a fresh, ordinary candidate; the
+`unvoided` label below is the route that works while the void is still being
+carried.
 
 To reopen a void item — you believe the work has genuinely regressed, or the
 verdict was wrong — **label any issue or pull request that names the item with
