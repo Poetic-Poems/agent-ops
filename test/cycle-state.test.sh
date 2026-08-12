@@ -326,6 +326,71 @@ cat > "$log" <<'EOF'
 EOF
 assert_eq "a repoless closure record is dropped" "0" "$(void_object_closed_items "$log" | jq 'length')"
 
+# --- retire_void_items (requirement 34n) ---
+# A fixed NOW_EPOCH throughout, never `date +%s`: the test must not depend on
+# when it happens to run. 2026-08-13T00:00:00Z; the boundary case sits exactly
+# 30 days before it (2026-07-14T00:00:00Z), the "old" case 35 days before, and
+# the "young" case 10 days before.
+now_epoch=1786579200
+actioned_one='[{"repo":"o/r","item":"1"}]'
+
+void_all='[
+  {"ts":"2026-07-09T00:00:00Z","repo":"o/r","item":"1","detail":"actioned and old"},
+  {"ts":"2026-07-14T00:00:00Z","repo":"o/r","item":"boundary","detail":"actioned, exactly 30d old"},
+  {"ts":"2026-08-03T00:00:00Z","repo":"o/r","item":"2","detail":"actioned but young"},
+  {"ts":"2026-07-09T00:00:00Z","repo":"o/r","item":"3","detail":"old but not actioned"},
+  {"repo":"o/r","item":"4","detail":"no ts at all, actioned would be irrelevant"},
+  {"ts":"not-a-date","repo":"o/r","item":"5","detail":"unparseable ts"},
+  {"ts":"2026-07-09T00:00:00Z","item":"6","detail":"repoless, hand-appended, old"}
+]'
+actioned_all=$(jq -nc '[{"repo":"o/r","item":"1"},{"repo":"o/r","item":"boundary"},
+  {"repo":"o/r","item":"2"},{"repo":"o/r","item":"4"},{"repo":"o/r","item":"5"},
+  {"repo":"o/r","item":"6"}]')
+
+assert_eq "actioned and old (30d default): the two matching entries retire, five remain" \
+  "5" "$(retire_void_items "$void_all" "$actioned_all" 30 "$now_epoch" | jq 'length')"
+assert_eq "exactly the threshold age retires (>=, not >)" \
+  "0" "$(retire_void_items "$void_all" "$actioned_all" 30 "$now_epoch" | jq '[.[] | select(.item == "boundary")] | length')"
+assert_eq "actioned but younger than the threshold is kept" \
+  "1" "$(retire_void_items "$void_all" "$actioned_all" 30 "$now_epoch" | jq '[.[] | select(.item == "2")] | length')"
+assert_eq "old but not in the actioned set is kept" \
+  "1" "$(retire_void_items "$void_all" "$actioned_one" 30 "$now_epoch" | jq '[.[] | select(.item == "3")] | length')"
+assert_eq "no ts at all is kept even when actioned and the threshold is low" \
+  "1" "$(retire_void_items "$void_all" "$actioned_all" 1 "$now_epoch" | jq '[.[] | select(.item == "4")] | length')"
+assert_eq "an unparseable ts is kept even when actioned" \
+  "1" "$(retire_void_items "$void_all" "$actioned_all" 30 "$now_epoch" | jq '[.[] | select(.item == "5")] | length')"
+assert_eq "a repoless (hand-appended) void never matches an actioned pair, and is kept" \
+  "1" "$(retire_void_items "$void_all" "$actioned_all" 30 "$now_epoch" | jq '[.[] | select(.item == "6")] | length')"
+
+assert_eq "void_retire_after_days 0 disables retirement outright" \
+  "$(jq -c . <<<"$void_all")" "$(retire_void_items "$void_all" "$actioned_all" 0 "$now_epoch" | jq -c .)"
+assert_eq "a non-numeric threshold degrades to disabled, not an error" \
+  "$(jq -c . <<<"$void_all")" "$(retire_void_items "$void_all" "$actioned_all" "banana" "$now_epoch" | jq -c .)"
+
+assert_eq "an empty actioned set retires nothing" \
+  "$(jq -c . <<<"$void_all")" "$(retire_void_items "$void_all" "[]" 30 "$now_epoch" | jq -c .)"
+
+assert_eq "malformed void_json is returned verbatim rather than raising" \
+  "not valid json" "$(retire_void_items "not valid json" "$actioned_all" 30 "$now_epoch")"
+assert_eq "malformed actioned_json fails safe to no retirement" \
+  "$(jq -c . <<<"$void_all")" "$(retire_void_items "$void_all" "not valid json" 30 "$now_epoch" | jq -c .)"
+
+# The shared void/blocked pairing (LATEST_UNRESOLVED_JQ) is what every
+# internal reader — open_blocked_items, and (via ENABLER_ELIGIBLE_JQ and
+# REFINEMENTS_MAP_JQ) enabler_eligible_items and refinements_map — recomputes
+# straight off the raw log, with no retirement arguments anywhere in their
+# signatures. Retirement is exclusively a property of the extract a caller
+# builds by calling retire_void_items on void_items' own output; it is not a
+# second definition of void, so an item retired from one cycle's delivered
+# extract still cannot resurface as blocked.
+cat > "$log" <<'EOF'
+{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"implementor","repo":"o/r","item":"7","detail":"already done"}
+EOF
+assert_eq "a void old enough to retire is still void, not blocked, on the raw log" \
+  "0" "$(open_blocked_items "$log" | jq 'length')"
+assert_eq "…and still the one entry void_items reports, unretired" \
+  "7" "$(void_items "$log" | jq -r '.[].item')"
+
 # --- open_blocked_items (requirement 34h) ---
 # Where the two states meet, void wins. The shape is not exotic: `item-void`
 # clears no block, so every `void` verdict the Enabler reaches leaves the
