@@ -6,8 +6,10 @@
 #
 # `preflight_done_reason` is a thin wrapper: `work_gone_clearances`
 # (test/work-gone.test.sh already covers that function's own decisions in
-# depth) around a one-entry blocked list, plus the stale-open-PR check for an
-# ordinary issues/tech-debt item. `preflight_branch_merged_reason` is the
+# depth) around a one-entry blocked list. `preflight_defer_reason` is the
+# stale-open-PR check for an ordinary issues/tech-debt item — a defer signal,
+# never a void-feeding one (#279), which is why it must stay out of
+# `preflight_done_reason`'s answer. `preflight_branch_merged_reason` is the
 # other, impure, done-signal — one live `gh api compare` call, stubbed below —
 # and `preflight_existing_branch_source` is the gate that gh call is never
 # reached without.
@@ -69,14 +71,21 @@ assert_eq "a repo pre-flight has no digest for decides nothing" \
 assert_eq "a repo whose digest could not be sampled decides nothing" \
   "" "$(preflight_done_reason o/a 125 agent/125 '[{"slug":"o/a","ok":false}]')"
 
-# --- Stale open PR on an ordinary item's own branch (issue #245) -----------------
-assert_eq "an ordinary item whose own branch already has an open PR is already done" \
+# --- Stale open PR on an ordinary item's own branch (issue #245, #279) -----------
+# A defer signal, not a done one: the fact can become false again (the PR may
+# close unmerged), so it must never reach `log_item_void` through
+# `preflight_done_reason` — a void is terminal and only a human clears one.
+assert_eq "the stale-open-PR fact never feeds the void-producing answer" \
+  "" "$(preflight_done_reason o/a 9 agent/9-stale "$states")"
+assert_eq "an ordinary item whose own branch already has an open PR defers" \
   "an open pull request already carries branch agent/9-stale" \
-  "$(preflight_done_reason o/a 9 agent/9-stale "$states")"
-assert_eq "an ordinary item whose branch has no open PR decides nothing" \
-  "" "$(preflight_done_reason o/a 130 agent/130 "$states")"
+  "$(preflight_defer_reason o/a 9 agent/9-stale "$states")"
+assert_eq "an ordinary item whose branch has no open PR defers nothing" \
+  "" "$(preflight_defer_reason o/a 130 agent/130 "$states")"
 assert_eq "a finishing source's own PR-shaped item never asks the stale-PR question" \
-  "" "$(preflight_done_reason o/a pr-9-abandoned-xyz agent/9-stale "$states")"
+  "" "$(preflight_defer_reason o/a pr-9-abandoned-xyz agent/9-stale "$states")"
+assert_eq "a repo the digest never sampled defers nothing" \
+  "" "$(preflight_defer_reason o/z 9 agent/9-stale "$states")"
 
 # --- preflight_existing_branch_source (issue #245) --------------------------------
 assert_eq "review-feedback's branch predates the claim" "0" \

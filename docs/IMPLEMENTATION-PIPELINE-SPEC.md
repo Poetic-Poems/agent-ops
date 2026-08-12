@@ -4653,44 +4653,63 @@ runs unattended.
     34i already reads deterministically, reused, not a new one invented for
     the occasion.
 
-    Two more done-signals run alongside `preflight_done_reason`, both cheap
-    enough to cost no clone of their own:
+    One more done-signal runs alongside `preflight_done_reason`, cheap
+    enough to cost no clone of its own: **the claimed branch is already
+    merged into `default_branch`**
+    (`lib/preflight.sh`'s `preflight_branch_merged_reason`): one live
+    `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
+    `identical` or `behind` means every commit on the branch is already an
+    ancestor of `default_branch`, so the draft's work landed some other way
+    while it sat. Run only for `review-feedback`, `merge-conflicts` and
+    `abandoned-drafts` — the three sources whose branch and pull request
+    predate the claim (`lib/preflight.sh`'s
+    `preflight_existing_branch_source`) — and never for an ordinary
+    `issues`/`tech-debt` claim, whose branch the Script has just created at
+    `default_branch`'s own head: comparing it against that same head the
+    moment the claim is won would always read `identical` and void every
+    ordinary claim on its first tick. Under squash-merge — both target
+    repositories' merge mode — a merged branch reads `diverged`, so this
+    signal actually catches only a true merge, a fast-forward, or a branch
+    carrying nothing of its own; the narrowing is false-negative-only (a
+    missed hit costs an Implementor engagement that discovers the same
+    thing, never a wrong void).
 
-    - **An open pull request already carries the just-claimed branch**, for
-      every item whose id is not a finishing source's own `pr-<n>-…` shape —
-      an `issues` or `tech-debt` item typically, but equally a `security`,
-      `code-quality`, `project-review`, `implementation-plan` or
-      `register-hygiene` one, since the claim mints all of them a branch the
-      same way. The `pr-<n>-…` shape is excluded because the check above
-      already covers it. Read from the
-      same `source_states_json` digest's `open_prs[].h`, gathered before the
-      claim — the "stale claim, a previous cycle's branch/PR already exists"
-      shape a lost-then-recovered claim race (requirement 17a) can produce.
-      `lib/preflight.sh`'s `preflight_open_pr_reason`, called from
-      `preflight_done_reason` itself.
-    - **The claimed branch is already merged into `default_branch`**
-      (`lib/preflight.sh`'s `preflight_branch_merged_reason`): one live
-      `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
-      `identical` or `behind` means every commit on the branch is already an
-      ancestor of `default_branch`, so the draft's work landed some other way
-      while it sat. Run only for `review-feedback`, `merge-conflicts` and
-      `abandoned-drafts` — the three sources whose branch and pull request
-      predate the claim (`lib/preflight.sh`'s
-      `preflight_existing_branch_source`) — and never for an ordinary
-      `issues`/`tech-debt` claim, whose branch the Script has just created at
-      `default_branch`'s own head: comparing it against that same head the
-      moment the claim is won would always read `identical` and void every
-      ordinary claim on its first tick.
-
-    A hit from any of the three logs `item-void` (stage `preflight`) with the
-    reason `work_gone_clearances`, `preflight_open_pr_reason` or
+    A hit from either done-signal logs `item-void` (stage `preflight`) with
+    the reason `work_gone_clearances` or
     `preflight_branch_merged_reason` gives, releases the claim (requirement
     17a's release rules) and ends the cycle — no Implementor engagement
-    spent. None needs a corroboration guard of its own (requirement 34d
+    spent. Neither needs a corroboration guard of its own (requirement 34d
     exists to catch a model's fabricated citation, and there is no model in
     this path to fabricate one): the evidence is read directly off
     `gh`/the register file/the cycle's own pre-claim digest, the same ground
-    truth requirement 34d's guard checks a citation against.
+    truth requirement 34d's guard checks a citation against. And both are
+    safe to make terminal for the same reason the 34i signals are: each
+    fact, once true, stays true — the staleness of a pre-claim digest can
+    only delay such a fact's arrival, never assert one that later becomes
+    false.
+
+    **An open pull request already carrying the just-claimed branch defers
+    the claim instead of voiding it** (`preflight_defer_reason`, agent-ops
+    #279) — checked for every item whose id is not a finishing source's own
+    `pr-<n>-…` shape (that shape is already answered by
+    `work_gone_clearances`), read from the same pre-claim digest's
+    `open_prs[].h`. It is the one pre-flight fact that can become false
+    again — the pull request it names may close unmerged tomorrow — and its
+    usual cause is narrower still: the digest is sampled before the
+    Co-Ordinator engagement, and a branch claim is create-only (requirement
+    17a), so winning the claim proves the ref did not exist at claim time
+    and the digest's pull request is very likely already gone. A void is
+    terminal (requirement 34h: never re-selected, never re-examined, cleared
+    only by a human) — voiding on a reversible, probably-stale fact would
+    retire live items silently, with nothing to prompt the human who alone
+    could unvoid them. So a hit logs a `warning` naming the repo, item and
+    reason, releases the claim, and ends the cycle: the item is free again
+    the next cycle, judged against a fresh digest. The check is nearly
+    unreachable by construction (the create-only claim excludes a live PR's
+    branch, and `scripts/sweep-orphan-branches.sh` refuses to delete a ref
+    with an open pull request) and is kept as defence in depth: it is cheap,
+    pure, and the state it names — however it arose — is one this cycle must
+    not spend an Implementor on either way.
 
 ### The Enabler
 
@@ -5682,12 +5701,14 @@ What exists, and the requirements each part answers to:
    `preflight_done_reason`, which given a repo, an item, its claim branch, the
    cycle's source-state digests and (for a tech-debt item) its one freshly
    read register row, wraps them into the one-entry blocked list
-   `work_gone_clearances` (3m) expects, then — for every item but a finishing
-   source's own `pr-<n>-…`-shaped one — falls back to
-   `preflight_open_pr_reason`, checking
+   `work_gone_clearances` (3m) expects and returns its reason, or nothing.
+   `preflight_defer_reason` is the non-terminal signal (#279): for every item
+   but a finishing source's own `pr-<n>-…`-shaped one it checks
    the same digest for an open pull request already carrying the claim
-   branch; returns the first reason found, or nothing. `preflight_branch_merged_reason`
-   is the third signal, kept separate because it is impure (one live
+   branch (`preflight_open_pr_reason`), and its hit defers the claim —
+   released, `warning` logged, no void — because that is the one fact here
+   that can become false again. `preflight_branch_merged_reason`
+   is the other done-signal, kept separate because it is impure (one live
    `gh api compare` call against the target repository) and `preflight_existing_branch_source`
    is the gate that scopes it to the three sources whose branch predates the
    claim (review-feedback, merge-conflicts, abandoned-drafts) — see
@@ -6122,7 +6143,18 @@ What exists, and the requirements each part answers to:
     `pull_request`-triggered analysis runs against, and so the only one GitHub
     files a pull request's alerts under; `refs/pull/<n>/head` carries no
     analysis and answers with an empty list and a 200, which is
-    indistinguishable from a clean pull request. An alerts API that
+    indistinguishable from a clean pull request. An **empty** alert list is
+    believed only after `_review_gate_analysis_exists` confirms at least one
+    code-scanning analysis exists for that same merge ref
+    (`code-scanning/analyses`, one existence read, spent only on the
+    empty-list path — alerts in hand are their own proof an analysis ran):
+    the alerts endpoint answers a never-analysed ref with the same `[]` and
+    200 a clean pull request produces, so without the existence check a pull
+    request CodeQL skipped, a first-push race, or a repository that scans on
+    push only (its alerts filed under `refs/heads/<branch>`, where the
+    merge-ref query can never see them) would all certify `clean`. No
+    analysis for the ref, or an existence check that cannot be asked, is
+    `unknown`, never `clean` (agent-ops#270). An alerts API that
     cannot be asked at all is `unknown`, never `clean` — the same "could not
     check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
     already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
@@ -6929,7 +6961,11 @@ pull request, run the ones the change touches and any it could regress.
    are read on `refs/pull/<n>/merge` and never on `refs/pull/<n>/head`
    (asserted on the ref the stubbed `gh` is actually asked for, because the
    head ref answers with an empty list and a 200 — a silent `clean` that
-   leaves every other assertion here passing); and an alerts API that
+   leaves every other assertion here passing); an empty alert list is `clean`
+   only when an analysis exists for the merge ref — with none, or with the
+   existence read itself failing, it is `unknown` naming why, and the
+   existence check is not spent at all when alerts are in hand (asserted on
+   the endpoints the stub is actually asked for); and an alerts API that
    cannot be asked at all is `unknown`, never `clean`, and never turns a dirty
    required-check verdict into anything softer. Then drive a cycle whose
    Reviewer answers `{"status": "ready"}` against a stubbed `gh` reporting a
@@ -7125,8 +7161,10 @@ pull request, run the ones the change touches and any it could regress.
    fetched (the register map is fetched fresh, per item, only when the source
    is `tech-debt`; passing none must decide nothing rather than assume open).
    An ordinary issues/tech-debt item whose own claim branch already carries an
-   open pull request in the pre-claim digest reads as already done too, and a
-   finishing source's own `pr-<n>-…`-shaped item never asks that question — it
+   open pull request in the pre-claim digest is reported by
+   `preflight_defer_reason` — a defer, never part of `preflight_done_reason`'s
+   void-feeding answer — and a finishing source's own `pr-<n>-…`-shaped item
+   never asks that question at all; it
    is already answered by the check above. `preflight_branch_merged_reason`
    reads `identical`/`behind` from a stubbed `gh api compare` as already
    merged, `diverged`/`ahead` as still live, and an unreadable or failed
