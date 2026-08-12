@@ -6035,7 +6035,18 @@ What exists, and the requirements each part answers to:
     `pull_request`-triggered analysis runs against, and so the only one GitHub
     files a pull request's alerts under; `refs/pull/<n>/head` carries no
     analysis and answers with an empty list and a 200, which is
-    indistinguishable from a clean pull request. An alerts API that
+    indistinguishable from a clean pull request. An **empty** alert list is
+    believed only after `_review_gate_analysis_exists` confirms at least one
+    code-scanning analysis exists for that same merge ref
+    (`code-scanning/analyses`, one existence read, spent only on the
+    empty-list path — alerts in hand are their own proof an analysis ran):
+    the alerts endpoint answers a never-analysed ref with the same `[]` and
+    200 a clean pull request produces, so without the existence check a pull
+    request CodeQL skipped, a first-push race, or a repository that scans on
+    push only (its alerts filed under `refs/heads/<branch>`, where the
+    merge-ref query can never see them) would all certify `clean`. No
+    analysis for the ref, or an existence check that cannot be asked, is
+    `unknown`, never `clean` (agent-ops#270). An alerts API that
     cannot be asked at all is `unknown`, never `clean` — the same "could not
     check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
     already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
@@ -6821,7 +6832,11 @@ pull request, run the ones the change touches and any it could regress.
    are read on `refs/pull/<n>/merge` and never on `refs/pull/<n>/head`
    (asserted on the ref the stubbed `gh` is actually asked for, because the
    head ref answers with an empty list and a 200 — a silent `clean` that
-   leaves every other assertion here passing); and an alerts API that
+   leaves every other assertion here passing); an empty alert list is `clean`
+   only when an analysis exists for the merge ref — with none, or with the
+   existence read itself failing, it is `unknown` naming why, and the
+   existence check is not spent at all when alerts are in hand (asserted on
+   the endpoints the stub is actually asked for); and an alerts API that
    cannot be asked at all is `unknown`, never `clean`, and never turns a dirty
    required-check verdict into anything softer. Then drive a cycle whose
    Reviewer answers `{"status": "ready"}` against a stubbed `gh` reporting a
