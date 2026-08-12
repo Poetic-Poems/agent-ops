@@ -494,7 +494,8 @@ takeover. Instead add it to `voided`:
 - `evidence`: the entry's own `superseded_evidence` field, **copied
   verbatim, unedited**. It is pre-formatted for a reason: it cites this PR's
   own number (`PR #<number>`), which the Script's void corroboration accepts
-  unconditionally for a `pr-<n>-…` item, and names the newer PR only by URL,
+  on the id alone for a `pr-<n>-…` item cited in the entry's own repo — as a
+  bare `PR #N` citation always is — and names the newer PR only by URL,
   never as "PR #<n>" — writing your own sentence that names the superseding
   PR as "PR #135" (or "pull request #135") will be checked against *that*
   PR's body and branch for this item's id, which it will never carry, and the
