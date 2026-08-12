@@ -55,6 +55,8 @@ SKILL_SRC="$SCRIPT_DIR/.claude/skills/project-review"
 # different system from the Claude usage limits above; see lib/github-limit.sh.
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/repo-clone.sh
+. "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
@@ -759,11 +761,10 @@ review_one() {
 
   clone_dir="$workspace_root/${review_id}-${safe}"
   assert_in_workspace "$clone_dir"
-  # `git clone`, not `gh repo clone`, for the reason agent-cycle.sh's own
-  # workspace step states: `gh` resolves the repository through a billed
-  # GraphQL query before it clones, and git's transport is not rate-limited.
-  # `gh auth setup-git` in entrypoint.sh authenticates the HTTPS remote.
-  if ! git clone --quiet "https://github.com/$slug.git" "$clone_dir" 2>"$review_dir/clone-$safe.err"; then
+  # `clone_repo` (lib/repo-clone.sh), shared with agent-cycle.sh's workspace
+  # step: `git clone`, because `gh repo clone` resolves the repository through
+  # a billed GraphQL query first and git's transport is not rate-limited.
+  if ! clone_repo "$slug" "$clone_dir" 2>"$review_dir/clone-$safe.err"; then
     log_event "review-attempt-failed" "$(jq -nc --arg r "$slug" --arg d "$(cat "$review_dir/clone-$safe.err")" '{repo: $r, stage: "workspace", detail: $d}')"
     release_review_claim "$slug" "$branch" "$safe" no-pr
     rm -rf "$clone_dir"; clone_dir=""

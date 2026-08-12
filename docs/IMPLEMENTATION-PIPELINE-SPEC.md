@@ -2441,17 +2441,21 @@ runs unattended.
    working directory is outside `workspace_root`. The user's own clones
    under `~/Code` are never touched.
 
-   The clone is `git clone`, not `gh repo clone`. Both fetch the same objects
-   over the same transport, but `gh` first resolves the repository through a
-   GraphQL query, which is billed against the API budget — and this step is
-   the last thing a cycle does before the Implementor, with the Co-Ordinator
-   engagement and the claim already paid for. On 2026-08-12T20:52Z that query
-   is where a cycle died: `GraphQL: API rate limit already exceeded`, having
-   spent everything and produced nothing. Git's own transport is not
-   rate-limited, so this step cannot fail that way. Authentication is
-   unchanged — `deploy/docker/entrypoint.sh` runs `gh auth setup-git`, so the
-   credential helper serves this HTTPS remote exactly as it serves the push
-   that follows. `review-cycle.sh` clones the same way, for the same reason.
+   The clone goes through `lib/repo-clone.sh`'s `clone_repo`, which runs `git
+   clone`, not `gh repo clone`. Both fetch the same objects over the same
+   transport, but `gh` first resolves the repository through a GraphQL query,
+   which is billed against the API budget — and this step is the last thing a
+   cycle does before the Implementor, with the Co-Ordinator engagement and the
+   claim already paid for. On 2026-08-12T20:52Z that query is where a cycle
+   died: `GraphQL: API rate limit already exceeded`, having spent everything
+   and produced nothing. Git's own transport is not rate-limited, so this step
+   cannot fail that way. Authentication is unchanged —
+   `deploy/docker/entrypoint.sh` runs `gh auth setup-git`, so the credential
+   helper serves this HTTPS remote exactly as it serves the push that follows.
+   `review-cycle.sh` clones through the same function, so the two cannot
+   diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
+   its own right, because a test that wants the clone to fail can no longer get
+   that from a fail-fast `gh` on `PATH`.
 6a. **The pipeline creates its own labels.** Before launching the Implementor,
    the Script ensures every label this system applies exists in the selected
    repository, creating only those that are absent: `pr_label`,
@@ -5957,6 +5961,8 @@ What exists, and the requirements each part answers to:
    differently. Sourced by both cycle scripts, `lib/claim.sh` and every
    `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
    `test/github-limit.test.sh`),
+   `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
+   pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and

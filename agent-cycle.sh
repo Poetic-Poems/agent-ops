@@ -53,6 +53,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # see the wrapper's header for what that does and does not cover.
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/repo-clone.sh
+. "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
@@ -4353,16 +4355,12 @@ impl_model="$(jq -r '.model' <<<"$work_order_json")"
 
 clone_dir="$workspace_root/$cycle_id"
 assert_in_workspace "$clone_dir"
-# `git clone`, not `gh repo clone`. The two fetch the same objects over the
-# same transport, but `gh` first resolves the repository through a GraphQL
-# query — which is billed against the API budget, and which is exactly where
-# the cycle of 2026-08-12T20:52Z died: `GraphQL: API rate limit already
-# exceeded`, after the Co-Ordinator engagement had been paid for and the claim
-# taken. Git's own transport is not rate-limited at all, so this cannot fail
-# for that reason. Authentication is unchanged: entrypoint.sh runs `gh auth
-# setup-git`, so the credential helper supplies GH_TOKEN for this HTTPS remote
-# exactly as it does for the push that follows.
-if ! git clone --quiet "https://github.com/$repo_slug.git" "$clone_dir" 2>"$cycle_dir/clone.err"; then
+# `clone_repo` (lib/repo-clone.sh) — `git clone`, not `gh repo clone`, because
+# `gh` resolves the repository through a GraphQL query that is billed against
+# the API budget, and this is the last step before the cycle's expensive stage.
+# That file holds the full reasoning and the `CLONE_GIT` test seam; both
+# pipelines clone through it so they cannot diverge.
+if ! clone_repo "$repo_slug" "$clone_dir" 2>"$cycle_dir/clone.err"; then
   log_event "attempt-failed" "$(jq -nc --arg d "$(cat "$cycle_dir/clone.err")" '{stage: "workspace", detail: $d}')"
   # The claim was taken before the clone; a cycle that ends here must not
   # keep holding the item (requirement 17a's release rules).
