@@ -1452,8 +1452,9 @@ runs unattended.
    - `superseded_evidence` — present only alongside `superseded_by`:
      pre-formatted evidence text a Co-Ordinator pastes **verbatim** into a
      `voided` entry. It names this PR's own number as "PR #N" (which
-     `lib/void-guard.sh`'s `void_pr_matches_item` trusts unconditionally for a
-     `pr-<n>-…` item — the id is minted from that very PR) and the superseding
+     `lib/void-guard.sh`'s `void_pr_matches_item` trusts on the id alone for a
+     `pr-<n>-…` item cited in the entry's own repo, as a bare citation always
+     is — the id is minted from that very PR) and the superseding
      PR only by URL, never as "PR #M" (which the guard would fetch and refuse,
      since a different, independent bump will never carry this item's id in
      its own body or branch). This is the one piece of free-text evidence in
@@ -4023,11 +4024,19 @@ runs unattended.
       request — requirements 3e, 3g and 23 mint its id as
       `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>` or
       `pr-<n>-conflict-<head-sha>` — so a citation of pull request `<n>`
-      corroborates item `pr-<n>-…` by the id's own construction, while any
-      other pull request is tested as usual. Nothing writes that synthetic id
-      into the pull request's body or branch, so without this the test would
-      refuse the one citation these items can honestly make, on exactly the
-      sources the candidate test below corroborates best. Evidence citing
+      corroborates item `pr-<n>-…` by the id's own construction. The id names
+      a pull request in the repository that minted it, so this shortcut fires
+      only when the citation resolves against the entry's own `repo` (the two
+      slugs compared case-insensitively, as GitHub treats them); a citation
+      resolving against any other repository, or one made by an entry that
+      names no `repo` at all, shares only the number with the id and is
+      tested against the cited pull request's body and branch like any other
+      citation — corroborated when the fetch names the item, refused when it
+      does not, never decided on the number alone. Any other pull request is
+      tested as usual. Nothing writes that synthetic id into the pull
+      request's body or branch, so without the shortcut the test would refuse
+      the one citation these items can honestly make, on exactly the sources
+      the candidate test below corroborates best. Evidence citing
       neither a PR nor a commit is untouched by this test — the two tests
       above are what govern free prose. This is what a citation that merely
       *exists* was missing: the shipped defect that motivated it (below)
@@ -6771,8 +6780,14 @@ pull request, run the ones the change touches and any it could regress.
    entry's, so a PR number that would match in the wrong repository is not
    corroboration. Assert the finishing sources are not caught by it: an item
    `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
-   request `<n>` is allowed on the id alone, while the same item citing a
-   different pull request is refused. Assert it runs with `repos: []` exactly
+   request `<n>` in the entry's own repo is allowed on the id alone, while
+   the same item citing a different pull request is refused. Assert the id
+   shortcut is slug-gated: the same item citing number `<n>` by a URL naming
+   a *different* repository is fetched — refused when the fetch fails, and
+   refused when the fetched body and branch name no item — and an entry
+   naming no `repo` at all whose URL citation's fetched body does name the
+   item is allowed, corroborated by the live test it fell through to rather
+   than by the number. Assert it runs with `repos: []` exactly
    as the Enabler's and the Implementor's calls do. Then drive it end to end: a
    Co-Ordinator returning a `voided` entry the guard refuses must produce an
    `attempt-failed` for that item and **no** `item-void`, and the next cycle
@@ -7550,11 +7565,27 @@ requirements above, which state only what is.
   correctly refuse it (a different, independent bump will never carry the
   superseded item's id). So `gather-merge-conflicts.sh` pre-formats the
   evidence itself, citing the superseded PR's *own* number — which the guard
-  already trusts unconditionally for a `pr-<n>-…` item — and naming the
+  trusts on the id alone for a `pr-<n>-…` item cited in the entry's own repo,
+  as a bare citation always is (issue #290) — and naming the
   superseding PR only by URL. A Co-Ordinator composing its own sentence
   naming "PR #135" instead would have every such void refused, silently,
   forever; pre-formatting the one sentence that must not vary was cheaper
   than teaching every future writer the distinction.
+- **The void guard's finishing-source id shortcut is slug-gated, and an entry
+  naming no repo falls through rather than refuses.** PR #281 made URL
+  citations resolve against the `owner/repo` the URL itself names, which
+  handed `void_pr_matches_item`'s id shortcut a slug the entry never chose: a
+  citation of `https://github.com/<any-owner>/<any-repo>/pull/281`
+  corroborated item `pr-281-…` with no fetch at all, on the numbers
+  coinciding across repositories (issue #290). The shortcut now fires only
+  when the cited slug is the entry's own `repo`. The other direction was a
+  choice: an entry naming no repo can never satisfy the gate and could have
+  been refused outright, but #281 deliberately made exactly that entry's URL
+  citations corroborable via the live fetch, so refusing would have
+  reintroduced the "names no repo" dead end that improvement removed. It
+  falls through to the ordinary body/branch test instead — the empty-repo
+  entry loses only the no-fetch shortcut, never the ability to be
+  corroborated.
 - **A register that lies about itself is repaired by the pipeline, and prevented
   by CI — two layers, because one was demonstrably not enough.** The register
   now keeps one convention throughout: a `tech-debt/<id>.md` file per record,

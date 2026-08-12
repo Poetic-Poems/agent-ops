@@ -105,8 +105,9 @@
 # as a claim that PR *implements* the item, and checks the cited PR's body and
 # branch for the item's own id — which the superseding PR will never carry
 # (it is a different, independent bump). Citing this PR's *own* number is what
-# the guard already trusts unconditionally for a `pr-<n>-…` item (its id is
-# minted from that very PR), so the pre-formatted text below cites this PR's
+# the guard trusts on the id alone for a `pr-<n>-…` item cited in the entry's
+# own repo, as a bare citation always is (its id is minted from that very
+# PR), so the pre-formatted text below cites this PR's
 # number for that reason and names the superseding PR only by URL, never as
 # "PR #N" — precise, not evasive: the claim being corroborated is "this PR
 # (its own number) is superseded", not "that PR did this PR's work".
