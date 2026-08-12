@@ -239,6 +239,49 @@ injecting the fault rather than by waiting for it.
       CPU and GitHub traffic. The suite stays whole (D7) — the dashboard
       just becomes separately deployable (D14) — and the raw-data feed
       never leaves the installation's private boundary. *[interactive]*
+- [ ] Decide how the suite authenticates to the forge, so that no
+      installation depends on a human's personal API quota. Every node, the
+      Publisher, and every interactive session presents a personal access
+      token belonging to the installation's owner, and GitHub keys the
+      primary rate limit to the *user* and not the token — so extra PATs buy
+      nothing, and the refusal names the person (`API rate limit already
+      exceeded for user ID 2049303`, fleet-wide on 2026-08-12). #312 cut the
+      cycles' GraphQL demand by ~97% and the dashboard split above removes
+      most of what is left, but both are demand-side: one bucket of 5,000
+      points per hour still has to cover an entire installation, however
+      large it grows. Evaluate every available identity against demand
+      measured *after* those two land, and record the arithmetic rather than
+      the conclusion alone (D14) — the owner's PAT (status quo: 5,000 REST
+      and 5,000 GraphQL points per hour per *user*, shared with their
+      shell); one machine account per node (N × 5,000, but the Terms of
+      Service permit "no more than one free machine account in addition to
+      your free Personal Account", and on a paid organisation each is also a
+      billable seat); one GitHub App installed on the organisation (seatless
+      on every plan, but 5,000 points per hour *per installation*, rising by
+      50/hour per repository above 20 and per member above 20 to a cap of
+      12,500 — for a small organisation, isolation without extra capacity);
+      one App per node against the same organisation (N × 5,000, still
+      seatless, at the cost of a key per app and hourly installation-token
+      minting that `gh` cannot do natively); and the Actions `GITHUB_TOKEN`
+      (1,000/hour per repository and scoped to a workflow run, so rejected
+      for a long-running node). Whatever ships as the default is what every
+      adopter inherits, and a hosted delivery (D2) would have no option but
+      an App, so this is a product decision and not merely an operational
+      one — which means pricing it for Pullwright rather than for
+      Poetic-Poems, because **the Pullwright repositories will not
+      necessarily be public.** A Free organisation of public repositories,
+      which is what Poetic-Poems is today, charges nothing for members and
+      nothing for standard-runner minutes; that arithmetic makes several of
+      these options look free when they are not free in general. Private
+      repositories move the bill on both axes at once — Actions minutes
+      begin drawing on the plan's allowance, and branch restrictions, the
+      merge gate the whole pipeline is built around, reach private
+      repositories only on GitHub Team or Enterprise Cloud — so a private
+      product repository that needs the gate puts the organisation on a
+      per-seat plan, which is precisely the plan on which machine accounts
+      stop being free and Apps stay free. Evaluate under both organisation
+      shapes and state which one the recommendation assumes.
+      *[interactive]*
 - [ ] Kubernetes deployment: manifests or a Helm chart, with the scheduler
       as a CronJob so scale-to-zero falls out naturally; Compose remains a
       supported option. *[interactive]*
@@ -339,6 +382,7 @@ Parked deliberately, each with a decide-by gate:
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
 | State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale or measured resource cost (D14) demands |
+| Forge API identity — the owner's PAT, machine accounts, one GitHub App on the organisation, or one App per node | Phase 2, before secrets-based provisioning fixes the credential shape; priced for a Pullwright organisation whose repositories may be private |
 | Multi-forge support (GitLab, Bitbucket, Gitea) | Revisit on design-partner demand, Phase 3 |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
 
