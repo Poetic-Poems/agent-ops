@@ -285,6 +285,62 @@ assert_eq "and the phantom takes none of the MAX_CYCLES budget" "1" \
 assert_eq "while both hand-appended events stay in the log tail" "2" \
   "$(jq '[.log_tail[] | select(.cycle == "manual")] | length' <<<"$cdata")"
 
+# --- No-op ticks are counted, not listed (issue #271) -----------------------------
+# Under the */15 cadence most firings are the stand-down short-circuit
+# (`cycle-start` → `stand-down` → `cycle-end`) or the lock-held skip
+# (`cycle-start` → `cycle-skipped` → `cycle-end`), and at one MAX_CYCLES slot
+# each they pushed the substantive history off the page. More no-op ticks
+# than the whole window holds, every one newer than the real work, must leave
+# the substantive cycles listed and surface only the O(1) `noop_ticks`
+# aggregate — total, split by kind, the newest tick's timestamp. The match is
+# the exact event shape, so a stand-down carrying more than the shape stays a
+# row: here, one that never logged `cycle-end` (a killed node, not a tick).
+n="$(new_home nodeN)"
+n_worked="${today_day}T010000Z-nodeN-1"
+n_none="${today_day}T020000Z-nodeN-2"
+n_kill="${today_day}T023000Z-nodeN-3"
+{
+  printf '{"ts":"2026-08-01T01:00:00Z","cycle":"%s","node":"nodeN","event":"cycle-start"}\n' "$n_worked"
+  printf '{"ts":"2026-08-01T01:00:01Z","cycle":"%s","node":"nodeN","event":"selection","repo":"o/a","item":"1","source":"tech-debt","title":"t"}\n' "$n_worked"
+  printf '{"ts":"2026-08-01T01:00:02Z","cycle":"%s","node":"nodeN","event":"pr-raised","repo":"o/a","pr_url":"https://github.com/o/a/pull/7"}\n' "$n_worked"
+  printf '{"ts":"2026-08-01T01:00:03Z","cycle":"%s","node":"nodeN","event":"cycle-end","exit_code":0}\n' "$n_worked"
+  printf '{"ts":"2026-08-01T02:00:00Z","cycle":"%s","node":"nodeN","event":"cycle-start"}\n' "$n_none"
+  printf '{"ts":"2026-08-01T02:00:01Z","cycle":"%s","node":"nodeN","event":"none-selected","reason":"nothing to do"}\n' "$n_none"
+  printf '{"ts":"2026-08-01T02:00:02Z","cycle":"%s","node":"nodeN","event":"cycle-end","exit_code":0}\n' "$n_none"
+  printf '{"ts":"2026-08-01T02:30:00Z","cycle":"%s","node":"nodeN","event":"cycle-start"}\n' "$n_kill"
+  printf '{"ts":"2026-08-01T02:30:01Z","cycle":"%s","node":"nodeN","event":"stand-down","reason":"disabled: maintenance"}\n' "$n_kill"
+  i=0
+  while (( i < 42 )); do
+    if (( i % 2 == 0 )); then noop_ev="stand-down"; else noop_ev="cycle-skipped"; fi
+    printf '{"ts":"2026-08-01T12:%02d:00Z","cycle":"%sT12%02d00Z-nodeN-t%d","node":"nodeN","event":"cycle-start"}\n' "$i" "$today_day" "$i" "$i"
+    printf '{"ts":"2026-08-01T12:%02d:01Z","cycle":"%sT12%02d00Z-nodeN-t%d","node":"nodeN","event":"%s","reason":"r"}\n' "$i" "$today_day" "$i" "$i" "$noop_ev"
+    printf '{"ts":"2026-08-01T12:%02d:02Z","cycle":"%sT12%02d00Z-nodeN-t%d","node":"nodeN","event":"cycle-end","exit_code":0}\n' "$i" "$today_day" "$i" "$i"
+    i=$(( i + 1 ))
+  done
+} > "$n/.local/state/poetic-agents/log.jsonl"
+run_publish "$n" NODE_NAME=nodeN
+ndata="$(data_of "$n")"
+assert_eq "42 newer no-op ticks leave every substantive cycle listed" "3" \
+  "$(jq '.cycles | length' <<<"$ndata")"
+assert_eq "no lock-held skip holds a detail row" "0" \
+  "$(jq '[.cycles[] | select(.outcome == "skipped")] | length' <<<"$ndata")"
+assert_eq "the one stand-down row left is the unfinished one" "$n_kill" \
+  "$(jq -r '[.cycles[] | select(.outcome == "stand-down")] | .[0].id' <<<"$ndata")"
+assert_eq "which never logged cycle-end, so it is not a tick" "null" \
+  "$(jq -r '[.cycles[] | select(.outcome == "stand-down")] | .[0].ended_at' <<<"$ndata")"
+assert_eq "the worked cycle keeps its slot under the flood" "1" \
+  "$(jq --arg c "$n_worked" '[.cycles[] | select(.id == $c)] | length' <<<"$ndata")"
+assert_eq "and so does the none-selected one — a Co-Ordinator verdict, not a no-op" "1" \
+  "$(jq --arg c "$n_none" '[.cycles[] | select(.id == $c)] | length' <<<"$ndata")"
+assert_eq "the aggregate counts every filtered tick" "42" \
+  "$(jq -r '.noop_ticks.total' <<<"$ndata")"
+assert_eq "split by kind: the stand-down short-circuits" "21" \
+  "$(jq -r '.noop_ticks.standdown' <<<"$ndata")"
+assert_eq "and the lock-held skips" "21" \
+  "$(jq -r '.noop_ticks.skipped' <<<"$ndata")"
+assert_eq "carrying the newest tick's own timestamp" "2026-08-01T12:41:02Z" \
+  "$(jq -r '.noop_ticks.last_ts' <<<"$ndata")"
+
 # --- The process budget on a long history ---------------------------------------
 # 300 single-stage cycles ≈ months of history. The per-file scan forked two jq
 # per envelope plus one re-parse per row (~900 forks before the detail loop
@@ -607,7 +663,9 @@ assert_eq "the derived lock threshold reaches the page" "true" \
   "$(jq -r '(.config.lock_stale_after // 0) > 0' <<<"$fdata")"
 assert_eq "and the work is the one the lock's cycle selected" "TD26072004" \
   "$(node_live nodeF-self item)"
-assert_eq "the fleet's newest cycle names the node that ran it" "nodeF-self" \
+# peer2's, not nodeF-self's own newer `-skipped` tick: a no-op tick holds no
+# detail slot (#271), so it cannot be the fleet's last cycle either.
+assert_eq "the fleet's newest cycle names the node that ran it" "peer2" \
   "$(jq -r '.status.last_cycle.node' <<<"$fdata")"
 
 # With the lock gone, our own row falls back to the same derivation the peers
@@ -626,19 +684,22 @@ assert_eq "falling back to its newest cycle" "${today_day}T051000Z-nodeF-self-sk
 # no end must not take the slot: it would date the fleet's last activity with a
 # null (rendered "—") and label it with the outcome ladder's floor. Here the
 # newest cycle in the union is peer1's, which is mid-flight, so the field must
-# skip past it to the newest one that logged `cycle-end`.
+# skip past it — and past the `-skipped` no-op tick, which holds no detail row
+# since #271 — to the newest substantive one that logged `cycle-end`.
 printf '{"ts":"2026-01-01T06:00:00Z","cycle":"%sT060000Z-peer1-99","node":"peer1","event":"cycle-start"}\n' \
   "$today_day" >> "$peer/log.jsonl"
 run_publish "$f" NODE_NAME=nodeF-self
 fdata="$(data_of "$f")"
 assert_eq "the newest cycle overall is the unfinished one" "${today_day}T060000Z-peer1-99" \
   "$(jq -r '.cycles[0].id' <<<"$fdata")"
-assert_eq "but last_cycle skips it for the newest that ended" "${today_day}T051000Z-nodeF-self-skipped" \
-  "$(jq -r '.status.last_cycle.id' <<<"$fdata")"
-assert_eq "so the field it is dated by is never null" "2026-01-01T05:10:02Z" \
+assert_eq "but last_cycle skips it for the newest substantive one that ended" \
+  "${today_day}T033000Z-peer2-88" "$(jq -r '.status.last_cycle.id' <<<"$fdata")"
+assert_eq "so the field it is dated by is never null" "2026-01-01T03:40:00Z" \
   "$(jq -r '.status.last_cycle.ended_at' <<<"$fdata")"
-assert_eq "and the outcome is a real verdict, not the ladder's floor" "skipped" \
+assert_eq "and the outcome is a real verdict, not the ladder's floor" "selected" \
   "$(jq -r '.status.last_cycle.outcome' <<<"$fdata")"
+assert_eq "while the skipped tick itself is counted, not listed (#271)" "1" \
+  "$(jq -r '.noop_ticks.skipped' <<<"$fdata")"
 
 # A node that has never run a cycle has no live state at all — null, not a
 # fabricated idle record. (`live` is absent from the page's reading of it.)
@@ -1206,6 +1267,10 @@ assert_eq "an outage stands down unreachable, not raced" "unreachable" \
   "$(cycle_field "$wdata" "$w_unreachable" standdown_cause)"
 assert_eq "and is not marked raced — no peer held anything" "false" \
   "$(cycle_field "$wdata" "$w_unreachable" raced)"
+# All three cycles carry a `claim-lost` beyond the bare no-op shape, so #271's
+# filter must leave every one of them its detail row and count none of them.
+assert_eq "a stand-down that carries more than the no-op shape is never aggregated" "0" \
+  "$(jq -r '.noop_ticks.total' <<<"$wdata")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then

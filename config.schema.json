@@ -509,12 +509,12 @@
       }
     },
     "max_chained_cycles": {
-      "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementor) and the sources it already gathered that cycle are still non-empty and non-excluded. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
+      "description": "Finish-then-continue: the most cycles that may run back-to-back in one process lineage — the cron-fired original plus however many it chains immediately afterward, each one launched only when the cycle before it did real work (claimed an item and ran the Implementor). The remaining-sources gate counts enabled source categories, not items, and back-pressure never empties it, so in practice a productive cycle chains to this cap regardless of remaining work. Never chains past a stand-down, a disabled pipeline, or a cycle that selected nothing. 1 disables chaining outright — the fleet is exactly the one-item-per-cron-firing shape every release before this key carried.",
       "type": "integer",
       "minimum": 1,
       "default": 3,
       "x-docs": {
-        "readme": "The most cycles that may run back-to-back in one lineage — the cron-fired original plus however many it chains immediately, instead of each waiting for the next cron firing, while sources already gathered are still non-empty. `1` disables chaining.",
+        "readme": "The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining.",
         "spec": "Finish-then-continue (requirement 39): the most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate chained continuations — bounded so a busy fleet still yields the lock periodically. `1` disables chaining."
       }
     },
@@ -791,6 +791,19 @@
         "value": {
           "readme": "`3`",
           "spec": "3 h"
+        }
+      }
+    },
+    "limit_escalate_after_hours": {
+      "description": "Hours an automatic usage-limit stand-down may run, aged from the first limit-hit of the current freeze, before the Script files an escalation issue (label `enabler_escalation_label`, assignee `enabler_assignee`, in `crash_loop_repo`). 0 turns the escalation off. Manual stand-downs never escalate.",
+      "type": "number",
+      "minimum": 0,
+      "default": 24,
+      "x-docs": {
+        "readme": "Hours. How long an automatic usage-limit stand-down may run before an escalation issue is filed; `0` turns it off. A manual stand-down never escalates.",
+        "spec": "The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it.",
+        "value": {
+          "spec": "24 h"
         }
       }
     },

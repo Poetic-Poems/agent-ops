@@ -461,6 +461,12 @@ stage_budget_apply() {
 }
 limit_cooldown_default_hours="$(cfg '.limit_cooldown_default')"
 disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
+# How long an automatic fleet-wide stand-down may run before it is put in
+# front of a human (requirement 2; #244). 0 turns the escalation off, the same
+# convention as crash_loop_after. Manual stand-downs never escalate — the
+# person who set one does not need to be paged about their own decision.
+limit_escalate_after_hours="$(cfg '.limit_escalate_after_hours')"
+[[ "$limit_escalate_after_hours" =~ ^[0-9]+$ ]] || limit_escalate_after_hours=24
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
 max_chained_cycles="$(cfg '.max_chained_cycles')"
@@ -575,17 +581,29 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       exit 0
       ;;
     disable)
-      by="${USER:-unknown}@$(hostname 2>/dev/null || echo '?') pid $$"
+      # toggle_actor, never `${USER:-unknown}`: the record's actor is what
+      # tells a reader whose decision this was, and `unknown@<container-id>`
+      # is what let a deliberate operator stand-down read as a runaway
+      # automatic freeze (#244).
+      actor="$(toggle_actor)"
+      by="$actor pid $$"
+      # Read before writing: a --disable over a live switch is an extension of
+      # the operator's earlier decision, and the log should say so rather than
+      # presenting it as a fresh stop.
+      prior_switch="$(toggle_state "$state_dir")"
+      extends="$(jq -c 'select(.state == "disabled") | .record' <<<"$prior_switch" 2>/dev/null || true)"
       if ! disable_spec="$(toggle_resolve_disable_spec "$DISABLE_FOR" "$DISABLE_UNTIL" \
                              "$disable_default_ttl_hours")"; then
         exit 64
       fi
       if ! record="$(toggle_disable "$state_dir" "$DISABLE_REASON" "$disable_spec" \
-                       "$disable_default_ttl_hours" "$by")"; then
+                       "$disable_default_ttl_hours" "$by" "$actor" manual)"; then
         exit 64
       fi
-      log_event "disabled" "$(jq -nc --argjson r "$record" \
-        '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by}')"
+      log_event "disabled" "$(jq -nc --argjson r "$record" --argjson x "${extends:-null}" \
+        '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by,
+          actor: $r.actor, kind: $r.kind}
+         + (if $x == null then {} else {extends: $x} end)')"
       printf 'agent-cycle: disabled — %s\n' "$(toggle_describe "$record")"
       # The same record goes up as the fleet switch (requirement 2.3a): with
       # several nodes active, "stop the pipelines" has to mean all of them.
@@ -643,10 +661,10 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # every earlier limit-hit, on this node immediately and on its peers at
       # their next state-sync fetch.
       log_event "limit-cleared" "$(jq -nc --arg w "$was" --arg r "$CLEAR_LIMIT_REASON" \
-        --arg by "${USER:-unknown}@$(hostname 2>/dev/null || echo '?')" \
+        --arg by "$(toggle_actor)" \
         '{was: (if $w == "" then null else $w end),
           reason: (if $r == "" then "cleared by hand" else $r end),
-          by: $by}')"
+          by: $by, actor: $by, kind: "manual"}')"
 
       # Carrier 2: the live flag. Deleting it rather than shortening it,
       # because fleet_limit_publish is extend-only by design (concurrent hits
@@ -1107,7 +1125,7 @@ log_voided_items() {
 }
 
 detect_and_log_limit_hit() {
-  local out_file="$1" text resume_at class reset_known
+  local out_file="$1" text resume_at class reset_known evidence=""
   # Two sources, and the structured one comes first because it is better
   # evidence, not merely earlier: the stream's own `rate_limit_info` carries
   # an epoch reset time, so the stand-down is a fact rather than the estimate
@@ -1120,6 +1138,7 @@ detect_and_log_limit_hit() {
      && IFS=$'\t' read -r resume_at class reset_known \
           < <(limit_decide_structured "$stage_rate_limit_json" "$limit_cooldown_default_hours"); then
     limit_hit_this_cycle=1
+    evidence="$stage_rate_limit_json"
   else
     limit_phrase_in "$out_file" "$out_file.stderr" || return 1
     # Remembered for the rest of the cycle, because the Enabler runs from the exit
@@ -1129,14 +1148,21 @@ detect_and_log_limit_hit() {
     limit_hit_this_cycle=1
     text="$(cat "$out_file" "$out_file.stderr" 2>/dev/null || true)"
     IFS=$'\t' read -r resume_at class reset_known < <(limit_decide "$text" "$limit_cooldown_default_hours")
+    evidence="$(grep -ihE "$LIMIT_PHRASE_REGEX" "$out_file" "$out_file.stderr" 2>/dev/null | head -n1 || true)"
   fi
+  # The API's own words, bounded: what the detector actually saw is what
+  # distinguishes an automatic stand-down from an assertion, and is what a
+  # later extension must bring fresh (requirement 2; #244).
+  evidence="${evidence:0:400}"
   log_event "limit-hit" "$(jq -nc --arg r "$resume_at" --arg c "$class" --argjson k "$reset_known" \
-    '{resume_at: $r, class: $c, reset_known: $k}')"
+    --arg n "$node_name" --arg e "$evidence" \
+    '{resume_at: $r, class: $c, reset_known: $k, kind: "auto", actor: $n,
+      evidence: (if $e == "" then null else $e end)}')"
   # Tell the fleet now, not a fetch interval from now: publish the stand-down
   # as fleet/limit.json (extend-only; requirement 2.1). Best-effort — the
   # limit-hit event above is already in this node's log, and the union carries
   # it to every peer on their next fetch regardless.
-  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$reset_known" "$node_name" \
+  fleet_limit_publish "$state_repo" "$state_dir" "$resume_at" "$class" "$reset_known" "$node_name" "$evidence" \
     || log_event "warning" "$(jq -nc \
          '{detail: "could not publish fleet/limit.json — peers will pick the cooldown up from the log union instead"}')"
 }
@@ -2781,6 +2807,11 @@ now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
   governing_class="$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)"
   governing_known="$(limit_reset_known "$governing")"
+  # Absent means auto: every record this system writes is a detector's, and
+  # says so; `manual` only ever enters by an operator's hand. The distinction
+  # is load-bearing in both directions (requirement 2; #244) — an automatic
+  # stand-down may be probed and cleared early, a manual one must never be.
+  governing_kind="$(jq -r '.kind // "auto"' <<<"$governing" 2>/dev/null || echo auto)"
   standing=1
   probe_note=""
   # 2.1b The estimated stand-down probes its own exit. When `reset_known` is
@@ -2799,8 +2830,10 @@ if (( resume_epoch > now_epoch )); then
   # asking earlier is the one spend that buys nothing. Nor does --dry-run
   # probe: a cycle that promises to change nothing must not write
   # `limit-cleared`, and a probe whose verdict it would have to ignore is
-  # pure cost.
-  if [[ "$governing_known" != "true" ]] && ! (( DRY_RUN )); then
+  # pure cost. And a *manual* record is never probed at all: it is an
+  # operator's decision, not a detector's inference, and no probe verdict is
+  # evidence about whether the human still means it (#244).
+  if [[ "$governing_kind" != "manual" && "$governing_known" != "true" ]] && ! (( DRY_RUN )); then
     probe_out="$cycle_dir/limit-probe.out"
     run_claude_stage limit-probe 180 "$implementor_model_trivial" \
       "Reply with the single word: ok" "$probe_out" "$cycle_dir" || true
@@ -2815,8 +2848,8 @@ if (( resume_epoch > now_epoch )); then
         # fleet_limit_publish is extend-only and delete is the one write that
         # legitimately moves a resume earlier.
         log_event "limit-cleared" "$(jq -nc --arg w "$resume_at" \
-          --arg by "auto-probe@$node_name" \
-          '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by}')"
+          --arg by "auto-probe@$node_name" --arg n "$node_name" \
+          '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by, actor: $n, kind: "auto"}')"
         if [[ -n "$state_repo" ]]; then
           fleet_flag_delete "$state_repo" "$state_dir" limit || log_event "warning" \
             '{"detail": "could not clear fleet/limit.json after a clear probe — peers reading it live stand down until their own probes answer"}'
@@ -2839,8 +2872,58 @@ if (( resume_epoch > now_epoch )); then
     esac
   fi
   if (( standing )); then
-    log_event "stand-down" "$(jq -nc --arg r "usage-limit cooldown $(limit_describe "$resume_at" \
-      "$governing_class" "$governing_known")$probe_note" '{reason: $r}')"
+    if [[ "$governing_kind" == "manual" ]]; then
+      # An operator's stand-down explains itself and is honoured as written:
+      # no probe ran above, nothing here clears it, and it ends at its own
+      # resume_at or when the human runs --clear-limit (#244).
+      standdown_reason="manual stand-down until $resume_at, set by $(jq -r \
+        '.actor // .node // "?"' <<<"$governing" 2>/dev/null || echo '?') — never probed or auto-cleared; 'agent-cycle.sh --clear-limit' lifts it early"
+    else
+      standdown_reason="usage-limit cooldown $(limit_describe "$resume_at" \
+        "$governing_class" "$governing_known")$probe_note"
+      # #244: a long-running *automatic* fleet-wide freeze is put in front of
+      # a human — the operator did not choose it, so nobody is watching it —
+      # while a manual stand-down never pages the person who set it. Aged
+      # from the start of the current freeze (limit_standdown_since), not
+      # from its latest extension, and raised once per freeze: the
+      # `limit-freeze-escalated` event in the union is the memory, and
+      # create_escalation_issue's open-issue guard catches the cross-node
+      # race the union has not yet carried.
+      if (( limit_escalate_after_hours > 0 )) && ! (( DRY_RUN )) \
+         && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" ]]; then
+        freeze_since="$(limit_standdown_since < "$union_log")"
+        freeze_epoch="$(date -d "$freeze_since" +%s 2>/dev/null || echo 0)"
+        freeze_done="$(jq -c --arg s "$freeze_since" \
+          'select(.event == "limit-freeze-escalated" and .since == $s)' \
+          "$union_log" 2>/dev/null | head -n1 || true)"
+        if [[ -z "$freeze_done" ]] && (( freeze_epoch > 0 )) \
+           && (( now_epoch - freeze_epoch >= limit_escalate_after_hours * 3600 )); then
+          freeze_body="$cycle_dir/limit-freeze-issue.md"
+          # shellcheck disable=SC2016  # the backticks are the issue body's Markdown, not expansions
+          {
+            printf '## The fleet has been standing down automatically since %s\n\n' "$freeze_since"
+            printf 'Every cycle since then has stood down on an automatic usage-limit record, and the freeze has now outlived `limit_escalate_after_hours` (%s h). The governing record:\n\n' "$limit_escalate_after_hours"
+            printf '```json\n%s\n```\n\n' "$governing"
+            printf 'If the limit is real, nothing is needed — the stand-down ends at its own resume time, and each cycle keeps probing an estimated one. If it has lapsed or was misread, `agent-cycle.sh --clear-limit <reason>` lifts it fleet-wide.\n\n'
+            printf -- '---\nItem: `usage-limit-freeze:%s` · raised by the Script · cycle `%s` · node `%s`\n' \
+              "$freeze_since" "$cycle_id" "$node_name"
+          } > "$freeze_body"
+          if freeze_created="$(create_escalation_issue "$crash_loop_repo" \
+               "usage-limit-freeze:$freeze_since" "$enabler_escalation_label" \
+               "Usage-limit freeze: the fleet has stood down automatically since $freeze_since" \
+               "$freeze_body")" && [[ -n "$freeze_created" ]]; then
+            log_event "limit-freeze-escalated" "$(jq -nc \
+              --argjson n "${freeze_created%%$'\t'*}" --arg u "${freeze_created#*$'\t'}" \
+              --arg s "$freeze_since" '{issue_number: $n, issue_url: $u, since: $s}')"
+          else
+            log_event "warning" "$(jq -nc \
+              --arg d "automatic usage-limit freeze since $freeze_since exceeds ${limit_escalate_after_hours}h but the escalation issue could not be filed — will retry next cycle" \
+              '{detail: $d}')"
+          fi
+        fi
+      fi
+    fi
+    log_event "stand-down" "$(jq -nc --arg r "$standdown_reason" '{reason: $r}')"
     exit 0
   fi
 fi

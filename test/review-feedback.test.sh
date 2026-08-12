@@ -113,12 +113,16 @@ blocking_of() {
 }
 # extract_answer_events REVIEWS ISSUE_COMMENTS REREQUESTS
 # The exact extraction scripts/gather-review-feedback.sh runs: a marked review
-# or marked general comment, or any review-requested timeline event.
+# or marked general comment whose marker's `actor=` field is `implementor`, or
+# any review-requested timeline event. Other actors (`script`, `enabler`,
+# `reviewer`, `refiner`) and a legacy marker with no `actor=` field at all are
+# marked but must not close a round — only the Implementor's own reply does
+# (agent-ops#292, decided in agent-ops#278).
 extract_answer_events() {
-  jq -c -n --arg marker "$marker" \
+  jq -c -n --arg marker "$marker" --arg implementor_actor "actor=implementor -->" \
       --argjson reviews "$1" --argjson comments "$2" --argjson rr "$3" '
-    ([$reviews[]  | select((.body // "") | contains($marker)) | .at]
-     + [$comments[] | select((.body // "") | contains($marker)) | .at]
+    ([$reviews[]  | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
+     + [$comments[] | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
      + [$rr[] | .at]) | sort
   '
 }
@@ -152,6 +156,33 @@ assert_eq "a marked reply after the review — answered, the human's turn" \
 human_comment="$(jq -c -n --arg at "2026-07-17T01:30:00Z" '[{at: $at, body: "looks close"}]')"
 assert_eq "an unmarked comment after the review does not answer it" \
   "0" "$(answered_after "$(extract_answer_events '[]' "$human_comment" '[]')" "$blocking_at")"
+
+# --- The actor restriction (agent-ops#292) ---
+#
+# On PR #269, an `actor=script` comment (a stage giving up) and an
+# `actor=enabler` comment (a stall being diagnosed) each carried the marker
+# and, under the old "any marked reply" rule, closed the round — the work sat
+# stranded until a human was escalated (agent-ops#278). Only `actor=implementor`
+# may close a round.
+# shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
+script_giveup="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Script** · autonomous pipeline · node `poetic-1`\n\nThe Implementor stage stopped on this pull request.\n\n%s cycle=X actor=script -->' "$marker")" \
+  '[{at: $at, body: $body}]')"
+assert_eq "an actor=script comment (a stage giving up) does not answer the round" \
+  "0" "$(answered_after "$(extract_answer_events '[]' "$script_giveup" '[]')" "$blocking_at")"
+
+# shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
+enabler_diagnosis="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf '**Enabler** · autonomous pipeline · node `poetic-1`\n\nStill blocked; diagnosing the stall.\n\n%s cycle=X actor=enabler -->' "$marker")" \
+  '[{at: $at, body: $body}]')"
+assert_eq "an actor=enabler comment (a stall being diagnosed) does not answer the round" \
+  "0" "$(answered_after "$(extract_answer_events '[]' "$enabler_diagnosis" '[]')" "$blocking_at")"
+
+# A legacy marker with no `actor=` field at all — from before the field
+# existed — must not be treated as an answer either; only a positive
+# `actor=implementor` match closes the round.
+legacy_marker="$(jq -c -n --arg at "2026-07-17T01:30:00Z" --arg body "$(printf 'Addressed both points.\n\n%s cycle=X -->' "$marker")" \
+  '[{at: $at, body: $body}]')"
+assert_eq "a legacy marked comment with no actor= field does not answer the round" \
+  "0" "$(answered_after "$(extract_answer_events '[]' "$legacy_marker" '[]')" "$blocking_at")"
 
 # Equally, a review-requested event (confirm_review_requested, lib/handoff.sh)
 # answers it, with no reply comment at all — GitHub's timeline record of

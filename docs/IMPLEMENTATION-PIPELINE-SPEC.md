@@ -606,6 +606,7 @@ and the schema must carry every one of them.
 | `lock_stale_after` | *(unset)* | A floor under the derived value of requirement 4f, not the value itself: the threshold is the sum, over the four actors, of the widest backstop each could draw this cycle, plus slack. Deriving it is the point — an assertion checked against fixed caps had to be re-derived by hand every time any of them moved, three times in two days. Erring long is close to free: a dead holder is taken over on its pid rather than its age, so this bounds only how long a live but hung cycle may hold on. |
 | `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
+| `limit_escalate_after_hours` | 24 h | The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
@@ -862,6 +863,24 @@ runs unattended.
       estimate, and `--status` reports the stand-down alongside the switch.
       Both answer "why is nothing happening?", and a status that knew only
       about the switch is how a stale cooldown went a day unexplained.
+
+      Every `limit-hit` event and `fleet/limit.json` record carries `kind:
+      "auto"`, `actor` (the detecting node — `limit-hit` events also keep
+      logging it as the event's own `node`), and `evidence` — the API's own
+      response, truncated to 400 characters (the structured
+      `rate_limit_info` object where the runner supplied one, else the first
+      matching limit line of the transcript). An extension of the flag is
+      therefore always accompanied by the fresh observation that justified
+      it, because the only writer is the detector responding to a hit. A
+      record whose `kind` is `manual` only ever enters `fleet/limit.json` by
+      an operator's hand: it is honoured as written until its `resume_at`
+      passes or `--clear-limit` lifts it, is never probed (1b) and never
+      escalates (1c), and its stand-down reason names its `actor` and says it
+      is manual. A record with no `kind` reads as `auto` — every record this
+      system has ever written was a detector's. `limit-cleared` events record
+      their own `actor` and `kind` (`manual` for `--clear-limit`, `auto` for
+      the probe), so the log distinguishes a human lifting a stand-down from
+      the system retiring one.
    1b. *An estimated stand-down probes its own exit.* When the governing
       record's `reset_known` is false, `resume_at` is this system's invented
       time and carries no information about the limit — so before standing
@@ -890,6 +909,30 @@ runs unattended.
       earlier is the one spend that buys nothing), and `--dry-run` never
       probes (a cycle that promises to change nothing must not write
       `limit-cleared`, and a verdict it would have to ignore is pure cost).
+      Nor is a `kind: manual` record ever probed: it is an operator's
+      decision, not a detector's inference, and no probe verdict is evidence
+      about whether the human still means it — a probe must never clear a
+      deliberate human stand-down (#244).
+   1c. *A long-running automatic freeze escalates; a manual stand-down never
+      pages.* While an automatic stand-down holds, the Script ages it from
+      `limit_standdown_since` (`lib/limit-detect.sh`: the `ts` of the first
+      `limit-hit` after the last `limit-cleared` in the union — the start of
+      the current freeze, not its latest extension). Once that age reaches
+      `limit_escalate_after_hours` (0 disables the check), it files an
+      escalation issue in `crash_loop_repo` — label
+      `enabler_escalation_label`, assignee `enabler_assignee`, body carrying
+      the governing record and the item ref `usage-limit-freeze:<since>` —
+      through the same duplicate-guarded `create_escalation_issue` the
+      Enabler and the crash-loop check use, and logs
+      `limit-freeze-escalated` with the issue and the freeze's start. That
+      event in the union is what makes the escalation once-per-freeze: a
+      cycle that finds one for the current freeze's start does not file
+      again, and the open-issue guard catches the cross-node race the union
+      has not yet carried. A failed filing logs a `warning` and retries next
+      cycle. Skipped on `--dry-run`, when `crash_loop_repo` or
+      `enabler_assignee` is unset, and always for `kind: manual` — the
+      operator who set a manual stand-down does not need to be paged about
+      their own decision.
    1a. *Claim GC*: run `lib/claim.sh gc` (requirement 17a) — best-effort,
       skipped on `--dry-run` — so registry entries a dead node left behind
       are swept before back-pressure counts them. Every node runs it; no
@@ -975,6 +1018,17 @@ runs unattended.
    timestamp, an alternative to `--for`'s relative duration; with both given,
    the later of the two deadlines wins and a warning names which. Transitions
    are logged (`disabled`, `enabled`).
+
+   The record carries `actor` and `kind` alongside `by` and `reason` (#244).
+   `actor` is `toggle_actor` (`lib/toggle.sh`): `NODE_NAME` when set, else
+   the invoking user at this host, falling through `id -un` to the numeric
+   uid — never `unknown`, because an unattributable flag is what let a
+   deliberate operator stand-down read as a runaway automatic freeze. `kind`
+   is `manual` for everything this entry point writes — an operator's or
+   agent's decision, honoured until its expiry or `--enable`, never probed
+   and never auto-cleared. A `--disable` issued while a switch is already set
+   is an extension of the earlier decision, and the `disabled` event records
+   the superseded record as `extends` rather than presenting a fresh stop.
 
    **Why it exists.** Both cron pipelines execute code out of the agent-ops
    working tree. An agent editing `agent-cycle.sh`, `lib/` or `prompts/` is
@@ -1263,10 +1317,11 @@ runs unattended.
    `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
    `CHANGES_REQUESTED`, and — the load-bearing clause — **no GitHub
    review-thread event has answered the blocking review**: no marked reply
-   (a review or general PR comment carrying `lib/pipeline-marker.sh`'s
-   invisible marker) and no `review_requested` timeline event, either dated
-   after the blocking review was submitted. Each entry carries every review
-   body and inline comment in the round, verbatim.
+   whose marker's `actor=` field is `implementor` (a review or general PR
+   comment carrying `lib/pipeline-marker.sh`'s invisible marker) and no
+   `review_requested` timeline event, either dated after the blocking review
+   was submitted. Each entry carries every review body and inline comment in
+   the round, verbatim.
 
    - **The turn rule is the whole feature.** This system raises PRs as the
      account it runs as, and GitHub forbids approving or dismissing a review on
@@ -1288,6 +1343,21 @@ runs unattended.
      stamped by GitHub itself at the moment they happen, so neither can be
      produced by a rebase; a round is answered only once one of them actually
      occurs after the blocking review.
+   - **Only a marked reply from the Implementor answers a round.** The
+     marker (`lib/pipeline-marker.sh`) records who wrote it — `script`,
+     `enabler`, `reviewer` and `refiner` write it too, for reasons unrelated
+     to answering a review — and two of those are never an answer:
+     `actor=script` records a stage giving up on the PR, and `actor=enabler`
+     a stall being diagnosed. On PR #269 exactly those two comments closed
+     the round under the plain "any marked reply" rule, and the work sat
+     stranded until a human was escalated (agent-ops#278). Requiring
+     `actor=implementor` — `prompts/implementor.md`'s own "Answer the review
+     before you finish" — fails loudly instead of silently: a future actor
+     added to the marker (as `refiner` was) leaves the round open rather than
+     closing it by default, and the next Implementor engagement simply finds
+     the round already answered and finishes it properly. A legacy marked
+     comment with no `actor=` field does not answer the round either, for the
+     same reason.
    - **The blocking review shares `_handoff_blocking_reviewers`'
      standing-position rule but deliberately not its bot filter**
      (requirement 34a): each reviewer's own most recent
@@ -1452,8 +1522,9 @@ runs unattended.
    - `superseded_evidence` — present only alongside `superseded_by`:
      pre-formatted evidence text a Co-Ordinator pastes **verbatim** into a
      `voided` entry. It names this PR's own number as "PR #N" (which
-     `lib/void-guard.sh`'s `void_pr_matches_item` trusts unconditionally for a
-     `pr-<n>-…` item — the id is minted from that very PR) and the superseding
+     `lib/void-guard.sh`'s `void_pr_matches_item` trusts on the id alone for a
+     `pr-<n>-…` item cited in the entry's own repo, as a bare citation always
+     is — the id is minted from that very PR) and the superseding
      PR only by URL, never as "PR #M" (which the guard would fetch and refuse,
      since a different, independent bump will never carry this item's id in
      its own body or branch). This is the one piece of free-text evidence in
@@ -2573,10 +2644,17 @@ runs unattended.
     even taken):
     - **Sources remain.** At least one configured repository's `.sources` —
       already narrowed by back-pressure (2.2a) if it was tripped — is
-      non-empty. This is not a prediction that work remains, only that
-      something is still configured to look at; the chained cycle's own
-      Co-Ordinator, gather and no-op fingerprint (3b) decide for real,
-      cheaply, exactly as an ordinary cron firing would.
+      non-empty. This counts enabled source *categories*, not items, and is
+      near-unconditional in practice: back-pressure narrows `.sources` to
+      the three finish-work sources rather than to empty, so a repo
+      configuring any of `review-feedback`/`merge-conflicts`/
+      `abandoned-drafts` keeps the count non-zero however back-pressured the
+      fleet is. It is not a prediction that work remains — the chained
+      cycle's own Co-Ordinator and gather decide that, and at full price,
+      since the cycle just finished changed the no-op fingerprint (3b) with
+      its own PR. In effect the cap below is the only gate that fires after
+      a productive cycle, and its cost is a deliberate trade — see the
+      finish-then-continue design decision.
     - **The lineage has room.** This cycle's own place in an unbroken chain
       of immediate continuations, 1 for the cron-fired original, is still
       under `max_chained_cycles` (default 3). A chained cycle inherits its
@@ -4023,11 +4101,19 @@ runs unattended.
       request — requirements 3e, 3g and 23 mint its id as
       `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>` or
       `pr-<n>-conflict-<head-sha>` — so a citation of pull request `<n>`
-      corroborates item `pr-<n>-…` by the id's own construction, while any
-      other pull request is tested as usual. Nothing writes that synthetic id
-      into the pull request's body or branch, so without this the test would
-      refuse the one citation these items can honestly make, on exactly the
-      sources the candidate test below corroborates best. Evidence citing
+      corroborates item `pr-<n>-…` by the id's own construction. The id names
+      a pull request in the repository that minted it, so this shortcut fires
+      only when the citation resolves against the entry's own `repo` (the two
+      slugs compared case-insensitively, as GitHub treats them); a citation
+      resolving against any other repository, or one made by an entry that
+      names no `repo` at all, shares only the number with the id and is
+      tested against the cited pull request's body and branch like any other
+      citation — corroborated when the fetch names the item, refused when it
+      does not, never decided on the number alone. Any other pull request is
+      tested as usual. Nothing writes that synthetic id into the pull
+      request's body or branch, so without the shortcut the test would refuse
+      the one citation these items can honestly make, on exactly the sources
+      the candidate test below corroborates best. Evidence citing
       neither a PR nor a commit is untouched by this test — the two tests
       above are what govern free prose. This is what a citation that merely
       *exists* was missing: the shipped defect that motivated it (below)
@@ -6230,6 +6316,18 @@ pull request, run the ones the change touches and any it could regress.
    `fleet/disabled.json` and both real pipelines on node B stand down
    naming the fleet switch, `--enable` on A genuinely removes the flag, and
    a `fleet/limit.json` published by A stands B down until its `resume_at`.
+   The same file covers requirement 2.3's actor/kind fields and requirement
+   2's kind gates (#244): a disable record carries `kind: manual` and a
+   non-empty `actor` that is never `unknown` (`NODE_NAME` when set, the
+   user otherwise, `id -un` with no `USER` at all); the published
+   `fleet/disabled.json` names the setting node as its actor; a limit flag
+   published with evidence carries `kind: auto`, its node as `actor`, and
+   the evidence; a hand-written `kind: manual` `fleet/limit.json` stands a
+   node down with a reason naming its actor and the manual kind, is not
+   probed (no probe note in the reason) and is not cleared; and an
+   automatic freeze older than `limit_escalate_after_hours` attempts the
+   1c escalation (offline, where `gh` fails fast, the attempt is the logged
+   `warning` naming the freeze's start).
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
@@ -6371,7 +6469,10 @@ pull request, run the ones the change touches and any it could regress.
    stated reset as a known one, maps a seven-day limit to the weekly class and
    a five-hour one to `other`, falls back exactly as the prose path does when
    no reset is stated, and declines rather than guessing on an empty,
-   unparseable or non-object record.
+   unparseable or non-object record; and `limit_standdown_since` names the
+   first hit of the current freeze — the earliest `limit-hit` with no later
+   `limit-cleared` — printing nothing on an empty stream, on one whose last
+   limit event is a `limit-cleared`, and never a hit from before that clear.
    `test/doctor.test.sh` passes: `--offline` reports the stream-flushing
    probe skipped rather than running it, so the suite never spends.
 1k4. **Both stage caps derive themselves, and in the safe direction
@@ -6782,8 +6883,14 @@ pull request, run the ones the change touches and any it could regress.
    entry's, so a PR number that would match in the wrong repository is not
    corroboration. Assert the finishing sources are not caught by it: an item
    `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
-   request `<n>` is allowed on the id alone, while the same item citing a
-   different pull request is refused. Assert it runs with `repos: []` exactly
+   request `<n>` in the entry's own repo is allowed on the id alone, while
+   the same item citing a different pull request is refused. Assert the id
+   shortcut is slug-gated: the same item citing number `<n>` by a URL naming
+   a *different* repository is fetched — refused when the fetch fails, and
+   refused when the fetched body and branch name no item — and an entry
+   naming no `repo` at all whose URL citation's fetched body does name the
+   item is allowed, corroborated by the live test it fell through to rather
+   than by the number. Assert it runs with `repos: []` exactly
    as the Enabler's and the Implementor's calls do. Then drive it end to end: a
    Co-Ordinator returning a `voided` entry the guard refuses must produce an
    `attempt-failed` for that item and **no** `item-void`, and the next cycle
@@ -7462,7 +7569,13 @@ do (measured: ~2m35s of Haiku per pass against these repos). The no-op
 short-circuit replaces those with a handful of `gh` calls and a hash, leaving
 one forced pass a day (`none_selected_recheck_hours`) as the safety valve —
 roughly a 96% cut in the idle floor, and no change at all to a busy day, where
-every cycle has something to fingerprint that moved.
+every cycle has something to fingerprint that moved. A busy day carries a
+chaining surcharge instead: finish-then-continue (39) runs each productive
+cycle's lineage to `max_chained_cycles` regardless of remaining work — the
+gate's "sources remain" half is near-unconditional and the fingerprint just
+changed — so up to `max_chained_cycles − 1` further full Co-Ordinator passes
+follow every productive cycle. Accepted for the drain rate, and tunable; see
+the finish-then-continue design decision.
 
 The Enabler is the one stage that spends a top-tier model, so what bounds it is
 worth stating as a number rather than a hope. Nothing is engaged until an item
@@ -7565,11 +7678,27 @@ requirements above, which state only what is.
   correctly refuse it (a different, independent bump will never carry the
   superseded item's id). So `gather-merge-conflicts.sh` pre-formats the
   evidence itself, citing the superseded PR's *own* number — which the guard
-  already trusts unconditionally for a `pr-<n>-…` item — and naming the
+  trusts on the id alone for a `pr-<n>-…` item cited in the entry's own repo,
+  as a bare citation always is (issue #290) — and naming the
   superseding PR only by URL. A Co-Ordinator composing its own sentence
   naming "PR #135" instead would have every such void refused, silently,
   forever; pre-formatting the one sentence that must not vary was cheaper
   than teaching every future writer the distinction.
+- **The void guard's finishing-source id shortcut is slug-gated, and an entry
+  naming no repo falls through rather than refuses.** PR #281 made URL
+  citations resolve against the `owner/repo` the URL itself names, which
+  handed `void_pr_matches_item`'s id shortcut a slug the entry never chose: a
+  citation of `https://github.com/<any-owner>/<any-repo>/pull/281`
+  corroborated item `pr-281-…` with no fetch at all, on the numbers
+  coinciding across repositories (issue #290). The shortcut now fires only
+  when the cited slug is the entry's own `repo`. The other direction was a
+  choice: an entry naming no repo can never satisfy the gate and could have
+  been refused outright, but #281 deliberately made exactly that entry's URL
+  citations corroborable via the live fetch, so refusing would have
+  reintroduced the "names no repo" dead end that improvement removed. It
+  falls through to the ordinary body/branch test instead — the empty-repo
+  entry loses only the no-fetch shortcut, never the ability to be
+  corroborated.
 - **A register that lies about itself is repaired by the pipeline, and prevented
   by CI — two layers, because one was demonstrably not enough.** The register
   now keeps one convention throughout: a `tech-debt/<id>.md` file per record,
@@ -7779,6 +7908,26 @@ requirements above, which state only what is.
   match", which costs one Co-Ordinator run. The rule can only be wrong by being
   *incomplete*, which is why requirement 3b's map of source-to-signal is
   normative and `none_selected_recheck_hours` caps the damage at a day.
+
+- **Finish-then-continue chains to its cap after real work, and that cost is
+  accepted** (requirement 39, issue #248; surfaced in the review of #268).
+  The "sources remain" half of the chain gate counts enabled source
+  *categories*, not items, and back-pressure (2.2a) narrows a repo's
+  `.sources` to the three finish-work sources rather than to empty — so for
+  any fleet whose repos configure `review-feedback`, `merge-conflicts` or
+  `abandoned-drafts` the count is never zero and `max_chained_cycles` is the
+  only gate that ever fires. Nor can a chained cycle short-circuit on the
+  no-op fingerprint (3b): the productive cycle's own PR changed the inputs
+  the fingerprint hashes. The behaviour is therefore "after a productive
+  cycle, chain to the cap", and each link pays a full Co-Ordinator pass
+  (~2m35s of Haiku by the cost profile's measure) whether or not anything
+  was left to pick up — up to `max_chained_cycles − 1` passes per productive
+  cycle, unconditionally. That is the accepted trade: #248 is after drain
+  rate — work discovered minutes after a merge rather than at the next cron
+  firing — and a gate that could predict remaining work would need the very
+  gather-and-select pass it is trying to decide whether to spend. Tuning
+  knob, not redesign: a fleet that finds the idle chains too dear lowers
+  `max_chained_cycles` (`1` disables chaining).
 
 - **The Enabler runs from the exit trap, not from nine call sites.** A model
   stage inside a cleanup handler is unusual enough to look like a mistake, so:
