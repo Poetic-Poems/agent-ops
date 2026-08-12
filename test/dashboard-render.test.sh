@@ -247,6 +247,44 @@ assert_contains "and is marked raced, which 'Stood down' alone does not say" \
 assert_not_contains "but is never called a recovered race" \
   "recovered race" "$sd"
 
+# --- preclaimed-standdown.json: skipped everything, contended for nothing ------
+# A `standdown_cause` of "pre-claimed" (spec 17a's claim-skipped: the cycle's
+# own gather had already seen every candidate claimed) is a selection defect,
+# not contention — no peer raced this cycle for anything, so neither race
+# badge may appear. The row itself survives (its reason text names the
+# defect); only the contention markers are withheld.
+pc="$(render preclaimed-standdown.json)" || { printf 'FAIL - preclaimed-standdown.json did not render:\n%s\n' "$pc"; exit 1; }
+assert_contains "a pre-claimed stand-down still reads as stood down" \
+  "Stood down" "$pc"
+assert_not_contains "but wears no raced marker — nothing was contended" \
+  "↻ raced" "$pc"
+assert_not_contains "and no recovered-race badge either" \
+  "recovered race" "$pc"
+
+# --- noop-aggregate.json: no-op ticks summarised, never listed (issue #271) ------
+# The Publisher holds the */15 cadence's stand-down short-circuits and
+# lock-held skips out of the MAX_CYCLES detail list and ships the single O(1)
+# `noop_ticks` aggregate instead. The page must render the substantive rows
+# it was given plus one summary line — here the aggregate counts more than
+# twice the forty slots the list could ever hold — and no line at all for a
+# zero aggregate (running.json above) or for a data.js written before the
+# field existed (finished.json and the rest carry no `noop_ticks` key).
+np="$(render noop-aggregate.json)" || { printf 'FAIL - noop-aggregate.json did not render:\n%s\n' "$np"; exit 1; }
+assert_contains "a substantive cycle keeps its ordinary row under the flood" \
+  "raise the widget count" "$np"
+assert_contains "and so does a none-selected one — a verdict, not a no-op" \
+  "no candidate item cleared the gates this cycle" "$np"
+assert_contains "one summary line counts what was held out of the list" \
+  "+ 87 no-op ticks held out of this list" "$np"
+assert_contains "split by kind, so a scheduler stuck on its lock stays visible" \
+  "61 stood down, 26 lock-held skips" "$np"
+assert_contains "and dates the newest tick — the cadence still showing itself" \
+  "newest 5m ago" "$np"
+assert_not_contains "a zero aggregate renders no summary line" \
+  "no-op tick" "$(render running.json)"
+assert_not_contains "nor does a data.js from before the field existed" \
+  "no-op tick" "$(render finished.json)"
+
 # --- #186: the spend-today card's persisted GMT/local/24h toggle -----------------
 # `render`'s optional second argument seeds the harness's localStorage stub, so
 # each mode is exercised as a fresh page load would read it back — not by

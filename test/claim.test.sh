@@ -56,13 +56,15 @@ d="${GH_STUB_DIR:?}"
 
 if [[ "${1:-}" == "pr" ]]; then printf '%s\n' "${GH_STUB_PRS:-0}"; exit 0; fi
 
-method=GET; path=""; jqf=""; declare -A f=()
+method=GET; path=""; jqf=""; slurp=0; declare -A f=()
 args=("$@")
 for (( i=0; i<${#args[@]}; i++ )); do
   case "${args[i]}" in
     -X)   method="${args[i+1]}"; (( i++ )) ;;
     -f)   kv="${args[i+1]}"; f["${kv%%=*}"]="${kv#*=}"; (( i++ )) ;;
     --jq) jqf="${args[i+1]}"; (( i++ )) ;;
+    --paginate) ;;
+    --slurp) slurp=1 ;;
     repos/*) path="${args[i]}" ;;
   esac
 done
@@ -125,6 +127,9 @@ case "$method $path" in
       && find . -type f 2>/dev/null | sed 's|^\./||' | grep "^${prefix}" \
       | jq -R '{ref: ("refs/heads/" + .)}' | jq -sc '.')"
     [[ -n "$out" ]] || out='[]'
+    # --slurp wraps each page's array in an outer array, exactly as gh does;
+    # the stub is a single page, so the wrap is one level deep.
+    (( slurp )) && out="[$out]"
     emit "$out"; exit 0 ;;
 esac
 exit 1
@@ -137,6 +142,7 @@ mkdir -p "$GH_STUB_DIR"
 run_claim() {  # run_claim <node-name> <args…>; prints nothing, returns claim.sh's rc
   env CLAIM_GH="$stub_bin/gh" CLAIM_NODE="$1" CLAIM_CYCLE="cycle-$1" \
       CLAIM_ITEM="${CLAIM_ITEM_OVERRIDE:-TD99}" CLAIM_SOURCE="${CLAIM_SOURCE_OVERRIDE:-tech-debt}" \
+      CLAIM_PR_NUMBER="${CLAIM_PR_NUMBER_OVERRIDE:-}" \
       "$CLAIM" "${@:2}" >/dev/null 2>&1
 }
 
@@ -167,6 +173,37 @@ wait "$pid_a"; rc_a=$?
 wait "$pid_b"; rc_b=$?
 assert_eq "a raced file claim has exactly one winner" "0 3" \
   "$(printf '%s\n' "$rc_a" "$rc_b" | sort -n | tr '\n' ' ' | sed 's/ $//')"
+
+# --- PR-level claim excludes two different item refs on the same PR (issue #238) --
+# agent-cycle.sh's claim loop takes this second, PR-keyed file claim alongside
+# the item claim for the three finishing sources — pr-77-review-501 and
+# pr-77-conflict-abcdef012345 are exactly the shape of two different item refs
+# (a review round; a conflict scoped to a head SHA) a Co-Ordinator could select
+# for the *same* pull request. Each wins its own item claim — different keys,
+# no collision — but only one may ever hold pr-77. CLAIM_PR_NUMBER is set on
+# both calls of each pair, exactly as agent-cycle.sh's claim loop sets it,
+# whether or not the PR-level claim that follows turns out to be won.
+CLAIM_ITEM_OVERRIDE="pr-77-review-501" CLAIM_SOURCE_OVERRIDE="review-feedback" \
+  CLAIM_PR_NUMBER_OVERRIDE="77" run_claim node-a claim file Poetic-Poems/poetic pr-77-review-501
+assert_eq "node-a wins its own item claim" "0" "$?"
+CLAIM_ITEM_OVERRIDE="pr-77-review-501" CLAIM_SOURCE_OVERRIDE="review-feedback" \
+  CLAIM_PR_NUMBER_OVERRIDE="77" run_claim node-a claim file Poetic-Poems/poetic pr-77
+assert_eq "node-a also wins the PR-level claim for pr-77" "0" "$?"
+
+CLAIM_ITEM_OVERRIDE="pr-77-conflict-abcdef012345" CLAIM_SOURCE_OVERRIDE="merge-conflicts" \
+  CLAIM_PR_NUMBER_OVERRIDE="77" run_claim node-b claim file Poetic-Poems/poetic pr-77-conflict-abcdef012345
+assert_eq "node-b wins its own, differently-keyed item claim on the same PR" "0" "$?"
+CLAIM_ITEM_OVERRIDE="pr-77-conflict-abcdef012345" CLAIM_SOURCE_OVERRIDE="merge-conflicts" \
+  CLAIM_PR_NUMBER_OVERRIDE="77" run_claim node-b claim file Poetic-Poems/poetic pr-77
+assert_eq "…but loses the PR-level claim — this is what #238 fixes" "3" "$?"
+
+claims_out="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" claims Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "claims reports pr_number for the item-keyed claim" "77" \
+  "$(jq -r '[.[] | select(.item == "pr-77-review-501" and .pr_number != null)][0].pr_number' <<<"$claims_out")"
+
+run_claim node-a release file Poetic-Poems/poetic pr-77
+run_claim node-a release file Poetic-Poems/poetic pr-77-review-501
+run_claim node-b release file Poetic-Poems/poetic pr-77-conflict-abcdef012345
 
 # --- GitHub unreachable fails closed ----------------------------------------------
 GH_STUB_FAIL=1 run_claim node-a claim branch Poetic-Poems/poetic td/TD98 main

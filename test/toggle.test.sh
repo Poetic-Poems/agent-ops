@@ -159,7 +159,19 @@ assert_eq "disable writes the reason" "editing lib/toggle.sh" "$(jq -r '.reason'
 assert_eq "disable stamps the expiry from the spec" \
   "2026-07-17T14:00:00Z" "$(jq -r '.expires_at' <<<"$record")"
 assert_eq "disable records who set it" "tester pid 1" "$(jq -r '.by' <<<"$record")"
+assert_eq "disable records a manual kind by default" "manual" "$(jq -r '.kind' <<<"$record")"
+assert_eq "disable derives the actor when none is given" \
+  "$(toggle_actor)" "$(jq -r '.actor' <<<"$record")"
 assert_eq "a set switch reads as disabled" "disabled" "$(state_of)"
+
+# --- toggle_actor (#244): attribution, never "unknown" ---
+# The record's actor is what tells a reader whose decision a stand-down was;
+# `unknown@<container-id>` is exactly the reading requirement 2.3 forbids.
+assert_eq "NODE_NAME names the actor outright" "node-x" \
+  "$(NODE_NAME=node-x bash -c ". '$SCRIPT_DIR/lib/toggle.sh'; toggle_actor")"
+actor_no_user="$(env -u USER -u NODE_NAME bash -c ". '$SCRIPT_DIR/lib/toggle.sh'; toggle_actor")"
+assert_eq "with no USER at all the actor is still someone, never unknown" "0" \
+  "$([[ -n "$actor_no_user" && "$actor_no_user" != unknown* ]] && echo 0 || echo 1)"
 
 # --- Expiry ---
 
@@ -395,6 +407,16 @@ assert_eq "a later resume_at extends it" "2026-07-17T18:00:00Z" \
   "$(fleet_limit_resume_at "$slug" "$fs_a")"
 assert_eq "the extending node signs the flag" "node-b" \
   "$(fleet_flag_fetch "$slug" "$fs_a" limit | jq -r '.node')"
+
+# The published record attributes itself (#244): an automatic kind, the node
+# as actor, and the API response that justified the write as evidence.
+fleet_limit_publish "$slug" "$fs_b" "2026-07-17T20:00:00Z" "monthly-spend" false node-b \
+  "HTTP 429: You've hit your monthly spend limit"
+assert_eq "a publish carries its evidence" \
+  "HTTP 429: You've hit your monthly spend limit" \
+  "$(fleet_flag_fetch "$slug" "$fs_a" limit | jq -r '.evidence')"
+assert_eq "and records an automatic kind with the node as actor" "auto/node-b" \
+  "$(fleet_flag_fetch "$slug" "$fs_a" limit | jq -r '"\(.kind)/\(.actor)"')"
 rm -f "$gh_backing/fleet/limit.json"
 
 # ===== The pipelines honour the fleet flags (offline e2e) =====================
@@ -424,8 +446,17 @@ new_home() {  # new_home <name> -> prints a throwaway node HOME
 
 run_node() {  # run_node <home> <script> [args…]
   local home="$1" script="$2"; shift 2
+  # DASHBOARD_GH_CMD: agent-cycle.sh's --disable/--enable/--clear-limit paths
+  # end in refresh_dashboard(), which shells out to publish-dashboard.sh as a
+  # separate process — TOGGLE_GH's PATH-independent stub reaches every other
+  # `gh` call this section makes, but not that one, since publish-dashboard.sh
+  # resolves `gh` through this seam instead of PATH (see its own PATH comment).
+  # Left unset, that call reaches the real `gh` and the real network the rest
+  # of this section is built to avoid (TD-PPagop-26080701). $stub_bin/gh's
+  # unconditional `exit 1` is exactly the "fail fast" this offline e2e wants.
   env HOME="$home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$home")" \
     PATH="$stub_bin:$PATH" TOGGLE_GH="$gh_stub" GH_STUB_BACKING="$gh_backing" \
+    DASHBOARD_GH_CMD="$stub_bin/gh" \
     CLAIM_GH=/bin/false STATE_SYNC_REMOTE="$state_remote" \
     GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" \
     "$SCRIPT_DIR/$script" "$@"
@@ -441,6 +472,18 @@ disable_out="$(run_node "$a_home" agent-cycle.sh --disable "fleet e2e halt" --fo
 assert_contains "--disable reports the fleet switch set" "fleet switch set" "$disable_out"
 assert_eq "--disable publishes fleet/disabled.json" "1" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+# The published record attributes itself (#244): the node that set it, never
+# `unknown`, and the manual kind that tells a probe to keep its hands off.
+assert_eq "the fleet switch names the node that set it" "fleet-node-a" \
+  "$(jq -r '.actor' "$gh_backing/fleet/disabled.json")"
+assert_eq "and records a manual kind" "manual" \
+  "$(jq -r '.kind' "$gh_backing/fleet/disabled.json")"
+
+# A second --disable over the live switch is an extension, and the log says
+# so rather than presenting a fresh stop.
+run_node "$a_home" agent-cycle.sh --disable "fleet e2e halt, extended" --for forever >/dev/null 2>&1
+assert_contains "re-disabling records the switch it extends" '"extends"' \
+  "$(cat "$a_home/.local/state/poetic-agents/log.jsonl" 2>/dev/null)"
 
 # B's implementation cycle stands down for it.
 run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
@@ -501,6 +544,42 @@ assert_contains "the superseded limit-hit is still in the log" \
 assert_not_contains "and the cycle no longer stands down for the usage limit" \
   'usage-limit cooldown' "$(tail -n +$(( b_log_before + 1 )) "$b_log" 2>/dev/null)"
 rm -f "$gh_backing/fleet/limit.json"
+
+# --- A manual fleet/limit.json is honoured, never probed (#244) -----------
+# An operator's stand-down is a decision, not an inference: the cycle must
+# stand down naming the actor and the manual kind, must not spend a probe on
+# it, and must not clear it.
+jq -n '{resume_at: "2030-03-01T00:00:00Z", class: "other", reset_known: false,
+        node: "operator", actor: "warwick@laptop", kind: "manual",
+        ts: "2026-08-12T00:00:00Z"}' > "$gh_backing/fleet/limit.json"
+rm -f "$b_log"
+run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a cycle under a manual limit flag exits cleanly" "0" "$?"
+assert_contains "a manual stand-down names its actor and kind" \
+  'manual stand-down until 2030-03-01T00:00:00Z, set by warwick@laptop' \
+  "$(cat "$b_log" 2>/dev/null)"
+assert_not_contains "a manual stand-down is never probed" \
+  '(probe:' "$(cat "$b_log" 2>/dev/null)"
+assert_not_contains "and never auto-cleared" \
+  '"event":"limit-cleared"' "$(cat "$b_log" 2>/dev/null)"
+assert_eq "the manual flag survives the cycle" "1" \
+  "$(test -f "$gh_backing/fleet/limit.json" && echo 1 || echo 0)"
+rm -f "$gh_backing/fleet/limit.json"
+
+# --- A long-running automatic freeze attempts its escalation (#244) -------
+# The seeded hit is months old with no limit-cleared after it, so the freeze
+# is far past `limit_escalate_after_hours`. Offline, `gh` fails fast, so the
+# attempt surfaces as the warning naming the freeze's start — which is the
+# assertion: the escalation fired, and a manual stand-down (above) never
+# reached it.
+printf '%s\n' \
+  '{"ts":"2026-01-01T00:00:00Z","cycle":"seed","node":"node-b","event":"limit-hit","resume_at":"2030-06-01T00:00:00Z","class":"monthly","reset_known":false}' \
+  > "$b_log"
+run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a cycle under a stale automatic freeze exits cleanly" "0" "$?"
+assert_contains "the freeze escalation is attempted and its failure recorded" \
+  'automatic usage-limit freeze since 2026-01-01T00:00:00Z' \
+  "$(cat "$b_log" 2>/dev/null)"
 
 printf '\n'
 if (( failures > 0 )); then

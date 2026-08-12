@@ -152,9 +152,19 @@ KEYWORDS
 # property name under "properties"/"$defs" is. At any depth, because
 # `x-docs.value` is itself keyed by audience for the keys whose two tables
 # render different value cells.
+#
+# A `default` value's own contents are data, not schema — `config_defaults`
+# copies it verbatim into config.json's output rather than reading it as
+# JSON Schema — so a key beneath one (`refinement_policy`'s default of
+# `{"issues": "preferred"}`, say) must not be compared against the keyword
+# list on the strength of sharing a name with something unimplemented
+# (`oneOf`, or here, `issues`) that the schema never actually uses as a
+# keyword. Dropped only when `default` is *not* the path's own last element —
+# `default` itself must still be recognised as the keyword it is.
 used="$(jq -r '[paths(scalars != null) + paths(type == "object" or type == "array")]
   | map(map(select(type == "string")))
   | map(select(any(.[]; startswith("x-")) | not))
+  | map(select((index("default")) as $di | $di == null or $di == (length - 1)))
   | [ .[]
       | . as $p
       | range($p | length) as $i

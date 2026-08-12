@@ -284,13 +284,17 @@ Keys:
 | `enabler_escalation_label` | `enabler-escalation` | Label applied to every issue the Enabler raises, for your filters and for its own duplicate check. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the issue is still raised, just unlabelled. |
 | `needs_refinement_label` | `needs-refinement` | Label put on an **issue** while the pipeline has it recorded as too under-specified to work on, and taken off again when that clears — see [Items nobody has specified](#items-nobody-has-specified). You can also apply it yourself to flag one directly; the pipeline reads that back the same way. The pipeline creates it in each target repo it works, so there is nothing to set up; without it the item is still recorded and still reaches the Enabler, you just do not see it in the...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many under-specified items one Enabler engagement will take on. Ordinary blocked items are never displaced by them, and items over the cap simply wait for a later engagement. `0` switches the refinement work off while still recording it. |
+| `refiner_model` | `claude-haiku-4-5-20251001` | The Refiner: writes a specification for an item nobody has scoped yet and marks it `refined`, before it would otherwise have to be blocked and wait for the Enabler — see [Refined items and the Refiner](#refined-items-and-the-refiner). A cheap model, engaged every cycle there is unrefined work to do. Leave it empty to switch the stage off. |
+| `refined_label` | `refined` | Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing. The pipeline creates it in each target repo it works, so there is nothing to set up. Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record. Do not set it to `blocked`, which is a...[continued below](#extended-notes-refined_label) |
+| `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off. |
+| `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Only `issues` and the sources fetched as structured data reach the Refiner's own engagement; `tech-debt`, `project-review` and `implementation-plan` still honour a policy in the Co-Ordinator's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked`. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
-| `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus however many it chains immediately, instead of each waiting for the next cron firing, while sources already gathered are still non-empty. `1` disables chaining. |
+| `max_chained_cycles` | `3` | The most cycles that may run back-to-back in one lineage — the cron-fired original plus its immediate continuations, instead of each waiting for the next cron firing. A productive cycle chains to this cap regardless of remaining work (the remaining-sources gate counts enabled source categories, which back-pressure never empties) — up to `max_chained_cycles − 1` further full Co-Ordinator passes, the accepted price of the drain rate. `1` disables chaining. |
 | `claim_ttl_hours` | `6` | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
 | `human_nudge_idle_hours` | `24` | Hours an approved, green pull request may sit idle — nothing left for the pipeline to do, only a merge click nobody was asked for — before `scripts/sweep-human-visibility.sh` posts one nudge comment naming `enabler_assignee`. `0` disables the nudge; the sweep still keeps a live review request on every such PR regardless (see [Configuration](#configuration) → `enabler_assignee`). |
@@ -300,13 +304,16 @@ Keys:
 | `timeout_implementor` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_enabler` | *(unset)* | Minutes, and an override. As above. |
+| `timeout_refiner` | *(unset)* | Minutes, and an override. As above. |
 | `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_implementor` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_reviewer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_enabler` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_refiner` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `lock_stale_after` | *(unset)* | Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer. |
 | `stage_budget` | *(unset)* | Tuning for how the stage budgets derive themselves. Every key has a default in the code and none of them is a timeout; you almost certainly want none of it. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
+| `limit_escalate_after_hours` | `24` | Hours. How long an automatic usage-limit stand-down may run before an escalation issue is filed; `0` turns it off. A manual stand-down never escalates. |
 | `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
@@ -366,6 +373,20 @@ The pipeline creates it in each target repo it works, so there is nothing to set
 Leave it empty to switch the labelling off in both directions.
 
 Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source.
+
+### Extended notes: `refined_label`
+
+Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing.
+
+The pipeline creates it in each target repo it works, so there is nothing to set up.
+
+Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record.
+
+Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source.
+
+### Extended notes: `refinement_policy`
+
+Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Only `issues` and the sources fetched as structured data reach the Refiner's own engagement; `tech-debt`, `project-review` and `implementation-plan` still honour a policy in the Co-Ordinator's ranking, but nothing writes them a specification yet.
 
 <!-- config-table:notes-end -->
 
@@ -1042,6 +1063,46 @@ jq -r 'select(.event == "enabler-examined" or .event == "escalated")
   ~/.local/state/poetic-agents/log.jsonl | tail -10
 ```
 
+### Refined items and the Refiner
+
+Most items never need the Enabler at all. Before an under-specified item would
+ever have to be blocked and wait several cycles, the **Refiner** — a cheap
+model, engaged every cycle there is unrefined work — looks at every new
+candidate whose source usually needs one (`issues` by default; see
+`refinement_policy` below) and writes a specification for it: the goal, what
+is in and out of scope, concrete acceptance criteria. For an issue that lands
+as one comment, and the issue picks up the `refined` label; for anything else
+it travels the same way an Enabler-written specification does — in the log,
+pasted into the work order when the item is selected.
+
+Where the Refiner cannot write one without deciding something that is yours —
+a credential, a product choice, information that exists only in your head —
+it declines instead, and the item follows the same path "Items nobody has
+specified" describes below.
+
+`refinement_policy` decides, per work source, whether an unrefined item may be
+selected at all: `required` (never — it waits for the Refiner), `preferred`
+(a refined item is ranked ahead of an equivalent unrefined one, but an
+unrefined item may still be picked) or `exempt` (the source already carries
+its own specification — a merge conflict, a review comment — and this does not
+apply, the default for every source not named). Only `issues` and the sources
+the Script already fetches in full — findings, review feedback, merge
+conflicts, abandoned drafts, register hygiene — are ones the Refiner can
+actually reach; setting a stricter policy for `tech-debt`, a plan task or a
+review recommendation still shapes ranking, but nothing writes those a
+specification yet.
+
+```bash
+# What the Refiner has written lately
+jq -r 'select(.event == "item-refined" and .by == "refiner")
+       | "\(.ts)  \(.repo)  \(.item)  \(.comment_url // "spec recorded in the log")"' \
+  ~/.local/state/poetic-agents/log.jsonl | tail -10
+```
+
+`--dry-run` never engages the Refiner, for the same reason it never engages
+the Enabler. `refiner_model` empty switches the stage off entirely — every
+item then waits for the ordinary blocked/Enabler path below.
+
 ### Items nobody has specified
 
 There is a third reason the pipeline skips an item, and it used to be invisible:
@@ -1052,11 +1113,14 @@ any of those, so it skipped them — and every cycle after it skipped them too,
 forever, without recording anything. Nothing looked wrong. The work simply
 never happened, and you were never told it was waiting on you.
 
-Now the Co-Ordinator reports such an item, and the Script records it as blocked
-with what is missing. Nothing else changes about that cycle. If the item is a
-GitHub issue it also picks up the `needs-refinement` label — and is assigned to
-you, so it shows up on Assigned-to-me and not only in a label filter — so you
-can see the same thing the pipeline can:
+Now the Co-Ordinator reports such an item — or the Refiner declines one it was
+given, or an Implementor gets partway into one and finds the brief itself
+insufficient — and the Script records it as blocked with what is missing.
+Nothing else changes about that cycle. If the item is a GitHub issue it also
+picks up the `needs-refinement` label — and is assigned to you, so it shows up
+on Assigned-to-me and not only in a label filter — so you can see the same
+thing the pipeline can. If the item had already been marked `refined`, that
+label comes off too: the specification it named did not hold up.
 
 ```bash
 gh issue list -R Poetic-Poems/poetic --label needs-refinement
@@ -1261,7 +1325,9 @@ See `docs/REVIEW-PIPELINE-SPEC.md` for the full specification.
 A local, single-page dashboard shows everything at a glance: whether a cycle
 is running, whether the pipelines are disabled and why, usage-limit
 stand-downs, open agent PRs and their CI status,
-recent cycles with per-stage cost/duration/model, failures, blocked and void
+recent cycles with per-stage cost/duration/model (substantive cycles only —
+the no-op ticks the `*/15` cadence mostly produces are summarised in one
+count beneath the table instead of holding rows), failures, blocked and void
 items, the work sources the Co-Ordinator sees, estimated token cost by day, by
 model and by actor, and the raw log — with each stage's transcript viewable
 inline.

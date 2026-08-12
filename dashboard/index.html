@@ -1202,9 +1202,28 @@
 
   // ---------- cycles panel ----------
   function cyclesPanel(cycles) {
+    var body = cyclesTable(cycles);
+    // The no-op ticks the Publisher held out of the detail list (#271): the
+    // stand-down short-circuits and lock-held skips that would otherwise fill
+    // the MAX_CYCLES slots under the */15 cadence. One aggregate line, not
+    // rows — and fleet-wide, so it is withheld while the list is filtered to
+    // one node rather than shown against a list it does not describe.
+    var agg = D.noop_ticks;
+    if (nodeFilter || !agg || !agg.total) return body;
+    var parts = [];
+    if (agg.standdown) parts.push(agg.standdown + " stood down");
+    if (agg.skipped) parts.push(agg.skipped + " lock-held skip" + (agg.skipped === 1 ? "" : "s"));
+    return el("div", {}, [body, el("div", {class:"muted", style:"margin-top:6px", text:
+      "+ " + agg.total + " no-op tick" + (agg.total === 1 ? "" : "s") + " held out of this list — " +
+      parts.join(", ") + (agg.last_ts ? "; newest " + fmtAgo(agg.last_ts) : "")})]);
+  }
+
+  function cyclesTable(cycles) {
     if (nodeFilter) cycles = cycles.filter(function (cy) { return cy.node === nodeFilter; });
     if (!cycles.length) return el("div", {class:"panel"}, el("div", {class:"empty",
-      text: nodeFilter ? "No cycles from " + nodeFilter + " in the fleet window." : "No cycles recorded yet."}));
+      text: nodeFilter ? "No cycles from " + nodeFilter + " in the fleet window."
+          : (D.noop_ticks && D.noop_ticks.total) ? "No substantive cycles in the fleet window."
+          : "No cycles recorded yet."}));
     var showNode = fleetVisible();
     var rows = [];
     cycles.forEach(function (cy, i) {
@@ -1837,7 +1856,11 @@
     if (st.switch && st.switch.disabled) {
       var sw = st.switch;
       var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
-      if (sw.by) detail += " — set by " + sw.by;
+      // Actor and kind (requirement 2.3, #244): whose decision this was, and
+      // whether it was a decision at all — `actor` is the clean identity,
+      // `by` the older display string kept for records that predate it.
+      if (sw.actor || sw.by) detail += " — set by " + (sw.actor || sw.by);
+      detail += " (" + (sw.kind || "manual") + ")";
       if (sw.since) detail += " at " + sw.since;
       detail += sw.expires_at ? ("; expires " + sw.expires_at)
                               : "; no expiry — needs `agent-cycle.sh --enable`";
@@ -1852,7 +1875,8 @@
     var ff = fleetFlags();
     if (ff.disabled && !(st.switch && st.switch.disabled)) {
       var fdetail = ff.disabled.reason ? ("“" + ff.disabled.reason + "”") : "no reason recorded";
-      if (ff.disabled.by) fdetail += " — set by " + ff.disabled.by;
+      if (ff.disabled.actor || ff.disabled.by) fdetail += " — set by " + (ff.disabled.actor || ff.disabled.by);
+      fdetail += " (" + (ff.disabled.kind || "manual") + ")";
       fdetail += ff.disabled.expires_at ? ("; expires " + ff.disabled.expires_at)
                                         : "; no expiry — needs `agent-cycle.sh --enable`";
       banners.appendChild(el("div", {class:"banner amber"}, [
@@ -1879,8 +1903,15 @@
       var resetKnown = ff.limit.reset_known !== undefined ? !!ff.limit.reset_known
                      : ff.limit.needs_human !== undefined ? !ff.limit.needs_human
                      : true;
-      var by = " — published by " + (ff.limit.node || "?") + ".";
-      var lsub = resetKnown
+      // `kind` (requirement 2.1, #244): a manual record is an operator's
+      // decision — honoured as written, never probed — and the banner must
+      // not describe it in the detector's voice.
+      var lkind = ff.limit.kind || "auto";
+      var by = " — " + (lkind === "manual" ? "set" : "published") + " by "
+             + (ff.limit.actor || ff.limit.node || "?") + " (" + lkind + ").";
+      var lsub = lkind === "manual"
+        ? "Until " + ff.limit.resume_at + by + " A manual stand-down is never probed; `agent-cycle.sh --clear-limit` lifts it early."
+        : resetKnown
         ? "Until " + ff.limit.resume_at + by
         : "Retrying after " + ff.limit.resume_at + " (estimated — no reset time was given)" + by +
           (ff.limit.class === "weekly" || ff.limit.class === "monthly"

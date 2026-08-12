@@ -107,6 +107,22 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   node's directory (the D-before-E source ranking in the Publisher); an id
   known only from events renders from its events alone.
 
+  **A no-op tick holds none of those slots** (issue #271). The `*/15` cadence
+  makes most firings no-ops — the stand-down short-circuit (`cycle-start` →
+  `stand-down` → `cycle-end`) and the lock-held skip (`cycle-start` →
+  `cycle-skipped` → `cycle-end`) — and at a slot each they shrank the window
+  from half a day of history to a couple of hours of mostly nothing. The
+  Publisher classifies them ahead of the cap, by exactly those event shapes,
+  and surfaces them as the single O(1) `noop_ticks` aggregate — total, split
+  by the outcome value the ladder would have given the row (`stand-down` /
+  `skipped`), and the newest timestamp — never as rows or a second list,
+  because the cap is what protects `data.js`'s size and the aggregate must
+  not grow with what it counts. A cycle that logged anything beyond those
+  shapes keeps its row: a raced stand-down (`claim-lost`, 17d's badge), a
+  pre-claimed one (`claim-skipped` — a selection defect, implementation spec
+  17a), a hand-appended `unvoided` sharing its id, or a kill that cost it its
+  `cycle-end` all carry information a count would bury.
+
   Its **`log.jsonl` is also what says whether that peer is working, and on
   what** — `fleet.nodes[].live`. A peer publishes no lock (state-sync excludes
   it: a copied lock is a lock no process holds), so the answer is derived from
@@ -148,6 +164,12 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   banner already covers it — the setting node writes both levels), and the
   fleet-wide usage-limit stand-down (shown when the local log union has not
   caught up — a standby with no state yet, or a hit seconds old elsewhere).
+  Both banners name the flag's `actor` (falling back to the older `by` /
+  `node` fields on records that predate it) and its `kind` (requirement 2,
+  #244) — whose decision the stand-down is, and whether it was a decision at
+  all: a `manual` limit record renders in the operator's voice ("set by …
+  (manual)", never probed, `--clear-limit` lifts it early) rather than the
+  detector's estimated-retry phrasing.
 - **`disabled.json`** — the switch (requirement 2.3), read through
   `lib/toggle.sh`: the same code the pipelines gate on, so the dashboard cannot
   disagree with them about whether cycles are meant to be running (requirement
@@ -159,8 +181,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   renders a quiet one: no cycles, no PRs, no failures, no errors. Without the
   banner, a switch someone set on Tuesday is indistinguishable from a week with
   nothing to do — which is how it goes unnoticed until Friday. Show the reason,
-  who set it, and its expiry (or that it has none and needs `--enable`), since
-  those are precisely the questions an operator has next.
+  who set it (`actor`, falling back to `by`), its kind, and its expiry (or that
+  it has none and needs `--enable`), since those are precisely the questions an
+  operator has next.
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what
@@ -403,8 +426,9 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                              //   to a peer's contention (implementation
                                              //   spec 17a) before its outcome; present
                                              //   whether or not it recovered
-               standdown_cause,             // "raced" | "unreachable" | null — only on
-                                             //   an outcome of "stand-down"
+               standdown_cause,             // "raced" | "unreachable" | "pre-claimed"
+                                             //   | null — only on an outcome of
+                                             //   "stand-down"
                stages:{ coordinator|implementor|reviewer:
                         { ran, cost_usd, duration_ms, num_turns, is_error,
                           terminal_reason, model, status, result, stderr,
@@ -412,6 +436,11 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                events[] } ],           // most recent 40 FLEET-WIDE, newest first
                                        //   ids of the cycle shape only — a
                                        //   hand-appended record is not a cycle
+                                       //   — and substantive only: no-op
+                                       //   ticks aggregate below instead (#271)
+  noop_ticks: { total, standdown, skipped,   // no-op ticks held out of cycles[],
+                last_ts },                   //   counted by kind + the newest
+                                             //   timestamp — O(1) however many
   blocked: [ { repo, item, ts, detail, stage,           // from the log union,
                                                         //   blocked and not void
                kind,                                    // "" ordinarily, "needs-refinement" for a
@@ -588,7 +617,14 @@ it as its live cycle (greyed when that node's own report has gone stale,
 amber and questioned once it is running past `lock_stale_after`), **no clean
 end** when no node is running it, and **not ended** when the data carries no
 node state to ask; click a row for per-stage detail with
-the parsed status, full transcript, and stderr); failures,
+the parsed status, full transcript, and stderr; beneath the table, one muted
+summary line for `noop_ticks` — the count held out of the list, split stood
+down / lock-held skips, with how fresh the newest is — shown only when there
+are any and only while the list is unfiltered, since the aggregate is
+fleet-wide and must not sit under a single node's rows; a window that is
+*all* no-ops reads "No substantive cycles in the fleet window." over that
+line, keeping "No cycles recorded yet." for a page with genuinely nothing);
+failures,
 blocked and void items (the void list newest first — it arrives grouped by
 repo and item, which no reader wants — and **capped twice**: the ten newest
 rows, each three lines tall, with the rest behind a `See more — N older items`
@@ -859,16 +895,27 @@ number's twins elsewhere on the page.
   rather than one burst. Two hand-appended `cycle: "manual"` records a
   fortnight apart raise no row in Recent cycles, take none of the `MAX_CYCLES`
   budget, and leave the real cycle at the top — while both events stay in the
-  log tail. And with `cron.log` short and a `cron.log.1` beside it —
+  log tail. With more no-op ticks in the log than `MAX_CYCLES` — newer than
+  the real work, as the `*/15` cadence produces — no stand-down or lock-held
+  skip shape raises a row, the substantive cycles still fill the detail list,
+  and `noop_ticks` counts every one of them, split by kind, carrying the
+  newest tick's timestamp; a stand-down that also logged a `claim-lost`
+  (issue #245's raced shape) keeps its row and stays out of the count, and so
+  does one whose `cycle-end` never came. And with `cron.log` short and a
+  `cron.log.1` beside it —
   `scripts/rotate-logs.sh` having just rotated — the cron panel's tail draws
   from both, oldest first, rather than going blank for the tick after a
   rotation. A cycle that lost a claim to a peer's contention (`claim-lost`,
   cause `held`) before a `selection` that names `race_losses` is marked
   `raced: true` carrying that same count, whichever `outcome` it then reached;
   one that lost every candidate carries `standdown_cause` — `"raced"` for
-  contention, `"unreachable"` when every loss was a GitHub outage instead —
-  and only a cycle with a `held` loss is marked `raced` at all, a GitHub
-  outage naming no peer to contend with (implementation spec 17a, issue #245).
+  contention, `"unreachable"` when every loss was a GitHub outage instead,
+  `"pre-claimed"` when nothing was ever attempted because the cycle's own
+  gather had already seen every candidate claimed (implementation spec 17a's
+  `claim-skipped`) — and only a cycle with a `held` loss is marked `raced` at
+  all: a GitHub outage names no peer to contend with, and a pre-claimed
+  skip was never contention in the first place, so neither shape may wear
+  contention's badge (implementation spec 17a, issue #245).
   An item that is blocked *and* void reaches `void[]` and not
   `blocked[]` (implementation spec 34h, acceptance check 8g), while an ordinary
   block beside it is still listed — a subtraction that over-reached would empty
@@ -908,7 +955,17 @@ number's twins elsewhere on the page.
   own (issue #245); it also renders the "recovered race ×N" badge naming the
   count, while a separate fixture of a cycle that lost *every* candidate
   (`raced: true`, `standdown_cause: "raced"`, outcome `stand-down`) carries
-  the `↻ raced` marker and never that one, having recovered nothing. The
+  the `↻ raced` marker and never that one, having recovered nothing; and a
+  third, of a cycle that skipped every candidate as pre-claimed
+  (`raced: false`, `standdown_cause: "pre-claimed"`), renders as an ordinary
+  stood-down row wearing neither race badge — a selection defect contends
+  with nobody. A
+  fixture whose `noop_ticks` counts more filtered ticks than the forty slots
+  hold (issue #271) renders its substantive cycles as ordinary rows plus the
+  one summary line — the total, the stood-down/lock-held-skip split and the
+  newest tick's age — while a fixture with a zero aggregate (and one with no
+  `noop_ticks` key at all, a `data.js` from before the field existed) renders
+  no such line. The
   per-repo `nice` badge is asserted from two fixtures, because both of its
   silences are load-bearing and neither is visible on the page that has them:
   a repo at `-5` carries a blue badge naming `×3.05` and earlier attention, one
@@ -1147,7 +1204,26 @@ number's twins elsewhere on the page.
   about the pipeline belongs, and leaves untouched every reader that acts on
   them — the limit stand-down, the blocked and void sets — because each keys on
   the event and the item, never on the cycle.
-- **A raced cycle carries a second badge, not a second outcome (issue #245).**
+- **A no-op tick is counted, not listed (issue #271).** `MAX_CYCLES = 40` was
+  sized for an hourly cadence; the `*/15` change (#268) quadrupled the tick
+  rate without touching it, and most of the new ticks are no-ops — a
+  stand-down short-circuit or a lock-held skip, three events and no stage.
+  Filling the fleet's forty detail slots with those cut the window from
+  roughly half a day of history to two-to-four hours, most of it rows
+  carrying nothing. The two candidate fixes were to raise `MAX_CYCLES`,
+  which grows `data.js` — the very thing the fleet-wide cap protects — or to
+  stop no-op ticks consuming slots; the second was chosen, with the filtered
+  ticks surfaced as the `noop_ticks` aggregate rather than dropped, so the
+  cadence itself stays visible (a fleet whose ticks stop aggregating has a
+  scheduler problem this line would otherwise hide). The aggregate is O(1)
+  by construction — three counts and one timestamp, never a second list —
+  and the filter matches the exact three-event shapes rather than every
+  `stand-down`/`skipped` outcome, so a stand-down that carries more than
+  the shape (a raced one, #245) keeps its detail row and its badges. What
+  this costs: a *fresh* stand-down no longer has a row of its own, and its
+  reason text is a log-tail read rather than a click — the aggregate's
+  newest-tick timestamp and the standing banners (switch, usage-limit) are
+  what keep that reading a glance.
   Losing a claim to a peer's healthy contention and then claiming the next
   candidate is not a different outcome from an ordinary first-try
   selection — the cycle still did whatever `outcome` already says, PR raised
@@ -1160,7 +1236,12 @@ number's twins elsewhere on the page.
   of `"raced"` on a stood-down cycle gets the identical badge, for the same
   reason "Stood down" alone does not say whether the fleet's own contention or
   a GitHub outage caused it — reading the reason text is not a substitute a
-  glance at the column can make. Blue, like the "recovered race ×N" badge
+  glance at the column can make. A `standdown_cause` of `"pre-claimed"`
+  deliberately gets no badge: no peer raced this cycle for anything — its
+  Co-Ordinator proposed work the gather had already seen claimed — and the
+  row's reason text names that defect; its `claim-skipped` events are also
+  what keep the row out of the `noop_ticks` aggregate, so the shape stays
+  visible in the history rather than being counted away. Blue, like the "recovered race ×N" badge
   beside the item and for implementation spec 17d's reason: contention is the
   fleet working, and amber on this page is reserved for what wants acting on.
   The two badges do not say the same thing twice, either: `race_losses` is a

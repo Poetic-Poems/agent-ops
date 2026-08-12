@@ -188,7 +188,9 @@ or cleanly handed-off cycle — never a killed one; the suite runs on a
 Kubernetes cluster from published manifests/chart; scale-to-zero is
 demonstrated (no idle compute cost between ticks); per-container CPU,
 memory, disk, and bandwidth budgets are stated and the metrics export
-reports actuals against them.
+reports actuals against them; a node whose derived local state has been
+corrupted returns to publishing without intervention, demonstrated by
+injecting the fault rather than by waiting for it.
 
 - [ ] Graceful drain: a shutting-down node finishes or hands off its
       in-flight cycle before exiting. The auto-update case is already
@@ -200,7 +202,28 @@ reports actuals against them.
       secrets/environment, never via `exec` logins into a running
       container. *[fleet]*
 - [ ] Health, readiness, and liveness endpoints plus structured metrics
-      export. *[fleet]*
+      export. Health has to mean *outbound* health and not merely local
+      liveness: a node whose last state-sync push failed is unhealthy even
+      though its cycles run, its logs look ordinary, and its own dashboard
+      renders it green. The incident below is what fixes the definition —
+      both laptop nodes reported themselves fresh for four days while
+      publishing nothing, because every signal either of them emitted was
+      one it also consumed. *[fleet]*
+- [ ] Self-healing derived state: every local store that is a cache of
+      something else — the state-sync mirror first among them, and the
+      workspace clones — is integrity-checked before use and rebuilt from
+      source when the check fails, instead of being trusted because it sits
+      on a volume that survives restarts.
+      On 2026-08-08 an unclean shutdown truncated ~20 loose git objects to
+      zero bytes in each laptop node's `.agent-ops-state` mirror. The damage
+      landed on a *peer's* remote-tracking ref, so `git push` could no longer
+      compute what the remote already had, and both nodes silently stopped
+      publishing for four days; `git gc` stayed wedged on the same objects,
+      so nothing self-healed. The mirror is wholly derived — the node's own
+      branch from `state_dir`, every other branch from the remote — so
+      discarding and re-initialising it costs one fetch and no information,
+      which is exactly why it should happen automatically rather than by
+      hand. *[fleet]*
 - [ ] Per-container resource budgets (D14): measure each container's
       baseline CPU, memory, disk, and bandwidth; set budgets from the
       measurements; and surface actuals-against-budget through the metrics
@@ -234,7 +257,11 @@ reports actuals against them.
       is an expensive way to replicate small, frequently-changing state —
       every sync is a fetch/push round-trip and the history only grows — so
       candidate replacements are weighed on measured bandwidth and disk
-      cost (D14) as well as on scale. *[interactive]*
+      cost (D14) as well as on scale. The interface owes its caller two
+      operations the git implementation lacks today, *verify* and
+      *rebuild-from-source*, so that self-healing is a property every
+      backend must supply rather than a repair someone wrote once for this
+      one. *[interactive]*
 
 ## Phase 3 — First external users
 
@@ -317,6 +344,18 @@ Parked deliberately, each with a decide-by gate:
 
 ## Assumptions
 
+- **An orchestrator does not make derived state safe.** Kubernetes improves
+  *detection*: a sync modelled as its own CronJob fails as a first-class Job
+  status rather than as a line in a log nobody reads, and graceful drain
+  removes one of the triggers. It does not repair anything. A corrupt
+  PersistentVolumeClaim survives every pod restart, eviction and
+  rescheduling the platform can perform, so the failure recurs on each tick
+  and the backoff merely re-runs it; and the mirror has to be persistent,
+  because re-fetching ~600 MB per node per tick is precisely the bandwidth
+  the budgets of D14 exist to prevent. Volume durability guarantees the
+  bytes are still present, never that they are still valid. Recovery is
+  application work on any platform, which is why it is a checklist item
+  above and not a consequence of the deployment target.
 - GitHub is the only forge until demand says otherwise.
 - The headless Claude CLI is the execution substrate for the Claude
   provider; the product's value is the orchestration, which is
