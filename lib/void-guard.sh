@@ -389,7 +389,7 @@ void_evidence_cited_commit_shas() {
   } | sort -u
 }
 
-# void_pr_matches_item SLUG NUM ITEM
+# void_pr_matches_item SLUG NUM ITEM ENTRY_REPO
 # Test one cited PR against the item it is supposed to corroborate: fetched
 # live from the API — never from a gathered candidate list, so this works
 # identically for a stage that has no such list (the Enabler, the
@@ -410,11 +410,20 @@ void_evidence_cited_commit_shas() {
 # evidence these items can carry — the same pull request `void_candidate_prs`
 # then reads the diff of. That refusal would fall precisely on the sources the
 # guard corroborates best, so the id is read for what it already says.
+#
+# What the id says is scoped, though: it was minted from a pull request in
+# ENTRY_REPO — the entry's own `repo` — and carries no slug of its own, so the
+# shortcut is taken only when SLUG *is* ENTRY_REPO (case-insensitive, as
+# GitHub treats slugs). A URL citation naming another repository's pull
+# request `<n>` merely coincides on the number, and an entry naming no repo
+# minted nothing; both fall through to the body/branch test below, which can
+# still corroborate them the ordinary way (issue #290).
 void_pr_matches_item() {
-  local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
+  local slug="$1" num="$2" item="$3" entry_repo="${4-}" gh_bin="${VOID_GUARD_GH:-gh}"
   local pr_json body head_ref
 
-  if grep -qiE "^pr-$num-" <<<"$item" 2>/dev/null; then
+  if [[ -n "$entry_repo" && "${slug,,}" == "${entry_repo,,}" ]] \
+    && grep -qiE "^pr-$num-" <<<"$item" 2>/dev/null; then
     return 0
   fi
 
@@ -434,7 +443,7 @@ $head_ref" "$item"; then
   return 1
 }
 
-# void_commit_matches_item SLUG SHA ITEM
+# void_commit_matches_item SLUG SHA ITEM ENTRY_REPO
 # Test one cited commit against the item it is supposed to corroborate. Two
 # facts must both hold:
 #
@@ -446,15 +455,17 @@ $head_ref" "$item"; then
 #      definition of "SHA has already landed".
 #   2. Something ties SHA to ITEM: its own commit message names it, or a pull
 #      request GitHub associates with it does (checked the same way a cited PR
-#      is — `void_pr_matches_item`). A squash-merge commit's message is the
-#      PR title, which does not reliably repeat an item id, so the associated-
-#      PR fallback is not optional polish; without it almost every genuine
-#      commit citation would be refused.
+#      is — `void_pr_matches_item`, with ENTRY_REPO passed through, since its
+#      id shortcut needs the entry's own repo to compare SLUG against). A
+#      squash-merge commit's message is the PR title, which does not reliably
+#      repeat an item id, so the associated-PR fallback is not optional
+#      polish; without it almost every genuine commit citation would be
+#      refused.
 #
 # Prints nothing and returns 0 when both hold; prints a one-line reason and
 # returns 1 otherwise.
 void_commit_matches_item() {
-  local slug="$1" sha="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
+  local slug="$1" sha="$2" item="$3" entry_repo="${4-}" gh_bin="${VOID_GUARD_GH:-gh}"
   local default_branch cmp_json status commit_json message num
 
   default_branch="$("$gh_bin" api "repos/$slug" --jq '.default_branch' 2>/dev/null)"
@@ -481,7 +492,7 @@ void_commit_matches_item() {
 
   while IFS= read -r num; do
     [[ -n "$num" ]] || continue
-    if void_pr_matches_item "$slug" "$num" "$item" >/dev/null; then
+    if void_pr_matches_item "$slug" "$num" "$item" "$entry_repo" >/dev/null; then
       return 0
     fi
   done < <("$gh_bin" api "repos/$slug/commits/$sha/pulls" --jq '.[].number' 2>/dev/null || true)
@@ -511,7 +522,10 @@ void_commit_matches_item() {
 # the `owner/repo` the URL itself names. Each pair is resolved against its
 # own slug, never against REPO_SLUG — a cross-repo URL citation would
 # otherwise be tested against the wrong repository, and REPO_SLUG is only
-# what a *bare* citation falls back to.
+# what a *bare* citation falls back to. REPO_SLUG is also handed to each
+# check as the entry's own repo: it is what gates `void_pr_matches_item`'s
+# finishing-source id shortcut to citations of the entry's own repository
+# (issue #290).
 #
 # Prints nothing and returns 0 when the evidence cites no PR or commit at all
 # (nothing to corroborate this way; the presence/resolvable rules above are
@@ -533,7 +547,7 @@ void_citation_reason() {
       printf 'evidence cites PR #%s to corroborate against, but the entry names no repo' "$num"
       return 1
     fi
-    if ! reason="$(void_pr_matches_item "$slug" "$num" "$item")"; then
+    if ! reason="$(void_pr_matches_item "$slug" "$num" "$item" "$repo")"; then
       printf '%s' "$reason"
       return 1
     fi
@@ -547,7 +561,7 @@ void_citation_reason() {
       printf 'evidence cites commit %s to corroborate against, but the entry names no repo' "$sha"
       return 1
     fi
-    if ! reason="$(void_commit_matches_item "$slug" "$sha" "$item")"; then
+    if ! reason="$(void_commit_matches_item "$slug" "$sha" "$item" "$repo")"; then
       printf '%s' "$reason"
       return 1
     fi

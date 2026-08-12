@@ -510,26 +510,26 @@ cat >"$tmp_dir/pr-235.json" <<'JSON'
 {"body": "Closes #224 — implements the five rewrites.", "head": {"ref": "agent/224"}}
 JSON
 
-out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "224")"; rc=$?
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "224" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "an unrelated-but-real PR does not match" "1" "$rc"
 assert_contains "  ... naming the fabrication" "fabricated citation" "$out"
 
 assert_eq "the genuinely implementing PR matches" \
-  "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "235" "224"; echo $?)"
+  "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "235" "224" "Poetic-Poems/poetic"; echo $?)"
 
-out="$(void_pr_matches_item "Poetic-Poems/poetic" "999" "224")"; rc=$?
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "999" "224" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "an unreadable cited PR does not match" "1" "$rc"
 assert_contains "  ... saying so" "could not be read" "$out"
 
 assert_eq "matching on the branch name alone is enough" \
   "0" "$(printf '{"body": "", "head": {"ref": "td/TD26051201"}}' >"$tmp_dir/pr-50.json"; \
-    void_pr_matches_item "Poetic-Poems/poetic" "50" "TD26051201"; echo $?)"
+    void_pr_matches_item "Poetic-Poems/poetic" "50" "TD26051201" "Poetic-Poems/poetic"; echo $?)"
 
 # A bare numeric item must not match a PR merely because a *longer* number
 # containing it appears somewhere — the word-boundary discipline this whole
 # check exists to apply.
 printf '{"body": "see line 1224 for details", "head": {"ref": "agent/9224x"}}' >"$tmp_dir/pr-60.json"
-out="$(void_pr_matches_item "Poetic-Poems/poetic" "60" "224")"; rc=$?
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "60" "224" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "a number embedded in a longer number does not match" "1" "$rc"
 
 # A finishing-source item is a pull request, and its id says which one. PR
@@ -541,15 +541,45 @@ printf '{"body": "Draft implementing the widget.", "head": {"ref": "agent/widget
   >"$tmp_dir/pr-205.json"
 for shape in "pr-205-abandoned-1a2b3c4d5e6f" "pr-205-review-2071883842" "pr-205-conflict-1a2b3c4d5e6f"; do
   assert_eq "a finishing-source item citing its own PR matches ($shape)" \
-    "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "205" "$shape"; echo $?)"
+    "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "205" "$shape" "Poetic-Poems/poetic"; echo $?)"
 done
-out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "pr-205-abandoned-1a2b3c4d5e6f")"; rc=$?
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "pr-205-abandoned-1a2b3c4d5e6f" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "  ... but citing a different PR is still refused" "1" "$rc"
 assert_contains "  ... as a fabrication" "fabricated citation" "$out"
 # `pr-2050-…` is a different item from `pr-205-…`: the trailing dash of the
 # id's own shape is what keeps one from reading as the other.
-out="$(void_pr_matches_item "Poetic-Poems/poetic" "205" "pr-2050-abandoned-1a2b3c4d5e6f")"; rc=$?
+out="$(void_pr_matches_item "Poetic-Poems/poetic" "205" "pr-2050-abandoned-1a2b3c4d5e6f" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "  ... and a longer PR number is not this PR" "1" "$rc"
+
+# --- void_pr_matches_item: the id shortcut is slug-gated (issue #290) ----------
+# The id `pr-281-…` names a pull request in the repository that minted it, so
+# the number is identity only within the entry's own repo. A URL citation
+# carrying any other owner/repo used to corroborate on the number coincidence
+# alone, with no fetch at all — the one citation shape the guard could never
+# catch, since nothing was ever read.
+
+# Cross-repo, same number: no fixture exists for Some/OtherRepo#281, so the
+# refusal is itself the proof a fetch was attempted where none used to be.
+out="$(void_pr_matches_item "Some/OtherRepo" "281" "pr-281-abandoned-deadbee1" "Poetic-Poems/agent-ops")"; rc=$?
+assert_eq "a cross-repo citation of a coinciding number does not take the id shortcut" "1" "$rc"
+assert_contains "  ... it is fetched, and refused unread" "could not be read" "$out"
+
+# ... and when the cross-repo PR does exist, its body and branch decide, like
+# any other citation's.
+printf '{"body": "Bumps the widget from 1.2 to 1.3.", "head": {"ref": "dependabot/widget-1.3"}}' \
+  >"$tmp_dir/pr-Some_OtherRepo-281.json"
+out="$(void_pr_matches_item "Some/OtherRepo" "281" "pr-281-abandoned-deadbee1" "Poetic-Poems/agent-ops")"; rc=$?
+assert_eq "  ... and a fetched cross-repo body naming no item is refused" "1" "$rc"
+assert_contains "  ... as a fabrication" "fabricated citation" "$out"
+
+# Same repo: the shortcut still fires with no fetch — no fixture exists for
+# Poetic-Poems/agent-ops#281 yet, so a fetch would be visible as a refusal.
+assert_eq "a same-repo citation still takes the id shortcut" \
+  "0" "$(void_pr_matches_item "Poetic-Poems/agent-ops" "281" "pr-281-abandoned-deadbee1" \
+    "Poetic-Poems/agent-ops"; echo $?)"
+assert_eq "  ... comparing the slugs case-insensitively, as GitHub does" \
+  "0" "$(void_pr_matches_item "poetic-poems/AGENT-OPS" "281" "pr-281-abandoned-deadbee1" \
+    "Poetic-Poems/agent-ops"; echo $?)"
 
 # --- void_commit_matches_item ---------------------------------------------------
 printf 'main' >"$tmp_dir/repo-Poetic-Poems_poetic"
@@ -558,28 +588,49 @@ printf '{"status": "ahead"}' >"$tmp_dir/compare-aad1405b_TO_main.json"
 printf '{"commit": {"message": "fix(sync): add timeouts (TD26051201)"}}' \
   >"$tmp_dir/commit-aad1405b.json"
 assert_eq "an ancestor commit whose own message names the item matches" \
-  "0" "$(void_commit_matches_item "Poetic-Poems/poetic" "aad1405b" "TD26051201"; echo $?)"
+  "0" "$(void_commit_matches_item "Poetic-Poems/poetic" "aad1405b" "TD26051201" "Poetic-Poems/poetic"; echo $?)"
 
 printf '{"status": "ahead"}' >"$tmp_dir/compare-bbbb111_TO_main.json"
 printf '{"commit": {"message": "fix(sync): add timeouts"}}' >"$tmp_dir/commit-bbbb111.json"
 printf '50\n' >"$tmp_dir/commit-bbbb111-pulls"
 assert_eq "an ancestor commit with no item in its own message matches via its linked PR" \
-  "0" "$(void_commit_matches_item "Poetic-Poems/poetic" "bbbb111" "TD26051201"; echo $?)"
+  "0" "$(void_commit_matches_item "Poetic-Poems/poetic" "bbbb111" "TD26051201" "Poetic-Poems/poetic"; echo $?)"
 
 printf '{"status": "diverged"}' >"$tmp_dir/compare-ccccccc_TO_main.json"
-out="$(void_commit_matches_item "Poetic-Poems/poetic" "ccccccc" "TD26051201")"; rc=$?
+out="$(void_commit_matches_item "Poetic-Poems/poetic" "ccccccc" "TD26051201" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "a commit that is not an ancestor of default_branch is refused" "1" "$rc"
 assert_contains "  ... saying so" "not an ancestor" "$out"
 
-out="$(void_commit_matches_item "Poetic-Poems/poetic" "ddddddd" "TD26051201")"; rc=$?
+out="$(void_commit_matches_item "Poetic-Poems/poetic" "ddddddd" "TD26051201" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "an unreadable commit is refused" "1" "$rc"
 assert_contains "  ... saying so" "could not be compared" "$out"
 
 printf '{"status": "ahead"}' >"$tmp_dir/compare-eeeeeee_TO_main.json"
 printf '{"commit": {"message": "fix(sync): add timeouts"}}' >"$tmp_dir/commit-eeeeeee.json"
-out="$(void_commit_matches_item "Poetic-Poems/poetic" "eeeeeee" "TD26051201")"; rc=$?
+out="$(void_commit_matches_item "Poetic-Poems/poetic" "eeeeeee" "TD26051201" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "an ancestor commit tied to nothing is refused" "1" "$rc"
 assert_contains "  ... saying so" "neither its message nor any pull request" "$out"
+
+# The slug gate travels through the associated-PR fallback (issue #290): a
+# commit in another repository, linked there to its own PR #281, must not
+# corroborate `pr-281-…` on the number, while the same link in the entry's
+# own repo still does.
+printf 'main' >"$tmp_dir/repo-Some_OtherRepo"
+printf '{"status": "ahead"}' >"$tmp_dir/compare-Some_OtherRepo-abc1234_TO_main.json"
+printf '{"commit": {"message": "bump widget to 1.3"}}' >"$tmp_dir/commit-Some_OtherRepo-abc1234.json"
+printf '281\n' >"$tmp_dir/commit-Some_OtherRepo-abc1234-pulls"
+out="$(void_commit_matches_item "Some/OtherRepo" "abc1234" "pr-281-abandoned-deadbee1" \
+  "Poetic-Poems/agent-ops")"; rc=$?
+assert_eq "a cross-repo commit's associated PR does not corroborate on the number" "1" "$rc"
+assert_contains "  ... saying so" "neither its message nor any pull request" "$out"
+
+printf 'main' >"$tmp_dir/repo-Poetic-Poems_agent-ops"
+printf '{"status": "ahead"}' >"$tmp_dir/compare-Poetic-Poems_agent-ops-abc1234_TO_main.json"
+printf '{"commit": {"message": "bump widget to 1.3"}}' >"$tmp_dir/commit-Poetic-Poems_agent-ops-abc1234.json"
+printf '281\n' >"$tmp_dir/commit-Poetic-Poems_agent-ops-abc1234-pulls"
+assert_eq "  ... while the entry's own repo's associated PR still does, on the id" \
+  "0" "$(void_commit_matches_item "Poetic-Poems/agent-ops" "abc1234" "pr-281-abandoned-deadbee1" \
+    "Poetic-Poems/agent-ops"; echo $?)"
 
 # --- void_citation_reason: the entry-level composition -------------------------
 entry_224_bad='{"item": "224", "repo": "Poetic-Poems/poetic",
@@ -644,6 +695,33 @@ entry_224_commit_url_good='{"item": "224", "repo": "Poetic-Poems/poetic",
 assert_eq "a commit URL citation resolves against its own repo, not the entry's" \
   "0" "$(void_citation_reason "$entry_224_commit_url_good" "Poetic-Poems/poetic"; echo $?)"
 
+# --- void_citation_reason: the id shortcut is slug-gated (issue #290) ----------
+# The exact shape issue #290 is about: an entry for a finishing-source item
+# whose evidence pastes another repository's PR URL, the two numbers
+# coinciding. Corroborated with no fetch at all before the gate.
+entry_281_cross='{"item": "pr-281-abandoned-deadbee1", "repo": "Poetic-Poems/agent-ops",
+  "reason": "the draft is finished",
+  "evidence": "see https://github.com/Some/OtherRepo/pull/281"}'
+out="$(void_citation_reason "$entry_281_cross" "Poetic-Poems/agent-ops")"; rc=$?
+assert_eq "a cross-repo URL citation of a coinciding number is refused" "1" "$rc"
+assert_contains "  ... on what the fetch found" "fabricated citation" "$out"
+
+# A bare self-citation resolves against the entry's own repo, so the gate
+# never touches the ordinary finishing-source shape.
+assert_eq "a bare self-citation still corroborates on the id alone" \
+  "0" "$(void_citation_reason '{"item": "pr-281-abandoned-deadbee1",
+    "repo": "Poetic-Poems/agent-ops",
+    "evidence": "PR #281 has an empty diff against its base"}' "Poetic-Poems/agent-ops"; echo $?)"
+
+# An entry naming no repo can still be corroborated by a URL citation — via
+# the live test the gate falls through to, never on the number alone. This is
+# the deliberate empty-repo improvement the gate must preserve.
+printf '{"body": "Finishing the abandoned draft pr-281-abandoned-deadbee1.", "head": {"ref": "agent/finish-281"}}' \
+  >"$tmp_dir/pr-Poetic-Poems_agent-ops-281.json"
+assert_eq "an entry with no repo falls through to the live test, and can corroborate" \
+  "0" "$(void_citation_reason '{"item": "pr-281-abandoned-deadbee1",
+    "evidence": "https://github.com/Poetic-Poems/agent-ops/pull/281 is finished"}' ""; echo $?)"
+
 # --- void_guard_reason: the acceptance criteria, verbatim -----------------------
 # "a void citing an unrelated-but-real PR is rejected; a void citing the
 # genuinely implementing PR passes" — and with `repos` = `[]`, exactly the way
@@ -671,6 +749,13 @@ assert_eq "an abandoned-draft void citing its own PR survives the guard" \
   "0" "$(void_guard_reason '{"item": "pr-205-abandoned-1a2b3c4d5e6f",
     "repo": "Poetic-Poems/poetic", "reason": "the draft is finished",
     "evidence": "PR #205 has an empty diff against its base; nothing remains"}' '[]'; echo $?)"
+
+# ... while the cross-repo number coincidence (issue #290) is refused end to
+# end, on the Enabler's and Implementor's own `[]` call shape — the shape the
+# no-fetch shortcut used to corroborate.
+out="$(void_guard_reason "$entry_281_cross" '[]')"; rc=$?
+assert_eq "void_guard_reason refuses a cross-repo URL citation of a coinciding number" "1" "$rc"
+assert_contains "  ... not corroborated" "not corroborated" "$out"
 
 printf '\n'
 if (( failures == 0 )); then

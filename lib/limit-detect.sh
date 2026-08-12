@@ -263,6 +263,22 @@ limit_union_resume_at() {
   limit_union_record | jq -r '.resume_at // empty' 2>/dev/null || true
 }
 
+# limit_standdown_since  < JSONL on stdin
+# The `ts` of the earliest `limit-hit` in the current uninterrupted stand-down
+# window — everything after the last `limit-cleared`, if any — or nothing when
+# no live hit exists. This is how long the fleet has been frozen, as distinct
+# from when the freeze was last *extended* (the governing record's own `ts`),
+# and is what the automatic-freeze escalation ages against (requirement 2;
+# #244): a freeze that keeps re-confirming itself must not keep resetting the
+# clock that decides when a human hears about it.
+limit_standdown_since() {
+  jq -rs '[.[] | select(.event == "limit-hit" or .event == "limit-cleared")]
+          | (map(.event) | rindex("limit-cleared")) as $i
+          | (if $i == null then . else .[($i + 1):] end)
+          | map(select(.event == "limit-hit"))
+          | (first | .ts) // empty' 2>/dev/null || true
+}
+
 # limit_later_record RECORD...
 # Requirement 2.1's "later resume wins", over the records of both carriers —
 # the log union and fleet/limit.json. Prints the governing record, or nothing
