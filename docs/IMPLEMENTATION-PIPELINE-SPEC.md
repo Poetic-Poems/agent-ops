@@ -1263,10 +1263,11 @@ runs unattended.
    `pr_label`, head branch under `branch_prefix`, `reviewDecision` of
    `CHANGES_REQUESTED`, and — the load-bearing clause — **no GitHub
    review-thread event has answered the blocking review**: no marked reply
-   (a review or general PR comment carrying `lib/pipeline-marker.sh`'s
-   invisible marker) and no `review_requested` timeline event, either dated
-   after the blocking review was submitted. Each entry carries every review
-   body and inline comment in the round, verbatim.
+   whose marker's `actor=` field is `implementor` (a review or general PR
+   comment carrying `lib/pipeline-marker.sh`'s invisible marker) and no
+   `review_requested` timeline event, either dated after the blocking review
+   was submitted. Each entry carries every review body and inline comment in
+   the round, verbatim.
 
    - **The turn rule is the whole feature.** This system raises PRs as the
      account it runs as, and GitHub forbids approving or dismissing a review on
@@ -1288,6 +1289,21 @@ runs unattended.
      stamped by GitHub itself at the moment they happen, so neither can be
      produced by a rebase; a round is answered only once one of them actually
      occurs after the blocking review.
+   - **Only a marked reply from the Implementor answers a round.** The
+     marker (`lib/pipeline-marker.sh`) records who wrote it — `script`,
+     `enabler`, `reviewer` and `refiner` write it too, for reasons unrelated
+     to answering a review — and two of those are never an answer:
+     `actor=script` records a stage giving up on the PR, and `actor=enabler`
+     a stall being diagnosed. On PR #269 exactly those two comments closed
+     the round under the plain "any marked reply" rule, and the work sat
+     stranded until a human was escalated (agent-ops#278). Requiring
+     `actor=implementor` — `prompts/implementor.md`'s own "Answer the review
+     before you finish" — fails loudly instead of silently: a future actor
+     added to the marker (as `refiner` was) leaves the round open rather than
+     closing it by default, and the next Implementor engagement simply finds
+     the round already answered and finishes it properly. A legacy marked
+     comment with no `actor=` field does not answer the round either, for the
+     same reason.
    - **The blocking review shares `_handoff_blocking_reviewers`'
      standing-position rule but deliberately not its bot filter**
      (requirement 34a): each reviewer's own most recent
