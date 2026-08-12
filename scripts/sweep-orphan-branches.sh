@@ -20,13 +20,18 @@
 # `abandoned_draft_after_hours`** (the same judgement that makes a draft
 # abandoned) — does the one thing that makes the state self-healing:
 #
-#   commits ahead of the default branch   open a DRAFT pull request from the
+#   commits ahead, never merged           open a DRAFT pull request from the
 #                                         ref, labelled `pr_label`, so the
 #                                         existing abandoned-drafts machinery
 #                                         recovers the work exactly as it
 #                                         recovers any other stalled draft
-#   nothing ahead                         delete the ref, which is all a claim
-#                                         at the base SHA ever was
+#   nothing ahead, or ahead but already
+#   merged into the default branch        delete the ref: either it was only
+#                                         ever the claim, or every repo here
+#                                         squash-merges, so a landed branch's
+#                                         commits never leave `ahead_by`
+#                                         positive and the ref is just a
+#                                         leftover the claim gc didn't clean up
 #
 # Fail-closed everywhere: any answer this script cannot get (a PR list that
 # errors, a registry read that fails with anything but 404, an undatable tip)
@@ -105,7 +110,7 @@ deferred=0
 
 sweep_branch() {  # <branch> <tip-sha>
   local branch="$1" sha="$2"
-  local prs registry_err tip_date tip_epoch ahead pr_out pr_url body_file
+  local prs merged registry_err tip_date tip_epoch ahead pr_out pr_url body_file
   local -a label_args=()
 
   [[ "$branch" == "$default_branch" ]] && return 0
@@ -164,6 +169,29 @@ sweep_branch() {  # <branch> <tip-sha>
       actions=$(( actions + 1 ))
     else
       warn "$branch" "could not delete the empty orphan ref"
+    fi
+    return 0
+  fi
+
+  # Every repo in the fleet squash-merges, so a merged branch's commits never
+  # enter the default branch's history — `ahead_by` stays positive forever
+  # for a branch that landed and was simply never deleted. Ask GitHub whether
+  # this head was ever merged before trusting `ahead_by` as proof of
+  # unrecovered work; a merged PR means the ref is a leftover the claim gc
+  # left behind, not an orphan, and the fix is the same delete as the
+  # ahead-zero case above, not another recovery draft (issue #302).
+  merged="$("$GH" pr list -R "$slug" --head "$branch" --state merged \
+          --json number --jq 'length' 2>/dev/null)" || merged=""
+  if [[ -z "$merged" ]]; then
+    warn "$branch" "could not check for a merged PR — leaving it alone"
+    return 0
+  fi
+  if [[ "$merged" != "0" ]]; then
+    if "$GH" api -X DELETE "repos/$slug/git/refs/heads/$branch" >/dev/null 2>&1; then
+      jq -nc --arg b "$branch" '{action: "released", branch: $b}'
+      actions=$(( actions + 1 ))
+    else
+      warn "$branch" "could not delete the already-merged leftover ref"
     fi
     return 0
   fi

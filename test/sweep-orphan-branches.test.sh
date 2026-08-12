@@ -94,7 +94,12 @@ case "$args" in
     exit 0 ;;
   "pr list -R x/y --head "*)
     b="${args##*--head }"; b="${b%% *}"
-    if [[ -f "$S/prs-$(flat "$b")" ]]; then cat "$S/prs-$(flat "$b")"; else echo 0; fi
+    if [[ "$args" == *"--state open"* ]]; then st=open
+    elif [[ "$args" == *"--state merged"* ]]; then st=merged
+    else echo "stub gh: pr list without a recognised --state: $args" >&2; exit 1
+    fi
+    if [[ -f "$S/fail-$st-pr-list-$(flat "$b")" ]]; then exit 1; fi
+    if [[ -f "$S/prs-$st-$(flat "$b")" ]]; then cat "$S/prs-$st-$(flat "$b")"; else echo 0; fi
     exit 0 ;;
   "api repos/Poetic-Poems/agent-ops-state/contents/claims/x__y/"*)
     b="${args##*claims/x__y/}"; b="${b%%.json*}"
@@ -141,7 +146,7 @@ run_sweep() {
 c="$tmp_dir/guards"; mkdir -p "$c"
 printf 'td/open-pr\tsha1\ntd/claimed\tsha2\ntd/reg-err\tsha3\ntd/fresh\tsha4\n' > "$c/refs-td_tsv"
 printf 'agent/moved\tsha5\nagent/empty\tsha6\n' > "$c/refs-agent_tsv"
-echo 1 > "$c/prs-td_open-pr"
+echo 1 > "$c/prs-open-td_open-pr"
 touch "$c/registry-td__claimed"
 touch "$c/registry-500-td__reg-err"
 for s in sha1 sha2 sha3 sha5 sha6; do echo "$stale" > "$c/date-$s"; done
@@ -208,6 +213,41 @@ assert_eq "a repo without the label still gets its work back" \
 assert_contains "and the fallback is loud about the gatherer's blindness" \
   "recovered without the autonomous-agent label" \
   "$(jq -r 'select(.action == "warning") | .detail' <<<"$out")"
+
+# --- Case 4: a squash-merged branch never left `ahead_by` -----------------------
+# Every repo here squash-merges, so a branch's own commits never enter the
+# default branch's history: `ahead_by` stays positive forever even though the
+# work already landed. A merged PR against the head is what tells the sweep
+# this is a leftover ref, not unrecovered work (issue #302).
+c="$tmp_dir/merged-leftover"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/landed\tsha-landed\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-landed"
+echo 4 > "$c/ahead-agent_landed"
+echo 1 > "$c/prs-merged-agent_landed"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a squash-merged leftover is released, not recovered" \
+  '{"action":"released","branch":"agent/landed"}' \
+  "$(jq -c 'select(.branch == "agent/landed")' <<<"$out")"
+assert_contains "by deleting the ref" \
+  "api -X DELETE repos/x/y/git/refs/heads/agent/landed" "$calls"
+assert_not_contains "and no recovery draft is ever opened for it" \
+  "pr create" "$(grep 'agent/landed' "$c/calls.log" || true)"
+
+# --- Case 5: the merged-PR check itself is fail-closed ---------------------------
+c="$tmp_dir/merged-check-fails"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/unknown\tsha-unknown\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-unknown"
+echo 3 > "$c/ahead-agent_unknown"
+touch "$c/fail-merged-pr-list-agent_unknown"
+
+out="$(run_sweep "$c")"
+assert_eq "a merged-PR check that errors warns rather than guessing" \
+  '{"action":"warning","branch":"agent/unknown","detail":"could not check for a merged PR — leaving it alone"}' \
+  "$(jq -c 'select(.branch == "agent/unknown")' <<<"$out")"
 
 printf '\n'
 if (( failures )); then

@@ -3117,8 +3117,18 @@ runs unattended.
     the default branch become a **draft PR** (labelled `pr_label`, so the
     abandoned-drafts machinery recovers the work exactly as it recovers any
     stalled draft; retried without the label, loudly, where the label is
-    missing), and a ref with nothing ahead is **deleted** — it was only
-    ever the claim, and the claim is dead. Actions are capped per run
+    missing) — **unless a PR was ever merged from that head**, which the
+    sweep checks (`gh pr list --head <branch> --state merged`) before
+    trusting `ahead_by` at all: every repo here squash-merges, so a merged
+    branch's own commits never enter the default branch's history and
+    `ahead_by` stays positive forever even though the work already landed —
+    without this check that permanently-ahead, already-merged-but-undeleted
+    ref would read as a fresh orphan on every sweep and mint an endless
+    stream of redundant recovery drafts (issue #302). A ref with nothing
+    ahead, or with a merged PR against its head, is **deleted** — it was
+    only ever the claim, and the claim is dead (or already honoured). A
+    failure to determine the merge state fails the same way as the other
+    guards: skip the ref, warn, touch nothing. Actions are capped per run
     (three per repo per cycle, the overflow reported, never silent), logged
     as `orphan-branch-recovered` / `orphan-branch-released` events, and
     every node may sweep concurrently: GitHub rejects a second open PR for
@@ -6831,8 +6841,11 @@ pull request, run the ones the change touches and any it could regress.
    than `abandoned_draft_after_hours` are each left untouched; a registry
    read that fails with anything but 404 leaves the ref alone and says so
    (`warning`, fail closed); a missing label falls back to an unlabelled PR
-   loudly; and a backlog past the per-run cap acts on the cap's worth and
-   reports the remainder (`deferred`) rather than flooding or staying
+   loudly; a stale ref with commits ahead but a merged PR against its head
+   yields a ref delete and a `released` action rather than another recovery
+   draft, and a failure to determine the merge state leaves the ref alone
+   and says so; and a backlog past the per-run cap acts on the cap's worth
+   and reports the remainder (`deferred`) rather than flooding or staying
    silent.
 7c. **Claim visibility is deterministic, both shapes and both directions
    (requirement 3o, issue #175).** `test/claim.test.sh`'s `claims`/`branches`
