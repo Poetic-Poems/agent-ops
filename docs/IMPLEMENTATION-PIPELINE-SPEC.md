@@ -2297,6 +2297,38 @@ runs unattended.
    bounds only how long a live but hung cycle may hold on. The review
    pipeline derives its own the same way, doubling the widest Reviewer-Agent
    backstop because one lock can span two repositories reviewed back to back.
+4g. **Fleet-state JSON reaches `jq` on stdin, never in argv.** Requirement
+   4c's cap is an `execve` fact, not a prompt fact, and prompts are not the
+   only unbounded strings this Script builds: the void extract, the blocked
+   extract, the refinements map, the claims array and the pre-fetched repo
+   array all grow with the fleet's history, and each used to ride into `jq`
+   as an `--argjson` value — a single argv entry capped at `MAX_ARG_STRLEN`
+   (131072 bytes). On 2026-08-12 the void extract reached 133615 bytes and
+   the cap bit twice, in two different ways. At the no-op fingerprint and
+   Co-Ordinator input builds the call is unguarded, so under `set -e` every
+   cycle on every node died at `execve` with `Argument list too long`, exit
+   126, before the Co-Ordinator ran — and because that death precedes both
+   selection and any stage launch, it wrote no `attempt-failed`, so
+   requirement 2.7's crash-loop ladder, which counts consecutive
+   Co-Ordinator `attempt-failed` events, never saw it: the union log showed
+   only `cycle-start`/`cycle-end` pairs while the dashboard's work-source
+   panel, fed by the publisher's own fetch, kept advertising candidates no
+   Co-Ordinator would ever read. At the act-on-void sweep (requirement 34k),
+   the register-void pass (requirement 34l) and the unvoid-label read
+   (requirement 34f), the same delivery sat behind `2>/dev/null || echo
+   '[]'` guards and degraded silently instead — and what those three
+   implement is exactly the machinery that retires void state, so the
+   failure had disabled its own remedy. Every fleet-state aggregate
+   therefore arrives on the `jq` call's standard input — one JSON document
+   per line, bound positionally with `input as $name` in the order printed,
+   an order coupling each call site states beside the `printf` — and only
+   values bounded by configuration (a model name, a config object, a prompt
+   sha, one repo's register ids) may still travel as `--arg`/`--argjson`.
+   Delivery is a here-string, not a pipe, for requirement 4c's reason: under
+   `pipefail` a producer's SIGPIPE must not become the reader's status.
+   `test/unvoid-label.test.sh` anchors the acceptance check with a void
+   array built past the cap; `tech-debt/TD-PPagop-26081301.md` records the
+   remaining `--argjson` sites whose inputs are bounded today.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —

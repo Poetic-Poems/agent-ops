@@ -3533,14 +3533,21 @@ void_json="$(void_items "$union_log")"
 # requests.
 if ! (( DRY_RUN )); then
   void_object_closed_json="$(void_object_closed_items "$union_log")"
-  void_close_candidates_json="$(jq -nc --argjson void "$void_json" --argjson closed "$void_object_closed_json" \
+  # Both arrays arrive on stdin, one document per line, never in argv
+  # (requirement 4g): the void extract and the closed set are unbounded, and
+  # on 2026-08-12 the extract crossed MAX_ARG_STRLEN — an `--argjson`
+  # delivery here failed into its `|| echo '[]'`, silently disabling the one
+  # sweep that retires void state.
+  void_close_stdin="$void_json"$'\n'"$void_object_closed_json"
+  void_close_candidates_json="$(jq -nc \
     --arg issue_re "$WORK_GONE_ISSUE_RE" --arg pr_re "$WORK_GONE_PR_RE" '
-    ($closed | map(.repo + " " + .item)) as $done
+    input as $void | input as $closed
+    | ($closed | map(.repo + " " + .item)) as $done
     | [ $void[]
         | select((.repo // "") != "" and (.item // "") != "")
         | select((.item | test($issue_re)) or (.item | test($pr_re)))
         | select((.repo + " " + .item) as $k | ($done | index($k)) == null) ]
-  ' 2>/dev/null || echo '[]')"
+  ' <<<"$void_close_stdin" 2>/dev/null || echo '[]')"
   while IFS= read -r vslug; do
     [[ -n "$vslug" ]] || continue
     repo_candidates_json="$(jq -c --arg r "$vslug" '[ .[] | select(.repo == $r)
@@ -3579,10 +3586,16 @@ while IFS= read -r vr_slug; do
   vr_branch="$(jq -r --arg s "$vr_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
     <<<"$ordered_repos_json" 2>/dev/null || true)"
   [[ -n "$vr_branch" ]] || continue
-  vr_candidates_json="$(jq -c --argjson void "$void_json" --arg r "$vr_slug" \
+  # The void extract on stdin, never in argv (requirement 4g) — same failure
+  # shape as the sweep above: past MAX_ARG_STRLEN this call would fall into
+  # its `|| echo '[]'` and the pass would silently find nothing. `ids` stays
+  # an --argjson: it is one repo's matching register ids, bounded by the
+  # register itself.
+  vr_candidates_json="$(jq -c --arg r "$vr_slug" \
     --argjson ids "$(jq -c --arg s "$vr_slug" '.[$s] // []' <<<"$void_register_ids_json")" \
-    -n '[ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
-          | {item, detail, evidence} ]' 2>/dev/null || echo '[]')"
+    -n 'input as $void
+        | [ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
+            | {item, detail, evidence} ]' <<<"$void_json" 2>/dev/null || echo '[]')"
   vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" "$vr_candidates_json")"
   # Only ever *adds* to what the first pass found. gather_register_hygiene
   # fails safe to `[]`, and this second read can fail where the first
@@ -3820,23 +3833,30 @@ refiner_prompt_sha=""
 [[ -f "$PROMPTS_DIR/refiner.md" ]] \
   && refiner_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")"
 
+# The eight fleet-state arrays arrive on stdin, one JSON document per line,
+# bound positionally below in the order printed — never in argv (requirement
+# 4g). Each `--argjson` value is a single argv entry capped at MAX_ARG_STRLEN
+# (131072 bytes), and on 2026-08-12 the void extract alone crossed it: this
+# unguarded call then died at execve with `Argument list too long`, exit 126,
+# on every cycle of every node, before the Co-Ordinator ran — and without an
+# `attempt-failed` for requirement 2.7's crash-loop ladder to count. Only
+# values bounded by configuration stay in argv. A here-string rather than a
+# pipe, for requirement 4c's reason: under `pipefail` a producer's SIGPIPE
+# must not become this assignment's status.
+noop_stdin="$(printf '%s\n' \
+  "$ordered_repos_json" "$source_states_json" "$blocked_json" "$void_json" \
+  "$refinements_json" "$claimed_json" "$enabler_eligible_json" "$refiner_candidates_json")"
 noop_input="$(jq -nc \
-  --argjson repos "$ordered_repos_json" \
-  --argjson states "$source_states_json" \
-  --argjson blocked "$blocked_json" \
-  --argjson void "$void_json" \
-  --argjson refinements "$refinements_json" \
-  --argjson claimed "$claimed_json" \
-  --argjson eligible "$enabler_eligible_json" \
   --argjson sc "$selection_config_json" \
   --argjson ec "$enabler_config_json" \
   --arg psha "$coordinator_prompt_sha" \
   --arg esha "$enabler_prompt_sha" \
   --arg wst "$coordinator_sources_table" \
-  --argjson rcand "$refiner_candidates_json" \
   --argjson rc "$refiner_config_json" \
   --arg rsha "$refiner_prompt_sha" \
-  '{
+  'input as $repos | input as $states | input as $blocked | input as $void
+   | input as $refinements | input as $claimed | input as $eligible | input as $rcand
+   | {
      repos: [ $repos[] as $r
               | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
      blocked: $blocked,
@@ -3852,7 +3872,7 @@ noop_input="$(jq -nc \
      refiner_candidates: $rcand,
      refiner_config: $rc,
      refiner_prompt_sha: $rsha
-   }')"
+   }' <<<"$noop_stdin")"
 noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 
 # Computed even when the skip is bypassed, because it is also what a
@@ -3869,19 +3889,21 @@ if [[ -n "$noop_skip" ]]; then
   exit 0
 fi
 
+# The five fleet-state arrays on stdin, never in argv (requirement 4g) —
+# the same delivery, order coupling and here-string reasoning as the no-op
+# fingerprint's build above.
+coordinator_stdin="$(printf '%s\n' \
+  "$ordered_repos_json" "$blocked_json" "$void_json" "$refinements_json" "$claimed_json")"
 coordinator_input="$(jq -nc \
-  --argjson repos "$ordered_repos_json" \
-  --argjson blocked "$blocked_json" \
-  --argjson void "$void_json" \
-  --argjson refinements "$refinements_json" \
-  --argjson claimed "$claimed_json" \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
   --argjson policies "$refinement_policy_json" \
-  '{repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
-    models: {default: $model_default, trivial: $model_trivial},
-    candidates_max: $cmax, refinement_policy: $policies}')"
+  'input as $repos | input as $blocked | input as $void
+   | input as $refinements | input as $claimed
+   | {repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
+      models: {default: $model_default, trivial: $model_trivial},
+      candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
 
 # --- 4. Co-Ordinator stage ---
 # `coordinator_sources_table` (computed above, ahead of the no-op fingerprint
