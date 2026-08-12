@@ -1,0 +1,81 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15,
+    "timeout_implementor": 90,
+    "timeout_reviewer": 30,
+    "timeout_enabler": 30,
+    "lock_stale_after": 4,
+    "dashboard_refresh_seconds": 5
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 2, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [
+    {
+      "id": "20260811T220000Z-poetic-1-201",
+      "node": "poetic-1",
+      "started_at": "@ago:14h",
+      "ended_at": "@ago:14h",
+      "outcome": "pr-raised",
+      "repo": "Poetic-Poems/agent-ops",
+      "item": "TD-PPagop-26080901",
+      "source": "tech-debt",
+      "title": "raise the widget count",
+      "pr_url": "https://github.com/Poetic-Poems/agent-ops/pull/270",
+      "reason": null,
+      "fail_detail": null,
+      "warning": null,
+      "total_cost_usd": 0.85,
+      "limit_hit": false,
+      "stages": {
+        "coordinator": {"model": "claude-haiku-5-20260101", "cost_usd": 0.05, "duration_ms": 41000,
+          "num_turns": 4, "is_error": false, "terminal_reason": "end_turn"},
+        "implementor": {"model": "claude-sonnet-5-20260101", "cost_usd": 0.80, "duration_ms": 500000,
+          "num_turns": 30, "is_error": false, "terminal_reason": "end_turn"}
+      }
+    },
+    {
+      "id": "20260811T200000Z-poetic-1-188",
+      "node": "poetic-1",
+      "started_at": "@ago:16h",
+      "ended_at": "@ago:16h",
+      "outcome": "none-selected",
+      "repo": null,
+      "item": null,
+      "source": null,
+      "title": null,
+      "pr_url": null,
+      "reason": "no candidate item cleared the gates this cycle",
+      "fail_detail": null,
+      "warning": null,
+      "total_cost_usd": 0.05,
+      "limit_hit": false,
+      "stages": {
+        "coordinator": {"model": "claude-haiku-5-20260101", "cost_usd": 0.05, "duration_ms": 39000,
+          "num_turns": 4, "is_error": false, "terminal_reason": "end_turn"}
+      }
+    }
+  ],
+  "noop_ticks": {"total": 87, "standdown": 61, "skipped": 26, "last_ts": "@ago:5m"},
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {},
+    "inputs": {}
+  },
+  "log_tail": [],
+  "cron_tail": ["*/15 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}

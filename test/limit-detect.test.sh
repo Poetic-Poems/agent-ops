@@ -193,6 +193,19 @@ assert_eq "a limit-hit after a limit-cleared stands down again" \
 assert_eq "limit_union_record is empty for a stream with no limit events" \
   "" "$(limit_union_record <<<'{"ts":"2026-01-01T00:00:00Z","event":"cycle-end"}')"
 
+# --- limit_standdown_since: the start of the current freeze (#244) ---------
+# The escalation of requirement 2 ages a freeze from its first hit, not its
+# latest extension — a freeze that keeps re-confirming itself must not keep
+# resetting the clock that decides when a human hears about it.
+assert_eq "limit_standdown_since names the first hit of an unbroken freeze" \
+  "2026-01-01T00:00:00Z" "$(limit_standdown_since <<<"$union_hits")"
+assert_eq "a limit-cleared ends the freeze: nothing to age" \
+  "" "$(limit_standdown_since <<<"$union_cleared")"
+assert_eq "a hit after a clear starts a new freeze at its own ts, not the old one's" \
+  "2026-01-01T04:00:00Z" "$(limit_standdown_since <<<"$union_recleared")"
+assert_eq "limit_standdown_since is empty for a stream with no limit events" \
+  "" "$(limit_standdown_since <<<'{"ts":"2026-01-01T00:00:00Z","event":"cycle-end"}')"
+
 # --- limit_later_record: requirement 2.1's "later resume wins" -------------
 rec_early='{"resume_at":"2030-01-01T00:00:00Z","class":"weekly","reset_known":true}'
 rec_late='{"resume_at":"2031-01-01T00:00:00Z","class":"monthly","reset_known":false}'

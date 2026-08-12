@@ -114,17 +114,37 @@ _review_gate_open_alerts() {
     2>/dev/null
 }
 
+# _review_gate_analysis_exists SLUG REF
+# Print the number of code-scanning analyses GitHub holds for REF (asked with
+# per_page=1, so the answer is 0 or 1 — existence is the question). Returns
+# non-zero printing nothing when the API could not be asked at all.
+#
+# This exists because the alerts endpoint answers a ref that was never
+# analysed with `[]` and a 200 — the same shape as a genuinely clean result
+# (the Gotchas row this gate already earned). An empty alert list is only
+# evidence once an analysis is known to exist for the ref it was read from.
+_review_gate_analysis_exists() {
+  local slug="$1" ref="$2" gh_bin="${REVIEW_GATE_GH:-gh}"
+  "$gh_bin" api --method GET "repos/$slug/code-scanning/analyses" \
+    -f ref="$ref" -F per_page=1 --jq 'length' 2>/dev/null
+}
+
 # review_gate_security_alerts PR_URL DEFAULT_BRANCH
 # Print `clean`, `dirty<TAB>reason`, or `unknown<TAB>reason`.
 #   clean    no open code-scanning alert with a security severity exists on
 #            the pull request's branch that isn't already open on
-#            DEFAULT_BRANCH too.
+#            DEFAULT_BRANCH too — and, when the alert list is empty, an
+#            analysis for the merge ref actually exists to vouch for it.
 #   dirty    at least one does — this pull request introduces it.
-#   unknown  the alerts API could not be asked at all (see header); a fact
-#            about this node or repository, not this pull request.
+#   unknown  the alerts API could not be asked at all (see header), or no
+#            analysis exists for the merge ref so an empty alert list proves
+#            nothing (CodeQL skipped by path filters, a first-push race, or
+#            a repository that scans on push only and files its alerts under
+#            `refs/heads/<branch>`); a fact about this node, repository or
+#            workflow configuration, not this pull request.
 review_gate_security_alerts() {
   local url="${1:-}" default_branch="${2:-main}" parts slug number
-  local pr_alerts base_alerts base_numbers new_security
+  local pr_alerts base_alerts base_numbers new_security analyses
 
   if [[ -z "$url" ]] || ! parts="$(_review_gate_pr_parts "$url")"; then
     printf 'unknown\tcould not resolve a pull request from %s' "$url"
@@ -146,7 +166,24 @@ review_gate_security_alerts() {
     printf 'unknown\tcould not read %s'\''s code-scanning alerts' "$url"
     return 0
   fi
-  [[ -n "$pr_alerts" ]] || { printf 'clean'; return 0; }
+  if [[ -z "$pr_alerts" ]]; then
+    # An empty alert list is the same shape as "no analysis was ever run for
+    # this ref" (agent-ops#270): `clean` here without confirming an analysis
+    # exists would certify a check that never actually happened — for a pull
+    # request CodeQL skipped, a first-push race, or a repository scanning on
+    # push only, whose alerts this gate's merge-ref query can never see.
+    if ! analyses="$(_review_gate_analysis_exists "$slug" "refs/pull/$number/merge")" \
+       || ! [[ "$analyses" =~ ^[0-9]+$ ]]; then
+      printf 'unknown\tcould not confirm a code-scanning analysis exists for refs/pull/%s/merge, so its empty alert list cannot be told apart from an analysis that never ran' "$number"
+      return 0
+    fi
+    if (( analyses == 0 )); then
+      printf 'unknown\tno code-scanning analysis exists for refs/pull/%s/merge — its empty alert list proves nothing (CodeQL skipped, a first-push race, or a repository that scans on push only)' "$number"
+      return 0
+    fi
+    printf 'clean'
+    return 0
+  fi
 
   if ! base_alerts="$(_review_gate_open_alerts "$slug" "refs/heads/$default_branch")"; then
     printf 'unknown\tcould not read %s'\''s open code-scanning alerts, so an alert on the pull request cannot be told apart from inherited debt' "$default_branch"

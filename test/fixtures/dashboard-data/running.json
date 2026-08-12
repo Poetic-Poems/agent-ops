@@ -42,6 +42,7 @@
       "total_cost_usd": 1.2, "limit_hit": false
     }
   ],
+  "noop_ticks": {"total": 0, "standdown": 0, "skipped": 0, "last_ts": null},
   "blocked": [],
   "void": [],
   "github": {

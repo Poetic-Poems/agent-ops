@@ -84,12 +84,21 @@
 #
 # The fix is to derive "answered" from signals GitHub itself timestamps at the
 # moment they happen, none of which a rebase can produce:
-#   - a **marked reply** — a review or a general PR comment carrying
-#     `lib/pipeline-marker.sh`'s invisible marker, i.e. this system's own
-#     answer to the round (`prompts/implementor.md`'s "Answer the review before
-#     you finish"). `gh pr comment` and `gh pr review --comment` file the same
-#     words under different collections, so both are checked, the same way
+#   - a **marked reply from the Implementor** — a review or a general PR
+#     comment carrying `lib/pipeline-marker.sh`'s invisible marker with
+#     `actor=implementor`, i.e. this system's own answer to the round
+#     (`prompts/implementor.md`'s "Answer the review before you finish").
+#     `gh pr comment` and `gh pr review --comment` file the same words under
+#     different collections, so both are checked, the same way
 #     gather-abandoned-drafts.sh already does for its own staleness clock.
+#     The marker also carries `actor=script`, `actor=enabler`, `actor=reviewer`
+#     or `actor=refiner` for other kinds of pipeline write, and two of those
+#     are by definition not answers: `actor=script` records a stage giving up,
+#     and `actor=enabler` a stall being diagnosed. On PR #269 exactly those two
+#     comments closed the round under the old "any marked reply" rule and the
+#     work sat stranded until a human was escalated (agent-ops#278). A legacy
+#     marked comment with no `actor=` field does not answer the round either,
+#     for the same reason.
 #   - a **review-requested event** — the timeline record of
 #     `confirm_review_requested` (`lib/handoff.sh`) asking the blocking
 #     reviewer to look again, which GitHub stamps at request time regardless of
@@ -218,14 +227,23 @@ while IFS= read -r pr; do
                  2>/dev/null || true)"
   jq -e 'type == "array"' <<<"$rerequests" >/dev/null 2>&1 || rerequests='[]'
 
-  # Every answer event in the PR's life, oldest first: a marked review, a
-  # marked general comment, or a review-requested event. Two different
-  # timestamps are read off this one list below — whether the *blocking*
-  # round has been answered, and where the *previous* round left off.
+  # Every answer event in the PR's life, oldest first: a marked review or
+  # general comment whose marker's `actor=` field is `implementor`, or a
+  # review-requested event. Two different timestamps are read off this one
+  # list below — whether the *blocking* round has been answered, and where
+  # the *previous* round left off.
+  #
+  # `actor=implementor -->` is the exact tail `pipeline_comment_marker`
+  # (lib/pipeline-marker.sh) prints for that actor — the actor token is
+  # always the marker's last field, immediately followed by ` -->` — so a
+  # substring match is precise with no regex needed. Any other actor
+  # (`script`, `enabler`, `reviewer`, `refiner`) or a legacy marker with no
+  # `actor=` field at all does not match and must not close the round.
   answer_events="$(jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" \
+      --arg implementor_actor "actor=implementor -->" \
       --argjson reviews "$reviews" --argjson comments "$issue_comments" --argjson rr "$rerequests" '
-    ([$reviews[]  | select((.body // "") | contains($marker)) | .at]
-     + [$comments[] | select((.body // "") | contains($marker)) | .at]
+    ([$reviews[]  | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
+     + [$comments[] | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
      + [$rr[] | .at]) | sort
   ')"
 
