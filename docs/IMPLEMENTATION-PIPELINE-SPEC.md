@@ -2644,10 +2644,17 @@ runs unattended.
     even taken):
     - **Sources remain.** At least one configured repository's `.sources` —
       already narrowed by back-pressure (2.2a) if it was tripped — is
-      non-empty. This is not a prediction that work remains, only that
-      something is still configured to look at; the chained cycle's own
-      Co-Ordinator, gather and no-op fingerprint (3b) decide for real,
-      cheaply, exactly as an ordinary cron firing would.
+      non-empty. This counts enabled source *categories*, not items, and is
+      near-unconditional in practice: back-pressure narrows `.sources` to
+      the three finish-work sources rather than to empty, so a repo
+      configuring any of `review-feedback`/`merge-conflicts`/
+      `abandoned-drafts` keeps the count non-zero however back-pressured the
+      fleet is. It is not a prediction that work remains — the chained
+      cycle's own Co-Ordinator and gather decide that, and at full price,
+      since the cycle just finished changed the no-op fingerprint (3b) with
+      its own PR. In effect the cap below is the only gate that fires after
+      a productive cycle, and its cost is a deliberate trade — see the
+      finish-then-continue design decision.
     - **The lineage has room.** This cycle's own place in an unbroken chain
       of immediate continuations, 1 for the cron-fired original, is still
       under `max_chained_cycles` (default 3). A chained cycle inherits its
@@ -7547,7 +7554,13 @@ do (measured: ~2m35s of Haiku per pass against these repos). The no-op
 short-circuit replaces those with a handful of `gh` calls and a hash, leaving
 one forced pass a day (`none_selected_recheck_hours`) as the safety valve —
 roughly a 96% cut in the idle floor, and no change at all to a busy day, where
-every cycle has something to fingerprint that moved.
+every cycle has something to fingerprint that moved. A busy day carries a
+chaining surcharge instead: finish-then-continue (39) runs each productive
+cycle's lineage to `max_chained_cycles` regardless of remaining work — the
+gate's "sources remain" half is near-unconditional and the fingerprint just
+changed — so up to `max_chained_cycles − 1` further full Co-Ordinator passes
+follow every productive cycle. Accepted for the drain rate, and tunable; see
+the finish-then-continue design decision.
 
 The Enabler is the one stage that spends a top-tier model, so what bounds it is
 worth stating as a number rather than a hope. Nothing is engaged until an item
@@ -7880,6 +7893,26 @@ requirements above, which state only what is.
   match", which costs one Co-Ordinator run. The rule can only be wrong by being
   *incomplete*, which is why requirement 3b's map of source-to-signal is
   normative and `none_selected_recheck_hours` caps the damage at a day.
+
+- **Finish-then-continue chains to its cap after real work, and that cost is
+  accepted** (requirement 39, issue #248; surfaced in the review of #268).
+  The "sources remain" half of the chain gate counts enabled source
+  *categories*, not items, and back-pressure (2.2a) narrows a repo's
+  `.sources` to the three finish-work sources rather than to empty — so for
+  any fleet whose repos configure `review-feedback`, `merge-conflicts` or
+  `abandoned-drafts` the count is never zero and `max_chained_cycles` is the
+  only gate that ever fires. Nor can a chained cycle short-circuit on the
+  no-op fingerprint (3b): the productive cycle's own PR changed the inputs
+  the fingerprint hashes. The behaviour is therefore "after a productive
+  cycle, chain to the cap", and each link pays a full Co-Ordinator pass
+  (~2m35s of Haiku by the cost profile's measure) whether or not anything
+  was left to pick up — up to `max_chained_cycles − 1` passes per productive
+  cycle, unconditionally. That is the accepted trade: #248 is after drain
+  rate — work discovered minutes after a merge rather than at the next cron
+  firing — and a gate that could predict remaining work would need the very
+  gather-and-select pass it is trying to decide whether to spend. Tuning
+  knob, not redesign: a fleet that finds the idle chains too dear lowers
+  `max_chained_cycles` (`1` disables chaining).
 
 - **The Enabler runs from the exit trap, not from nine call sites.** A model
   stage inside a cleanup handler is unusual enough to look like a mistake, so:

@@ -57,7 +57,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 # shellcheck source=lib/stage-budget.sh
 . "$SCRIPT_DIR/lib/stage-budget.sh"
 
-MAX_CYCLES=40        # recent cycles shown in detail (with transcripts)
+MAX_CYCLES=40        # recent substantive cycles shown in detail (with
+                     # transcripts); no-op ticks aggregate instead (#271)
 MAX_LOG_TAIL=300     # recent raw log events surfaced
 TRANSCRIPT_CAP=40000 # bytes kept per transcript / stderr
 GH_TIMEOUT=15        # seconds per gh call
@@ -454,6 +455,44 @@ cycle_id_re='^[0-9]{8}T[0-9]{6}Z-'
 cycle_rows="$work_tmp/cycle-rows"
 tab="$(printf '\t')"
 
+# Nor does a no-op tick hold a detail slot (issue #271). Under the `*/15`
+# cadence most firings are no-ops — the stand-down short-circuit
+# (`cycle-start` → `stand-down` → `cycle-end`) and the lock-held skip
+# (`cycle-start` → `cycle-skipped` → `cycle-end`) — and at one slot each they
+# shrank the fleet's MAX_CYCLES window from half a day of history to a couple
+# of hours of mostly nothing. They are classified here, ahead of the cap, and
+# surfaced as the single O(1) `noop_ticks` aggregate (a count split by kind
+# plus the newest timestamp) rather than as rows or a second list — the cap
+# is what keeps data.js near its single-node size, and the aggregate must not
+# grow with what it counts. The match is those exact event shapes: a cycle
+# that logged anything else — a `claim-lost` race (17d's badge lives on that
+# row), an `unvoided`, a kill that cost it its `cycle-end` — carries
+# information and keeps its row.
+noop_cycles_file="$work_tmp/noop-cycles.json"
+jq -c --arg re "$cycle_id_re" '
+  # The kind is named by the outcome value the detail ladder (cycle_obj)
+  # would have given the row: "stand-down" or "skipped", or null for any
+  # cycle that is not one of the two no-op shapes.
+  def noop_kind:
+    ([ .[].event ] | unique) as $t
+    | if   (($t - ["cycle-start", "stand-down", "cycle-end"]) == [])
+           and ($t | contains(["stand-down", "cycle-end"]))    then "stand-down"
+      elif (($t - ["cycle-start", "cycle-skipped", "cycle-end"]) == [])
+           and ($t | contains(["cycle-skipped", "cycle-end"])) then "skipped"
+      else null end;
+  [ .[] | select((.cycle // "") | test($re)) ]
+  | group_by(.cycle)
+  | map({id: .[0].cycle, kind: noop_kind, last_ts: ([ .[].ts // "" ] | max)})
+  | map(select(.kind != null))' "$events_file" > "$noop_cycles_file" 2>/dev/null
+jq -e 'type == "array"' "$noop_cycles_file" >/dev/null 2>&1 || printf '[]' > "$noop_cycles_file"
+noop_ids="$work_tmp/noop-ids"
+jq -r '.[].id' "$noop_cycles_file" > "$noop_ids" 2>/dev/null || : > "$noop_ids"
+noop_json="$(jq -c '{total: length,
+                     standdown: (map(select(.kind == "stand-down")) | length),
+                     skipped:   (map(select(.kind == "skipped"))    | length),
+                     last_ts:   ((map(.last_ts) | max) // null)}' "$noop_cycles_file" 2>/dev/null)"
+[[ -n "$noop_json" ]] || noop_json='{"total":0,"standdown":0,"skipped":0,"last_ts":null}'
+
 # The D rows of one cycles directory: every id it holds, tagged with where it
 # came from. A glob rather than `ls`, so an id that is not a plain word cannot
 # be split or re-interpreted on its way through a pipe; the directory may not
@@ -474,8 +513,9 @@ dir_rows() {  # dir_rows CYCLES_DIR
     [[ -d "$pd" ]] || continue
     dir_rows "$pd"
   done
-} | sort -t "$tab" -k1,1r -k2,2 | awk -F'\t' -v re="$cycle_id_re" \
-      '$1 ~ re && !seen[$1]++' | cut -f1,3 \
+} | sort -t "$tab" -k1,1r -k2,2 | awk -F'\t' -v re="$cycle_id_re" -v noopfile="$noop_ids" \
+      'BEGIN { while ((getline id < noopfile) > 0) noop[id] = 1 }
+       $1 ~ re && !($1 in noop) && !seen[$1]++' | cut -f1,3 \
   | head -n "$MAX_CYCLES" > "$cycle_rows"
 
 # Manifest of every existing stage file in the window, plus the window's own
@@ -1476,6 +1516,7 @@ data_json="$(jq -n \
   --argjson status "$status_json" \
   --argjson counts "$counts_json" \
   --slurpfile cyc "$cycles_file" \
+  --argjson noop "$noop_json" \
   --argjson blocked "$blocked_json" \
   --argjson void "$void_json" \
   --slurpfile gh "$work_tmp/github.json" \
@@ -1485,7 +1526,7 @@ data_json="$(jq -n \
   --argjson fleet_flags "$fleet_flags_json" \
   --arg max_prs "$max_open_agent_prs" \
   '{generated_at: $generated_at, node: $self_node, config: $config, status: $status, counts: $counts,
-    cycles: $cyc[0], blocked: $blocked, void: $void, github: $gh[0], log_tail: $lt[0],
+    cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked, void: $void, github: $gh[0], log_tail: $lt[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
 
