@@ -757,6 +757,23 @@ out="$(void_guard_reason "$entry_281_cross" '[]')"; rc=$?
 assert_eq "void_guard_reason refuses a cross-repo URL citation of a coinciding number" "1" "$rc"
 assert_contains "  ... not corroborated" "not corroborated" "$out"
 
+# --- Dependabot-superseded evidence, the exact shape gather-merge-conflicts.sh
+# produces (issue #300). Before the fix it named the superseding PR by URL,
+# which PR #281 made the guard resolve live — and refuse, since a superseding
+# bump never carries the superseded item's id. The repaired format cites the
+# superseded PR's own number (corroborated via the finishing-source id
+# shortcut, no fetch needed) and names the superseding PR only by its branch
+# name, which neither the PR-number nor the commit-SHA extractor matches.
+entry_superseded="$(jq -n \
+  --arg item "pr-129-conflict-c96c8ef9d31a" \
+  --arg repo "Poetic-Poems/poetic-fiddle" \
+  --arg reason "a newer Dependabot bump of the same dependency supersedes this one" \
+  --arg evidence "PR #129's own branch (dependabot/npm_and_yarn/eslint at 9.39.5) is superseded: a newer open Dependabot pull request on branch dependabot/npm_and_yarn/eslint-10.9.0 bumps dependabot/npm_and_yarn/eslint to 10.9.0. Both cannot land — the older bump (this PR) is redundant now that the newer one exists." \
+  '{item: $item, repo: $repo, reason: $reason, evidence: $evidence}')"
+assert_eq "a Dependabot-superseded void, cited exactly as gather-merge-conflicts.sh formats it, survives the guard" \
+  "0" "$(void_guard_reason "$entry_superseded" '[]'; echo $?)"
+assert_eq "  ... silently" "" "$(void_guard_reason "$entry_superseded" '[]')"
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'
