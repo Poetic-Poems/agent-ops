@@ -566,9 +566,10 @@ takeover. Instead add it to `voided`:
   own number (`PR #<number>`), which the Script's void corroboration reads
   off the item's own `pr-<n>-…` id for a citation in the entry's own repo —
   as a bare `PR #N` citation always is — and then corroborates against that
-  pull request's own live state, excusing a Dependabot-authored PR from the
-  empty-diff half of that check, so this still-open, still-conflicting bump
-  passes on its state alone. And it names the newer PR only by its branch
+  pull request's own live state. A `-conflict-` item is read against whether
+  its pull request is still conflicting, never against its diff, and
+  Dependabot's own are excused from even that, so this still-open,
+  still-conflicting bump passes. And it names the newer PR only by its branch
   name, never as "PR #<n>" and never by its URL — writing your own sentence
   that names the superseding PR either of those ways will be checked against
   *that* PR's body and branch for this item's id, which it will never carry,

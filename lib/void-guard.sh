@@ -404,34 +404,79 @@ void_finishing_item_pr() {
   printf '%s' "$num"
 }
 
+# void_finishing_item_shape ITEM
+# Print which of the three finishing sources minted ITEM's id — `abandoned`,
+# `review` or `conflict` — and return 0. Prints nothing and returns 1 for
+# anything else, including a `pr-<n>-…` id whose middle word is none of those:
+# an unrecognised shape gets the strictest reading below, never the most
+# permissive one. Matched and reported case-insensitively, the same discipline
+# `void_candidate_prs` applies to item ids — the gatherers mint these in lower
+# case, but what reaches an entry is whatever the writer typed.
+void_finishing_item_shape() {
+  local item="$1" shape
+  shape="$(grep -oiE '^pr-[0-9]+-(abandoned|review|conflict)-' <<<"$item" 2>/dev/null || true)"
+  [[ -n "$shape" ]] || return 1
+  shape="${shape#*-}"
+  shape="${shape#*-}"
+  shape="${shape%-}"
+  printf '%s' "${shape,,}"
+}
+
 # void_finishing_pr_reason SLUG NUM ITEM
 # Decide whether NUM, the pull request a finishing-source ITEM was minted
 # from, corroborates a void of that item. Prints nothing and returns 0 when
 # it does; prints a one-line reason and returns 1 otherwise.
 #
 # A finishing-source item exists only to finish one specific, named pull
-# request, so "already done" means one of three things about that PR, fetched
-# live (never from a gathered candidate list, so this works identically for a
-# stage that has no such list — the Enabler, the Implementor):
-#   - **merged or otherwise closed** — there is no more finishing to do on a
-#     pull request that will never land via this route, whatever state the
-#     underlying work is in. GitHub reports both under `state: "closed"`; a
-#     void does not need to know which.
-#   - **open, with an empty diff against its base** — whatever this item was
-#     to finish has already been resolved: nothing changes relative to the
-#     base it would merge into.
-#   - **open, with a non-empty diff, but authored by Dependabot** —
-#     `gather-merge-conflicts.sh` votes a superseded Dependabot bump void
-#     while it is still open and still carries its own real changes
-#     (`superseded_by`, requirement 3s): the claim being corroborated is "a
-#     newer bump makes this one redundant", never "this diff is empty", so
-#     the diff test does not apply to it.
-# Anything else — open, non-empty diff, not Dependabot's — is refused, as is
-# a pull request the API will not answer for: an unreadable citation
-# corroborates nothing.
+# request, so the void is decided against that PR's own live state, fetched
+# here (never from a gathered candidate list, so this works identically for a
+# stage that has no such list — the Enabler, the Implementor). A pull request
+# the API will not answer for is refused whatever the shape: an unreadable
+# citation corroborates nothing.
+#
+# **Merged or otherwise closed corroborates every shape outright.** There is
+# no more finishing to do on a pull request that will never land via this
+# route, whatever state the underlying work is in. GitHub reports merged and
+# closed-unmerged alike under `state: "closed"`; a void does not need to know
+# which.
+#
+# **An open pull request is read against what its own shape claims, and the
+# strictness is calibrated to what requirement 34k then does with the void:**
+#
+#   - `pr-<n>-abandoned-…`, `pr-<n>-review-…` — a corroborated void of these
+#     makes 34k *close pull request `<n>`*, with a comment. That is a
+#     destructive, human-visible act on someone's live branch, and closing one
+#     on an unexamined claim is precisely how pull request #264 and its human
+#     `CHANGES_REQUESTED` round were lost (TD-PPagop-26080901). So only one
+#     open-PR reading is accepted: an **empty diff against its base** —
+#     whatever this item was to finish is already in the base, so closing the
+#     PR discards nothing. An open pull request that still changes files is
+#     refused and escalated, even when the void's claim ("obsolete", "no
+#     longer wanted") may well be true: that claim is a judgement no API call
+#     can corroborate, and a human is the right one to make it
+#     (TD-PPagop-26081308 records what that costs requirement 34k).
+#   - `pr-<n>-conflict-…` — a corroborated void of this shape closes *nothing*
+#     (requirement 34k excludes it, TD-PPagop-26080901: the void says the
+#     **conflict** resolved, not the pull request, which stays a live PR of
+#     ours). An empty diff is therefore not the claim being made, and
+#     demanding one would refuse every honest void this shape can write. The
+#     test is the mirror of the one that minted the item instead
+#     (`gather-merge-conflicts.sh`): the void is refused only while the API
+#     still reports the PR **definitively conflicting** (`mergeable: false`).
+#     A `mergeable` GitHub has not finished computing (`null`) reads as not
+#     definitively conflicting and is accepted, the same asymmetry the
+#     gatherer chose in the other direction — it admits a candidate on
+#     `CONFLICTING` and never on the transient `UNKNOWN`.
+#     One author is excused from that last test: Dependabot. A superseded
+#     bump is void while its own PR is still open *and* still conflicting
+#     (`superseded_by`, requirement 3s) — the claim is "a newer bump replaces
+#     this one", which no mergeability reading can confirm, and requirement 3s
+#     is the only route by which a still-conflicting PR becomes void at all.
+#     The excuse is scoped to this shape, where that route lives, and applies
+#     only after the state test has run.
 void_finishing_pr_reason() {
   local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
-  local pr_json state login files
+  local pr_json state shape login files
 
   pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
   if [[ -z "$pr_json" ]]; then
@@ -445,9 +490,20 @@ void_finishing_pr_reason() {
     return 0
   fi
 
-  login="$(jq -r '.user.login // ""' <<<"$pr_json" 2>/dev/null || true)"
-  if [[ "$login" == "dependabot[bot]" ]]; then
-    return 0
+  shape="$(void_finishing_item_shape "$item" || true)"
+
+  if [[ "$shape" == "conflict" ]]; then
+    if [[ "$(jq -r 'if .mergeable == false then "conflicting" else "" end' \
+      <<<"$pr_json" 2>/dev/null || true)" != "conflicting" ]]; then
+      return 0
+    fi
+    login="$(jq -r '.user.login // ""' <<<"$pr_json" 2>/dev/null || true)"
+    if [[ "$login" == "dependabot[bot]" ]]; then
+      return 0
+    fi
+    printf 'refuted: PR #%s in %s, whose conflict item %s reports resolved, is still conflicting against its base' \
+      "$num" "$slug" "$item"
+    return 1
   fi
 
   files="$("$gh_bin" api "repos/$slug/pulls/$num/files" --jq 'length' 2>/dev/null)" || files=""
@@ -483,13 +539,23 @@ void_finishing_pr_reason() {
 # pull request is not a loose association, it is the item's own definition.
 # Nothing will ever write `pr-205-abandoned-1a2b3c4d5e6f` in PR #205's body or
 # branch name, so the body/branch test below would refuse the most natural
-# evidence these items can carry — the same pull request `void_candidate_prs`
-# then reads the diff of. That refusal would fall precisely on the sources the
-# guard corroborates best, so the id is read for what it already says: NUM is
-# handed to `void_finishing_pr_reason` instead of to the body/branch test,
-# which corroborates it against the PR's own live state (TD-PPagop-26080807)
-# rather than accepting the id's say-so with no fetch at all, as this once
-# did.
+# evidence these items can carry. That refusal would fall precisely on the
+# sources the guard corroborates best, so the id is read for what it already
+# says: NUM is handed to `void_finishing_pr_reason` instead of to the
+# body/branch test, which corroborates it against the PR's own live state
+# (TD-PPagop-26080807) rather than accepting the id's say-so with no fetch at
+# all, as this once did.
+#
+# That live check is the whole of the corroboration these items get, in every
+# stage — `void_candidate_prs` never backstopped them and cannot. It matches a
+# candidate's `.item`, and a finishing-source id is never a candidate's
+# `.item`: the gatherers put it in `.ref` and leave `.item` as whatever
+# register id the branch or body named, or `null`
+# (`scripts/gather-abandoned-drafts.sh`, `gather-review-feedback.sh`,
+# `gather-merge-conflicts.sh`). So the Co-Ordinator's extra candidate-diff test
+# is silent on this shape exactly as the Enabler's and the Implementor's
+# `repos: []` calls are, which is why the fetch here has to be the thing that
+# looks.
 #
 # What the id says is scoped, though: it was minted from a pull request in
 # ENTRY_REPO — the entry's own `repo` — and carries no slug of its own, so the

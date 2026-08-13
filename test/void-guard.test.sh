@@ -554,13 +554,32 @@ assert_eq "a bare issue number yields nothing" "" "$(void_finishing_item_pr "224
 assert_eq "a longer embedded number is not truncated to a prefix match" \
   "2050" "$(void_finishing_item_pr "pr-2050-abandoned-1a2b3c4d5e6f")"
 
+# --- void_finishing_item_shape: which source minted the id --------------------
+# The shape decides which live test the void gets, so an id whose middle word is
+# none of the three must read as unknown and take the strict test, never the
+# permissive one.
+assert_eq "an abandoned-draft id names its source" \
+  "abandoned" "$(void_finishing_item_shape "pr-205-abandoned-1a2b3c4d5e6f")"
+assert_eq "a review-feedback id names its source" \
+  "review" "$(void_finishing_item_shape "pr-205-review-2071883842")"
+assert_eq "a merge-conflict id names its source" \
+  "conflict" "$(void_finishing_item_shape "pr-205-conflict-1a2b3c4d5e6f")"
+assert_eq "an unrecognised middle word names no source" \
+  "" "$(void_finishing_item_shape "pr-205-something-else")"
+assert_eq "the shape is read case-insensitively, as item ids are throughout" \
+  "conflict" "$(void_finishing_item_shape "PR-205-Conflict-1a2b3c4d5e6f")"
+assert_eq "an ordinary tech-debt id names no source" \
+  "" "$(void_finishing_item_shape "TD26051201")"
+
 # --- void_finishing_pr_reason: what "already done" means for one of these -----
 # A finishing-source item exists only to finish one named pull request, so its
 # void is corroborated by that PR's own live state rather than by a diff
 # against a gathered candidate — the fetch these items need is driven by their
 # id, not by a per-cycle candidate list, so it works identically for the
 # Enabler and the Implementor (repos: []) as for the Co-Ordinator
-# (TD-PPagop-26080807).
+# (TD-PPagop-26080807). Closed corroborates every shape; an *open* PR is read
+# against what its own shape claims, with the strictness calibrated to what
+# requirement 34k then does with the void.
 printf '{"state": "closed", "merged_at": "2026-08-01T00:00:00Z"}' >"$tmp_dir/pr-210.json"
 assert_eq "a merged PR corroborates outright" \
   "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "210" "pr-210-abandoned-aaaaaaaaaaaa"; echo $?)"
@@ -569,6 +588,9 @@ printf '{"state": "closed", "merged_at": null}' >"$tmp_dir/pr-211.json"
 assert_eq "a closed, unmerged PR corroborates too — there is nothing left to finish on it" \
   "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "211" "pr-211-abandoned-bbbbbbbbbbbb"; echo $?)"
 
+# `-abandoned-` and `-review-` are the two shapes requirement 34k *closes* the
+# pull request for, so an empty diff against its base is the only open-PR
+# reading accepted: closing it then discards nothing.
 printf '{"state": "open"}' >"$tmp_dir/pr-212.json"
 printf '0' >"$tmp_dir/files-212"
 assert_eq "an open PR with an empty diff against its base corroborates" \
@@ -580,36 +602,67 @@ out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "213" "pr-213-abandoned-dd
 assert_eq "an open PR that still changes files is refused" "1" "$rc"
 assert_contains "  ... naming the count still outstanding" "still changes 3 file(s)" "$out"
 assert_contains "  ... refuted" "refuted:" "$out"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "213" "pr-213-review-2071883842")"; rc=$?
+assert_eq "  ... and the review-feedback shape is read exactly the same way" "1" "$rc"
+assert_contains "  ... on the same diff" "still changes 3 file(s)" "$out"
+# An id whose shape is none of the three gets the strict reading, not the
+# permissive one.
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "213" "pr-213-something-else")"; rc=$?
+assert_eq "  ... as does an id of no recognised shape" "1" "$rc"
 
 out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "214" "pr-214-abandoned-eeeeeeeeeeee")"; rc=$?
 assert_eq "an unreadable PR is refused, not treated as innocent" "1" "$rc"
 assert_contains "  ... saying so" "could not be read" "$out"
 
-# A superseded Dependabot bump is void while its own PR is still open and
-# still carries a real, non-empty diff (gather-merge-conflicts.sh's
-# `superseded_by`, requirement 3s) — the claim is "a newer bump replaces this
-# one", never "this diff is empty", so the diff test is excused for it alone.
-printf '{"state": "open", "user": {"login": "dependabot[bot]"}}' >"$tmp_dir/pr-215.json"
-printf '4' >"$tmp_dir/files-215"
-assert_eq "an open, non-empty-diff PR authored by Dependabot is excused from the diff test" \
+# `-conflict-` is the shape requirement 34k closes *nothing* for
+# (TD-PPagop-26080901): the void says the conflict resolved, not the pull
+# request, which stays a live PR of ours carrying its full diff. So the diff
+# test is not the test — mergeability is, mirroring the `CONFLICTING` reading
+# that minted the item in gather-merge-conflicts.sh. A non-empty diff on a PR
+# GitHub no longer calls conflicting corroborates the void; `files-217` is
+# deliberately absent, so a stray diff fetch here would fail loudly.
+printf '{"state": "open", "mergeable": true, "user": {"login": "someone-else"}}' >"$tmp_dir/pr-217.json"
+assert_eq "a conflict item whose PR is mergeable again corroborates, diff and all" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "217" "pr-217-conflict-111111111111"; echo $?)"
+
+# Mergeability GitHub has not finished computing reads as not *definitively*
+# conflicting and is accepted — the same asymmetry the gatherer chose in the
+# other direction, admitting a candidate on CONFLICTING and never on UNKNOWN.
+printf '{"state": "open", "mergeable": null, "user": {"login": "someone-else"}}' >"$tmp_dir/pr-218.json"
+assert_eq "  ... as does one whose mergeability is not yet computed" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "218" "pr-218-conflict-222222222222"; echo $?)"
+
+printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}}' >"$tmp_dir/pr-216.json"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "216" "pr-216-conflict-000000000000")"; rc=$?
+assert_eq "a conflict item whose PR is still conflicting is refused" "1" "$rc"
+assert_contains "  ... on the conflict, never on the diff" "still conflicting" "$out"
+
+# One author is excused from that last test, and only within this shape: a
+# superseded Dependabot bump is void while its own PR is still open *and* still
+# conflicting (`superseded_by`, requirement 3s). The claim is "a newer bump
+# replaces this one", which no mergeability reading can confirm, and 3s is the
+# only route by which a still-conflicting PR becomes void at all.
+printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}}' \
+  >"$tmp_dir/pr-215.json"
+assert_eq "a still-conflicting Dependabot bump is excused, for the supersession case" \
   "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "215" "pr-215-conflict-ffffffffffff"; echo $?)"
 
-# A non-Dependabot author gets no such excuse, even with the same shape.
-printf '{"state": "open", "user": {"login": "someone-else"}}' >"$tmp_dir/pr-216.json"
-printf '4' >"$tmp_dir/files-216"
-out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "216" "pr-216-conflict-000000000000")"; rc=$?
-assert_eq "an open, non-empty-diff PR from anyone else is still refused" "1" "$rc"
-assert_contains "  ... on the diff" "still changes 4 file(s)" "$out"
+# The excuse is scoped to the shape that route lives in: Dependabot's authorship
+# buys nothing on a shape whose corroborated void closes the pull request.
+printf '5' >"$tmp_dir/files-215"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "215" "pr-215-abandoned-ffffffffffff")"; rc=$?
+assert_eq "  ... but buys nothing on an abandoned-draft or review item" "1" "$rc"
+assert_contains "  ... which is still read on its diff" "still changes 5 file(s)" "$out"
 
 # --- void_pr_matches_item: the finishing-source id shortcut --------------------
 # A finishing-source item is a pull request, and its id says which one. PR
 # #205's body and branch will never spell `pr-205-abandoned-<head-sha>`, so
 # without reading the id itself the guard would refuse the one citation these
-# items can honestly make — their own pull request, the very PR
-# `void_candidate_prs` then reads the diff of. Closed corroborates outright, so
-# this fixture proves the id selects the live-state check, not that the state
-# check is skipped — a `files-205` fixture is deliberately absent, so a wrong
-# diff fetch here would fail loudly rather than pass by coincidence.
+# items can honestly make — their own pull request. Closed corroborates every
+# shape outright, so this fixture proves the id selects the live-state check,
+# not that the state check is skipped — a `files-205` fixture is deliberately
+# absent, so a wrong diff fetch here would fail loudly rather than pass by
+# coincidence.
 printf '{"state": "closed", "body": "Draft implementing the widget.", "head": {"ref": "agent/widget"}}' \
   >"$tmp_dir/pr-205.json"
 for shape in "pr-205-abandoned-1a2b3c4d5e6f" "pr-205-review-2071883842" "pr-205-conflict-1a2b3c4d5e6f"; do
@@ -864,6 +917,29 @@ out="$(void_guard_reason "$entry_finishing" "$REPOS_FINISHING")"; rc=$?
 assert_eq "  ... and identically on the Co-Ordinator's populated \`repos\`" "1" "$rc"
 assert_contains "  ... for the same reason" "still changes 4 file(s)" "$out"
 
+# ... and the case that separates the shapes, end to end (TD-PPagop-26080901,
+# pull request #264): a `-conflict-` item is void when the *conflict* resolved,
+# which leaves its pull request open, mergeable and carrying its full diff — the
+# very triple the `-abandoned-` reading above refuses. Requirement 34k closes
+# nothing for this shape, so nothing is destroyed by allowing it, and refusing
+# it would refuse every honest void the merge-conflicts source can write.
+# `files-207` is deliberately absent: a diff fetch on this shape would fail
+# loudly rather than pass by coincidence.
+entry_conflict_resolved='{"item": "pr-207-conflict-1a2b3c4d5e6f",
+  "repo": "Poetic-Poems/poetic", "reason": "the conflict on this PR has resolved",
+  "evidence": "PR #207 no longer conflicts with its base"}'
+printf '{"state": "open", "mergeable": true, "user": {"login": "Warwick-Allen"}, "body": "", "head": {"ref": "agent/widget"}}' \
+  >"$tmp_dir/pr-207.json"
+assert_eq "a resolved-conflict void of a live PR of ours survives the guard" \
+  "0" "$(void_guard_reason "$entry_conflict_resolved" '[]'; echo $?)"
+assert_eq "  ... silently" "" "$(void_guard_reason "$entry_conflict_resolved" '[]')"
+
+printf '{"state": "open", "mergeable": false, "user": {"login": "Warwick-Allen"}, "body": "", "head": {"ref": "agent/widget"}}' \
+  >"$tmp_dir/pr-207.json"
+out="$(void_guard_reason "$entry_conflict_resolved" '[]')"; rc=$?
+assert_eq "  ... while the same claim about a still-conflicting PR is refused" "1" "$rc"
+assert_contains "  ... on the conflict itself" "still conflicting" "$out"
+
 # ... while the cross-repo number coincidence (issue #290) is refused end to
 # end, on the Enabler's and Implementor's own `[]` call shape — the shape the
 # no-fetch shortcut used to corroborate.
@@ -879,13 +955,14 @@ assert_contains "  ... not corroborated" "not corroborated" "$out"
 # shortcut) and names the superseding PR only by its branch name, which
 # neither the PR-number nor the commit-SHA extractor matches.
 #
-# The superseded PR is still open with a real, non-empty diff at the moment
-# this void is recorded — superseding it does not empty its diff — so the
-# shortcut's live fetch must read it as Dependabot's own and excuse it from
-# the diff test (TD-PPagop-26080807); `files-129` is deliberately non-zero so
-# a regression that stops excusing it fails loudly here rather than passing
-# by coincidence.
-printf '{"state": "open", "user": {"login": "dependabot[bot]"}, "body": "", "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+# The superseded PR is still open, still conflicting and still carrying a real
+# diff at the moment this void is recorded — superseding a bump neither resolves
+# its conflict nor empties it — so the shortcut's live fetch must read it as
+# Dependabot's own and excuse it from the mergeability test
+# (TD-PPagop-26080807). `mergeable` is deliberately `false` here, matching the
+# only state gather-merge-conflicts.sh ever gathers from, so a regression that
+# stops excusing it fails loudly rather than passing on an unset field.
+printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}, "body": "", "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
   >"$tmp_dir/pr-Poetic-Poems_poetic-fiddle-129.json"
 printf '2' >"$tmp_dir/files-129"
 entry_superseded="$(jq -n \
