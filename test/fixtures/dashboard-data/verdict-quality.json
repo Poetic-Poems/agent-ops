@@ -49,6 +49,11 @@
          "selections": 2, "fallbacks": 0, "none_selected": 0,
          "corroborated": 0, "rejected": 0, "rate": null}
       ],
+      "by_band": [
+        {"band": "tech-debt", "rejected": 2, "unaccounted": 34},
+        {"band": "issues", "rejected": 1, "unaccounted": 3},
+        {"band": "unknown", "rejected": 1, "unaccounted": 7}
+      ],
       "last_rejection": {
         "ts": "@ago:5h",
         "node": "poetic-2",

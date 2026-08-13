@@ -1765,6 +1765,32 @@
       }
     }
 
+    // Requirement 3x's per-band tally (issue #322, dashboard side issue
+    // #345): which band the fleet is getting wrong, not just how often.
+    // Counts, not a rate — a per-band denominator has no honest meaning (a
+    // verdict rejected over `issues` was not "a verdict about issues", it was
+    // a verdict about everything the Script handed over that cycle), so the
+    // single rate above stays the only one and this renders two counts
+    // instead: how many rejected verdicts named the band, and the item count
+    // behind that. Already sorted most-rejected first server-side. A
+    // rejection from before #322 carries no band breakdown and lands under
+    // "unknown" rather than vanishing or being guessed into a real band.
+    var bands = v.by_band || [];
+    if (bands.length) {
+      var brows = bands.slice(0, VERDICT_ROWS_MAX).map(function (b) {
+        return el("tr", {}, [
+          el("td", {class:"mono", text: b.band}),
+          el("td", {}, el("span", {class:"badge b-red", text: String(b.rejected)})),
+          el("td", {class:"mono", text: String(b.unaccounted)})
+        ]);
+      });
+      wrap.appendChild(tableOf(["Band","Rejected","Unaccounted"], brows));
+      if (bands.length > VERDICT_ROWS_MAX) {
+        wrap.appendChild(el("div", {class:"muted", style:"font-size:11.5px; margin-top:6px",
+          text:"… and " + (bands.length - VERDICT_ROWS_MAX) + " more band row(s) not shown"}));
+      }
+    }
+
     var r = v.last_rejection;
     if (r) {
       var box = el("div", {class:"panel", style:"padding:14px; margin-top:12px"});

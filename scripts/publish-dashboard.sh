@@ -958,6 +958,47 @@ jq -c --arg cut "$day_cut" '
             rejected:      total("rejected")}
            | . + {rate: rate})
      | sort_by([- .rejected, .model])) as $by_model
+  # Requirement 3x per-band tally (issue #322), rolled up rather than
+  # rendered per verdict: counts, not a rate — a verdict rejected over
+  # `issues` was not "a verdict about issues", it was a verdict about
+  # everything the Script handed over that cycle, so there is no sound
+  # per-band denominator to divide by (the single rate above stays the only
+  # one). `rejected` is how many rejected verdicts named this band at all;
+  # `unaccounted` is the item count behind that, summed across those
+  # verdicts — the two answer "which band" and "how much", respectively.
+  # Same source selection as `rejected` above (corroboration first, the
+  # fallback `none-selected` only where no corroboration event exists for
+  # that cycle), restricted to the same day window, and the same
+  # sibling-`warning` fallback `last_rejection` already uses for a
+  # corroboration event logged before this field existed. A rejection with
+  # no `bands` at all — every event from before #322 — lands in an explicit
+  # `unknown` bucket rather than vanishing or being guessed into a real band;
+  # its `unaccounted` is that same events own `unaccounted_total`, the one
+  # figure it does carry.
+  | ([ $ev[] | select(.event == "corroboration" and .verdict == "rejected")
+             | select(day_of != null and day_of >= $cut) ]
+     + [ $ev[] | select(.event == "none-selected" and .td_verdict_rejected == true
+                        and (($corr_cycles[(.cycle // "")] // false) | not))
+               | select(day_of != null and day_of >= $cut) ]
+     | map(
+         . as $r
+         | (if $r.event == "corroboration" then
+              ($r.bands // (
+                 ([ $ev[] | select(.event == "warning" and (.cycle // "") == ($r.cycle // "")
+                                   and ((.unaccounted | type) == "array")) ]
+                  | max_by(.ts // "")) as $w
+                 | ($w // {}).bands // null))
+            else $r.bands end) as $b
+         | if $b == null
+           then [{band: "unknown", rejected: 1, unaccounted: ($r.unaccounted_total // 0)}]
+           else ($b | to_entries | map({band: .key, rejected: 1, unaccounted: .value}))
+           end)
+     | flatten
+     | group_by(.band)
+     | map({band: .[0].band,
+            rejected:    (map(.rejected)    | add),
+            unaccounted: (map(.unaccounted) | add)})
+     | sort_by([- .rejected, .band])) as $by_band
   # The newest rejection, whichever record carries it, with what became of the
   # cycle that produced it — a rate with no instance is not actionable, and an
   # instance that does not say whether the fleet recovered is half the story
@@ -1010,10 +1051,10 @@ jq -c --arg cut "$day_cut" '
           none_selected: total("none_selected"),
           corroborated:  total("corroborated"),
           rejected:      total("rejected")})
-  | . + {rate: rate, by_day: $by_day, by_model: $by_model, last_rejection: $last}
+  | . + {rate: rate, by_day: $by_day, by_model: $by_model, by_band: $by_band, last_rejection: $last}
 ' "$events_file" > "$coord_verdicts_file" 2>/dev/null
 if ! jq -e 'type == "object"' "$coord_verdicts_file" >/dev/null 2>&1; then
-  printf '%s' '{"window_from":null,"window_to":null,"runs":0,"retries":0,"selections":0,"fallbacks":0,"none_selected":0,"corroborated":0,"rejected":0,"rate":null,"by_day":[],"by_model":[],"last_rejection":null}' \
+  printf '%s' '{"window_from":null,"window_to":null,"runs":0,"retries":0,"selections":0,"fallbacks":0,"none_selected":0,"corroborated":0,"rejected":0,"rate":null,"by_day":[],"by_model":[],"by_band":[],"last_rejection":null}' \
     > "$coord_verdicts_file"
 fi
 # Merged into `counts` rather than shipped as a key of its own: it is a

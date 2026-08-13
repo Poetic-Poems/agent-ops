@@ -214,6 +214,8 @@ assert_eq "and reads as a real zero rather than a missing key" "0" \
   "$(jq -r '.counts.coordinator_verdicts.runs' <<<"$data")"
 assert_eq "with no rate at all, since nothing was corroborated" "null" \
   "$(jq -r '.counts.coordinator_verdicts.rate' <<<"$data")"
+assert_eq "and the per-band tally reads as a real empty array too" "[]" \
+  "$(jq -c '.counts.coordinator_verdicts.by_band' <<<"$data")"
 
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
@@ -390,7 +392,7 @@ v_run() {  # v_run <iso-date> <hh:mm:ss> <cycle> <model> [retry-suffix]
   # V1 — rejected, retried, and the retry selected.
   v_run "$v_yest" "02:00:00" "${v_yest_day}T020000Z-nodeV-1" "$haiku"
   printf '{"ts":"%sT02:00:01Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"warning","detail":"tech-debt verdict contradiction: the Script found 33 eligible open tech-debt item(s)","eligible_total":33,"unaccounted":[{"repo":"o/a","item":"TD-1"}]}\n' "$v_yest" "$v_yest_day"
-  printf '{"ts":"%sT02:00:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":33,"unaccounted_total":1,"unaccounted":[{"repo":"o/a","item":"TD-1"}],"reason":"all recorded void","coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
+  printf '{"ts":"%sT02:00:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":33,"unaccounted_total":1,"unaccounted":[{"repo":"o/a","item":"TD-1"}],"reason":"all recorded void","coordinator_model":"%s","bands":{"tech-debt":1}}\n' "$v_yest" "$v_yest_day" "$haiku"
   v_run "$v_yest" "02:05:00" "${v_yest_day}T020000Z-nodeV-1" "$haiku" ',"retry":true'
   printf '{"ts":"%sT02:05:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":2,"verdict":"accepted-by-selection","eligible_total":33,"coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
   printf '{"ts":"%sT02:05:03Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"selection","repo":"o/a","item":"TD-1","source":"tech-debt","model":"claude-opus-5","title":"t"}\n' "$v_yest" "$v_yest_day"
@@ -407,9 +409,9 @@ v_run() {  # v_run <iso-date> <hh:mm:ss> <cycle> <model> [retry-suffix]
   printf '{"ts":"%sT05:00:02Z","cycle":"%sT050000Z-nodeV-4","node":"nodeV","event":"none-selected","reason":"nothing eligible","fingerprint":"def","eligible_total":0,"coordinator_model":"%s"}\n' "$v_today" "$v_today_day" "$haiku"
   # V5 — rejected twice on the other model, and the Script picked for it.
   v_run "$v_today" "06:00:00" "${v_today_day}T060000Z-nodeV-5" "claude-sonnet-5"
-  printf '{"ts":"%sT06:00:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":9,"unaccounted_total":9,"unaccounted":[{"repo":"o/b","item":"TD-9"}],"reason":"nothing to do","coordinator_model":"claude-sonnet-5"}\n' "$v_today" "$v_today_day"
+  printf '{"ts":"%sT06:00:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":9,"unaccounted_total":9,"unaccounted":[{"repo":"o/b","item":"TD-9"}],"reason":"nothing to do","coordinator_model":"claude-sonnet-5","bands":{"issues":1}}\n' "$v_today" "$v_today_day"
   v_run "$v_today" "06:05:00" "${v_today_day}T060000Z-nodeV-5" "claude-sonnet-5" ',"retry":true'
-  printf '{"ts":"%sT06:05:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":2,"verdict":"rejected","eligible_total":9,"unaccounted_total":3,"unaccounted":[{"repo":"o/b","item":"TD-9"},{"repo":"o/b","item":"TD-10"}],"reason":"still nothing to do","coordinator_model":"claude-sonnet-5"}\n' "$v_today" "$v_today_day"
+  printf '{"ts":"%sT06:05:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":2,"verdict":"rejected","eligible_total":9,"unaccounted_total":3,"unaccounted":[{"repo":"o/b","item":"TD-9"},{"repo":"o/b","item":"TD-10"}],"reason":"still nothing to do","coordinator_model":"claude-sonnet-5","bands":{"issues":1,"tech-debt":2}}\n' "$v_today" "$v_today_day"
   printf '{"ts":"%sT06:05:03Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"selection","repo":"o/b","item":"TD-9","source":"tech-debt","model":"claude-opus-5","title":"t","selected_by":"script-fallback"}\n' "$v_today" "$v_today_day"
 } > "$v/.local/state/poetic-agents/log.jsonl"
 run_publish "$v" NODE_NAME=nodeV
@@ -473,6 +475,31 @@ assert_eq "with the record's own count beside them, not the shown one" "3" \
   "$(jq -r '.last_rejection.unaccounted_total' <<<"$vdata")"
 assert_eq "and what the fleet did about it — a contradiction is no longer a lost cycle" \
   "recovered-by-fallback" "$(jq -r '.last_rejection.outcome' <<<"$vdata")"
+
+# --- Co-Ordinator verdict quality: the per-band tally (issue #345) --------------
+# Counts, not a rate: which band a rejection named, and how many items in it
+# went unaccounted, summed across every rejected verdict in the window — never
+# per-verdict figures, since a verdict rejected over one band is not "a
+# verdict about that band" and has no sound per-band denominator. V1's one
+# rejection names `tech-debt` alone; V5's two rejections both name `issues`
+# (summed across attempts) and its second also names `tech-debt` again
+# (summed with V1's); V3 is a rejection recorded before spec 3x's `bands`
+# object existed and must land under an explicit `unknown` bucket rather than
+# vanishing or being folded into a real band.
+assert_eq "a band named by two different rejections sums across them" "2" \
+  "$(jq -r '.by_band[] | select(.band == "issues") | .rejected' <<<"$vdata")"
+assert_eq "and its unaccounted count sums the same way" "2" \
+  "$(jq -r '.by_band[] | select(.band == "issues") | .unaccounted' <<<"$vdata")"
+assert_eq "a band named by rejections on two different verdicts also sums" "2" \
+  "$(jq -r '.by_band[] | select(.band == "tech-debt") | .rejected' <<<"$vdata")"
+assert_eq "unaccounted 1 (V1) + 2 (V5 attempt 2)" "3" \
+  "$(jq -r '.by_band[] | select(.band == "tech-debt") | .unaccounted' <<<"$vdata")"
+assert_eq "a rejection from before spec 3x's bands lands under an explicit unknown bucket" "1" \
+  "$(jq -r '.by_band[] | select(.band == "unknown") | .rejected' <<<"$vdata")"
+assert_eq "ranked most-rejected first" "issues" \
+  "$(jq -r '.by_band[0].band' <<<"$vdata")"
+assert_eq "with exactly the three bands this window saw" "3" \
+  "$(jq -r '.by_band | length' <<<"$vdata")"
 
 # The window is the retained log union and says so, so a short log cannot pass
 # for a clean history.
