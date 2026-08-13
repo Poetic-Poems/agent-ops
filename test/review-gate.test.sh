@@ -9,15 +9,18 @@
 # request is handed to a human as ready, checked against a stubbed `gh`
 # rather than trusted from a model's report:
 #
-#   - every required check green, with an empty required-check list treated
-#     as a failure rather than a vacuous pass (poetic-fiddle #190: a
-#     CONFLICTING pull request reports none at all) — and a required-check
-#     list that could not be read at all (a 502, a transient auth failure, a
-#     rate limit) reads as `unknown` rather than folded into the same
-#     `dirty`, but still refuses the handoff (non-zero exit) exactly like a
-#     genuine failure does (TD-PPagop-26081305): a fact about this node or
-#     GitHub's availability, not the pull request, but not evidence of
-#     "nothing wrong" either;
+#   - every required check green, with a pull request reporting no required
+#     checks treated as a failure rather than a vacuous pass (poetic-fiddle
+#     #190: a CONFLICTING pull request reports none at all) — and a
+#     required-check list that could not be read at all (a 502, a transient
+#     auth failure, a rate limit) reads as `unknown` rather than folded into
+#     the same `dirty`, but still refuses the handoff (non-zero exit) exactly
+#     like a genuine failure does (TD-PPagop-26081305): a fact about this node
+#     or GitHub's availability, not the pull request, but not evidence of
+#     "nothing wrong" either. The two arrive from `gh` in the *same* shape —
+#     empty stdout, non-zero exit, since `gh` reports an empty required-check
+#     list as an error and never as `[]` — so the stub below reproduces both
+#     diagnoses verbatim and the assertions pin which word each earns;
 #   - no code-scanning alert with a security severity introduced by the pull
 #     request — one already open on the base branch is inherited debt, not
 #     this pull request's fault, and must not block it;
@@ -79,8 +82,16 @@ URL="https://github.com/Poetic-Poems/poetic-fiddle/pull/216"
 # --- The stub gh --------------------------------------------------------------
 # State lives in files:
 #   $tmp_dir/required.json   the `pr checks --required --json name,bucket`
-#                             payload; "ERROR" makes the call fail as #190's
-#                             does (empty stdout, non-zero exit).
+#                             payload. Two sentinels stand for the two ways
+#                             the real `gh` fails this call, both with empty
+#                             stdout and a non-zero exit and distinguishable
+#                             only by the diagnosis on stderr: "NONE" is
+#                             #190's — `gh` reports a pull request with no
+#                             required checks as an error, never as `[]`, so
+#                             this is what the trap actually looks like — and
+#                             "ERROR" is a transport failure (a 502, an auth
+#                             failure, a rate limit) with `gh`'s own wording
+#                             for one.
 #   $tmp_dir/pr-alerts.tsv   lines for the `ref=refs/pull/<n>/merge` alerts
 #                             call; "ERROR" makes the call fail.
 #   $tmp_dir/base-alerts.tsv the same, for `ref=refs/heads/<default-branch>`.
@@ -105,7 +116,12 @@ d="$(dirname "$0")"
 
 if [[ "$1 $2" == "pr checks" ]]; then
   content="$(cat "$d/required.json" 2>/dev/null || echo '[]')"
-  [[ "$content" == "ERROR" ]] && { echo "no required checks reported on the branch" >&2; exit 1; }
+  # Both diagnoses are `gh` 2.97's own, verbatim from
+  # pkg/cmd/pr/checks/checks.go and pkg/cmdutil — the empty required-check
+  # list is returned as an error before the `--json` exporter ever writes, so
+  # stdout is empty in both cases and only these lines tell them apart.
+  [[ "$content" == "NONE" ]] && { echo "no required checks reported on the 'agent/some-branch' branch" >&2; exit 1; }
+  [[ "$content" == "ERROR" ]] && { echo "HTTP 502: Bad gateway (https://api.github.com/graphql)" >&2; exit 1; }
   printf '%s' "$content"
   exit 0
 fi
@@ -163,10 +179,21 @@ assert_eq "a failing required check is dirty" "dirty" "${out%%$'\t'*}"
 assert_contains "  ... naming the failing check" "CI" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
+# The shape #190 actually arrives in: `gh` refuses the call and says why on
+# stderr. Read from stdout alone this is indistinguishable from the 502 below,
+# which is why the verdict is taken from the diagnosis.
+set_required 'NONE'
+out="$(review_gate_required_checks "$URL")"; rc=$?
+assert_eq "a pull request reporting no required checks is dirty, not vacuously clean" "dirty" "${out%%$'\t'*}"
+assert_contains "  ... naming the conflicting-PR-runs-no-CI trap" "no required checks at all" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+# Defensive: no `gh` on record emits this, but an empty list read as anything
+# other than the trap above would be the vacuous pass poetic-fiddle #190 cost.
 set_required '[]'
 out="$(review_gate_required_checks "$URL")"; rc=$?
-assert_eq "an empty required-check list is dirty, not vacuously clean" "dirty" "${out%%$'\t'*}"
-assert_contains "  ... naming the conflicting-PR-runs-no-CI trap" "no required checks at all" "$out"
+assert_eq "an empty required-check list is dirty too, however it arrives" "dirty" "${out%%$'\t'*}"
+assert_contains "  ... naming the same trap" "no required checks at all" "$out"
 assert_eq "  ... and exits 1" "1" "$rc"
 
 set_required 'ERROR'
@@ -174,6 +201,8 @@ out="$(review_gate_required_checks "$URL")"; rc=$?
 assert_eq "an unreadable required-check list is unknown, never assumed clean" "unknown" "${out%%$'\t'*}"
 assert_contains "  ... naming the pull request it could not read" "$URL" "$out"
 assert_eq "  ... but still exits 1, refusing the handoff like dirty" "1" "$rc"
+assert_eq "  ... and is not confused with the no-required-checks trap" \
+  "" "$(grep -o 'no required checks at all' <<<"$out")"
 
 out="$(review_gate_required_checks "")"; rc=$?
 assert_eq "no PR url at all is dirty" "dirty" "${out%%$'\t'*}"
@@ -309,6 +338,18 @@ out="$(review_gate_verdict "$URL" "main")"; rc=$?
 assert_eq "an unreadable required-check list is unknown overall" "unknown" "${out%%$'\t'*}"
 assert_contains "  ... naming the required checks it could not read" "required checks" "$out"
 assert_eq "  ... but exits 1, refusing the handoff unlike an alerts-caused unknown" "1" "$rc"
+
+# ... and the pull request that reports no required checks at all, which
+# reaches this file in the same shape, must still come out `dirty` overall:
+# it is #190's trap, a fact about the pull request, and a caller told
+# `unknown` would hand its author a node-level excuse for it.
+set_required 'NONE'
+set_pr_alerts ''
+set_base_alerts ''
+out="$(review_gate_verdict "$URL" "main")"; rc=$?
+assert_eq "no required checks at all is dirty overall, not the node's unknown" "dirty" "${out%%$'\t'*}"
+assert_contains "  ... naming the trap" "no required checks at all" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
 
 # A genuinely dirty alert must still win over an unreadable required-check
 # list: the pull request has a real, nameable problem, and that must not be

@@ -4502,13 +4502,14 @@ runs unattended.
     request, and warns at both points rather than blocking either. This is
     the reasoning `review_gate_security_alerts` already applies to an alerts
     API it cannot reach, and deliberately *not* the one
-    `review_gate_required_checks` applies to an unreadable check list: there,
-    silence is itself the hazard (a CONFLICTING pull request genuinely
-    reports no required checks), whereas an unreadable pull request looks
-    nothing like one missing its keyword. A node degraded enough for this to
-    matter is stopped at the `ready` handoff by
-    `review_gate_required_checks`, which does fail closed, before this gate
-    is ever consulted.
+    `review_gate_required_checks` applies to a check list it cannot read:
+    that one reports `unknown` too (requirement 31c) but still refuses the
+    handoff, because a pull request that genuinely runs no CI reaches it in
+    the same shape and silence is itself the hazard there, whereas an
+    unreadable pull request looks nothing like one missing its keyword. A
+    node degraded enough for this to matter is stopped at the `ready` handoff
+    by `review_gate_required_checks`, which does fail closed, before this
+    gate is ever consulted.
 
     So every target repository gets the same deterministic gate: agent-ops
     from its own CI workflow *and* the script-side gate that also covers it
@@ -4718,11 +4719,11 @@ runs unattended.
     - every required status check green at the pull request's *current* head
       commit (`gh pr checks --required`, asked fresh rather than reused from
       anything read earlier in the engagement, so a check still catching up to
-      a fix just pushed is never mistaken for one that passed). An empty
-      required-check list is treated as failing, never as a vacuous pass —
-      poetic-fiddle #190, a CONFLICTING pull request, reports *no* required
-      checks at all, which is the conflicting-PR-runs-no-CI trap this guards
-      against — and so is a required check that is real and not green;
+      a fix just pushed is never mistaken for one that passed). A pull request
+      reporting no required checks at all is treated as failing, never as a
+      vacuous pass — poetic-fiddle #190, a CONFLICTING pull request, reports
+      *no* required checks, which is the conflicting-PR-runs-no-CI trap this
+      guards against — and so is a required check that is real and not green;
     - no code-scanning alert carrying a security severity that this pull
       request's branch carries and the default branch does not — a default
       branch that already lives with an accepted alert must not freeze every
@@ -4741,7 +4742,16 @@ runs unattended.
     failure, a rate limit — is a fact about this node or GitHub's
     availability, not this pull request, but it is not evidence of "nothing
     wrong" either, so it still refuses the handoff (a non-zero exit) exactly
-    like `dirty` does; the Script records this as its own node-level `warning`
+    like `dirty` does. That failure is told apart from the trap above by the
+    diagnosis `gh` writes to stderr and not by the shape of its answer, because
+    `gh` reports a pull request with no required checks as an error too — `no
+    required checks reported on the '<branch>' branch`, returned before the
+    `--json` payload is ever written — so both arrive with empty stdout and a
+    non-zero exit, and a split on stdout alone would file every conflicting
+    pull request as a degraded node. An unrecognised diagnosis is `unknown`:
+    both words refuse the handoff, so a `gh` that rewords its message costs
+    attribution and never safety. The Script records the node case as its own
+    node-level `warning`
     — naming the node, not the pull request — carrying an `unblock_condition`
     that says to retry once a node can read GitHub again, not the generic
     "fix your required checks" wording a real failure earns, so an Enabler
@@ -7867,18 +7877,26 @@ What exists, and the requirements each part answers to:
     URL and the repository's default branch, `review_gate_verdict` prints
     `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — every required
     status check green at the current head commit
-    (`review_gate_required_checks`, `gh pr checks --required`, an empty list
-    treated as failing rather than vacuously passing) and no code-scanning
+    (`review_gate_required_checks`, `gh pr checks --required`, a pull request
+    with no required checks treated as failing rather than vacuously passing)
+    and no code-scanning
     alert carrying a security severity that the pull request's branch has and
     the default branch does not (`review_gate_security_alerts`, the base
     branch's own open alerts subtracted first so inherited debt never blocks a
     pull request that did not introduce it). `review_gate_required_checks`
     itself prints `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` too
-    (TD-PPagop-26081305): an empty list or a real failing check is `dirty`;
-    only `gh pr checks --required` failing to answer at all is `unknown` — and
-    unlike every other `unknown` in this file, it still exits non-zero,
-    refusing the handoff exactly like `dirty`, because an unread required-
-    check list is never evidence of "nothing wrong". `review_gate_verdict`
+    (TD-PPagop-26081305): a pull request with no required checks, or a real
+    failing check, is `dirty`; only `gh pr checks --required` failing to
+    answer at all is `unknown` — and unlike every other `unknown` in this
+    file, it still exits non-zero, refusing the handoff exactly like `dirty`,
+    because an unread required-check list is never evidence of "nothing
+    wrong". The first two of those reach it in the same shape, since `gh`
+    reports a pull request with no required checks as an error (`no required
+    checks reported on the '<branch>' branch`, returned before the `--json`
+    payload is written) and not as `[]`, so the word is chosen from the
+    diagnosis `gh` writes to stderr — which the call therefore captures rather
+    than discards — and an unrecognised diagnosis is `unknown`, the
+    conservative word, since both refuse the handoff. `review_gate_verdict`
     propagates that distinction through its own exit status: 1 when the
     verdict is `dirty`, or `unknown` because required checks could not be
     read; 0 when the verdict is `clean`, or `unknown` only because the
@@ -8929,10 +8947,17 @@ pull request, run the ones the change touches and any it could regress.
 8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
    handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
    passes: every required check passing is `clean`; a failing required check
-   and an empty required-check list are both `dirty`, never a vacuous pass; a
-   required-check list that could not be read at all is `unknown` rather than
-   folded into `dirty` — but still exits non-zero, refusing the handoff
-   exactly like `dirty` does (TD-PPagop-26081305); an open code-scanning alert
+   and a pull request reporting no required checks are both `dirty`, never a
+   vacuous pass; a required-check list that could not be read at all is
+   `unknown` rather than folded into `dirty` — but still exits non-zero,
+   refusing the handoff exactly like `dirty` does (TD-PPagop-26081305). Those
+   last two are asserted against the shapes `gh` itself produces, both of them
+   an empty stdout and a non-zero exit told apart only by the diagnosis on
+   stderr, with `gh`'s own wording in the stub for each (`no required checks
+   reported on the '<branch>' branch` against a transport failure's) — a stub
+   that answered the no-required-checks case with `[]` would assert a shape no
+   `gh` emits and let the trap it exists for be filed as a degraded node. An
+   open code-scanning alert
    with a security severity on the pull request's branch is `dirty` unless the
    same alert number is already open on the default branch, in which case it
    is `clean`; an alert with no security severity never gates; the pull
@@ -10266,6 +10291,7 @@ confident, recurring no-op.
 | A staleness clock reset by the system's own housekeeping | `abandoned-drafts` (requirement 3e) measured a draft's staleness from `updatedAt`, which moves for anything at all. On poetic#92 a label edit deferred detection by a full `abandoned_draft_after_hours`, and — the sharper case — the Enabler's own comment correctly diagnosing the stall reset the clock in the same breath it cleared the block, deferring the very recovery it had just enabled. Filtering by comment author could not fix it: every pipeline write happens under the same GitHub account a human also comments as. | Ask "would *this system itself* ever produce this signal, and does that mean what a human producing it would mean?" before trusting a timestamp as "somebody is on it" (TD26072605). Where the answer differs, stamp what you write (`lib/pipeline-marker.sh`'s invisible marker) so the reader can tell its own hand from a human's, and discount your own bookkeeping (label edits) unconditionally. Same shape as "a change-detection digest that tracks churn instead of meaning" above, but the churn here is the system talking to itself. |
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
 | A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
+| Two different faults that reach the caller in the same shape | TD-PPagop-26081305 split `review_gate_required_checks` in two so a node that cannot read GitHub would stop being recorded as N broken pull requests — `dirty` for a pull request with no required checks (poetic-fiddle #190's conflicting-PR-runs-no-CI trap), `unknown` for a `gh` that could not answer. It split them on the shape of `gh`'s stdout: `[]` against nothing at all. But `gh pr checks --required` reports an empty required-check list as an *error* — `no required checks reported on the '<branch>' branch`, returned before the `--json` payload is ever written — so #190 arrives with empty stdout and a non-zero exit, byte-for-byte what a 502 looks like, and the `[]` branch is unreachable in production. Shipped, it would have filed every conflicting pull request as a degraded node, under an `unblock_condition` saying nothing found implicates the pull request: the same misattribution the item was written to remove, pointed the other way. The tests passed because the stub, written before the split, had always modelled #190 as its `ERROR` case. | Before splitting one verdict into two, establish what the tool *actually emits* for each case — read its source, or run it against a real instance of each — rather than what its `--json` contract suggests it emits. A CLI's error path is not covered by its output schema, and “no results” is the case most likely to be reported as a failure rather than as an empty one. Where two cases share a shape, the discriminator has to come from the channel that differs (here, stderr), and the stub has to carry the tool's own wording verbatim for both — otherwise the test asserts a shape nothing produces. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
 | A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |

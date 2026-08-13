@@ -37,16 +37,29 @@
 #
 # `review_gate_required_checks` still tells its own two failure shapes apart
 # (TD-PPagop-26081305, agent-ops#327's review): a required check that is
-# genuinely failing or an empty list (the trap above) are findings about the
-# pull request and stay `dirty`; `gh pr checks --required` failing to answer
-# at all — a 502, a transient auth failure, a rate limit — is a fact about
-# this node or GitHub's availability, and is reported `unknown` instead. That
-# `unknown` still refuses the handoff, signalled by a non-zero exit unlike the
-# two `unknown`s below: a node whose `gh` cannot be trusted must not be read
-# as "nothing wrong" merely because "wrong" could not be confirmed either. The
-# distinction exists so the caller can log a node-level warning naming what
-# could not be read, instead of a pull-request-shaped complaint that names
-# nothing to fix.
+# genuinely failing, or a pull request with no required checks at all (the
+# trap above), are findings about the pull request and stay `dirty`; `gh pr
+# checks --required` failing to answer at all — a 502, a transient auth
+# failure, a rate limit — is a fact about this node or GitHub's availability,
+# and is reported `unknown` instead. That `unknown` still refuses the handoff,
+# signalled by a non-zero exit unlike the two `unknown`s below: a node whose
+# `gh` cannot be trusted must not be read as "nothing wrong" merely because
+# "wrong" could not be confirmed either. The distinction exists so the caller
+# can log a node-level warning naming what could not be read, instead of a
+# pull-request-shaped complaint that names nothing to fix.
+#
+# The two are told apart by `gh`'s **stderr**, not by the shape of its stdout,
+# because `gh` reports "this pull request has no required checks" as an error
+# and not as an empty list: `populateStatusChecks` returns
+# `no required checks reported on the '<branch>' branch` (or `no checks
+# reported…`, when nothing ran at all) and `checksRun` returns that before it
+# ever writes the `--json` payload, so #190's trap arrives with empty stdout
+# and a non-zero exit — byte-for-byte what a 502 looks like. Splitting on
+# stdout alone would file every conflicting pull request as a degraded node,
+# which is this item's own misattribution pointed the other way. An empty
+# `[]` is still read as the trap if a future `gh` ever emits one, and any
+# unrecognised diagnosis falls to `unknown`: both words refuse the handoff, so
+# a reworded message costs attribution, never safety.
 #
 # `review_gate_security_alerts` is a different exception, and only for the
 # specific failure "the alerts API could not be asked at all" (no
@@ -80,17 +93,21 @@ _review_gate_pr_parts() {
 
 # review_gate_required_checks PR_URL
 # Print `clean`, `dirty<TAB>reason`, or `unknown<TAB>reason`. Exit 0 for
-# clean, 1 for dirty *or* unknown — both refuse the handoff. An empty
-# required-check list stays `dirty`, never a vacuous "clean" (see header —
-# the conflicting-PR-runs-no-CI trap, poetic-fiddle #190), and so does a
-# required check that is real and not green. Only `gh pr checks --required`
-# failing to answer at all — a 502, a transient auth failure, a rate limit —
-# is `unknown`: a fact about this node or GitHub's availability, not about
-# the pull request, though it still fails closed exactly like `dirty` (the
-# non-zero exit is the same; only the word differs, so a caller can log a
-# node-level warning instead of a pull-request-shaped complaint).
+# clean, 1 for dirty *or* unknown — both refuse the handoff. A pull request
+# reporting no required checks stays `dirty`, never a vacuous "clean" (see
+# header — the conflicting-PR-runs-no-CI trap, poetic-fiddle #190), and so
+# does a required check that is real and not green. Only `gh pr checks
+# --required` failing to answer at all — a 502, a transient auth failure, a
+# rate limit — is `unknown`: a fact about this node or GitHub's availability,
+# not about the pull request, though it still fails closed exactly like
+# `dirty` (the non-zero exit is the same; only the word differs, so a caller
+# can log a node-level warning instead of a pull-request-shaped complaint).
+#
+# Both of those arrive as a failed `gh` call with empty stdout, so the header's
+# stderr test — not the shape of stdout — is what separates them.
 review_gate_required_checks() {
   local url="${1:-}" gh_bin="${REVIEW_GATE_GH:-gh}" parts slug number raw failing
+  local err_file diagnosis
 
   if [[ -z "$url" ]] || ! parts="$(_review_gate_pr_parts "$url")"; then
     printf 'dirty\tcould not resolve a pull request from %s' "$url"
@@ -98,8 +115,20 @@ review_gate_required_checks() {
   fi
   IFS=$'\t' read -r slug number <<<"$parts"
 
-  raw="$("$gh_bin" pr checks "$number" -R "$slug" --required --json name,bucket 2>/dev/null)" || true
+  # stderr is kept rather than discarded because it carries the only signal
+  # that tells "this pull request has no required checks" apart from "this
+  # node could not ask" — see the header.
+  err_file="$(mktemp)"
+  raw="$("$gh_bin" pr checks "$number" -R "$slug" --required --json name,bucket 2>"$err_file")" || true
+  diagnosis="$(cat "$err_file" 2>/dev/null || true)"
+  rm -f "$err_file"
+
   if ! jq -e 'type == "array"' <<<"$raw" >/dev/null 2>&1; then
+    if [[ "$diagnosis" == *"no required checks reported on the"* \
+       || "$diagnosis" == *"no checks reported on the"* ]]; then
+      printf 'dirty\t%s reports no required checks at all against its head commit — the conflicting-PR-runs-no-CI trap' "$url"
+      return 1
+    fi
     printf 'unknown\tcould not read %s'\''s required checks against its current head commit' "$url"
     return 1
   fi
