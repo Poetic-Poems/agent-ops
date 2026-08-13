@@ -10,10 +10,9 @@
 # `dependabot-alert-<n>`/`code-scanning-alert-<n>`, `register-hygiene-<hash>`,
 # `failed-run-<workflow>`, and `pr-<n>-conflict-<head-sha>` (later joined by
 # its sibling shape `pr-<n>-superseded-<head-sha>`, TD-PPagop-26081304) — had
-# no actioned signal at all, so a void of one of those shapes never retired
-# and the
-# extract kept the same unbounded growth curve requirement 34n exists to stop,
-# underneath the part it does bound.
+# no actioned signal at all, so a void of one of those shapes never retired and
+# the extract kept the same unbounded growth curve requirement 34n exists to
+# stop, underneath the part it does bound.
 #
 # The decided direction (TD-PPagop-26081303, filed against PR #311's review):
 # age-only retirement is rejected, because a void whose id is *still being
@@ -222,8 +221,8 @@ void_review_plan_actioned() {
 # nor `-superseded-` is offered by several sources (`issues:<band>`,
 # `review-feedback`, `abandoned-drafts`, `human-visibility`), so no such
 # inverse exists and no `source-dropped` verdict can be read off the id —
-# those keep the closed-object signal they
-# already had. The `repo-dropped` half needs no map at all and so applies to
+# those keep the closed-object signal they already had. The `repo-dropped`
+# half needs no map at all and so applies to
 # every shape: nothing in a repo the config does not name can be offered by
 # any source.
 #

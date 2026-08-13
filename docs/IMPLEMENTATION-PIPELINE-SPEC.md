@@ -4109,7 +4109,8 @@ runs unattended.
     PR-derived sources do have one, but they do not need this rule, because
     their refs are scoped to the round or the head SHA that produced them
     (`pr-<n>-review-<review-id>`, `pr-<n>-conflict-<head-sha>`,
-    `pr-<n>-abandoned-<head-sha>` — requirement 20): a human reviewing again,
+    `pr-<n>-superseded-<head-sha>`, `pr-<n>-abandoned-<head-sha>` —
+    requirement 20): a human reviewing again,
     or a commit landing on the branch, mints a fresh item id that no block
     covers, so evidence arriving there is never held behind a stale marker.
 19. Chooses the Implementor's model: `implementor_model_trivial` only when
@@ -5102,7 +5103,11 @@ runs unattended.
         so this shape gets its own live test instead, calibrated to the same
         closing act #264 was lost to: accepted only when **both** hold, at
         void time, never read off the entry's own `evidence`: the PR's author
-        is Dependabot's (the account `lib/dependabot-bump.sh` names), and
+        is Dependabot's own account — read here off a REST fetch, which spells
+        it `dependabot[bot]`, not the `DEPENDABOT_LOGIN` spelling
+        `lib/dependabot-bump.sh` holds for the GraphQL surface `gh --json`
+        reads (the same account, two surfaces, and only the listing call below
+        takes the GraphQL one) — and
         `dependabot_newer_open_pr`, re-run against the repository's
         *currently* open Dependabot pull requests, still names a
         strictly-newer open bump of the same family. Either half failing
@@ -5427,7 +5432,9 @@ runs unattended.
 
     - **an issue** (a bare number) — the number is not in that repo's open-issue
       digest (requirement 3b);
-    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
+    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-superseded-…`,
+      `-review-…` — `WORK_GONE_PR_RE` reads the number off any `pr-<n>-…` shape,
+      which is what keeps this rule indifferent to which source minted it) —
       the number is not in that repo's open-PR digest;
     - **a register item** (`TD<date><nn>` or `TD-<scope>-<date><nn>`) — the
       item's own file on the default branch says `status: resolved` or
@@ -5828,8 +5835,12 @@ runs unattended.
       - **liveness**, for the four shapes the cycle already gathers as
         structured data each cycle (TD-PPagop-26081303): a
         `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
-        `register-hygiene-<hash>`, a `pr-<n>-conflict-<head-sha>` (the shape
-        34k deliberately excludes from its own close), or a
+        `register-hygiene-<hash>`, either merge-conflicts shape
+        (`pr-<n>-conflict-<head-sha>`, which 34k deliberately excludes from its
+        own close, and `pr-<n>-superseded-<head-sha>`, which it closes — both
+        come from the same gather, so the same absent-from-it test decides
+        both, redundantly for the second, which also earns a
+        `void-object-closed` once that close lands), or a
         `failed-run-<…>` is actioned once its id is (a) absent from this
         cycle's own gather for its source, decided only when that source's
         gather succeeded this cycle, and (b) nothing else — liveness is not
@@ -5906,7 +5917,8 @@ runs unattended.
         `scripts/gather-findings.sh` serves both and either alone keeps its
         voids live. The `source-dropped` half is deliberately confined to the
         shapes whose id *form* names the source that mints them: a bare issue
-        number or a non-`-conflict-` `pr-<n>-…` is offered by several sources
+        number or a `pr-<n>-…` shaped neither `-conflict-` nor `-superseded-`
+        is offered by several sources
         (`issues:<band>`, `review-feedback`, `abandoned-drafts`,
         `human-visibility`), so no inverse exists and no verdict can be read
         off the id — those keep the closed-object signal they already had.
@@ -9062,8 +9074,9 @@ pull request, run the ones the change touches and any it could regress.
    `test/cycle-state.test.sh`'s `void_config_actioned` section passes,
    against `lib/void-liveness.sh`: an entry naming a repo the configured
    array does not list is actioned as `repo-dropped` whatever its shape,
-   including the bare-issue and non-`-conflict-` `pr-<n>-…` shapes no
-   `source-dropped` verdict can be read off; an entry whose shape names a
+   including the bare-issue shape and the `pr-<n>-…` shapes that are neither
+   `-conflict-` nor `-superseded-`, off which no
+   `source-dropped` verdict can be read; an entry whose shape names a
    source the repo still lists is never actioned; an entry whose shape names
    a source the repo no longer lists is actioned as `source-dropped`, tested
    for each of the seven mapped shapes; the alert shape stays live while

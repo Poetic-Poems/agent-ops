@@ -673,6 +673,21 @@ printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}
 assert_eq "a Dependabot bump with a newer open bump of the same family corroborates" \
   "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff"; echo $?)"
 
+# `mergeable` decides nothing on this shape, in either direction — a bump is
+# superseded whether or not it still conflicts, and reading the field here
+# would be the `-conflict-` test smuggled back in. The fixture above pins
+# `false`; these pin the other two readings, so a regression that started
+# consulting the field fails on one of the three rather than passing by
+# whichever one it happened to be given.
+for mergeable in true null; do
+  printf '{"state": "open", "mergeable": %s, "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+    "$mergeable" >"$tmp_dir/pr-219.json"
+  assert_eq "  ... whatever mergeable reads ($mergeable)" \
+    "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff"; echo $?)"
+done
+printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+  >"$tmp_dir/pr-219.json"
+
 # Re-derived live, not read off the void's own claim: no newer bump open now
 # (Dependabot merged it, or it was closed) refuses even though the item still
 # says superseded.
@@ -682,9 +697,15 @@ assert_eq "  ... but not once no newer bump is open" "1" "$rc"
 assert_contains "  ... naming the missing bump" "has none open now" "$out"
 
 # The author test runs first, and independently: a superseded-shaped item
-# citing a PR that is not Dependabot's own is refused without ever asking
-# whether a newer bump exists.
-printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}, "head": {"ref": "agent/widget"}}' \
+# citing a PR that is not Dependabot's own is refused on the author alone. The
+# newer bump is deliberately present in the live list for this one, and the
+# head ref deliberately of that same family, so the refusal cannot be the
+# no-newer-bump half passing itself off as the author half — the fourth of the
+# four author x newer-bump combinations, and the only one where the two tests
+# would disagree.
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
   >"$tmp_dir/pr-221.json"
 out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "221" "pr-221-superseded-ffffffffffff")"; rc=$?
 assert_eq "a superseded item whose PR is not Dependabot's own is refused" "1" "$rc"

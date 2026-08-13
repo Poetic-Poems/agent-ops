@@ -4838,9 +4838,11 @@ fi
 #     residue, and so this read, bounded;
 #   - liveness, for the four shapes the cycle already gathers as structured
 #     data each cycle (TD-PPagop-26081303): a `dependabot-alert-<n>`/
-#     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, a
-#     `pr-<n>-conflict-<head-sha>` (the merge-conflicts shape requirement 34k
-#     deliberately excludes from its own close), or a `failed-run-<…>` is
+#     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, either
+#     merge-conflicts shape (`pr-<n>-conflict-<head-sha>`, which requirement
+#     34k deliberately excludes from its own close, and
+#     `pr-<n>-superseded-<head-sha>`, which it closes — same gather, so the
+#     same test decides both), or a `failed-run-<…>` is
 #     actioned once its id is absent from this cycle's own gather for that
 #     source, and that gather succeeded (`void_liveness_actioned`,
 #     lib/void-liveness.sh) — read off the same tee files the repo loop
