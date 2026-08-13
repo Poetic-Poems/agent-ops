@@ -111,14 +111,21 @@ if [[ "$2" == */pulls/*/files ]]; then
 fi
 # A bare `repos/<slug>/pulls/<n>` — the citation guard's own fetch of a cited
 # PR's body and branch, distinct from the `/files` count above. A
-# slug-specific fixture (`pr-<slug>-<n>.json`) is tried first, so a test can
-# put the same PR number in two repos and prove each resolves independently;
-# a plain `pr-<n>.json` (no repo distinction) is the fallback every existing
-# fixture already uses.
+# slug-specific fixture (`pr-<slug>-<n>.json`) is tried first — matched
+# case-insensitively, since GitHub resolves owner/repo the same way and a
+# caller (e.g. the id shortcut's own case-insensitive slug comparison) may
+# hand this stub a differently-cased slug than the fixture was written with —
+# so a test can put the same PR number in two repos and prove each resolves
+# independently; a plain `pr-<n>.json` (no repo distinction) is the fallback
+# every existing fixture already uses.
 if [[ "$2" == */pulls/* ]]; then
   slug="${2#repos/}"; slug="${slug%%/pulls/*}"
   n="${2##*/pulls/}"
   f="$d/pr-${slug//\//_}-$n.json"
+  if [[ ! -f "$f" ]]; then
+    match="$(find "$d" -maxdepth 1 -iname "pr-${slug//\//_}-$n.json" -print -quit 2>/dev/null)"
+    [[ -n "$match" ]] && f="$match"
+  fi
   [[ -f "$f" ]] || f="$d/pr-$n.json"
   [[ -f "$f" ]] || exit 1
   cat "$f"
@@ -532,12 +539,78 @@ printf '{"body": "see line 1224 for details", "head": {"ref": "agent/9224x"}}' >
 out="$(void_pr_matches_item "Poetic-Poems/poetic" "60" "224" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "a number embedded in a longer number does not match" "1" "$rc"
 
+# --- void_finishing_item_pr: reading the PR number out of the id --------------
+assert_eq "an abandoned-draft id yields its PR number" \
+  "205" "$(void_finishing_item_pr "pr-205-abandoned-1a2b3c4d5e6f")"
+assert_eq "a review-feedback id yields its PR number" \
+  "205" "$(void_finishing_item_pr "pr-205-review-2071883842")"
+assert_eq "a merge-conflict id yields its PR number" \
+  "205" "$(void_finishing_item_pr "pr-205-conflict-1a2b3c4d5e6f")"
+assert_eq "an ordinary tech-debt id yields nothing" \
+  "" "$(void_finishing_item_pr "TD26051201")"
+assert_eq "a bare issue number yields nothing" "" "$(void_finishing_item_pr "224")"
+# The trailing dash of the id's own shape is what keeps `pr-2050-…` from
+# reading as `pr-205-…`.
+assert_eq "a longer embedded number is not truncated to a prefix match" \
+  "2050" "$(void_finishing_item_pr "pr-2050-abandoned-1a2b3c4d5e6f")"
+
+# --- void_finishing_pr_reason: what "already done" means for one of these -----
+# A finishing-source item exists only to finish one named pull request, so its
+# void is corroborated by that PR's own live state rather than by a diff
+# against a gathered candidate — the fetch these items need is driven by their
+# id, not by a per-cycle candidate list, so it works identically for the
+# Enabler and the Implementor (repos: []) as for the Co-Ordinator
+# (TD-PPagop-26080807).
+printf '{"state": "closed", "merged_at": "2026-08-01T00:00:00Z"}' >"$tmp_dir/pr-210.json"
+assert_eq "a merged PR corroborates outright" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "210" "pr-210-abandoned-aaaaaaaaaaaa"; echo $?)"
+
+printf '{"state": "closed", "merged_at": null}' >"$tmp_dir/pr-211.json"
+assert_eq "a closed, unmerged PR corroborates too — there is nothing left to finish on it" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "211" "pr-211-abandoned-bbbbbbbbbbbb"; echo $?)"
+
+printf '{"state": "open"}' >"$tmp_dir/pr-212.json"
+printf '0' >"$tmp_dir/files-212"
+assert_eq "an open PR with an empty diff against its base corroborates" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "212" "pr-212-abandoned-cccccccccccc"; echo $?)"
+
+printf '{"state": "open"}' >"$tmp_dir/pr-213.json"
+printf '3' >"$tmp_dir/files-213"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "213" "pr-213-abandoned-dddddddddddd")"; rc=$?
+assert_eq "an open PR that still changes files is refused" "1" "$rc"
+assert_contains "  ... naming the count still outstanding" "still changes 3 file(s)" "$out"
+assert_contains "  ... refuted" "refuted:" "$out"
+
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "214" "pr-214-abandoned-eeeeeeeeeeee")"; rc=$?
+assert_eq "an unreadable PR is refused, not treated as innocent" "1" "$rc"
+assert_contains "  ... saying so" "could not be read" "$out"
+
+# A superseded Dependabot bump is void while its own PR is still open and
+# still carries a real, non-empty diff (gather-merge-conflicts.sh's
+# `superseded_by`, requirement 3s) — the claim is "a newer bump replaces this
+# one", never "this diff is empty", so the diff test is excused for it alone.
+printf '{"state": "open", "user": {"login": "dependabot[bot]"}}' >"$tmp_dir/pr-215.json"
+printf '4' >"$tmp_dir/files-215"
+assert_eq "an open, non-empty-diff PR authored by Dependabot is excused from the diff test" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "215" "pr-215-conflict-ffffffffffff"; echo $?)"
+
+# A non-Dependabot author gets no such excuse, even with the same shape.
+printf '{"state": "open", "user": {"login": "someone-else"}}' >"$tmp_dir/pr-216.json"
+printf '4' >"$tmp_dir/files-216"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "216" "pr-216-conflict-000000000000")"; rc=$?
+assert_eq "an open, non-empty-diff PR from anyone else is still refused" "1" "$rc"
+assert_contains "  ... on the diff" "still changes 4 file(s)" "$out"
+
+# --- void_pr_matches_item: the finishing-source id shortcut --------------------
 # A finishing-source item is a pull request, and its id says which one. PR
 # #205's body and branch will never spell `pr-205-abandoned-<head-sha>`, so
 # without reading the id itself the guard would refuse the one citation these
 # items can honestly make — their own pull request, the very PR
-# `void_candidate_prs` then reads the diff of.
-printf '{"body": "Draft implementing the widget.", "head": {"ref": "agent/widget"}}' \
+# `void_candidate_prs` then reads the diff of. Closed corroborates outright, so
+# this fixture proves the id selects the live-state check, not that the state
+# check is skipped — a `files-205` fixture is deliberately absent, so a wrong
+# diff fetch here would fail loudly rather than pass by coincidence.
+printf '{"state": "closed", "body": "Draft implementing the widget.", "head": {"ref": "agent/widget"}}' \
   >"$tmp_dir/pr-205.json"
 for shape in "pr-205-abandoned-1a2b3c4d5e6f" "pr-205-review-2071883842" "pr-205-conflict-1a2b3c4d5e6f"; do
   assert_eq "a finishing-source item citing its own PR matches ($shape)" \
@@ -547,7 +620,8 @@ out="$(void_pr_matches_item "Poetic-Poems/poetic" "232" "pr-205-abandoned-1a2b3c
 assert_eq "  ... but citing a different PR is still refused" "1" "$rc"
 assert_contains "  ... as a fabrication" "fabricated citation" "$out"
 # `pr-2050-…` is a different item from `pr-205-…`: the trailing dash of the
-# id's own shape is what keeps one from reading as the other.
+# id's own shape is what keeps one from reading as the other. Falls through to
+# the ordinary body/branch test against `pr-205.json`, which names neither.
 out="$(void_pr_matches_item "Poetic-Poems/poetic" "205" "pr-2050-abandoned-1a2b3c4d5e6f" "Poetic-Poems/poetic")"; rc=$?
 assert_eq "  ... and a longer PR number is not this PR" "1" "$rc"
 
@@ -572,9 +646,13 @@ out="$(void_pr_matches_item "Some/OtherRepo" "281" "pr-281-abandoned-deadbee1" "
 assert_eq "  ... and a fetched cross-repo body naming no item is refused" "1" "$rc"
 assert_contains "  ... as a fabrication" "fabricated citation" "$out"
 
-# Same repo: the shortcut still fires with no fetch — no fixture exists for
-# Poetic-Poems/agent-ops#281 yet, so a fetch would be visible as a refusal.
-assert_eq "a same-repo citation still takes the id shortcut" \
+# Same repo: the shortcut fetches PR #281's own live state — closed
+# corroborates outright, so no `files-281` fixture is needed to prove it (and
+# its absence means a wrong diff fetch here would fail loudly, not pass by
+# coincidence).
+printf '{"state": "closed", "body": "", "head": {"ref": "agent/281"}}' \
+  >"$tmp_dir/pr-Poetic-Poems_agent-ops-281.json"
+assert_eq "a same-repo citation takes the id shortcut, corroborated by the PR's own live state" \
   "0" "$(void_pr_matches_item "Poetic-Poems/agent-ops" "281" "pr-281-abandoned-deadbee1" \
     "Poetic-Poems/agent-ops"; echo $?)"
 assert_eq "  ... comparing the slugs case-insensitively, as GitHub does" \
@@ -707,8 +785,10 @@ assert_eq "a cross-repo URL citation of a coinciding number is refused" "1" "$rc
 assert_contains "  ... on what the fetch found" "fabricated citation" "$out"
 
 # A bare self-citation resolves against the entry's own repo, so the gate
-# never touches the ordinary finishing-source shape.
-assert_eq "a bare self-citation still corroborates on the id alone" \
+# never touches the ordinary finishing-source shape — it is corroborated by
+# PR #281's own live state (the "closed" fixture set up above), not by the
+# citation text.
+assert_eq "a bare self-citation still corroborates via the id-driven live check" \
   "0" "$(void_citation_reason '{"item": "pr-281-abandoned-deadbee1",
     "repo": "Poetic-Poems/agent-ops",
     "evidence": "PR #281 has an empty diff against its base"}' "Poetic-Poems/agent-ops"; echo $?)"
@@ -762,8 +842,18 @@ assert_contains "  ... not corroborated" "not corroborated" "$out"
 # which PR #281 made the guard resolve live — and refuse, since a superseding
 # bump never carries the superseded item's id. The repaired format cites the
 # superseded PR's own number (corroborated via the finishing-source id
-# shortcut, no fetch needed) and names the superseding PR only by its branch
-# name, which neither the PR-number nor the commit-SHA extractor matches.
+# shortcut) and names the superseding PR only by its branch name, which
+# neither the PR-number nor the commit-SHA extractor matches.
+#
+# The superseded PR is still open with a real, non-empty diff at the moment
+# this void is recorded — superseding it does not empty its diff — so the
+# shortcut's live fetch must read it as Dependabot's own and excuse it from
+# the diff test (TD-PPagop-26080807); `files-129` is deliberately non-zero so
+# a regression that stops excusing it fails loudly here rather than passing
+# by coincidence.
+printf '{"state": "open", "user": {"login": "dependabot[bot]"}, "body": "", "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+  >"$tmp_dir/pr-Poetic-Poems_poetic-fiddle-129.json"
+printf '2' >"$tmp_dir/files-129"
 entry_superseded="$(jq -n \
   --arg item "pr-129-conflict-c96c8ef9d31a" \
   --arg repo "Poetic-Poems/poetic-fiddle" \

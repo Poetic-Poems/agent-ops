@@ -389,6 +389,82 @@ void_evidence_cited_commit_shas() {
   } | sort -u
 }
 
+# void_finishing_item_pr ITEM
+# Print the pull request number a finishing-source item id embeds, and
+# return 0 — ITEM shaped `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-
+# <review-id>` or `pr-<n>-conflict-<head-sha>` (scripts/gather-abandoned-
+# drafts.sh, gather-review-feedback.sh, gather-merge-conflicts.sh) prints
+# `<n>`. Prints nothing and returns 1 when ITEM is not shaped that way — an
+# ordinary tech-debt id, issue number or review recommendation mints nothing
+# a PR number can be read out of.
+void_finishing_item_pr() {
+  local item="$1" num
+  num="$(grep -oiE '^pr-[0-9]+-' <<<"$item" 2>/dev/null | grep -oE '[0-9]+' || true)"
+  [[ -n "$num" ]] || return 1
+  printf '%s' "$num"
+}
+
+# void_finishing_pr_reason SLUG NUM ITEM
+# Decide whether NUM, the pull request a finishing-source ITEM was minted
+# from, corroborates a void of that item. Prints nothing and returns 0 when
+# it does; prints a one-line reason and returns 1 otherwise.
+#
+# A finishing-source item exists only to finish one specific, named pull
+# request, so "already done" means one of three things about that PR, fetched
+# live (never from a gathered candidate list, so this works identically for a
+# stage that has no such list — the Enabler, the Implementor):
+#   - **merged or otherwise closed** — there is no more finishing to do on a
+#     pull request that will never land via this route, whatever state the
+#     underlying work is in. GitHub reports both under `state: "closed"`; a
+#     void does not need to know which.
+#   - **open, with an empty diff against its base** — whatever this item was
+#     to finish has already been resolved: nothing changes relative to the
+#     base it would merge into.
+#   - **open, with a non-empty diff, but authored by Dependabot** —
+#     `gather-merge-conflicts.sh` votes a superseded Dependabot bump void
+#     while it is still open and still carries its own real changes
+#     (`superseded_by`, requirement 3s): the claim being corroborated is "a
+#     newer bump makes this one redundant", never "this diff is empty", so
+#     the diff test does not apply to it.
+# Anything else — open, non-empty diff, not Dependabot's — is refused, as is
+# a pull request the API will not answer for: an unreadable citation
+# corroborates nothing.
+void_finishing_pr_reason() {
+  local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
+  local pr_json state login files
+
+  pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
+  if [[ -z "$pr_json" ]]; then
+    printf 'PR #%s in %s, which item %s names as the pull request to finish, could not be read' \
+      "$num" "$slug" "$item"
+    return 1
+  fi
+
+  state="$(jq -r '.state // ""' <<<"$pr_json" 2>/dev/null || true)"
+  if [[ "$state" == "closed" ]]; then
+    return 0
+  fi
+
+  login="$(jq -r '.user.login // ""' <<<"$pr_json" 2>/dev/null || true)"
+  if [[ "$login" == "dependabot[bot]" ]]; then
+    return 0
+  fi
+
+  files="$("$gh_bin" api "repos/$slug/pulls/$num/files" --jq 'length' 2>/dev/null)" || files=""
+  if ! [[ "$files" =~ ^[0-9]+$ ]]; then
+    printf 'PR #%s in %s, which item %s names as the pull request to finish, could not be read' \
+      "$num" "$slug" "$item"
+    return 1
+  fi
+  if (( files > 0 )); then
+    printf 'refuted: PR #%s in %s, which item %s names as the pull request to finish, still changes %s file(s) against its base' \
+      "$num" "$slug" "$item" "$files"
+    return 1
+  fi
+
+  return 0
+}
+
 # void_pr_matches_item SLUG NUM ITEM ENTRY_REPO
 # Test one cited PR against the item it is supposed to corroborate: fetched
 # live from the API — never from a gathered candidate list, so this works
@@ -399,8 +475,8 @@ void_evidence_cited_commit_shas() {
 # reason and returns 1 otherwise, including when the PR cannot be read at all
 # — an unreadable citation corroborates nothing.
 #
-# One item shape needs no fetch at all: a finishing-source item *is* a pull
-# request. The gatherers mint its id from the PR's own number —
+# One item shape is corroborated differently: a finishing-source item *is* a
+# pull request. The gatherers mint its id from the PR's own number —
 # `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
 # `pr-<n>-conflict-<head-sha>` (scripts/gather-abandoned-drafts.sh,
 # gather-review-feedback.sh, gather-merge-conflicts.sh) — so citing that very
@@ -409,7 +485,11 @@ void_evidence_cited_commit_shas() {
 # branch name, so the body/branch test below would refuse the most natural
 # evidence these items can carry — the same pull request `void_candidate_prs`
 # then reads the diff of. That refusal would fall precisely on the sources the
-# guard corroborates best, so the id is read for what it already says.
+# guard corroborates best, so the id is read for what it already says: NUM is
+# handed to `void_finishing_pr_reason` instead of to the body/branch test,
+# which corroborates it against the PR's own live state (TD-PPagop-26080807)
+# rather than accepting the id's say-so with no fetch at all, as this once
+# did.
 #
 # What the id says is scoped, though: it was minted from a pull request in
 # ENTRY_REPO — the entry's own `repo` — and carries no slug of its own, so the
@@ -419,12 +499,16 @@ void_evidence_cited_commit_shas() {
 # minted nothing; both fall through to the body/branch test below, which can
 # still corroborate them the ordinary way (issue #290).
 void_pr_matches_item() {
-  local slug="$1" num="$2" item="$3" entry_repo="${4-}" gh_bin="${VOID_GUARD_GH:-gh}"
-  local pr_json body head_ref
+  local slug="$1" num="$2" item="$3" entry_repo="${4-}"
+  local gh_bin="${VOID_GUARD_GH:-gh}" pr_json body head_ref reason
 
   if [[ -n "$entry_repo" && "${slug,,}" == "${entry_repo,,}" ]] \
-    && grep -qiE "^pr-$num-" <<<"$item" 2>/dev/null; then
-    return 0
+    && [[ "$(void_finishing_item_pr "$item")" == "$num" ]]; then
+    if reason="$(void_finishing_pr_reason "$slug" "$num" "$item")"; then
+      return 0
+    fi
+    printf '%s' "$reason"
+    return 1
   fi
 
   pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
