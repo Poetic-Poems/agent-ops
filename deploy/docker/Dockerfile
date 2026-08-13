@@ -89,6 +89,15 @@ RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
     && apt-get install -y --no-install-recommends gh \
     && rm -rf /var/lib/apt/lists/*
 
+# lib/review-gate.sh tells "this pull request has no required checks" apart
+# from "gh could not answer" by these two stderr diagnoses (cli/cli,
+# pkg/cmd/pr/checks/checks.go). gh is installed unpinned above, so guard the
+# dependency here: if a future gh rewords them, fail the image build rather
+# than silently demoting every conflicting pull request to a node-level
+# `unknown`. Keep these substrings in step with review_gate_required_checks.
+RUN grep -qaF "no required checks reported on the" "$(command -v gh)" \
+    && grep -qaF "no checks reported on the" "$(command -v gh)"
+
 # Node.js from NodeSource, for the `claude` CLI and for any target repo whose
 # checks are npm-driven.
 RUN curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
