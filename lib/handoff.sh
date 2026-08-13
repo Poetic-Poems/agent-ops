@@ -450,18 +450,29 @@ confirm_review_requested() {
 # `_handoff_known_reviewers`) — and it is why ASSIGNEE equal to the author is a
 # `skip` rather than an attempt.
 #
-# Prints one of:
-#   skip       PR_URL is empty, the PR is a draft, something is already
-#               `CHANGES_REQUESTED`-blocking it (confirm_review_requested's
-#               job, not this one's), or the only candidate target is the
-#               pull request's own author.
-#   already    every candidate target already has a pending review request.
-#   requested  this call asked, and GitHub now shows it pending.
-#   failed     the request could not be read, or did not take.
+# The no-candidate case carries its own detail (`skip\tno-candidate`),
+# distinguishable from the other two `skip` reasons below (tech-debt/
+# TD-PPagop-26081001.md): unlike a draft or a `CHANGES_REQUESTED`-blocked pull
+# request — both fine to leave alone, since each has its own actor and its own
+# clock — nothing else will ever ask this human, so a caller that cares (the
+# periodic sweep, requirement 38c) needs to tell it apart from the other two
+# to log a `warning` about it rather than passing over it in silence.
 #
-# Exit status is 0 for `skip`, `already` and `requested`, 1 for `failed` — the
-# same convention as `confirm_review_requested`, so callers can share one
-# `case` shape across both.
+# Prints one of:
+#   skip               the PR_URL is empty, the PR is a draft, or something is
+#                       already `CHANGES_REQUESTED`-blocking it
+#                       (confirm_review_requested's job, not this one's).
+#   skip<TAB>no-candidate
+#                       the only candidate target is the pull request's own
+#                       author — there is nobody left to ask.
+#   already             every candidate target already has a pending review
+#                       request.
+#   requested           this call asked, and GitHub now shows it pending.
+#   failed              the request could not be read, or did not take.
+#
+# Exit status is 0 for `skip` (either shape), `already` and `requested`, 1 for
+# `failed` — the same convention as `confirm_review_requested`, so callers can
+# share one `case` shape across both.
 ensure_human_reviewer() {
   local url="${1:-}" assignee="${2:-}" gh_bin="${HANDOFF_GH:-gh}"
   local parts slug number draft blocking known author targets pending
@@ -524,7 +535,7 @@ ensure_human_reviewer() {
   elif [[ -n "$assignee" && "$assignee" != "$author" ]]; then
     targets="$assignee"
   else
-    printf 'skip'
+    printf 'skip\tno-candidate'
     return 0
   fi
 

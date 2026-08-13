@@ -3351,7 +3351,7 @@ $(jq . <<<"$input")
                   '{pr_url: $u, handoff: "enabler", state: $h}
                    + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
                    + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
-                   + (if $hr == "" or $hr == "skip" then {}
+                   + (if $hr == "" or ($hr | startswith("skip")) then {}
                       else {human_review_requested: $hr, human_reviewer: $ha} end)')"
                 ;;
               *)
@@ -6317,7 +6317,7 @@ if [[ "$rev_status" == "ready" ]]; then
     '{pr_url: $u, handoff: $h}
      + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
      + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
-     + (if $hr == "" or $hr == "skip" then {}
+     + (if $hr == "" or ($hr | startswith("skip")) then {}
         else {human_review_requested: $hr, human_reviewer: $ha} end)')"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The

@@ -27,7 +27,10 @@
 #   1. Ensures a live review request exists where nothing is
 #      CHANGES_REQUESTED-blocking it (`ensure_human_reviewer`) — requirement
 #      38a's guarantee, kept continuously rather than only at the moment of
-#      handoff.
+#      handoff — or, where the pull request's only legal candidate is its own
+#      author, logs a `warning` naming that (tech-debt/TD-PPagop-26081001.md):
+#      nothing else will ever ask this human, so this is the one `skip`
+#      reason worth surfacing rather than passing over in silence.
 #   2. Where something *is* CHANGES_REQUESTED-blocking it, but the round has
 #      already been answered by a marked Implementor reply, repeats
 #      requirement 31b's re-request (`confirm_review_requested`) — the crash
@@ -201,7 +204,12 @@ while IFS= read -r pr_url; do
   # `ensure_human_reviewer` carries its own guard for the blocked case: a pull
   # request something is still CHANGES_REQUESTED-blocking answers `skip`, and
   # this leaves it to the self-heal check below, which carries the judgement
-  # this call does not.
+  # this call does not. A draft or a blocked pull request is a bare `skip` —
+  # each has its own actor and its own clock, so nothing further is logged.
+  # The no-candidate case (tech-debt/TD-PPagop-26081001.md) is different: its
+  # own `skip\tno-candidate` shape says nothing will ever ask this human, so
+  # it gets its own `warning`, distinguishable from every other reason
+  # `ensure_human_reviewer` skips (requirement 38e reads this back).
   human_state="$(ensure_human_reviewer "$pr_url" "$assignee")" || true
   human_who=""
   IFS=$'\t' read -r human_state human_who <<<"$human_state" || true
@@ -212,6 +220,11 @@ while IFS= read -r pr_url; do
       ;;
     failed)
       warn "$pr_url" "could not request review from ${human_who:-$assignee}"
+      ;;
+    skip)
+      if [[ "$human_who" == "no-candidate" ]]; then
+        warn "$pr_url" "no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=$assignee"
+      fi
       ;;
   esac
 

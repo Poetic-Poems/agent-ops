@@ -56,18 +56,20 @@
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
 #
-# ## Two warning classes, told apart
+# ## Three warning classes, told apart
 #
-# `sweep-human-visibility.sh` logs two different per-pull-request warnings —
-# "could not request review from …" (the review-request POST itself failed)
-# and "could not post the idle nudge comment" (the nudge comment POST itself
-# failed) — and they clear on two different live facts. A single shared check
-# would get one of them wrong: every pull request a nudge warning is logged
-# against is, by the nudge's own gate, already `APPROVED` — so a check that
-# only asks "has a human reviewed this" would read every nudge-class warning
-# as resolved the moment it is created, silently dropping it before anyone
-# ever saw the nudge that failed to post. So each class re-verifies its own
-# claim:
+# `sweep-human-visibility.sh` logs three different per-pull-request warnings —
+# "could not request review from …" (the review-request POST itself failed),
+# "could not post the idle nudge comment" (the nudge comment POST itself
+# failed), and "no legal review-request candidate" (no POST was even
+# attempted — `ensure_human_reviewer`'s `skip\tno-candidate`,
+# tech-debt/TD-PPagop-26081001.md) — and they clear on three different live
+# facts. A single shared check would get more than one of them wrong: every
+# pull request a nudge warning is logged against is, by the nudge's own gate,
+# already `APPROVED` — so a check that only asks "has a human reviewed this"
+# would read every nudge-class warning as resolved the moment it is created,
+# silently dropping it before anyone ever saw the nudge that failed to post.
+# So each class re-verifies its own claim:
 #
 #   could_not_request      — a read-only "is a human review currently
 #                             requested (or already given)" check: `gh pr
@@ -85,6 +87,17 @@
 #                             `<!-- agent-ops:human-nudge -->` marker
 #                             `sweep-human-visibility.sh` itself posts and
 #                             checks for idempotency.
+#   no_candidate            — does a candidate exist now: `gh pr view --json
+#                             author,reviews`, generalising
+#                             `ensure_human_reviewer`'s own candidate rule
+#                             read-only — a non-author, non-bot reviewer
+#                             having since reviewed the pull request, or
+#                             `enabler_assignee` (carried in the warning's own
+#                             detail text, at the value it held when the
+#                             sweep warned) no longer naming the author, is
+#                             the violation resolving itself: the sweep's own
+#                             next pass would request them before this
+#                             gatherer runs again.
 #   (anything else)         — a warning this script does not recognise (e.g.
 #                             "could not read the pull request's state —
 #                             skipping the idle check", or a future warning
@@ -134,13 +147,14 @@ jq -e 'type == "array"' <<<"$violations_json" >/dev/null 2>&1 || violations_json
 
 # _warning_class DETAIL
 # Classify a sweep warning's detail text into the live check that resolves
-# it. Prefix/substring matched against the two fixed shapes
+# it. Prefix/substring matched against the three fixed shapes
 # sweep-human-visibility.sh's own `warn` calls produce; anything else is
 # `unknown`.
 _warning_class() {
   case "$1" in
     "could not request review from"*) printf 'could_not_request' ;;
     *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
+    "no legal review-request candidate"*) printf 'no_candidate' ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -152,10 +166,11 @@ _warning_class() {
 # note describes.
 _pr_violation_survives() {
   local pr_url="$1" detail="$2" class json state draft decision requests has_marker
+  local assignee author_login known_other
   class="$(_warning_class "$detail")"
 
   json="$(gh pr view "$pr_url" \
-            --json state,isDraft,reviewDecision,reviewRequests,comments 2>/dev/null)" || true
+            --json state,isDraft,reviewDecision,reviewRequests,comments,author,reviews 2>/dev/null)" || true
   if [[ -z "$json" ]]; then
     printf 'keep'
     return
@@ -182,6 +197,30 @@ _pr_violation_survives() {
       has_marker="$(jq -r '(.comments // []) | any((.body // "") | test("agent-ops:human-nudge"))' \
                      <<<"$json" 2>/dev/null || echo false)"
       if [[ "$has_marker" == "true" ]]; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    no_candidate)
+      # Generalises `ensure_human_reviewer`'s own candidate rule (`lib/
+      # handoff.sh`) read-only: a candidate now exists if either a non-author,
+      # non-bot reviewer has since reviewed the pull request (the `known`
+      # list `ensure_human_reviewer` would target first) or `enabler_assignee`
+      # — carried in DETAIL, `sweep-human-visibility.sh`'s own value at the
+      # time it warned — is not (or is no longer) the pull request's own
+      # author. Either is the violation resolving itself: the sweep's own
+      # next pass would request them and turn this into a
+      # `human-review-requested` event before this gatherer ever ran again.
+      assignee="$(sed -n 's/.*enabler_assignee=//p' <<<"$detail")"
+      author_login="$(jq -r '.author.login // ""' <<<"$json" 2>/dev/null || true)"
+      known_other="$(jq -r --arg a "$author_login" '
+          [(.reviews // [])[] | select((.state // "") != "PENDING")
+             | (.author.login // "")
+             | select(. != "" and . != $a and (endswith("[bot]") | not))]
+          | unique | length' <<<"$json" 2>/dev/null || echo 0)"
+      if [[ "$known_other" != "0" ]] \
+          || { [[ -n "$assignee" ]] && [[ "$assignee" != "$author_login" ]]; }; then
         printf 'drop'
       else
         printf 'keep'
