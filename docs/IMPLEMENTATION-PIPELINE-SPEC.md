@@ -4963,7 +4963,14 @@ runs unattended.
     when the unrelated item `pr-264-conflict-…` was voided after its conflict
     resolved, and both the PR and the review round were lost
     (TD-PPagop-26080901). So a void of this shape closes nothing: it is left
-    exactly like a void shape that names no GitHub object at all, below.
+    exactly like a void shape that names no GitHub object at all, below. The
+    exclusion is decided before the per-call action cap, exactly as the
+    `stage` gate below is: this shape is never actionable on any cycle, so it
+    must neither consume one of the three slots nor be counted in the
+    overflow the cap reports — a deferred count naming work nothing will ever
+    do would have the Script log that warning every cycle in perpetuity,
+    since a shape this never closes never earns the `void-object-closed`
+    that would retire it under requirement 34n.
 
     Every other void shape — a tech-debt register id, a project-review ref,
     an implementation-plan task id — names something that is not a GitHub
@@ -5153,11 +5160,19 @@ runs unattended.
       per-cycle read, bounded. A void of
       any other shape — a project-review ref, an implementation-plan task id,
       a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
-      `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
-      defined for it at all, since 34k's sweep acts only on the bare-issue
-      and `pr-<n>-…` shapes and 34l's register pass only on register ids, so
-      a void of those kinds is never actioned and never retires on this rule
-      alone; and
+      `register-hygiene-<hash>`, a `failed-run-<…>`, and the
+      `pr-<n>-conflict-<head-sha>` shape 34k deliberately excludes from its
+      close — has no actioned signal defined for it at all, since 34k's
+      sweep acts only on the bare-issue shape and the non-`-conflict-`
+      `pr-<n>-…` shapes, and 34l's register pass only on register ids, so a
+      void of those kinds is never actioned and never retires on this rule
+      alone. The merge-conflicts shape is the one whose id is minted per
+      occurrence rather than per object — a fresh `<head-sha>` mints a fresh
+      id, so no two ever coalesce — which makes it the fastest-growing member
+      of that class; TD-PPagop-26081303 carries the decided direction for
+      closing it, and reaches this shape under its own first rule, since
+      `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
+      and stops yielding the id the moment the conflict resolves; and
     - **old** — its `item-void` event's own `ts` is at least
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
@@ -7841,8 +7856,10 @@ pull request, run the ones the change touches and any it could regress.
    alone; a `pr-<n>-conflict-<head-sha>` void — the merge-conflicts shape,
    which names a pull request but is not about closing it (TD-PPagop-26080901)
    — is left entirely alone too, with no API call made, exactly like the
-   register id; a void carrying no reason still reaches the comment with its
-   evidence intact; and the per-call action cap defers rather than floods.
+   register id, and is excluded before the action cap, so it neither spends a
+   slot nor appears in the deferred count; a void carrying no reason still
+   reaches the comment with its evidence intact; and the per-call action cap
+   defers rather than floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract

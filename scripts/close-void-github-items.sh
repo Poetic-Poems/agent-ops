@@ -132,6 +132,21 @@ while IFS=$'\t' read -r item detail evidence stage; do
     *) continue ;;
   esac
 
+  # A merge-conflicts void names the pull request only to say the *conflict*
+  # on it resolved — the PR itself is not the work that is gone, and closing
+  # it here would discard a live, unconflicted PR of ours (requirement 34k,
+  # TD-PPagop-26080901). Left unprocessed, exactly like a void shape that
+  # names no GitHub object at all — and skipped here, before the action cap,
+  # for the same reason the stage gate above is: this script will never
+  # action this shape on any cycle, so it must not eat a slot, nor count as
+  # deferred work a later pass could do. Counting it would report
+  # `remaining: N` for items nothing will ever do, every cycle forever, since
+  # a shape this never closes never earns the `void-object-closed` that would
+  # retire it (requirement 34n).
+  if grep -qE '^pr-[0-9]+-conflict-' <<<"$item"; then
+    continue
+  fi
+
   if (( actions >= max_actions )); then
     deferred=$(( deferred + 1 ))
     continue
@@ -159,14 +174,6 @@ while IFS=$'\t' read -r item detail evidence stage; do
     else
       warn "$item" "could not close issue #$item"
     fi
-
-  elif grep -qE '^pr-[0-9]+-conflict-' <<<"$item"; then
-    # A merge-conflicts void names the pull request only to say the
-    # *conflict* on it resolved — the PR itself is not the work that is
-    # gone, and closing it here would discard a live, unconflicted PR of
-    # ours (requirement 34k, TD-PPagop-26080901). Left unprocessed, exactly
-    # like a void shape that names no GitHub object at all.
-    continue
 
   elif grep -qP "$WORK_GONE_PR_RE" <<<"$item"; then
     n="$(grep -oE '^pr-[0-9]+' <<<"$item" | grep -oE '[0-9]+')"

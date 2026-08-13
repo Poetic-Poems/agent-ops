@@ -206,6 +206,20 @@ assert_eq "and reports the rest as deferred" \
   '{"action":"deferred","remaining":1}' \
   "$(jq -c 'select(.action == "deferred")' <<<"$out")"
 
+# --- Case 6b: an excluded shape is not deferred work ------------------------------
+# The `-conflict-` exclusion is tested before the cap, exactly as the stage gate is:
+# this script will never action that shape on any cycle, so it must neither eat a
+# slot nor be counted as work a later pass could still do. Counting it would have
+# the caller log a `warning` carrying `remaining: N` every cycle forever — a shape
+# this never closes never earns the `void-object-closed` that would retire it
+# (requirement 34n), so it is in the candidate set on every cycle from now on.
+c="$tmp_dir/case6b"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"11","stage":"coordinator"},{"item":"12","stage":"coordinator"},{"item":"13","stage":"coordinator"},{"item":"pr-264-conflict-abc123def456","stage":"coordinator"},{"item":"pr-265-conflict-fedcba654321","stage":"coordinator"}]')"
+assert_eq "the cap is still spent only on actionable items" "3" \
+  "$(jq -c 'select(.action == "closed")' <<<"$out" | wc -l | tr -d ' ')"
+assert_eq "and an excluded shape is never reported as deferred" "" \
+  "$(jq -c 'select(.action == "deferred")' <<<"$out")"
+
 if (( failures > 0 )); then
   echo "$failures failure(s)"
   exit 1
