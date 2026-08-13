@@ -6540,8 +6540,11 @@ runs unattended.
     but leaves `COMMENT` open to them, and a Reviewer's own findings may be
     filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
     them — under the account that raised the pull request. The pending list
-    needs no such filter: GitHub never lets a review request name the pull
-    request's own author to begin with.
+    needs no author filter: GitHub never lets a review request name the pull
+    request's own author to begin with. It carries no *bot* filter either,
+    unlike the reviews list, and reads only `requested_reviewers` (users),
+    never `requested_teams` — tech-debt/TD-PPagop-26081403.md records both,
+    and what requirement 38e's own read of the same rule does differently.
 
     The no-candidate `skip` carries its own detail, `skip\tno-candidate`,
     distinguishable from the other two `skip` reasons — a draft, or something
