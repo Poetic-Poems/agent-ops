@@ -606,7 +606,7 @@ and the schema must carry every one of them.
 | `refiner_model` | `claude-haiku-4-5-20251001` | The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage. |
 | `refined_label` | `refined` | The label the Script projects onto an issue-type item once the Refiner records it `refined` (requirement 39c). One-way and never read back — unlike `needs_refinement_label`'s hand-flag path, there is no hand-applied form of this label: the shared log is the sole record of whether an item is refined, exactly as requirement 34e already establishes for the negative marker. Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
-| `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and `issues` arrays — so a policy set for `tech-debt`, `project-review`...[continued below](#extended-notes-refinement_policy) |
+| `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays — so a policy set for `project-review`...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
@@ -715,7 +715,7 @@ It must not be `blocked`, for the reason given against `enabler_escalation_label
 
 ### Extended notes: `refinement_policy`
 
-Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and `issues` arrays — so a policy set for `tech-debt`, `project-review` or `implementation-plan` shapes selection only, never engagement (TD-PPagop-26080809); `tech_debt` is pre-fetched (requirement 3t) but is not one of the arrays that gathering reads.
+Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays — so a policy set for `project-review` or `implementation-plan` shapes selection only, never engagement (TD-PPagop-26081307); neither is pre-fetched as structured data for the Refiner to read.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -6130,18 +6130,13 @@ runs unattended.
     candidate iff **all** of:
     1. it appears in this cycle's pre-fetched source arrays — `findings`
        (`security`/`code-quality`), `review_feedback`, `abandoned_drafts`,
-       `merge_conflicts`, `register_hygiene`, `issues` (requirement 3) — the
-       same arrays the Co-Ordinator reads, keyed the same way (`source`,
-       `ref`). `tech-debt`, `project-review` and `implementation-plan` items
-       are never candidates, whatever their policy says: this clause's list
-       is the whole of what `refiner_candidate_items` reads, and none of the
-       three is in it. For `project-review` and `implementation-plan` there
-       is nothing to offer the Refiner either way, the Script pre-fetching
-       neither as structured data; `tech_debt` it does pre-fetch (requirement
-       3t), but for the Co-Ordinator's candidate set only — widening this
-       clause to draw on it is the follow-up work
-       `tech-debt/TD-PPagop-26080809.md` records, not something requirement 3t
-       carries;
+       `merge_conflicts`, `register_hygiene`, `issues`, `tech_debt`
+       (requirement 3) — the same arrays the Co-Ordinator reads, keyed the
+       same way (`source`, `ref`). `project-review` and `implementation-plan`
+       items are never candidates, whatever their policy says: this clause's
+       list is the whole of what `refiner_candidate_items` reads, and neither
+       is in it — the Script pre-fetches neither as structured data, so there
+       is nothing to offer the Refiner either way;
     2. its source's `refinement_policy` (config) is not `"exempt"` — the
        default for a source the object does not name, and the correct default
        for a source whose items already carry their own specification (a
@@ -6170,7 +6165,7 @@ runs unattended.
     a `"required"` or `"preferred"` source to benefit from — setting either
     policy on a source this paragraph's clause 1 excludes shapes the
     Co-Ordinator's ranking but starves it of anything to rank favourably,
-    which is exactly what `tech-debt/TD-PPagop-26080809.md` records as
+    which is exactly what `tech-debt/TD-PPagop-26081307.md` records as
     follow-up work.
 
 39b. **Claims and the engagement cap.** Before claiming, the candidate set is
@@ -8348,9 +8343,12 @@ pull request, run the ones the change touches and any it could regress.
     includes a pre-fetched item only when its source is not
     `refinement_policy`-exempt, excludes one `refinements_map` already names,
     one that is blocked, one that is void, and one that is claimed; a source
-    absent from `refinement_policy` is treated as exempt; `refiner_engagement_set`
-    caps the result deterministically by `(repo, source, item)` and treats an
-    unreadable `MAX` as `0`.
+    absent from `refinement_policy` is treated as exempt; a `tech_debt` entry
+    is a candidate under the same rule as every other pre-fetched source, so a
+    `refinement_policy["tech-debt"]` of `"required"` or `"preferred"` reaches
+    an engagement rather than shaping only the Co-Ordinator's ranking;
+    `refiner_engagement_set` caps the result deterministically by
+    `(repo, source, item)` and treats an unreadable `MAX` as `0`.
 39c. **The Refiner's verdicts are recorded as stated, driving the real switch
     (requirements 39c, 39d, 39e).** `test/refiner-verdicts.test.sh` passes:
     driving `maybe_run_refiner` itself — lifted verbatim from `agent-cycle.sh`,
