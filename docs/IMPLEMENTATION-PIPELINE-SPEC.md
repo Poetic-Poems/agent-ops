@@ -618,8 +618,8 @@ and the schema must carry every one of them.
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
-| `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
-| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
+| `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
+| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementor` | *(unset)* | As `timeout_coordinator`, for the Implementor. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -1369,26 +1369,55 @@ runs unattended.
    have said so. So the Script reads the one signal that class does leave.
    After the requirement-2.5 union snapshot and before the stand-down
    checks (a fleet that is also standing down must still raise the alarm),
-   `lib/crash-loop.sh`'s `crash_loop_verdict` scans the union for
-   `crash_loop_after` or more **consecutive** Co-Ordinator `attempt-failed`
-   events carrying **one identical detail**, with no Co-Ordinator success
-   (`stage-end`, stage `coordinator`, exit 0) anywhere in the fleet in
-   between. Identical detail is what separates the deterministic class from
-   transient noise; any success resets the count. On a verdict, and unless
-   `crash_loop_escalated_since` finds a `crash-loop-escalated` event with
-   the same detail at or after the run's own first failure (so the same
-   loop is never escalated twice, while a fresh loop with an old detail
-   escalates anew), the Script files an issue on `crash_loop_repo` through
-   the Enabler's own `create_escalation_issue` — same open-issue dedup
-   (item ref `crash-loop:coordinator`), same label, same load-bearing
-   assignee that keeps the pipeline from selecting its own SOS as work —
-   and logs `crash-loop-escalated` with the verdict's fields and the
-   issue's number and URL. If the issue cannot be filed the Script logs a
-   `warning` and leaves no `crash-loop-escalated` event, so the next cycle
-   retries. The cycle then proceeds normally either way: detection must
-   never suppress the recovery attempt that might end the loop.
-   `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
-   `enabler_assignee`, disables the check; `--dry-run` never files.
+   `lib/crash-loop.sh` scans the union for two independent failure
+   classes, each escalated through the shared `crash_loop_escalate` path:
+
+   - `crash_loop_verdict` scans for `crash_loop_after` or more
+     **consecutive** Co-Ordinator `attempt-failed` events carrying **one
+     identical detail**, with no Co-Ordinator success (`stage-end`, stage
+     `coordinator`, exit 0) anywhere in the fleet in between. Identical
+     detail is what separates the deterministic class from transient
+     noise; any success resets the count.
+   - `crash_loop_preselection_verdict` scans for `crash_loop_after` or
+     more **consecutive** cycles that each logged `cycle-start` followed by
+     a `cycle-end` with a **non-zero `exit_code`** and *no* `stage-start`
+     for any stage anywhere in between, grouped by that `exit_code` (there
+     is no `detail` string on this path). This is the class the
+     Co-Ordinator check above cannot see: a cycle that dies while
+     assembling its own runtime input — `execve` failing on an oversized
+     argv, the shape of both the 2026-08-01 argv-cap outage and the
+     2026-08-12 void-extract one — writes no `attempt-failed` for any
+     stage, so the union shows only the `cycle-start` / `cycle-end`
+     pair. A completed cycle that starts a **selection-path** stage
+     (`coordinator`, `implementor` or `reviewer`) resets the count,
+     whatever that stage then does — reaching selection is itself proof
+     the systemic block is not reproducing right now, and what happens to
+     an item once a stage is running already has its own recovery ladder.
+     A `stage-start` from the Enabler or the Refiner never resets the
+     count: both run from the cycle's cleanup path, after any
+     pre-selection death has already happened, so counting them as
+     recovery would blind this check the moment their non-zero-exit
+     guards (the "a cycle that ended badly" bail-outs in requirements 35
+     and 39) were ever relaxed. A cycle with no `cycle-end` at all (still
+     running, or killed too abruptly to log one) is dropped, counted
+     neither way.
+
+   On a verdict from either reader, and unless `crash_loop_escalated_since`
+   finds a `crash-loop-escalated` event with the same detail at or after the
+   run's own first failure (so the same loop is never escalated twice,
+   while a fresh loop with an old detail escalates anew), the Script files
+   an issue on `crash_loop_repo` through the Enabler's own
+   `create_escalation_issue` — same open-issue dedup (item ref
+   `crash-loop:coordinator` for the first class, `crash-loop:pre-selection`
+   for the second, so either can escalate independently of the other), same
+   label, same load-bearing assignee that keeps the pipeline from selecting
+   its own SOS as work — and logs `crash-loop-escalated` with the verdict's
+   fields and the issue's number and URL. If the issue cannot be filed the
+   Script logs a `warning` and leaves no `crash-loop-escalated` event, so
+   the next cycle retries. The cycle then proceeds normally either way:
+   detection must never suppress the recovery attempt that might end the
+   loop. `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
+   `enabler_assignee`, disables both checks; `--dry-run` never files.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
@@ -7263,8 +7292,9 @@ What exists, and the requirements each part answers to:
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`,
    `lib/void-liveness.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
-   `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
-   `crash_loop_escalated_since`, both pure readers of the union stream),
+   `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict`,
+   `crash_loop_preselection_verdict` and `crash_loop_escalated_since`, all
+   pure readers of the union stream),
    `lib/human-visibility-hygiene.sh` (requirement 38e's
    `human_visibility_violations`, another pure reader of the union stream,
    reducing requirement 38c's `warning` events to the identities — pull
@@ -8421,8 +8451,8 @@ pull request, run the ones the change touches and any it could regress.
    with no output changes no limit state and the reason ends
    `(probe: inconclusive)`. `--dry-run` with the same injected event launches
    no probe.
-5a. **A fleet-wide Co-Ordinator crash loop is detected once and escalated
-   once (requirement 2.7).** `test/crash-loop.test.sh` passes: for
+5a. **A fleet-wide crash loop, of either class, is detected once and
+   escalated once (requirement 2.7).** `test/crash-loop.test.sh` passes: for
    `crash_loop_verdict`, a stream of threshold-many consecutive same-detail
    Co-Ordinator failures yields a verdict carrying the count, the window and
    every failing node; one fewer yields nothing; a Co-Ordinator success
@@ -8430,10 +8460,22 @@ pull request, run the ones the change touches and any it could regress.
    precedes an `unparseable final message` failure, which counts as one, not
    threshold-plus); a detail change restarts the count at one; item-stage
    failures and other nodes' noise never contribute; a threshold of 0 is the
-   off switch. For `crash_loop_escalated_since`, an escalation event for the
-   same detail after the run's first failure suppresses re-escalation, while
-   an older one — a closed issue from a past loop — does not, and a
-   different detail never matches.
+   off switch. `crash_loop_preselection_verdict` passes the same shape of
+   cases against the class `crash_loop_verdict` cannot see: threshold-many
+   consecutive cycles that each logged `cycle-start` then `cycle-end` with
+   the same non-zero `exit_code` and no `stage-start` anywhere between them
+   yields a verdict carrying the count, the window, every failing node and
+   the `exit_code`; one fewer yields nothing; a completed cycle that reaches
+   a selection-path stage (`coordinator`, `implementor` or `reviewer`)
+   resets the count whatever that stage then exits, as does a clean
+   (`exit_code` 0) cycle, while an Enabler or Refiner `stage-start` never
+   counts as recovery; an exit-code change restarts the count at
+   one; a cycle with no `cycle-end` at all is dropped, counted neither way;
+   item-stage failures and other nodes' noise never contribute; a threshold
+   of 0 is the off switch. For `crash_loop_escalated_since`, an escalation
+   event for the same detail after the run's first failure suppresses
+   re-escalation, while an older one — a closed issue from a past loop —
+   does not, and a different detail never matches.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
 6a. **The switch stops both pipelines and lets go by itself.**

@@ -3051,6 +3051,55 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# crash_loop_escalate VERDICT_JSON ITEM_REF KIND_LABEL TITLE_PREFIX EVIDENCE_LINE
+# Shared by both requirement-2.7 crash-loop classes: same dedup
+# (`crash_loop_escalated_since`), same label, same load-bearing assignee, same
+# `crash-loop-escalated` event shape — only the wording, the item ref that
+# keys `create_escalation_issue`'s open-issue dedup, and where a human should
+# start reading differ between them. KIND_LABEL is the plural noun phrase for
+# "N consecutive KIND_LABEL"; EVIDENCE_LINE is a prose line naming what to
+# read first.
+crash_loop_escalate() {
+  local verdict_json="$1" item_ref="$2" kind_label="$3" title_prefix="$4" evidence_line="$5"
+  local cl_detail cl_first_ts cl_body cl_created
+  cl_detail="$(jq -r '.detail // ""' <<<"$verdict_json")"
+  cl_first_ts="$(jq -r '.first_ts // ""' <<<"$verdict_json")"
+  if crash_loop_escalated_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
+    return 0
+  fi
+  cl_body="$cycle_dir/crash-loop-issue-${item_ref#crash-loop:}.md"
+  {
+    printf '## What the fleet log shows\n\n'
+    jq -r --arg k "$kind_label" \
+      '"- **\(.count) consecutive \($k)**, every one `\(.detail)`\n- first at `\(.first_ts)`, still failing at `\(.last_ts)`\n- nodes affected: \(.nodes | join(", "))"' \
+      <<<"$verdict_json"
+    cat <<CRASH_LOOP_BODY
+
+No recovery — a success, or (for a pre-selection death) a cycle reaching a
+selection stage — has happened anywhere in the fleet since the first of these.
+A failure this uniform is almost certainly deterministic — something that
+ships in the image or the config, not a transient — so no amount of retrying
+will clear it, and until it clears the fleet selects no work at all.
+
+$evidence_line
+
+---
+Filed automatically by agent-cycle.sh (requirement 2.7).
+ref: $item_ref
+CRASH_LOOP_BODY
+  } > "$cl_body"
+  if cl_created="$(create_escalation_issue "$crash_loop_repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "$title_prefix ($cl_detail)" \
+        "$cl_body")" && [[ -n "$cl_created" ]]; then
+    log_event "crash-loop-escalated" "$(jq -c \
+      --argjson n "${cl_created%%$'\t'*}" --arg u "${cl_created#*$'\t'}" \
+      '. + {issue_number: $n, issue_url: $u}' <<<"$verdict_json")"
+  else
+    log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
+  fi
+}
+
 # maybe_run_enabler CYCLE_EXIT_CODE
 # Engage the Enabler if this cycle should, and translate its verdicts into log
 # events and issues. Always returns without disturbing the cycle's outcome.
@@ -3834,44 +3883,32 @@ acquire_lock
 # raises the alarm; after the union snapshot, because the loop is a property
 # of the fleet's memory, not this node's. The cycle then proceeds normally —
 # detection must never suppress the recovery attempt that might end the loop.
+#
+# Two classes share this block, through the one `crash_loop_escalate` path:
+# a Co-Ordinator that runs and fails identically (`crash_loop_verdict`), and
+# a cycle that dies before any stage — Co-Ordinator included — ever starts
+# (`crash_loop_preselection_verdict`, TD-PPagop-26081302). The second exists
+# because the first is blind to exactly the shape both real outages took:
+# `execve` failing on an oversized argv kills the cycle before `stage-start`
+# for any stage is ever logged, so no `attempt-failed` exists for
+# `crash_loop_verdict` to count. Each class keys its own item ref, so either
+# can escalate independently of the other.
 if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
     && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" && -s "$union_log" ]]; then
   crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_json" ]]; then
-    cl_detail="$(jq -r '.detail // ""' <<<"$crash_loop_json")"
-    cl_first_ts="$(jq -r '.first_ts // ""' <<<"$crash_loop_json")"
-    if ! crash_loop_escalated_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
-      cl_body="$cycle_dir/crash-loop-issue.md"
-      {
-        printf '## What the fleet log shows\n\n'
-        jq -r '"- **\(.count) consecutive Co-Ordinator failures**, every one `\(.detail)`\n- first at `\(.first_ts)`, still failing at `\(.last_ts)`\n- nodes affected: \(.nodes | join(", "))"' \
-          <<<"$crash_loop_json"
-        cat <<'CRASH_LOOP_BODY'
+    crash_loop_escalate "$crash_loop_json" "crash-loop:coordinator" \
+      "Co-Ordinator failures" \
+      "Crash loop: the Co-Ordinator is failing fleet-wide" \
+      "Start with the newest failing cycle's \`coordinator.out.stderr\` under \`state_dir/cycles/\`; the stage transcripts survive every failure."
+  fi
 
-No Co-Ordinator has succeeded anywhere in the fleet since the first of these.
-A failure this uniform is almost certainly deterministic — something that ships
-in the image or the config, not a transient — so no amount of retrying will
-clear it, and until it clears the fleet selects no work at all.
-
-Start with the newest failing cycle's `coordinator.out.stderr` under
-`state_dir/cycles/`; the stage transcripts survive every failure.
-
----
-Filed automatically by agent-cycle.sh (requirement 2.7).
-ref: crash-loop:coordinator
-CRASH_LOOP_BODY
-      } > "$cl_body"
-      if cl_created="$(create_escalation_issue "$crash_loop_repo" "crash-loop:coordinator" \
-            "$enabler_escalation_label" \
-            "Crash loop: the Co-Ordinator is failing fleet-wide ($cl_detail)" \
-            "$cl_body")" && [[ -n "$cl_created" ]]; then
-        log_event "crash-loop-escalated" "$(jq -c \
-          --argjson n "${cl_created%%$'\t'*}" --arg u "${cl_created#*$'\t'}" \
-          '. + {issue_number: $n, issue_url: $u}' <<<"$crash_loop_json")"
-      else
-        log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
-      fi
-    fi
+  crash_loop_preselection_json="$(crash_loop_preselection_verdict "$crash_loop_after" < "$union_log")"
+  if [[ -n "$crash_loop_preselection_json" ]]; then
+    crash_loop_escalate "$crash_loop_preselection_json" "crash-loop:pre-selection" \
+      "cycles dying before any stage started" \
+      "Crash loop: cycles are dying before any stage starts" \
+      "No stage transcript exists for a cycle that dies before any stage begins — start with the newest failing cycle's entry in \`cron.log\` (or \`cron.log.1\` after rotation) under \`state_dir/\`."
   fi
 fi
 
