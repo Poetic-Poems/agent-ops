@@ -19,6 +19,11 @@ the specification for an item too vague to select, which is otherwise skipped
 in silence forever — see
 [Items nobody has specified](#items-nobody-has-specified).
 
+At the same end of the same cycle, and not rarely at all: the **Refiner**
+(Haiku) writes that specification for an item nobody has scoped *before* it has
+to be blocked and wait for the Enabler at all — see
+[Refined items and the Refiner](#refined-items-and-the-refiner).
+
 If no suitable item exists, or if back-pressure shows open agent PRs, the cycle stands down — cheaply, without waking the Co-Ordinator, when nothing has changed since it last found nothing to do (see [Skipping no-op cycles](#skipping-no-op-cycles)).
 
 ## Responding to your review comments

@@ -13,7 +13,7 @@ to their agents.
 Each component has an as-built requirements specification in `docs/`:
 
 - `docs/IMPLEMENTATION-PIPELINE-SPEC.md` — the hourly implementation
-  pipeline (`agent-cycle.sh`, `lib/`, `scripts/`, and the three stage
+  pipeline (`agent-cycle.sh`, `lib/`, `scripts/`, and the five stage
   prompts).
 - `docs/REVIEW-PIPELINE-SPEC.md` — the weekly project-review pipeline
   (`review-cycle.sh`, `prompts/project-reviewer.md`, the vendored skill).

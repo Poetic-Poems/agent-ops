@@ -27,9 +27,12 @@ cron (hourly)
        ├─ Implementor (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
        ├─ Reviewer (Sonnet/Opus)    ← corrects the branch, flips the PR to ready
        │     └─ Human               ← reviews and merges (the only gate)
-       └─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
-                                      cycle: unblocks, voids, or raises an issue
-                                      assigned to the Human saying what to do
+       ├─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
+       │                              cycle: unblocks, voids, or raises an issue
+       │                              assigned to the Human saying what to do
+       └─ Refiner (Haiku)           ← same end of the cycle: writes the specification
+                                      an unscoped item lacks, before it has to be
+                                      blocked and wait for the Enabler
 ```
 
 ## Actors
@@ -53,6 +56,16 @@ cron (hourly)
    enough to select, it specifies it (requirement 36b); and where only a human
    can move an item, it composes a GitHub issue that the Script files, assigned
    to that human. It writes no code and raises no pull request.
+8. The **Refiner** — a headless Claude Code invocation, engaged from the same
+   end-of-cycle cleanup as the Enabler and immediately after it, that writes
+   the specification an under-specified item lacks *before* the item has to be
+   blocked and wait for the Enabler to reach it (requirement 39). Every item
+   it takes ends `refined` — the specification posted as a comment on the
+   item's own issue, or returned as `refined_spec` where the source has no
+   thread to write into — or `needs-refinement`, where only a human can supply
+   what is missing (requirements 39c and 39d). Its powers are deliberately
+   narrower than the Enabler's: it writes no code, raises no pull request, and
+   can neither escalate nor void.
 
 ## Environment (verified 2026-07-20)
 
@@ -2420,7 +2433,7 @@ runs unattended.
    prompt — the one that would sit broken longest before anyone noticed — is
    covered by construction rather than by a second copy kept in step by hand.
 4d. **One stage launcher, and it streams.** Every headless `claude`
-   invocation either pipeline makes — the four stages of this document, the
+   invocation either pipeline makes — the five stages of this document, the
    usage-limit probe of requirement 1b, and the Reviewer-Agent of
    `docs/REVIEW-PIPELINE-SPEC.md` R5.3 — goes through `run_claude_stage` in
    `lib/stage-run.sh`: one implementation, sourced by both cycle scripts,
@@ -2862,9 +2875,9 @@ runs unattended.
    landing during cleanup itself must not re-enter the handler.
    `review-cycle.sh` carries the same discipline as R7a of its own spec.
 9d. **Visible attribution.** Every pull-request or issue comment this system
-   posts — from `agent-cycle.sh` directly, and from the Implementor, Reviewer
-   and Enabler — opens with a leading bold line naming the Actor that wrote it
-   and the node it ran on:
+   posts — from `agent-cycle.sh` directly, and from the Implementor, Reviewer,
+   Enabler and Refiner — opens with a leading bold line naming the Actor that
+   wrote it and the node it ran on:
 
    ```
    **<Display>** · autonomous pipeline · node `<node>`
@@ -2886,11 +2899,12 @@ runs unattended.
    fails open on an unknown token — prints it raw — so an Actor added later
    degrades gracefully rather than vanishing from a comment. `agent-cycle.sh`
    and `review-cycle.sh` call it directly; a model cannot source shell, so
-   `prompts/implementor.md`, `prompts/reviewer.md` and `prompts/enabler.md`
-   each spell the header's literal form out and instruct their stage to open
-   every comment with it, using the node name each receives at invocation
-   verbatim (`## Node` for the Implementor and Reviewer; the runtime input's
-   `node` for the Enabler, which already received it). Regression-tested by
+   `prompts/implementor.md`, `prompts/reviewer.md`, `prompts/enabler.md` and
+   `prompts/refiner.md` each spell the header's literal form out and instruct
+   their stage to open every comment with it, using the node name each receives
+   at invocation verbatim (`## Node` for the Implementor and Reviewer; the
+   runtime input's `node` for the Enabler and the Refiner, each of which
+   already received it). Regression-tested by
    `test/comment-identity.test.sh`.
 9e. **Salvage before discard.** Before requirement 9's failure path fires on
    an unparseable final message — the Co-Ordinator, Implementor and Reviewer
@@ -6216,12 +6230,13 @@ What exists, and the requirements each part answers to:
    token→display map, failing open on an unknown token; and
    `pipeline_comment_header ACTOR NODE`, the leading visible line every such
    comment opens with. `agent-cycle.sh`'s and `review-cycle.sh`'s own comments
-   call these directly; the Implementor's, Enabler's and Reviewer's comment
-   instructions (`prompts/implementor.md`, `prompts/enabler.md`,
-   `prompts/reviewer.md`) spell both the header and the marker out literally,
-   via the cycle id and node name each receives at invocation. One definition
+   call these directly; the Implementor's, Enabler's, Reviewer's and Refiner's
+   comment instructions (`prompts/implementor.md`, `prompts/enabler.md`,
+   `prompts/reviewer.md`, `prompts/refiner.md`) spell both the header and the
+   marker out literally, via the cycle id and node name each receives at
+   invocation. One definition
    (requirement 34a): the reader and every writer that is a shell source this
-   file, and the three prompts — which a model reads, so they must spell both
+   file, and the four prompts — which a model reads, so they must spell both
    forms out — are asserted against `PIPELINE_COMMENT_MARKER_PREFIX` by
    `test/abandoned-drafts.test.sh` and against the header's literal form by
    `test/comment-identity.test.sh`, so neither can drift between any of them.
