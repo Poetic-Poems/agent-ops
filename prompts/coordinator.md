@@ -563,13 +563,16 @@ takeover. Instead add it to `voided`:
   bump of the same dependency."
 - `evidence`: the entry's own `superseded_evidence` field, **copied
   verbatim, unedited**. It is pre-formatted for a reason: it cites this PR's
-  own number (`PR #<number>`), which the Script's void corroboration accepts
-  on the id alone for a `pr-<n>-…` item cited in the entry's own repo — as a
-  bare `PR #N` citation always is — and names the newer PR only by URL,
-  never as "PR #<n>" — writing your own sentence that names the superseding
-  PR as "PR #135" (or "pull request #135") will be checked against *that*
-  PR's body and branch for this item's id, which it will never carry, and the
-  void will be refused. Use the field exactly as given.
+  own number (`PR #<number>`), which the Script's void corroboration reads
+  off the item's own `pr-<n>-…` id for a citation in the entry's own repo —
+  as a bare `PR #N` citation always is — and then corroborates against that
+  pull request's own live state, excusing a Dependabot-authored PR from the
+  empty-diff half of that check, so this still-open, still-conflicting bump
+  passes on its state alone. And it names the newer PR only by its branch
+  name, never as "PR #<n>" and never by its URL — writing your own sentence
+  that names the superseding PR either of those ways will be checked against
+  *that* PR's body and branch for this item's id, which it will never carry,
+  and the void will be refused. Use the field exactly as given.
 This stops PR #<number> being offered as a candidate again, but does **not**
 close it: `close-void-github-items.sh` leaves every `pr-<n>-conflict-…` void
 untouched, this superseded one included, because the same shape also covers a
