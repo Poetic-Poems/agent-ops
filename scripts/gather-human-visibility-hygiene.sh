@@ -113,6 +113,16 @@
 
 set -uo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Rate-limit-aware `gh`: sourcing this wraps every `gh` call below so a
+# refusal GitHub will lift in seconds is waited out rather than being read as
+# an answer this script could not get. See lib/github-limit.sh. It matters
+# more here than in most gatherers: an unreadable re-check *keeps* its
+# violation, so a rate-limited cycle would otherwise offer a candidate for a
+# violation that had already resolved.
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
+
 slug="${1:-}"
 violations_json="${2:-[]}"
 pr_label="${3:-autonomous-agent}"

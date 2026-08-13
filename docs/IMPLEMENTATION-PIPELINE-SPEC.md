@@ -6059,7 +6059,11 @@ What exists, and the requirements each part answers to:
    order the two kinds deserve is not the same one. Called for every repo
    whose `sources` include `human-visibility`, whenever
    `human_visibility_violations` names that repo, and assigned to that
-   repo's own `human_visibility` array. No violations, or none surviving the
+   repo's own `human_visibility` array. Sources `lib/github-limit.sh` like
+   every other gatherer (requirement 2.0a), which matters more here than most:
+   an unreadable re-check keeps its violation, so a rate-limit refusal taken
+   at face value would offer a candidate for a violation that had already
+   resolved. No violations, or none surviving the
    live re-check, is `[]` (exit 0) — the ordinary answer almost every cycle
    gets. Regression-tested in `test/gather-human-visibility-hygiene.test.sh`,
    (the reduction) `test/human-visibility-hygiene.test.sh` and (the Script's
