@@ -3133,10 +3133,17 @@ maybe_run_enabler() {
   # `$lbl`, not `$label`: `label` is a jq keyword, and a jq program that fails to
   # compile here would leave the runtime input empty — which the guard below turns
   # into a silently skipped engagement.
-  input="$(jq -nc --argjson items "$claimed_json" --arg lbl "$enabler_escalation_label" \
+  # The claimed items arrive on stdin, bound with `input as $items`
+  # (requirement 4g) — never in argv. Only the refinement class is capped per
+  # engagement (see the claim loop above); ordinary blocked items are not, and
+  # each carries its block's evidence payload, so past MAX_ARG_STRLEN this
+  # build would fail into the guard below and skip the engagement silently —
+  # disabling the very stage that retires blocked state.
+  input="$(jq -nc --arg lbl "$enabler_escalation_label" \
     --arg assignee "$enabler_assignee" --arg cycle "$cycle_id" --arg node "$node_name" \
-    '{items: $items, escalation_label: $lbl, assignee: $assignee, cycle: $cycle, node: $node}' \
-    2>/dev/null || true)"
+    'input as $items
+     | {items: $items, escalation_label: $lbl, assignee: $assignee, cycle: $cycle, node: $node}' \
+    <<<"$claimed_json" 2>/dev/null || true)"
   [[ -n "$input" ]] || return 0
 
   prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" enabler "$prompt_overrides_json")
@@ -3499,9 +3506,15 @@ maybe_run_refiner() {
   (( n_claimed > 0 )) || return 0
 
   # --- One engagement over every claimed item ---
-  input="$(jq -nc --argjson items "$claimed_json" --arg lbl "$refined_label" \
+  # The claimed items arrive on stdin, bound with `input as $items`
+  # (requirement 4g) — never in argv, on the same terms as the Enabler's build
+  # above: past MAX_ARG_STRLEN this would fail into the guard below and skip
+  # the engagement silently.
+  input="$(jq -nc --arg lbl "$refined_label" \
     --arg cycle "$cycle_id" --arg node "$node_name" \
-    '{items: $items, refined_label: $lbl, cycle: $cycle, node: $node}' 2>/dev/null || true)"
+    'input as $items
+     | {items: $items, refined_label: $lbl, cycle: $cycle, node: $node}' \
+    <<<"$claimed_json" 2>/dev/null || true)"
   [[ -n "$input" ]] || return 0
 
   prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")
