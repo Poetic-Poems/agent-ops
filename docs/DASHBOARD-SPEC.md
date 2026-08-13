@@ -206,8 +206,8 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   independently from the same envelope and are expected to agree.
 
   The **actor** that spent it is the transcript's own filename, and needs no
-  new field: `cycles/<id>/{coordinator,implementor,reviewer,enabler}.out` name
-  themselves, and `reviews/<id>/reviewer-<repo>.out` is normalised to
+  new field: `cycles/<id>/{coordinator,implementor,reviewer,enabler,refiner}.out`
+  name themselves, and `reviews/<id>/reviewer-<repo>.out` is normalised to
   `project-reviewer` from the directory two levels up — it belongs to the
   weekly pipeline, not to the cycle Reviewer. Any other stem passes through
   verbatim, on the same fail-open rule as the source labels below.
@@ -669,21 +669,24 @@ events — `<node>` only (click its card to clear)" and "No log events from
 `<node>`."). The actor is derived rather than logged, because no event carries an
 `actor` field and each pipeline already records it somewhere else: the
 implementation pipeline's `stage`; `handoff` on `pr-ready`, naming which actor
-took the pull request out of draft; `by` on `unblocked` (and on that event
-only — `by` elsewhere names a *person*, who set the switch or cleared a
-stand-down); the Enabler's own `escalated`, `enabler-examined` and
-`item-refined`, which carry none of them. A review-pipeline event is the
-Project Reviewer's, which is a different actor from the cycle Reviewer even
-where the review pipeline writes `stage: "reviewer"` — the same distinction
-the Publisher's cost scan draws from the transcript path, drawn the same way
-so the two halves of the page cannot disagree about who did what. Steps with
-no agent in them name none: the clone (`stage: "workspace"`) and a handoff the
-Script completed itself (`handoff: "script"`), as do the cycle-level events
-(`cycle-start`, `selection`, `cycle-end`, and the review pipeline's
-lifecycle), which are the Script's records of a cycle's progress rather than
-any agent's work. Like the source tags and the by-actor chart, this fails
-open: a token the page has never heard of renders as itself, so an actor added
-upstream shows up unlabelled rather than vanishing into a dash.
+took the pull request out of draft; `by` on `unblocked` and on `item-refined`
+(and on those two events only — `by` elsewhere names a *person*, who set the
+switch or cleared a stand-down); the Enabler's own `escalated`,
+`enabler-examined` and `item-refined`, and the Refiner's `refiner-examined`,
+which carry none of the first three. `item-refined` is the one event with two
+writers — the Enabler's refinement pass and the Refiner — and only the
+Refiner's carries `by`, so one without it is the Enabler's. A review-pipeline
+event is the Project Reviewer's, which is a different actor from the cycle
+Reviewer even where the review pipeline writes `stage: "reviewer"` — the same
+distinction the Publisher's cost scan draws from the transcript path, drawn the
+same way so the two halves of the page cannot disagree about who did what.
+Steps with no agent in them name none: the clone (`stage: "workspace"`) and a
+handoff the Script completed itself (`handoff: "script"`), as do the
+cycle-level events (`cycle-start`, `selection`, `cycle-end`, and the review
+pipeline's lifecycle), which are the Script's records of a cycle's progress
+rather than any agent's work. Like the source tags and the by-actor chart, this
+fails open: a token the page has never heard of renders as itself, so an actor
+added upstream shows up unlabelled rather than vanishing into a dash.
 
 Every pull-request number anywhere on the page is rendered by one widget,
 which makes it a link with a **record card** carrying that PR's entry from

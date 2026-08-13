@@ -1687,6 +1687,7 @@
     "implementor":      ["implementor", "the Implementor — makes the change and raises the PR"],
     "reviewer":         ["reviewer",    "the Reviewer — reviews the PR and marks it ready"],
     "enabler":          ["enabler",     "the Enabler — examines blocked items and escalates"],
+    "refiner":          ["refiner",     "the Refiner — specifies items nobody has scoped"],
     "project-reviewer": ["proj-review", "the Project Reviewer — the weekly project-review cycle"]
   };
   // Same bars as by-model, and deliberately so: this is the same measure cut a
@@ -1731,16 +1732,23 @@
   // - `pr-ready` carries the actor as `handoff` — which of them took the pull
   //   request out of draft — where `script` means the pipeline completed a
   //   handoff its Reviewer left undone, so again no agent.
-  // - `unblocked` names the Enabler in `by`. `by` on any other event is a
-  //   *person* (who set the switch, who cleared the stand-down), never an
-  //   agent, which is why this is read for that one event and not in general.
-  // - the Enabler's own three events predate all of the above and carry none
-  //   of them.
+  // - `unblocked` names the Enabler in `by`, and `item-refined` — the one
+  //   event with two writers, the Enabler's refinement pass and the Refiner —
+  //   names whichever of them wrote it in that same field. Only the Refiner's
+  //   carries it, so an `item-refined` without one is the Enabler's. `by` on
+  //   any other event is a *person* (who set the switch, who cleared the
+  //   stand-down), never an agent, which is why this is read for those two
+  //   events and not in general.
+  // - the Enabler's own three events, and the Refiner's `refiner-examined`,
+  //   predate all of the above and carry none of them.
   //
   // Failing open like sourceTag() and the by-actor chart: a token this page
   // has never heard of renders as itself rather than as a dash, so an actor
   // added upstream shows up unlabelled instead of vanishing.
-  var ENABLER_EVENT = { "escalated": 1, "enabler-examined": 1, "item-refined": 1 };
+  var VERDICT_EVENT = {
+    "escalated": "enabler", "enabler-examined": "enabler",
+    "item-refined": "enabler", "refiner-examined": "refiner"
+  };
   function eventActor(e) {
     var ev = e.event || "";
     if (e.stage === "workspace") return null;
@@ -1749,7 +1757,8 @@
         ? "project-reviewer" : null;
     }
     if (e.stage) return e.stage;
-    if (ENABLER_EVENT[ev]) return "enabler";
+    if (ev === "item-refined" && e.by) return e.by;
+    if (VERDICT_EVENT[ev]) return VERDICT_EVENT[ev];
     if (ev === "unblocked" && e.by) return e.by;
     if (ev === "pr-ready" && e.handoff && e.handoff !== "script") return e.handoff;
     return null;
