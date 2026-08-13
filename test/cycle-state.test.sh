@@ -30,6 +30,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/cycle-state.sh
 . "$SCRIPT_DIR/lib/cycle-state.sh"
+# shellcheck source=lib/work-gone.sh
+. "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/void-liveness.sh
+. "$SCRIPT_DIR/lib/void-liveness.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -451,6 +455,136 @@ cat >> "$log" <<'EOF'
 EOF
 assert_eq "round-trip: a fresh verdict after the retirement re-enters the extract" \
   "1" "$(subtract_retired_voids "$(void_items "$log")" "$(void_retired_items "$log")" | jq 'length')"
+
+# --- void_liveness_actioned (requirement 34n's liveness rule, --------------
+# --- TD-PPagop-26081303) ----------------------------------------------------
+#
+# The four shapes the cycle already gathers as structured data each cycle:
+# an alert ref, a register-hygiene ref, a failed-run ref and a merge-conflict
+# ref (the addendum's `pr-<n>-conflict-<head-sha>` — "merge-conflict-
+# resolved" below). Each is tested for both halves of the rule: liveness (an
+# id still present in this cycle's own gather is never actioned, however old)
+# and the gather's own success (an id absent from a gather that did not
+# succeed decides nothing either).
+void_shapes='[
+  {"repo":"o/r","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"dependabot-alert-2","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"code-scanning-alert-9","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"register-hygiene-aaaaaaaaaaaa","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"register-hygiene-bbbbbbbbbbbb","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"failed-run-ci","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"failed-run-sync-framework","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"pr-12-conflict-1a2b3c4d5e6f","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"pr-13-conflict-9f8e7d6c5b4a","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/other","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
+  {"item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"}
+]'
+gather_map='{
+  "o/r": {
+    "alert": {"ok": true, "ids": ["dependabot-alert-1"]},
+    "register-hygiene": {"ok": true, "ids": ["register-hygiene-aaaaaaaaaaaa"]},
+    "failed-run": {"ok": false, "ids": []},
+    "merge-conflict": {"ok": true, "ids": ["pr-12-conflict-1a2b3c4d5e6f"]}
+  }
+}'
+liveness_out="$(void_liveness_actioned "$void_shapes" "$gather_map")"
+
+assert_eq "alert: still present in this cycle's gather is never actioned" \
+  "0" "$(jq '[.[] | select(.item == "dependabot-alert-1")] | length' <<<"$liveness_out")"
+assert_eq "alert: absent from a successful gather is actioned" \
+  "liveness-alert" "$(jq -r '.[] | select(.item == "dependabot-alert-2") | .by' <<<"$liveness_out")"
+assert_eq "alert: the code-scanning shape is recognised too" \
+  "liveness-alert" "$(jq -r '.[] | select(.item == "code-scanning-alert-9") | .by' <<<"$liveness_out")"
+assert_eq "register-hygiene: still present is never actioned" \
+  "0" "$(jq '[.[] | select(.item == "register-hygiene-aaaaaaaaaaaa")] | length' <<<"$liveness_out")"
+assert_eq "register-hygiene: absent from a successful gather is actioned" \
+  "liveness-register-hygiene" \
+  "$(jq -r '.[] | select(.item == "register-hygiene-bbbbbbbbbbbb") | .by' <<<"$liveness_out")"
+assert_eq "failed-run: absent but the gather did not succeed decides nothing" \
+  "0" "$(jq '[.[] | select(.item == "failed-run-ci")] | length' <<<"$liveness_out")"
+assert_eq "  ... neither failed-run entry is actioned while ok is false" \
+  "0" "$(jq '[.[] | select(.item == "failed-run-sync-framework")] | length' <<<"$liveness_out")"
+assert_eq "merge-conflict-resolved: a conflict still reported by this cycle's gather is kept" \
+  "0" "$(jq '[.[] | select(.item == "pr-12-conflict-1a2b3c4d5e6f")] | length' <<<"$liveness_out")"
+assert_eq "merge-conflict-resolved: a conflict no longer reported is actioned" \
+  "liveness-merge-conflict" \
+  "$(jq -r '.[] | select(.item == "pr-13-conflict-9f8e7d6c5b4a") | .by' <<<"$liveness_out")"
+assert_eq "a same-id void in a different repo, absent from GATHER_JSON, decides nothing" \
+  "0" "$(jq '[.[] | select(.repo == "o/other")] | length' <<<"$liveness_out")"
+assert_eq "a repo-less (hand-appended) void matches no shape's repo lookup" \
+  "0" "$(jq '[.[] | select(.repo == "")] | length' <<<"$liveness_out")"
+
+assert_eq "an id shaped like nothing this rule knows decides nothing" \
+  "0" "$(void_liveness_actioned '[{"repo":"o/r","item":"TD26070101","ts":"2026-07-01T00:00:00Z"}]' "$gather_map" | jq 'length')"
+assert_eq "an empty GATHER_JSON actions nothing" \
+  "0" "$(void_liveness_actioned "$void_shapes" '{}' | jq 'length')"
+assert_eq "malformed VOID_JSON fails safe to []" \
+  "[]" "$(void_liveness_actioned "not valid json" "$gather_map")"
+assert_eq "malformed GATHER_JSON fails safe to []" \
+  "[]" "$(void_liveness_actioned "$void_shapes" "not valid json")"
+
+# The age half of requirement 34n's rule is `retire_void_items` itself
+# (already covered above); this pins that a liveness verdict feeds it exactly
+# like any other actioned pair — young stays, old-and-actioned retires — and
+# that a prior `void-retired` record still masks it via
+# `subtract_retired_voids`, the same interaction the round-trip block above
+# proves for the register-resolved path.
+liveness_now_epoch=1786579200
+liveness_void='[
+  {"ts":"2026-07-01T00:00:00Z","repo":"o/r","item":"dependabot-alert-101","detail":"actioned and old"},
+  {"ts":"2026-08-10T00:00:00Z","repo":"o/r","item":"dependabot-alert-102","detail":"actioned but young"}
+]'
+liveness_gather='{"o/r":{"alert":{"ok":true,"ids":[]},"register-hygiene":{"ok":true,"ids":[]},"failed-run":{"ok":true,"ids":[]},"merge-conflict":{"ok":true,"ids":[]}}}'
+liveness_actioned="$(void_liveness_actioned "$liveness_void" "$liveness_gather")"
+assert_eq "liveness feeding retire_void_items: actioned and old retires" \
+  "0" "$(retire_void_items "$liveness_void" "$liveness_actioned" 30 "$liveness_now_epoch" \
+         | jq '[.[] | select(.item == "dependabot-alert-101")] | length')"
+assert_eq "liveness feeding retire_void_items: actioned but young is kept" \
+  "1" "$(retire_void_items "$liveness_void" "$liveness_actioned" 30 "$liveness_now_epoch" \
+         | jq '[.[] | select(.item == "dependabot-alert-102")] | length')"
+
+cat > "$log" <<'EOF'
+{"ts":"2026-06-01T00:00:00Z","event":"item-void","stage":"coordinator","repo":"o/r","item":"dependabot-alert-101","detail":"already closed"}
+{"ts":"2026-08-01T00:00:00Z","event":"void-retired","repo":"o/r","item":"dependabot-alert-101","void_ts":"2026-06-01T00:00:00Z","by":"liveness-alert"}
+EOF
+assert_eq "a prior void-retired record masks a liveness-retired id from the extract" \
+  "0" "$(subtract_retired_voids "$(void_items "$log")" "$(void_retired_items "$log")" | jq 'length')"
+
+# --- void_review_plan_actioned (requirement 34n's on-demand-reader rule, ---
+# --- TD-PPagop-26081303) -----------------------------------------------------
+#
+# The two shapes the cycle does not pre-fetch: a project-review ref and an
+# implementation-plan task id, actioned by the same on-demand readers
+# requirement 34i already uses for the blocked set (a merged pull request, a
+# checked task-list box).
+review_plan_void='[
+  {"repo":"o/r","item":"review-2026-07-11-R-02","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"review-2026-07-11-R-03","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"W10-breach-handling","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"W10-still-open","ts":"2026-07-01T00:00:00Z"}
+]'
+review_status='{"o/r":{"review-2026-07-11-R-02":"merged"}}'
+plan_status='{"o/r":{"W10-breach-handling":"done","W10-still-open":"open"}}'
+rp_out="$(void_review_plan_actioned "$review_plan_void" "$review_status" "$plan_status")"
+
+assert_eq "a review ref named by a merged pull request is actioned" \
+  "review-merged" "$(jq -r '.[] | select(.item == "review-2026-07-11-R-02") | .by' <<<"$rp_out")"
+assert_eq "a review ref with no merged pull request is kept" \
+  "0" "$(jq '[.[] | select(.item == "review-2026-07-11-R-03")] | length' <<<"$rp_out")"
+assert_eq "a plan task whose checkbox reads done is actioned" \
+  "plan-task-done" "$(jq -r '.[] | select(.item == "W10-breach-handling") | .by' <<<"$rp_out")"
+assert_eq "a plan task whose checkbox reads open is kept" \
+  "0" "$(jq '[.[] | select(.item == "W10-still-open")] | length' <<<"$rp_out")"
+assert_eq "malformed VOID_JSON fails safe to []" \
+  "[]" "$(void_review_plan_actioned "not valid json" "$review_status" "$plan_status")"
+assert_eq "malformed status maps fail safe to []" \
+  "[]" "$(void_review_plan_actioned "$review_plan_void" "not valid json" "not valid json")"
+
+rp_now_epoch=1786579200
+rp_void='[{"ts":"2026-07-01T00:00:00Z","repo":"o/r","item":"review-2026-07-11-R-02","detail":"actioned and old"}]'
+rp_actioned="$(void_review_plan_actioned "$rp_void" "$review_status" "$plan_status")"
+assert_eq "review-plan liveness feeding retire_void_items: actioned and old retires" \
+  "0" "$(retire_void_items "$rp_void" "$rp_actioned" 30 "$rp_now_epoch" | jq 'length')"
 
 # --- open_blocked_items (requirement 34h) ---
 # Where the two states meet, void wins. The shape is not exotic: `item-void`

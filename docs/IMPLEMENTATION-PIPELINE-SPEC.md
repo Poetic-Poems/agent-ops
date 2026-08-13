@@ -5337,33 +5337,74 @@ runs unattended.
 
     An entry retires once it is both:
 
-    - **actioned** — the same two facts requirements 34k and 34l already
-      establish, read again for the void set the way requirement 34i already
-      reads the register one for the blocked set: an issue or pull request
-      GitHub itself reports closed (`void_object_closed_items`, the set
-      requirement 34k's sweep already maintains), or a tech-debt register row
-      whose own file on the default branch says `status: resolved` or
-      `status: not-debt` — requirement 34i's own "the work is gone"
-      statuses, read for the still-unretired void register ids by a further
-      `scripts/gather-register-status.sh` call per repo, alongside the one
-      requirement 34i already makes for that repo's blocked ones — the
-      recorded subtraction below is what keeps that residue, and so the
-      per-cycle read, bounded. A void of
-      any other shape — a project-review ref, an implementation-plan task id,
-      a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
-      `register-hygiene-<hash>`, a `failed-run-<…>`, and the
-      `pr-<n>-conflict-<head-sha>` shape 34k deliberately excludes from its
-      close — has no actioned signal defined for it at all, since 34k's
-      sweep acts only on the bare-issue shape and the non-`-conflict-`
-      `pr-<n>-…` shapes, and 34l's register pass only on register ids, so a
-      void of those kinds is never actioned and never retires on this rule
-      alone. The merge-conflicts shape is the one whose id is minted per
-      occurrence rather than per object — a fresh `<head-sha>` mints a fresh
-      id, so no two ever coalesce — which makes it the fastest-growing member
-      of that class; TD-PPagop-26081303 carries the decided direction for
-      closing it, and reaches this shape under its own first rule, since
-      `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
-      and stops yielding the id the moment the conflict resolves; and
+    - **actioned** — one of five signals, one per class of void shape, none
+      of them a model's judgement:
+
+      - an issue or pull request GitHub itself reports closed
+        (`void_object_closed_items`, the set requirement 34k's sweep already
+        maintains) — the bare-issue shape and the non-`-conflict-`
+        `pr-<n>-…` shapes 34k's sweep itself acts on;
+      - a tech-debt register row whose own file on the default branch says
+        `status: resolved` or `status: not-debt` — requirement 34i's own
+        "the work is gone" statuses, read for the still-unretired void
+        register ids (a `TD<date><nn>`/`TD-<scope>-<date><nn>` shape) by a
+        further `scripts/gather-register-status.sh` call per repo, alongside
+        the one requirement 34i already makes for that repo's blocked ones;
+      - **liveness**, for the four shapes the cycle already gathers as
+        structured data each cycle (TD-PPagop-26081303): a
+        `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
+        `register-hygiene-<hash>`, a `pr-<n>-conflict-<head-sha>` (the shape
+        34k deliberately excludes from its own close), or a
+        `failed-run-<…>` is actioned once its id is (a) absent from this
+        cycle's own gather for its source, decided only when that source's
+        gather succeeded this cycle, and (b) nothing else — liveness is not
+        itself the age test, which the second half of this rule still
+        applies uniformly. Age-only retirement for these four shapes was
+        considered and rejected: a void whose id is *still being gathered* —
+        a still-open alert, a register-hygiene finding the register still
+        has, a workflow still failing, a PR still conflicted — is doing live
+        suppression work every cycle, and retiring it on age alone would
+        re-expose the item to be rediscovered void all over again, the exact
+        rediscovery churn requirement 34k exists to stop. "This cycle's own
+        gather" is, for the first three, the same array the Co-Ordinator's
+        runtime input already carries for that repo — read from the tee
+        files `gather_findings`/`gather_register_hygiene`/
+        `gather_merge_conflicts` already write during the repo walk, before
+        claim exclusion narrows them (a claimed alert is still an open one),
+        so this costs no further `gh` call; "that source's gather succeeded"
+        is a `.ok` marker each of those three functions writes alongside its
+        tee file, from gather-findings.sh's own exit code for the alert
+        shape and from stderr emptiness for the other two, which never
+        signal failure via exit code by design (see their own headers). The
+        merge-conflicts shape is the one whose id is minted per occurrence
+        rather than per object — a fresh `<head-sha>` mints a fresh id, so no
+        two ever coalesce — which makes it the fastest-growing member of
+        this class; it needs nothing beyond the ordinary liveness rule, since
+        `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
+        and stops yielding the id the moment the conflict resolves.
+        `failed-run-<…>` is the one shape not read straight off a tee file:
+        `scripts/gather-source-state.sh`'s own `workflows` digest names each
+        still-failing workflow by id, not by the basename the item id is
+        minted from (requirement 19), so `scripts/gather-workflow-basenames.sh`
+        maps id to basename, called once per repo that still carries
+        unretired `failed-run-` void residue (usually none) — bounded the
+        same way the register-status read is;
+      - a *merged* pull request, for a project-review ref
+        (`review-<date>-R-NN`), or a checked task-list box, for an
+        implementation-plan task id — the same on-demand readers requirement
+        34i already calls for the blocked set
+        (`scripts/gather-review-status.sh`, `scripts/gather-plan-status.sh`),
+        called here for the void residue of those two shapes instead, since
+        neither is pre-fetched as structured data at all; and
+
+      `lib/void-liveness.sh`'s `void_liveness_actioned` (the four
+      structured-gather shapes) and `void_review_plan_actioned` (the two
+      on-demand-reader shapes) are the two pure functions this cycle folds
+      into the actioned set alongside `void_object_closed_items` and the
+      register-status read, all four concatenated before `retire_void_items`
+      ever sees them. A void naming no repo (the hand-appended form
+      requirement 34c allows) matches none of the five signals, so it is
+      left, as it always was, for a human to retract; and
     - **old** — its `item-void` event's own `ts` is at least
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
@@ -8267,6 +8308,32 @@ pull request, run the ones the change touches and any it could regress.
    its prompt; an `unknown` one warns and hands the Reviewer nothing; a clean
    one does neither, and leaves the prompt byte-for-byte as it was before the
    section existed.
+8q. **A void shape with no closed-object or register-resolved signal still
+   retires, once its source stops yielding it (requirement 34n's liveness
+   rule, TD-PPagop-26081303).** `test/cycle-state.test.sh`'s
+   `void_liveness_actioned` section passes, against `lib/void-liveness.sh`:
+   for each of the four structured-gather shapes (an alert ref, a
+   register-hygiene ref, a `failed-run-` ref, a merge-conflict ref), an id
+   still present in GATHER_JSON's `ids` for its repo+shape is never actioned,
+   however old; an id absent from a `{ok: true}` gather is actioned, tagged
+   `liveness-<shape>`; an id absent from a `{ok: false}` gather, or from a
+   repo/shape GATHER_JSON carries nothing for at all, decides nothing — the
+   same "unknown is not gone" rule requirement 34i's own clearances observe;
+   a same-numbered id in a different, unlisted repo is untouched; a
+   repo-less (hand-appended) void matches no shape's repo lookup; an id
+   shaped like none of the four is ignored; and malformed `VOID_JSON` or
+   `GATHER_JSON` fails safe to `[]`. The `void_review_plan_actioned` section
+   passes the same way for the two on-demand-reader shapes: a project-review
+   ref is actioned only once a status map reports `"merged"`, an
+   implementation-plan task id only once it reports `"done"`, anything else
+   (including a malformed status map) decides nothing. Both sections also
+   pin the two remaining halves of the requirement: an actioned-and-old
+   liveness or review/plan pair reaches `retire_void_items` and is dropped
+   exactly like an object-closed or register-resolved one, an
+   actioned-but-young pair is kept, and a `void-retired` fact already on the
+   log still masks a liveness-retired id via `subtract_retired_voids` — the
+   same round-trip the register-resolved path already proves, now covering
+   every shape the rule actions.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
