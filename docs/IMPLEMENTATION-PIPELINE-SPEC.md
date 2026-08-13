@@ -5638,40 +5638,151 @@ runs unattended.
 
     An entry retires once it is both:
 
-    - **actioned** — the same two facts requirements 34k and 34l already
-      establish, read again for the void set the way requirement 34i already
-      reads the register one for the blocked set: an issue or pull request
-      GitHub itself reports closed (`void_object_closed_items`, the set
-      requirement 34k's sweep already maintains), or a tech-debt register row
-      whose own file on the default branch says `status: resolved` or
-      `status: not-debt` — requirement 34i's own "the work is gone"
-      statuses, read for the still-unretired void register ids by a further
-      `scripts/gather-register-status.sh` call per repo, alongside the one
-      requirement 34i already makes for that repo's blocked ones — the
-      recorded subtraction below is what keeps that residue, and so the
-      per-cycle read, bounded. A void of
-      any other shape — a project-review ref, an implementation-plan task id,
-      a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
-      `register-hygiene-<hash>`, a `failed-run-<…>`, and the
-      `pr-<n>-conflict-<head-sha>` shape 34k deliberately excludes from its
-      close — has no actioned signal defined for it at all, since 34k's
-      sweep acts only on the bare-issue shape and the non-`-conflict-`
-      `pr-<n>-…` shapes, and 34l's register pass only on register ids, so a
-      void of those kinds is never actioned and never retires on this rule
-      alone. The merge-conflicts shape is the one whose id is minted per
-      occurrence rather than per object — a fresh `<head-sha>` mints a fresh
-      id, so no two ever coalesce — which makes it the fastest-growing member
-      of that class; TD-PPagop-26081303 carries the decided direction for
-      closing it, and reaches this shape under its own first rule, since
-      `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
-      and stops yielding the id the moment the conflict resolves; and
+    - **actioned** — one of six signals, one per class of void shape, none
+      of them a model's judgement:
+
+      - an issue or pull request GitHub itself reports closed
+        (`void_object_closed_items`, the set requirement 34k's sweep already
+        maintains) — the bare-issue shape and the non-`-conflict-`
+        `pr-<n>-…` shapes 34k's sweep itself acts on;
+      - a tech-debt register row whose own file on the default branch says
+        `status: resolved` or `status: not-debt` — requirement 34i's own
+        "the work is gone" statuses, read for the still-unretired void
+        register ids (a `TD<date><nn>`/`TD-<scope>-<date><nn>` shape) by a
+        further `scripts/gather-register-status.sh` call per repo, alongside
+        the one requirement 34i already makes for that repo's blocked ones;
+      - **liveness**, for the four shapes the cycle already gathers as
+        structured data each cycle (TD-PPagop-26081303): a
+        `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
+        `register-hygiene-<hash>`, a `pr-<n>-conflict-<head-sha>` (the shape
+        34k deliberately excludes from its own close), or a
+        `failed-run-<…>` is actioned once its id is (a) absent from this
+        cycle's own gather for its source, decided only when that source's
+        gather succeeded this cycle, and (b) nothing else — liveness is not
+        itself the age test, which the second half of this rule still
+        applies uniformly. Age-only retirement for these four shapes was
+        considered and rejected: a void whose id is *still being gathered* —
+        a still-open alert, a register-hygiene finding the register still
+        has, a workflow still failing, a PR still conflicted — is doing live
+        suppression work every cycle, and retiring it on age alone would
+        re-expose the item to be rediscovered void all over again, the exact
+        rediscovery churn requirement 34k exists to stop. "This cycle's own
+        gather" is, for the first three, the same array the Co-Ordinator's
+        runtime input already carries for that repo — read from the tee
+        files `gather_findings`/`gather_register_hygiene`/
+        `gather_merge_conflicts` already write during the repo walk, before
+        claim exclusion narrows them (a claimed alert is still an open one),
+        so this costs no further `gh` call; "that source's gather succeeded"
+        is a `.ok` marker each of those three functions writes *only*
+        alongside its tee file — never on its own, since a marker with no
+        array beside it reads downstream as "gathered, found nothing", the
+        one sentence it exists to stop the cycle saying — and only when that
+        read also succeeded: gather-findings.sh's own exit code for the alert
+        shape, stderr emptiness for the other two, which never signal failure
+        via exit code by design (see their own headers). Because a tee file
+        is now read rather than merely kept for debugging, every gather that
+        writes one names the pass it is serving in the filename:
+        `gather_register_hygiene` is called twice per cycle for one repo —
+        here during the repo walk and again for requirement 34l's void
+        re-derivation — and takes a `purpose` argument (`prefetch`, `void`)
+        exactly as `gather_review_status`/`gather_plan_status` do for
+        requirement 34i's two passes. Liveness reads the `prefetch` pass's
+        files only. Sharing one filename was a defect, not a saving:
+        `scripts/gather-register-hygiene.sh` prints `[]` on stdout for every
+        failure path, which is a valid array, so a failed second read
+        replaced a successful first read's array with an empty one beneath a
+        `.ok` marker the first read had already written — and liveness then
+        retired every still-live `register-hygiene-<hash>` void in the repo
+        on the strength of a rate limit. The
+        merge-conflicts shape is the one whose id is minted per occurrence
+        rather than per object — a fresh `<head-sha>` mints a fresh id, so no
+        two ever coalesce — which makes it the fastest-growing member of
+        this class; it needs nothing beyond the ordinary liveness rule, since
+        `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
+        and stops yielding the id the moment the conflict resolves.
+        `failed-run-<…>` is the one shape not read straight off a tee file:
+        `scripts/gather-source-state.sh`'s own `workflows` digest names each
+        still-failing workflow by id, not by the basename the item id is
+        minted from (requirement 19), so `scripts/gather-workflow-basenames.sh`
+        maps id to basename, called once per repo that still carries
+        unretired `failed-run-` void residue (usually none) — bounded the
+        same way the register-status read is;
+      - a *merged* pull request, for a project-review ref
+        (`review-<date>-R-NN`), or a checked task-list box, for an
+        implementation-plan task id — the same on-demand readers requirement
+        34i already calls for the blocked set
+        (`scripts/gather-review-status.sh`, `scripts/gather-plan-status.sh`),
+        called here for the void residue of those two shapes instead, since
+        neither is pre-fetched as structured data at all; and
+      - **the configuration itself**, for the residue none of the four above
+        can reach (`void_config_actioned`, decided on PR #340's review,
+        2026-08-13). Liveness decides nothing without the source's own
+        successful gather, and a source is gathered only for a repo whose
+        `sources` still list it — so a repo that drops `merge-conflicts` (or
+        `security`, or `register-hygiene`) freezes every void of that shape
+        it had already minted, and a repo dropped from `repos` altogether
+        freezes every shape but the closed-object one. An entry is actioned
+        when its repo is absent from the configured repo set (`by:
+        "repo-dropped"`, any shape — nothing in a repo the config does not
+        name can be offered by any source), or when its item is shaped like a
+        source's own id and that source is absent from the repo's `sources`
+        (`by: "source-dropped"`). The shape -> source map is the inverse of
+        the repo walk's own gating, one entry per shape — the alert shape
+        alone has two, `security` and `code-quality`, because
+        `scripts/gather-findings.sh` serves both and either alone keeps its
+        voids live. The `source-dropped` half is deliberately confined to the
+        shapes whose id *form* names the source that mints them: a bare issue
+        number or a non-`-conflict-` `pr-<n>-…` is offered by several sources
+        (`issues:<band>`, `review-feedback`, `abandoned-drafts`,
+        `human-visibility`), so no inverse exists and no verdict can be read
+        off the id — those keep the closed-object signal they already had.
+
+        This is **not** a weakening of requirement 34i's "unknown is not
+        gone". That rule is about a *failed read*, which is indistinguishable
+        from absence; a source missing from `sources` is a definite fact the
+        cycle reads locally for free, and the two were conflated only because
+        a missing `.ok` marker meant both "the gather failed" and "the gather
+        never ran". What a void buys is suppression of a candidate the
+        Co-Ordinator would otherwise be offered; an ungathered source offers
+        nothing, so the void buys nothing. Nor does the rediscovery-churn
+        objection that killed age-only retirement reach it: churn needs the
+        item to be re-offered, which needs a human to re-add the source or
+        the repo, at which point one rediscovery pass is the correct
+        behaviour of a newly-enabled source and is bounded by what is still
+        live at that moment. The array read is `all_repos_json`, the
+        **unnarrowed** one straight off `cfg_json '.repos'`, and that is
+        load-bearing twice over: `repos_json` carries `--repo`'s own filter,
+        under which every other repo would read as dropped, and
+        `ordered_repos_json`'s `sources` are rewritten by back-pressure
+        (requirement 2.2a) down to the three finishing sources, which would
+        mint a spurious `source-dropped` for `security` and
+        `register-hygiene` on every back-pressured cycle. A `repos` array
+        that is empty or unreadable decides nothing rather than retiring the
+        whole extract at once. The decision is config-derived and so is only
+        as fleet-consistent as the config: a node running a stale image can
+        retire on a repo a newer config still names, which costs the same
+        bounded rediscovery a wrong retirement always costs, never a
+        clearance;
+
+      `lib/void-liveness.sh`'s `void_liveness_actioned` (the four
+      structured-gather shapes), `void_review_plan_actioned` (the two
+      on-demand-reader shapes) and `void_config_actioned` (the config
+      residue) are the three pure functions this cycle folds into the
+      actioned set alongside `void_object_closed_items` and the
+      register-status read, all five concatenated before `retire_void_items`
+      ever sees them. A void naming no repo (the hand-appended form
+      requirement 34c allows) matches none of the six signals — the config
+      rule skips an empty repo explicitly — so it is left, as it always was,
+      for a human to retract; and
     - **old** — its `item-void` event's own `ts` is at least
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
 
     A retirement, once decided, is **recorded**: a `void-retired` event per
     entry — `{repo, item, void_ts, by}`, `by` naming the actioned signal
-    (`object-closed` or `register-resolved`) — a fact rather than a state,
+    (`object-closed`, `register-resolved`, `liveness-<shape>`,
+    `review-merged`, `plan-task-done`, `source-dropped` or `repo-dropped`) —
+    a fact rather than a state,
     exactly as requirement 34k's `void-object-closed` is: nothing clears it.
     The next cycle reads the recorded set back (`void_retired_items`,
     `lib/cycle-state.sh`) and subtracts it from the extract
@@ -6832,6 +6943,18 @@ What exists, and the requirements each part answers to:
    items and an `implementation_plan_path` configured, and not at all
    otherwise. Fails safe to `{}` (exit 0); regression-tested in
    `test/work-gone.test.sh`; must pass `shellcheck`.
+3v. `scripts/gather-workflow-basenames.sh` implementing the one read
+   requirement 34n's liveness rule needs and no other source provides: given a
+   repo slug, prints `{ok, basenames}` mapping each of the repo's workflow ids
+   to its file's basename without extension — the half requirement 19 mints a
+   `failed-run-` item id from, which `scripts/gather-source-state.sh`'s own
+   `workflows` digest (3b) carries only by id. Called once per repo that still
+   carries unretired `failed-run-` void residue and not at all otherwise, so it
+   is bounded by that residue rather than by the fleet. `ok: false` on any API
+   failure and never on a legitimately empty workflow list, since requirement
+   34n reads `ok` before trusting the map for anything. Fails safe (exit 0);
+   unit-tested (`test/gather-workflow-basenames.test.sh`); must pass
+   `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -6911,6 +7034,30 @@ What exists, and the requirements each part answers to:
    above is asked for those and no others. Pure — it reads nothing itself — and
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
+3w. `lib/void-liveness.sh` implementing requirement 34n's third, fourth and
+   sixth actioned signals: `void_liveness_actioned`, which given the void
+   extract and
+   this cycle's own per-repo, per-shape gather (`{ok, ids}` for `alert`,
+   `register-hygiene`, `failed-run` and `merge-conflict`) prints one
+   `{repo, item, by}` per void whose id its source no longer yields;
+   `void_review_plan_actioned`, which does the same for a project-review ref a
+   merged pull request names and an implementation-plan task id a checked box
+   names, reading the status maps `scripts/gather-review-status.sh` (3o) and
+   `scripts/gather-plan-status.sh` (3p) already print; and
+   `void_config_actioned`, which given the extract and the **unnarrowed**
+   configured repo array prints one entry per void whose repo the config no
+   longer names (`repo-dropped`, any shape) or whose shape names a source that
+   repo no longer lists (`source-dropped`), the residue liveness cannot reach
+   because an ungathered source never writes the `.ok` marker liveness needs.
+   All three take the unbounded
+   extract on stdin, never in argv (requirement 4g), and all fail safe to `[]`
+   — an unknown, a gather that did not succeed, an empty or unreadable repo
+   array and a malformed input alike
+   decide no retirement. Pure — they read nothing themselves; the shape regexes
+   for the two on-demand-reader classes and the register class are
+   `lib/work-gone.sh`'s own
+   (requirement 34a), so this file is sourced after it. Unit-tested
+   (`test/cycle-state.test.sh`); must pass `shellcheck`.
 3s. `lib/preflight.sh` implementing requirement 34m's decision:
    `preflight_done_reason`, which given a repo, an item, its claim branch, the
    cycle's source-state digests and (for a tech-debt item) its one freshly
@@ -6962,7 +7109,8 @@ What exists, and the requirements each part answers to:
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
    pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
+   `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`,
+   `lib/void-liveness.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/human-visibility-hygiene.sh` (requirement 38e's
@@ -8651,6 +8799,51 @@ pull request, run the ones the change touches and any it could regress.
    its prompt; an `unknown` one warns and hands the Reviewer nothing; a clean
    one does neither, and leaves the prompt byte-for-byte as it was before the
    section existed.
+8q. **A void shape with no closed-object or register-resolved signal still
+   retires, once its source stops yielding it (requirement 34n's liveness
+   rule, TD-PPagop-26081303).** `test/cycle-state.test.sh`'s
+   `void_liveness_actioned` section passes, against `lib/void-liveness.sh`:
+   for each of the four structured-gather shapes (an alert ref, a
+   register-hygiene ref, a `failed-run-` ref, a merge-conflict ref), an id
+   still present in GATHER_JSON's `ids` for its repo+shape is never actioned,
+   however old; an id absent from a `{ok: true}` gather is actioned, tagged
+   `liveness-<shape>`; an id absent from a `{ok: false}` gather, or from a
+   repo/shape GATHER_JSON carries nothing for at all, decides nothing — the
+   same "unknown is not gone" rule requirement 34i's own clearances observe;
+   a same-numbered id in a different, unlisted repo is untouched; a
+   repo-less (hand-appended) void matches no shape's repo lookup; an id
+   shaped like none of the four is ignored; and malformed `VOID_JSON` or
+   `GATHER_JSON` fails safe to `[]`. The `void_review_plan_actioned` section
+   passes the same way for the two on-demand-reader shapes: a project-review
+   ref is actioned only once a status map reports `"merged"`, an
+   implementation-plan task id only once it reports `"done"`, anything else
+   (including a malformed status map) decides nothing. Both sections also
+   pin the two remaining halves of the requirement: an actioned-and-old
+   liveness or review/plan pair reaches `retire_void_items` and is dropped
+   exactly like an object-closed or register-resolved one, an
+   actioned-but-young pair is kept, and a `void-retired` fact already on the
+   log still masks a liveness-retired id via `subtract_retired_voids` — the
+   same round-trip the register-resolved path already proves, now covering
+   every shape the rule actions.
+8r. **A void whose source or repo the config has dropped retires too
+   (requirement 34n's config signal, PR #340's review).**
+   `test/cycle-state.test.sh`'s `void_config_actioned` section passes,
+   against `lib/void-liveness.sh`: an entry naming a repo the configured
+   array does not list is actioned as `repo-dropped` whatever its shape,
+   including the bare-issue and non-`-conflict-` `pr-<n>-…` shapes no
+   `source-dropped` verdict can be read off; an entry whose shape names a
+   source the repo still lists is never actioned; an entry whose shape names
+   a source the repo no longer lists is actioned as `source-dropped`, tested
+   for each of the seven mapped shapes; the alert shape stays live while
+   *either* `security` or `code-quality` remains, and retires only when both
+   are gone; a bare issue number and a `pr-<n>-stale` in a *configured* repo
+   are never actioned however few sources remain; a repo-less void is
+   skipped; and an empty, non-array or malformed repo array decides nothing
+   rather than retiring the whole extract. The section also pins the age
+   half — an actioned-and-old config pair reaches `retire_void_items` and is
+   dropped, an actioned-but-young one is kept — and, in `agent-cycle.sh`, that
+   the array read is `all_repos_json` rather than the `--repo`-filtered
+   `repos_json` or the back-pressure-narrowed `ordered_repos_json`.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

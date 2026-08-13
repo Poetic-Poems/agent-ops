@@ -91,6 +91,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/void-liveness.sh
+. "$SCRIPT_DIR/lib/void-liveness.sh"
 # shellcheck source=lib/human-visibility-hygiene.sh
 . "$SCRIPT_DIR/lib/human-visibility-hygiene.sh"
 # shellcheck source=lib/preflight.sh
@@ -1457,16 +1459,36 @@ extract_pr_url() {
 # valid JSON and never fails a cycle; this guards its output anyway and
 # degrades to an empty array, teeing the result into the cycle dir for
 # debugging.
+#
+# Also records whether this cycle's own read succeeded, for requirement 34n's
+# liveness retirement (TD-PPagop-26081303): a `findings-$safe.ok` marker,
+# written iff gather-findings.sh's own contract says so (exit 0 — a disabled
+# feature or a legitimately empty answer; exit 1 on a real failure). The void-
+# liveness pass, further down this cycle, reads the marker and the tee'd
+# `.json` array together — `ok` decides whether the array may be trusted as
+# "every alert still open", never whether it is non-empty.
 gather_findings() {
-  local slug="$1" out safe
+  local slug="$1" out safe rc
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>"$cycle_dir/findings-$safe.err" || true)"
+  if out="$("$SCRIPT_DIR/scripts/gather-findings.sh" "$slug" 2>"$cycle_dir/findings-$safe.err")"; then
+    rc=0
+  else
+    rc=$?
+  fi
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/findings-$safe.json"
     printf '%s' "$out"
+    # The marker requires *both* halves: a zero exit and a tee file the
+    # liveness pass can actually read. gather-findings.sh exits 0 on paths
+    # that can still leave stdout unusable (its final `jq -n` failing prints
+    # nothing yet falls through to `exit 0`), and a marker written without
+    # the `.json` beside it reads downstream as "gathered, found nothing" —
+    # the one sentence this marker exists to stop the cycle saying.
+    (( rc == 0 )) && : > "$cycle_dir/findings-$safe.ok"
   else
     printf '[]'
   fi
+  return 0
 }
 
 # Sample the change-detection signals the no-op short-circuit (requirement 3b)
@@ -1528,6 +1550,18 @@ gather_merge_conflicts() {
   safe="${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" "$slug" "$pr_label" "$branch_prefix" \
         2>"$cycle_dir/merge-conflicts-$safe.err" || true)"
+  # Requirement 34n's liveness retirement (TD-PPagop-26081303): a
+  # `merge-conflicts-$safe.ok` marker, written iff this cycle's own read
+  # produced a valid array and said nothing on stderr. gather-merge-
+  # conflicts.sh always exits 0 by design (its output feeds the Co-Ordinator,
+  # and a source that cannot look must simply not fire rather than abort the
+  # cycle), so stderr is the only signal a real `gh` failure leaves — the same
+  # distinction scripts/gather-register-hygiene.sh draws between "empty
+  # because there is nothing" and "empty because it could not look".
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 \
+     && [[ ! -s "$cycle_dir/merge-conflicts-$safe.err" ]]; then
+    : > "$cycle_dir/merge-conflicts-$safe.ok"
+  fi
   if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '[]'
     return
@@ -1611,14 +1645,41 @@ gather_merge_conflicts() {
 # uniformity with its siblings and because editing scripts/td-check.pl changes
 # candidacy with no commit to the target repo at all (see
 # scripts/gather-register-hygiene.sh and lib/noop-skip.sh).
+#
+# PURPOSE, like gather_review_status's own, names the asking pass — `prefetch`
+# (this repo walk) or `void` (requirement 34l's void re-derivation below) —
+# and lands in the diagnostic filenames. Unlike its siblings this function has
+# *two* callers per cycle for the same repo, and before they were separated
+# the second one's tee silently overwrote the first's: gather-register-
+# hygiene.sh prints `[]` on stdout for every failure path (a rate limit, a
+# network blip, a branch moved between the two — the exact cases the void pass
+# below names), which is a valid array, so a failed second read replaced a
+# successful first read's array with an empty one while the `.ok` marker that
+# read had already written stayed put. The liveness pass then read
+# marker-present plus no ids as "gathered, found nothing" and retired every
+# still-live `register-hygiene-<hash>` void in the repo — a retirement caused
+# by a failed read, which is the one thing the marker exists to prevent.
 gather_register_hygiene() {
-  local slug="$1" branch="$2" void="${3:-[]}" out safe
-  safe="${slug//\//_}"
+  local slug="$1" branch="$2" purpose="$3" void="${4:-[]}" out safe
+  safe="$purpose-${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-register-hygiene.sh" "$slug" "$branch" "$void" \
         2>"$cycle_dir/register-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/register-hygiene-$safe.json"
     printf '%s' "$out"
+    # Requirement 34n's liveness retirement (TD-PPagop-26081303): a
+    # `register-hygiene-$safe.ok` marker, written iff this read said nothing
+    # on stderr. gather-register-hygiene.sh always exits 0 by design (a real
+    # API failure is deliberately as silent, on stdout, as "no register" —
+    # see its own header — with the diagnosis reaching only stderr), so
+    # stderr emptiness is the one signal a real failure leaves. Written as a
+    # full `if`, not a `&&` list: this is the last command in the function,
+    # and a bare `&&` whose test fails would return 1 from the function
+    # itself — which under `set -e` aborts the whole cycle at the plain
+    # assignment the void-register-hygiene pass below makes.
+    if [[ ! -s "$cycle_dir/register-hygiene-$safe.err" ]]; then
+      : > "$cycle_dir/register-hygiene-$safe.ok"
+    fi
   else
     printf '[]'
   fi
@@ -1767,10 +1828,16 @@ gather_register_status() {
 # (requirement 34i). Same shape and same reason as gather_register_status
 # above: called only for a repo with blocked project-review items, at no cost
 # otherwise.
+#
+# PURPOSE, like gather_register_status's own, names the asking pass —
+# `blocked` (requirement 34i) or `void` (requirement 34n's liveness
+# retirement, TD-PPagop-26081303) — and lands in the diagnostic filenames, so
+# the two passes this cycle can make against the same repo don't silently
+# discard each other's evidence.
 gather_review_status() {
-  local slug="$1" branch="$2" out safe
-  shift 2
-  safe="${slug//\//_}"
+  local slug="$1" branch="$2" purpose="$3" out safe
+  shift 3
+  safe="$purpose-${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-review-status.sh" "$slug" "$branch" "$@" \
         2>"$cycle_dir/review-status-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
@@ -1783,11 +1850,11 @@ gather_review_status() {
 
 # What the implementation-plan document's own checkboxes say about specific
 # blocked plan-task ids (requirement 34i). Same shape and same reason as
-# gather_register_status above.
+# gather_register_status above, including PURPOSE.
 gather_plan_status() {
-  local slug="$1" branch="$2" path="$3" out safe
-  shift 3
-  safe="${slug//\//_}"
+  local slug="$1" branch="$2" path="$3" purpose="$4" out safe
+  shift 4
+  safe="$purpose-${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-plan-status.sh" "$slug" "$branch" "$path" "$@" \
         2>"$cycle_dir/plan-status-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
@@ -1795,6 +1862,24 @@ gather_plan_status() {
     printf '%s' "$out"
   else
     printf '{}'
+  fi
+}
+
+# Which basename requirement 19's `failed-runs` item id names each workflow id
+# (requirement 34n's liveness retirement, TD-PPagop-26081303) —
+# scripts/gather-workflow-basenames.sh's own `{ok, basenames}`, called only
+# for a repo with still-unretired `failed-run-` void entries: a fleet with
+# none spends nothing here.
+gather_workflow_basenames() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-workflow-basenames.sh" "$slug" \
+        2>"$cycle_dir/workflow-basenames-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/workflow-basenames-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '{"ok":false,"basenames":{}}'
   fi
 }
 
@@ -4083,7 +4168,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
   fi
   register_hygiene="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
-    register_hygiene="$(exclude_claimed_items "$(gather_register_hygiene "$slug" "$default_branch")" "$claimed_item_refs_json")"
+    register_hygiene="$(exclude_claimed_items "$(gather_register_hygiene "$slug" "$default_branch" prefetch)" "$claimed_item_refs_json")"
   fi
   # The issues source is one source at four ranks (`issues:urgent` …
   # `issues:low`, requirement 15e), so any band in `sources` warrants the one
@@ -4307,7 +4392,7 @@ while IFS=$'\t' read -r rev_slug rev_refs; do
     <<<"$ordered_repos_json" 2>/dev/null || true)"
   [[ -n "$rev_branch" ]] || continue
   # shellcheck disable=SC2086  # $rev_refs is a deliberate word-split ref list.
-  rev_map="$(gather_review_status "$rev_slug" "$rev_branch" $rev_refs)"
+  rev_map="$(gather_review_status "$rev_slug" "$rev_branch" blocked $rev_refs)"
   review_status_json="$(jq -c --arg s "$rev_slug" --argjson m "$rev_map" '. + {($s): $m}' \
     <<<"$review_status_json" 2>/dev/null || printf '%s' "$review_status_json")"
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
@@ -4326,7 +4411,7 @@ while IFS=$'\t' read -r plan_slug plan_ids; do
   plan_path="$(jq -r '.implementation_plan_path // ""' <<<"$plan_entry" 2>/dev/null || true)"
   [[ -n "$plan_branch" && -n "$plan_path" ]] || continue
   # shellcheck disable=SC2086  # $plan_ids is a deliberate word-split id list.
-  plan_map="$(gather_plan_status "$plan_slug" "$plan_branch" "$plan_path" $plan_ids)"
+  plan_map="$(gather_plan_status "$plan_slug" "$plan_branch" "$plan_path" blocked $plan_ids)"
   plan_status_json="$(jq -c --arg s "$plan_slug" --argjson m "$plan_map" '. + {($s): $m}' \
     <<<"$plan_status_json" 2>/dev/null || printf '%s' "$plan_status_json")"
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
@@ -4496,14 +4581,18 @@ while IFS= read -r vr_slug; do
     -n 'input as $void
         | [ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
             | {item, detail, evidence} ]' <<<"$void_json" 2>/dev/null || echo '[]')"
-  vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" "$vr_candidates_json")"
+  vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" void "$vr_candidates_json")"
   # Only ever *adds* to what the first pass found. gather_register_hygiene
   # fails safe to `[]`, and this second read can fail where the first
   # succeeded — a rate limit, a network blip, a branch moved between the two.
   # Overwriting on that answer would delete a genuine register-hygiene
   # candidate the cycle already holds, on no evidence at all; the whole point
   # of this pass is a superset of the first, so an empty result is the one
-  # answer it can never mean.
+  # answer it can never mean. `purpose void` is what keeps that reasoning
+  # true of the tee files as well as of this variable: the two passes wrote
+  # to one filename until requirement 34n's liveness rule started reading it,
+  # at which point this pass's failure became a false retirement of the other
+  # pass's still-live findings.
   [[ "$(jq 'length' <<<"$vr_hygiene_json" 2>/dev/null || echo 0)" != "0" ]] || continue
   ordered_repos_json="$(jq -c --arg r "$vr_slug" --argjson rh "$vr_hygiene_json" \
     'map(if .slug == $r then .register_hygiene = $rh else . end)' \
@@ -4572,22 +4661,60 @@ fi
 # monitoring dashboard's own use of `void_items`). Retirement narrows only
 # what this one cycle goes on to hand somebody, never what counts as void.
 #
-# "Actioned" is the same two facts requirements 34k and 34l already
-# establish, read again for the void set the way requirement 34i already
-# reads the register one for the blocked set: an issue or pull request GitHub
-# itself confirms closed (`void_object_closed_items`, re-read here — a pure
-# function over the union log already in memory, costing no `gh` call at
-# all), or a tech-debt register row whose own file says `status: resolved` or
-# `status: not-debt` — 34i's own "the work is gone" statuses, which do cost a
-# read: a further `gather_register_status` call per repo with still-unretired
-# void register ids, alongside the one 34i already makes for that repo's
-# blocked ones — the recorded subtraction above is what keeps that residue,
-# and so this read, bounded. A
-# void of any other shape — a project-review ref, an implementation-plan task
-# id, a `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
-# `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
-# defined for it at all (34k and 34l act on none of those shapes), so a void
-# of those kinds is never actioned and never retires on this rule alone.
+# "Actioned" is built from six signals, none of them needing a `gh` call this
+# rule does not already budget for:
+#
+#   - an issue or pull request GitHub itself confirms closed
+#     (`void_object_closed_items`, re-read here — a pure function over the
+#     union log already in memory, costing nothing);
+#   - a tech-debt register row whose own file says `status: resolved` or
+#     `status: not-debt` — 34i's own "the work is gone" statuses, read by a
+#     further `gather_register_status` call per repo with still-unretired void
+#     register ids, alongside the one 34i already makes for that repo's
+#     blocked ones — the recorded subtraction above is what keeps that
+#     residue, and so this read, bounded;
+#   - liveness, for the four shapes the cycle already gathers as structured
+#     data each cycle (TD-PPagop-26081303): a `dependabot-alert-<n>`/
+#     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, a
+#     `pr-<n>-conflict-<head-sha>` (the merge-conflicts shape requirement 34k
+#     deliberately excludes from its own close), or a `failed-run-<…>` is
+#     actioned once its id is absent from this cycle's own gather for that
+#     source, and that gather succeeded (`void_liveness_actioned`,
+#     lib/void-liveness.sh) — read off the same tee files the repo loop
+#     already wrote for the first three, and one further
+#     `gather_workflow_basenames` call per repo with still-unretired
+#     `failed-run-` void ids for the fourth; and
+#   - a merged pull request, for a project-review ref, or a checked task-list
+#     box, for an implementation-plan task id — the same on-demand readers
+#     34i already calls for the blocked set (`gather_review_status`,
+#     `gather_plan_status`), read here for the void residue
+#     (`void_review_plan_actioned`, lib/void-liveness.sh); and
+#   - the configuration itself, for the residue none of the four above can
+#     reach (`void_config_actioned`, lib/void-liveness.sh; PR #340 review):
+#     liveness needs the source's own successful gather, and a source is
+#     gathered only for a repo whose `sources` still list it, so a repo that
+#     drops `merge-conflicts` — or `security`, or `register-hygiene` — freezes
+#     every void of that shape it had already minted, and a repo dropped from
+#     the config altogether freezes every shape but the closed-object one.
+#     Both are read straight off `all_repos_json`, which costs nothing and is
+#     deliberately the *unnarrowed* array: `repos_json` carries `--repo`'s
+#     filter, under which every other repo would read as dropped, and
+#     `ordered_repos_json`'s own `sources` are rewritten by back-pressure
+#     (step 2.2a, further down) to the three finishing sources.
+#
+# Age-only retirement for the four liveness shapes was considered and
+# rejected: a void whose id is *still being gathered* — a still-open alert, a
+# register-hygiene finding the register still has, a workflow still failing, a
+# PR still conflicted — is doing live suppression work every cycle, and
+# retiring it on age alone would re-expose the item to be rediscovered void
+# all over again, the exact rediscovery churn requirement 34k exists to stop.
+# That objection does not reach the config signal: it needs the item to be
+# re-offered, which needs a human to re-add the source or the repo, at which
+# point one rediscovery pass is the correct behaviour of a newly-enabled
+# source and is bounded by what is still live at that moment.
+# A void naming no repo (the hand-appended form requirement 34c allows) never
+# matches any of these six signals, so it is left, as it always was, for a
+# human to retract.
 #
 # Each entry this block retires is recorded as a `void-retired` event —
 # `{repo, item, void_ts, by}`, a fact rather than a state exactly as
@@ -4618,15 +4745,125 @@ if (( void_retire_after_days > 0 )); then
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$void_register_ids_json" 2>/dev/null || true)
 
+  # The project-review and implementation-plan residue (TD-PPagop-26081303):
+  # requirement 34i's own on-demand readers, over the void set's still-
+  # unretired ids of those two shapes — same cost shape as the register read
+  # above, `purpose void` so the diagnostic files don't collide with 34i's own
+  # blocked-set read of the same repo.
+  void_review_status_json='{}'
+  while IFS=$'\t' read -r vrv_slug vrv_refs; do
+    [[ -n "$vrv_slug" && -n "$vrv_refs" ]] || continue
+    vrv_branch="$(jq -r --arg s "$vrv_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+      <<<"$ordered_repos_json" 2>/dev/null || true)"
+    [[ -n "$vrv_branch" ]] || continue
+    # shellcheck disable=SC2086  # $vrv_refs is a deliberate word-split ref list.
+    vrv_map="$(gather_review_status "$vrv_slug" "$vrv_branch" void $vrv_refs)"
+    void_review_status_json="$(jq -c --arg s "$vrv_slug" --argjson m "$vrv_map" '. + {($s): $m}' \
+      <<<"$void_review_status_json" 2>/dev/null || printf '%s' "$void_review_status_json")"
+  done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+           <<<"$(work_gone_review_refs "$void_json")" 2>/dev/null || true)
+
+  void_plan_status_json='{}'
+  while IFS=$'\t' read -r vrp_slug vrp_ids; do
+    [[ -n "$vrp_slug" && -n "$vrp_ids" ]] || continue
+    vrp_entry="$(jq -c --arg s "$vrp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
+      <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
+    vrp_branch="$(jq -r '.default_branch // ""' <<<"$vrp_entry" 2>/dev/null || true)"
+    vrp_path="$(jq -r '.implementation_plan_path // ""' <<<"$vrp_entry" 2>/dev/null || true)"
+    [[ -n "$vrp_branch" && -n "$vrp_path" ]] || continue
+    # shellcheck disable=SC2086  # $vrp_ids is a deliberate word-split id list.
+    vrp_map="$(gather_plan_status "$vrp_slug" "$vrp_branch" "$vrp_path" void $vrp_ids)"
+    void_plan_status_json="$(jq -c --arg s "$vrp_slug" --argjson m "$vrp_map" '. + {($s): $m}' \
+      <<<"$void_plan_status_json" 2>/dev/null || printf '%s' "$void_plan_status_json")"
+  done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+           <<<"$(work_gone_plan_ids "$void_json")" 2>/dev/null || true)
+
+  # The four liveness shapes (TD-PPagop-26081303): per repo, whatever
+  # gather_findings/gather_register_hygiene/gather_merge_conflicts already
+  # wrote to the cycle dir during the repo loop — the `.ok` marker (this
+  # cycle's own read of that source succeeded) and the ids it currently
+  # yields — read straight off those tee files, so alert/register-hygiene/
+  # merge-conflict liveness costs no further `gh` call at all. `failed-run` is
+  # the one exception: gather-source-state.sh's own `workflows` digest names
+  # each still-failing workflow by id, not by the basename the item id is
+  # minted from, so the id -> basename map is fetched here, bounded to the
+  # repos that actually carry unretired `failed-run-` void residue (usually
+  # none).
+  void_failed_run_repos_json="$(jq -r --arg re "$VOID_LIVENESS_FAILED_RUN_RE" '
+    [ .[] | select((.repo // "") != "" and ((.item // "") | test($re))) | .repo ] | unique' \
+    <<<"$void_json" 2>/dev/null || echo '[]')"
+
+  void_liveness_gather_json='{}'
+  while IFS= read -r vl_slug; do
+    [[ -n "$vl_slug" ]] || continue
+    vl_safe="${vl_slug//\//_}"
+
+    vl_alert_ok=false; vl_alert_ids='[]'
+    if [[ -f "$cycle_dir/findings-$vl_safe.ok" ]]; then
+      vl_alert_ok=true
+      vl_alert_ids="$(jq -c '[.[].ref]' "$cycle_dir/findings-$vl_safe.json" 2>/dev/null || echo '[]')"
+    fi
+
+    # The `prefetch` pass's own files, never requirement 34l's `void` pass:
+    # that second pass folds the void evidence in (so its array answers a
+    # different question) and can fail where the first succeeded, which is
+    # why the two carry separate `purpose` prefixes at all.
+    vl_rh_ok=false; vl_rh_ids='[]'
+    if [[ -f "$cycle_dir/register-hygiene-prefetch-$vl_safe.ok" ]]; then
+      vl_rh_ok=true
+      vl_rh_ids="$(jq -c '[.[].ref]' "$cycle_dir/register-hygiene-prefetch-$vl_safe.json" 2>/dev/null || echo '[]')"
+    fi
+
+    vl_mc_ok=false; vl_mc_ids='[]'
+    if [[ -f "$cycle_dir/merge-conflicts-$vl_safe.ok" ]]; then
+      vl_mc_ok=true
+      vl_mc_ids="$(jq -c '[.[].ref]' "$cycle_dir/merge-conflicts-$vl_safe.json" 2>/dev/null || echo '[]')"
+    fi
+
+    vl_fr_ok=false; vl_fr_ids='[]'
+    if jq -e --arg r "$vl_slug" 'index($r) != null' <<<"$void_failed_run_repos_json" >/dev/null 2>&1; then
+      vl_basenames_json="$(gather_workflow_basenames "$vl_slug")"
+      if [[ "$(jq -r '.ok // false' <<<"$vl_basenames_json" 2>/dev/null)" == "true" ]]; then
+        vl_state_json="$(jq -c --arg s "$vl_slug" \
+          '[.[] | select((.slug // "") == $s and .ok == true)] | first // {}' \
+          <<<"$source_states_json" 2>/dev/null || echo '{}')"
+        if [[ "$(jq -r 'has("slug")' <<<"$vl_state_json" 2>/dev/null)" == "true" ]]; then
+          vl_fr_ok=true
+          vl_fr_ids="$(jq -c --argjson bn "$vl_basenames_json" '
+            [ (.workflows // [])[] | select(.c == "failure") | (.w | tostring) as $id
+              | ($bn.basenames[$id] // null) | select(. != null) | ("failed-run-" + .) ]' \
+            <<<"$vl_state_json" 2>/dev/null || echo '[]')"
+        fi
+      fi
+    fi
+
+    void_liveness_gather_json="$(jq -c --arg s "$vl_slug" \
+      --argjson alert_ok "$vl_alert_ok" --argjson alert_ids "$vl_alert_ids" \
+      --argjson rh_ok "$vl_rh_ok" --argjson rh_ids "$vl_rh_ids" \
+      --argjson mc_ok "$vl_mc_ok" --argjson mc_ids "$vl_mc_ids" \
+      --argjson fr_ok "$vl_fr_ok" --argjson fr_ids "$vl_fr_ids" \
+      '. + {($s): {alert: {ok: $alert_ok, ids: $alert_ids},
+                   "register-hygiene": {ok: $rh_ok, ids: $rh_ids},
+                   "merge-conflict": {ok: $mc_ok, ids: $mc_ids},
+                   "failed-run": {ok: $fr_ok, ids: $fr_ids}}}' \
+      <<<"$void_liveness_gather_json" 2>/dev/null || printf '%s' "$void_liveness_gather_json")"
+  done < <(jq -r '.[].slug' <<<"$ordered_repos_json" 2>/dev/null || true)
+
   # The closed set grows with every void ever actioned, so it arrives on
   # stdin, never in argv (requirement 4g), and is intersected with the
   # extract's own pairs before it travels any further: retirement can only
   # drop what is in the extract, so the intersection loses nothing and is
   # what keeps `void_actioned_json` — which does ride an --argjson below —
   # bounded by the unretired residue rather than by history. `by` names the
-  # actioned signal, for the `void-retired` event to carry.
+  # actioned signal, for the `void-retired` event to carry. The liveness,
+  # review/plan and config pairs are already bounded the same way — each is
+  # computed straight from `void_json`'s own residue, never from history, and
+  # each entry is three short fields whatever the entry it was derived from.
   # shellcheck disable=SC2016  # jq's $void/$closed/$reg et al., not the shell's.
-  void_actioned_json="$(jq -c -n --argjson reg "$void_register_status_json" '
+  void_actioned_json="$(jq -c -n --argjson reg "$void_register_status_json" \
+    --argjson liveness "$(void_liveness_actioned "$void_json" "$void_liveness_gather_json")" \
+    --argjson revplan "$(void_review_plan_actioned "$void_json" "$void_review_status_json" "$void_plan_status_json")" \
+    --argjson config "$(void_config_actioned "$void_json" "$all_repos_json")" '
     input as $void | input as $closed
     | ($void | map((.repo // "") + "|" + (.item // ""))) as $pairs
     | ($closed
@@ -4635,7 +4872,7 @@ if (( void_retire_after_days > 0 )); then
     | ($reg | to_entries | map(.key as $repo | .value | to_entries[]
        | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
        | {repo: $repo, item: .key, by: "register-resolved"})) as $reg_done
-    | $closed_here + $reg_done' \
+    | $closed_here + $reg_done + $liveness + $revplan + $config' \
     <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>/dev/null || echo '[]')"
 
   void_json_before_retire="$void_json"
