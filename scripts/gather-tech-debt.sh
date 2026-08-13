@@ -159,7 +159,7 @@ while IFS= read -r name; do
     '{source: "tech-debt", ref: $id, id: $id, title: $title, filed: $filed, url: $url, body: $body}')" \
     || degrade "entry assembly failed for $name"
   out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")" || degrade "array assembly failed at $name"
-done < <(cd "$root/tech-debt" && ls -1 -- *.md 2>/dev/null | sort)
+done < <(cd "$root/tech-debt" && find . -maxdepth 1 -name '*.md' -printf '%f\n' 2>/dev/null | sort)
 
 out="$(jq -c 'sort_by(.id)' <<<"$out" 2>/dev/null || printf '%s' "$out")"
 printf '%s\n' "$out"
