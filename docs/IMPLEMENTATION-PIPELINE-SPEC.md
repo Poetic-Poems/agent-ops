@@ -1388,12 +1388,19 @@ runs unattended.
      argv, the shape of both the 2026-08-01 argv-cap outage and the
      2026-08-12 void-extract one — writes no `attempt-failed` for any
      stage, so the union shows only the `cycle-start` / `cycle-end`
-     pair. A completed cycle that reaches any stage at all resets the
-     count, whatever that stage then does — reaching a stage is itself
-     proof the systemic block is not reproducing right now, and what
-     happens to an item once a stage is running already has its own
-     recovery ladder; a cycle with no `cycle-end` at all (still running,
-     or killed too abruptly to log one) is dropped, counted neither way.
+     pair. A completed cycle that starts a **selection-path** stage
+     (`coordinator`, `implementor` or `reviewer`) resets the count,
+     whatever that stage then does — reaching selection is itself proof
+     the systemic block is not reproducing right now, and what happens to
+     an item once a stage is running already has its own recovery ladder.
+     A `stage-start` from the Enabler or the Refiner never resets the
+     count: both run from the cycle's cleanup path, after any
+     pre-selection death has already happened, so counting them as
+     recovery would blind this check the moment their non-zero-exit
+     guards (the "a cycle that ended badly" bail-outs in requirements 35
+     and 39) were ever relaxed. A cycle with no `cycle-end` at all (still
+     running, or killed too abruptly to log one) is dropped, counted
+     neither way.
 
    On a verdict from either reader, and unless `crash_loop_escalated_since`
    finds a `crash-loop-escalated` event with the same detail at or after the
@@ -8452,8 +8459,10 @@ pull request, run the ones the change touches and any it could regress.
    the same non-zero `exit_code` and no `stage-start` anywhere between them
    yields a verdict carrying the count, the window, every failing node and
    the `exit_code`; one fewer yields nothing; a completed cycle that reaches
-   any stage resets the count whatever that stage then exits, as does a
-   clean (`exit_code` 0) cycle; an exit-code change restarts the count at
+   a selection-path stage (`coordinator`, `implementor` or `reviewer`)
+   resets the count whatever that stage then exits, as does a clean
+   (`exit_code` 0) cycle, while an Enabler or Refiner `stage-start` never
+   counts as recovery; an exit-code change restarts the count at
    one; a cycle with no `cycle-end` at all is dropped, counted neither way;
    item-stage failures and other nodes' noise never contribute; a threshold
    of 0 is the off switch. For `crash_loop_escalated_since`, an escalation

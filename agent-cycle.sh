@@ -3060,8 +3060,8 @@ crash_loop_escalate() {
       <<<"$verdict_json"
     cat <<CRASH_LOOP_BODY
 
-No recovery — a success, or (for a pre-selection death) a cycle reaching any
-stage at all — has happened anywhere in the fleet since the first of these.
+No recovery — a success, or (for a pre-selection death) a cycle reaching a
+selection stage — has happened anywhere in the fleet since the first of these.
 A failure this uniform is almost certainly deterministic — something that
 ships in the image or the config, not a transient — so no amount of retrying
 will clear it, and until it clears the fleet selects no work at all.

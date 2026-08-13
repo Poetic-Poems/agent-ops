@@ -30,8 +30,12 @@
 # outage and the 2026-08-12 void-extract one both took this shape). It shares
 # the same properties above, grouped by `exit_code` instead of `detail` since
 # a pre-selection death carries no detail string, and a completed cycle
-# reaching any stage resets it exactly as a success does — reaching a stage
-# proves the systemic block is not reproducing right now.
+# reaching a selection-path stage (`coordinator`, `implementor`, `reviewer`)
+# resets it exactly as a success does — reaching selection proves the systemic
+# block is not reproducing right now. A cleanup-path stage (`enabler`,
+# `refiner`) never resets: those start after a pre-selection death has already
+# happened, so counting them as recovery would silence the alarm the moment
+# their non-zero-exit guards were relaxed.
 #
 # No network: all three functions are pure readers of an event stream on
 # stdin.
@@ -182,6 +186,22 @@ reset_via_success="$(head -n4 <<<"$four_deaths"
   tail -n4 <<<"$four_deaths")"
 assert_eq "a clean exit mid-run resets the count" "" \
   "$(crash_loop_preselection_verdict 4 <<<"$reset_via_success")"
+
+# The Enabler and Refiner start from cleanup(), after a pre-selection death
+# has already happened — a stage-start from either is evidence the post-mortem
+# path ran, not that selection got anywhere. Today their guards keep them off
+# dead cycles entirely; if that is ever relaxed, these two cycles are exactly
+# what the union would show, and they must count as deaths, not recovery.
+cleanup_stage_deaths="$(head -n4 <<<"$four_deaths"
+  cycle_start_at 2026-08-01T10:20:00Z n2 c2b
+  stage_start_at 2026-08-01T10:21:00Z n2 c2b enabler
+  cycle_end_at 2026-08-01T10:25:00Z n2 c2b 126
+  cycle_start_at 2026-08-01T10:26:00Z n3 c3b
+  stage_start_at 2026-08-01T10:27:00Z n3 c3b refiner
+  cycle_end_at 2026-08-01T10:28:00Z n3 c3b 126
+  tail -n4 <<<"$four_deaths")"
+assert_eq "an Enabler or Refiner stage-start never counts as recovery" \
+  "6" "$(crash_loop_preselection_verdict 4 <<<"$cleanup_stage_deaths" | jq -r '.count')"
 
 exit_code_change="$(head -n4 <<<"$four_deaths"
   died_at 2026-08-01T11:00:00Z n3 c5 137

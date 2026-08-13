@@ -101,11 +101,23 @@ crash_loop_verdict() {
 # too abruptly to log one) are dropped rather than counted either way. A
 # cycle resets the run — exactly like a Co-Ordinator success resets
 # `crash_loop_verdict` — the moment it proves the systemic block is not
-# reproducing right now: either it exits 0, or it reaches a stage at all
-# (any `stage-start`, for any stage), regardless of how that stage then
-# fares. What happens to an item once a stage is running already has its
-# own recovery ladder; this reader's only job is the gap before that ladder
-# can even see a failure.
+# reproducing right now: either it exits 0, or it starts a selection-path
+# stage (`coordinator`, `implementor` or `reviewer`), regardless of how
+# that stage then fares. What happens to an item once a stage is running
+# already has its own recovery ladder; this reader's only job is the gap
+# before that ladder can even see a failure.
+#
+# The stage list is deliberately a whitelist of the stages that can only
+# start once the cycle's runtime input has been assembled — the phase whose
+# death this reader exists to see. The Enabler and the Refiner start from
+# `cleanup()`, *after* any pre-selection death has already happened and
+# before `cycle-end` is logged, so a `stage-start` from either proves the
+# post-mortem path ran, not that selection got anywhere. Today both decline
+# on a non-zero cycle exit, but that guard is framed as a cost decision and
+# may one day be relaxed — and this reader must not silently stop firing
+# when it is. An unlisted future selection-path stage fails the other way,
+# as a spurious verdict a human sees and corrects: the right failure mode
+# for an alarm.
 crash_loop_preselection_verdict() {
   local threshold="${1:-0}"
   if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )); then
@@ -123,7 +135,10 @@ crash_loop_preselection_verdict() {
             node: ($end.node // "?"),
             ts: ($end.ts // null),
             exit_code: ($end.exit_code // 1),
-            had_stage: (any(.[]; .event == "stage-start"))
+            had_stage: (any(.[]; .event == "stage-start"
+                            and ((.stage // "")
+                                 | . == "coordinator" or . == "implementor"
+                                   or . == "reviewer")))
           }
       )
     # `group_by` does not preserve input order; the run is only meaningful
