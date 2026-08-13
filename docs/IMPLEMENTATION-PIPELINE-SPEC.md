@@ -2200,6 +2200,96 @@ runs unattended.
    delivered them (requirement 4g) — this requirement adds call sites to an
    existing, already-compliant function and a new function built the same
    way; neither introduces a new `--argjson` delivery for either extract.
+
+3v. **Corroboration retry, and mechanical fallback selection (issue #321).**
+   Requirement 3t's gate stops a rejected verdict from arming the no-op
+   fingerprint, so the *next* cycle asks again unconditionally — but the
+   rejected cycle itself still stood down, and if the confabulation recurs
+   cycle after cycle (as it did across 2026-08-10 to 08-12, issue #310), the
+   fleet degrades into a warning-per-cycle loop with zero selections:
+   visible on the log, but liveness still depending entirely on the model
+   eventually getting it right. A corroboration-rejected verdict costs at
+   most one extra Co-Ordinator engagement, never the cycle, and in the limit
+   selection liveness does not depend on the model at all:
+
+   - **The retry.** When requirement 3t's gate rejects the first verdict
+     (`td_unaccounted_n > 0`), the Script re-invokes the Co-Ordinator once
+     more in the same cycle, same model, same base prompt, with an addendum
+     stating the Script's own arithmetic verbatim — the eligible total, how
+     many the first verdict accounted for, and the exact refs still
+     unaccounted — and asking for a per-item verdict on each of them or a
+     selection. `stage_budget_apply`/`run_claude_stage`/`stage-end`/
+     `attempt-failed` are the same mechanism the first attempt uses (factored
+     into `run_coordinator_stage_attempt`, called with `{"retry": true}` for
+     this second engagement), so a retry's own launch failure or unparseable
+     message is handled exactly as the first attempt's would be — it does not
+     reach fallback selection, below. Capped at exactly one retry per cycle:
+     the retry's own verdict, corroborated or not, is never itself retried.
+     Its `needs_refinement`/`voided` processing (unblocked/recheck-clean
+     unrestricted) is restricted to the items the addendum named unaccounted —
+     an entry repeating an already-accounted item, or naming one outside that
+     set, is dropped before requirement 16a's/34d's recording, so a model that
+     re-derives its whole first verdict does not double the void-guard check,
+     the refinement label, or any GitHub comment either one posts. The two
+     attempts' recorded `needs_refinement`/`voided` are unioned (never
+     re-processed) before the retry's own corroboration check runs, so an item
+     the *first* attempt already accounted for does not need re-accounting by
+     the retry.
+   - **Fallback selection.** If the retry's own verdict is also rejected by
+     requirement 3t's gate (against the union of both attempts' recorded
+     arrays), the Script selects mechanically — no third Co-Ordinator
+     engagement. `fallback_select_candidate` walks a fixed source-band
+     priority order over `ordered_repos_json` — the same order
+     `prompts/coordinator.md`'s "Selection algorithm" describes: the five
+     cross-repo overrides (security, urgent issues, review-feedback,
+     merge-conflicts, abandoned-drafts) ahead of the residual repo-then-source
+     walk (human-visibility, high issues, tech-debt, medium issues, low
+     issues, code-quality, register-hygiene) — restricted to the bands the
+     Script has a pre-fetched array for; `failed-runs`, `implementation-plan`
+     and `project-review` have none and are skipped rather than approximated
+     (each would need a live `gh` read or a tree fetch the Co-Ordinator
+     performs for itself, which this mechanical path does not). This is a
+     deliberate, bounded narrowing: `eligible_tech_debt_total > 0` is what let
+     the gate reject a verdict at all, so the `tech-debt` rank always has
+     something to fall to even when every higher-priority band is empty and
+     every lower one unreachable — the one guarantee this path depends on.
+     Each candidate is built straight from its own pre-fetched entry's own
+     fields — the same `item`/`branch`/`pr_url`/`pr_number`/`takeover` shape
+     `prompts/coordinator.md`'s "Output" section requires per source — with
+     `context` a verbatim paste of the entry's own body and `acceptance` a
+     generic instruction naming the source's standard procedure, since no
+     model composed a bespoke one; `model`/`model_reason` are
+     `implementor_model_default` and a fixed string naming this as a
+     mechanical pick. The single winning candidate is fed into requirement
+     17a's ordinary claim loop exactly as a model-ranked candidate would be —
+     no special-cased race, so a lost claim stands the cycle down the same
+     way any exhausted candidate list would.
+   - **Distinguishable in the log.** A fallback-won `selection` event carries
+     `selected_by: "script-fallback"` (present only then — a model pick's
+     event has no such field), so the dashboard and issue #319's
+     verdict-quality metrics can tell model picks from fallback picks apart.
+     Every corroboration check — both attempts, accepted or rejected — logs
+     its own `corroboration` event (`attempt: 1|2`, `verdict:
+     "accepted"|"rejected"|"accepted-by-selection"`, `eligible_total`,
+     `unaccounted_total`, and (attempt 2 only) `lib/metering.sh`'s cost/time
+     fields for that retry engagement), so the retry's own cost is visible on
+     the event that explains why it ran, not only inferable by
+     cross-referencing `stage-end` timestamps by hand.
+   - **Fingerprint un-arming is unchanged.** Requirement 3t's own rule —
+     omit `fingerprint` from `none-selected` whenever any eligible item is
+     left unaccounted — applies identically to the retry's own rejected
+     verdict (`retried: true` added to `none-selected` for that case) and to
+     a fallback selection, which never logs `none-selected` at all (a
+     candidate was claimed instead). Only a `none-selected` fully accounted
+     for on the first attempt, or accepted on the retry, ever carries a
+     fingerprint.
+   - **Explicitly deferred.** Escalating the retry to a stronger model (a
+     `coordinator_model` override for the retry invocation only) is not part
+     of this requirement — whether the rejection rate observed through issue
+     #319's metrics justifies any model spend there, or a wholesale
+     `coordinator_model` upgrade instead, is a configuration decision for
+     later, informed by data this requirement's own `corroboration` events
+     now make visible.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -7652,6 +7742,54 @@ pull request, run the ones the change touches and any it could regress.
    Co-Ordinator reads — while the no-op fingerprint's own input
    (`test/noop-skip.test.sh`) is unaffected and still hashes both extracts,
    untrimmed, exactly as before this requirement.
+
+2j-i. **A rejected verdict costs one retry, then a mechanical pick, never the
+   cycle (requirement 3v).** `test/coordinator-retry-fallback.test.sh` passes,
+   against `run_coordinator_stage_attempt` and `fallback_select_candidate`
+   lifted verbatim out of `agent-cycle.sh` and a stubbed `run_claude_stage`
+   returning a queued sequence of canned verdicts (one per call, so the first
+   and second engagement can answer differently):
+   - **Retry succeeds.** A first verdict `td_verdict_rejected` and a second
+     (retry) verdict that selects a candidate: the Co-Ordinator is invoked
+     exactly twice, the second `stage-start`/`stage-end` pair carries
+     `retry: true`, two `corroboration` events log (`attempt: 1,
+     verdict: "rejected"`, then `attempt: 2, verdict: "accepted-by-selection"`
+     carrying cost/time fields), no `none-selected` event logs at all, and the
+     work order the caller ends up with is the retry's own `candidates`.
+   - **Retry corroborates cleanly.** A first verdict rejected, a second
+     verdict `selected: false` that fully accounts for the band (via
+     `needs_refinement`/`voided` naming exactly the refs the retry addendum
+     listed): two `corroboration` events (`rejected` then `accepted`), one
+     `none-selected` event carrying the fingerprint and `reason` from the
+     *retry's* message, and no fallback candidate is requested.
+   - **Fallback fires.** Both verdicts `selected: false` and still
+     `td_verdict_rejected` after unioning both attempts' recorded
+     `needs_refinement`/`voided`: two `warning` events, two `corroboration`
+     events (both `rejected`), one `none-selected` carrying `retried: true`
+     and no `fingerprint`, and `fallback_select_candidate` is called and its
+     single candidate reaches the caller with `selected_by_fallback=1`.
+   - **The retry's recording is scoped to what it was asked about.** A retry
+     message that repeats a `voided`/`needs_refinement` entry the first
+     attempt already recorded, alongside a new one for an item the addendum
+     actually named unaccounted: only the new entry reaches
+     `record_needs_refinement_block`/the void guard — asserted by call count,
+     not just by the corroboration math coming out right.
+   - **A retry launch failure does not fall back.** The stubbed
+     `run_claude_stage` fails (non-zero exit) on the second call only:
+     `run_coordinator_stage_attempt` returns non-zero, `attempt-failed`/
+     `handle_stage_failure` fire for it exactly as they would for a first-
+     attempt failure, and `fallback_select_candidate` is never called.
+   - **`fallback_select_candidate`'s band order and shapes, unit-tested
+     directly** (no stage stub needed): against a synthetic
+     `ordered_repos_json`, a security finding outranks a tech-debt item in
+     the same repo; a Dependabot merge-conflicts entry with
+     `bot: true, rebase_requested: true, superseded_by: null` produces
+     `takeover: true` with `branch` omitted and `pr_url`/`pr_number` present;
+     one with `rebase_requested: false` is skipped (falls through to the next
+     band, never a candidate); a `review-feedback`/`abandoned-drafts` entry
+     carries its own `branch`/`pr_url`/`pr_number` verbatim; every band empty
+     prints `null`, not a crash or an empty-string candidate accepted
+     downstream as one.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
@@ -9222,3 +9360,4 @@ confident, recurring no-op.
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
 | A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |
+| Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
