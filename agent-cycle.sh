@@ -1478,10 +1478,16 @@ gather_findings() {
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/findings-$safe.json"
     printf '%s' "$out"
+    # The marker requires *both* halves: a zero exit and a tee file the
+    # liveness pass can actually read. gather-findings.sh exits 0 on paths
+    # that can still leave stdout unusable (its final `jq -n` failing prints
+    # nothing yet falls through to `exit 0`), and a marker written without
+    # the `.json` beside it reads downstream as "gathered, found nothing" —
+    # the one sentence this marker exists to stop the cycle saying.
+    (( rc == 0 )) && : > "$cycle_dir/findings-$safe.ok"
   else
     printf '[]'
   fi
-  (( rc == 0 )) && : > "$cycle_dir/findings-$safe.ok"
   return 0
 }
 
@@ -1652,8 +1658,14 @@ gather_register_hygiene() {
     # on stderr. gather-register-hygiene.sh always exits 0 by design (a real
     # API failure is deliberately as silent, on stdout, as "no register" —
     # see its own header — with the diagnosis reaching only stderr), so
-    # stderr emptiness is the one signal a real failure leaves.
-    [[ ! -s "$cycle_dir/register-hygiene-$safe.err" ]] && : > "$cycle_dir/register-hygiene-$safe.ok"
+    # stderr emptiness is the one signal a real failure leaves. Written as a
+    # full `if`, not a `&&` list: this is the last command in the function,
+    # and a bare `&&` whose test fails would return 1 from the function
+    # itself — which under `set -e` aborts the whole cycle at the plain
+    # assignment the void-register-hygiene pass below makes.
+    if [[ ! -s "$cycle_dir/register-hygiene-$safe.err" ]]; then
+      : > "$cycle_dir/register-hygiene-$safe.ok"
+    fi
   else
     printf '[]'
   fi

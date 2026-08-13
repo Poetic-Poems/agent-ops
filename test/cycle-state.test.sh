@@ -504,6 +504,21 @@ assert_eq "failed-run: absent but the gather did not succeed decides nothing" \
   "0" "$(jq '[.[] | select(.item == "failed-run-ci")] | length' <<<"$liveness_out")"
 assert_eq "  ... neither failed-run entry is actioned while ok is false" \
   "0" "$(jq '[.[] | select(.item == "failed-run-sync-framework")] | length' <<<"$liveness_out")"
+
+# The failed-run shape's own liveness half, which the map above can only test
+# for `ok: false`: the same two ids against a succeeded gather that still
+# names one of the two workflows.
+liveness_fr_out="$(void_liveness_actioned "$void_shapes" '{
+  "o/r": {"failed-run": {"ok": true, "ids": ["failed-run-ci"]}}
+}')"
+assert_eq "failed-run: a workflow still failing this cycle is never actioned" \
+  "0" "$(jq '[.[] | select(.item == "failed-run-ci")] | length' <<<"$liveness_fr_out")"
+assert_eq "failed-run: one absent from a succeeded gather is actioned" \
+  "liveness-failed-run" \
+  "$(jq -r '.[] | select(.item == "failed-run-sync-framework") | .by' <<<"$liveness_fr_out")"
+assert_eq "  ... and a shape the partial map says nothing about decides nothing" \
+  "0" "$(jq '[.[] | select(.item == "dependabot-alert-2")] | length' <<<"$liveness_fr_out")"
+
 assert_eq "merge-conflict-resolved: a conflict still reported by this cycle's gather is kept" \
   "0" "$(jq '[.[] | select(.item == "pr-12-conflict-1a2b3c4d5e6f")] | length' <<<"$liveness_out")"
 assert_eq "merge-conflict-resolved: a conflict no longer reported is actioned" \

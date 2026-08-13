@@ -5372,10 +5372,13 @@ runs unattended.
         `gather_merge_conflicts` already write during the repo walk, before
         claim exclusion narrows them (a claimed alert is still an open one),
         so this costs no further `gh` call; "that source's gather succeeded"
-        is a `.ok` marker each of those three functions writes alongside its
-        tee file, from gather-findings.sh's own exit code for the alert
-        shape and from stderr emptiness for the other two, which never
-        signal failure via exit code by design (see their own headers). The
+        is a `.ok` marker each of those three functions writes *only*
+        alongside its tee file — never on its own, since a marker with no
+        array beside it reads downstream as "gathered, found nothing", the
+        one sentence it exists to stop the cycle saying — and only when that
+        read also succeeded: gather-findings.sh's own exit code for the alert
+        shape, stderr emptiness for the other two, which never signal failure
+        via exit code by design (see their own headers). The
         merge-conflicts shape is the one whose id is minted per occurrence
         rather than per object — a fresh `<head-sha>` mints a fresh id, so no
         two ever coalesce — which makes it the fastest-growing member of
@@ -6572,6 +6575,18 @@ What exists, and the requirements each part answers to:
    items and an `implementation_plan_path` configured, and not at all
    otherwise. Fails safe to `{}` (exit 0); regression-tested in
    `test/work-gone.test.sh`; must pass `shellcheck`.
+3v. `scripts/gather-workflow-basenames.sh` implementing the one read
+   requirement 34n's liveness rule needs and no other source provides: given a
+   repo slug, prints `{ok, basenames}` mapping each of the repo's workflow ids
+   to its file's basename without extension — the half requirement 19 mints a
+   `failed-run-` item id from, which `scripts/gather-source-state.sh`'s own
+   `workflows` digest (3b) carries only by id. Called once per repo that still
+   carries unretired `failed-run-` void residue and not at all otherwise, so it
+   is bounded by that residue rather than by the fleet. `ok: false` on any API
+   failure and never on a legitimately empty workflow list, since requirement
+   34n reads `ok` before trusting the map for anything. Fails safe (exit 0);
+   unit-tested (`test/gather-workflow-basenames.test.sh`); must pass
+   `shellcheck`.
 3b. `scripts/gather-source-state.sh` implementing requirement 3b's sampling:
    given a repo slug and default branch, prints one JSON object holding that
    repo's head SHA and its issues, workflows and open-PR digests, with `ok:
@@ -6651,6 +6666,21 @@ What exists, and the requirements each part answers to:
    above is asked for those and no others. Pure — it reads nothing itself — and
    every unknown resolves to no clearance. Unit-tested (`test/work-gone.test.sh`);
    must pass `shellcheck`.
+3w. `lib/void-liveness.sh` implementing requirement 34n's third and fourth
+   actioned signals: `void_liveness_actioned`, which given the void extract and
+   this cycle's own per-repo, per-shape gather (`{ok, ids}` for `alert`,
+   `register-hygiene`, `failed-run` and `merge-conflict`) prints one
+   `{repo, item, by}` per void whose id its source no longer yields, and
+   `void_review_plan_actioned`, which does the same for a project-review ref a
+   merged pull request names and an implementation-plan task id a checked box
+   names, reading the status maps `scripts/gather-review-status.sh` (3o) and
+   `scripts/gather-plan-status.sh` (3p) already print. Both take the unbounded
+   extract on stdin, never in argv (requirement 4g), and both fail safe to `[]`
+   — an unknown, a gather that did not succeed and a malformed input alike
+   decide no retirement. Pure — they read nothing themselves; the shape regexes
+   for the two on-demand-reader classes are `lib/work-gone.sh`'s own
+   (requirement 34a), so this file is sourced after it. Unit-tested
+   (`test/cycle-state.test.sh`); must pass `shellcheck`.
 3s. `lib/preflight.sh` implementing requirement 34m's decision:
    `preflight_done_reason`, which given a repo, an item, its claim branch, the
    cycle's source-state digests and (for a tech-debt item) its one freshly
@@ -6702,7 +6732,8 @@ What exists, and the requirements each part answers to:
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
    pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
-   `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
+   `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`,
+   `lib/void-liveness.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
    `lib/human-visibility-hygiene.sh` (requirement 38e's
