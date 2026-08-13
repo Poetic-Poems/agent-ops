@@ -35,16 +35,31 @@
 # that ran was green" test over an empty list satisfies vacuously — the
 # conflicting-PR-runs-no-CI trap this file's caller must not fall into.
 #
-# `review_gate_security_alerts` is the one exception, and only for the
+# `review_gate_required_checks` still tells its own two failure shapes apart
+# (TD-PPagop-26081305, agent-ops#327's review): a required check that is
+# genuinely failing or an empty list (the trap above) are findings about the
+# pull request and stay `dirty`; `gh pr checks --required` failing to answer
+# at all — a 502, a transient auth failure, a rate limit — is a fact about
+# this node or GitHub's availability, and is reported `unknown` instead. That
+# `unknown` still refuses the handoff, signalled by a non-zero exit unlike the
+# two `unknown`s below: a node whose `gh` cannot be trusted must not be read
+# as "nothing wrong" merely because "wrong" could not be confirmed either. The
+# distinction exists so the caller can log a node-level warning naming what
+# could not be read, instead of a pull-request-shaped complaint that names
+# nothing to fix.
+#
+# `review_gate_security_alerts` is a different exception, and only for the
 # specific failure "the alerts API could not be asked at all" (no
 # `security_events` permission on this token, code scanning not enabled on
 # the repository, GitHub unreachable): that is a fact about this node or this
 # repository, not about the pull request, and blocking every handoff on it
 # forever would trade one hazard for a worse one — the same reasoning
 # scripts/preview-deploy.sh already applies to a Vercel preview it cannot
-# reach. `review_gate_verdict` reports that case as `unknown`, never `clean`:
-# a caller must say so rather than certifying a check that was never actually
-# made.
+# reach. `review_gate_verdict` reports that case as `unknown` too, but exits
+# 0: a caller must say so rather than certifying a check that was never
+# actually made, but need not refuse the handoff over it. The two `unknown`s
+# are told apart by `review_gate_verdict`'s own exit status, not by the word
+# alone — see its own header.
 #
 # Sourced, never executed: no shell options are set here, matching every
 # other lib/*.sh — the caller (agent-cycle.sh runs under `set -euo pipefail`;
@@ -64,10 +79,16 @@ _review_gate_pr_parts() {
 }
 
 # review_gate_required_checks PR_URL
-# Print `clean` or `dirty<TAB>reason`. Exit 0 for clean, 1 for dirty — "dirty"
-# deliberately covers both a genuinely failing/pending required check and an
-# unreadable or empty required-check list (see header for why the two are
-# treated alike).
+# Print `clean`, `dirty<TAB>reason`, or `unknown<TAB>reason`. Exit 0 for
+# clean, 1 for dirty *or* unknown — both refuse the handoff. An empty
+# required-check list stays `dirty`, never a vacuous "clean" (see header —
+# the conflicting-PR-runs-no-CI trap, poetic-fiddle #190), and so does a
+# required check that is real and not green. Only `gh pr checks --required`
+# failing to answer at all — a 502, a transient auth failure, a rate limit —
+# is `unknown`: a fact about this node or GitHub's availability, not about
+# the pull request, though it still fails closed exactly like `dirty` (the
+# non-zero exit is the same; only the word differs, so a caller can log a
+# node-level warning instead of a pull-request-shaped complaint).
 review_gate_required_checks() {
   local url="${1:-}" gh_bin="${REVIEW_GATE_GH:-gh}" parts slug number raw failing
 
@@ -79,7 +100,7 @@ review_gate_required_checks() {
 
   raw="$("$gh_bin" pr checks "$number" -R "$slug" --required --json name,bucket 2>/dev/null)" || true
   if ! jq -e 'type == "array"' <<<"$raw" >/dev/null 2>&1; then
-    printf 'dirty\tcould not read %s'\''s required checks against its current head commit' "$url"
+    printf 'unknown\tcould not read %s'\''s required checks against its current head commit' "$url"
     return 1
   fi
   if ! jq -e 'length > 0' <<<"$raw" >/dev/null 2>&1; then
@@ -209,35 +230,51 @@ review_gate_security_alerts() {
 # review_gate_verdict PR_URL DEFAULT_BRANCH
 # The one entry point agent-cycle.sh calls before ever handing a pull request
 # to `confirm_pr_ready` (requirement 31a) on a Reviewer's `ready` verdict.
-# Prints `clean`, `dirty<TAB>reason`, or `unknown<TAB>reason` — an `unknown`
-# alert read never turns a genuinely dirty required-check verdict into
-# anything softer, but it does mean a clean one is only "as far as we could
-# tell", not certified. Exit 0 for clean or unknown, 1 for dirty.
+# Prints `clean`, `dirty<TAB>reason`, or `unknown<TAB>reason` — a `dirty`
+# verdict from either sub-check always wins, so an `unknown` read never turns
+# a genuinely dirty verdict into anything softer.
+#
+# The two ways to reach `unknown` are not the same thing, and a caller must
+# not treat them alike: exit 1 means the required-check list itself could not
+# be read, so this still refuses the handoff exactly like `dirty` (an unread
+# check list is never certified "nothing wrong" — see lib/review-gate.sh's
+# header and TD-PPagop-26081305); exit 0 means only the security-alert (or,
+# at the caller, closing-keyword) read failed, which does not itself block —
+# the handoff proceeds and the caller is expected to log a warning instead. A
+# caller that discards this exit status with `|| true` the way it safely can
+# for a `dirty`/`clean` verdict will silently let an unreadable required-check
+# list through; capture it.
 review_gate_verdict() {
   local url="${1:-}" default_branch="${2:-main}"
   local checks_word checks_reason alerts_word alerts_reason combined
 
   combined="$(review_gate_required_checks "$url")"
   IFS=$'\t' read -r checks_word checks_reason <<<"$combined"
-  if [[ "$checks_word" != "clean" ]]; then
+  if [[ "$checks_word" == "dirty" ]]; then
     printf 'dirty\t%s' "$checks_reason"
     return 1
   fi
 
   combined="$(review_gate_security_alerts "$url" "$default_branch")"
   IFS=$'\t' read -r alerts_word alerts_reason <<<"$combined"
-  case "$alerts_word" in
-    dirty)
-      printf 'dirty\t%s' "$alerts_reason"
-      return 1
-      ;;
-    unknown)
-      printf 'unknown\t%s' "$alerts_reason"
-      return 0
-      ;;
-    *)
-      printf 'clean'
-      return 0
-      ;;
-  esac
+  if [[ "$alerts_word" == "dirty" ]]; then
+    printf 'dirty\t%s' "$alerts_reason"
+    return 1
+  fi
+
+  # Required-checks unreadable takes precedence over an unreadable alert
+  # list: it is the one that must still block, so its reason is the one a
+  # caller needs in hand to log the right warning and unblock_condition.
+  if [[ "$checks_word" == "unknown" ]]; then
+    printf 'unknown\t%s' "$checks_reason"
+    return 1
+  fi
+
+  if [[ "$alerts_word" == "unknown" ]]; then
+    printf 'unknown\t%s' "$alerts_reason"
+    return 0
+  fi
+
+  printf 'clean'
+  return 0
 }

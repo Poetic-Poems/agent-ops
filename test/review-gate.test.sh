@@ -9,15 +9,23 @@
 # request is handed to a human as ready, checked against a stubbed `gh`
 # rather than trusted from a model's report:
 #
-#   - every required check green, with an empty or unreadable required-check
-#     list treated as a failure rather than a vacuous pass (poetic-fiddle
-#     #190: a CONFLICTING pull request reports none at all);
+#   - every required check green, with an empty required-check list treated
+#     as a failure rather than a vacuous pass (poetic-fiddle #190: a
+#     CONFLICTING pull request reports none at all) — and a required-check
+#     list that could not be read at all (a 502, a transient auth failure, a
+#     rate limit) reads as `unknown` rather than folded into the same
+#     `dirty`, but still refuses the handoff (non-zero exit) exactly like a
+#     genuine failure does (TD-PPagop-26081305): a fact about this node or
+#     GitHub's availability, not the pull request, but not evidence of
+#     "nothing wrong" either;
 #   - no code-scanning alert with a security severity introduced by the pull
 #     request — one already open on the base branch is inherited debt, not
 #     this pull request's fault, and must not block it;
-#   - an alerts API that cannot be asked at all reads as `unknown`, never as
-#     `clean` — a fact about the node or the repository, not the pull
-#     request, that a caller must still be told about;
+#   - an alerts API that cannot be asked at all reads as `unknown` too, but
+#     unlike the required-checks `unknown` above, it exits 0 and does not
+#     itself block — a fact about the node or the repository, not the pull
+#     request, that a caller must still be told about but need not refuse the
+#     handoff over;
 #   - an empty alert list is only believed once an analysis is confirmed to
 #     exist for the merge ref (agent-ops#270) — the alerts endpoint answers a
 #     never-analysed ref with `[]` and a 200, the same shape as a genuinely
@@ -163,8 +171,9 @@ assert_eq "  ... and exits 1" "1" "$rc"
 
 set_required 'ERROR'
 out="$(review_gate_required_checks "$URL")"; rc=$?
-assert_eq "an unreadable required-check list is dirty, never assumed clean" "dirty" "${out%%$'\t'*}"
-assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "an unreadable required-check list is unknown, never assumed clean" "unknown" "${out%%$'\t'*}"
+assert_contains "  ... naming the pull request it could not read" "$URL" "$out"
+assert_eq "  ... but still exits 1, refusing the handoff like dirty" "1" "$rc"
 
 out="$(review_gate_required_checks "")"; rc=$?
 assert_eq "no PR url at all is dirty" "dirty" "${out%%$'\t'*}"
@@ -288,6 +297,33 @@ set_pr_alerts 'ERROR'
 out="$(review_gate_verdict "$URL" "main")"; rc=$?
 assert_eq "clean checks with an unreadable alerts API is unknown overall" "unknown" "${out%%$'\t'*}"
 assert_eq "  ... and exits 0" "0" "$rc"
+
+# TD-PPagop-26081305: an unreadable *required-check* list must not be folded
+# into either the alerts-style non-blocking `unknown` above or a generic
+# `dirty` that names nothing to fix — it is its own `unknown`, distinguished
+# from the alerts one by exit status, and it still refuses the handoff.
+set_required 'ERROR'
+set_pr_alerts ''
+set_base_alerts ''
+out="$(review_gate_verdict "$URL" "main")"; rc=$?
+assert_eq "an unreadable required-check list is unknown overall" "unknown" "${out%%$'\t'*}"
+assert_contains "  ... naming the required checks it could not read" "required checks" "$out"
+assert_eq "  ... but exits 1, refusing the handoff unlike an alerts-caused unknown" "1" "$rc"
+
+# A genuinely dirty alert must still win over an unreadable required-check
+# list: the pull request has a real, nameable problem, and that must not be
+# hidden behind a milder-sounding node-level `unknown`.
+set_required 'ERROR'
+set_pr_alerts "$(printf '42\tcritical')"
+set_base_alerts ''
+out="$(review_gate_verdict "$URL" "main")"; rc=$?
+assert_eq "a real dirty alert still wins over an unreadable required-check list" "dirty" "${out%%$'\t'*}"
+assert_contains "  ... naming the alert" "#42 (critical)" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
+set_required '[{"name":"CI","bucket":"pass"}]'
+set_pr_alerts ''
+set_base_alerts ''
 
 # --- Survives the caller's shell options ---------------------------------------
 # agent-cycle.sh runs under `set -euo pipefail`, and reads this the same way it

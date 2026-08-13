@@ -4718,11 +4718,11 @@ runs unattended.
     - every required status check green at the pull request's *current* head
       commit (`gh pr checks --required`, asked fresh rather than reused from
       anything read earlier in the engagement, so a check still catching up to
-      a fix just pushed is never mistaken for one that passed). An empty or
-      unreadable required-check list is treated as failing, never as a vacuous
-      pass — poetic-fiddle #190, a CONFLICTING pull request, reports *no*
-      required checks at all, which is the conflicting-PR-runs-no-CI trap this
-      guards against;
+      a fix just pushed is never mistaken for one that passed). An empty
+      required-check list is treated as failing, never as a vacuous pass —
+      poetic-fiddle #190, a CONFLICTING pull request, reports *no* required
+      checks at all, which is the conflicting-PR-runs-no-CI trap this guards
+      against — and so is a required check that is real and not green;
     - no code-scanning alert carrying a security severity that this pull
       request's branch carries and the default branch does not — a default
       branch that already lives with an accepted alert must not freeze every
@@ -4734,26 +4734,42 @@ runs unattended.
     handoff never runs at all; this is recorded as a Reviewer handback
     (requirement 32a) naming what the gate found, exactly as though the
     Reviewer itself had reported `blocked`, and no `gh pr ready` is attempted.
-    `unknown` — the code-scanning read could not be asked at all (no
-    `security_events` permission on this token, code scanning not enabled, an
-    unreachable API): a fact about the node or the repository, not the pull
-    request, so the handoff proceeds and a `warning` is logged instead — the
-    same "could not check is not a failure" contract requirement 24a's Vercel
-    preview check already keeps, applied here so a token missing one
-    permission cannot silently freeze every pull request's handoff fleet-wide.
-    An `unknown` alert read never softens a `dirty` required-check verdict;
+
+    `unknown` covers two distinct facts, told apart by `review_gate_verdict`'s
+    exit status rather than by the word alone (TD-PPagop-26081305): `gh pr
+    checks --required` failing to answer *at all* — a 502, a transient auth
+    failure, a rate limit — is a fact about this node or GitHub's
+    availability, not this pull request, but it is not evidence of "nothing
+    wrong" either, so it still refuses the handoff (a non-zero exit) exactly
+    like `dirty` does; the Script records this as its own node-level `warning`
+    — naming the node, not the pull request — carrying an `unblock_condition`
+    that says to retry once a node can read GitHub again, not the generic
+    "fix your required checks" wording a real failure earns, so an Enabler
+    reading a queue of these does not mistake a degraded node for N unrelated
+    broken pull requests. A code-scanning read that could not be asked at all
+    (no `security_events` permission on this token, code scanning not
+    enabled, an unreachable API) is the *other* `unknown`, unrelated to the
+    node's ability to read required checks: it exits 0, so the handoff
+    proceeds and a plain `warning` is logged instead — the same "could not
+    check is not a failure" contract requirement 24a's Vercel preview check
+    already keeps, applied here so a token missing one permission cannot
+    silently freeze every pull request's handoff fleet-wide. A `dirty`
+    verdict from either check always wins over an `unknown` from the other;
     required checks are asked first and gate on their own.
 
     One further check shares this gate: requirement 25a's script-side
     closing-keyword gate (`lib/closing-keyword-gate.sh`, component 17a) is
     asked here too, after `review_gate_verdict` and before requirement 31's
     draft flip, and a `dirty` verdict from it is recorded as the same
-    requirement 32a handback; an `unknown` one warns, exactly as an
-    unreadable alert list does. It is asked again here rather than trusted
-    from the pass it made when the pull request was raised, for the same
-    reason the checks above are read fresh: a body can be edited between the
-    two — and because that earlier call only *tells* the Reviewer, so this is
-    the only point at which the closing keyword is actually enforced.
+    requirement 32a handback; an `unknown` one warns and proceeds, exactly as
+    the non-blocking alerts `unknown` above does — a required-check list
+    unreadable enough to matter already stopped the cycle at
+    `review_gate_verdict`, so by the time this gate runs the node is known
+    able to read GitHub. It is asked again here rather than trusted from the
+    pass it made when the pull request was raised, for the same reason the
+    checks above are read fresh: a body can be edited between the two — and
+    because that earlier call only *tells* the Reviewer, so this is the only
+    point at which the closing keyword is actually enforced.
 
     #216 itself: the human resolved it directly on the pull request (renaming
     the flagged constant, commit `8e62ff6`) before this requirement existed to
@@ -7851,20 +7867,33 @@ What exists, and the requirements each part answers to:
     URL and the repository's default branch, `review_gate_verdict` prints
     `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — every required
     status check green at the current head commit
-    (`review_gate_required_checks`, `gh pr checks --required`, an empty or
-    unreadable list treated as failing rather than vacuously passing) and no
-    code-scanning alert carrying a security severity that the pull request's
-    branch has and the default branch does not (`review_gate_security_alerts`,
-    the base branch's own open alerts subtracted first so inherited debt never
-    blocks a pull request that did not introduce it). The pull request's
-    alerts are read on its **merge** ref (`refs/pull/<n>/merge`) — the ref its
-    `pull_request`-triggered analysis runs against, and so the only one GitHub
-    files a pull request's alerts under; `refs/pull/<n>/head` carries no
-    analysis and answers with an empty list and a 200, which is
-    indistinguishable from a clean pull request. An **empty** alert list is
-    believed only after `_review_gate_analysis_exists` confirms at least one
-    code-scanning analysis exists for that same merge ref
-    (`code-scanning/analyses`, one existence read, spent only on the
+    (`review_gate_required_checks`, `gh pr checks --required`, an empty list
+    treated as failing rather than vacuously passing) and no code-scanning
+    alert carrying a security severity that the pull request's branch has and
+    the default branch does not (`review_gate_security_alerts`, the base
+    branch's own open alerts subtracted first so inherited debt never blocks a
+    pull request that did not introduce it). `review_gate_required_checks`
+    itself prints `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` too
+    (TD-PPagop-26081305): an empty list or a real failing check is `dirty`;
+    only `gh pr checks --required` failing to answer at all is `unknown` — and
+    unlike every other `unknown` in this file, it still exits non-zero,
+    refusing the handoff exactly like `dirty`, because an unread required-
+    check list is never evidence of "nothing wrong". `review_gate_verdict`
+    propagates that distinction through its own exit status: 1 when the
+    verdict is `dirty`, or `unknown` because required checks could not be
+    read; 0 when the verdict is `clean`, or `unknown` only because the
+    security-alert read failed. A caller must inspect this exit status rather
+    than discard it, or it will silently let an unreadable required-check
+    list through the same way it safely can for the alerts-only `unknown`.
+
+    The pull request's alerts are read on its **merge** ref
+    (`refs/pull/<n>/merge`) — the ref its `pull_request`-triggered analysis
+    runs against, and so the only one GitHub files a pull request's alerts
+    under; `refs/pull/<n>/head` carries no analysis and answers with an empty
+    list and a 200, which is indistinguishable from a clean pull request. An
+    **empty** alert list is believed only after `_review_gate_analysis_exists`
+    confirms at least one code-scanning analysis exists for that same merge
+    ref (`code-scanning/analyses`, one existence read, spent only on the
     empty-list path — alerts in hand are their own proof an analysis ran):
     the alerts endpoint answers a never-analysed ref with the same `[]` and
     200 a clean pull request produces, so without the existence check a pull
@@ -8899,30 +8928,41 @@ pull request, run the ones the change touches and any it could regress.
    rung it.
 8d-ii. **A `ready` verdict is confirmed against GitHub, not trusted, before any
    handoff mechanism runs (requirement 31c).** `test/review-gate.test.sh`
-   passes: every required check passing is `clean`; a failing required check,
-   an empty required-check list, and an unreadable required-check list are all
-   `dirty`, never a vacuous pass; an open code-scanning alert with a security
-   severity on the pull request's branch is `dirty` unless the same alert
-   number is already open on the default branch, in which case it is `clean`;
-   an alert with no security severity never gates; the pull request's alerts
-   are read on `refs/pull/<n>/merge` and never on `refs/pull/<n>/head`
-   (asserted on the ref the stubbed `gh` is actually asked for, because the
-   head ref answers with an empty list and a 200 — a silent `clean` that
-   leaves every other assertion here passing); an empty alert list is `clean`
-   only when an analysis exists for the merge ref — with none, or with the
-   existence read itself failing, it is `unknown` naming why, and the
-   existence check is not spent at all when alerts are in hand (asserted on
-   the endpoints the stub is actually asked for); and an alerts API that
-   cannot be asked at all is `unknown`, never `clean`, and never turns a dirty
-   required-check verdict into anything softer. Then drive a cycle whose
-   Reviewer answers `{"status": "ready"}` against a stubbed `gh` reporting a
-   failing required check: the cycle must record the same outcome as a
-   Reviewer `blocked` verdict (requirement 32a) — an `attempt-failed` naming
-   what the gate found — and must never call `gh pr ready` at all. Assert the
-   `unknown` path separately: the same cycle with the alerts read failing but
-   required checks clean must still complete the handoff, with a `warning`
-   logged rather than a block, so a token missing one permission cannot
-   silently freeze every pull request's handoff fleet-wide.
+   passes: every required check passing is `clean`; a failing required check
+   and an empty required-check list are both `dirty`, never a vacuous pass; a
+   required-check list that could not be read at all is `unknown` rather than
+   folded into `dirty` — but still exits non-zero, refusing the handoff
+   exactly like `dirty` does (TD-PPagop-26081305); an open code-scanning alert
+   with a security severity on the pull request's branch is `dirty` unless the
+   same alert number is already open on the default branch, in which case it
+   is `clean`; an alert with no security severity never gates; the pull
+   request's alerts are read on `refs/pull/<n>/merge` and never on
+   `refs/pull/<n>/head` (asserted on the ref the stubbed `gh` is actually
+   asked for, because the head ref answers with an empty list and a 200 — a
+   silent `clean` that leaves every other assertion here passing); an empty
+   alert list is `clean` only when an analysis exists for the merge ref — with
+   none, or with the existence read itself failing, it is `unknown` naming
+   why, and the existence check is not spent at all when alerts are in hand
+   (asserted on the endpoints the stub is actually asked for); and an alerts
+   API that cannot be asked at all is `unknown` too, but exits 0 — a dirty
+   verdict from either check always wins over an `unknown` from the other, and
+   an unreadable required-check list, being the one that must still block,
+   wins over an unreadable alerts read when both are unknown at once. Then
+   drive a cycle whose Reviewer answers `{"status": "ready"}` against a
+   stubbed `gh` reporting a failing required check: the cycle must record the
+   same outcome as a Reviewer `blocked` verdict (requirement 32a) — an
+   `attempt-failed` naming what the gate found — and must never call `gh pr
+   ready` at all. Assert the two `unknown` paths separately, since they behave
+   oppositely: the same cycle with the alerts read failing but required checks
+   clean must still complete the handoff, with a `warning` logged rather than
+   a block, so a token missing one permission cannot silently freeze every
+   pull request's handoff fleet-wide; the same cycle with the required-checks
+   read itself failing must instead record an `attempt-failed` exactly as the
+   `dirty` case does, plus a separate node-level `warning` naming the node and
+   what could not be read, and the `attempt-failed`'s `unblock_condition` must
+   say to retry once a node can read GitHub again — never the required-checks-
+   specific wording a genuine failure earns, which would send an Enabler
+   looking for a defect that is not there.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the

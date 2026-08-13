@@ -6207,13 +6207,38 @@ if [[ "$rev_status" == "ready" ]]; then
   # runs, ask GitHub directly, the same "confirm, don't trust" shape requirement
   # 31a already applies to the draft flag itself.
   gate_default_branch="$(jq -r '.default_branch // "main"' <<<"$work_order_json")"
-  gate_result="$(review_gate_verdict "$impl_pr_url" "$gate_default_branch")" || true
+  # Captured, not discarded with `|| true`: `review_gate_verdict` exits
+  # non-zero for a `dirty` verdict *and* for the specific `unknown` that means
+  # its required-check list could not be read at all (TD-PPagop-26081305) —
+  # that one still refuses the handoff, unlike the alerts/closing-keyword
+  # `unknown`s below, so the caller must tell the two apart by exit status,
+  # not by the word alone (see lib/review-gate.sh's own header).
+  if gate_result="$(review_gate_verdict "$impl_pr_url" "$gate_default_branch")"; then
+    gate_rc=0
+  else
+    gate_rc=$?
+  fi
   gate_word=""; gate_reason=""
   IFS=$'\t' read -r gate_word gate_reason <<<"$gate_result" || true
   if [[ "$gate_word" == "dirty" ]]; then
     log_reviewer_handback \
       "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $gate_reason" \
       "$impl_pr_url" "Get every required check green and clear the named security-severity code-scanning alert, then let the Reviewer re-examine it."
+    exit 0
+  fi
+  if [[ "$gate_word" == "unknown" && "$gate_rc" -ne 0 ]]; then
+    # A node fact, not a pull-request fact — logged as its own warning so a
+    # `gh` degraded on this node is visible as a pattern across items rather
+    # than only as N pull-request-shaped handbacks naming nothing to fix. The
+    # handback itself still runs: an unread required-check list is refused
+    # exactly like a genuinely failing one, and its unblock_condition names
+    # the node-level cause rather than telling the Enabler to inspect a pull
+    # request that may already be fine.
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
+      '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
+    log_reviewer_handback \
+      "the Reviewer reported ready, but $impl_pr_url's required checks could not be confirmed: $gate_reason" \
+      "$impl_pr_url" "Retry once a node can read GitHub's required-checks API for this pull request — nothing found here implicates the pull request itself."
     exit 0
   fi
 
@@ -6237,8 +6262,10 @@ if [[ "$rev_status" == "ready" ]]; then
   # `unknown` is "the question could not be put" — a degraded `gh` on this
   # node, not a fault in this pull request — so it warns rather than blocks,
   # the same way an unreadable alert list does just below. A node degraded
-  # enough for this to matter does not get past `review_gate_required_checks`
-  # above in any case, which does fail closed on a check list it cannot read.
+  # enough for this to matter does not get past `review_gate_verdict` above in
+  # any case: it already refused the handoff, with its own warning, the
+  # moment its required-check list came back unreadable rather than merely
+  # unable to confirm an alert or a keyword.
   if [[ "$ck_word" == "unknown" ]]; then
     log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$ck_reason" \
       '{detail: ("could not confirm " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
