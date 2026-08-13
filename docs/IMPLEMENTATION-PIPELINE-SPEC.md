@@ -595,6 +595,7 @@ and the schema must carry every one of them.
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
+| `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
@@ -620,6 +621,9 @@ and the schema must carry every one of them.
 | `stage_budget` | *(unset)* | Tuning for the derivation of requirement 4f: `gap_multiplier` and `shrinkage_runs` shape the watchdog estimate, `increase_factor`, `decrease_after_runs`, `decrease_step_min`, `kill_rate_slo` and `ceiling_multiple` shape the backstop controller, and `window_days`/`window_runs` bound what either looks at. Defaults live in `lib/stage-budget.sh`, not here, on requirement 4e's reasoning: a value an installation must set is a value it can set wrongly. |
 | `limit_cooldown_default` | 3 h | Stand-down period after an ordinary/transient usage-limit error whose reset time cannot be parsed. A weekly/monthly match with no parseable reset time uses the longer `LIMIT_LONG_COOLDOWN_HOURS` fallback in `lib/limit-detect.sh` instead (see requirement 10) — not this key. |
 | `limit_escalate_after_hours` | 24 h | The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it. |
+| `github_min_core_budget` | 300 points | The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from a `/rate_limit` call that is itself exempt from the limits it reports. `0` disables the floor. |
+| `github_min_graphql_budget` | 100 points | The `graphql` floor of the GitHub API budget check (requirement 2.0). Separate from `github_min_core_budget` because GitHub meters the two pools independently and either can be the binding one — on 2026-08-12 the fleet exhausted `graphql` with 96% of its `core` hour unspent. `0` disables the floor. |
+| `github_retry_max_wait_seconds` | 60 s | The per-call wait bound of the `gh` wrapper (requirement 2.0a). A secondary rate limit waits a fixed fallback, a primary one waits until GitHub's stated reset, and either is abandoned if it exceeds this — the cycle holds a lock and runs on a `cycle_interval_minutes` tick, so a wrapper that waited out a primary limit would collide with the next tick. `0` turns retrying off. |
 | `disable_default_ttl` | 4 h | How long `--disable` lasts when neither `--for` nor `--until` says (requirement 2.3). Long enough to cover an editing session, short enough that a forgotten switch costs a few cycles rather than every future one. |
 | `none_selected_recheck_hours` | 24 h | The no-op short-circuit's safety valve (requirement 3b): the Co-Ordinator is engaged regardless once the last `none-selected` is this old, even if nothing changed. Bounds how long a gap in fingerprint coverage can stall the pipeline. `0` disables the valve — don't. |
 | `image_behind_grace_hours` | 3 h | The dashboard badge's (and `scripts/check-node-image.sh`'s) tolerance for a node behind the registry's newest image (`lib/image-drift.sh`, requirement 2.5, #155) before it turns amber / fails: a roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state, not a fault. |
@@ -834,6 +838,53 @@ runs unattended.
    one implementation each script calls, so the Script's refusal and
    `doctor.sh`'s `fail` can never drift on what counts as a fault.
 2. **Stand-down checks.** Each check logs its reason and exits cleanly:
+   0. *GitHub API budget*: before any other check, read `GET /rate_limit` and
+      stand the cycle down when either metered pool is below its floor —
+      `core` below `github_min_core_budget`, or `graphql` below
+      `github_min_graphql_budget`. Either floor set to `0` turns that
+      resource's check off; both at `0` turns the check off entirely. The
+      `stand-down` event carries the binding resource, its remaining points,
+      and `resume_at` — which is GitHub's own stated reset, never an estimate,
+      so unlike a usage-limit stand-down (1b) nothing probes it and nothing
+      needs to. When both pools are below their floors the one resetting
+      **later** binds, so the stand-down covers both.
+
+      First, because it is the only free check: `/rate_limit` is exempt from
+      the limits it reports, and every check below it can spend money — 1b's
+      probe most literally. What it prevents is not a failed `gh` call but
+      the cycle those calls sit inside. On 2026-08-12 an exhausted GraphQL
+      budget read to the pipeline as a quiet GitHub: every gatherer degraded
+      to `[]` (the `[]`-on-error trap in the Gotchas table), the Co-Ordinator
+      engaged on that digest and selected an item, the claim was taken, and
+      the cycle died at the clone with `GraphQL: API rate limit already
+      exceeded`. Everything before the clone was spent answering a question
+      GitHub answers for free.
+
+      A `/rate_limit` call that cannot be read is **not** a stand-down. An
+      unreadable meter is no evidence about the budget, and a node that cannot
+      reach it could not have run a cycle anyway; whatever call meets the real
+      fault will report it. Standing down here would give a network blip the
+      same face as an exhausted account.
+
+   0a. *A refusal shorter than the cycle is waited out, not reported.* The two
+      GitHub limits divide by how far away their reset is, and this is the near
+      half. `lib/github-limit.sh` defines a `gh` shell function that shadows the
+      binary for every script sourcing it: a call GitHub refuses for rate
+      reasons is retried once, after waiting until the stated reset (a primary
+      limit) or a fixed short fallback (a secondary limit, for which GitHub
+      states no reset anywhere `gh` surfaces). A wait longer than
+      `github_retry_max_wait_seconds`, or than twice that across one process,
+      is not taken at all — the cycle holds a lock and runs on a
+      `cycle_interval_minutes` tick, so waiting out a primary limit inside one
+      would collide with the next tick. That case belongs to 2.0, not here.
+
+      The binary is reached with `command gh`, so a test's `PATH` stub is still
+      what runs. A call invoked through `timeout`, `env` or `xargs` bypasses
+      the wrapper, which is why `scripts/publish-dashboard.sh` — every call of
+      which is deliberately under `timeout` to hold the heartbeat's window — is
+      unaffected. stdout is buffered and emitted once the call is finished
+      with, so a retried `gh api --paginate` cannot emit its early pages twice.
+
    1. *Usage-limit cooldown*: the same signal arrives on two carriers, and
       the **later** `resume_at` wins. The log union's most recent `limit-hit`
       is as fresh as the last state-sync fetch; `fleet/limit.json` on the
@@ -988,6 +1039,20 @@ runs unattended.
       readable from the log line alone, because the PRs behind a historical
       count are merged or closed by the time anyone asks, leaving
       cycle-record archaeology as the only other answer.
+
+      The listing behind the count asks for `GITHUB_PR_LIST_LIMIT` pull
+      requests (`lib/github-limit.sh`) rather than inheriting `gh`'s
+      undeclared default of 30, and a response that came back **at** that cap
+      trips the gate on its own — with a `warning` naming the repository, and
+      the composition suffixed to say the figures are floors. `gh` gives no
+      signal that it truncated, so a capped listing simply produces low
+      counts, and low counts open a gate whose purpose is to stay shut. Note
+      that nothing bounds the listing at `max_open_agent_prs`: a pull request
+      waiting in the human's merge queue carries `pr_label` and is
+      deliberately excluded from the sum above, so a repository can hold
+      arbitrarily many open labelled PRs while the sum stays small. Of the two
+      ways to be wrong here, deferring a cycle that could have run is
+      recoverable next cycle and opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
    (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
@@ -1403,11 +1468,19 @@ runs unattended.
    - **Only branches under `branch_prefix`.** The Human Gate reserves every
      other branch for humans; "they asked for changes" is not licence to push to
      a colleague's PR.
+   - **The head SHA comes from `headRefOid`, not from the `commits`
+     collection.** Reading `commits[-1].oid` cost 31 GraphQL points a call
+     against a repository with three open pull requests — `gh` requests
+     `commits(last: 100)` for each of the `--limit` slots, and GitHub charges
+     for nodes asked for rather than nodes returned — where the scalar field
+     costs 1. The listing is bounded at `GITHUB_PR_LIST_LIMIT`
+     (`lib/github-limit.sh`) rather than inheriting `gh`'s undeclared default
+     of 30, and says on stderr when the response came back at that cap; here
+     truncation can only mean a review round is not offered this cycle.
    - Fails safe to `[]` (exit 0). But show `gh`'s stderr: a rejected `--json`
-     field name (`headRefOid` does not exist in every `gh`) otherwise degrades
-     to an empty array indistinguishable from "nothing is under review", and the
-     source silently never fires. That cost a debugging round when this was
-     built.
+     field name otherwise degrades to an empty array indistinguishable from
+     "nothing is under review", and the source silently never fires. That cost
+     a debugging round when this was built.
 3e. **Abandoned-drafts pre-fetch.** For each configured repo whose `sources`
    include `abandoned-drafts`, run `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
@@ -1450,18 +1523,41 @@ runs unattended.
      resets the clock **not at all**, never partially — the Enabler's own verdict
      already reaches selection as an `unblocked`/`still-blocked` event
      (requirement 18), so a partial reset would add nothing.
+   - **The head commit arrives as `headRefOid` plus one REST call, never as
+     the `commits` collection.** The listing asks for the head sha as a scalar
+     field, and the head commit's `committedDate` — which the clock above
+     needs and a sha alone does not give — is fetched per surviving candidate
+     from `GET /repos/<slug>/commits/<sha>`, reading `.commit.committer.date`
+     (REST's spelling of GraphQL's `committedDate`; `.commit.author.date` is
+     the other one and would be the wrong field). Asking a listing for
+     `commits` cost 31 GraphQL points a call against a repository with three
+     open pull requests, because `gh` requests `commits(last: 100)` for each
+     of the `--limit` slots and GitHub charges for nodes asked for rather than
+     nodes returned; the same listing with `headRefOid` measures 1. A PR whose
+     head-commit date cannot be read is excluded this cycle, loudly on stderr,
+     under the same uncomputable-activity rule as a capped collection.
    - **A nested collection at `gh`'s cap is missing evidence, not evidence.**
      `gh pr list` does not paginate the collections this computation reads —
-     `commits`, `reviews` and `comments` each arrive capped at 100 items, with
-     `comments` oldest-first — so at the cap the newest activity may be absent,
-     and at the commits cap `commits[-1]` is not the head. A PR with any
-     collection at the cap is excluded this cycle, loudly on stderr: the same
-     uncomputable-activity treatment as the missing-commit case below, chosen
-     over paginating per candidate because the failure it guards against is the
-     dangerous direction (a live human conversation past the cap misread as
-     silence) while the cost is the safe one — a stalled draft that has somehow
-     accumulated 100 of anything waits for a human, and on this system's own
-     drafts such a PR is an anomaly worth a human's eye anyway.
+     `reviews` and `comments` each arrive capped at 100 items, with `comments`
+     oldest-first — so at the cap the newest activity may be absent. A PR with
+     either collection at the cap is excluded this cycle, loudly on stderr:
+     the same uncomputable-activity treatment as the unreadable-head-commit
+     case above, chosen over paginating per candidate because the failure it
+     guards against is the dangerous direction (a live human conversation past
+     the cap misread as silence) while the cost is the safe one — a stalled
+     draft that has somehow accumulated 100 of anything waits for a human, and
+     on this system's own drafts such a PR is an anomaly worth a human's eye
+     anyway. `commits` needed the same guard while it was read, because at its
+     cap `commits[-1]` was the hundredth commit rather than the head;
+     `headRefOid` is the head at any branch length, so that clause has no
+     counterpart here and is not missing.
+   - **The listing itself is bounded and its truncation is noticed.** It asks
+     for `GITHUB_PR_LIST_LIMIT` pull requests (`lib/github-limit.sh`) rather
+     than inheriting `gh`'s undeclared default of 30, and says on stderr when
+     the response came back at that cap. Unlike the back-pressure gate of
+     requirement 2.2, where the same truncation is dangerous, here it can only
+     mean a draft is not offered for recovery this cycle — the safe direction
+     every other exclusion in this source takes.
    - **Ready PRs are not ours to touch here.** A non-draft PR is finished work
      waiting on the human; answering it is `review-feedback`'s job, and
      force-pushing it would violate the Human Gate. Only drafts qualify.
@@ -1478,10 +1574,10 @@ runs unattended.
      must exist for the fingerprint anyway, so it gets one definition
      (requirement 34a).
    - Fails safe to `[]` (exit 0), with the same stderr discipline as requirement
-     3c. A PR whose real activity cannot be computed (no commit — should never
-     happen — or a collection at the cap, above) is excluded rather than treated
-     as maximally stale: the dangerous direction is stealing live work, not
-     leaving a stalled draft one more cycle. `shellcheck`-clean.
+     3c. A PR whose real activity cannot be computed (an unreadable head-commit
+     date — should never happen — or a collection at the cap, above) is excluded
+     rather than treated as maximally stale: the dangerous direction is stealing
+     live work, not leaving a stalled draft one more cycle. `shellcheck`-clean.
 3g. **Merge-conflicts pre-fetch.** For each configured repo whose `sources`
    include `merge-conflicts`, run `scripts/gather-merge-conflicts.sh <slug>
    <pr_label> <branch_prefix>` and attach the array to that repo's entry as
@@ -2310,6 +2406,38 @@ runs unattended.
    bounds only how long a live but hung cycle may hold on. The review
    pipeline derives its own the same way, doubling the widest Reviewer-Agent
    backstop because one lock can span two repositories reviewed back to back.
+4g. **Fleet-state JSON reaches `jq` on stdin, never in argv.** Requirement
+   4c's cap is an `execve` fact, not a prompt fact, and prompts are not the
+   only unbounded strings this Script builds: the void extract, the blocked
+   extract, the refinements map, the claims array and the pre-fetched repo
+   array all grow with the fleet's history, and each used to ride into `jq`
+   as an `--argjson` value — a single argv entry capped at `MAX_ARG_STRLEN`
+   (131072 bytes). On 2026-08-12 the void extract reached 133615 bytes and
+   the cap bit twice, in two different ways. At the no-op fingerprint and
+   Co-Ordinator input builds the call is unguarded, so under `set -e` every
+   cycle on every node died at `execve` with `Argument list too long`, exit
+   126, before the Co-Ordinator ran — and because that death precedes both
+   selection and any stage launch, it wrote no `attempt-failed`, so
+   requirement 2.7's crash-loop ladder, which counts consecutive
+   Co-Ordinator `attempt-failed` events, never saw it: the union log showed
+   only `cycle-start`/`cycle-end` pairs while the dashboard's work-source
+   panel, fed by the publisher's own fetch, kept advertising candidates no
+   Co-Ordinator would ever read. At the act-on-void sweep (requirement 34k),
+   the register-void pass (requirement 34l) and the unvoid-label read
+   (requirement 34f), the same delivery sat behind `2>/dev/null || echo
+   '[]'` guards and degraded silently instead — and what those three
+   implement is exactly the machinery that retires void state, so the
+   failure had disabled its own remedy. Every fleet-state aggregate
+   therefore arrives on the `jq` call's standard input — one JSON document
+   per line, bound positionally with `input as $name` in the order printed,
+   an order coupling each call site states beside the `printf` — and only
+   values bounded by configuration (a model name, a config object, a prompt
+   sha, one repo's register ids) may still travel as `--arg`/`--argjson`.
+   Delivery is a here-string, not a pipe, for requirement 4c's reason: under
+   `pipefail` a producer's SIGPIPE must not become the reader's status.
+   `test/unvoid-label.test.sh` anchors the acceptance check with a void
+   array built past the cap; `tech-debt/TD-PPagop-26081301.md` records the
+   remaining `--argjson` sites whose inputs are bounded today.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -2326,6 +2454,22 @@ runs unattended.
    workspace; the Script must refuse (assert) to launch a stage whose
    working directory is outside `workspace_root`. The user's own clones
    under `~/Code` are never touched.
+
+   The clone goes through `lib/repo-clone.sh`'s `clone_repo`, which runs `git
+   clone`, not `gh repo clone`. Both fetch the same objects over the same
+   transport, but `gh` first resolves the repository through a GraphQL query,
+   which is billed against the API budget — and this step is the last thing a
+   cycle does before the Implementor, with the Co-Ordinator engagement and the
+   claim already paid for. On 2026-08-12T20:52Z that query is where a cycle
+   died: `GraphQL: API rate limit already exceeded`, having spent everything
+   and produced nothing. Git's own transport is not rate-limited, so this step
+   cannot fail that way. Authentication is unchanged —
+   `deploy/docker/entrypoint.sh` runs `gh auth setup-git`, so the credential
+   helper serves this HTTPS remote exactly as it serves the push that follows.
+   `review-cycle.sh` clones through the same function, so the two cannot
+   diverge, and `CLONE_GIT` substitutes a stub for tests — a seam this needs in
+   its own right, because a test that wants the clone to fail can no longer get
+   that from a fail-fast `gh` on `PATH`.
 6a. **The pipeline creates its own labels.** Before launching the Implementor,
    the Script ensures every label this system applies exists in the selected
    repository, creating only those that are absent: `pr_label`,
@@ -3926,14 +4070,19 @@ runs unattended.
     `crash-loop-escalated`,
     `labels-ensured`, `limit-hit`, `limit-cleared`,
     `orphan-branch-recovered`, `orphan-branch-released`,
-    `issue-closed-post-merge`, `void-object-closed`,
+    `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
     `disabled`, `enabled`, `salvage`,
     `warning`, `cycle-end`. A `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
     `warning` whose `detail` names the same repo and number instead, since
-    nothing was requested and the retry is automatic next cycle. A `salvage` event (requirement 9e) carries the
+    nothing was requested and the retry is automatic next cycle. A
+    `void-retired` event (requirement 34n) carries the `repo` and `item` of
+    the void entry it retired from the extract, the `void_ts` of the verdict
+    it settled, and `by` — `object-closed` or `register-resolved` — the
+    actioned signal that qualified it; it is a fact with no clearing event,
+    read back by `void_retired_items`. A `salvage` event (requirement 9e) carries the
     `stage` being rescued and an `outcome` — `attempted`, `recovered` or
     `failed` — plus `exit_code` when the resume itself did not exit 0. It is
     written for every resume the Script actually starts, success or not,
@@ -4360,6 +4509,23 @@ runs unattended.
     void, a maintainer applied a label called `unvoided` to the pull request and
     nothing read it — the item stayed void, the fleet stood down hourly, and the
     label sat there looking like the action had been taken.
+
+    Requirement 34n adds a second, coarser way back that is deliberately
+    *not* this one — and it is a ratified change of position, not an
+    oversight. While a void is still being carried, a plain reopen of the
+    closed object changes nothing, exactly as this requirement records: the
+    label is the only voice a human has. But once the void has *retired* from
+    the extract (actioned and `void_retire_after_days` old), reopening the
+    closed object is enough by itself: nothing in the extract suppresses the
+    item any longer, so the reopened object is simply gathered as a fresh,
+    ordinary candidate — the same outcome a genuine `unvoided` would have
+    produced. The two mechanisms knowingly part company there: 34k's sweep
+    still declines to re-close an object it once closed, and the audited
+    label route, with its `ts`-ordering rule, remains the only exit *before*
+    retirement. The judgement ratified is that a human reopening an issue
+    whose void has been settled, actioned and stale for a month is
+    unambiguously asking for the work back, and demanding the label on top
+    of the reopen would be ceremony with no added authority.
 34g. **A human's own hand-applied label is a report, not a state.** Requirement
     34e's projection is deliberately one-way for the block *it* creates: the
     label mirrors what the Co-Ordinator already reported, and nothing reads it
@@ -4799,6 +4965,124 @@ runs unattended.
     with an open pull request) and is kept as defence in depth: it is cheap,
     pure, and the state it names — however it arose — is one this cycle must
     not spend an Implementor on either way.
+34n. **A void that is both actioned and old retires from the extract.**
+    Requirement 34c's only exit from void is a human's hand-appended
+    `unvoided` — deliberately, since nothing else may reason its way out of a
+    terminal state — so the *set* nothing ever leaves grows by one entry for
+    every item ever voided, forever. On 2026-08-12 it reached 122 entries and
+    133,615 bytes, past `MAX_ARG_STRLEN` (131,072 bytes): every node's cycle
+    died at `execve` with `Argument list too long`, before the Co-Ordinator
+    ever ran, for roughly two hours across the fleet (issue #309). Requirement
+    4g's stdin-only delivery is what stops that failure recurring; this is
+    what stops the growth that caused it, by retiring an entry once holding
+    onto it no longer buys anything.
+
+    An entry retires once it is both:
+
+    - **actioned** — the same two facts requirements 34k and 34l already
+      establish, read again for the void set the way requirement 34i already
+      reads the register one for the blocked set: an issue or pull request
+      GitHub itself reports closed (`void_object_closed_items`, the set
+      requirement 34k's sweep already maintains), or a tech-debt register row
+      whose own file on the default branch says `status: resolved` or
+      `status: not-debt` — requirement 34i's own "the work is gone"
+      statuses, read for the still-unretired void register ids by a further
+      `scripts/gather-register-status.sh` call per repo, alongside the one
+      requirement 34i already makes for that repo's blocked ones — the
+      recorded subtraction below is what keeps that residue, and so the
+      per-cycle read, bounded. A void of
+      any other shape — a project-review ref, an implementation-plan task id,
+      a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
+      `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
+      defined for it at all, since 34k's sweep acts only on the bare-issue
+      and `pr-<n>-…` shapes and 34l's register pass only on register ids, so
+      a void of those kinds is never actioned and never retires on this rule
+      alone; and
+    - **old** — its `item-void` event's own `ts` is at least
+      `void_retire_after_days` old (default 30; `0` disables retirement
+      outright).
+
+    A retirement, once decided, is **recorded**: a `void-retired` event per
+    entry — `{repo, item, void_ts, by}`, `by` naming the actioned signal
+    (`object-closed` or `register-resolved`) — a fact rather than a state,
+    exactly as requirement 34k's `void-object-closed` is: nothing clears it.
+    The next cycle reads the recorded set back (`void_retired_items`,
+    `lib/cycle-state.sh`) and subtracts it from the extract
+    (`subtract_retired_voids`) the moment `void_items` has produced it —
+    before the 34k sweep, the 34l register pass, and this requirement's own
+    evidence-gathering. Two bounds follow that re-deciding retirement from
+    scratch each cycle would not give: the per-cycle GitHub cost is
+    proportional to the *unretired residue*, never to every void ever filed —
+    an id whose retirement is on the log is never asked about again — and the
+    extract stays bounded even on a cycle whose register read fails, because
+    the subtraction needs nothing but the log. The subtraction is ts-ordered
+    like every clearing rule here: a `void-retired` event masks only an
+    `item-void` older than itself, so an item voided afresh after its
+    retirement re-enters the extract on the new verdict's own terms. On
+    `--dry-run` nothing is recorded — the mark is durable state, like the
+    34k sweep it mirrors — while the in-memory narrowing still applies, so a
+    dry run sees the extract a real cycle would.
+
+    `retire_void_items` (`lib/cycle-state.sh`) is the one implementation,
+    called once, immediately after requirement 34l's register-hygiene pass
+    and before anything downstream reads `void_json`: the Script reassigns
+    `void_json` to its answer rather than introducing a second name, so the
+    Refiner's candidate filter, the no-op fingerprint and the Co-Ordinator's
+    own input all see the bounded set with nothing to remember. Every earlier
+    reader this same cycle — the 34k sweep and the 34l register-hygiene pass,
+    both running against the extract with recorded retirements already
+    subtracted, and `unvoid_clearances_json`, which reads `void_items`
+    directly and so still reaches a retired-but-void item — needs nothing
+    from the narrower set this call produces: 34k's own closed-object gate
+    already skips a closed item on its own account, and 34l's repair has
+    nothing left to do once a row already reads `resolved`/`not-debt`, which
+    is a precondition retirement itself requires. (Narrowing before 34l is
+    also what stops a repo whose void register ids have all retired paying a
+    register fetch every cycle forever.)
+
+    **This changes what one cycle hands somebody, never what counts as
+    void.** Requirement 34c is untouched, and so is every internal reader
+    that recomputes void straight off the log instead of calling
+    `void_items` — `open_blocked_items` (34h), `enabler_eligible_items`
+    (35a), `refinements_map` (3h), and the monitoring dashboard's own void
+    table — each its own copy of the shared `LATEST_UNRESOLVED_JQ` rule
+    (requirement 34a), unbounded and unaffected. A retired item therefore
+    never resurfaces as blocked (open_blocked_items still subtracts it from
+    the raw, ever-growing void set) and the dashboard's void count is
+    unchanged; only the payload this one cycle goes on to hand the
+    Co-Ordinator, the Refiner and the no-op fingerprint shrinks. A retired
+    entry's only remaining trace is the `item-void` event itself, still on
+    the log forever, and the closed GitHub object or resolved register row
+    the retirement rule required before it would act — which is also why a
+    human reopening that object later behaves exactly as intended even
+    without the `unvoid_label` route of requirement 34f: 34f's own rule binds
+    a clearance to "void recorded *before* the label", and a retired void
+    has nothing left in the extract for a label to clear — the reopened
+    object simply becomes a fresh, ordinary candidate the next time a source
+    gathers it, the same outcome a genuine `unvoided` would have produced.
+
+    Fails safe in the direction requirement 34d already established for void
+    itself: `void_retire_after_days` of `0`, or unset, disables retirement
+    and every entry stays — and takes the register read with it, so an
+    installation that has switched retirement off pays nothing for the
+    evidence retirement would have needed; an `item-void` event with no
+    parseable `ts`, or a malformed `void_json`/actioned set of any kind, is
+    never retired. `0` also stops the recorded subtraction: the
+    `void-retired` facts stay on the log but stop masking, so the extract
+    returns to the full raw set while retirement is off — an operator's kill
+    switch if retirement ever misbehaves — and resumes masking, with nothing
+    re-queried, when it is switched back on. The
+    failure mode this leaves is one more cycle carrying an entry that was
+    ready to go — never a void quietly reopened.
+
+    As defence in depth alongside requirement 4g's stdin delivery — which is
+    what actually keeps this from reaching `MAX_ARG_STRLEN` again, since
+    retirement only bounds the steady state and stdin removed the argv limit
+    entirely — the Script logs a `warning` naming the byte size and entry
+    count whenever `void_json` is still over 100,000 bytes after retirement:
+    a live signal that retirement itself has fallen behind (a burst of new
+    voids, `void_retire_after_days` set too high, or 34k/34l failing to
+    action items), well before any cap could bite.
 
 ### The Enabler
 
@@ -5663,12 +5947,12 @@ What exists, and the requirements each part answers to:
 3f. `scripts/gather-abandoned-drafts.sh` implementing requirement 3e: given a
    repo slug, PR label, branch prefix and staleness threshold, prints the JSON
    array of this system's own abandoned draft PRs (open, draft, ours, whose last
-   real activity — commits, and the reviews and comments not carrying
+   real activity — the head commit, and the reviews and comments not carrying
    `lib/pipeline-marker.sh`'s marker — is untouched past the threshold), each
-   carrying the draft PR's body verbatim and a head-SHA-scoped ref. A PR any of
-   whose nested collections `gh pr list` returned at its 100-item cap is
-   excluded for the cycle rather than judged on possibly-incomplete activity
-   (requirement 3e). Its
+   carrying the draft PR's body verbatim and a head-SHA-scoped ref. A PR either
+   of whose nested collections `gh pr list` returned at its 100-item cap, or
+   whose head-commit date could not be read, is excluded for the cycle rather
+   than judged on possibly-incomplete activity (requirement 3e). Its
    candidate rule is regression-tested in `test/abandoned-drafts.test.sh`. Fails
    safe to `[]` (exit 0). Must pass `shellcheck`. Sources
    `lib/pipeline-marker.sh`, which implements the write side of the same
@@ -5949,6 +6233,17 @@ What exists, and the requirements each part answers to:
    overrides the config for tests. Unit-tested
    (`test/sweep-human-visibility.test.sh`); must pass `shellcheck`.
 3a. The shared library (`lib/cycle-state.sh`, `lib/limit-detect.sh`,
+   `lib/github-limit.sh` (requirement 2.0's `github_limit_snapshot`,
+   `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
+   wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
+   `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
+   three callers — the back-pressure gate and the two PR-listing gatherers —
+   must agree on what a truncated page is even though they treat one
+   differently. Sourced by both cycle scripts, `lib/claim.sh` and every
+   `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
+   `test/github-limit.test.sh`),
+   `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
+   pipelines take, with `CLONE_GIT` substituting a stub for tests),
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
@@ -6770,6 +7065,19 @@ pull request, run the ones the change touches and any it could regress.
    prints `[]` and exits 0 — a missing repo, a disabled feature, an API error, or
    an unparseable threshold never aborts the cycle. Its candidate rule is
    regression-tested in `test/abandoned-drafts.test.sh`.
+2i. **The GitHub API budget gates the cycle, and a short refusal is waited
+   out.** `test/github-limit.test.sh` passes: `github_limit_verdict` returns
+   `ok` above both floors, `exhausted` naming the binding resource below
+   either, the **later**-resetting resource when both are below, and `unknown`
+   — never `exhausted` — for a snapshot that is missing, empty or unparseable;
+   `github_limit_kind` tells a secondary refusal from a primary one and both
+   from an ordinary failure; `github_limit_wait_plan` waits until a stated
+   reset, refuses a reset beyond the per-call bound, clamps to what is left of
+   the process budget and returns nothing once that budget is spent; and
+   `github_pr_list_truncated` fires exactly at the cap. The wrapper itself is
+   exercised against a stub `gh`: a rate-limited call is retried once and its
+   stdout emitted exactly once, a non-rate-limit failure is returned
+   unretried, and `gh`'s own stderr reaches the caller either way.
 2c. `scripts/gather-merge-conflicts.sh Poetic-Poems/does-not-exist autonomous-agent agent/`
    prints `[]` and exits 0 — a missing repo, a disabled feature, or an API error
    never aborts the cycle. Its candidate rule, including the `bot`,
@@ -7392,6 +7700,28 @@ pull request, run the ones the change touches and any it could regress.
    for exactly `review-feedback`, `merge-conflicts` and `abandoned-drafts`,
    false for every other source (including one that merely contains one of
    those names as a substring).
+8o. **A void that is both actioned and old drops out of the extract; every
+   other one does not (requirement 34n).** `test/cycle-state.test.sh`'s
+   `retire_void_items` section passes: an entry whose `{repo, item}` is in
+   the actioned set and whose `ts` is at least `void_retire_after_days` old
+   is dropped; the same entry with a younger `ts` is kept; an old entry
+   *not* in the actioned set is kept; an entry with no parseable `ts` is kept
+   regardless of the actioned set; `void_retire_after_days` of `0` returns
+   every entry unchanged, including old, actioned ones; and malformed input
+   (either JSON argument) returns the original `void_json` verbatim rather
+   than raising. The recorded half holds too: `void_retired_items` returns
+   one `{repo, item, ts}` per pair — the latest `ts` — dropping repoless and
+   itemless events, and `subtract_retired_voids` drops exactly the entries
+   whose recorded retirement post-dates the void's own `ts` (an item voided
+   afresh after its retirement stays in the extract), returning its input
+   verbatim when either argument is malformed, while `void_items` over the
+   same log still reports the retired entry — the raw set the dashboard and
+   requirement 34c read. `test/cycle-state.test.sh`'s `open_blocked_items`,
+   `enabler_eligible_items` and `refinements_map` sections keep asserting
+   against the *raw*, unretired void/blocked pairing (`LATEST_UNRESOLVED_JQ`)
+   with no retirement arguments in sight, pinning that retirement is a
+   property of the extract a caller requests, never of the shared
+   blocked/void definition those three read directly off the log.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
@@ -8298,6 +8628,8 @@ confident, recurring no-op.
 
 | Trap | What it looks like when it bites | Build it this way instead |
 |---|---|---|
+| A `--json` field that is cheap to type and expensive to fetch | `gh pr list --json commits` cost 31 GraphQL points a call against a repository with **three** open pull requests, because `gh` asks for `commits(last: 100)` in each of the `--limit` slots and GitHub charges for nodes requested, not returned. Two gatherers × three repos × two nodes × four cycles an hour was most of the 5,000-point hourly budget, and the fleet exhausted it on 2026-08-12 — after which every work source read as empty and the pipeline looked idle rather than blocked. | Ask for the scalar (`headRefOid`, not `commits[-1].oid`) and fetch the rest from REST per candidate, where the budget is thousands. Measure a call's real cost — bracket it with `gh api rate_limit`, which is itself exempt — rather than assuming that a listing of three items costs three items' worth. |
+| A listing that silently comes back at its page size | `gh pr list` defaults to `--limit 30` and says nothing when it truncates, so the back-pressure gate simply counted low — and a gate that counts low opens. Nothing bounds the listing at `max_open_agent_prs`, because a PR waiting in the human's merge queue carries the label but is excluded from the sum. | State the cap (`GITHUB_PR_LIST_LIMIT`) instead of inheriting one, and test for it (`github_pr_list_truncated`). Then decide per call site which direction is dangerous: a work source that misses a candidate has merely not fired, whereas a gate that undercounts has let work past a cap that was already full. |
 | A helper returns non-zero for a legitimately empty result, and the script runs under `set -e` | `[[ -z "$x" ]] && x="$(helper)"` takes the helper's exit status, so the *whole cycle* dies at that line. Here it died two lines before logging the failure it had just detected — nine cycles left nothing behind but a `selection` event and `exit 1`. | A lookup that finds nothing is a normal outcome: return 0 and print nothing. Reserve non-zero for real errors. Assert it at the real call-site shape under `set -e`, not on the function alone — the function looked fine; the *interaction* was the bug. |
 | The writer of an event and the reader of it disagree about the key | `attempt-failed` recorded no `repo`/`item`; the blocked extract grouped by exactly those. Every event collapsed into one anonymous group, so **no failed attempt ever blocked anything** — for months, undetected, because each half reads correctly on its own. | Round-trip the contract in a test: write the event, read it back through the real extract, assert the item is blocked. Any log the system reads back is a contract with itself. |
 | A model's clean "I can't/needn't do this" is treated as a crash | A `{"status":"blocked"}` report went down the failure path and was filed as `"implementor exited 0"`, throwing away the reason and unblock condition — the entire product of a full model run. So the next cycle bought the same discovery. | A verdict is a result. Persist it with the model's own words (requirement 9a), and note *which* verdict it is (requirement 9b). The log is the system's only memory: a finding you don't write down, you pay for again, on a schedule, forever. |
@@ -8316,3 +8648,4 @@ confident, recurring no-op.
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
 | A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
+| A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |

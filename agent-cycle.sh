@@ -48,6 +48,13 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 
 # shellcheck source=lib/limit-detect.sh
 . "$SCRIPT_DIR/lib/limit-detect.sh"
+# GitHub's rate limits, which are a different system from the Claude usage
+# limits above. Sourcing this also wraps every `gh` call this script makes —
+# see the wrapper's header for what that does and does not cover.
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/repo-clone.sh
+. "$SCRIPT_DIR/lib/repo-clone.sh"
 # shellcheck source=lib/model-id.sh
 . "$SCRIPT_DIR/lib/model-id.sh"
 # shellcheck source=lib/config-schema.sh
@@ -317,6 +324,13 @@ fi
 # requirement 34c's "only a human may clear a void" is unchanged; what this
 # gives them is a way to say it from where they actually are.
 unvoid_label="$(cfg '.unvoid_label')"
+# How old a fully-actioned void must be before it is dropped from the extract
+# (requirement 34n). `0` disables retirement, which is also what an
+# unparseable value falls back to — never retiring is the safe direction, an
+# unbounded extract being the cost this requirement exists to bound rather
+# than a correctness risk on its own.
+void_retire_after_days="$(cfg '.void_retire_after_days')"
+[[ "$void_retire_after_days" =~ ^[0-9]+$ ]] || void_retire_after_days=0
 # The refinement class (requirements 34e, 35d). The label is a projection onto
 # issue-type items and nothing reads it back, so an empty value switches the
 # projection off without touching the log mechanism that actually carries the
@@ -469,6 +483,23 @@ disable_default_ttl_hours="$(cfg '.disable_default_ttl')"
 # person who set one does not need to be paged about their own decision.
 limit_escalate_after_hours="$(cfg '.limit_escalate_after_hours')"
 [[ "$limit_escalate_after_hours" =~ ^[0-9]+$ ]] || limit_escalate_after_hours=24
+# The GitHub API budget a cycle must find before it is worth starting one
+# (requirement 2.0). Two floors because GitHub meters two pools separately and
+# either can be the binding one — on 2026-08-12 the fleet exhausted `graphql`
+# while `core` still had 96% of its hour left. Either set to 0 turns that
+# resource's floor off; both at 0 turns the check off entirely.
+github_min_core_budget="$(cfg '.github_min_core_budget')"
+[[ "$github_min_core_budget" =~ ^[0-9]+$ ]] || github_min_core_budget=0
+github_min_graphql_budget="$(cfg '.github_min_graphql_budget')"
+[[ "$github_min_graphql_budget" =~ ^[0-9]+$ ]] || github_min_graphql_budget=0
+# How long lib/github-limit.sh's `gh` wrapper may wait out a single refusal,
+# and how long this whole process may spend waiting across all of them. Read
+# here and exported so the gatherers and sweeps this cycle launches are
+# governed by the installation's number rather than the library's default.
+GITHUB_LIMIT_MAX_WAIT_SECONDS="$(cfg '.github_retry_max_wait_seconds')"
+[[ "$GITHUB_LIMIT_MAX_WAIT_SECONDS" =~ ^[0-9]+$ ]] || GITHUB_LIMIT_MAX_WAIT_SECONDS=60
+GITHUB_LIMIT_TOTAL_WAIT_SECONDS=$(( GITHUB_LIMIT_MAX_WAIT_SECONDS * 2 ))
+export GITHUB_LIMIT_MAX_WAIT_SECONDS GITHUB_LIMIT_TOTAL_WAIT_SECONDS
 none_selected_recheck_hours="$(cfg '.none_selected_recheck_hours')"
 candidates_max="$(cfg '.candidates_max')"
 max_chained_cycles="$(cfg '.max_chained_cycles')"
@@ -1483,10 +1514,16 @@ gather_source_state() {
 # per repo: the ids come from the blocked extract, so it runs only for a repo
 # that has blocked register items — which is usually none of them, at no cost.
 # An unreadable answer is `{}`, and `{}` clears nothing.
+#
+# PURPOSE names the asking pass — `blocked` (requirement 34i), `void`
+# (requirement 34n) or `selected` (the pre-flight read) — and lands in the
+# diagnostic filenames, because three passes can ask about the same repo in
+# one cycle and a shared name means the last writer silently discards the
+# other two's evidence.
 gather_register_status() {
-  local slug="$1" branch="$2" out safe
-  shift 2
-  safe="${slug//\//_}"
+  local slug="$1" branch="$2" purpose="$3" out safe
+  shift 3
+  safe="$purpose-${slug//\//_}"
   out="$("$SCRIPT_DIR/scripts/gather-register-status.sh" "$slug" "$branch" "$@" \
         2>"$cycle_dir/register-status-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "object"' <<<"$out" >/dev/null 2>&1; then
@@ -2842,6 +2879,43 @@ CRASH_LOOP_BODY
 fi
 
 # --- 2. Stand-down checks ---
+# 2.0 GitHub API budget (requirement 2.0). First of the stand-down checks
+# because it is the only free one: `GET /rate_limit` is exempt from the limits
+# it reports, so asking costs nothing, and every check below it — the
+# usage-limit probe most of all — can spend real money.
+#
+# What this prevents is not the failed `gh` call. It is the cycle of
+# 2026-08-12T20:52Z, which read a rate-limited GitHub as a quiet one: every
+# gatherer degraded to `[]`, the Co-Ordinator engaged on that digest and chose
+# an item, the claim was taken, and the cycle then died at the clone with
+# `GraphQL: API rate limit already exceeded`. All of that is downstream of a
+# question GitHub would have answered for free before the first token was
+# spent.
+#
+# `unknown` — the meter itself unreadable — is deliberately not a stand-down.
+# It is no evidence about the budget, and a node that cannot reach
+# `/rate_limit` could not have run a cycle anyway; the failure it does have
+# will be reported by whatever call meets it. Standing down here would invent
+# a way for a network blip to look like an exhausted account.
+if (( github_min_core_budget > 0 || github_min_graphql_budget > 0 )); then
+  IFS=$'\t' read -r gh_budget_verdict gh_budget_resource gh_budget_remaining gh_budget_reset_at \
+    < <(github_limit_verdict "$(github_limit_snapshot || true)" \
+          "$github_min_core_budget" "$github_min_graphql_budget")
+  if [[ "$gh_budget_verdict" == "exhausted" ]]; then
+    if [[ "$gh_budget_resource" == "core" ]]; then
+      gh_budget_floor="$github_min_core_budget"
+    else
+      gh_budget_floor="$github_min_graphql_budget"
+    fi
+    log_event "stand-down" "$(jq -nc --arg r "$(github_limit_describe \
+      "$gh_budget_resource" "$gh_budget_remaining" "$gh_budget_floor" "$gh_budget_reset_at")" \
+      --arg res "$gh_budget_resource" --arg rem "$gh_budget_remaining" \
+      --arg until "$gh_budget_reset_at" \
+      '{reason: $r, github_resource: $res, github_remaining: $rem, resume_at: $until}')"
+    exit 0
+  fi
+fi
+
 # 2.1 Usage-limit cooldown (fleet-wide: every node shares one Claude account,
 # so a limit any node hit stands this one down too). Two carriers of the same
 # signal, and the later resume wins: the log union is as fresh as the last
@@ -3139,18 +3213,39 @@ fi
 # PR does not yet exist. Which of them filled the gate is what a cap-tuning
 # decision needs to know. Recording it here costs nothing; reconstructing it
 # later means cycle-record archaeology.
+#
+# The listing's page size is stated (`GITHUB_PR_LIST_LIMIT`, lib/github-limit.sh)
+# rather than left to `gh`'s undeclared default of 30, and a response that came
+# back at it is treated as a trip. This is the one place in the pipeline where
+# a truncated listing is actively dangerous: `gh` gives no signal that it
+# capped, so the counts below would simply be low, and low counts open a gate
+# whose whole purpose is to stay shut. Note that the raw listing is not bounded
+# by `max_open_agent_prs` — a pull request waiting in the human's merge queue
+# carries `pr_label` and is deliberately excluded from the sum — so a repo can
+# genuinely hold more open labelled PRs than the cap, and the cap is no
+# guarantee the page was big enough.
 ready_count=0
 human_queue_count=0
 draft_count=0
+listing_truncated=0
 while IFS= read -r slug; do
-  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" --json isDraft,reviewDecision \
+  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --limit "$GITHUB_PR_LIST_LIMIT" --json isDraft,reviewDecision \
     --jq '[([.[] | select(.isDraft | not)] | length),
            ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
-           ([.[] | select(.isDraft)] | length)] | @tsv' 2>/dev/null)" || counts=''
-  IFS=$'\t' read -r n_ready n_human n_draft <<<"$counts"
+           ([.[] | select(.isDraft)] | length),
+           length] | @tsv' 2>/dev/null)" || counts=''
+  IFS=$'\t' read -r n_ready n_human n_draft n_total <<<"$counts"
   [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
   [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
+  [[ "$n_total" =~ ^[0-9]+$ ]] || n_total=0
+  if github_pr_list_truncated "$n_total"; then
+    listing_truncated=1
+    log_event "warning" "$(jq -nc --arg r "$slug" --arg l "$GITHUB_PR_LIST_LIMIT" --arg d \
+      "back-pressure: $slug's open labelled pull requests came back at the ${GITHUB_PR_LIST_LIMIT}-item listing cap, so the count below is a floor, not a total; treating back-pressure as tripped rather than counting a truncated page" \
+      '{repo: $r, limit: $l, detail: $d}')"
+  fi
   ready_count=$(( ready_count + n_ready ))
   human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
@@ -3177,6 +3272,14 @@ open_composition="$pipeline_ready_count changes-requested + $draft_count draft +
 backpressure_tripped=0
 if (( adjusted_open_count >= max_open_agent_prs )); then
   backpressure_tripped=1
+fi
+# A truncated listing trips the gate on its own, whatever the visible sum came
+# to: the counts are a floor and the real total is unknown, and of the two ways
+# to be wrong — deferring a cycle that could have run, or opening work past a
+# cap that was already full — only the first is recoverable next cycle.
+if (( listing_truncated )); then
+  backpressure_tripped=1
+  open_composition="$open_composition — at least one repo's listing was truncated, so these are floors"
 fi
 
 # --- 2b. Git identity ---
@@ -3456,7 +3559,7 @@ while IFS=$'\t' read -r reg_slug reg_ids; do
     <<<"$ordered_repos_json" 2>/dev/null || true)"
   [[ -n "$reg_branch" ]] || continue
   # shellcheck disable=SC2086  # $reg_ids is a deliberate word-split id list.
-  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" $reg_ids)"
+  reg_map="$(gather_register_status "$reg_slug" "$reg_branch" blocked $reg_ids)"
   register_status_json="$(jq -c --arg s "$reg_slug" --argjson m "$reg_map" '. + {($s): $m}' \
     <<<"$register_status_json" 2>/dev/null || printf '%s' "$register_status_json")"
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
@@ -3548,6 +3651,36 @@ fi
 blocked_json="$(blocked_items "$union_log")"
 void_json="$(void_items "$union_log")"
 
+# Requirement 34n's memory, applied the moment the extract exists: every pair
+# an earlier cycle already retired (a `void-retired` event on the log — a
+# fact, not a state, exactly as `void-object-closed` is) is subtracted here,
+# before the 34k sweep, the 34l register pass and 34n's own evidence-gathering
+# below ever see the set. Two bounds follow that re-deciding retirement from
+# scratch each cycle would not give: the register read below runs only over
+# the *unretired* residue, so an id retired once is never asked about again —
+# per-cycle GitHub cost proportional to what is still live, not to every void
+# ever filed — and the extract stays bounded even on a cycle whose register
+# read fails, because this subtraction needs nothing but the log. The
+# subtraction is ts-ordered (`subtract_retired_voids`): an item voided afresh
+# after its old verdict retired re-enters on the new verdict's own terms.
+#
+# Neither pass between here and 34n loses anything to the narrowing: 34k's
+# closed-object gate already skips every issue- or PR-shaped id a retirement
+# could cover (a closed object is what actioned it), and 34l's register repair
+# has nothing to do once a row reads `resolved`/`not-debt`, which retirement
+# itself required first — narrowing before 34l is what stops a repo whose
+# void register ids are all retired paying a register fetch forever. The 34f
+# label route is computed further up, from `void_items` directly, so a human's
+# `unvoided` still reaches a retired-but-void item.
+#
+# Gated on the same switch as retirement itself: `0` must restore the full,
+# unretired extract — the recorded facts stay on the log, but stop masking —
+# so an operator has a kill switch if retirement ever misbehaves, and flipping
+# it back re-masks from the log with nothing re-queried.
+if (( void_retire_after_days > 0 )); then
+  void_json="$(subtract_retired_voids "$void_json" "$(void_retired_items "$union_log")")"
+fi
+
 # 34k: act on void. A void already stops the item being selected again
 # (requirement 34c), but nothing before this touched the GitHub object it
 # names, so an obsolete draft PR or a superseded issue stayed open — visible
@@ -3567,14 +3700,21 @@ void_json="$(void_items "$union_log")"
 # requests.
 if ! (( DRY_RUN )); then
   void_object_closed_json="$(void_object_closed_items "$union_log")"
-  void_close_candidates_json="$(jq -nc --argjson void "$void_json" --argjson closed "$void_object_closed_json" \
+  # Both arrays arrive on stdin, one document per line, never in argv
+  # (requirement 4g): the void extract and the closed set are unbounded, and
+  # on 2026-08-12 the extract crossed MAX_ARG_STRLEN — an `--argjson`
+  # delivery here failed into its `|| echo '[]'`, silently disabling the one
+  # sweep that retires void state.
+  void_close_stdin="$void_json"$'\n'"$void_object_closed_json"
+  void_close_candidates_json="$(jq -nc \
     --arg issue_re "$WORK_GONE_ISSUE_RE" --arg pr_re "$WORK_GONE_PR_RE" '
-    ($closed | map(.repo + " " + .item)) as $done
+    input as $void | input as $closed
+    | ($closed | map(.repo + " " + .item)) as $done
     | [ $void[]
         | select((.repo // "") != "" and (.item // "") != "")
         | select((.item | test($issue_re)) or (.item | test($pr_re)))
         | select((.repo + " " + .item) as $k | ($done | index($k)) == null) ]
-  ' 2>/dev/null || echo '[]')"
+  ' <<<"$void_close_stdin" 2>/dev/null || echo '[]')"
   while IFS= read -r vslug; do
     [[ -n "$vslug" ]] || continue
     repo_candidates_json="$(jq -c --arg r "$vslug" '[ .[] | select(.repo == $r)
@@ -3613,10 +3753,16 @@ while IFS= read -r vr_slug; do
   vr_branch="$(jq -r --arg s "$vr_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
     <<<"$ordered_repos_json" 2>/dev/null || true)"
   [[ -n "$vr_branch" ]] || continue
-  vr_candidates_json="$(jq -c --argjson void "$void_json" --arg r "$vr_slug" \
+  # The void extract on stdin, never in argv (requirement 4g) — same failure
+  # shape as the sweep above: past MAX_ARG_STRLEN this call would fall into
+  # its `|| echo '[]'` and the pass would silently find nothing. `ids` stays
+  # an --argjson: it is one repo's matching register ids, bounded by the
+  # register itself.
+  vr_candidates_json="$(jq -c --arg r "$vr_slug" \
     --argjson ids "$(jq -c --arg s "$vr_slug" '.[$s] // []' <<<"$void_register_ids_json")" \
-    -n '[ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
-          | {item, detail, evidence} ]' 2>/dev/null || echo '[]')"
+    -n 'input as $void
+        | [ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
+            | {item, detail, evidence} ]' <<<"$void_json" 2>/dev/null || echo '[]')"
   vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" "$vr_candidates_json")"
   # Only ever *adds* to what the first pass found. gather_register_hygiene
   # fails safe to `[]`, and this second read can fail where the first
@@ -3664,6 +3810,136 @@ if [[ "$(jq 'length' <<<"$human_visibility_json" 2>/dev/null || echo 0)" != "0" 
       'map(if .slug == $r then .human_visibility = $hv else . end)' \
       <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
   done < <(jq -r '[.[].repo] | unique[]' <<<"$human_visibility_json" 2>/dev/null || true)
+fi
+
+# Requirement 34n: retire every void entry that is both fully actioned and
+# old enough out of `void_json` before anything else reads it — from here on
+# `void_json` *is* the bounded extract, reassigned rather than shadowed under
+# a new name so every consumer below (the Refiner's candidate filter, the
+# no-op fingerprint, the Co-Ordinator's own input) sees it with nothing to
+# remember. This is what stops the extract growing without bound: on
+# 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN`
+# — because nothing before this requirement ever retired an entry once it was
+# actioned; the only way one left the set at all was a human's hand-appended
+# `unvoided` (issue #309).
+#
+# The 34k sweep and the 34l register-hygiene pass above saw the extract with
+# *recorded* retirements already subtracted (the block where `void_json` is
+# first computed), but not the ones this block is about to decide — and
+# neither needs those either, being already safe to run against an
+# item this rule would go on to retire — 34k's own `void_object_closed_items`
+# gate already skips a closed object, and 34l's register-hygiene repair has
+# nothing left to do once the row already reads `resolved`/`not-debt`, which
+# is exactly the state this rule requires before it will retire a register
+# void at all. `unvoid_clearances_json`, computed earlier from `void_items`
+# directly, is unaffected for the same reason `void_items` itself is: neither
+# this reassignment nor requirement 34c's own semantics change — a void stays
+# void forever, on the raw log, for every reader that recomputes it there
+# (`open_blocked_items`, `enabler_eligible_items`, `refinements_map`, and the
+# monitoring dashboard's own use of `void_items`). Retirement narrows only
+# what this one cycle goes on to hand somebody, never what counts as void.
+#
+# "Actioned" is the same two facts requirements 34k and 34l already
+# establish, read again for the void set the way requirement 34i already
+# reads the register one for the blocked set: an issue or pull request GitHub
+# itself confirms closed (`void_object_closed_items`, re-read here — a pure
+# function over the union log already in memory, costing no `gh` call at
+# all), or a tech-debt register row whose own file says `status: resolved` or
+# `status: not-debt` — 34i's own "the work is gone" statuses, which do cost a
+# read: a further `gather_register_status` call per repo with still-unretired
+# void register ids, alongside the one 34i already makes for that repo's
+# blocked ones — the recorded subtraction above is what keeps that residue,
+# and so this read, bounded. A
+# void of any other shape — a project-review ref, an implementation-plan task
+# id, a `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
+# `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
+# defined for it at all (34k and 34l act on none of those shapes), so a void
+# of those kinds is never actioned and never retires on this rule alone.
+#
+# Each entry this block retires is recorded as a `void-retired` event —
+# `{repo, item, void_ts, by}`, a fact rather than a state exactly as
+# `void-object-closed` is (requirement 34k) — which is what makes the
+# decision durable: the subtraction where `void_json` is first computed reads
+# those events back, so a settled id is never re-evidenced or re-decided, and
+# the register read here stays proportional to the unretired residue instead
+# of growing by one id per void ever retired. The recording is skipped on
+# --dry-run, like the 34k sweep itself — it is a durable mark on the log —
+# while the in-memory narrowing still applies, so a dry run sees the extract
+# a real one would.
+#
+# All of it is behind the `> 0` gate, because the register read is the whole
+# cost of this requirement and `void_retire_after_days` of `0` disables the
+# requirement: an installation that has switched retirement off must not go
+# on paying for the evidence retirement would have needed.
+if (( void_retire_after_days > 0 )); then
+  void_register_status_json='{}'
+  while IFS=$'\t' read -r vrs_slug vrs_ids; do
+    [[ -n "$vrs_slug" && -n "$vrs_ids" ]] || continue
+    vrs_branch="$(jq -r --arg s "$vrs_slug" 'map(select(.slug == $s)) | .[0].default_branch // ""' \
+      <<<"$ordered_repos_json" 2>/dev/null || true)"
+    [[ -n "$vrs_branch" ]] || continue
+    # shellcheck disable=SC2086  # $vrs_ids is a deliberate word-split id list.
+    vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" void $vrs_ids)"
+    void_register_status_json="$(jq -c --arg s "$vrs_slug" --argjson m "$vrs_map" '. + {($s): $m}' \
+      <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")"
+  done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
+           <<<"$void_register_ids_json" 2>/dev/null || true)
+
+  # The closed set grows with every void ever actioned, so it arrives on
+  # stdin, never in argv (requirement 4g), and is intersected with the
+  # extract's own pairs before it travels any further: retirement can only
+  # drop what is in the extract, so the intersection loses nothing and is
+  # what keeps `void_actioned_json` — which does ride an --argjson below —
+  # bounded by the unretired residue rather than by history. `by` names the
+  # actioned signal, for the `void-retired` event to carry.
+  # shellcheck disable=SC2016  # jq's $void/$closed/$reg et al., not the shell's.
+  void_actioned_json="$(jq -c -n --argjson reg "$void_register_status_json" '
+    input as $void | input as $closed
+    | ($void | map((.repo // "") + "|" + (.item // ""))) as $pairs
+    | ($closed
+       | map(select((.repo + "|" + .item) as $k | ($pairs | index($k)) != null)
+             | {repo, item, by: "object-closed"})) as $closed_here
+    | ($reg | to_entries | map(.key as $repo | .value | to_entries[]
+       | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
+       | {repo: $repo, item: .key, by: "register-resolved"})) as $reg_done
+    | $closed_here + $reg_done' \
+    <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>/dev/null || echo '[]')"
+
+  void_json_before_retire="$void_json"
+  void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
+
+  if ! (( DRY_RUN )); then
+    # Both extracts on stdin (requirement 4g); a retire_void_items failure
+    # returns its input verbatim, so before == after and nothing is recorded.
+    # shellcheck disable=SC2016  # jq's $before/$after/$actioned et al.
+    void_retired_now_json="$(jq -c -n --argjson actioned "$void_actioned_json" '
+      input as $before | input as $after
+      | ($after | map((.repo // "") + "|" + (.item // ""))) as $kept
+      | [ $before[]
+          | ((.repo // "") + "|" + (.item // "")) as $k
+          | select(($kept | index($k)) == null)
+          | {repo, item, void_ts: .ts,
+             by: (($actioned | map(select(((.repo // "") + "|" + (.item // "")) == $k))
+                   | first | .by) // "actioned")} ]' \
+      <<<"$void_json_before_retire"$'\n'"$void_json" 2>/dev/null || echo '[]')"
+    while IFS= read -r void_retired_entry; do
+      [[ -n "$void_retired_entry" ]] || continue
+      log_event "void-retired" "$void_retired_entry"
+    done < <(jq -c '.[]' <<<"$void_retired_now_json" 2>/dev/null || true)
+  fi
+fi
+
+# Defence in depth alongside requirement 4g's stdin-only delivery (which is
+# what actually stops this reaching `MAX_ARG_STRLEN` again — retirement bounds
+# the steady state, not any one cycle's worst case): a `warning`, well under
+# the 131072-byte cap, if the extract stays large enough after retirement to
+# be worth a human's attention.
+void_json_bytes="$(printf '%s' "$void_json" | wc -c)"
+if (( void_json_bytes > 100000 )); then
+  log_event "warning" "$(jq -nc \
+    --argjson n "$(jq 'length' <<<"$void_json" 2>/dev/null || echo 0)" --argjson b "$void_json_bytes" \
+    '{detail: ("void extract is " + ($b | tostring) + " bytes across " + ($n | tostring)
+               + " entries after retirement — approaching the 131072-byte MAX_ARG_STRLEN cap; check void_retire_after_days and whether requirements 34k/34l are actioning items")}')"
 fi
 
 # The third extract (requirement 3h): what a previous Enabler engagement
@@ -3889,23 +4165,30 @@ refiner_prompt_sha=""
 [[ -f "$PROMPTS_DIR/refiner.md" ]] \
   && refiner_prompt_sha="$(stage_prompt_sha "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")"
 
+# The eight fleet-state arrays arrive on stdin, one JSON document per line,
+# bound positionally below in the order printed — never in argv (requirement
+# 4g). Each `--argjson` value is a single argv entry capped at MAX_ARG_STRLEN
+# (131072 bytes), and on 2026-08-12 the void extract alone crossed it: this
+# unguarded call then died at execve with `Argument list too long`, exit 126,
+# on every cycle of every node, before the Co-Ordinator ran — and without an
+# `attempt-failed` for requirement 2.7's crash-loop ladder to count. Only
+# values bounded by configuration stay in argv. A here-string rather than a
+# pipe, for requirement 4c's reason: under `pipefail` a producer's SIGPIPE
+# must not become this assignment's status.
+noop_stdin="$(printf '%s\n' \
+  "$ordered_repos_json" "$source_states_json" "$blocked_json" "$void_json" \
+  "$refinements_json" "$claimed_json" "$enabler_eligible_json" "$refiner_candidates_json")"
 noop_input="$(jq -nc \
-  --argjson repos "$ordered_repos_json" \
-  --argjson states "$source_states_json" \
-  --argjson blocked "$blocked_json" \
-  --argjson void "$void_json" \
-  --argjson refinements "$refinements_json" \
-  --argjson claimed "$claimed_json" \
-  --argjson eligible "$enabler_eligible_json" \
   --argjson sc "$selection_config_json" \
   --argjson ec "$enabler_config_json" \
   --arg psha "$coordinator_prompt_sha" \
   --arg esha "$enabler_prompt_sha" \
   --arg wst "$coordinator_sources_table" \
-  --argjson rcand "$refiner_candidates_json" \
   --argjson rc "$refiner_config_json" \
   --arg rsha "$refiner_prompt_sha" \
-  '{
+  'input as $repos | input as $states | input as $blocked | input as $void
+   | input as $refinements | input as $claimed | input as $eligible | input as $rcand
+   | {
      repos: [ $repos[] as $r
               | $r + { state: ((first($states[]? | select(.slug == $r.slug))) // {ok: false}) } ],
      blocked: $blocked,
@@ -3921,7 +4204,7 @@ noop_input="$(jq -nc \
      refiner_candidates: $rcand,
      refiner_config: $rc,
      refiner_prompt_sha: $rsha
-   }')"
+   }' <<<"$noop_stdin")"
 noop_fingerprint_value="$(noop_fingerprint <<<"$noop_input")"
 
 # Computed even when the skip is bypassed, because it is also what a
@@ -3938,19 +4221,21 @@ if [[ -n "$noop_skip" ]]; then
   exit 0
 fi
 
+# The five fleet-state arrays on stdin, never in argv (requirement 4g) —
+# the same delivery, order coupling and here-string reasoning as the no-op
+# fingerprint's build above.
+coordinator_stdin="$(printf '%s\n' \
+  "$ordered_repos_json" "$blocked_json" "$void_json" "$refinements_json" "$claimed_json")"
 coordinator_input="$(jq -nc \
-  --argjson repos "$ordered_repos_json" \
-  --argjson blocked "$blocked_json" \
-  --argjson void "$void_json" \
-  --argjson refinements "$refinements_json" \
-  --argjson claimed "$claimed_json" \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
   --argjson policies "$refinement_policy_json" \
-  '{repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
-    models: {default: $model_default, trivial: $model_trivial},
-    candidates_max: $cmax, refinement_policy: $policies}')"
+  'input as $repos | input as $blocked | input as $void
+   | input as $refinements | input as $claimed
+   | {repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
+      models: {default: $model_default, trivial: $model_trivial},
+      candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
 
 # --- 4. Co-Ordinator stage ---
 # `coordinator_sources_table` (computed above, ahead of the no-op fingerprint
@@ -4273,7 +4558,7 @@ fi
 preflight_register_json='{}'
 if [[ "$selected_source" == "tech-debt" ]]; then
   preflight_register_json="$(jq -nc --arg s "$selected_repo" \
-    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" "$selected_item")" \
+    --argjson m "$(gather_register_status "$selected_repo" "$selected_default_branch" selected "$selected_item")" \
     '{($s): $m}')"
 fi
 preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
@@ -4312,7 +4597,12 @@ impl_model="$(jq -r '.model' <<<"$work_order_json")"
 
 clone_dir="$workspace_root/$cycle_id"
 assert_in_workspace "$clone_dir"
-if ! gh repo clone "$repo_slug" "$clone_dir" -- --quiet 2>"$cycle_dir/clone.err"; then
+# `clone_repo` (lib/repo-clone.sh) — `git clone`, not `gh repo clone`, because
+# `gh` resolves the repository through a GraphQL query that is billed against
+# the API budget, and this is the last step before the cycle's expensive stage.
+# That file holds the full reasoning and the `CLONE_GIT` test seam; both
+# pipelines clone through it so they cannot diverge.
+if ! clone_repo "$repo_slug" "$clone_dir" 2>"$cycle_dir/clone.err"; then
   log_event "attempt-failed" "$(jq -nc --arg d "$(cat "$cycle_dir/clone.err")" '{stage: "workspace", detail: $d}')"
   # The claim was taken before the clone; a cycle that ends here must not
   # keep holding the item (requirement 17a's release rules).

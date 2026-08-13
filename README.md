@@ -289,6 +289,7 @@ Keys:
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Only `issues` and the sources fetched as structured data reach the Refiner's own engagement; `tech-debt`, `project-review` and `implementation-plan` still honour a policy in the Co-Ordinator's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked`. |
+| `void_retire_after_days` | `30` days | Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
@@ -314,6 +315,9 @@ Keys:
 | `stage_budget` | *(unset)* | Tuning for how the stage budgets derive themselves. Every key has a default in the code and none of them is a timeout; you almost certainly want none of it. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |
 | `limit_escalate_after_hours` | `24` | Hours. How long an automatic usage-limit stand-down may run before an escalation issue is filed; `0` turns it off. A manual stand-down never escalates. |
+| `github_min_core_budget` | `300` | GitHub REST points a cycle must have left before it starts. `0` turns the check off for this resource. |
+| `github_min_graphql_budget` | `100` | GitHub GraphQL points a cycle must have left before it starts. `0` turns the check off for this resource. |
+| `github_retry_max_wait_seconds` | `60` | Seconds. How long a single `gh` call may wait out a rate-limit refusal before failing; a process may spend twice this in total. `0` turns retrying off. |
 | `disable_default_ttl` | `4` | Hours. How long `--disable` lasts when neither `--for` nor `--until` says. See [Pausing the pipelines](#pausing-the-pipelines). |
 | `none_selected_recheck_hours` | `24` | Hours. The Co-Ordinator is engaged at least this often even when nothing has changed. See [Skipping no-op cycles](#skipping-no-op-cycles). `0` disables that safety net entirely — not recommended. |
 | `image_behind_grace_hours` | `3` | Hours a node may sit behind the newest published image before the dashboard's **image behind** badge turns amber and `scripts/check-node-image.sh` exits non-zero. A roll defers while a cycle is in flight, so being behind an image published more recently than this is the ordinary mid-roll state. See [Is this node on the newest image](deploy/docker/README.md#is-this-node-on-the-newest-image). |
@@ -965,6 +969,19 @@ Both are listed on the dashboard. The void list only ever grows, so it is shown
 short: the ten newest rows, each three lines tall, with **See more** at the foot
 of the table for the older ones and any row opening to its full reason when you
 click it. The heading counts every void item however few rows are showing.
+
+The dashboard's own list — and the item's void mark itself — never shrink; what
+does is the copy the pipeline hands the Co-Ordinator each cycle. Once a void is
+both settled — its issue or pull request closed, or its tech-debt row read
+`resolved`/`not-debt` — and `void_retire_after_days` old (30 by default), it
+drops out of that copy: there is nothing left for the pipeline to keep
+repeating to itself about an item everyone has already finished with. `0`
+switches this off. A retirement is recorded in the pipeline's own log, so a
+settled verdict is never re-checked against GitHub — and once an item has
+retired, reopening its closed issue or pull request is enough by itself to
+put it back in front of the pipeline as a fresh, ordinary candidate; the
+`unvoided` label below is the route that works while the void is still being
+carried.
 
 To reopen a void item — you believe the work has genuinely regressed, or the
 verdict was wrong — **label any issue or pull request that names the item with

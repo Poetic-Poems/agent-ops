@@ -221,7 +221,11 @@ void_items() {
 # This is the sweep's own idempotency: closing a void'd issue or pull request
 # is a one-shot action, deliberately never repeated even if a human reopens
 # the object without applying the `unvoid_label` (requirement 34f) — the
-# sanctioned way to say a void was wrong. Without this record the sweep would
+# sanctioned way to say a void was wrong. (Requirement 34n qualifies that
+# since: once the void has *retired* — actioned and `void_retire_after_days`
+# old — a plain reopen does put the item back in front of the pipeline, as a
+# fresh candidate rather than a cleared void; 34f records the ratified
+# position.) Without this record the sweep would
 # re-close whatever it had just reopened, every cycle, forever: exactly the
 # "unvoided" bug 34f itself warns against, aimed at a human's plain re-open
 # instead of at the label.
@@ -243,6 +247,142 @@ void_object_closed_items() {
       | jq -sc "$jq_prog" 2>/dev/null || true)"
   fi
   [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
+# void_retired_items [LOG_FILE]
+# Print, as a JSON array of {repo, item, ts}, the most recent `void-retired`
+# event for every {repo, item} pair one was ever recorded against (requirement
+# 34n). Reads LOG_FILE, or stdin if it is omitted or "-".
+#
+# `void-retired` is a fact, not a state, for the same reason and in the same
+# shape as `void-object-closed` above: retirement is decided once, on evidence
+# (actioned and old — requirement 34n), and recording the decision is what
+# stops the next cycle asking GitHub the same settled question about the same
+# id forever. The one wrinkle a plain unique-pairs read would miss is *time*:
+# an item can be voided afresh after its old verdict retired (the object
+# reopened and re-gathered, then found already-done again), and the new
+# `item-void` must not be masked by the old retirement — so the latest `ts`
+# per pair is kept, for `subtract_retired_voids` to order against.
+#
+# Repoless or itemless events are dropped, as everywhere else in this file: a
+# retirement is only ever recorded from an actioned pair, and an actioned pair
+# always names both.
+void_retired_items() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "void-retired"
+                   and (.repo // "") != "" and (.item // "") != "") ]
+    | group_by((.repo // "") + "|" + .item)
+    | map(sort_by(.ts) | last | {repo, item, ts})'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
+# subtract_retired_voids VOID_JSON RETIRED_JSON
+# Print VOID_JSON (the shape `void_items` returns) with every entry whose
+# {repo, item} pair a RETIRED_JSON record (`void_retired_items`) covers
+# dropped — "covers" meaning the retirement's `ts` is strictly later than the
+# void entry's own, the same ordering rule every clearing event here obeys
+# (`LATEST_UNRESOLVED_JQ`), so a fresh `item-void` recorded *after* the pair
+# retired re-enters the extract on its own terms.
+#
+# This is requirement 34n's memory, applied before anything reads the extract:
+# the bound it gives holds even on a cycle whose register read fails, because
+# it needs nothing but the log — and it is what keeps the per-cycle register
+# read proportional to the unretired residue rather than to every void ever
+# filed. Both inputs are unbounded, so both travel on stdin, never in argv
+# (requirement 4g). Fails safe the same way `retire_void_items` does: a jq
+# failure on either input returns VOID_JSON verbatim — never subtracting is
+# one oversized extract, wrongly subtracting is a verdict silently dropped.
+subtract_retired_voids() {
+  local void_json="${1:-[]}" retired_json="${2:-[]}" out=""
+  # shellcheck disable=SC2016  # jq's $void/$retired/$e, not the shell's.
+  out="$(jq -c -n '
+    input as $void | input as $retired
+    | $void
+    | map(. as $e
+          | select($retired
+                   | any((.repo // "") == ($e.repo // "")
+                         and (.item // "") == ($e.item // "")
+                         and ((.ts // "") > ($e.ts // "")))
+                   | not))
+  ' <<<"$void_json"$'\n'"$retired_json" 2>/dev/null || true)"
+  [[ -n "$out" ]] || out="$void_json"
+  printf '%s' "$out"
+}
+
+# retire_void_items VOID_JSON ACTIONED_JSON RETIRE_AFTER_DAYS [NOW_EPOCH]
+# Print VOID_JSON (the shape `void_items` returns) with every entry that is
+# both **actioned** — its `{repo, item}` pair present in ACTIONED_JSON — and
+# **old** — its `ts` at least RETIRE_AFTER_DAYS old — dropped (requirement
+# 34n). Everything else, including every entry `_latest_unresolved` groups
+# under the same key, passes through unchanged.
+#
+# This does not change what is void (requirement 34c is untouched, and every
+# internal reader that subtracts void from blocked — `open_blocked_items`,
+# `enabler_eligible_items`, `refinements_map`, each its own copy of
+# `LATEST_UNRESOLVED_JQ` rather than a call to `void_items` — recomputes the
+# *raw*, unretired set straight off the log, so a retired item never
+# resurfaces as blocked). It only shrinks the *extract* a caller goes on to
+# hand to the Co-Ordinator, the no-op fingerprint, or the Refiner's candidate
+# filter — the value requirement 4g moved onto stdin after it crossed
+# `MAX_ARG_STRLEN` at 122 entries on 2026-08-12, and which keeps growing by
+# one entry for every item ever voided if nothing ever retires. ACTIONED_JSON
+# is the caller's business, not this function's: `void_object_closed_items`
+# (requirement 34k, an issue or pull request GitHub confirms closed) and a
+# register row read `resolved` or `not-debt` (requirement 34i's own "gone"
+# statuses, checked for the void set the same way that requirement already
+# checks it for the blocked one) are both `{repo, item}` pairs, so the caller
+# simply concatenates them.
+#
+# A void naming no repo — the hand-appended form requirement 34c allows —
+# never matches an ACTIONED_JSON entry (every actioned pair names a repo) and
+# so is never retired; a human's own line is left for a human to retract.
+#
+# Fails safe in every direction an unattended cycle can hit: RETIRE_AFTER_DAYS
+# 0 (or not a non-negative integer) disables retirement outright and returns
+# VOID_JSON verbatim, unparseable input (either JSON argument, or a `ts` that
+# does not parse as ISO-8601) counts as "not old" rather than erroring the
+# entry away, and a jq failure of any kind returns VOID_JSON unchanged. Never
+# retiring is always the safe direction here — the failure mode is one more
+# cycle carrying an entry that was ready to go, not a void quietly reopened.
+#
+# This function only *decides*; the caller records each entry it dropped as a
+# `void-retired` event, and it is the recorded set (`void_retired_items`,
+# subtracted by `subtract_retired_voids` above) that keeps an id from being
+# re-evidenced and re-decided every cycle thereafter.
+retire_void_items() {
+  local void_json="${1:-[]}" actioned_json="${2:-[]}" retire_days="${3:-0}" now="${4:-}"
+  local out=""
+  if ! [[ "$retire_days" =~ ^[0-9]+$ ]] || (( retire_days == 0 )); then
+    printf '%s' "$void_json"
+    return 0
+  fi
+  [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
+  # Both arrays on stdin, never in argv (requirement 4g): VOID_JSON is the
+  # unbounded extract itself, and ACTIONED_JSON grows with it — an --argjson
+  # here is the same delivery that failed at MAX_ARG_STRLEN on 2026-08-12.
+  # shellcheck disable=SC2016  # jq's $done/$e/$key/$t/$old, not the shell's.
+  out="$(jq -c -n --argjson days "$retire_days" --argjson now "$now" '
+    input as $void | input as $actioned
+    | ($actioned | map((.repo // "") + "|" + (.item // "")) | unique) as $done
+    | $void
+    | map(. as $e
+          | (($e.repo // "") + "|" + ($e.item // "")) as $key
+          | ((try ($e.ts | fromdateiso8601) catch null)) as $t
+          | (($done | index($key)) != null) as $actioned_hit
+          | ($t != null and ($now - $t) >= ($days * 86400)) as $old
+          | select(($actioned_hit and $old) | not))
+  ' <<<"$void_json"$'\n'"$actioned_json" 2>/dev/null || true)"
+  [[ -n "$out" ]] || out="$void_json"
   printf '%s' "$out"
 }
 

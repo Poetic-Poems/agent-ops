@@ -133,6 +133,24 @@ assert_eq "no voids, no clearances" "[]" "$(unvoid_clearances "$REQ_92" '[]')"
 assert_eq "a request with no items clears nothing" "[]" \
   "$(unvoid_clearances '[{"repo": "r", "labelled_at": "2026-07-25T21:40:28Z"}]' "$VOIDS")"
 
+# --- The argv cap (requirement 4g) ---
+# The void extract is unbounded, and on 2026-08-12 it crossed MAX_ARG_STRLEN
+# (131072 bytes, the kernel's per-entry argv cap). Delivered via `--argjson`,
+# that made this function's jq fail into its `|| true` — every request read
+# as clearing nothing, so the human's one escape hatch silently stopped
+# working fleet-wide, with nothing on any dashboard to say so. Requirement 4g
+# moves the arrays onto stdin; this pins it, with a fixture the first
+# assertion proves is genuinely past the cap.
+FILLER="$(jq -nc '[range(1300) | {repo: "Poetic-Poems/filler",
+  item: ("TD-fill-" + tostring), ts: "2026-07-01T00:00:00Z",
+  detail: ("pad " + ("x" * 80)), event: "item-void"}]')"
+BIG_VOIDS_DOCS="$FILLER"$'\n'"$VOIDS"
+BIG_VOIDS="$(jq -sc 'add' <<<"$BIG_VOIDS_DOCS")"
+assert_eq "the oversized fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$BIG_VOIDS" | wc -c) > 131072 ))"
+assert_eq "a void extract past the argv cap still clears the labelled item" \
+  "Poetic-Poems/poetic|TD26072114" "$(cleared "$REQ_92" "$BIG_VOIDS")"
+
 # The caller is a cycle under `set -euo pipefail`, at the point it is about to
 # record state. Malformed input must yield an empty array, not a dead cycle.
 (

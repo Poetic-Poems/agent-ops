@@ -139,6 +139,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -151,21 +153,45 @@ fi
 # The open, agent-raised, changes-requested PRs, with their head commit so the
 # candidate can carry `head_sha`.
 #
-# stderr is shown, not swallowed. A `gh` that rejects a field name — as it did
-# for `headRefOid`, which this version of `gh` does not have — otherwise
+# `headRefOid` is the head commit's sha directly. This used to ask for the
+# whole `commits` collection and read `.commits[-1].oid` off the end of it,
+# which cost 30 GraphQL points per call against a repository with three open
+# pull requests — `gh` requests `commits(last: 100)` for every one of the
+# `--limit` slots and GitHub charges for the nodes asked for, not the ones
+# returned. Two gatherers and two nodes paying that on a 15-minute cadence was
+# most of the 5,000-point hourly budget, and on 2026-08-12 it ran out
+# fleet-wide. The same listing with `headRefOid` in place of `commits` measures
+# 1 point. (The comment this replaces said `gh` had no `headRefOid` field; that
+# has not been true for some releases.)
+#
+# stderr is shown, not swallowed. A `gh` that rejects a field name otherwise
 # degrades to an empty array indistinguishable from "nothing is under review",
 # and the source silently never fires. That is the `[]`-on-error trap in the
 # Gotchas table, and it cost a debugging round here before this line existed.
 # Heads may be `agent/…` or — for tech-debt items, whose claim branch is the
 # human protocol's own `td/<ID>` — `td/…`; the label filter above is the
 # primary "ours" signal either way.
-prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
-        --json number,title,headRefName,commits,isDraft,reviewDecision,url,body \
-        --jq "[.[] | select(.isDraft | not)
+all_prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+        --limit "$GITHUB_PR_LIST_LIMIT" \
+        --json number,title,headRefName,headRefOid,isDraft,reviewDecision,url,body \
+        || true)"
+if [[ -z "$all_prs" ]] || ! jq -e 'type == "array"' <<<"$all_prs" >/dev/null 2>&1; then
+  printf '[]'
+  exit 0
+fi
+
+# A listing at the cap may be missing entries (lib/github-limit.sh). Here that
+# can only lose a candidate — a pull request whose review round simply is not
+# offered this cycle — so it is said out loud and the run continues, unlike the
+# back-pressure gate, where the same truncation would let work through.
+if github_pr_list_truncated "$(jq 'length' <<<"$all_prs")"; then
+  echo "gather-review-feedback: $slug: the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a review round beyond it is not offered this cycle" >&2
+fi
+
+prs="$(jq -c "[.[] | select(.isDraft | not)
                    | select(.reviewDecision == \"CHANGES_REQUESTED\")
                    | select((.headRefName | startswith(\"$branch_prefix\"))
-                            or (.headRefName | startswith(\"td/\")))]" \
-        || true)"
+                            or (.headRefName | startswith(\"td/\")))]" <<<"$all_prs" 2>/dev/null || true)"
 if [[ -z "$prs" ]] || ! jq -e 'type == "array"' <<<"$prs" >/dev/null 2>&1; then
   printf '[]'
   exit 0
@@ -175,7 +201,7 @@ out='[]'
 while IFS= read -r pr; do
   [[ -n "$pr" ]] || continue
   number="$(jq -r '.number' <<<"$pr")"
-  head_sha="$(jq -r '.commits[-1].oid // ""' <<<"$pr")"
+  head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || continue
 
   # Every review, so the round can be assembled and the blocking review found.

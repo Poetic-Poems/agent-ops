@@ -443,6 +443,20 @@
         "spec": "The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's \"only a human may clear a void\" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`."
       }
     },
+    "void_retire_after_days": {
+      "description": "How old a fully-actioned void (its GitHub object closed, or its register row read resolved/not-debt) must be before it is dropped from the extract. 0 disables retirement.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 30,
+      "x-docs": {
+        "readme": "Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement.",
+        "spec": "How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item.",
+        "value": {
+          "readme": "`30` days",
+          "spec": "30 d"
+        }
+      }
+    },
     "prompt_overrides": {
       "description": "Per-installation prompt extension or replacement, so house rules survive an update instead of forking prompts/. A relative path resolves against `state_dir`. Absent, or a stage absent from it, reproduces the shipped prompt byte for byte.",
       "type": "object",
@@ -806,6 +820,45 @@
         "spec": "The automatic-freeze escalation threshold of requirement 2 (#244): aged from `limit_standdown_since` (the first `limit-hit` of the current freeze, not its latest extension), raised once per freeze via the `limit-freeze-escalated` event, filed in `crash_loop_repo` with `enabler_escalation_label` and `enabler_assignee`. `0` disables it. A manual stand-down never pages the person who set it.",
         "value": {
           "spec": "24 h"
+        }
+      }
+    },
+    "github_min_core_budget": {
+      "description": "GitHub REST (`core`) rate-limit points a cycle must find remaining before it is worth starting. Below this the Script stands the cycle down at requirement 2.0, before any model token is spent, until GitHub's stated reset. `0` turns this resource's floor off.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 300,
+      "x-docs": {
+        "readme": "GitHub REST points a cycle must have left before it starts. `0` turns the check off for this resource.",
+        "spec": "The `core` floor of the GitHub API budget check (requirement 2.0). Sized above one cycle's typical REST spend so the cycle that starts can finish, and read from a `/rate_limit` call that is itself exempt from the limits it reports. `0` disables the floor.",
+        "value": {
+          "spec": "300 points"
+        }
+      }
+    },
+    "github_min_graphql_budget": {
+      "description": "GitHub GraphQL rate-limit points a cycle must find remaining before it is worth starting. Metered separately from `core` and, in practice, the one that runs out first. `0` turns this resource's floor off.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 100,
+      "x-docs": {
+        "readme": "GitHub GraphQL points a cycle must have left before it starts. `0` turns the check off for this resource.",
+        "spec": "The `graphql` floor of the GitHub API budget check (requirement 2.0). Separate from `github_min_core_budget` because GitHub meters the two pools independently and either can be the binding one — on 2026-08-12 the fleet exhausted `graphql` with 96% of its `core` hour unspent. `0` disables the floor.",
+        "value": {
+          "spec": "100 points"
+        }
+      }
+    },
+    "github_retry_max_wait_seconds": {
+      "description": "How long `lib/github-limit.sh`'s `gh` wrapper may wait out a single rate-limit refusal before giving up on that call. A whole process may spend twice this across all of its calls. Bounded well below the cycle interval: a wait longer than this is the budget check's problem, not a retry's.",
+      "type": "integer",
+      "minimum": 0,
+      "default": 60,
+      "x-docs": {
+        "readme": "Seconds. How long a single `gh` call may wait out a rate-limit refusal before failing; a process may spend twice this in total. `0` turns retrying off.",
+        "spec": "The per-call wait bound of the `gh` wrapper (requirement 2.0a). A secondary rate limit waits a fixed fallback, a primary one waits until GitHub's stated reset, and either is abandoned if it exceeds this — the cycle holds a lock and runs on a `cycle_interval_minutes` tick, so a wrapper that waited out a primary limit would collide with the next tick. `0` turns retrying off.",
+        "value": {
+          "spec": "60 s"
         }
       }
     },
