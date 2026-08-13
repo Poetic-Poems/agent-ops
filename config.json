@@ -12,7 +12,7 @@
     {
       "slug": "Poetic-Poems/agent-ops",
       "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality", "register-hygiene"],
-      "nice": -5
+      "nice": -18
     }
   ],
   "state_dir": "~/.local/state/poetic-agents",
