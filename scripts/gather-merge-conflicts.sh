@@ -18,7 +18,11 @@
 # Candidate shape (our own PRs):
 #   {
 #     "source": "merge-conflicts",
-#     "ref": "pr-57-conflict-1a2b3c4d5e6f", // stable, and scoped to THIS head
+#     "ref": "pr-57-conflict-1a2b3c4d5e6f", // stable, scoped to THIS head; a
+#                                             // Dependabot candidate superseded
+#                                             // by a newer bump instead mints
+#                                             // "pr-57-superseded-1a2b3c4d5e6f"
+#                                             // (see the "superseded_by" note below)
 #     "number": 57,
 #     "pr_number": 57,
 #     "url": "https://github.com/…/pull/57",
@@ -42,7 +46,14 @@
 #                                 // the head SHA — see lib/dependabot-bump.sh)
 #   "superseded_by": null        // another open Dependabot PR's number, when
 #                                 // it bumps the same dependency to a newer
-#                                 // version than this one — this PR is moot
+#                                 // version than this one — this PR is moot.
+#                                 // When set, `ref` above mints the distinct
+#                                 // "pr-<n>-superseded-<head-sha>" shape
+#                                 // instead of "pr-<n>-conflict-<head-sha>",
+#                                 // so requirement 34k can close this PR on
+#                                 // the void without re-admitting an
+#                                 // unrelated, merely-conflicted PR of ours
+#                                 // that happens to share the conflict shape
 #   "superseded_evidence": null  // present only when superseded_by is —
 #                                 // pre-formatted, corroboration-safe evidence
 #                                 // text a Co-Ordinator can copy verbatim into
@@ -154,6 +165,12 @@
 # review-feedback's per-round refs: an unattended system expires items by
 # irrelevance.
 #
+# The same head-sha scoping applies to the `pr-<n>-superseded-<head-sha>` shape
+# a superseded Dependabot candidate mints instead: a fresh commit on that PR's
+# branch (a rebase, say) mints a fresh ref just as it would for the conflict
+# shape, so a stale void of an earlier head never suppresses a state nobody has
+# looked at.
+#
 # Fails safe: always prints a valid JSON array and exits 0. A repo with no
 # conflicted PRs contributes `[]`; an API that will not answer contributes `[]`
 # too (the source simply does not fire this cycle) — but note gather-source-state.sh
@@ -247,9 +264,12 @@ emit() {  # <pr-json> <bot: true|false>
     fi
   fi
 
+  local ref_kind="conflict"
+  [[ -n "$superseded_by" ]] && ref_kind="superseded"
+
   cand="$(jq -nc \
     --argjson pr "$pr" \
-    --arg ref "pr-${number}-conflict-${head_sha:0:12}" \
+    --arg ref "pr-${number}-${ref_kind}-${head_sha:0:12}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
     --argjson bot "$bot" \

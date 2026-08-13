@@ -110,6 +110,16 @@
 # Environment:
 #   VOID_GUARD_GH  override `gh` (tests stub it).
 
+# `DEPENDABOT_LOGIN`, `dependabot_bump_family` and `dependabot_newer_open_pr`
+# — needed to re-derive a `pr-<n>-superseded-…` void's own claim live, below —
+# are lib/dependabot-bump.sh's, sourced here rather than re-implemented
+# (requirement 34a's one-definition rule). Self-contained, the same way
+# lib/claim.sh sources its own dependencies, so this file works whether
+# agent-cycle.sh sources it first or a test sources lib/void-guard.sh alone.
+VOID_GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/dependabot-bump.sh
+. "$VOID_GUARD_DIR/lib/dependabot-bump.sh"
+
 # entry_field_text ENTRY_JSON FIELD
 # Print one field of a model-supplied entry as a single string — objects and
 # arrays are rendered as JSON so a caller can test emptiness without caring
@@ -392,11 +402,11 @@ void_evidence_cited_commit_shas() {
 # void_finishing_item_pr ITEM
 # Print the pull request number a finishing-source item id embeds, and
 # return 0 — ITEM shaped `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-
-# <review-id>` or `pr-<n>-conflict-<head-sha>` (scripts/gather-abandoned-
-# drafts.sh, gather-review-feedback.sh, gather-merge-conflicts.sh) prints
-# `<n>`. Prints nothing and returns 1 when ITEM is not shaped that way — an
-# ordinary tech-debt id, issue number or review recommendation mints nothing
-# a PR number can be read out of.
+# <review-id>`, `pr-<n>-conflict-<head-sha>` or `pr-<n>-superseded-<head-sha>`
+# (scripts/gather-abandoned-drafts.sh, gather-review-feedback.sh,
+# gather-merge-conflicts.sh) prints `<n>`. Prints nothing and returns 1 when
+# ITEM is not shaped that way — an ordinary tech-debt id, issue number or
+# review recommendation mints nothing a PR number can be read out of.
 void_finishing_item_pr() {
   local item="$1" num
   num="$(grep -oiE '^pr-[0-9]+-' <<<"$item" 2>/dev/null | grep -oE '[0-9]+' || true)"
@@ -405,16 +415,16 @@ void_finishing_item_pr() {
 }
 
 # void_finishing_item_shape ITEM
-# Print which of the three finishing sources minted ITEM's id — `abandoned`,
-# `review` or `conflict` — and return 0. Prints nothing and returns 1 for
-# anything else, including a `pr-<n>-…` id whose middle word is none of those:
-# an unrecognised shape gets the strictest reading below, never the most
-# permissive one. Matched and reported case-insensitively, the same discipline
-# `void_candidate_prs` applies to item ids — the gatherers mint these in lower
-# case, but what reaches an entry is whatever the writer typed.
+# Print which of the four finishing sources minted ITEM's id — `abandoned`,
+# `review`, `conflict` or `superseded` — and return 0. Prints nothing and
+# returns 1 for anything else, including a `pr-<n>-…` id whose middle word is
+# none of those: an unrecognised shape gets the strictest reading below, never
+# the most permissive one. Matched and reported case-insensitively, the same
+# discipline `void_candidate_prs` applies to item ids — the gatherers mint
+# these in lower case, but what reaches an entry is whatever the writer typed.
 void_finishing_item_shape() {
   local item="$1" shape
-  shape="$(grep -oiE '^pr-[0-9]+-(abandoned|review|conflict)-' <<<"$item" 2>/dev/null || true)"
+  shape="$(grep -oiE '^pr-[0-9]+-(abandoned|review|conflict|superseded)-' <<<"$item" 2>/dev/null || true)"
   [[ -n "$shape" ]] || return 1
   shape="${shape#*-}"
   shape="${shape#*-}"
@@ -467,16 +477,29 @@ void_finishing_item_shape() {
 #     definitively conflicting and is accepted, the same asymmetry the
 #     gatherer chose in the other direction — it admits a candidate on
 #     `CONFLICTING` and never on the transient `UNKNOWN`.
-#     One author is excused from that last test: Dependabot. A superseded
-#     bump is void while its own PR is still open *and* still conflicting
-#     (`superseded_by`, requirement 3s) — the claim is "a newer bump replaces
-#     this one", which no mergeability reading can confirm, and requirement 3s
-#     is the only route by which a still-conflicting PR becomes void at all.
-#     The excuse is scoped to this shape, where that route lives, and applies
-#     only after the state test has run.
+#   - `pr-<n>-superseded-…` — a corroborated void of this shape *does* close
+#     pull request `<n>` (requirement 34k's ordinary act-on-void path, once
+#     the id shape distinguishes it from `-conflict-`). Closing a Dependabot
+#     PR is not the same act as closing a human-visible PR of ours — nobody is
+#     mid-review on the bot's own branch — but it is still an irreversible,
+#     human-visible act on GitHub, so it earns its own live check rather than
+#     the conflict shape's mergeability test, which proves the wrong claim
+#     here (a superseded bump can be superseded whether or not it still
+#     conflicts). Accepted only when **both** hold, re-derived live and never
+#     read off the entry's own `evidence`: the PR's author is
+#     `dependabot[bot]` (`DEPENDABOT_LOGIN` is the GraphQL form the gatherer
+#     reads; the REST fetch here reports the same account this way — see
+#     `lib/dependabot-bump.sh`), and `dependabot_newer_open_pr`, re-run now
+#     against the repository's *currently* open Dependabot pull requests,
+#     still names a strictly-newer open bump of the same family. Either half
+#     failing refuses with a reason naming which one. This is the excuse
+#     `-conflict-` used to carry for Dependabot before this shape existed
+#     (TD-PPagop-26081304) — moved here because the claim it excuses
+#     ("superseded") now has its own shape to be corroborated against, rather
+#     than riding on a shape whose own test it can never honestly pass.
 void_finishing_pr_reason() {
   local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
-  local pr_json state shape login files
+  local pr_json state shape login files head_ref dependabot_open
 
   pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
   if [[ -z "$pr_json" ]]; then
@@ -497,13 +520,28 @@ void_finishing_pr_reason() {
       <<<"$pr_json" 2>/dev/null || true)" != "conflicting" ]]; then
       return 0
     fi
-    login="$(jq -r '.user.login // ""' <<<"$pr_json" 2>/dev/null || true)"
-    if [[ "$login" == "dependabot[bot]" ]]; then
-      return 0
-    fi
     printf 'refuted: PR #%s in %s, whose conflict item %s reports resolved, is still conflicting against its base' \
       "$num" "$slug" "$item"
     return 1
+  fi
+
+  if [[ "$shape" == "superseded" ]]; then
+    login="$(jq -r '.user.login // ""' <<<"$pr_json" 2>/dev/null || true)"
+    if [[ "$login" != "dependabot[bot]" ]]; then
+      printf 'refuted: PR #%s in %s, whose supersession item %s claims a Dependabot bump, is authored by %s' \
+        "$num" "$slug" "$item" "${login:-an unreadable author}"
+      return 1
+    fi
+    head_ref="$(jq -r '.head.ref // ""' <<<"$pr_json" 2>/dev/null || true)"
+    dependabot_open="$("$gh_bin" pr list -R "$slug" --state open --author "$DEPENDABOT_LOGIN" \
+      --json number,headRefName 2>/dev/null)" || dependabot_open=""
+    jq -e 'type == "array"' <<<"$dependabot_open" >/dev/null 2>&1 || dependabot_open='[]'
+    if [[ -z "$(dependabot_newer_open_pr "$num" "$head_ref" "$dependabot_open")" ]]; then
+      printf 'refuted: PR #%s in %s, whose supersession item %s claims a newer open Dependabot bump of the same family, has none open now' \
+        "$num" "$slug" "$item"
+      return 1
+    fi
+    return 0
   fi
 
   files="$("$gh_bin" api "repos/$slug/pulls/$num/files" --jq 'length' 2>/dev/null)" || files=""
@@ -534,9 +572,10 @@ void_finishing_pr_reason() {
 # One item shape is corroborated differently: a finishing-source item *is* a
 # pull request. The gatherers mint its id from the PR's own number —
 # `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
-# `pr-<n>-conflict-<head-sha>` (scripts/gather-abandoned-drafts.sh,
-# gather-review-feedback.sh, gather-merge-conflicts.sh) — so citing that very
-# pull request is not a loose association, it is the item's own definition.
+# `pr-<n>-conflict-<head-sha>`, `pr-<n>-superseded-<head-sha>`
+# (scripts/gather-abandoned-drafts.sh, gather-review-feedback.sh,
+# gather-merge-conflicts.sh) — so citing that very pull request is not a loose
+# association, it is the item's own definition.
 # Nothing will ever write `pr-205-abandoned-1a2b3c4d5e6f` in PR #205's body or
 # branch name, so the body/branch test below would refuse the most natural
 # evidence these items can carry. That refusal would fall precisely on the

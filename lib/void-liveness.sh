@@ -8,8 +8,10 @@
 # "actioned" was only ever defined for the two shapes requirements 34k and 34l
 # already act on. Every other shape a cycle can void —
 # `dependabot-alert-<n>`/`code-scanning-alert-<n>`, `register-hygiene-<hash>`,
-# `failed-run-<workflow>`, and `pr-<n>-conflict-<head-sha>` — had no actioned
-# signal at all, so a void of one of those shapes never retired and the
+# `failed-run-<workflow>`, and `pr-<n>-conflict-<head-sha>` (later joined by
+# its sibling shape `pr-<n>-superseded-<head-sha>`, TD-PPagop-26081304) — had
+# no actioned signal at all, so a void of one of those shapes never retired
+# and the
 # extract kept the same unbounded growth curve requirement 34n exists to stop,
 # underneath the part it does bound.
 #
@@ -73,11 +75,17 @@ VOID_LIVENESS_REGISTER_HYGIENE_RE='^register-hygiene-[0-9a-f]{12}$'
 # filename may carry dots, underscores or hyphens).
 VOID_LIVENESS_FAILED_RUN_RE='^failed-run-.+$'
 
-# scripts/gather-merge-conflicts.sh's own ref for the shape requirement 34k
-# deliberately excludes from its close (the addendum to TD-PPagop-26081303):
-# `pr-<n>-conflict-` plus the head SHA's leading 12 hex characters
-# (`${head_sha:0:12}`).
-VOID_LIVENESS_MERGE_CONFLICT_RE='^pr-[0-9]+-conflict-[0-9a-f]{6,40}$'
+# scripts/gather-merge-conflicts.sh's own two ref shapes, both scoped to a
+# head SHA's leading 12 hex characters (`${head_sha:0:12}`): `pr-<n>-conflict-`,
+# the shape requirement 34k deliberately excludes from its close (the addendum
+# to TD-PPagop-26081303), and `pr-<n>-superseded-`, the shape a Dependabot
+# supersession (requirement 3s) mints instead and that 34k *does* close
+# (TD-PPagop-26081304). Both retire from the void extract the same way — this
+# file's own absent-from-this-cycle's-gather test — and the superseded shape
+# additionally earns a `void-object-closed` once 34k closes its pull request;
+# the two signals coincide (a closed pull request also leaves the gather), so
+# sharing one regex here is redundant-but-safe rather than a competing rule.
+VOID_LIVENESS_MERGE_CONFLICT_RE='^pr-[0-9]+-(conflict|superseded)-[0-9a-f]{6,40}$'
 
 # void_liveness_actioned VOID_JSON GATHER_JSON
 # Print, as a JSON array of `{repo, item, by}`, the pairs from VOID_JSON that
@@ -210,10 +218,11 @@ void_review_plan_actioned() {
 # `code-quality` together — either alone keeps its voids live.
 #
 # Deliberately scoped to the shapes whose id *form* names the source that
-# mints them. A bare issue number or a non-`-conflict-` `pr-<n>-…` is offered
-# by several sources (`issues:<band>`, `review-feedback`, `abandoned-drafts`,
-# `human-visibility`), so no such inverse exists and no `source-dropped`
-# verdict can be read off the id — those keep the closed-object signal they
+# mints them. A bare issue number or a `pr-<n>-…` shaped neither `-conflict-`
+# nor `-superseded-` is offered by several sources (`issues:<band>`,
+# `review-feedback`, `abandoned-drafts`, `human-visibility`), so no such
+# inverse exists and no `source-dropped` verdict can be read off the id —
+# those keep the closed-object signal they
 # already had. The `repo-dropped` half needs no map at all and so applies to
 # every shape: nothing in a repo the config does not name can be offered by
 # any source.
