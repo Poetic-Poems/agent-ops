@@ -3499,8 +3499,9 @@ runs unattended.
     identical to the empty orphan, so its ref can be deleted mid-run — the
     Implementor's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
-17c. **The post-merge closing-keyword sweep.** Requirement 25a's CI check
-    stops a *new* pull request from merging without a real closing keyword;
+17c. **The post-merge closing-keyword sweep.** Requirement 25a's checks — its
+    CI workflow and its script-side gate — stop a *new* pull request from
+    merging without a real closing keyword;
     this is the backstop for what already got through — a PR merged before
     that check existed, or one that merged some other way — and for the
     ordinary lag between a fix landing and the issue it was meant to close
@@ -3882,8 +3883,9 @@ runs unattended.
     it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
     one, the item is complete only once that row is flipped or the
     Implementor has said why the evidence did not hold up.
-25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
-    trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
+25a. **The closing keyword requirement 25 asks for is enforced deterministically
+    — by CI and by the Script — not by trusting the prompt.**
+    `.github/workflows/closing-keyword.yml` runs
     `scripts/check-closing-keyword.sh` against the PR body and head branch
     on every `pull_request` event, and two anchors decide what the body owes:
 
@@ -4164,6 +4166,14 @@ runs unattended.
     permission cannot silently freeze every pull request's handoff fleet-wide.
     An `unknown` alert read never softens a `dirty` required-check verdict;
     required checks are asked first and gate on their own.
+
+    One further check shares this gate: requirement 25a's script-side
+    closing-keyword gate (`lib/closing-keyword-gate.sh`, component 17a) is
+    asked here too, after `review_gate_verdict` and before requirement 31's
+    draft flip, and a `dirty` verdict from it is recorded as the same
+    requirement 32a handback. It is asked again here rather than trusted from
+    the pass it made when the pull request was raised, for the same reason
+    the checks above are read fresh: a body can be edited between the two.
 
     #216 itself: the human resolved it directly on the pull request (renaming
     the flagged constant, commit `8e62ff6`) before this requirement existed to
@@ -6811,7 +6821,12 @@ What exists, and the requirements each part answers to:
     and runs both through `scripts/check-closing-keyword.sh` unmodified,
     printing `clean` or `dirty<TAB>reason` — the same shape
     `lib/review-gate.sh`'s `review_gate_verdict` reports, so a caller folds
-    both into one handoff gate. An unreadable pull request or an empty URL
+    both into one handoff gate. The reason is always a single line — the
+    checker emits one `::error::`-prefixed line per fault and an `agent/<N>`
+    branch missing its marker earns two, so they are flattened into one and
+    the workflow-command prefix stripped, every caller parsing the verdict
+    with a single `read` that would otherwise keep only the first. An
+    unreadable pull request or an empty URL
     is `dirty`, never a crash. `agent-cycle.sh` calls it at the two points
     it already knows a pull request's body and head branch: right after the
     Implementor's PR is raised (refusing the handoff to the Reviewer stage
@@ -7967,7 +7982,9 @@ pull request, run the ones the change touches and any it could regress.
    is dirty naming the issue (the regression the underlying checker exists
    for), an `agent/<N>` branch with no marker is dirty naming the missing
    marker, and an unreadable pull request or an empty URL is dirty rather
-   than a crash.
+   than a crash. The two-fault case (no marker *and* no keyword) reports
+   both faults, on one line and free of the `::error::` workflow-command
+   prefix, since every caller parses the verdict with a single `read`.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

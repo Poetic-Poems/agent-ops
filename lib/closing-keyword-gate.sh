@@ -57,6 +57,17 @@ closing_keyword_gate() {
     printf 'clean'
     return 0
   fi
+  # One line, always. The checker writes one `::error::`-prefixed line per
+  # fault it finds, and an `agent/<N>` branch missing its marker earns two of
+  # them (the absent marker, then the absent keyword) — but every caller reads
+  # this verdict with `IFS=$'\t' read -r word reason`, which keeps the first
+  # line and silently discards the rest. Flatten here, where the whole reason
+  # is still in hand, rather than let it be truncated there. The `::error::`
+  # prefix is a GitHub Actions workflow command and means nothing in the two
+  # places this reason actually lands — a PR comment a human reads, and the
+  # `attempt-failed` record the Enabler reads — so it goes with it.
+  reason="${reason//::error::/}"
+  reason="${reason//$'\n'/; }"
   printf 'dirty\t%s' "${reason:-check-closing-keyword.sh failed with no output}"
   return 1
 }

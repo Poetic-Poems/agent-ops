@@ -104,6 +104,13 @@ out="$(closing_keyword_gate "$URL")"; rc=$?
 assert_eq "  ... exits 1" "1" "$rc"
 assert_eq "agent/<N> branch with no marker is dirty" "dirty" "${out%%$'\t'*}"
 assert_contains "  ... naming the missing marker" "agent-ops:closes-issue item=199" "$out"
+# This is the two-fault case — no marker *and* no keyword — and every caller
+# parses the verdict with a single `read`, so both faults have to survive on
+# one line or the second is silently dropped.
+assert_contains "  ... and the missing keyword too" "closing keyword" "$out"
+assert_eq "  ... on a single line" "1" "$(grep -c '' <<<"$out")"
+assert_eq "  ... with no ::error:: workflow-command prefix left in it" \
+  "0" "$(grep -c '::error::' <<<"$out")"
 
 # --- gh itself failing to resolve the PR -------------------------------------
 
