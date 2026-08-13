@@ -1508,6 +1508,14 @@ runs unattended.
    - **Only branches under `branch_prefix`.** The Human Gate reserves every
      other branch for humans; "they asked for changes" is not licence to push to
      a colleague's PR.
+   - **The answered-from-events extraction and decision are `lib/handoff.sh`'s
+     `handoff_answer_events` / `handoff_round_answered`, one definition shared
+     with requirement 38c's sweep (requirement 34a).** This script passes all
+     three signals — reviews, PR comments, and the timeline's
+     `review_requested` events; `scripts/sweep-human-visibility.sh` calls the
+     same functions with the timeline omitted, so its own re-request cannot
+     read back next cycle as an answer to itself
+     (tech-debt/TD-PPagop-26080804.md).
    - **The head SHA comes from `headRefOid`, not from the `commits`
      collection.** Reading `commits[-1].oid` cost 31 GraphQL points a call
      against a repository with three open pull requests — `gh` requests
@@ -5907,6 +5915,10 @@ runs unattended.
     - where nothing is `CHANGES_REQUESTED`-blocking it, ensures
       `ensure_human_reviewer` (requirement 38a, kept continuously rather than
       only at the moment of handoff);
+    - where something *is* `CHANGES_REQUESTED`-blocking it, but the round has
+      already been answered — a marked reply from the Implementor after the
+      blocking review, and only that signal (see below) — repeats
+      requirement 31b's re-request (`confirm_review_requested`);
     - where the pull request is `APPROVED`, `MERGEABLE`, every check
       genuinely green (an empty `statusCheckRollup` is excluded explicitly —
       that is CI not having run, not CI having passed), and has been since
@@ -5914,7 +5926,8 @@ runs unattended.
       `enabler_assignee` — unless one is already there, which a
       `<!-- agent-ops:human-nudge -->` marker comment makes idempotent rather
       than merely time-windowed. `human_nudge_idle_hours` of `0` disables the
-      nudge only; the review-request self-heal above is unconditional.
+      nudge only; the review-request self-heal above (both halves) is
+      unconditional.
 
     This *is* the periodic, deterministic audit of requirement 38's own
     guarantee, made self-healing rather than merely reported: a violation this
@@ -5925,25 +5938,49 @@ runs unattended.
     work rather than sitting unread in the log (requirement 38e). Skipped on
     `--dry-run`, like every sweep that writes.
 
-    A pull request something is still `CHANGES_REQUESTED`-blocking is left
-    entirely alone — the sweep never calls `confirm_review_requested`
-    (requirement 31b), and the omission is deliberate. That function's
-    contract assumes the judgement "these changes answer the review", which
-    only the Reviewer's `ready` verdict supplies (requirement 31b's one call
-    site), and the sweep has none to offer: re-requesting without it inverts
-    the queue — the human is asked to re-look at a pull request whose next
-    actor is the pipeline — and, because requirement 3c's candidate rule
-    reads a review-requested timeline event as the round having been
-    *answered* (`scripts/gather-review-feedback.sh`, the
+    A pull request something is `CHANGES_REQUESTED`-blocking, but whose round
+    is not yet answered, is left entirely alone — the sweep must not
+    re-request on the strength of `reviewDecision` alone. Re-requesting an
+    *unanswered* round inverts the queue — the human is asked to re-look at a
+    pull request whose next actor is the pipeline — and, because requirement
+    3c's candidate rule reads a review-requested timeline event as the round
+    having been *answered* (`scripts/gather-review-feedback.sh`, the
     events-not-timestamps fix), it would also drop the pull request out of
     the Implementor's own review-feedback selection while the human's
-    `CHANGES_REQUESTED` sat unanswered — PR #205's silent-starvation failure
-    reintroduced hourly and fleet-wide. The case this leaves unhealed (a
-    `ready`-verdict re-request lost to a crash between the push and the
-    request) is recorded as deferred work in
-    `tech-debt/TD-PPagop-26080804.md`: healing it correctly needs
-    requirement 3c's answered-from-events predicate shared out of its
-    script, so the sweep can tell an answered round from an unanswered one.
+    `CHANGES_REQUESTED` sat unanswered — PR #205's silent-starvation failure,
+    reintroduced hourly and fleet-wide.
+
+    The discriminating judgement is `lib/handoff.sh`'s
+    `handoff_round_answered` (requirement 34a) — the same predicate
+    requirement 3c's candidate rule uses — called here with the timeline
+    signal omitted: only a marked reply from the Implementor counts as
+    `answered`, never a `review_requested` event, because this call's own
+    re-request would otherwise read back next cycle as the round having
+    answered itself. `unanswered` and `unknown` (a read this script could not
+    make, reported as a `warning`) are both left alone; only `answered`
+    repeats the re-request. This closes the gap `tech-debt/TD-PPagop-26080804.md`
+    recorded: a `ready`-verdict re-request that `agent-cycle.sh` lost to a
+    crash between the Implementor's push and the Reviewer's verdict now heals
+    on the sweep's next pass rather than sitting unrequested indefinitely.
+
+    The tri-state is asymmetric, and the implementation must fail towards
+    `unknown`: `answered` is the verdict that *acts*, so a verdict reached by
+    accident costs the queue inversion and the silent starvation above, where
+    the same accident landing on `unknown` costs one warning and a retry next
+    cycle. Anything `handoff_round_answered` cannot compute — an empty
+    blocking timestamp, an argument that is not a single JSON array, an
+    extraction that errors — is therefore `unknown`. That places a
+    requirement on its callers' reads: `gh api --paginate` emits its `--jq`
+    filter's result once per page as separate documents, so an aggregate
+    written inside the filter is computed per page and disagrees with itself
+    past the endpoint's thirty-item default, and two documents satisfy a
+    `type == "array"` check before failing the extraction. Both of
+    `_sweep_round_answered`'s reads therefore stream one object per line and
+    slurp with `jq -s` afterwards, as `_handoff_blocking_reviewers`
+    (requirement 31b) does. `scripts/gather-review-feedback.sh`'s four reads
+    do not yet, which is recorded as `tech-debt/TD-PPagop-26081306.md`; the
+    predicate's `unknown` is what keeps that failure on the safe side of the
+    line meanwhile.
 
     The Script logs what the sweep did under the sweep's own event names —
     `human-review-requested` and `human-nudged`, each
@@ -6640,7 +6677,9 @@ What exists, and the requirements each part answers to:
    requirement 32b; requirement 31b's `confirm_review_requested`, the same
    promise for the round after the first; requirement 38a's
    `ensure_human_reviewer`, the same promise again where nobody's review is
-   blocking at all; and requirement 9's
+   blocking at all; requirement 3c's `handoff_answer_events` and
+   `handoff_round_answered`, the answered-from-events predicate shared with
+   requirement 38c's sweep; and requirement 9's
    `pr_url_for_branch`, which names the pull request on a claimed branch when
    the stage that opened it named nothing; `HANDOFF_GH` substitutes a stub for
    tests),
@@ -8512,7 +8551,16 @@ pull request, run the ones the change touches and any it could regress.
     human beside them, and an author-only reviews list is a `skip`; `skip`s
     while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
     pull request is a draft; and an unreadable reviews list or pending list is
-    `failed`, never an assumed `skip`. `test/needs-refinement.test.sh` passes:
+    `failed`, never an assumed `skip`. `handoff_round_answered` is asserted
+    directly there too, both callers' halves at once: a marked
+    `actor=implementor` reply after the blocking review is `answered`, the
+    same reply before it is `unanswered`, an unmarked comment and another
+    actor's marked comment never answer, and a `review_requested` event
+    answers only the caller that passes that signal. Its failure direction is
+    asserted as its own group, because that is where the requirement lives —
+    an empty blocking timestamp, an argument that is not a single JSON array,
+    two concatenated pages, and an array whose elements break the extraction
+    are each `unknown`, never `answered`. `test/needs-refinement.test.sh` passes:
     `refinement_block_fields`'s third argument records `needs_refinement_assignee`
     independent of the label argument; `refinement_assignee_add`/`_remove` each
     make one `gh issue edit --add-assignee`/`--remove-assignee` call and fail
@@ -8527,10 +8575,18 @@ pull request, run the ones the change touches and any it could regress.
     passes against a stubbed `gh`: a pull request with nothing blocking it and
     no known reviewer yet is both re-requested (from the approver) and, when
     also approved, mergeable, green and idle past `human_nudge_idle_hours`,
-    nudged in the same pass; a `CHANGES_REQUESTED`-blocked pull request has
-    no review request made for it and is never nudged — the sweep never
-    calls `confirm_review_requested` (requirement 38c's design note), and
-    the nudge's own `reviewDecision == APPROVED` gate holds it off; a pull
+    nudged in the same pass; a `CHANGES_REQUESTED`-blocked pull request whose
+    round is unanswered has no review request made for it and is never
+    nudged; the same pull request whose round *is* answered — a marked
+    Implementor reply after the blocking review — is re-requested via
+    `confirm_review_requested`, still never nudged (the nudge's own
+    `reviewDecision == APPROVED` gate holds it off regardless); a reply
+    predating the blocking review, or one carrying no marker at all, does not
+    self-heal it; a round this cannot read (`handoff_round_answered`
+    returning `unknown`) is a `warning`, never a guessed request; a listing
+    the stub splits across two pages — the shape `--paginate` produces — still
+    self-heals when answered and is still silent when unanswered, which is
+    what holds `_sweep_round_answered`'s reads to the streamed form; a pull
     request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty

@@ -107,6 +107,14 @@
 # review was submitted. Nothing about a force-push can produce either: it
 # moves no comment, leaves no review body, and asks no one to re-review.
 #
+# The extraction and the answered/unanswered decision are
+# `lib/handoff.sh`'s `handoff_answer_events` / `handoff_round_answered`
+# (requirement 34a): this script passes all three signals — reviews, PR
+# comments and the timeline's `review_requested` events — while
+# scripts/sweep-human-visibility.sh (requirement 38c) calls the same
+# functions with the timeline omitted, so its own re-request cannot read
+# back next cycle as an answer to itself (tech-debt/TD-PPagop-26080804.md).
+#
 # ## Gather every review in the round, not just the blocking one
 #
 # The substance and the formal signal routinely live in different reviews by
@@ -141,6 +149,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -255,9 +265,10 @@ while IFS= read -r pr; do
 
   # Every answer event in the PR's life, oldest first: a marked review or
   # general comment whose marker's `actor=` field is `implementor`, or a
-  # review-requested event. Two different timestamps are read off this one
-  # list below — whether the *blocking* round has been answered, and where
-  # the *previous* round left off.
+  # review-requested event (`handoff_answer_events`, lib/handoff.sh —
+  # requirement 34a's one definition). Two different timestamps are read off
+  # this one list below — whether the *blocking* round has been answered,
+  # and where the *previous* round left off.
   #
   # `actor=implementor -->` is the exact tail `pipeline_comment_marker`
   # (lib/pipeline-marker.sh) prints for that actor — the actor token is
@@ -265,21 +276,17 @@ while IFS= read -r pr; do
   # substring match is precise with no regex needed. Any other actor
   # (`script`, `enabler`, `reviewer`, `refiner`) or a legacy marker with no
   # `actor=` field at all does not match and must not close the round.
-  answer_events="$(jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" \
-      --arg implementor_actor "actor=implementor -->" \
-      --argjson reviews "$reviews" --argjson comments "$issue_comments" --argjson rr "$rerequests" '
-    ([$reviews[]  | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
-     + [$comments[] | select((.body // "") | contains($marker) and contains($implementor_actor)) | .at]
-     + [$rr[] | .at]) | sort
-  ')"
+  answer_events="$(handoff_answer_events "$reviews" "$issue_comments" "$rerequests")"
 
   # Answered iff an answer event happened after the blocking review was
-  # submitted. This is the whole fix: the old comparison used the head
-  # commit's `committedDate`, which a force-push re-stamps to push time with
-  # no review of its own having happened; these events are stamped by GitHub
-  # itself at the moment this system (or a human) actually acted.
-  answered="$(jq -r --arg c "$blocking_at" '[.[] | select(. > $c)] | length' <<<"$answer_events")"
-  [[ "$answered" == "0" ]] || continue
+  # submitted (`handoff_round_answered`, lib/handoff.sh). This is the whole
+  # fix: the old comparison used the head commit's `committedDate`, which a
+  # force-push re-stamps to push time with no review of its own having
+  # happened; these events are stamped by GitHub itself at the moment this
+  # system (or a human) actually acted. `reviews` and `issue_comments` are
+  # already-validated arrays by this point (checked above); `rerequests` was
+  # defaulted to `[]` on a bad response, so this never reads `unknown` here.
+  [[ "$(handoff_round_answered "$blocking_at" "$reviews" "$issue_comments" "$rerequests")" == "unanswered" ]] || continue
 
   # Where the previous round's answer left off — the start of the round now
   # open — so the body carries everything since, including a COMMENTED review
