@@ -23,8 +23,10 @@
 #     both would silently drop every nudge-class warning on sight; this
 #     confirms it does not. A `no legal review-request candidate` violation
 #     (tech-debt/TD-PPagop-26081001.md) clears only once a non-author,
-#     non-bot, submitted review appears, or the assignee named in its own
-#     detail text no longer names the pull request's author.
+#     non-bot, submitted review appears, a review request is already pending
+#     (CODEOWNERS' own auto-request, before anyone has reviewed), or the
+#     assignee named in its own detail text no longer names the pull
+#     request's author.
 #   - **A pull-request violation of any class is dropped once merged, closed
 #     or back in draft**, and a repo-level listing failure is dropped only
 #     once the listing itself succeeds live.
@@ -182,6 +184,16 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
         STUB_REVIEWS='[{"author":{"login":"Warwick-Allen"},"state":"PENDING"}]' \
         "$GATHER" "o/a" "$no_candidate_level")"
 assert_eq "an unsubmitted (pending) review is not yet a candidate" "1" "$(jq 'length' <<<"$out")"
+
+# --- no_candidate: a pending review request now exists — dropped -----------
+# agent-ops #350, #353, #355: CODEOWNERS already auto-requested a live
+# reviewer the moment the pull request opened, before anyone had reviewed it
+# — exactly `STUB_REVIEWS='[]'` with `STUB_REVIEW_REQUESTS=1` — which the
+# `known`-reviewer check alone cannot see.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        STUB_REVIEW_REQUESTS=1 "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a no-candidate violation is dropped once a review request is already pending" \
+  "[]" "$out"
 
 # --- no_candidate: enabler_assignee no longer names the author — dropped ---
 no_candidate_reassigned='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=someone-else","ts":"2026-08-08T02:00:00Z"}]'

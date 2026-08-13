@@ -532,6 +532,36 @@ out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "with nobody known, ASSIGNEE is the fallback" \
   "$(printf 'requested\twarwickallen')" "$out"
 
+# CODEOWNERS' own auto-request, live before anyone has reviewed at all — the
+# gap that misread agent-ops #350, #353, #355 as `skip\tno-candidate` even
+# though a live human review request already stood on each: nobody has
+# submitted a review yet, so `known` is empty, but a request is already
+# pending for someone who is not ASSIGNEE and not the author. Report it as
+# `already`, never fall through to `no-candidate`.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'octocat\n' >"$tmp_dir/author"
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "octocat")"; rc=$?
+assert_eq "a pending CODEOWNERS request is reported, not read as no-candidate" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... without posting" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# The exact agent-ops #350/#353/#355 shape: ASSIGNEE equal to the author too
+# (this system's own pull requests), which alone would fall to
+# `skip\tno-candidate` — but CODEOWNERS' pending request for a distinct
+# account already answers the requirement, so this must not.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a pending request survives even when ASSIGNEE equals the author" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
 # The collision this function exists to avoid a 422 on: nobody has ever
 # reviewed, and ASSIGNEE is also the pull request's own author — exactly this
 # system's own pull requests, authored and comment-attributed under one

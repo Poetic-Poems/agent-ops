@@ -88,16 +88,21 @@
 #                             `sweep-human-visibility.sh` itself posts and
 #                             checks for idempotency.
 #   no_candidate            — does a candidate exist now: `gh pr view --json
-#                             author,reviews`, generalising
+#                             author,reviews,reviewRequests`, generalising
 #                             `ensure_human_reviewer`'s own candidate rule
 #                             read-only — a non-author, non-bot reviewer
-#                             having since reviewed the pull request, or
-#                             `enabler_assignee` (carried in the warning's own
-#                             detail text, at the value it held when the
-#                             sweep warned) no longer naming the author, is
-#                             the violation resolving itself: the sweep's own
-#                             next pass would request them before this
-#                             gatherer runs again.
+#                             having since reviewed the pull request, a
+#                             review request already pending (most often
+#                             CODEOWNERS' own auto-request, live before
+#                             anyone has reviewed — the `known`-reviewer
+#                             check alone cannot see it), or `enabler_assignee`
+#                             (carried in the warning's own detail text, at
+#                             the value it held when the sweep warned) no
+#                             longer naming the author, is the violation
+#                             resolving itself: the sweep's own next pass
+#                             would report `already` or `requested`, never
+#                             `no-candidate` again, before this gatherer runs
+#                             again.
 #   (anything else)         — a warning this script does not recognise (e.g.
 #                             "could not read the pull request's state —
 #                             skipping the idle check", or a future warning
@@ -206,12 +211,17 @@ _pr_violation_survives() {
       # Generalises `ensure_human_reviewer`'s own candidate rule (`lib/
       # handoff.sh`) read-only: a candidate now exists if either a non-author,
       # non-bot reviewer has since reviewed the pull request (the `known`
-      # list `ensure_human_reviewer` would target first) or `enabler_assignee`
-      # — carried in DETAIL, `sweep-human-visibility.sh`'s own value at the
-      # time it warned — is not (or is no longer) the pull request's own
-      # author. Either is the violation resolving itself: the sweep's own
-      # next pass would request them and turn this into a
-      # `human-review-requested` event before this gatherer ever ran again.
+      # list `ensure_human_reviewer` would target first), or a review request
+      # is already pending — most often CODEOWNERS' own auto-request, made
+      # the moment the pull request opened, before anyone has reviewed yet,
+      # which the `known`-reviewer check cannot see (agent-ops #350, #353,
+      # #355: each already had `Warwick-Allen` live-requested by CODEOWNERS
+      # with nobody's review submitted) — or `enabler_assignee` — carried in
+      # DETAIL, `sweep-human-visibility.sh`'s own value at the time it warned
+      # — is not (or is no longer) the pull request's own author. Any of the
+      # three is the violation resolving itself: the sweep's own next pass
+      # would report `already` or `requested` for this pull request, never
+      # `no-candidate` again, before this gatherer ever ran again.
       assignee="$(sed -n 's/.*enabler_assignee=//p' <<<"$detail")"
       author_login="$(jq -r '.author.login // ""' <<<"$json" 2>/dev/null || true)"
       known_other="$(jq -r --arg a "$author_login" '
@@ -219,7 +229,8 @@ _pr_violation_survives() {
              | (.author.login // "")
              | select(. != "" and . != $a and (endswith("[bot]") | not))]
           | unique | length' <<<"$json" 2>/dev/null || echo 0)"
-      if [[ "$known_other" != "0" ]] \
+      requests="$(jq -r '(.reviewRequests // []) | length' <<<"$json" 2>/dev/null || echo 0)"
+      if [[ "$known_other" != "0" ]] || [[ "$requests" != "0" ]] \
           || { [[ -n "$assignee" ]] && [[ "$assignee" != "$author_login" ]]; }; then
         printf 'drop'
       else
