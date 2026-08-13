@@ -7284,8 +7284,11 @@ What exists, and the requirements each part answers to:
    `lib/stage-budget.sh` (requirement 4f's derivation:
    `stage_budget_observations` over the log union, `stage_budget_table`
    holding the estimator, the controller and the shrinkage,
-   `stage_budget_resolve` applying the precedence, and
-   `stage_budget_lock_seconds` deriving the lock; sourced by both cycle
+   `stage_budget_resolve` applying the precedence,
+   `stage_budget_all_overrides` taking the widest configured cap per actor
+   across the plain `timeout_<actor>` / `inactivity_<actor>` keys and every
+   repository's own `stage_timeouts` / `stage_inactivity`, and
+   `stage_budget_lock_seconds` deriving the lock from it; sourced by both cycle
    scripts, by `scripts/doctor.sh` and by the dashboard publisher, all four of
    which must agree about what a stage is allowed) and
    `lib/metering.sh`) holding every
