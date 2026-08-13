@@ -208,6 +208,34 @@ assert_eq "a malformed blocked extract has nothing to retry — the safe directi
 assert_eq "an empty blocked argument reads as nothing blocked" "52" \
   "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" '')")"
 
+# --- The argv cap (requirement 4g) -------------------------------------------
+# The own-actions map and the blocked extract both grow with the fleet's
+# history, and past MAX_ARG_STRLEN (131072 bytes, the kernel's per-entry argv
+# cap) an `--argjson` delivery made each of these calls fail into its own
+# fallback. The two fallbacks point opposite ways by design — "not ours" here,
+# "nothing to retry" below — so the cap did not merely disable the pair, it
+# desynchronised them: the filter would stop dropping our own stuck write
+# (re-manufacturing the block requirement 39f exists to prevent) while its
+# complement stopped offering that same write for retry. Requirement 4g puts
+# every one of these arrays on stdin; these pin it, with fixtures the size
+# assertions prove are genuinely past the cap.
+big_map="$(jq -nc --argjson m "$stuck_map" \
+  '$m + ([range(3000) | {("o/filler|" + tostring):
+     {action: "add", ts: "2026-08-01T09:00:00Z", label: "needs-refinement"}}] | add)')"
+assert_eq "the oversized own-actions fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_map" | wc -c) > 131072 ))"
+assert_eq "an own-actions map past the argv cap still drops our own application" "1" \
+  "$(jq 'length' <<<"$(label_filter_own_applications "$candidates" "$big_map")")"
+assert_eq "  ... leaving the candidate nobody recorded" "53" \
+  "$(jq -r '.[0].number' <<<"$(label_filter_own_applications "$candidates" "$big_map")")"
+
+big_blocked="$(jq -nc '[range(3000) | {repo: "o/filler", item: ("TD-fill-" + tostring),
+  kind: "needs-refinement", detail: ("pad " + ("x" * 40))}]')"
+assert_eq "the oversized blocked fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_blocked" | wc -c) > 131072 ))"
+assert_eq "a blocked extract past the argv cap still names the stuck label to retry" "52" \
+  "$(jq -r '.[0].number' <<<"$(label_own_stale_applications "$candidates" "$stuck_map" "$big_blocked")")"
+
 # The call-site shape under `set -e`.
 (
   set -euo pipefail
