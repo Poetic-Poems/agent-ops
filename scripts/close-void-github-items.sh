@@ -20,7 +20,15 @@
 # Only the two id shapes that name a GitHub object at all (`lib/work-gone.sh`'s
 # own definitions, reused rather than re-derived — requirement 34a):
 #   a bare issue number       closes the issue, iff GitHub still reports it open
-#   `pr-<n>-…`                closes the pull request, iff still open
+#   `pr-<n>-…`                closes the pull request, iff still open —
+#                             *except* `pr-<n>-conflict-<head-sha>`: that shape
+#                             says the *conflict* is gone, not the pull
+#                             request, which stays a live, unconflicted PR of
+#                             ours (requirement 34k). Closing it on this void
+#                             would discard live work — it did, for real, to
+#                             pull request #264 — so this one shape is left
+#                             alone exactly like a non-GitHub-object void
+#                             (TD-PPagop-26080901).
 # Every other void shape (a tech-debt register id, a review ref, a plan task
 # id) names something that is not a GitHub object to close and is left alone
 # here entirely.
@@ -152,6 +160,14 @@ while IFS=$'\t' read -r item detail evidence stage; do
       warn "$item" "could not close issue #$item"
     fi
 
+  elif grep -qE '^pr-[0-9]+-conflict-' <<<"$item"; then
+    # A merge-conflicts void names the pull request only to say the
+    # *conflict* on it resolved — the PR itself is not the work that is
+    # gone, and closing it here would discard a live, unconflicted PR of
+    # ours (requirement 34k, TD-PPagop-26080901). Left unprocessed, exactly
+    # like a void shape that names no GitHub object at all.
+    continue
+
   elif grep -qP "$WORK_GONE_PR_RE" <<<"$item"; then
     n="$(grep -oE '^pr-[0-9]+' <<<"$item" | grep -oE '[0-9]+')"
     if [[ -z "$n" ]]; then
@@ -178,10 +194,12 @@ while IFS=$'\t' read -r item detail evidence stage; do
       warn "$item" "could not close pull request #$n"
     fi
   fi
-  # Every other shape names something that is not a GitHub object (a
-  # register id, a review ref, a plan task id) — silently out of scope for
-  # this script, never processed and never marked closed, so a later,
-  # purpose-built reader can still act on it.
+  # Every other shape — a register id, a review ref, a plan task id, or the
+  # `-conflict-` shape handled above — names something that is not a pull
+  # request or issue to close here (or, for `-conflict-`, names one but is
+  # not about closing it) — silently out of scope for this script, never
+  # processed and never marked closed, so a later, purpose-built reader can
+  # still act on it.
 done < <(jq -r '.[] | [.item,
                        ((.detail // "") | if . == "" then "-" else . end),
                        ((.evidence // "") | if . == "" then "-" else . end),

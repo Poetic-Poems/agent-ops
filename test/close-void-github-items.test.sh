@@ -8,6 +8,13 @@
 # because nothing ever touched the object itself. This script's whole job is
 # to close it once, on the first cycle that sees the void, and never again.
 #
+# It also guards the opposite failure: pull request #264 — a ready PR of ours
+# carrying a human review round — was closed unmerged when an unrelated
+# merge-conflicts void (`pr-264-conflict-…`) was actioned after its conflict
+# resolved (TD-PPagop-26080901). That shape names a pull request only to say
+# the *conflict* on it is gone, never that the pull request itself is; cases
+# 4b/4c pin it left alone.
+#
 # `gh` is a stub on PATH via SWEEP_GH; no network.
 #
 # Run directly: ./test/close-void-github-items.test.sh — exit 0 iff all passed.
@@ -151,6 +158,25 @@ c="$tmp_dir/case4"; mkdir -p "$c"
 out="$(run "$c" '[{"item":"TD-PPagop-26072401","detail":"voided, register not flipped","stage":"coordinator"}]')"
 assert_eq "a register id is never actioned here" "" "$out"
 assert_eq "and gh is never even called" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
+
+# --- Case 4b: a merge-conflicts void names a pull request but is left alone -------
+# `pr-<n>-conflict-<head-sha>` says the *conflict* is gone, not the pull request —
+# it may be a live, unconflicted PR of ours (TD-PPagop-26080901). Closing it here
+# closed PR #264 out from under a human review round. Left unprocessed, exactly
+# like a void shape naming no GitHub object at all.
+c="$tmp_dir/case4b"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"pr-264-conflict-abc123def456","detail":"the conflict resolved","stage":"coordinator"}]')"
+assert_eq "a conflict-shaped void is never actioned here" "" "$out"
+assert_eq "and gh is never even called for it" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
+
+# --- Case 4c: the same exclusion holds for a Dependabot supersession void ---------
+# A superseded Dependabot bump mints the identical `pr-<n>-conflict-…` shape
+# (scripts/gather-merge-conflicts.sh) — the exclusion is on the id shape alone, so
+# it applies here too, even though this void really does mean the PR is obsolete.
+c="$tmp_dir/case4c"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"pr-205-conflict-deadbeef0000","detail":"Dependabot PR #205 is superseded by a newer bump of the same dependency","stage":"coordinator"}]')"
+assert_eq "a superseded-bump conflict void is never actioned here either" "" "$out"
+assert_eq "and gh is never even called for it" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 5: an unreadable object is left alone, not guessed at -------------------
 c="$tmp_dir/case5"; mkdir -p "$c"
