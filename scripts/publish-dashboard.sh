@@ -969,12 +969,14 @@ jq -c --arg cut "$day_cut" '
   # Same source selection as `rejected` above (corroboration first, the
   # fallback `none-selected` only where no corroboration event exists for
   # that cycle), restricted to the same day window, and the same
-  # sibling-`warning` fallback `last_rejection` already uses for a
-  # corroboration event logged before this field existed. A rejection with
-  # no `bands` at all — every event from before #322 — lands in an explicit
-  # `unknown` bucket rather than vanishing or being guessed into a real band;
-  # its `unaccounted` is that same events own `unaccounted_total`, the one
-  # figure it does carry.
+  # sibling-`warning` fallback `last_rejection` already uses for a record
+  # logged before the field it needs existed. A rejection with no `bands`
+  # at all — every event from before #322 — lands in an explicit `unknown`
+  # bucket rather than vanishing or being guessed into a real band; its
+  # `unaccounted` is that same events own `unaccounted_total` where it
+  # carries one (a `corroboration` always does), else the count of the
+  # sibling `warning` events `unaccounted` refs — a pre-3v `none-selected`
+  # carries no figure at all, and only the warning of its cycle holds it.
   | ([ $ev[] | select(.event == "corroboration" and .verdict == "rejected")
              | select(day_of != null and day_of >= $cut) ]
      + [ $ev[] | select(.event == "none-selected" and .td_verdict_rejected == true
@@ -982,15 +984,13 @@ jq -c --arg cut "$day_cut" '
                | select(day_of != null and day_of >= $cut) ]
      | map(
          . as $r
-         | (if $r.event == "corroboration" then
-              ($r.bands // (
-                 ([ $ev[] | select(.event == "warning" and (.cycle // "") == ($r.cycle // "")
-                                   and ((.unaccounted | type) == "array")) ]
-                  | max_by(.ts // "")) as $w
-                 | ($w // {}).bands // null))
-            else $r.bands end) as $b
+         | ([ $ev[] | select(.event == "warning" and (.cycle // "") == ($r.cycle // "")
+                             and ((.unaccounted | type) == "array")) ]
+            | max_by(.ts // "")) as $w
+         | ($r.bands // ($w // {}).bands // null) as $b
          | if $b == null
-           then [{band: "unknown", rejected: 1, unaccounted: ($r.unaccounted_total // 0)}]
+           then [{band: "unknown", rejected: 1,
+                  unaccounted: ($r.unaccounted_total // ((($w // {}).unaccounted // []) | length))}]
            else ($b | to_entries | map({band: .key, rejected: 1, unaccounted: .value}))
            end)
      | flatten

@@ -485,7 +485,9 @@ assert_eq "and what the fleet did about it — a contradiction is no longer a lo
 # (summed across attempts) and its second also names `tech-debt` again
 # (summed with V1's); V3 is a rejection recorded before spec 3x's `bands`
 # object existed and must land under an explicit `unknown` bucket rather than
-# vanishing or being folded into a real band.
+# vanishing or being folded into a real band — carrying the count of its
+# sibling `warning`'s `unaccounted` refs, since a pre-3v `none-selected`
+# carries no figure of its own (the same sibling `last_rejection` reads).
 assert_eq "a band named by two different rejections sums across them" "2" \
   "$(jq -r '.by_band[] | select(.band == "issues") | .rejected' <<<"$vdata")"
 assert_eq "and its unaccounted count sums the same way" "2" \
@@ -496,6 +498,8 @@ assert_eq "unaccounted 1 (V1) + 2 (V5 attempt 2)" "3" \
   "$(jq -r '.by_band[] | select(.band == "tech-debt") | .unaccounted' <<<"$vdata")"
 assert_eq "a rejection from before spec 3x's bands lands under an explicit unknown bucket" "1" \
   "$(jq -r '.by_band[] | select(.band == "unknown") | .rejected' <<<"$vdata")"
+assert_eq "whose unaccounted count comes from the sibling warning the event predates" "1" \
+  "$(jq -r '.by_band[] | select(.band == "unknown") | .unaccounted' <<<"$vdata")"
 assert_eq "ranked most-rejected first" "issues" \
   "$(jq -r '.by_band[0].band' <<<"$vdata")"
 assert_eq "with exactly the three bands this window saw" "3" \

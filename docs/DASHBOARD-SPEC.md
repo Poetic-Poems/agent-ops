@@ -717,7 +717,10 @@ most-rejected first and capped like the day/model table (`VERDICT_ROWS_MAX`),
 with the overflow stated rather than silent. A rejected verdict logged before
 spec 3x's `bands` object existed carries no band breakdown at all; it lands
 under an explicit `unknown` row rather than vanishing from the tally or being
-guessed into a real band.
+guessed into a real band, its `unaccounted` taken from the event's own
+`unaccounted_total` where it carries one, else from its cycle's sibling
+`warning` — the same fallback the newest-rejection panel uses — since a
+pre-3v `none-selected` carries no figure at all.
 
 Its three empty states mean three different things and are rendered as three
 different things: **no Co-Ordinator runs in the retained log** (missing data
@@ -1051,8 +1054,9 @@ number's twins elsewhere on the page.
   from a mix of shapes in the same synthetic log: one rejection naming two
   bands at once (counted in both), a second rejection naming one of the same
   bands again (summed, not overwritten), and a rejection logged with no
-  `bands` at all, which lands under `unknown` carrying its own
-  `unaccounted_total` rather than being dropped or folded into a real band.
+  `bands` at all, which lands under `unknown` rather than being dropped or
+  folded into a real band, its `unaccounted` read from the sibling `warning`
+  of its cycle since the legacy event carries no figure of its own.
 
 - `test/dashboard-render.test.sh` passes its plain-`grep` check, run without
   `node` and independent of the harness below, that the header's documentation
