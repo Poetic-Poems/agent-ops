@@ -159,6 +159,16 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[
 assert_eq "a no-candidate violation with still nobody to ask survives" "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
+# --- no_candidate: a pending request exists, nobody has reviewed yet — dropped ---
+# agent-ops PR #350/#355: CODEOWNERS' own request already named a non-author
+# candidate before anyone submitted a review, which `known_other` alone
+# cannot see. `ensure_human_reviewer` (lib/handoff.sh) now checks this same
+# fact before ASSIGNEE, and this re-check must agree with it.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        STUB_REVIEW_REQUESTS=1 \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a no-candidate violation is dropped once a request is already pending" "[]" "$out"
+
 # --- no_candidate: a non-author, non-bot reviewer now exists — dropped -----
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
         STUB_REVIEWS='[{"author":{"login":"Warwick-Allen"},"state":"APPROVED"}]' \
