@@ -2,10 +2,12 @@
 #
 # lib/dependabot-bump.sh — the Dependabot-PR classification rule shared by
 # scripts/gather-merge-conflicts.sh (which reports it on a merge-conflicts
-# candidate) and scripts/nudge-dependabot-rebase.sh (which acts on that same
-# candidate the moment it reads it): one definition, per requirement 34a, so
-# the two readers cannot silently drift on what counts as "the same bump" or
-# "already asked to rebase" (issue #250).
+# candidate), scripts/nudge-dependabot-rebase.sh (which acts on that same
+# candidate the moment it reads it), and lib/void-guard.sh (which re-derives
+# supersession live to corroborate a `pr-<n>-superseded-…` void): one
+# definition, per requirement 34a, so none of the three can silently drift on
+# what counts as "the same bump", "already asked to rebase" (issue #250), or
+# "still superseded".
 #
 # Sourced, never executed: it sets no shell options, because every caller
 # already runs under `set -uo pipefail` (or stricter) of its own.
@@ -13,7 +15,7 @@
 # GitHub's GraphQL API — which every `gh --json` read goes through — reports
 # Dependabot's own pull requests under this login, not the REST-flavoured
 # "dependabot[bot]" some other GitHub surfaces use.
-# shellcheck disable=SC2034  # read by scripts/gather-merge-conflicts.sh, which sources this file
+# shellcheck disable=SC2034  # read by scripts/gather-merge-conflicts.sh and lib/void-guard.sh, which source this file
 DEPENDABOT_LOGIN='app/dependabot'
 
 # dependabot_rebase_marker HEAD_SHA12

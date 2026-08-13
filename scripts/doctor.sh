@@ -202,7 +202,7 @@ if ((local_retained < cycles_retained)); then
 fi
 
 if [[ "$(cfg '.crash_loop_after')" != "0" && -z "$(cfg '.crash_loop_repo')" ]]; then
-  warn "crash_loop_after is set but crash_loop_repo is empty, which disables the check anyway — a fleet-wide Co-Ordinator crash loop would surface nowhere"
+  warn "crash_loop_after is set but crash_loop_repo is empty, which disables both checks anyway — a fleet-wide crash loop would surface nowhere"
 fi
 
 # --- Models ---
@@ -331,16 +331,15 @@ section "Stage budgets"
 # Reported rather than merely computed, because that is the whole bargain of a
 # self-tuning value: it is allowed to move on its own precisely because it can
 # always be asked what it is and why.
+config_json="$(cat "$config_file" 2>/dev/null || printf '{}')"
 budget_table="$(stage_budget_table \
   "$(fleet_logs "$state_dir" "$(fleet_peers_dir "$workspace_root")" log.jsonl \
      | stage_budget_observations 2>/dev/null || printf '[]')" \
-  "$(stage_budget_settings "$(cat "$config_file" 2>/dev/null || printf '{}')")" \
+  "$(stage_budget_settings "$config_json")" \
   2>/dev/null || printf '{"cells":{},"actors":{}}')"
 
 lock_stale_sec="$(stage_budget_lock_seconds "$budget_table" \
-  "$(jq -c '["coordinator","implementor","reviewer","enabler"]
-            | map(. as $a | {key: $a, value: {backstop: (.["timeout_" + $a] // null)}})
-            | from_entries' <<<"$(cat "$config_file")" 2>/dev/null || printf '{}')" \
+  "$(stage_budget_all_overrides "$config_json")" \
   30 "$(jq -r '.lock_stale_after // 0' "$config_file" 2>/dev/null || printf 0)")"
 ok "the cycle lock is derived at $(( lock_stale_sec / 60 )) min, from the backstops in force plus 30 min slack"
 
@@ -357,15 +356,26 @@ else
 fi
 
 # A configured cap is an override that outranks the derivation for as long as
-# it is there, which is easy to set once and then forget about entirely.
+# it is there, which is easy to set once and then forget about entirely —
+# at any of requirement 4f's three precedence levels: the ten top-level
+# `timeout_<actor>` / `inactivity_<actor>` keys (five actors, including the
+# Refiner), and every repository's own `stage_timeouts` / `stage_inactivity`
+# entry, named by that repository's slug so the warning says which entry to
+# edit.
 while IFS= read -r overridden; do
   [[ -n "$overridden" ]] || continue
   warn "$overridden is set, which pins that cap and turns off its self-tuning — remove it unless you mean to"
-done < <(jq -r '[ "timeout_coordinator", "timeout_implementor", "timeout_reviewer",
-                  "timeout_enabler", "inactivity_coordinator", "inactivity_implementor",
-                  "inactivity_reviewer", "inactivity_enabler" ]
-                | map(select(. as $k | ($ARGS.named.cfg[$k] | type) == "number"))[]' \
-              --argjson cfg "$(cat "$config_file")" -n 2>/dev/null || true)
+done < <(jq -r '
+  [ "timeout_coordinator", "timeout_implementor", "timeout_reviewer",
+    "timeout_enabler", "timeout_refiner", "inactivity_coordinator",
+    "inactivity_implementor", "inactivity_reviewer", "inactivity_enabler",
+    "inactivity_refiner" ]
+  | map(select(. as $k | ($ARGS.named.cfg[$k] | type) == "number"))[],
+  ( ($ARGS.named.cfg.repos // [])[] as $r
+    | ["stage_timeouts", "stage_inactivity"][] as $field
+    | (($r[$field] // {}) | keys[]) as $actor
+    | ($r.slug + "'"'"'s " + $field + "." + $actor) )' \
+              --argjson cfg "$config_json" -n 2>/dev/null || true)
 section "Crontab"
 
 render_script="$SCRIPT_DIR/deploy/docker/render-crontab.sh"

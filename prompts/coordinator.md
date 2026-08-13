@@ -588,20 +588,22 @@ takeover. Instead add it to `voided`:
   own number (`PR #<number>`), which the Script's void corroboration reads
   off the item's own `pr-<n>-…` id for a citation in the entry's own repo —
   as a bare `PR #N` citation always is — and then corroborates against that
-  pull request's own live state. A `-conflict-` item is read against whether
-  its pull request is still conflicting, never against its diff, and
-  Dependabot's own are excused from even that, so this still-open,
-  still-conflicting bump passes. And it names the newer PR only by its branch
-  name, never as "PR #<n>" and never by its URL — writing your own sentence
-  that names the superseding PR either of those ways will be checked against
-  *that* PR's body and branch for this item's id, which it will never carry,
-  and the void will be refused. Use the field exactly as given.
-This stops PR #<number> being offered as a candidate again, but does **not**
-close it: `close-void-github-items.sh` leaves every `pr-<n>-conflict-…` void
-untouched, this superseded one included, because the same shape also covers a
-live PR of ours whose conflict merely resolved, and closing that one would
-destroy real work. The superseded pull request stays open for a human to
-close by hand — there is nothing further for you or an Implementor to do.
+  pull request's own live state. This entry mints the distinct
+  `pr-<n>-superseded-<head-sha>` shape (never `-conflict-`), so the guard
+  reads it as its own claim, not the conflict shape's: it re-derives, live,
+  whether this PR is still Dependabot's own and still superseded by a
+  strictly-newer open bump of the same family — the same test
+  `superseded_by` names here, run again at void time rather than trusted from
+  this cycle's read. And it names the newer PR only by its branch name, never
+  as "PR #<n>" and never by its URL — writing your own sentence that names
+  the superseding PR either of those ways will be checked against *that*
+  PR's body and branch for this item's id, which it will never carry, and
+  the void will be refused. Use the field exactly as given.
+This stops PR #<number> being offered as a candidate again, and — unlike a
+`-conflict-` void — the Script *does* close it: `close-void-github-items.sh`
+treats `pr-<n>-superseded-…` as an ordinary pull-request void, since this
+shape's claim is that the pull request itself is moot, not merely that its
+conflict resolved. There is nothing further for you or an Implementor to do.
 
 *Takeover (`bot: true`, `rebase_requested: true`, `superseded_by` null).*
 This system already asked Dependabot to rebase this PR (`@dependabot rebase`,

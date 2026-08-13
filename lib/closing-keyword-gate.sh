@@ -26,14 +26,15 @@
 # not about the pull request, and the reasoning lib/review-gate.sh spells out
 # for its own alerts read applies unchanged: blocking every handoff on a
 # degraded `gh` forever would trade one hazard for a worse one. The analogy
-# that does *not* hold is `review_gate_required_checks`, which does report an
-# unreadable check list as `dirty` — there, silence is itself the hazard
-# (poetic-fiddle #190, a CONFLICTING pull request, genuinely reports no
-# required checks at all, so an empty list is what a bad pull request looks
-# like). Nothing of the sort is true here: an unreadable pull request looks
-# nothing like one missing its keyword, so reading one as the other buys no
-# safety and costs every item on the node. The gate that a pull request
-# cannot reach a human through is the one at the Reviewer's `ready` handoff,
+# that does *not* hold is `review_gate_required_checks`: it reports a check
+# list it could not read as `unknown` too, but a blocking one — there, silence
+# is itself the hazard (poetic-fiddle #190, a CONFLICTING pull request,
+# genuinely reports no required checks at all, and `gh` refuses that call in
+# the same shape it refuses an unreachable one, so silence is what a bad pull
+# request looks like). Nothing of the sort is true here: an unreadable pull
+# request looks nothing like one missing its keyword, so reading one as the
+# other buys no safety and costs every item on the node. The gate that a
+# pull request cannot reach a human through is the one at the `ready` handoff,
 # and `review_gate_required_checks` already fails closed there for any node
 # whose `gh` is degraded enough to matter.
 #

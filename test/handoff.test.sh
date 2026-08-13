@@ -532,18 +532,51 @@ out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "with nobody known, ASSIGNEE is the fallback" \
   "$(printf 'requested\twarwickallen')" "$out"
 
+# CODEOWNERS' own auto-request, live before anyone has reviewed at all — the
+# gap that misread agent-ops #350, #353, #355 as `skip\tno-candidate` even
+# though a live human review request already stood on each: nobody has
+# submitted a review yet, so `known` is empty, but a request is already
+# pending for someone who is not ASSIGNEE and not the author. Report it as
+# `already`, never fall through to `no-candidate`.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'octocat\n' >"$tmp_dir/author"
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "octocat")"; rc=$?
+assert_eq "a pending CODEOWNERS request is reported, not read as no-candidate" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... without posting" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
+# The exact agent-ops #350/#353/#355 shape: ASSIGNEE equal to the author too
+# (this system's own pull requests), which alone would fall to
+# `skip\tno-candidate` — but CODEOWNERS' pending request for a distinct
+# account already answers the requirement, so this must not.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a pending request survives even when ASSIGNEE equals the author" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
 # The collision this function exists to avoid a 422 on: nobody has ever
 # reviewed, and ASSIGNEE is also the pull request's own author — exactly this
 # system's own pull requests, authored and comment-attributed under one
 # account while a human reviews under another. GitHub refuses a review request
 # aimed at an author; asking is not attempted at all, and it is not a warning-
 # worthy `failed` either, because the configuration will say the same thing
-# again next cycle.
+# again next cycle. It is, though, a distinguishable `skip\tno-candidate`
+# (tech-debt/TD-PPagop-26081001.md): nobody else will ever ask this human
+# either, unlike a draft or a blocked pull request's own bare `skip`.
 review_n=0
 reset_human_stub false works
 set_reviews
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
-assert_eq "ASSIGNEE equal to the author is a skip, not a 422 attempt" "skip" "$out"
+assert_eq "ASSIGNEE equal to the author is a distinguishable skip, not a 422 attempt" \
+  "$(printf 'skip\tno-candidate')" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
 assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
 
@@ -567,12 +600,14 @@ assert_eq "  ... in one POST" "1" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
 
 # The same, with nobody else on the list: striking the author off leaves no
 # candidate at all, and ASSIGNEE is the author too, so it is a skip — not a
-# request GitHub would refuse, and not a `failed` worth warning about.
+# request GitHub would refuse, and not a `failed` worth warning about — and,
+# like the case above, distinguishable as `no-candidate`.
 review_n=0
 reset_human_stub false works
 set_reviews "$(review warwickallen COMMENTED)"
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
-assert_eq "an author-only reviews list leaves nobody to ask" "skip" "$out"
+assert_eq "an author-only reviews list leaves nobody to ask" \
+  "$(printf 'skip\tno-candidate')" "$out"
 assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
 
 # CHANGES_REQUESTED still blocking: confirm_review_requested's job, not this
@@ -592,12 +627,14 @@ out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "a draft pull request is skipped" "skip" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
 
-# An empty ASSIGNEE with nobody known is a skip too — there is nobody to name.
+# An empty ASSIGNEE with nobody known is a skip too — there is nobody to name
+# — and the same distinguishable `no-candidate` shape, not a bare `skip`.
 review_n=0
 reset_human_stub false works
 set_reviews
 out="$(ensure_human_reviewer "$URL" "")"; rc=$?
-assert_eq "no assignee and no known reviewer is a skip" "skip" "$out"
+assert_eq "no assignee and no known reviewer is a distinguishable skip" \
+  "$(printf 'skip\tno-candidate')" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
 
 # The POST that reports success and changes nothing.

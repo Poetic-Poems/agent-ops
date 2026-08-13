@@ -342,6 +342,23 @@ assert_contains "the attempt that produced it is named, since a cycle now has tw
 assert_contains "and what became of the cycle it happened on" \
   "recovered — the Script picked" "$vq"
 
+# --- the per-band tally (issue #345): which band, not just how often -------------
+# Counts, not a rate, ranked most-rejected first as the aggregate already
+# sorts it — and a rejection logged before spec 3x's `bands` object existed
+# renders under an explicit "unknown" row rather than vanishing.
+assert_contains "the per-band table heads its columns as counts, not a rate" \
+  "<th> Band <th> Rejected <th> Unaccounted" "$vqflat"
+assert_contains "the band with the most rejections leads the table" \
+  '<td class="mono"> tech-debt' "$vqflat"
+assert_contains "carrying its own rejected and unaccounted counts" \
+  '<td class="mono"> tech-debt <td> <span class="badge b-red"> 2 <td class="mono"> 34' \
+  "$vqflat"
+assert_contains "a second band appears as its own row" \
+  "issues" "$vq"
+assert_contains "a rejection from before spec 3x lands under an explicit unknown row" \
+  '<td class="mono"> unknown <td> <span class="badge b-red"> 1 <td class="mono"> 7' \
+  "$vqflat"
+
 # The zero state, which must read as an answer rather than as missing data —
 # the distinction the issue asks for explicitly.
 vqc="$(render verdict-quality-clean.json)" || { printf 'FAIL - verdict-quality-clean.json did not render:\n%s\n' "$vqc"; exit 1; }
@@ -353,6 +370,8 @@ assert_contains "and still names the denominator, so zero is legible as a rate" 
   "0 of 3 corroborated verdicts rejected" "$vqc"
 assert_not_contains "with no contradiction block to imply one happened" \
   "most recent contradiction" "$vqc"
+assert_not_contains "nor a per-band table where no data.js key names one" \
+  "Unaccounted" "$vqc"
 
 # A page written before the Publisher recorded any of this must say that,
 # rather than rendering a clean-looking zero it has no data for.

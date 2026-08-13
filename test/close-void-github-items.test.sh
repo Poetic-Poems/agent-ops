@@ -12,8 +12,11 @@
 # carrying a human review round — was closed unmerged when an unrelated
 # merge-conflicts void (`pr-264-conflict-…`) was actioned after its conflict
 # resolved (TD-PPagop-26080901). That shape names a pull request only to say
-# the *conflict* on it is gone, never that the pull request itself is; cases
-# 4b/4c pin it left alone.
+# the *conflict* on it is gone, never that the pull request itself is; case 4b
+# pins it left alone. Its sibling shape, `pr-<n>-superseded-…` (a Dependabot
+# bump a newer open bump made moot, TD-PPagop-26081304), makes the opposite
+# claim — the pull request itself is moot — so case 4c pins it closed like any
+# other pull-request void.
 #
 # `gh` is a stub on PATH via SWEEP_GH; no network.
 #
@@ -169,14 +172,18 @@ out="$(run "$c" '[{"item":"pr-264-conflict-abc123def456","detail":"the conflict 
 assert_eq "a conflict-shaped void is never actioned here" "" "$out"
 assert_eq "and gh is never even called for it" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
 
-# --- Case 4c: the same exclusion holds for a Dependabot supersession void ---------
-# A superseded Dependabot bump mints the identical `pr-<n>-conflict-…` shape
-# (scripts/gather-merge-conflicts.sh) — the exclusion is on the id shape alone, so
-# it applies here too, even though this void really does mean the PR is obsolete.
+# --- Case 4c: a Dependabot supersession void closes through the ordinary branch ---
+# A superseded Dependabot bump mints the distinct `pr-<n>-superseded-…` shape
+# (scripts/gather-merge-conflicts.sh, TD-PPagop-26081304) — its claim is that the
+# pull request itself is moot, not merely its conflict, so it carries none of
+# `-conflict-`'s exclusion and closes like any other pull-request void.
 c="$tmp_dir/case4c"; mkdir -p "$c"
-out="$(run "$c" '[{"item":"pr-205-conflict-deadbeef0000","detail":"Dependabot PR #205 is superseded by a newer bump of the same dependency","stage":"coordinator"}]')"
-assert_eq "a superseded-bump conflict void is never actioned here either" "" "$out"
-assert_eq "and gh is never even called for it" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
+out="$(run "$c" '[{"item":"pr-205-superseded-deadbeef0000","detail":"Dependabot PR #205 is superseded by a newer bump of the same dependency","stage":"coordinator"}]')"
+assert_eq "a superseded-shaped void closes the pull request" \
+  '{"action":"closed","item":"pr-205-superseded-deadbeef0000","kind":"pull-request","number":205,"closed_by":"sweep"}' \
+  "$(jq -c . <<<"$out")"
+assert_contains "the close call carries a comment" "pr close 205 -R x/y --comment" \
+  "$(cat "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 5: an unreadable object is left alone, not guessed at -------------------
 c="$tmp_dir/case5"; mkdir -p "$c"

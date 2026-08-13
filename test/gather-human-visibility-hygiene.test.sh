@@ -12,7 +12,7 @@
 #   - **A violation that still reproduces live becomes exactly one candidate**,
 #     `source: "human-visibility"` (its own source, issue #284's decision 2 —
 #     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
-#   - **The two warning classes are told apart (issue #284's decision 1).** A
+#   - **The three warning classes are told apart (issue #284's decision 1).** A
 #     `could not request review from …` violation clears only once a human
 #     review is live or already given (`reviewRequests` non-empty, or
 #     `reviewDecision` of `APPROVED`/`CHANGES_REQUESTED`); a
@@ -21,7 +21,12 @@
 #     `agent-ops:human-nudge` marker comment actually appears, never merely
 #     because the pull request is approved. Using the request-class check for
 #     both would silently drop every nudge-class warning on sight; this
-#     confirms it does not.
+#     confirms it does not. A `no legal review-request candidate` violation
+#     (tech-debt/TD-PPagop-26081001.md) clears only once a non-author,
+#     non-bot, submitted review appears, a review request is already pending
+#     (CODEOWNERS' own auto-request, before anyone has reviewed), or the
+#     assignee named in its own detail text no longer names the pull
+#     request's author.
 #   - **A pull-request violation of any class is dropped once merged, closed
 #     or back in draft**, and a repo-level listing failure is dropped only
 #     once the listing itself succeeds live.
@@ -66,7 +71,9 @@ assert_eq() {
 # steer a named pull request's live open/draft state; `$STUB_REVIEW_DECISION`
 # and `$STUB_REVIEW_REQUESTS` (nonzero means a pending request exists) steer
 # the request-class check; `$STUB_NUDGE_MARKER` (`yes`/`no`) steers whether
-# the nudge marker comment is present; `$STUB_VIEW_RC` set nonzero makes the
+# the nudge marker comment is present; `$STUB_AUTHOR` (default `author`) and
+# `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`, default `[]`)
+# steer the no-candidate-class check; `$STUB_VIEW_RC` set nonzero makes the
 # re-check itself unreadable, the fail-safe case.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
@@ -82,8 +89,9 @@ case "${1:-} ${2:-}" in
     [[ "${STUB_REVIEW_REQUESTS:-0}" == "0" ]] || reqs='[{"login":"reviewer"}]'
     comments="[]"
     [[ "${STUB_NUDGE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:human-nudge -->"}]'
-    printf '{"state":"%s","isDraft":%s,"reviewDecision":"%s","reviewRequests":%s,"comments":%s}\n' \
-      "${STUB_PR_STATE:-OPEN}" "${STUB_PR_DRAFT:-false}" "${STUB_REVIEW_DECISION:-}" "$reqs" "$comments"
+    printf '{"state":"%s","isDraft":%s,"reviewDecision":"%s","reviewRequests":%s,"comments":%s,"author":{"login":"%s"},"reviews":%s}\n' \
+      "${STUB_PR_STATE:-OPEN}" "${STUB_PR_DRAFT:-false}" "${STUB_REVIEW_DECISION:-}" "$reqs" "$comments" \
+      "${STUB_AUTHOR:-author}" "${STUB_REVIEWS:-[]}"
     ;;
   *)
     echo "stub gh: unexpected call: $*" >&2
@@ -98,6 +106,7 @@ repo_level='[{"repo":"o/a","pr_url":"","detail":"could not list o/a'"'"'s open p
 request_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not request review from foo","ts":"2026-08-08T02:00:00Z"}]'
 nudge_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the idle nudge comment","ts":"2026-08-08T02:00:00Z"}]'
 unknown_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s state — skipping the idle check","ts":"2026-08-08T02:00:00Z"}]'
+no_candidate_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=author","ts":"2026-08-08T02:00:00Z"}]'
 
 # --- No input is [] ----------------------------------------------------------
 out="$(STUB_LIST_RC=0 "$GATHER" "o/a")"
@@ -142,6 +151,56 @@ assert_eq "a request-class violation on an approved pull request is dropped" "[]
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUESTED STUB_REVIEW_REQUESTS=0 \
         "$GATHER" "o/a" "$request_level")"
 assert_eq "a request-class violation on a changes-requested pull request is dropped" "[]" "$out"
+
+# --- no_candidate: still nobody to ask — survives ---------------------------
+# The fixture's own detail names `enabler_assignee=author`, and the stub's
+# default author is also `author` with no reviews at all: exactly the state
+# `ensure_human_reviewer` read when it returned `skip\tno-candidate`.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a no-candidate violation with still nobody to ask survives" "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
+
+# --- no_candidate: a non-author, non-bot reviewer now exists — dropped -----
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
+        STUB_REVIEWS='[{"author":{"login":"Warwick-Allen"},"state":"APPROVED"}]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a no-candidate violation is dropped once a real reviewer appears" "[]" "$out"
+
+# --- no_candidate: the author's own review is never a candidate ------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
+        STUB_REVIEWS='[{"author":{"login":"author"},"state":"COMMENTED"}]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "the author's own review never counts as a candidate" "1" "$(jq 'length' <<<"$out")"
+
+# --- no_candidate: a bot reviewer is never a candidate ---------------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
+        STUB_REVIEWS='[{"author":{"login":"dependabot[bot]"},"state":"COMMENTED"}]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a bot reviewer is never a candidate" "1" "$(jq 'length' <<<"$out")"
+
+# --- no_candidate: a still-pending review is not yet a candidate -----------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
+        STUB_REVIEWS='[{"author":{"login":"Warwick-Allen"},"state":"PENDING"}]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "an unsubmitted (pending) review is not yet a candidate" "1" "$(jq 'length' <<<"$out")"
+
+# --- no_candidate: a pending review request now exists — dropped -----------
+# agent-ops #350, #353, #355: CODEOWNERS already auto-requested a live
+# reviewer the moment the pull request opened, before anyone had reviewed it
+# — exactly `STUB_REVIEWS='[]'` with `STUB_REVIEW_REQUESTS=1` — which the
+# `known`-reviewer check alone cannot see.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        STUB_REVIEW_REQUESTS=1 "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a no-candidate violation is dropped once a review request is already pending" \
+  "[]" "$out"
+
+# --- no_candidate: enabler_assignee no longer names the author — dropped ---
+no_candidate_reassigned='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=someone-else","ts":"2026-08-08T02:00:00Z"}]'
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        "$GATHER" "o/a" "$no_candidate_reassigned")"
+assert_eq "a no-candidate violation is dropped once the assignee no longer names the author" \
+  "[]" "$out"
 
 # --- could_not_post_nudge: absent marker survives, even though APPROVED ----
 # The pull request a nudge warning is logged against is always APPROVED (the

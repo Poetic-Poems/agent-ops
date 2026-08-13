@@ -242,6 +242,24 @@ out="$(run_sweep)"
 assert_eq "no enabler_assignee means nothing to request or nudge" "" "$out"
 write_config warwickallen 24
 
+# --- No legal review-request candidate: a warning, not silence ------------------
+# The one `skip` reason nothing else will ever ask about again (tech-debt/
+# TD-PPagop-26081001.md): `enabler_assignee` is also the pull request's own
+# author (`reset_stub`'s default) and nobody else has ever reviewed it, so
+# `ensure_human_reviewer` returns its distinguishable `skip\tno-candidate`
+# rather than the bare `skip` a blocked pull request gets (the sweep's own
+# listing already excludes drafts) — and that is the one `skip` reason this
+# sweep itself surfaces as a `warning`, unlike a still-blocked pull request
+# (see below), which produces no action at all.
+reset_stub
+set_reviews
+out="$(run_sweep)"
+assert_eq "no legal candidate is a warning" "warning" "$(jq -r '.action' <<<"$out")"
+assert_contains "  ... naming the pull request" "$URL" "$(jq -r '.pr_url' <<<"$out")"
+assert_contains "  ... naming the assignee that could not be used" \
+  "enabler_assignee=warwickallen" "$(jq -r '.detail' <<<"$out")"
+assert_eq "  ... having asked GitHub nothing" "" "$(cat "$tmp_dir/posts")"
+
 # --- Still CHANGES_REQUESTED-blocked, unanswered: left entirely alone -----------
 # The self-heal (see the script's design note; tech-debt/TD-PPagop-26080804.md)
 # only fires on an *answered* round. With no marked Implementor reply at all —
