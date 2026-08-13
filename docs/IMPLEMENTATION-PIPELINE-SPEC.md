@@ -4760,7 +4760,7 @@ runs unattended.
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
-    `disabled`, `enabled`, `salvage`,
+    `disabled`, `enabled`, `salvage`, `chained`,
     `warning`, `cycle-end`. A `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
@@ -4898,7 +4898,12 @@ runs unattended.
     the `fingerprint` of requirement 3b; `disabled`/`enabled` carry the switch
     record, so the log can explain both why cycles stopped and why they
     resumed — including when they resumed because a disable expired rather than
-    because anyone chose to re-enable it. `selection`, and any `attempt-failed` or `item-void`
+    because anyone chose to re-enable it. A `chained` event (requirement 39) is
+    logged by the parent cycle, from its own cleanup, immediately before it
+    launches its continuation: `depth` is the launching child's own place in
+    the lineage (the parent's plus one) and `max_chained_cycles` is the cap in
+    force, so a lineage's length is reconstructable from the log without
+    inferring it from consecutive `cycle-start` timestamps. `selection`, and any `attempt-failed` or `item-void`
     raised once an item has been selected, must carry both `repo` and `item` —
     requirements 34 and 34c key on them, so an event that omits them cannot
     pin any state on the item it names, and the omission is invisible until you
@@ -7711,6 +7716,30 @@ What exists, and the requirements each part answers to:
     check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
     already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
     (`test/review-gate.test.sh`); must pass `shellcheck`.
+21. `scripts/pickup-metrics.sh` — a read-only operator report, like
+    `scripts/watch-node.sh` (component 11) and `scripts/check-node-compose.sh`
+    (component 12): answers issue #248's acceptance 5 (no increase in
+    duplicate-work incidents) from the union event log, without adding a new
+    event or touching pipeline behaviour. Reads `lib/fleet.sh`'s `fleet_logs`
+    over `state_dir`/`fleet_peers_dir workspace_root` (or `--state-dir`/
+    `--peers-dir` overrides), parsing defensively one line at a time
+    (`jq -c -R 'fromjson? // empty'`, as `scripts/publish-dashboard.sh` does,
+    since the log is appended to while it reads) and bounded by an optional
+    `--since <iso8601>`. Splits every `selection` and contended `claim-lost`
+    event (`cause` of `held` or `pr-held` — WI-2 renames a PR-keyed `held` loss
+    to `pr-held`, so counting only `held` would silently undercount after
+    #238; a `claim-lost` with no `cause` at all, from before requirement 17a
+    carried one, counts toward neither) into a "before"/"after" era **per
+    node, at that node's own first `chained` event** (component-21's reason
+    for reading it rather than #268's merge timestamp: an auto-updated fleet
+    picks up a change at different real times per node, so only a node's own
+    evidence that it exercised finish-then-continue marks its own adoption; a
+    node with no `chained` event in the window is entirely "before"). Prints
+    both eras' `selection` and contended-`claim-lost` counts, each ratio, and
+    the window covered, as JSON on stdout. Regression-tested against a
+    fixture log covering a malformed trailing line, a causeless `claim-lost`
+    and a `pr-held` one (`test/pickup-metrics.test.sh`); must pass
+    `shellcheck`.
 
 ## Acceptance checks
 
@@ -9427,6 +9456,16 @@ pull request, run the ones the change touches and any it could regress.
     every other malformed schedule key already gets. `test/doctor.test.sh`
     passes: the crontab report names the full comma list, not just the
     first occurrence.
+17e. **Contended-claim-loss reporting is correct per node and per era
+    (component 21).** `test/pickup-metrics.test.sh` passes against a fixture
+    union log: `selection` and `claim-lost` events split "before"/"after" at
+    each node's own first `chained` event, never at a fixed timestamp; a node
+    with no `chained` event in the fixture falls wholly in "before"; a
+    contended count includes `held` and `pr-held` `claim-lost` causes and
+    excludes every other cause, including a line carrying no `cause` at all; a
+    malformed trailing line is skipped rather than aborting the read; and
+    `--since` bounds the window reported. `scripts/pickup-metrics.sh` passes
+    `shellcheck`.
 
 ## Host provisioning (human steps)
 
