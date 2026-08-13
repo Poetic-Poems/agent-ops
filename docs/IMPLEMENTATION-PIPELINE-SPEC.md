@@ -27,9 +27,12 @@ cron (hourly)
        ├─ Implementor (Sonnet/Haiku)← ephemeral clone, feature branch, draft PR
        ├─ Reviewer (Sonnet/Opus)    ← corrects the branch, flips the PR to ready
        │     └─ Human               ← reviews and merges (the only gate)
-       └─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
-                                      cycle: unblocks, voids, or raises an issue
-                                      assigned to the Human saying what to do
+       ├─ Enabler (Opus, rarely)    ← re-examines long-blocked items at the end of a
+       │                              cycle: unblocks, voids, or raises an issue
+       │                              assigned to the Human saying what to do
+       └─ Refiner (Haiku)           ← same end of the cycle: writes the specification
+                                      an unscoped item lacks, before it has to be
+                                      blocked and wait for the Enabler
 ```
 
 ## Actors
@@ -53,6 +56,16 @@ cron (hourly)
    enough to select, it specifies it (requirement 36b); and where only a human
    can move an item, it composes a GitHub issue that the Script files, assigned
    to that human. It writes no code and raises no pull request.
+8. The **Refiner** — a headless Claude Code invocation, engaged from the same
+   end-of-cycle cleanup as the Enabler and immediately after it, that writes
+   the specification an under-specified item lacks *before* the item has to be
+   blocked and wait for the Enabler to reach it (requirement 39). Every item
+   it takes ends `refined` — the specification posted as a comment on the
+   item's own issue, or returned as `refined_spec` where the source has no
+   thread to write into — or `needs-refinement`, where only a human can supply
+   what is missing (requirements 39c and 39d). Its powers are deliberately
+   narrower than the Enabler's: it writes no code, raises no pull request, and
+   can neither escalate nor void.
 
 ## Environment (verified 2026-07-20)
 
@@ -1842,9 +1855,13 @@ runs unattended.
      pick — the assignment drop also covers the Enabler's escalation issues,
      which are always assigned. The judgement half ("a question or discussion
      rather than actionable work", over the whole thread) stays the
-     Co-Ordinator's. Items blocked in the shared log are **not** dropped:
-     requirement 18a's mandatory re-check needs the thread and `updated_at`
-     in front of the Co-Ordinator to decide whether fresh evidence unblocks.
+     Co-Ordinator's. This gatherer itself never reads the shared log, so it
+     drops nothing for being blocked or void there — that exclusion runs as a
+     later, second pass over this array, once the log's extracts are final
+     (requirement 3u), and even then only a *stale* block is dropped: a
+     blocked issue carrying fresh evidence stays, because requirement 18a's
+     mandatory re-check needs the thread and `updated_at` in front of the
+     Co-Ordinator to decide whether that evidence unblocks it.
    - **Degrades to `[]` (exit 0) on any API failure**, like requirement 3a
      and unlike the source-state digest: the array is *given to* the
      Co-Ordinator, so an empty array is a faithful record of the input it
@@ -1993,24 +2010,28 @@ runs unattended.
    that repo's freshly gathered `claimed` set, during the same repo-loop pass
    that gathers `tech_debt`.
 
-   Blocked/void exclusion, uniquely among the pre-fetched arrays, is applied
-   in a **second** pass, once `blocked_json`/`void_json` are final — after
-   every reconciliation requirement 34 runs (34f, 34g, 34i, 34j) and after
-   requirement 34n's retirement — because both extracts depend on this same
-   repo loop's `ordered_repos_json` for their own work-gone reconciliation and
-   so do not exist yet at gather time. `exclude_blocked_or_void_items` drops
-   any `tech_debt` entry whose `ref` is recorded blocked or void for that
-   repo, scoped by repo exactly as the Co-Ordinator's own reading of
+   Blocked/void exclusion is applied in a **second** pass, once
+   `blocked_json`/`void_json` are final — after every reconciliation
+   requirement 34 runs (34f, 34g, 34i, 34j) and after requirement 34n's
+   retirement — because both extracts depend on this same repo loop's
+   `ordered_repos_json` for their own work-gone reconciliation and so do not
+   exist yet at gather time. `exclude_blocked_or_void_items` drops any
+   `tech_debt` entry whose `ref` is recorded blocked or void for that repo,
+   scoped by repo exactly as the Co-Ordinator's own reading of
    `blocked`/`void` always has been (a blank `repo` on an old, pre-scoping
-   event still matches every repo). This is safe to do deterministically,
-   unlike the `issues` source's blocked exclusion (requirement 3j), which is
-   deliberately left for the Co-Ordinator's judgement because requirement
-   18a's re-check needs a live issue thread to decide whether fresh evidence
-   unblocks it: a tech-debt item has no such re-check, because requirement
-   34i's work-gone reconciliation already clears a block whose register row
-   has actually flipped to `resolved`/`not-debt` before `blocked_json` is
-   computed, reading the very same register this array is drawn from. Nothing
-   filtered out here is ever a block that needed a second look.
+   event still matches every repo). This is safe to do deterministically in
+   full, unlike the `issues` source's blocked exclusion (requirement 3j),
+   because requirement 34i's work-gone reconciliation already clears a
+   tech-debt block whose register row has actually flipped to
+   `resolved`/`not-debt` before `blocked_json` is computed, reading the very
+   same register this array is drawn from: nothing filtered out here is ever
+   a block that needed a second look. `issues` still keeps a live re-check for
+   a blocked entry carrying fresh evidence — requirement 18a needs the thread
+   itself, which no register re-derives — but every other pre-fetched band,
+   including `issues`' own stale blocks and every band's void entries, gets
+   this identical second pass or the purpose-built variant requirement 3u
+   describes, once `blocked_json`/`void_json` are final at this same point in
+   the cycle.
 
    What remains in each repo's `tech_debt` array after both passes —
    `eligible_tech_debt_json` (Script-internal; requirement 3t's own reader,
@@ -2085,6 +2106,92 @@ runs unattended.
    no-op short-circuit: the very next cycle asks the Co-Ordinator again,
    unconditionally, rather than replaying the wrong answer until
    `none_selected_recheck_hours` forces a recheck.
+3u. **Blocked/void exclusion, extended to every other pre-fetched band, and
+   `void` withheld from the Co-Ordinator's own input entirely (issue #320).**
+   Requirement 3t proved the pattern on one band: candidates the Script
+   already knows are blocked or void need no per-item model judgement to
+   exclude, and handing them over anyway is exactly the unreviewed band a
+   small model confabulates a verdict about (issue #310). That pattern now
+   applies to every pre-fetched band, not tech-debt alone.
+
+   Once `blocked_json`/`void_json` are final — the same point in the cycle
+   3t's own second pass runs, after every reconciliation requirement 34 runs
+   and after requirement 34n's retirement — the Script re-applies
+   `exclude_blocked_or_void_items` to `findings`, `review_feedback`,
+   `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and
+   `human_visibility`, exactly as it
+   already did to `tech_debt`: any entry whose `ref` is recorded blocked or
+   void for that repo is dropped, scoped by repo exactly as
+   `BLOCKED_ITEMS_JQ`'s own repo-or-blank match (a blank `repo` on an old,
+   pre-scoping event still matches every repo). There is nothing
+   tech-debt-specific about the exclusion itself — only tech-debt was the
+   band it was first proven safe on.
+
+   `issues` is the one band this cannot apply to unmodified. Requirement 18a
+   obliges the Co-Ordinator to re-read a blocked issue's live thread when its
+   `updated_at` carries evidence posted after the block was last confirmed
+   current, and a candidate the Script drops before the Co-Ordinator ever
+   sees it cannot be re-read — dropping every blocked issue here would
+   silently retire that mandatory re-check rather than apply it. So `issues`
+   gets a purpose-built pass instead, `exclude_blocked_or_void_issues`: void
+   entries are dropped unconditionally, exactly like every other band (a void
+   has no re-check to preserve — requirement 34c: only a human's `unvoided`
+   ever reopens one), but a blocked entry is dropped only when it is
+   *stale* — its `updated_at` no newer than the later of the block's own `ts`
+   and its newest `recheck_clean_ts`, requirement 18a's own comparison,
+   mirrored verbatim (`test/cycle-state.test.sh`'s `needs_mandatory_reread`
+   pins the same comparison against the same fields). That is exactly the
+   "skip it on the marker alone, no re-read needed" case the prompt already
+   told the Co-Ordinator was mechanical (prompts/coordinator.md's "Re-checking
+   blocked items"), so removing it from the Co-Ordinator's judgement removes
+   no judgement at all — a blocked issue carrying fresh evidence still
+   reaches the Co-Ordinator, exactly as before this requirement, for the live
+   re-read only it can perform.
+
+   What remains in each band after both passes is the Script's own,
+   no-per-item-judgement-required answer to "what could the Co-Ordinator
+   actually select from this band this cycle" — open, unclaimed, unblocked
+   (or, for `issues`, blocked-but-due-a-re-read), not void — for every
+   pre-fetched band without exception, not tech-debt alone.
+
+   **`void` is removed from `coordinator_input` entirely.** Every band the
+   Script pre-fetches whole is now void-filtered before the Co-Ordinator ever
+   runs, so a raw list for it to apply that same judgement to by eye no
+   longer has a use the eight pre-fetched bands need — and the three sources
+   the Co-Ordinator still derives itself (`project-review`, `failed-runs`,
+   `implementation-plan`) never had a pre-fetched array for the Script to
+   check a list against in the first place, so withholding the list changes
+   nothing structural for them either: the Co-Ordinator's own live evidence,
+   read while evaluating each candidate ("Voiding an item yourself"), was
+   always how those three get voided, list or no list. The Co-Ordinator may
+   still *add* a fresh entry to `voided` in its verdict without ever having
+   seen the existing extract — the Script's void corroboration (requirement
+   34d) validates that entry independently, against the evidence cited, never
+   against a list the model was shown. `blocked` stays, because `issues`' live
+   re-check duty and the three Co-Ordinator-derived sources' own exclusion-1
+   check both still need it, but trimmed to the fields either duty actually
+   reads — `repo`, `item`, `ts`, `detail` and `recheck_clean_ts` where
+   present — dropping `stage`, `cycle`, `event` and an Implementor's
+   `unblock_condition`, none of which `prompts/coordinator.md` ever reads off
+   a `blocked` entry.
+
+   The no-op fingerprint (requirement 3b) is unaffected by any of this: its
+   own input still hashes the full, untrimmed `blocked_json` and `void_json`
+   verbatim, exactly as before this requirement — a void-state or block-state
+   change must still buy the next cycle a fresh look, even though the
+   Co-Ordinator itself no longer reads a void list and reads a narrower
+   `blocked` one. Trimming or removing what the *model* sees is deliberately
+   a separate decision from what the *fingerprint* covers, made once here and
+   never coupled: coupling them would let a `void` extract edit stop busting
+   the fingerprint the same day it stopped being visible to the model, for no
+   reason connected to whether the fleet's state had actually changed.
+
+   Both extracts this requirement's exclusions read arrive at
+   `exclude_blocked_or_void_items`/`exclude_blocked_or_void_issues` on stdin,
+   never in argv, exactly as requirement 3t's own second pass already
+   delivered them (requirement 4g) — this requirement adds call sites to an
+   existing, already-compliant function and a new function built the same
+   way; neither introduces a new `--argjson` delivery for either extract.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -2331,7 +2438,7 @@ runs unattended.
    prompt — the one that would sit broken longest before anyone noticed — is
    covered by construction rather than by a second copy kept in step by hand.
 4d. **One stage launcher, and it streams.** Every headless `claude`
-   invocation either pipeline makes — the four stages of this document, the
+   invocation either pipeline makes — the five stages of this document, the
    usage-limit probe of requirement 1b, and the Reviewer-Agent of
    `docs/REVIEW-PIPELINE-SPEC.md` R5.3 — goes through `run_claude_stage` in
    `lib/stage-run.sh`: one implementation, sourced by both cycle scripts,
@@ -2773,9 +2880,9 @@ runs unattended.
    landing during cleanup itself must not re-enter the handler.
    `review-cycle.sh` carries the same discipline as R7a of its own spec.
 9d. **Visible attribution.** Every pull-request or issue comment this system
-   posts — from `agent-cycle.sh` directly, and from the Implementor, Reviewer
-   and Enabler — opens with a leading bold line naming the Actor that wrote it
-   and the node it ran on:
+   posts — from `agent-cycle.sh` directly, and from the Implementor, Reviewer,
+   Enabler and Refiner — opens with a leading bold line naming the Actor that
+   wrote it and the node it ran on:
 
    ```
    **<Display>** · autonomous pipeline · node `<node>`
@@ -2797,11 +2904,12 @@ runs unattended.
    fails open on an unknown token — prints it raw — so an Actor added later
    degrades gracefully rather than vanishing from a comment. `agent-cycle.sh`
    and `review-cycle.sh` call it directly; a model cannot source shell, so
-   `prompts/implementor.md`, `prompts/reviewer.md` and `prompts/enabler.md`
-   each spell the header's literal form out and instruct their stage to open
-   every comment with it, using the node name each receives at invocation
-   verbatim (`## Node` for the Implementor and Reviewer; the runtime input's
-   `node` for the Enabler, which already received it). Regression-tested by
+   `prompts/implementor.md`, `prompts/reviewer.md`, `prompts/enabler.md` and
+   `prompts/refiner.md` each spell the header's literal form out and instruct
+   their stage to open every comment with it, using the node name each receives
+   at invocation verbatim (`## Node` for the Implementor and Reviewer; the
+   runtime input's `node` for the Enabler and the Refiner, each of which
+   already received it). Regression-tested by
    `test/comment-identity.test.sh`.
 9e. **Salvage before discard.** Before requirement 9's failure path fires on
    an unparseable final message — the Co-Ordinator, Implementor and Reviewer
@@ -3210,7 +3318,18 @@ runs unattended.
     - recorded as blocked in the shared log (an `attempt-failed` event not
       followed by an `unblocked` event for that item) — for a GitHub issue,
       only once requirement 18a's mandatory re-check, where it applies, has
-      found the recorded blocker still holds;
+      found the recorded blocker still holds — or recorded as void (an
+      `item-void` event not followed by `unvoided`), which has no re-check to
+      preserve for any source. For `findings`, `review_feedback`,
+      `abandoned_drafts`, `merge_conflicts`, `register_hygiene`,
+      `human_visibility` and
+      `tech_debt`, both halves are already applied deterministically by the
+      Script (requirement 3u) before the runtime input is assembled — there
+      is nothing left here for the Co-Ordinator to check for any of those
+      seven sources. `issues` gets the same treatment for its void half and for a
+      *stale* blocked entry; only a blocked issue carrying evidence fresh
+      enough to warrant requirement 18a's live re-check ever reaches the
+      Co-Ordinator;
     - a tech-debt item whose status is `in-progress` (its item file's
       `status:` frontmatter);
     - already referenced by any open PR or draft (a claim, per the repos'
@@ -3504,8 +3623,9 @@ runs unattended.
     identical to the empty orphan, so its ref can be deleted mid-run — the
     Implementor's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
-17c. **The post-merge closing-keyword sweep.** Requirement 25a's CI check
-    stops a *new* pull request from merging without a real closing keyword;
+17c. **The post-merge closing-keyword sweep.** Requirement 25a's checks — its
+    CI workflow and its script-side gate — stop a *new* pull request from
+    merging without a real closing keyword;
     this is the backstop for what already got through — a PR merged before
     that check existed, or one that merged some other way — and for the
     ordinary lag between a fix landing and the issue it was meant to close
@@ -3887,8 +4007,9 @@ runs unattended.
     it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
     one, the item is complete only once that row is flipped or the
     Implementor has said why the evidence did not hold up.
-25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
-    trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
+25a. **The closing keyword requirement 25 asks for is enforced deterministically
+    — by CI and by the Script — not by trusting the prompt.**
+    `.github/workflows/closing-keyword.yml` runs
     `scripts/check-closing-keyword.sh` against the PR body and head branch
     on every `pull_request` event, and two anchors decide what the body owes:
 
@@ -3920,6 +4041,57 @@ runs unattended.
     by reporting a check of the same name. Acceptance check 8m is how that
     setting is verified, it being the one piece of requirement 25a no file
     in this repository carries.
+
+    That workflow file guards only agent-ops, the repository that carries
+    it — a workflow guards the repository it ships in, not every repository
+    the pipeline raises pull requests in. `poetic` and `poetic-fiddle` carry
+    no closing-keyword workflow of their own, so enforcement there is
+    script-side instead: `lib/closing-keyword-gate.sh`'s `closing_keyword_gate`
+    re-reads a pull request's current body and head branch with `gh pr view`
+    and runs them through the same `scripts/check-closing-keyword.sh`,
+    at two points the Script (`agent-cycle.sh`) already stands between the
+    pull request and a human. The two are asked for different reasons and
+    answered differently:
+
+    - **Right after the Implementor's PR is raised**, this is *feedback*, not
+      a gate. A dirty verdict is recorded as a warning and handed to the
+      Reviewer as a `## Script findings` entry in its prompt; the cycle
+      continues into the review exactly as it would have. What the check
+      finds is a pull-request body edit — the class of defect the Reviewer's
+      own step 4 fixes and pushes in the same cycle — so refusing the handoff
+      here would convert a self-healing case into an item recorded
+      `attempt-failed` and blocked pending an Enabler engagement, at no gain:
+      the second call is what a pull request cannot reach a human through.
+      What this call buys is that the Reviewer *knows*, since it cannot see
+      the later verdict from inside its own session and would otherwise hand
+      off, be handed back, and cost the review anyway.
+    - **At the Reviewer's own `ready` handoff**, alongside
+      `review_gate_verdict`, this is the gate. A dirty verdict hands back
+      through `log_reviewer_handback`, exactly as a failing required check or
+      a new security-severity alert already does, and the PR stays a draft.
+      It is asked again here rather than trusted from the earlier call for
+      the same reason requirement 31c re-reads everything at this point: the
+      body can change between the two, and a Reviewer that ignored its
+      `## Script findings` entry has to stop somewhere.
+
+    A verdict of `unknown` — `gh pr view` failed past
+    `lib/github-limit.sh`'s retry, its answer carried no head branch, or the
+    checker could not be run — is a fact about the node, not the pull
+    request, and warns at both points rather than blocking either. This is
+    the reasoning `review_gate_security_alerts` already applies to an alerts
+    API it cannot reach, and deliberately *not* the one
+    `review_gate_required_checks` applies to an unreadable check list: there,
+    silence is itself the hazard (a CONFLICTING pull request genuinely
+    reports no required checks), whereas an unreadable pull request looks
+    nothing like one missing its keyword. A node degraded enough for this to
+    matter is stopped at the `ready` handoff by
+    `review_gate_required_checks`, which does fail closed, before this gate
+    is ever consulted.
+
+    So every target repository gets the same deterministic gate: agent-ops
+    from its own CI workflow *and* the script-side gate that also covers it
+    a second time, `poetic` and `poetic-fiddle` from the script-side gate
+    alone. Acceptance check 8p is how the gate itself is verified.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -4149,6 +4321,17 @@ runs unattended.
     permission cannot silently freeze every pull request's handoff fleet-wide.
     An `unknown` alert read never softens a `dirty` required-check verdict;
     required checks are asked first and gate on their own.
+
+    One further check shares this gate: requirement 25a's script-side
+    closing-keyword gate (`lib/closing-keyword-gate.sh`, component 17a) is
+    asked here too, after `review_gate_verdict` and before requirement 31's
+    draft flip, and a `dirty` verdict from it is recorded as the same
+    requirement 32a handback; an `unknown` one warns, exactly as an
+    unreadable alert list does. It is asked again here rather than trusted
+    from the pass it made when the pull request was raised, for the same
+    reason the checks above are read fresh: a body can be edited between the
+    two — and because that earlier call only *tells* the Reviewer, so this is
+    the only point at which the closing keyword is actually enforced.
 
     #216 itself: the human resolved it directly on the pull request (renaming
     the flagged constant, commit `8e62ff6`) before this requirement existed to
@@ -6144,12 +6327,13 @@ What exists, and the requirements each part answers to:
    token→display map, failing open on an unknown token; and
    `pipeline_comment_header ACTOR NODE`, the leading visible line every such
    comment opens with. `agent-cycle.sh`'s and `review-cycle.sh`'s own comments
-   call these directly; the Implementor's, Enabler's and Reviewer's comment
-   instructions (`prompts/implementor.md`, `prompts/enabler.md`,
-   `prompts/reviewer.md`) spell both the header and the marker out literally,
-   via the cycle id and node name each receives at invocation. One definition
+   call these directly; the Implementor's, Enabler's, Reviewer's and Refiner's
+   comment instructions (`prompts/implementor.md`, `prompts/enabler.md`,
+   `prompts/reviewer.md`, `prompts/refiner.md`) spell both the header and the
+   marker out literally, via the cycle id and node name each receives at
+   invocation. One definition
    (requirement 34a): the reader and every writer that is a shell source this
-   file, and the three prompts — which a model reads, so they must spell both
+   file, and the four prompts — which a model reads, so they must spell both
    forms out — are asserted against `PIPELINE_COMMENT_MARKER_PREFIX` by
    `test/abandoned-drafts.test.sh` and against the header's literal form by
    `test/comment-identity.test.sh`, so neither can drift between any of them.
@@ -6818,6 +7002,32 @@ What exists, and the requirements each part answers to:
     interpolating it into the step directly, so an attacker-controlled title
     or body from a fork PR cannot inject shell. Unit-tested
     (`test/check-closing-keyword.test.sh`); must pass `shellcheck`.
+17a. `lib/closing-keyword-gate.sh` implementing requirement 25a's other
+    layer: given a pull request URL, `closing_keyword_gate` reads its
+    current body and head branch with `gh pr view --json body,headRefName`
+    and runs both through `scripts/check-closing-keyword.sh` unmodified,
+    printing `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — the same
+    shape `lib/review-gate.sh`'s `review_gate_verdict` reports, so a caller
+    folds both into one handoff gate. The reason is always a single line —
+    the checker emits one `::error::`-prefixed line per fault and an
+    `agent/<N>` branch missing its marker earns two, so they are flattened
+    into one and the workflow-command prefix stripped, every caller parsing
+    the verdict with a single `read` that would otherwise keep only the
+    first. `dirty` is reserved for a fault in the pull request itself;
+    "could not ask" — `gh pr view` failing, answering without a head branch,
+    or the checker exiting 126 or higher — is `unknown`, never a crash and
+    never a fault attributed to the pull request. An empty URL is the one
+    exception, `dirty` because it is a bug in the caller rather than a
+    degraded node. `agent-cycle.sh` calls it at the two points it already
+    knows a pull request's body and head branch: right after the
+    Implementor's PR is raised (a dirty verdict there becomes the
+    `## Script findings` section of the Reviewer's prompt, not a refusal) and
+    again at the Reviewer's own `ready` handoff, which is the enforcing one
+    (handing back through `log_reviewer_handback` on a dirty verdict, the
+    same shape a failing required check or a new security alert already
+    uses there). `CLOSING_KEYWORD_GATE_GH` stubs `gh` for tests, and
+    `CLOSING_KEYWORD_GATE_CHECK` the checker's path. Unit-tested
+    (`test/closing-keyword-gate.test.sh`); must pass `shellcheck`.
 18. `scripts/sweep-closed-issues.sh` implementing requirement 17c's sweep:
     given a repo slug, a node name and a cycle id, lists that repo's merged
     `pr_label`-labelled pull requests (bounded to the most recently updated),
@@ -7375,6 +7585,39 @@ pull request, run the ones the change touches and any it could regress.
    `none-selected` logs **no** contradiction warning and keeps its fingerprint,
    because requirement 2.2a empties `tech_debt` along with `issues` and the
    eligible set is read after that narrowing.
+2k. **Blocked/void exclusion reaches every pre-fetched band, `issues`
+   included, and `void` never reaches the Co-Ordinator (requirement 3u, issue
+   #320).** `test/cycle-state.test.sh` passes: `exclude_blocked_or_void_items`,
+   lifted the same way `test/tech-debt-eligibility.test.sh` already lifts it,
+   drops a candidate blocked or void for its own repo from a `findings`-shaped
+   array exactly as it does from a `tech_debt`-shaped one — the exclusion
+   itself is not tech-debt-specific, only its first proof was. The new
+   `exclude_blocked_or_void_issues` drops a void issue unconditionally; drops a
+   *stale* blocked issue — `updated_at` no newer than the later of the block's
+   own `ts` and its newest `recheck_clean_ts` — and keeps a *fresh* one, the
+   same threshold comparison this file's `needs_mandatory_reread` mirror
+   already pins for requirement 18a, asserted to agree with it on the same
+   fixtures rather than duplicated as a second, driftable definition; honours
+   repo scoping identically to `exclude_blocked_or_void_items` (a blank `repo`
+   on the blocked/void entry matches every repo); drops a candidate with no
+   `ref` rather than crashing on it; and degrades to the unfiltered array on
+   malformed `blocked`/`void` input, delivered on stdin and proven past
+   `MAX_ARG_STRLEN` the same way `test/tech-debt-eligibility.test.sh`'s own
+   oversized-void fixture is. The band list the generic pass loops over is
+   pinned too — `findings`, `review_feedback`, `abandoned_drafts`,
+   `merge_conflicts`, `register_hygiene`, `human_visibility`, `tech_debt`,
+   every pre-fetched band but `issues` — because it is inline shell rather
+   than a function, and a band added to a repo entry but not to it would keep
+   handing the Co-Ordinator blocked and void candidates it has no `void` list
+   left to check them against. Separately, `agent-cycle.sh`'s own
+   `coordinator_input` build carries no `void` key at all, and its `blocked`
+   entries carry only `repo`, `item`, `ts`, `detail` and `recheck_clean_ts` —
+   asserted by lifting that build verbatim the same way and running it over a
+   `blocked_json` entry with extra fields (`stage`, `cycle`, `event`,
+   `unblock_condition`), which must not survive into what the
+   Co-Ordinator reads — while the no-op fingerprint's own input
+   (`test/noop-skip.test.sh`) is unaffected and still hashes both extracts,
+   untrimmed, exactly as before this requirement.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
@@ -7962,6 +8205,34 @@ pull request, run the ones the change touches and any it could regress.
    with no retirement arguments in sight, pinning that retirement is a
    property of the extract a caller requests, never of the shared
    blocked/void definition those three read directly off the log.
+8p. **The closing-keyword gate applies to every target repository, not only
+   the one carrying the workflow (requirement 25a, TD-PPagop-26080803).**
+   `test/closing-keyword-gate.test.sh` passes against a stubbed `gh`:
+   `closing_keyword_gate` reads a pull request's body and head branch and
+   reports the checker's own verdict as `clean` or `dirty<TAB>reason` — a
+   body with no marker on a non-numeric branch is clean, a marker with a
+   real closing keyword is clean, prose describing intent without a keyword
+   is dirty naming the issue (the regression the underlying checker exists
+   for), and an `agent/<N>` branch with no marker is dirty naming the
+   missing marker. The two-fault case (no marker *and* no keyword) reports
+   both faults, on one line and free of the `::error::` workflow-command
+   prefix, since every caller parses the verdict with a single `read`.
+   Separately, the cases where the question could not be put report
+   `unknown` and exit 0, so a caller warns rather than stalling the item: an
+   unreadable pull request, an answer carrying no head branch (which must
+   never read as clean — an empty body on an empty branch is the shape of a
+   *passing* pull request), and a checker that cannot be run. An empty URL
+   remains `dirty`, and none of these is a crash.
+
+   What `agent-cycle.sh` then *does* with each verdict is asserted separately,
+   by `test/closing-keyword-wiring.test.sh`, against the two blocks lifted
+   verbatim from the script: a `dirty` verdict at the Implementor-side call
+   carries on into the Reviewer stage holding the fault (never recording the
+   item `attempt-failed`, the refusal this gate deliberately does not make)
+   and that fault reaches the Reviewer as a `## Script findings` section of
+   its prompt; an `unknown` one warns and hands the Reviewer nothing; a clean
+   one does neither, and leaves the prompt byte-for-byte as it was before the
+   section existed.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering

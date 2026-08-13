@@ -31,13 +31,14 @@
 # their own PR comments by calling pipeline_comment_marker and
 # pipeline_comment_header, and scripts/gather-abandoned-drafts.sh sources this
 # same file and matches on PIPELINE_COMMENT_MARKER_PREFIX, so that write side
-# and the read side cannot drift apart. The Implementor's, Enabler's and
-# Reviewer's comment instructions (prompts/implementor.md, prompts/enabler.md,
-# prompts/reviewer.md) are the one place the strings have to be spelled out
-# rather than sourced, so test/abandoned-drafts.test.sh and
-# test/comment-identity.test.sh assert all three prompts still carry the forms
-# defined here, which is what stops a change to them silently un-marking (or
-# un-attributing) every comment those three stages write.
+# and the read side cannot drift apart. The Implementor's, Enabler's,
+# Reviewer's and Refiner's comment instructions (prompts/implementor.md,
+# prompts/enabler.md, prompts/reviewer.md, prompts/refiner.md) are the one
+# place the strings have to be spelled out rather than sourced, so
+# test/abandoned-drafts.test.sh and test/comment-identity.test.sh assert all
+# four prompts still carry the forms defined here, which is what stops a change
+# to them silently un-marking (or un-attributing) every comment those four
+# stages write.
 #
 # An HTML comment renders invisibly on GitHub; the header is deliberately the
 # opposite — GitHub always renders the top of a comment and truncates the
