@@ -75,7 +75,7 @@ log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$S
 log_voided_items_fn="$(extract_fn 'log_voided_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
 run_coordinator_stage_attempt_fn="$(extract_fn 'run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-json]' "$SCRIPT_DIR/agent-cycle.sh")"
-fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model>' "$SCRIPT_DIR/agent-cycle.sh")"
+fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json>' "$SCRIPT_DIR/agent-cycle.sh")"
 coordinator_corroborate_retry_or_fallback_fn="$(extract_fn 'coordinator_corroborate_retry_or_fallback() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 for pair in \
@@ -177,6 +177,8 @@ implementor_model_default="claude-fallback-model"
 coordinator_prompt="stub base prompt"
 # shellcheck disable=SC2034
 refinement_policy_json='{}'
+# shellcheck disable=SC2034  # read by the eval'd fallback_select_candidate call
+refinements_json='{}'
 # shellcheck disable=SC2034
 noop_fingerprint_value="fp-abc123"
 
@@ -296,6 +298,40 @@ rf_pick="$(fallback_select_candidate "$rf_repos" "m")"
 assert_eq "review-feedback carries its own branch verbatim" "agent/td1" "$(jq -r '.branch' <<<"$rf_pick")"
 assert_eq "…and its own pr_url" "https://x/pull/57" "$(jq -r '.pr_url' <<<"$rf_pick")"
 
+assert_eq "no internal ranking key leaks onto the winning candidate" "null" \
+  "$(jq -r '._rank // null' <<<"$rf_pick")"
+
+# --- refinement_policy binds the mechanical pick as it binds the Co-Ordinator ---
+# `required`: an unrefined item from that source is not a candidate at all, so
+# a *lower* band wins instead of it — the mechanical path must not be able to
+# select what no Co-Ordinator engagement was allowed to rank.
+td_and_hygiene='[{"slug":"acme/widgets","default_branch":"main",
+  "findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],
+  "tech_debt":[{"source":"tech-debt","ref":"TD1","id":"TD1","title":"fix TD1","filed":"2026-08-01","url":"https://x/TD1.md","body":"TD1 body"}],
+  "register_hygiene":[{"source":"register-hygiene","ref":"RH1","body":"stale row","url":"https://x/rh","blob_sha":"abc","problems":["orphan"]}]}]'
+refined_td1='{"acme/widgets":{"TD1":{"ts":"2026-08-12T00:00:00Z","cycle":"c1","spec":"do this"}}}'
+
+assert_eq "an unrefined item from a required source is skipped, and a lower band wins" \
+  "register-hygiene" \
+  "$(jq -r '.source' <<<"$(fallback_select_candidate "$td_and_hygiene" "m" '{}' '{"tech-debt":"required"}')")"
+assert_eq "…and a refined one from that same source is selected normally" "tech-debt" \
+  "$(jq -r '.source' <<<"$(fallback_select_candidate "$td_and_hygiene" "m" "$refined_td1" '{"tech-debt":"required"}')")"
+assert_eq "…while an exempt source (the default) ignores refinement entirely" "tech-debt" \
+  "$(jq -r '.source' <<<"$(fallback_select_candidate "$td_and_hygiene" "m" '{}' '{}')")"
+
+# `preferred`: no exclusion, a thumb on the scale — the refined item wins its
+# band over an unrefined one that precedes it, and an all-unrefined band is
+# still perfectly selectable.
+refined_td2='{"acme/widgets":{"TD2":{"ts":"2026-08-12T00:00:00Z","cycle":"c1","spec":"do this"}}}'
+assert_eq "a preferred source ranks its refined item ahead of an earlier unrefined one" "TD2" \
+  "$(jq -r '.item' <<<"$(fallback_select_candidate "$repos_tech_debt_only" "m" "$refined_td2" '{"tech-debt":"preferred"}')")"
+assert_eq "…and with nothing refined, band order still decides" "TD1" \
+  "$(jq -r '.item' <<<"$(fallback_select_candidate "$repos_tech_debt_only" "m" '{}' '{"tech-debt":"preferred"}')")"
+assert_eq "a required source with nothing refined anywhere leaves no candidate" "null" \
+  "$(fallback_select_candidate "$repos_tech_debt_only" "m" '{}' '{"tech-debt":"required"}')"
+assert_eq "an unreadable refinements/policy argument degrades to exempt, not to a crash" "tech-debt" \
+  "$(jq -r '.source' <<<"$(fallback_select_candidate "$repos_tech_debt_only" "m" 'not json' 'not json')")"
+
 # ============================================================================
 # run_coordinator_stage_attempt: launch, parse, and retry-tagging mechanics
 # ============================================================================
@@ -405,11 +441,16 @@ assert_eq "fallback fires: two warning events (one per rejected attempt)" "2" \
   "$(grep -cE '^event warning ' <<<"$calls")"
 assert_eq "fallback fires: two corroboration events, both rejected" "2" \
   "$(events_named "$calls" corroboration | jq -s '[.[] | select(.verdict == "rejected")] | length')"
-assert_eq "fallback fires: exactly one none-selected, carrying retried:true" "1" \
+# A cycle that recovers mechanically selected something, so it logs no
+# none-selected at all: that event names the cycle's outcome (requirement 3b's
+# fingerprint and the dashboard's outcome precedence both read it that way),
+# and the rejected verdict itself is already on the record twice over, in the
+# warning and the corroboration event.
+assert_eq "fallback fires: no none-selected event — the cycle selected something" "0" \
   "$(grep -cE '^event none-selected ' <<<"$calls")"
-ns_evt="$(events_named "$calls" none-selected | head -n1)"
-assert_eq "fallback fires: …retried:true" "true" "$(jq -r '.retried' <<<"$ns_evt")"
-assert_eq "fallback fires: …and no fingerprint" "null" "$(jq -r '.fingerprint // null' <<<"$ns_evt")"
+assert_eq "fallback fires: the second corroboration still carries the rejected verdict's reason" \
+  "retried and still nothing" \
+  "$(events_named "$calls" corroboration | sed -n '2p' | jq -r '.reason')"
 assert_eq "fallback fires: work_order_json is the mechanical pick (TD1, id order)" "TD1" \
   "$(jq -r '.item' <<<"$work_order_json")"
 # shellcheck disable=SC2154  # set by the eval'd coordinator_corroborate_retry_or_fallback
@@ -417,6 +458,23 @@ assert_eq "fallback fires: selected_by_fallback is armed" "1" "$selected_by_fall
 # shellcheck disable=SC2154
 assert_eq "fallback fires: candidates_json is a one-candidate array of the pick" "1" \
   "$(jq 'length' <<<"$candidates_json")"
+
+# --- Fallback finds nothing: the one branch that still logs none-selected ---
+# Contrived — `eligible_tech_debt_total > 0` with an empty tech-debt band defies
+# the guarantee fallback_select_candidate's own comment rests on — but the code
+# fails closed rather than assuming it away, and this is the branch that does.
+run_full_scenario "fallback finds nothing" "$attempt1" 0 "$attempt2_stillrejected" "$empty_repos" > "$tmp_dir/scenario.out"
+calls="$(cat "$tmp_dir/scenario.out")"
+
+assert_eq "fallback finds nothing: function returns 1 (caller should exit)" "1" "$fn_rc"
+assert_eq "fallback finds nothing: exactly one none-selected" "1" \
+  "$(grep -cE '^event none-selected ' <<<"$calls")"
+ns_evt="$(events_named "$calls" none-selected | head -n1)"
+assert_eq "fallback finds nothing: …carrying retried:true" "true" "$(jq -r '.retried' <<<"$ns_evt")"
+assert_eq "fallback finds nothing: …and td_verdict_rejected:true" "true" \
+  "$(jq -r '.td_verdict_rejected' <<<"$ns_evt")"
+assert_eq "fallback finds nothing: …and no fingerprint, so the next cycle asks again" "null" \
+  "$(jq -r '.fingerprint // null' <<<"$ns_evt")"
 
 # --- A retry launch failure does not reach fallback -------------------------
 run_full_scenario "retry launch fails" "$attempt1" 1 "" "$repos_tech_debt_only" > "$tmp_dir/scenario.out"

@@ -2100,16 +2100,49 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # judgement to report — cheap to spot on the eventual Implementor work order,
 # rather than silently reusing whatever the last attempt happened to prefer.
 #
+# `refinement_policy` (requirement 39a) binds this path exactly as it binds
+# the Co-Ordinator, and for the same reason: a `"required"` source's unrefined
+# item is not a lower-ranked candidate, it is one nobody has written a
+# specification for yet, and handing it to an Implementor under a generic
+# `acceptance` string is precisely the outcome that policy exists to prevent.
+# A mechanical picker that ignored it could select what no Co-Ordinator
+# engagement was allowed to. So an unrefined item from a `"required"` source
+# is dropped here (`mk` yields nothing for it), and a `"preferred"` source's
+# refined items are ranked ahead of its unrefined ones within their band —
+# the same thumb on the scale `prompts/coordinator.md`'s "Per-source
+# refinement policy" section describes, applied by a stable sort so the band's
+# own order still decides everything else. `"exempt"` sources, which is every
+# source an installation has not opted in, are unaffected.
+#
+# This costs the guarantee above nothing. The gate can only reject a verdict
+# when `refinement_policy["tech-debt"]` is not `"required"` — under that
+# policy `tech_debt_unaccounted_items` returns `[]` unconditionally, so this
+# path is unreachable — and whenever it is reachable, the `tech-debt` rank is
+# both non-empty and unfiltered by the exclusion above.
+#
 # Prints the single winning candidate object, or `null` if every reachable
 # band was empty (never observed in practice, per the guarantee above, but
 # handled rather than assumed).
-fallback_select_candidate() {  # <ordered-repos-json> <default-model>
-  local repos="$1" model="$2"
-  jq -c --arg model "$model" \
+fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinements-json> <refinement-policy-json>
+  local repos="$1" model="$2" refinements="${3:-{\}}" policy="${4:-{\}}"
+  jq -e 'type == "object"' <<<"$refinements" >/dev/null 2>&1 || refinements='{}'
+  jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
+  jq -c --arg model "$model" --argjson refinements "$refinements" --argjson policy "$policy" \
     --arg model_reason "script-fallback: deterministic band-priority pick after two rejected corroboration verdicts; no model judgement applied" '
+    def policy_of($src): (($policy // {})[$src] // "exempt");
+    def is_refined($r; $item): ((($refinements // {})[$r] // {})[($item | tostring)] // null) != null;
+
+    # `_rank` is stripped from the winner below; it exists only to order the
+    # band of a "preferred" source, and is 0 under every other policy so those
+    # bands keep the order they are built in.
     def mk($r; $db; $src; $item; $title; $ctx; $acc; $extra):
-      {repo: $r, default_branch: $db, source: $src, item: $item, title: $title,
-       model: $model, model_reason: $model_reason, context: $ctx, acceptance: $acc} + $extra;
+      if policy_of($src) == "required" and (is_refined($r; $item) | not) then empty
+      else
+        {repo: $r, default_branch: $db, source: $src, item: $item, title: $title,
+         model: $model, model_reason: $model_reason, context: $ctx, acceptance: $acc,
+         _rank: (if policy_of($src) == "preferred" and (is_refined($r; $item) | not)
+                 then 1 else 0 end)} + $extra
+      end;
 
     def issue_ctx: "Issue #" + (.number | tostring) + ": " + (.title // "") + "\n\n"
       + (.body // "") + "\n\nComments:\n"
@@ -2175,7 +2208,7 @@ fallback_select_candidate() {  # <ordered-repos-json> <default-model>
     [ sec_cands, issue_band("Urgent"), rf_cands, mc_cands, ad_cands, hv_cands,
       issue_band("High"), td_cands, issue_band("Medium"), issue_band("Low"), cq_cands, rh_cands ]
     | map(select(length > 0))
-    | if length > 0 then .[0][0] else null end
+    | if length > 0 then (.[0] | sort_by(._rank) | .[0] | del(._rank)) else null end
   ' <<<"$repos"
 }
 
@@ -2377,7 +2410,6 @@ one JSON object, nothing else.
     --argjson n "$td_unaccounted_retry_n" --argjson items "$td_unaccounted_retry_json" --arg r "$retry_reason" \
     --argjson m "$retry_metering_json" \
     '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, unaccounted: $items, reason: $r} + $m')"
-  log_event "none-selected" "$(jq -nc --arg r "$retry_reason" '{reason: $r, td_verdict_rejected: true, retried: true}')"
 
   # --- 5a-fallback. Deterministic selection (requirement 3v, issue #321) ---
   # Both engagements this cycle failed to corroborate a `none-selected`
@@ -2387,12 +2419,29 @@ one JSON object, nothing else.
   # picks mechanically, through the same create-only claim race any
   # model-ranked candidate goes through (requirement 17a, in the caller) — a
   # possibly-suboptimal pick is strictly better than a frozen fleet.
-  fallback_candidate_json="$(fallback_select_candidate "$ordered_repos_json" "$implementor_model_default")"
+  #
+  # The twice-rejected verdict is fully on the record by this point — two
+  # `warning`s and two `corroboration` events, the second carrying the
+  # retry's own `reason` — so it is deliberately *not* also written as a
+  # `none-selected` before the pick is attempted. `none-selected` names a
+  # cycle's outcome, not a verdict: every other reader treats it that way,
+  # from requirement 3b's fingerprint to the dashboard's own outcome ladder
+  # (`scripts/publish-dashboard.sh`, where it outranks both `selection` and
+  # `stand-down`), so a cycle that logged one *and* went on to select would
+  # render as "Nothing selected" — reporting the recovery as the failure it
+  # recovered from, and undercounting fallback picks for issue #319's
+  # metrics. It is logged below instead, on the one branch where the cycle
+  # really does select nothing.
+  fallback_candidate_json="$(fallback_select_candidate "$ordered_repos_json" \
+    "$implementor_model_default" "$refinements_json" "$refinement_policy_json")"
   if [[ -z "$fallback_candidate_json" || "$fallback_candidate_json" == "null" ]]; then
     # Not observed in practice (see fallback_select_candidate's own comment
     # for the guarantee this would defy), but fail closed rather than assume
     # it away: nothing to claim, so stand down exactly as an ordinary
-    # corroboration rejection would.
+    # corroboration rejection would — including requirement 3t's un-armed
+    # fingerprint, which a rejected verdict is denied however the cycle ends.
+    log_event "none-selected" "$(jq -nc --arg r "$retry_reason" \
+      '{reason: $r, td_verdict_rejected: true, retried: true}')"
     return 1
   fi
   candidates_json="$(jq -c '[.]' <<<"$fallback_candidate_json")"

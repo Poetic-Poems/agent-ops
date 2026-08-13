@@ -2285,6 +2285,23 @@ runs unattended.
      the gate reject a verdict at all, so the `tech-debt` rank always has
      something to fall to even when every higher-priority band is empty and
      every lower one unreachable — the one guarantee this path depends on.
+     `refinement_policy` (requirement 39a) binds the mechanical pick exactly
+     as it binds the Co-Ordinator: an unrefined item from a `"required"`
+     source is never a fallback candidate, and a `"preferred"` source's
+     refined items rank ahead of its unrefined ones within their own band
+     (a stable sort, so nothing else about the band order moves). The
+     alternative — a fallback deliberately outside the refinement discipline,
+     on the grounds that a frozen fleet is worse — is rejected because it is
+     not the trade it appears to be: a `"required"` source's unrefined item
+     is one nobody has specified yet, so selecting it hands the Implementor
+     the generic `acceptance` string above and nothing else, which is the
+     outcome requirement 39a exists to prevent, and it buys no liveness the
+     guarantee above does not already provide. Nor does it cost that
+     guarantee anything: `refinement_policy["tech-debt"] == "required"` makes
+     `tech_debt_unaccounted_items` return `[]` unconditionally, so the gate
+     can never reject and this whole path is unreachable — wherever it *is*
+     reachable, the `tech-debt` rank is both non-empty and unfiltered by the
+     exclusion.
      Each candidate is built straight from its own pre-fetched entry's own
      fields — the same `item`/`branch`/`pr_url`/`pr_number`/`takeover` shape
      `prompts/coordinator.md`'s "Output" section requires per source — with
@@ -2307,17 +2324,25 @@ runs unattended.
      fields for that retry engagement), so the retry's own cost is visible on
      the event that explains why it ran, not only inferable by
      cross-referencing `stage-end` timestamps by hand.
-   - **Fingerprint un-arming is unchanged.** Requirement 3t's own rule —
-     omit `fingerprint` from `none-selected` whenever any eligible item is
-     left unaccounted — applies identically to the retry's own rejected
-     verdict, whose `none-selected` carries `retried: true` and no
-     fingerprint. That event records the *verdict*, not the cycle's outcome:
-     it is written before fallback selection is attempted, so a cycle that
-     then falls back carries both it and the `selection` event the
-     mechanical pick wins, and nothing about the fallback re-arms the
-     fingerprint the rejected verdict was denied. Only a `none-selected`
-     fully accounted for on the first attempt, or accepted on the retry,
-     ever carries a fingerprint.
+   - **Fingerprint un-arming is unchanged, and `none-selected` still names
+     the outcome.** Requirement 3t's own rule — omit `fingerprint` from
+     `none-selected` whenever any eligible item is left unaccounted — applies
+     identically to the retry's own rejected verdict, whose `none-selected`
+     carries `retried: true` and no fingerprint. Only a `none-selected` fully
+     accounted for on the first attempt, or accepted on the retry, ever
+     carries one. A cycle that *falls back* logs no `none-selected` at all:
+     the twice-rejected verdict is already fully on the record (two
+     `warning`s, and a `corroboration` per attempt carrying each verdict's own
+     `reason`), and `none-selected` names a cycle's outcome rather than a
+     verdict — requirement 3b's fingerprint reads it that way, and so does the
+     dashboard's outcome precedence (`DASHBOARD-SPEC.md`, where it outranks
+     both `selection` and `stand-down`), so a cycle emitting both it and the
+     `selection` its mechanical pick won would render as "Nothing selected"
+     and report the recovery as the failure it recovered from. The event is
+     written only on the branch where the fallback finds no candidate at all
+     and the cycle really does select nothing; a fallback pick that is then
+     lost to a claim race stands down through requirement 17a's ordinary
+     path, and records that (`stand-down`, cause `raced`), not this.
    - **Explicitly deferred.** Escalating the retry to a stronger model (a
      `coordinator_model` override for the retry invocation only) is not part
      of this requirement — whether the rejection rate observed through issue
@@ -7870,9 +7895,20 @@ pull request, run the ones the change touches and any it could regress.
    - **Fallback fires.** Both verdicts `selected: false` and still
      `td_verdict_rejected` after unioning both attempts' recorded
      `needs_refinement`/`voided`: two `warning` events, two `corroboration`
-     events (both `rejected`), one `none-selected` carrying `retried: true`
-     and no `fingerprint`, and `fallback_select_candidate` is called and its
+     events (both `rejected`), *no* `none-selected` event — the cycle
+     selected something — and `fallback_select_candidate` is called and its
      single candidate reaches the caller with `selected_by_fallback=1`.
+   - **Fallback finds nothing.** The same two rejected verdicts against a
+     fleet whose every pre-fetched band is empty: one `none-selected`
+     carrying `retried: true` and no `fingerprint`, and the function returns
+     1 for the caller to stand the cycle down.
+   - **`refinement_policy` binds the mechanical pick.** Against
+     `fallback_select_candidate` in isolation: under
+     `{"tech-debt": "required"}` an unrefined tech-debt item is not selected
+     and a lower band wins instead, a refined one is selected normally, and
+     under `{"tech-debt": "preferred"}` the refined item wins its band over
+     an unrefined one that precedes it while an all-unrefined band is still
+     selectable.
    - **The retry's recording is scoped to what it was asked about.** A retry
      message that repeats a `voided`/`needs_refinement` entry the first
      attempt already recorded, alongside a new one for an item the addendum
