@@ -570,9 +570,12 @@ takeover. Instead add it to `voided`:
   PR as "PR #135" (or "pull request #135") will be checked against *that*
   PR's body and branch for this item's id, which it will never carry, and the
   void will be refused. Use the field exactly as given.
-This closes PR #<number> automatically once the void is recorded
-(`close-void-github-items.sh`, WI-4's act-on-void path) — there is nothing
-further for you or an Implementor to do.
+This stops PR #<number> being offered as a candidate again, but does **not**
+close it: `close-void-github-items.sh` leaves every `pr-<n>-conflict-…` void
+untouched, this superseded one included, because the same shape also covers a
+live PR of ours whose conflict merely resolved, and closing that one would
+destroy real work. The superseded pull request stays open for a human to
+close by hand — there is nothing further for you or an Implementor to do.
 
 *Takeover (`bot: true`, `rebase_requested: true`, `superseded_by` null).*
 This system already asked Dependabot to rebase this PR (`@dependabot rebase`,

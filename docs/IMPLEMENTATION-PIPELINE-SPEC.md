@@ -1738,12 +1738,17 @@ runs unattended.
      ordinary rebase case, because there is no other PR left to carry it.
    - **Superseded** (`superseded_by` non-null, either state of
      `rebase_requested`): never nudged (nothing to gain by asking Dependabot
-     to rebase a PR about to be closed as redundant) and never a takeover
+     to rebase a PR that has nothing left to do) and never a takeover
      candidate. The Co-Ordinator instead records it in `voided`, copying
-     `superseded_evidence` verbatim as `evidence` — closing the PR is
-     `close-void-github-items.sh`'s ordinary act-on-void path (requirement
-     34k), unchanged: the item's `pr-<n>-…` ref shape is all that path has
-     ever needed.
+     `superseded_evidence` verbatim as `evidence`, so it is never offered
+     again — but this no longer closes the pull request. Requirement 34k
+     excludes every `pr-<n>-conflict-…` ref, this superseded one included,
+     from its act-on-void close (TD-PPagop-26080901): the same shape also
+     covers a live, unconflicted PR of ours whose conflict merely resolved,
+     and closing *that* one destroys real work, so the shape is left alone
+     across the board rather than closed for some voids and not others. The
+     superseded pull request is voided but stays open until a human closes it
+     by hand.
 
    `prompts/coordinator.md` states the first-sighting case explicitly, as a
    named third treatment alongside superseded and takeover, rather than
@@ -5127,8 +5132,28 @@ runs unattended.
     - **an issue** (a bare number) — closed, with a comment carrying the
       void's own `detail` (the reason) and `evidence`, iff GitHub still
       reports it open;
-    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
-      closed the same way, iff still open.
+    - **a pull request** (`pr-<n>-abandoned-…`, `-review-…`) — closed the
+      same way, iff still open.
+
+    **The `-conflict-` shape is excluded from the pull-request case above.**
+    `pr-<n>-conflict-<head-sha>` names the pull request only to say the
+    *conflict* on it resolved — the void is about the conflict, not about the
+    pull request, which stays a live, ready PR of ours the moment the shape
+    is voided. Closing it here would discard exactly the work requirement
+    34's `merge-conflicts` source exists to protect, and did, for real:
+    pull request #264 — the first raising of the branch that became #273,
+    carrying a human `CHANGES_REQUESTED` review round — was closed unmerged
+    when the unrelated item `pr-264-conflict-…` was voided after its conflict
+    resolved, and both the PR and the review round were lost
+    (TD-PPagop-26080901). So a void of this shape closes nothing: it is left
+    exactly like a void shape that names no GitHub object at all, below. The
+    exclusion is decided before the per-call action cap, exactly as the
+    `stage` gate below is: this shape is never actionable on any cycle, so it
+    must neither consume one of the three slots nor be counted in the
+    overflow the cap reports — a deferred count naming work nothing will ever
+    do would have the Script log that warning every cycle in perpetuity,
+    since a shape this never closes never earns the `void-object-closed`
+    that would retire it under requirement 34n.
 
     Every other void shape — a tech-debt register id, a project-review ref,
     an implementation-plan task id — names something that is not a GitHub
@@ -5318,11 +5343,19 @@ runs unattended.
       per-cycle read, bounded. A void of
       any other shape — a project-review ref, an implementation-plan task id,
       a `dependabot-alert-<n>` or `code-scanning-alert-<n>`, a
-      `register-hygiene-<hash>`, a `failed-run-<…>` — has no actioned signal
-      defined for it at all, since 34k's sweep acts only on the bare-issue
-      and `pr-<n>-…` shapes and 34l's register pass only on register ids, so
-      a void of those kinds is never actioned and never retires on this rule
-      alone; and
+      `register-hygiene-<hash>`, a `failed-run-<…>`, and the
+      `pr-<n>-conflict-<head-sha>` shape 34k deliberately excludes from its
+      close — has no actioned signal defined for it at all, since 34k's
+      sweep acts only on the bare-issue shape and the non-`-conflict-`
+      `pr-<n>-…` shapes, and 34l's register pass only on register ids, so a
+      void of those kinds is never actioned and never retires on this rule
+      alone. The merge-conflicts shape is the one whose id is minted per
+      occurrence rather than per object — a fresh `<head-sha>` mints a fresh
+      id, so no two ever coalesce — which makes it the fastest-growing member
+      of that class; TD-PPagop-26081303 carries the decided direction for
+      closing it, and reaches this shape under its own first rule, since
+      `scripts/gather-merge-conflicts.sh` re-gathers the source every cycle
+      and stops yielding the id the moment the conflict resolves; and
     - **old** — its `item-void` event's own `ts` is at least
       `void_retire_after_days` old (default 30; `0` disables retirement
       outright).
@@ -7014,9 +7047,11 @@ What exists, and the requirements each part answers to:
     open object with a comment carrying the void's `detail`/`evidence`,
     printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
     `"already"` — `deferred`, `warning`) for the Script to log as
-    `void-object-closed`. Any other id shape is left untouched. Capped at
-    three actions per call, the overflow reported rather than silent.
-    `SWEEP_GH` stubs `gh` for tests. Unit-tested
+    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` shape is excluded
+    from the pull-request case — it names a live PR the void says nothing
+    about closing — and left untouched exactly like any other id shape.
+    Capped at three actions per call, the overflow reported rather than
+    silent. `SWEEP_GH` stubs `gh` for tests. Unit-tested
     (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
 20. `lib/review-gate.sh` implementing requirement 31c: given a pull request
     URL and the repository's default branch, `review_gate_verdict` prints
@@ -8061,8 +8096,13 @@ pull request, run the ones the change touches and any it could regress.
    for an entry no writer this script recognises corroborated; an object
    already closed is reported (`closed_by: "already"`) rather than touched
    again; a shape naming no GitHub object (a register id) is left entirely
-   alone; a void carrying no reason still reaches the comment with its
-   evidence intact; and the per-call action cap defers rather than floods.
+   alone; a `pr-<n>-conflict-<head-sha>` void — the merge-conflicts shape,
+   which names a pull request but is not about closing it (TD-PPagop-26080901)
+   — is left entirely alone too, with no API call made, exactly like the
+   register id, and is excluded before the action cap, so it neither spends a
+   slot nor appears in the deferred count; a void carrying no reason still
+   reaches the comment with its evidence intact; and the per-call action cap
+   defers rather than floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract
@@ -8750,10 +8790,17 @@ requirements above, which state only what is.
   branch, closing the bot's — because at that point Dependabot is
   demonstrably not going to resolve it itself. A superseded bump (a newer
   Dependabot PR already covers the same dependency) is voided rather than
-  nudged or taken over, through the *existing* act-on-void path
-  (`close-void-github-items.sh`, WI-4) rather than a new closing mechanism —
-  the one piece of care that path needed was the evidence text: void
-  corroboration (`lib/void-guard.sh`) reads "PR #N" — bare, or as a
+  nudged or taken over, through the *existing* void-recording path rather
+  than a new one — so it stops being offered as a candidate every cycle,
+  which is the problem this half of the fix set out to solve. It does
+  **not** also close the pull request: `close-void-github-items.sh`
+  (requirement 34k) excludes every `pr-<n>-conflict-…` void, this superseded
+  one included, from its act-on-void close, because the identical shape also
+  covers a live PR of ours whose conflict merely resolved, and closing that
+  one destroys real work (TD-PPagop-26080901) — a superseded bot PR now
+  waits for a human to close it, the same as before requirement 34k existed.
+  Recording the void correctly still needed the same one piece of care with
+  the evidence text: void corroboration (`lib/void-guard.sh`) reads "PR #N" — bare, or as a
   `.../pull/N` URL — in evidence as a claim that PR *implements* the item,
   fetches whichever form a cited superseding PR uses, and correctly refuses
   it (a different, independent bump will never carry the superseded item's
