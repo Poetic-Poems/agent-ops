@@ -1533,7 +1533,7 @@ gather_issues() {
 # errand. Claimed-item exclusion is applied by the caller via
 # exclude_claimed_items, like every other pre-fetched array; blocked/void
 # exclusion is applied by a second pass once blocked_json/void_json exist (see
-# "5. Tech-debt eligibility" below) — this function only ever returns the raw
+# "3c. Tech-debt eligibility" below) — this function only ever returns the raw
 # open set.
 gather_tech_debt() {
   local slug="$1" branch="$2" out safe
@@ -3457,7 +3457,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # Claim exclusion only, here: blocked/void exclusion for tech-debt needs
   # `blocked_json`/`void_json`, which do not exist yet this early in the cycle
   # (they depend on this same loop's `ordered_repos_json` for the work-gone
-  # reconciliation passes below) — see "5. Tech-debt eligibility" further down,
+  # reconciliation passes below) — see "3c. Tech-debt eligibility" further down,
   # which filters this array in place once they do.
   tech_debt="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
@@ -4042,11 +4042,13 @@ if (( void_json_bytes > 100000 )); then
                + " entries after retirement — approaching the 131072-byte MAX_ARG_STRLEN cap; check void_retire_after_days and whether requirements 34k/34l are actioning items")}')"
 fi
 
-# --- 5. Tech-debt eligibility (requirement 3t, issue #310) ---
-# The repo loop above (section 3) attached each repo's open tech-debt items,
-# claim-filtered, before `blocked_json`/`void_json` existed to filter them
-# further. Now that both are final — void_json has had every reconciliation
-# pass and its own retirement applied — finish the job: drop any item this
+# --- 3c. Tech-debt eligibility, decided (requirement 3t, issue #310) ---
+# Deferred from step 3 for the same reason 2.2a's back-pressure decision and
+# 3b's no-op fingerprint are deferred from their own numbers: the repo loop
+# (section 3) attached each repo's open tech-debt items, claim-filtered,
+# before `blocked_json`/`void_json` existed to filter them further. Now that
+# both are final — void_json has had every reconciliation pass and its own
+# retirement applied — finish the job: drop any item this
 # repo's own blocked or void record names, exactly as exclude_claimed_items
 # already dropped claimed ones. What remains in each repo's `tech_debt` array
 # is the Script's own answer to "what could the Co-Ordinator actually select
@@ -4066,7 +4068,7 @@ done < <(jq -r '[.[] | select(((.tech_debt // []) | length) > 0) | .slug] | uniq
 
 # The Script's own count of what the tech-debt band could actually offer this
 # cycle, and which repo+item pairs make it up — the machine-corroboration
-# baseline "5b. Tech-debt verdict corroboration" below tests the Co-Ordinator's
+# baseline "5a. Tech-debt verdict corroboration" below tests the Co-Ordinator's
 # verdict against, and requirement 3b's fingerprint (below) hashes as part of
 # `repos[].tech_debt` regardless, verbatim like `register_hygiene`.
 eligible_tech_debt_json="$(jq -c '[.[] | .slug as $s | (.tech_debt // [])[] | {repo: $s, item: .ref}]' \
