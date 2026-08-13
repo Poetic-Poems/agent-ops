@@ -418,8 +418,21 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
   counts:  { cycles_shown, failures_shown, prs_reached_ready,   // fleet-wide
              spend_today_usd, spend_total_usd,
              by_day[], by_model[], by_actor[],   // both pipelines' actors
-             recent_costs[] },     // {ts, cost} per row, last 3 days, for the
+             recent_costs[],       // {ts, cost} per row, last 3 days, for the
                                     //   spend-today card's GMT/local/24h toggle
+             coordinator_verdicts: {   // how often the Script rejects a
+               window_from, window_to, //   Co-Ordinator verdict, and what
+               runs, retries,          //   the fleet spent recovering
+               selections, fallbacks,  //   (implementation spec 3t/3v/3w)
+               none_selected, corroborated, rejected, rate,
+               by_day:   [ {day, model, runs, retries, selections, fallbacks,
+                            none_selected, corroborated, rejected, rate} ],
+               by_model: [ {model, runs, retries, selections, fallbacks,
+                            none_selected, corroborated, rejected, rate} ],
+               last_rejection: { ts, node, cycle, attempt, model, reason,
+                                 detail, eligible_total, unaccounted_total,
+                                 unaccounted:[{repo,item}],
+                                 outcome } } },  // what became of that cycle
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,
                raced, race_losses,          // true/count iff the cycle lost a claim
@@ -647,9 +660,70 @@ do. A repo at `0` or with no key carries neither badge nor note, so a fleet
 that has set no `nice` anywhere renders the panel it rendered before the
 feature existed. The values reach the page unaided — `config.repos` already
 ships wholesale — so this is rendering only: the Publisher is unchanged;
+**Co-Ordinator verdict quality** (immediately below the work sources, and
+deliberately: that panel is what the Co-Ordinator was handed, this one is how
+often its answer about it survived the Script checking that answer);
 the cost charts — by-day on the left, by-model and by-actor stacked beside it,
 since the first runs to sixty rows and the other two to five; recent log;
 `cron.log` tail.
+
+The **Co-Ordinator verdict quality** panel renders
+`counts.coordinator_verdicts` (issue #319). Implementation spec 3t
+corroborates a `selected: false` verdict against the Script's own eligible
+tech-debt set and rejects one that cannot account for the band; spec 3v then
+retries it once and, failing that, picks mechanically. Both act one cycle at a
+time, and per cycle they can only say whether it happened. The operator
+question they leave behind — is `coordinator_model` the wrong model for this
+job — is a **rate**, so the panel leads with one: the rejected count, the
+corroborated count it is over, and the percentage, with a red badge at or above
+half and amber below.
+
+The unit is the **verdict, not the cycle**, because spec 3v lets one cycle
+produce two and a retry rejected in turn is a second wrong answer rather than
+the same one restated. What the fleet spent on those rejections is a second
+line — retry engagements, and items the Script had to pick itself — because
+that cost is real and is invisible in the rate above it.
+
+Beneath, one row per UTC day **per Co-Ordinator model**, newest day first and
+models in a stable order within a day, so an installation that changes
+`coordinator_model` on one node gets two separately attributable rates rather
+than one blended figure. Beneath that, the newest rejection itself — which
+attempt it was, the verdict's own stated reason, the Script's machine detail,
+the unaccounted item refs (capped at twenty with the full count stated beside
+them), and **what became of that cycle**: recovered by the retry, recovered by
+the Script's own pick, accepted on retry with nothing selected, or stood down.
+A rate with no instance is not actionable; an instance that does not say
+whether the fleet recovered is half the story spec 3v now has to tell.
+
+Its three empty states mean three different things and are rendered as three
+different things: **no Co-Ordinator runs in the retained log** (missing data
+— a log too short or too new), **no rate yet** (verdicts, but none over a
+non-empty eligible set, so there was nothing to corroborate), and **no
+rejected verdicts in this window** in green (the healthy answer, which must
+not read as silence). A `data.js` written before the Publisher recorded any
+of this says so outright rather than rendering a clean-looking zero it has no
+data for.
+
+The window is the **retained log union and nothing more**, and the panel says
+so under its own figures: `log.jsonl` is rotated at `log_retained_bytes` and
+`fleet_logs` reads only the live generation, so the aggregate is honestly "over
+the log we still have", carrying `window_from`/`window_to` rather than leaving
+the page to imply a history it cannot see. Persisting counters across publishes
+was the alternative and was not taken: four nodes publish the same union
+independently, and a double-counted rejection is a worse answer than an
+honestly bounded one.
+
+Verdicts are read from spec 3v's `corroboration` events where a cycle has
+them and from its `none-selected` where it does not — never both for one
+cycle, or a rejection that reached the fallback path with nothing to pick
+would be counted twice. Attribution comes from the event
+(`coordinator_model`, implementation spec 3w), falling back to the model that
+cycle recorded on its coordinator `stage-end` — the same invocation id, so the
+two cannot disagree — which is what lets the panel populate from history
+already on disk rather than only from cycles run after it shipped. `selection`
+carries a `model` of its own and it is deliberately never read here: that is
+the *Implementor* model chosen for the item, and reading it would attribute a
+Co-Ordinator verdict to whichever model was about to do the work.
 
 The **recent log** is the newest 80 events, one row each: time, the event as a
 badge, **Node**, **Repo**, **Actor**, and the event's own detail. Those three
@@ -933,6 +1007,22 @@ number's twins elsewhere on the page.
   unrelated repo's own legitimate 404 still reads `answered_404` in the same
   tick, proving the two are told apart from each other and not just from the
   healthy case.
+  The verdict-quality aggregate (issue #319) counts **both** terms of the
+  rate and tells five shapes apart in one synthetic log: a verdict rejected
+  then recovered by the retry that followed it, an accepted one over a
+  non-empty eligible set (denominator only), one written before implementation
+  spec 3v recorded `corroboration` events, an empty eligible set (neither
+  term), and a verdict rejected twice that the Script then had to pick for.
+  A cycle counts its verdict **once** — spec 3v writes both a `corroboration`
+  and a `none-selected` for the same answer, and counting both would inflate
+  every denominator by exactly the cycles that stood down cleanly. Two models
+  in the same window carry separate rates and separate fallback counts; a
+  `selection` is attributed to the Co-Ordinator model and never to the
+  Implementor `model` the event itself carries; the newest rejection names its
+  attempt, its own `unaccounted` refs and count, and what became of the cycle
+  it happened on; and a log holding no Co-Ordinator record at all still ships
+  the aggregate zeroed with a `null` rate, since the page can only distinguish
+  a clean window from missing data if an empty window is still an object.
 - `test/dashboard-render.test.sh` passes its plain-`grep` check, run without
   `node` and independent of the harness below, that the header's documentation
   nav carries all six `blob/main/<path>` links (README, the three pipeline
@@ -1003,6 +1093,20 @@ number's twins elsewhere on the page.
   see-more control names how many are held back, and every row carries both
   the height cap and the class that makes it open. A fixture inside the cap
   renders no control at all.
+  The Co-Ordinator verdict-quality card (issue #319) is asserted in both its
+  populated and its zero state, because they are the two readings an operator
+  acts on and only one of them was ever going to be exercised by accident: a
+  fixture carrying rejections renders the rate *and* both terms of it, a red
+  badge at three-quarters, the recovery line naming the retries and the picks
+  the Script had to make itself, a row per day per model with the second model
+  attributed apart from the first, a day with nothing to corroborate showing
+  no rate rather than a zero one, and the newest rejection beneath — its
+  attempt, reason, machine detail, unaccounted refs, the stated count of the
+  ones the cap held back, and what became of the cycle it happened on. A second fixture with verdicts but no rejections renders
+  the green "no rejected verdicts in this window" against its own denominator
+  and no contradiction block at all, while a `data.js` from before the
+  aggregate existed says so outright rather than rendering that same clean
+  zero for data it does not have.
   Out of scope by the same tree-building limit:
   the pull-request hover card's pointer/focus behaviour, covered only by the
   manual and headless checks below.

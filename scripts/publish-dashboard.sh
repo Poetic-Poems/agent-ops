@@ -835,6 +835,192 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$cost
     recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost}))
   }')"
 
+# --- Co-Ordinator verdict quality (requirement 3w, issue #319) ----------------
+# How often the Script rejects a Co-Ordinator verdict, by UTC day and by the
+# model that produced it. Requirement 3t made a confabulated verdict
+# *detectable* and requirement 3v made it *recoverable* — a retry, then a
+# mechanical fallback pick — but both act one cycle at a time, and the
+# question the detection exists to serve is a rate: does it justify changing
+# `coordinator_model`? A rate needs both terms, and only the rejections were
+# ever counted.
+#
+# The unit is the **verdict**, not the cycle, because requirement 3v made a
+# cycle able to produce two: the first engagement and its one retry are two
+# separate answers from the model, each corroborated against the same eligible
+# set on its own. `corroboration` events (3v) are therefore the primary
+# record — one per verdict, carrying the Script's own `eligible_total`, the
+# outcome, and (3w) the model. A cycle that logged none, which is every cycle
+# from before 3v shipped and every cycle whose band was genuinely empty, falls
+# back to its `none-selected` events instead; the two are never mixed for one
+# cycle, or a rejection that reached the fallback path would be counted twice
+# — 3v writes both a rejected `corroboration` and a `td_verdict_rejected`
+# `none-selected` when no fallback candidate exists.
+#
+# `accepted-by-selection` counts in the denominator like any other verdict:
+# it is the retry getting it right, and leaving it out would credit a recovery
+# to nobody and flatter every model that recovers that way.
+#
+# The window is the retained union log and nothing more — `log.jsonl` is
+# rotated at `log_retained_bytes` and `fleet_logs` reads only the live
+# generation, so a figure here is "over the log we still have", which is why
+# `window_from`/`window_to` ship alongside the counts rather than leaving the
+# page to imply a window it cannot see. Persisting counters across publishes
+# was the alternative; it would have to survive four nodes publishing the same
+# union independently, and a double-counted rejection is a worse answer than
+# an honestly bounded one.
+#
+# Attribution comes from the event itself (`coordinator_model`, requirement
+# 3w), falling back to the model that cycle recorded on its coordinator
+# `stage-end` — which is the same invocation id, so the two never disagree —
+# so the card populates from history already in the log rather than only from
+# cycles run after this ships. `selection` carries a `model` of its own; it is
+# the *Implementor* model chosen for the item, and reading it here would
+# attribute a Co-Ordinator verdict to whichever model was about to do the
+# work, so this reads the cycle map and never that field.
+#
+# The events arrive as a file, and the aggregate leaves as one (requirement
+# 4g) — neither is large today, and neither is bounded by anything that would
+# keep it that way.
+coord_verdicts_file="$work_tmp/coord-verdicts.json"
+jq -c --arg cut "$day_cut" '
+  . as $ev
+  # cycle -> the model its Co-Ordinator stage ran under. Both attempts of a
+  # cycle run under the same id, so one entry per cycle is enough.
+  | ($ev
+     | map(select(.event == "stage-end" and .stage == "coordinator" and ((.cycle // "") != "")))
+     | reduce .[] as $s ({}; .[$s.cycle] = ($s.model // null))) as $cyc_model
+  # The cycles whose verdicts are on the record as `corroboration` events. A
+  # `none-selected` from one of these is the same verdict said twice, so it is
+  # read for the cycle outcome and never again as a verdict.
+  # A map, not a list: the membership test below sits inside a `select`, where
+  # `$list | index(.cycle)` would evaluate `.cycle` against the list rather
+  # than against the event, and abort the whole program on the first cycle
+  # that has one.
+  | ($ev | map(select(.event == "corroboration") | .cycle // "")
+         | reduce .[] as $c ({}; .[$c] = true)) as $corr_cycles
+  | def day_of: ((.ts // "" | tostring)
+                 | if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}")
+                   then (.[0:4] + .[5:7] + .[8:10]) else null end);
+    def model_of: (.coordinator_model // $cyc_model[(.cycle // "")] // "unknown");
+    def zero: {runs: 0, retries: 0, selections: 0, fallbacks: 0,
+               none_selected: 0, corroborated: 0, rejected: 0};
+    def cell: {day: day_of, model: model_of} + zero;
+    def rate: (if .corroborated > 0 then (.rejected / .corroborated) else null end);
+    def total($k): (map(.[$k]) | add // 0);
+
+    # Engagements: both attempts of a cycle are runs, the second is also a
+    # retry.
+    [ $ev[] | select(.event == "stage-end" and .stage == "coordinator")
+            | cell + {runs: 1, retries: (if .retry == true then 1 else 0 end)} ]
+    # Outcomes: what the cycle did, as distinct from what its verdicts were.
+  + [ $ev[] | select(.event == "selection")
+            | cell + {selections: 1,
+                      fallbacks: (if .selected_by == "script-fallback" then 1 else 0 end)} ]
+  + [ $ev[] | select(.event == "none-selected") | cell + {none_selected: 1} ]
+    # Verdicts, from the corroboration record where there is one…
+  + [ $ev[] | select(.event == "corroboration")
+            | cell + {corroborated: (if ((.eligible_total // 0) > 0)
+                                        or (.verdict == "rejected")
+                                        or (.verdict == "accepted-by-selection")
+                                     then 1 else 0 end),
+                      rejected: (if .verdict == "rejected" then 1 else 0 end)} ]
+    # …and from the verdict event itself where there is not. A rejection is by
+    # construction over a non-empty eligible set (requirement 3t corroborates
+    # nothing else), so it counts in both terms even on an event too old to
+    # carry the total.
+  + [ $ev[] | select(.event == "none-selected"
+                     and (($corr_cycles[(.cycle // "")] // false) | not))
+            | cell + {corroborated: (if ((.eligible_total // 0) > 0)
+                                        or (.td_verdict_rejected == true)
+                                     then 1 else 0 end),
+                      rejected: (if .td_verdict_rejected == true then 1 else 0 end)} ]
+  | map(select(.day != null and .day >= $cut))
+  | group_by([.day, .model])
+  | map({day: .[0].day, model: .[0].model,
+         runs:          total("runs"),
+         retries:       total("retries"),
+         selections:    total("selections"),
+         fallbacks:     total("fallbacks"),
+         none_selected: total("none_selected"),
+         corroborated:  total("corroborated"),
+         rejected:      total("rejected")}
+        | . + {rate: rate})
+  | sort_by([.day, .model])
+  | . as $by_day
+  | ($by_day | group_by(.model)
+     | map({model: .[0].model,
+            runs:          total("runs"),
+            retries:       total("retries"),
+            selections:    total("selections"),
+            fallbacks:     total("fallbacks"),
+            none_selected: total("none_selected"),
+            corroborated:  total("corroborated"),
+            rejected:      total("rejected")}
+           | . + {rate: rate})
+     | sort_by([- .rejected, .model])) as $by_model
+  # The newest rejection, whichever record carries it, with what became of the
+  # cycle that produced it — a rate with no instance is not actionable, and an
+  # instance that does not say whether the fleet recovered is half the story
+  # requirement 3v now has to tell. The refs are capped because 33 of them is a
+  # real, observed case and data.js is a byte budget; the full count rides
+  # alongside so the cap is visible rather than silent.
+  | ([ $ev[] | select(.event == "corroboration" and .verdict == "rejected") ]
+     | max_by(.ts // "")) as $rc
+  | ([ $ev[] | select(.event == "none-selected" and .td_verdict_rejected == true
+                      and (($corr_cycles[(.cycle // "")] // false) | not)) ]
+     | max_by(.ts // "")) as $rn
+  | (if   $rc == null then $rn
+     elif $rn == null then $rc
+     elif ($rn.ts // "") > ($rc.ts // "") then $rn
+     else $rc end) as $rej
+  | ($rej
+     | if . == null then null
+       else . as $r
+       # The sibling `warning` of the same verdict, for a rejection recorded
+       # before `corroboration` events carried the detail themselves.
+       | ([ $ev[] | select(.event == "warning" and (.cycle // "") == ($r.cycle // "")
+                           and ((.unaccounted | type) == "array")) ]
+          | max_by(.ts // "")) as $w
+       | (($r.unaccounted // ($w // {}).unaccounted // [])) as $un
+       | ([ $ev[] | select((.cycle // "") == ($r.cycle // "") and (.ts // "") > ($r.ts // "")) ]) as $after
+       | {ts: ($r.ts // null), node: ($r.node // null), cycle: ($r.cycle // null),
+          attempt: ($r.attempt // null),
+          model: ($r.coordinator_model // $cyc_model[($r.cycle // "")] // "unknown"),
+          reason: ($r.reason // ""),
+          detail: (($w // {}).detail // ""),
+          eligible_total: ($r.eligible_total // ($w // {}).eligible_total // null),
+          unaccounted_total: ($r.unaccounted_total // ($un | length)),
+          unaccounted: ($un | map({repo: (.repo // ""), item: (.item // "")}) | .[0:20]),
+          outcome: (if   ($after | any(.event == "selection" and .selected_by == "script-fallback"))
+                         then "recovered-by-fallback"
+                    elif ($after | any(.event == "selection")) then "recovered-by-retry"
+                    elif ($after | any(.event == "corroboration" and .verdict == "accepted"))
+                         then "accepted-on-retry"
+                    else "stood-down" end)}
+       end) as $last
+  | ([ $ev[] | .ts // empty ]) as $tss
+  | {window_from: ($tss | min), window_to: ($tss | max)}
+    + ($by_day
+       | {runs:          total("runs"),
+          retries:       total("retries"),
+          selections:    total("selections"),
+          fallbacks:     total("fallbacks"),
+          none_selected: total("none_selected"),
+          corroborated:  total("corroborated"),
+          rejected:      total("rejected")})
+  | . + {rate: rate, by_day: $by_day, by_model: $by_model, last_rejection: $last}
+' "$events_file" > "$coord_verdicts_file" 2>/dev/null
+if ! jq -e 'type == "object"' "$coord_verdicts_file" >/dev/null 2>&1; then
+  printf '%s' '{"window_from":null,"window_to":null,"runs":0,"retries":0,"selections":0,"fallbacks":0,"none_selected":0,"corroborated":0,"rejected":0,"rate":null,"by_day":[],"by_model":[],"last_rejection":null}' \
+    > "$coord_verdicts_file"
+fi
+# Merged into `counts` rather than shipped as a key of its own: it is a
+# roll-up over the same window as everything else there, and the page reads
+# one object for its metric cards.
+counts_merged="$(jq -c --slurpfile v "$coord_verdicts_file" \
+  '. + {coordinator_verdicts: $v[0]}' <<<"$counts_json" 2>/dev/null)"
+[[ -n "$counts_merged" ]] && counts_json="$counts_merged"
+
 # --- Blocked and void items (requirements 34, 34c, 34h) ----------------------
 # Both rules live in lib/cycle-state.sh, shared with agent-cycle.sh, so what the
 # dashboard calls blocked or void is by construction what the Co-Ordinator is

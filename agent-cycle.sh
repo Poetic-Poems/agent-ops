@@ -2250,6 +2250,27 @@ coordinator_corroborate_retry_or_fallback() {
   fi
   td_unaccounted_n="$(jq 'length' <<<"$td_unaccounted_json" 2>/dev/null || echo 0)"
 
+  # Requirement 3w (issue #319): what every verdict this cycle records owes
+  # the rate. Requirement 3v's `corroboration` events already carry the
+  # Script's own `eligible_total`, which is the denominator; what neither they
+  # nor `none-selected` carried is *which model produced the verdict*, and
+  # without that the fleet cannot tell a rate that would justify changing
+  # `coordinator_model` from one that would not. The only other record of this
+  # cycle's Co-Ordinator model is its `stage-end` metering — a per-verdict
+  # join for any reader — or its transcript, which is retained on an entirely
+  # different schedule from the log.
+  #
+  # `coordinator_model` is the id the stage was *invoked* with, not a key of
+  # the envelope's `modelUsage` map, for the reason lib/metering.sh gives for
+  # making the same choice: the invocation id is the thing an operator sets
+  # and the thing `stage-end` already records, while `modelUsage` names
+  # whatever the session actually reached for — including a subagent's model —
+  # so keying on it would split one setting's rate across several labels and
+  # disagree with every other record of the same run. Both attempts run under
+  # the same id (`run_coordinator_stage_attempt` above), so the retry's own
+  # verdict is attributed to the same model that produced the first.
+  coord_model_json="$(jq -nc --arg m "$coordinator_model" '{coordinator_model: $m}')"
+
   # The fingerprint recorded here is the one taken *before* the Co-Ordinator
   # ran, which is the only correct choice. Anything that changed while it was
   # working is, by definition, something it may not have seen — so it must be
@@ -2270,10 +2291,16 @@ coordinator_corroborate_retry_or_fallback() {
   if (( td_unaccounted_n == 0 )); then
     if (( eligible_tech_debt_total > 0 )); then
       log_event "corroboration" "$(jq -nc --argjson a 1 --arg v "accepted" --argjson total "$eligible_tech_debt_total" \
-        '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: 0}')"
+        --argjson m "$coord_model_json" '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: 0} + $m')"
     fi
+    # `eligible_total` rides the `none-selected` too, and on every branch
+    # below (requirement 3w): a cycle whose band was genuinely empty logs no
+    # `corroboration` at all, so without the figure here a reader cannot tell
+    # "nothing was eligible" — which is a clean verdict with no rate to be
+    # part of — from an event written before any of this existed.
     log_event "none-selected" "$(jq -nc --arg r "$reason" --arg f "$noop_fingerprint_value" \
-      '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end)')"
+      --argjson total "$eligible_tech_debt_total" --argjson m "$coord_model_json" \
+      '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end) + {eligible_total: $total} + $m')"
     return 1
   fi
 
@@ -2288,7 +2315,8 @@ coordinator_corroborate_retry_or_fallback() {
       eligible_total: $total, unaccounted: $items}')"
   log_event "corroboration" "$(jq -nc --argjson a 1 --arg v "rejected" --argjson total "$eligible_tech_debt_total" \
     --argjson n "$td_unaccounted_n" --argjson items "$td_unaccounted_json" --arg r "$reason" \
-    '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, unaccounted: $items, reason: $r}')"
+    --argjson m "$coord_model_json" \
+    '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, unaccounted: $items, reason: $r} + $m')"
 
   # --- 5a-retry. One re-prompt, quoting the contradiction (requirement 3v, issue #321) ---
   # A confabulated `none-selected` costs the Script nothing to detect (above),
@@ -2375,8 +2403,13 @@ one JSON object, nothing else.
     --argjson b "${coord_recorded_voided_json:-[]}" '$a + $b')"
 
   if [[ "$retry_selected" == "true" ]]; then
+    # `eligible_total` here too (requirement 3w): this verdict is one the
+    # retry got right, and a denominator that counted only the verdicts still
+    # phrased as `none-selected` would credit the recovery to nobody and
+    # overstate every model that ever recovers this way.
     log_event "corroboration" "$(jq -nc --argjson a 2 --arg v "accepted-by-selection" --argjson m "$retry_metering_json" \
-      '{attempt: $a, verdict: $v} + $m')"
+      --argjson total "$eligible_tech_debt_total" --argjson cm "$coord_model_json" \
+      '{attempt: $a, verdict: $v, eligible_total: $total} + $m + $cm')"
     # The retry's own work order — an ordinary model selection, no different
     # from one the first attempt could have made — is what the caller feeds
     # "5b. Candidates, and the claim" once this returns 0.
@@ -2393,9 +2426,11 @@ one JSON object, nothing else.
 
   if (( td_unaccounted_retry_n == 0 )); then
     log_event "corroboration" "$(jq -nc --argjson a 2 --arg v "accepted" --argjson total "$eligible_tech_debt_total" \
-      --argjson m "$retry_metering_json" '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: 0} + $m')"
+      --argjson m "$retry_metering_json" --argjson cm "$coord_model_json" \
+      '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: 0} + $m + $cm')"
     log_event "none-selected" "$(jq -nc --arg r "$retry_reason" --arg f "$noop_fingerprint_value" \
-      '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end)')"
+      --argjson total "$eligible_tech_debt_total" --argjson m "$coord_model_json" \
+      '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end) + {eligible_total: $total} + $m')"
     return 1
   fi
 
@@ -2408,8 +2443,8 @@ one JSON object, nothing else.
       eligible_total: $total, unaccounted: $items}')"
   log_event "corroboration" "$(jq -nc --argjson a 2 --arg v "rejected" --argjson total "$eligible_tech_debt_total" \
     --argjson n "$td_unaccounted_retry_n" --argjson items "$td_unaccounted_retry_json" --arg r "$retry_reason" \
-    --argjson m "$retry_metering_json" \
-    '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, unaccounted: $items, reason: $r} + $m')"
+    --argjson m "$retry_metering_json" --argjson cm "$coord_model_json" \
+    '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, unaccounted: $items, reason: $r} + $m + $cm')"
 
   # --- 5a-fallback. Deterministic selection (requirement 3v, issue #321) ---
   # Both engagements this cycle failed to corroborate a `none-selected`
@@ -2441,7 +2476,8 @@ one JSON object, nothing else.
     # corroboration rejection would — including requirement 3t's un-armed
     # fingerprint, which a rejected verdict is denied however the cycle ends.
     log_event "none-selected" "$(jq -nc --arg r "$retry_reason" \
-      '{reason: $r, td_verdict_rejected: true, retried: true}')"
+      --argjson total "$eligible_tech_debt_total" --argjson m "$coord_model_json" \
+      '{reason: $r, td_verdict_rejected: true, retried: true, eligible_total: $total} + $m')"
     return 1
   fi
   candidates_json="$(jq -c '[.]' <<<"$fallback_candidate_json")"
