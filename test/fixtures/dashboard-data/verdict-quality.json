@@ -1,0 +1,77 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": [],
+    "coordinator_verdicts": {
+      "window_from": "@ago:3d",
+      "window_to": "@now",
+      "runs": 11,
+      "retries": 2,
+      "selections": 3,
+      "fallbacks": 1,
+      "none_selected": 6,
+      "corroborated": 4,
+      "rejected": 3,
+      "rate": 0.75,
+      "by_day": [
+        {"day": "20260812", "model": "claude-haiku-4-5-20251001",
+         "runs": 8, "retries": 2, "selections": 1, "fallbacks": 1,
+         "none_selected": 5, "corroborated": 3, "rejected": 3, "rate": 1},
+        {"day": "20260813", "model": "claude-haiku-4-5-20251001",
+         "runs": 1, "retries": 0, "selections": 0, "fallbacks": 0,
+         "none_selected": 1, "corroborated": 1, "rejected": 0, "rate": 0},
+        {"day": "20260813", "model": "claude-sonnet-5",
+         "runs": 2, "retries": 0, "selections": 2, "fallbacks": 0,
+         "none_selected": 0, "corroborated": 0, "rejected": 0, "rate": null}
+      ],
+      "by_model": [
+        {"model": "claude-haiku-4-5-20251001", "runs": 9, "retries": 2,
+         "selections": 1, "fallbacks": 1, "none_selected": 6,
+         "corroborated": 4, "rejected": 3, "rate": 0.75},
+        {"model": "claude-sonnet-5", "runs": 2, "retries": 0,
+         "selections": 2, "fallbacks": 0, "none_selected": 0,
+         "corroborated": 0, "rejected": 0, "rate": null}
+      ],
+      "last_rejection": {
+        "ts": "@ago:5h",
+        "node": "poetic-2",
+        "cycle": "20260812T220000Z-poetic-2-9",
+        "attempt": 2,
+        "model": "claude-haiku-4-5-20251001",
+        "reason": "every eligible tech-debt item is recorded void",
+        "detail": "tech-debt verdict contradiction: the Script found 33 eligible open tech-debt item(s) (unclaimed, unblocked, not void), but 33 of them were neither selected, covered by a needs_refinement report the Script recorded, nor by a voided entry it disposed of this cycle",
+        "eligible_total": 33,
+        "unaccounted_total": 33,
+        "unaccounted": [
+          {"repo": "Poetic-Poems/poetic", "item": "TD-PPpoet-26072901"},
+          {"repo": "Poetic-Poems/agent-ops", "item": "TD-PPagop-26080801"}
+        ],
+        "outcome": "recovered-by-fallback"
+      }
+    }
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {"ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {}, "inputs": {}},
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 3
+}

@@ -285,6 +285,80 @@ assert_not_contains "a zero aggregate renders no summary line" \
 assert_not_contains "nor does a data.js from before the field existed" \
   "no-op tick" "$(render finished.json)"
 
+# --- verdict-quality.json: the Co-Ordinator verdict-quality card (issue #319) ----
+# The card exists to answer a question one cycle never can: how often the
+# Script rejects a Co-Ordinator verdict (implementation spec 3t/3v), and
+# whether that rate is a property of `coordinator_model`. So the rate, its two
+# terms, the split by model, and what the fleet spent recovering are each
+# asserted — a card that renders a count without the denominator it was
+# divided by is the page the issue was filed against.
+vq="$(render verdict-quality.json)" || { printf 'FAIL - verdict-quality.json did not render:\n%s\n' "$vq"; exit 1; }
+assert_contains "the card leads with the rejection rate" \
+  "75% rejected" "$vq"
+assert_contains "and names both terms of it, so the denominator is never implied" \
+  "3 of 4 corroborated verdicts rejected" "$vq"
+assert_contains "a rate at or above half is coloured as a fault, not a warning" \
+  'class="badge b-red"' "$vq"
+assert_contains "the recovery line names what the rejections cost (spec 3v)" \
+  "2 retry engagement(s), 1 item(s) the Script had to pick itself" "$vq"
+assert_contains "the counts name the window they were taken over" \
+  "11 Co-Ordinator run(s), 3 selected, 6 nothing-selected" "$vq"
+assert_contains "and say what bounds that window, so silence is not read as history" \
+  "the retained log union" "$vq"
+# Split by model: the whole point of the split is that changing
+# `coordinator_model` on one node produces separately attributable rates, so
+# both models must appear as their own rows with their own figures.
+vqflat="$(tr '\n' ' ' <<<"$vq" | tr -s ' ')"
+assert_contains "the by-day table heads its columns as counts and a rate" \
+  "<th> Day <th> Co-Ord model <th> Runs <th> Selected <th> Nothing selected <th> Corroborated <th> Rejected <th> Rate" \
+  "$vqflat"
+assert_contains "the model that produced the rejections has its own row" \
+  "haiku-4-5" "$vq"
+assert_contains "and the model that did not is attributed separately" \
+  "sonnet-5" "$vq"
+assert_contains "a day/model row with nothing to corroborate shows no rate rather than a zero one" \
+  '<td class="mono"> 0 <td class="mono"> 0 <td> <span class="mono muted"> 0 <td class="mono"> — ' "$vqflat"
+assert_contains "while a corroborated day with no rejection shows a real zero rate" \
+  '<td class="mono"> 1 <td class="mono"> 1 <td> <span class="mono muted"> 0 <td class="mono"> 0%' "$vqflat"
+# The example beneath the rate: a rate with no instance is not actionable.
+assert_contains "the newest contradiction is shown beneath the counts" \
+  "most recent contradiction" "$vq"
+assert_contains "with the verdict's own stated reason" \
+  "every eligible tech-debt item is recorded void" "$vq"
+assert_contains "the Script's machine detail" \
+  "the Script found 33 eligible open tech-debt item(s)" "$vq"
+assert_contains "and the unaccounted item refs it named" \
+  "TD-PPagop-26080801" "$vq"
+assert_contains "counted against the eligible set they were drawn from" \
+  "Unaccounted items (33 of 33 eligible)" "$vq"
+assert_contains "with the display cap stated rather than silently truncating" \
+  "… and 31 more" "$vq"
+assert_contains "the node that produced it is named, since a fleet has four" \
+  "poetic-2" "$vq"
+# Requirement 3v means a contradiction is no longer the same thing as a lost
+# cycle, and the card must not imply that it is.
+assert_contains "the attempt that produced it is named, since a cycle now has two" \
+  "attempt 2" "$vq"
+assert_contains "and what became of the cycle it happened on" \
+  "recovered — the Script picked" "$vq"
+
+# The zero state, which must read as an answer rather than as missing data —
+# the distinction the issue asks for explicitly.
+vqc="$(render verdict-quality-clean.json)" || { printf 'FAIL - verdict-quality-clean.json did not render:\n%s\n' "$vqc"; exit 1; }
+assert_contains "a window with no rejected verdict says so explicitly" \
+  "no rejected verdicts in this window" "$vqc"
+assert_contains "coloured as the healthy answer it is" \
+  'class="badge b-green"' "$vqc"
+assert_contains "and still names the denominator, so zero is legible as a rate" \
+  "0 of 3 corroborated verdicts rejected" "$vqc"
+assert_not_contains "with no contradiction block to imply one happened" \
+  "most recent contradiction" "$vqc"
+
+# A page written before the Publisher recorded any of this must say that,
+# rather than rendering a clean-looking zero it has no data for.
+assert_contains "a data.js from before the aggregate existed reads as missing data" \
+  "written by a Publisher that did not record it yet" "$(render finished.json)"
+
 # --- #186: the spend-today card's persisted GMT/local/24h toggle -----------------
 # `render`'s optional second argument seeds the harness's localStorage stub, so
 # each mode is exercised as a fresh page load would read it back — not by

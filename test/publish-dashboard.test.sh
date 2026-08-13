@@ -203,6 +203,18 @@ assert_eq "every recent_costs row carries a real ISO instant" "3" \
 assert_eq "the cycle far outside COST_SCAN_DAYS is excluded from recent_costs too" \
   "0" "$(jq -r '[.counts.recent_costs[].ts | select(startswith("2020"))] | length' <<<"$data")"
 
+# The verdict-quality aggregate (issue #319) ships even when the log holds no
+# Co-Ordinator record at all, zeroed rather than absent: the page distinguishes
+# "no rejected verdicts in the window" from "this Publisher never recorded any
+# of this", and it can only draw that line if an empty window is still an
+# object.
+assert_eq "the verdict aggregate is present on a log with no Co-Ordinator record" \
+  "object" "$(jq -r '.counts.coordinator_verdicts | type' <<<"$data")"
+assert_eq "and reads as a real zero rather than a missing key" "0" \
+  "$(jq -r '.counts.coordinator_verdicts.runs' <<<"$data")"
+assert_eq "with no rate at all, since nothing was corroborated" "null" \
+  "$(jq -r '.counts.coordinator_verdicts.rate' <<<"$data")"
+
 raw="$(cat "$a/.local/state/poetic-agents/dashboard/data.js")"
 assert_contains "token shapes are redacted" "[REDACTED-TOKEN]" "$raw"
 assert_lacks "no raw token survives"        "ghp_0123456789abcdefXYZ0123" "$raw"
@@ -341,6 +353,132 @@ assert_eq "and the lock-held skips" "21" \
 assert_eq "carrying the newest tick's own timestamp" "2026-08-01T12:41:02Z" \
   "$(jq -r '.noop_ticks.last_ts' <<<"$ndata")"
 
+# --- Co-Ordinator verdict quality (issue #319) ----------------------------------
+# The rate the Script rejects a Co-Ordinator verdict at (implementation spec
+# 3t/3v), by UTC day and by the model that produced it. Both terms are counted
+# here, not just the rejections: the incident this came from (#310) was one
+# node standing the whole fleet down for a day, and the operator question it
+# left behind — is `coordinator_model` the wrong model — is a ratio, so a
+# numerator with no denominator answers nothing.
+#
+# The unit is the verdict, not the cycle, because requirement 3v made a cycle
+# able to produce two. The fixture holds one of each shape the aggregate must
+# tell apart:
+#
+#   V1  rejected, then a retry that selected      2 verdicts, 1 rejected
+#   V2  accepted over a non-empty eligible set    denominator only — and its
+#                                                 `none-selected` must not be
+#                                                 counted as a second verdict
+#   V3  a `none-selected` from before 3v          1 rejected, attributed by
+#                                                 its cycle's own stage-end
+#   V4  an empty eligible set                     neither term
+#   V5  rejected twice, then the Script picked    2 verdicts, 2 rejected, on
+#                                                 the other model
+v="$(new_home nodeV)"
+v_today="$(date -u +%Y-%m-%d)"
+v_yest="$(date -u -d '-1 day' +%Y-%m-%d 2>/dev/null || echo "$v_today")"
+v_today_day="${v_today//-/}"
+v_yest_day="${v_yest//-/}"
+haiku="claude-haiku-4-5-20251001"
+# One coordinator engagement: the `stage-end` requirement 33a writes for it.
+# `$5` is `,"retry":true` for the retry of a rejected verdict, empty otherwise.
+v_run() {  # v_run <iso-date> <hh:mm:ss> <cycle> <model> [retry-suffix]
+  printf '{"ts":"%sT%sZ","cycle":"%s","node":"nodeV","event":"stage-end","stage":"coordinator","exit_code":0,"model":"%s"%s}\n' \
+    "$1" "$2" "$3" "$4" "${5:-}"
+}
+{
+  # V1 — rejected, retried, and the retry selected.
+  v_run "$v_yest" "02:00:00" "${v_yest_day}T020000Z-nodeV-1" "$haiku"
+  printf '{"ts":"%sT02:00:01Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"warning","detail":"tech-debt verdict contradiction: the Script found 33 eligible open tech-debt item(s)","eligible_total":33,"unaccounted":[{"repo":"o/a","item":"TD-1"}]}\n' "$v_yest" "$v_yest_day"
+  printf '{"ts":"%sT02:00:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":33,"unaccounted_total":1,"unaccounted":[{"repo":"o/a","item":"TD-1"}],"reason":"all recorded void","coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
+  v_run "$v_yest" "02:05:00" "${v_yest_day}T020000Z-nodeV-1" "$haiku" ',"retry":true'
+  printf '{"ts":"%sT02:05:02Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"corroboration","attempt":2,"verdict":"accepted-by-selection","eligible_total":33,"coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
+  printf '{"ts":"%sT02:05:03Z","cycle":"%sT020000Z-nodeV-1","node":"nodeV","event":"selection","repo":"o/a","item":"TD-1","source":"tech-debt","model":"claude-opus-5","title":"t"}\n' "$v_yest" "$v_yest_day"
+  # V2 — accepted over a non-empty eligible set: the denominator, once.
+  v_run "$v_yest" "03:00:00" "${v_yest_day}T030000Z-nodeV-2" "$haiku"
+  printf '{"ts":"%sT03:00:02Z","cycle":"%sT030000Z-nodeV-2","node":"nodeV","event":"corroboration","attempt":1,"verdict":"accepted","eligible_total":4,"unaccounted_total":0,"coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
+  printf '{"ts":"%sT03:00:03Z","cycle":"%sT030000Z-nodeV-2","node":"nodeV","event":"none-selected","reason":"every item is claimed","fingerprint":"abc","eligible_total":4,"coordinator_model":"%s"}\n' "$v_yest" "$v_yest_day" "$haiku"
+  # V3 — a rejection recorded before 3v: no corroboration event, no fields.
+  v_run "$v_yest" "04:00:00" "${v_yest_day}T040000Z-nodeV-3" "$haiku"
+  printf '{"ts":"%sT04:00:01Z","cycle":"%sT040000Z-nodeV-3","node":"nodeV","event":"warning","detail":"tech-debt verdict contradiction: the Script found 7 eligible open tech-debt item(s)","eligible_total":7,"unaccounted":[{"repo":"o/c","item":"TD-7"}]}\n' "$v_yest" "$v_yest_day"
+  printf '{"ts":"%sT04:00:02Z","cycle":"%sT040000Z-nodeV-3","node":"nodeV","event":"none-selected","reason":"legacy event","td_verdict_rejected":true}\n' "$v_yest" "$v_yest_day"
+  # V4 — nothing was eligible, so there was nothing to corroborate.
+  v_run "$v_today" "05:00:00" "${v_today_day}T050000Z-nodeV-4" "$haiku"
+  printf '{"ts":"%sT05:00:02Z","cycle":"%sT050000Z-nodeV-4","node":"nodeV","event":"none-selected","reason":"nothing eligible","fingerprint":"def","eligible_total":0,"coordinator_model":"%s"}\n' "$v_today" "$v_today_day" "$haiku"
+  # V5 — rejected twice on the other model, and the Script picked for it.
+  v_run "$v_today" "06:00:00" "${v_today_day}T060000Z-nodeV-5" "claude-sonnet-5"
+  printf '{"ts":"%sT06:00:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":1,"verdict":"rejected","eligible_total":9,"unaccounted_total":9,"unaccounted":[{"repo":"o/b","item":"TD-9"}],"reason":"nothing to do","coordinator_model":"claude-sonnet-5"}\n' "$v_today" "$v_today_day"
+  v_run "$v_today" "06:05:00" "${v_today_day}T060000Z-nodeV-5" "claude-sonnet-5" ',"retry":true'
+  printf '{"ts":"%sT06:05:02Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"corroboration","attempt":2,"verdict":"rejected","eligible_total":9,"unaccounted_total":3,"unaccounted":[{"repo":"o/b","item":"TD-9"},{"repo":"o/b","item":"TD-10"}],"reason":"still nothing to do","coordinator_model":"claude-sonnet-5"}\n' "$v_today" "$v_today_day"
+  printf '{"ts":"%sT06:05:03Z","cycle":"%sT060000Z-nodeV-5","node":"nodeV","event":"selection","repo":"o/b","item":"TD-9","source":"tech-debt","model":"claude-opus-5","title":"t","selected_by":"script-fallback"}\n' "$v_today" "$v_today_day"
+} > "$v/.local/state/poetic-agents/log.jsonl"
+run_publish "$v" NODE_NAME=nodeV
+vdata="$(jq -c '.counts.coordinator_verdicts' <<<"$(data_of "$v")")"
+
+assert_eq "every Co-Ordinator engagement in the window is counted" "7" "$(jq -r '.runs' <<<"$vdata")"
+assert_eq "including the retries, counted again on their own" "2" "$(jq -r '.retries' <<<"$vdata")"
+assert_eq "every selection" "2" "$(jq -r '.selections' <<<"$vdata")"
+assert_eq "and the ones the Script had to make itself" "1" "$(jq -r '.fallbacks' <<<"$vdata")"
+assert_eq "every nothing-selected outcome" "3" "$(jq -r '.none_selected' <<<"$vdata")"
+assert_eq "the denominator is the verdicts there was something to corroborate" "6" \
+  "$(jq -r '.corroborated' <<<"$vdata")"
+assert_eq "the numerator is the rejected ones" "4" "$(jq -r '.rejected' <<<"$vdata")"
+assert_eq "and the rate is one over the other" "0.6666666666666666" "$(jq -r '.rate' <<<"$vdata")"
+assert_eq "an empty eligible set enters neither term" "1" \
+  "$(jq -r --arg d "$v_today_day" --arg m "$haiku" \
+     '[.by_day[] | select(.day == $d and .model == $m and .none_selected == 1
+                          and .corroborated == 0 and .rejected == 0)] | length' <<<"$vdata")"
+# A cycle records its verdict once. Requirement 3v writes a `corroboration`
+# *and* a `none-selected` for the same verdict, and counting both would inflate
+# every denominator by exactly the cycles that stood down cleanly.
+assert_eq "a cycle that logged both records is one verdict, not two" "4" \
+  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .corroborated' <<<"$vdata")"
+
+# Changing `coordinator_model` on one node must produce separately
+# attributable rates — the whole reason the split exists.
+assert_eq "the model that was rejected twice carries both" "2" \
+  "$(jq -r '.by_model[] | select(.model == "claude-sonnet-5") | .rejected' <<<"$vdata")"
+assert_eq "at its own rate" "1" \
+  "$(jq -r '.by_model[] | select(.model == "claude-sonnet-5") | .rate' <<<"$vdata")"
+assert_eq "and the other model is counted apart from it" "2" \
+  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .rejected' <<<"$vdata")"
+assert_eq "at its own rate too" "0.5" \
+  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .rate' <<<"$vdata")"
+assert_eq "a selection is attributed to the Co-Ordinator model, never the Implementor one" "0" \
+  "$(jq -r '[.by_model[] | select(.model == "claude-opus-5")] | length' <<<"$vdata")"
+assert_eq "a verdict written before 3v is still attributed by its own cycle" "3" \
+  "$(jq -r --arg m "$haiku" '.by_model[] | select(.model == $m) | .none_selected' <<<"$vdata")"
+assert_eq "and the Script fallback is attributed to the model it had to rescue" "1" \
+  "$(jq -r '.by_model[] | select(.model == "claude-sonnet-5") | .fallbacks' <<<"$vdata")"
+
+assert_eq "the day the fallback happened carries it" "1" \
+  "$(jq -r --arg d "$v_today_day" \
+     '.by_day[] | select(.day == $d and .model == "claude-sonnet-5") | .fallbacks' <<<"$vdata")"
+assert_eq "and the day it did not, does not" "0" \
+  "$(jq -r --arg d "$v_yest_day" --arg m "$haiku" \
+     '.by_day[] | select(.day == $d and .model == $m) | .fallbacks' <<<"$vdata")"
+
+# The example beneath the rate, and what became of the cycle it happened on.
+assert_eq "the newest rejection names its cycle" "${v_today_day}T060000Z-nodeV-5" \
+  "$(jq -r '.last_rejection.cycle' <<<"$vdata")"
+assert_eq "and which of the cycle's two attempts it was" "2" \
+  "$(jq -r '.last_rejection.attempt' <<<"$vdata")"
+assert_eq "and the model that produced it" "claude-sonnet-5" \
+  "$(jq -r '.last_rejection.model' <<<"$vdata")"
+assert_eq "carrying the eligible total it failed to account for" "9" \
+  "$(jq -r '.last_rejection.eligible_total' <<<"$vdata")"
+assert_eq "the unaccounted refs, from the corroboration record itself" "2" \
+  "$(jq -r '.last_rejection.unaccounted | length' <<<"$vdata")"
+assert_eq "with the record's own count beside them, not the shown one" "3" \
+  "$(jq -r '.last_rejection.unaccounted_total' <<<"$vdata")"
+assert_eq "and what the fleet did about it — a contradiction is no longer a lost cycle" \
+  "recovered-by-fallback" "$(jq -r '.last_rejection.outcome' <<<"$vdata")"
+
+# The window is the retained log union and says so, so a short log cannot pass
+# for a clean history.
+assert_eq "the window names its own oldest event" "${v_yest}T02:00:00Z" \
+  "$(jq -r '.window_from' <<<"$vdata")"
+assert_eq "and its newest" "${v_today}T06:05:03Z" "$(jq -r '.window_to' <<<"$vdata")"
 # --- The process budget on a long history ---------------------------------------
 # 300 single-stage cycles ≈ months of history. The per-file scan forked two jq
 # per envelope plus one re-parse per row (~900 forks before the detail loop
