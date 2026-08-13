@@ -203,6 +203,8 @@ assert_eq "  ... never yet asked to rebase (no marker comment)" \
   "false" "$(jq -r '.[0].rebase_requested' <<<"$out")"
 assert_eq "  ... superseded by #135, the newer open bump of the same dependency" \
   "135" "$(jq -r '.[0].superseded_by' <<<"$out")"
+assert_eq "  ... and mints the distinct superseded ref shape, not -conflict- (TD-PPagop-26081304)" \
+  "pr-129-superseded-c96c8ef9d31a" "$(jq -r '.[0].ref' <<<"$out")"
 assert_contains_json() {
   local desc="$1" needle="$2" haystack="$3"
   if [[ "$haystack" == *"$needle"* ]]; then
@@ -238,6 +240,8 @@ assert_eq "a marker comment scoped to the current head sets rebase_requested" \
   "true" "$(jq -r '.[0].rebase_requested' <<<"$out")"
 assert_eq "  ... and with no competing bump this time, it is not superseded" \
   "null" "$(jq -r '.[0].superseded_by' <<<"$out")"
+assert_eq "  ... and mints the ordinary -conflict- ref shape, not -superseded-" \
+  "pr-129-conflict-c96c8ef9d31a" "$(jq -r '.[0].ref' <<<"$out")"
 
 # --- A marker scoped to a DIFFERENT (stale) head does not count ---
 cat > "$tmp_dir/dependabot.json" <<'JSON'
