@@ -3618,8 +3618,9 @@ runs unattended.
     identical to the empty orphan, so its ref can be deleted mid-run — the
     Implementor's later push recreates it, and the cost is at worst a
     duplicate PR, priced against an item wedged forever.
-17c. **The post-merge closing-keyword sweep.** Requirement 25a's CI check
-    stops a *new* pull request from merging without a real closing keyword;
+17c. **The post-merge closing-keyword sweep.** Requirement 25a's checks — its
+    CI workflow and its script-side gate — stop a *new* pull request from
+    merging without a real closing keyword;
     this is the backstop for what already got through — a PR merged before
     that check existed, or one that merged some other way — and for the
     ordinary lag between a fix landing and the issue it was meant to close
@@ -4001,8 +4002,9 @@ runs unattended.
     it exits 0 on a VOIDED STATUS row untouched. Where the work order carries
     one, the item is complete only once that row is flipped or the
     Implementor has said why the evidence did not hold up.
-25a. **The closing keyword requirement 25 asks for is enforced by CI, not by
-    trusting the prompt.** `.github/workflows/closing-keyword.yml` runs
+25a. **The closing keyword requirement 25 asks for is enforced deterministically
+    — by CI and by the Script — not by trusting the prompt.**
+    `.github/workflows/closing-keyword.yml` runs
     `scripts/check-closing-keyword.sh` against the PR body and head branch
     on every `pull_request` event, and two anchors decide what the body owes:
 
@@ -4034,6 +4036,57 @@ runs unattended.
     by reporting a check of the same name. Acceptance check 8m is how that
     setting is verified, it being the one piece of requirement 25a no file
     in this repository carries.
+
+    That workflow file guards only agent-ops, the repository that carries
+    it — a workflow guards the repository it ships in, not every repository
+    the pipeline raises pull requests in. `poetic` and `poetic-fiddle` carry
+    no closing-keyword workflow of their own, so enforcement there is
+    script-side instead: `lib/closing-keyword-gate.sh`'s `closing_keyword_gate`
+    re-reads a pull request's current body and head branch with `gh pr view`
+    and runs them through the same `scripts/check-closing-keyword.sh`,
+    at two points the Script (`agent-cycle.sh`) already stands between the
+    pull request and a human. The two are asked for different reasons and
+    answered differently:
+
+    - **Right after the Implementor's PR is raised**, this is *feedback*, not
+      a gate. A dirty verdict is recorded as a warning and handed to the
+      Reviewer as a `## Script findings` entry in its prompt; the cycle
+      continues into the review exactly as it would have. What the check
+      finds is a pull-request body edit — the class of defect the Reviewer's
+      own step 4 fixes and pushes in the same cycle — so refusing the handoff
+      here would convert a self-healing case into an item recorded
+      `attempt-failed` and blocked pending an Enabler engagement, at no gain:
+      the second call is what a pull request cannot reach a human through.
+      What this call buys is that the Reviewer *knows*, since it cannot see
+      the later verdict from inside its own session and would otherwise hand
+      off, be handed back, and cost the review anyway.
+    - **At the Reviewer's own `ready` handoff**, alongside
+      `review_gate_verdict`, this is the gate. A dirty verdict hands back
+      through `log_reviewer_handback`, exactly as a failing required check or
+      a new security-severity alert already does, and the PR stays a draft.
+      It is asked again here rather than trusted from the earlier call for
+      the same reason requirement 31c re-reads everything at this point: the
+      body can change between the two, and a Reviewer that ignored its
+      `## Script findings` entry has to stop somewhere.
+
+    A verdict of `unknown` — `gh pr view` failed past
+    `lib/github-limit.sh`'s retry, its answer carried no head branch, or the
+    checker could not be run — is a fact about the node, not the pull
+    request, and warns at both points rather than blocking either. This is
+    the reasoning `review_gate_security_alerts` already applies to an alerts
+    API it cannot reach, and deliberately *not* the one
+    `review_gate_required_checks` applies to an unreadable check list: there,
+    silence is itself the hazard (a CONFLICTING pull request genuinely
+    reports no required checks), whereas an unreadable pull request looks
+    nothing like one missing its keyword. A node degraded enough for this to
+    matter is stopped at the `ready` handoff by
+    `review_gate_required_checks`, which does fail closed, before this gate
+    is ever consulted.
+
+    So every target repository gets the same deterministic gate: agent-ops
+    from its own CI workflow *and* the script-side gate that also covers it
+    a second time, `poetic` and `poetic-fiddle` from the script-side gate
+    alone. Acceptance check 8p is how the gate itself is verified.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
@@ -4263,6 +4316,17 @@ runs unattended.
     permission cannot silently freeze every pull request's handoff fleet-wide.
     An `unknown` alert read never softens a `dirty` required-check verdict;
     required checks are asked first and gate on their own.
+
+    One further check shares this gate: requirement 25a's script-side
+    closing-keyword gate (`lib/closing-keyword-gate.sh`, component 17a) is
+    asked here too, after `review_gate_verdict` and before requirement 31's
+    draft flip, and a `dirty` verdict from it is recorded as the same
+    requirement 32a handback; an `unknown` one warns, exactly as an
+    unreadable alert list does. It is asked again here rather than trusted
+    from the pass it made when the pull request was raised, for the same
+    reason the checks above are read fresh: a body can be edited between the
+    two — and because that earlier call only *tells* the Reviewer, so this is
+    the only point at which the closing keyword is actually enforced.
 
     #216 itself: the human resolved it directly on the pull request (renaming
     the flagged constant, commit `8e62ff6`) before this requirement existed to
@@ -6905,6 +6969,32 @@ What exists, and the requirements each part answers to:
     interpolating it into the step directly, so an attacker-controlled title
     or body from a fork PR cannot inject shell. Unit-tested
     (`test/check-closing-keyword.test.sh`); must pass `shellcheck`.
+17a. `lib/closing-keyword-gate.sh` implementing requirement 25a's other
+    layer: given a pull request URL, `closing_keyword_gate` reads its
+    current body and head branch with `gh pr view --json body,headRefName`
+    and runs both through `scripts/check-closing-keyword.sh` unmodified,
+    printing `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — the same
+    shape `lib/review-gate.sh`'s `review_gate_verdict` reports, so a caller
+    folds both into one handoff gate. The reason is always a single line —
+    the checker emits one `::error::`-prefixed line per fault and an
+    `agent/<N>` branch missing its marker earns two, so they are flattened
+    into one and the workflow-command prefix stripped, every caller parsing
+    the verdict with a single `read` that would otherwise keep only the
+    first. `dirty` is reserved for a fault in the pull request itself;
+    "could not ask" — `gh pr view` failing, answering without a head branch,
+    or the checker exiting 126 or higher — is `unknown`, never a crash and
+    never a fault attributed to the pull request. An empty URL is the one
+    exception, `dirty` because it is a bug in the caller rather than a
+    degraded node. `agent-cycle.sh` calls it at the two points it already
+    knows a pull request's body and head branch: right after the
+    Implementor's PR is raised (a dirty verdict there becomes the
+    `## Script findings` section of the Reviewer's prompt, not a refusal) and
+    again at the Reviewer's own `ready` handoff, which is the enforcing one
+    (handing back through `log_reviewer_handback` on a dirty verdict, the
+    same shape a failing required check or a new security alert already
+    uses there). `CLOSING_KEYWORD_GATE_GH` stubs `gh` for tests, and
+    `CLOSING_KEYWORD_GATE_CHECK` the checker's path. Unit-tested
+    (`test/closing-keyword-gate.test.sh`); must pass `shellcheck`.
 18. `scripts/sweep-closed-issues.sh` implementing requirement 17c's sweep:
     given a repo slug, a node name and a cycle id, lists that repo's merged
     `pr_label`-labelled pull requests (bounded to the most recently updated),
@@ -8075,6 +8165,34 @@ pull request, run the ones the change touches and any it could regress.
    with no retirement arguments in sight, pinning that retirement is a
    property of the extract a caller requests, never of the shared
    blocked/void definition those three read directly off the log.
+8p. **The closing-keyword gate applies to every target repository, not only
+   the one carrying the workflow (requirement 25a, TD-PPagop-26080803).**
+   `test/closing-keyword-gate.test.sh` passes against a stubbed `gh`:
+   `closing_keyword_gate` reads a pull request's body and head branch and
+   reports the checker's own verdict as `clean` or `dirty<TAB>reason` — a
+   body with no marker on a non-numeric branch is clean, a marker with a
+   real closing keyword is clean, prose describing intent without a keyword
+   is dirty naming the issue (the regression the underlying checker exists
+   for), and an `agent/<N>` branch with no marker is dirty naming the
+   missing marker. The two-fault case (no marker *and* no keyword) reports
+   both faults, on one line and free of the `::error::` workflow-command
+   prefix, since every caller parses the verdict with a single `read`.
+   Separately, the cases where the question could not be put report
+   `unknown` and exit 0, so a caller warns rather than stalling the item: an
+   unreadable pull request, an answer carrying no head branch (which must
+   never read as clean — an empty body on an empty branch is the shape of a
+   *passing* pull request), and a checker that cannot be run. An empty URL
+   remains `dirty`, and none of these is a crash.
+
+   What `agent-cycle.sh` then *does* with each verdict is asserted separately,
+   by `test/closing-keyword-wiring.test.sh`, against the two blocks lifted
+   verbatim from the script: a `dirty` verdict at the Implementor-side call
+   carries on into the Reviewer stage holding the fault (never recording the
+   item `attempt-failed`, the refusal this gate deliberately does not make)
+   and that fault reaches the Reviewer as a `## Script findings` section of
+   its prompt; an `unknown` one warns and hands the Reviewer nothing; a clean
+   one does neither, and leaves the prompt byte-for-byte as it was before the
+   section existed.
 9. A cron-style invocation from a minimal environment can resolve `claude`
    and run `claude -V` (or a tiny `claude -p` smoke test) successfully.
 10. One supervised full cycle (`--once`) against whichever repo the ordering
