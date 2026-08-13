@@ -429,6 +429,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                             none_selected, corroborated, rejected, rate} ],
                by_model: [ {model, runs, retries, selections, fallbacks,
                             none_selected, corroborated, rejected, rate} ],
+               by_band:  [ {band, rejected, unaccounted} ],
+                                       // counts, not a rate (issue #345):
+                                       //   rejected verdicts naming this band,
+                                       //   and the item count behind that;
+                                       //   "unknown" for a rejection logged
+                                       //   before spec 3x's `bands` existed
                last_rejection: { ts, node, cycle, attempt, model, reason,
                                  detail, eligible_total, unaccounted_total,
                                  bands,  // {source: count}, spec 3x; null pre-3x
@@ -695,6 +701,26 @@ them), and **what became of that cycle**: recovered by the retry, recovered by
 the Script's own pick, accepted on retry with nothing selected, or stood down.
 A rate with no instance is not actionable; an instance that does not say
 whether the fleet recovered is half the story spec 3v now has to tell.
+
+A third breakdown, alongside `by_day` and `by_model`, answers the question the
+rate alone cannot: **which band** the fleet is getting wrong, and whether it
+is the same one every time — a rejection rate concentrated in `issues` is a
+different failure, and a different fix, from one concentrated in
+`merge-conflicts` (issue #345). It reports **counts, not a rate**: `rejected`
+(how many rejected verdicts named the band at all) and `unaccounted` (the item
+count behind that, summed across those verdicts). There is deliberately no
+per-band rate — a verdict rejected over `issues` was not "a verdict about
+issues", it was a verdict about everything the Script handed over that cycle,
+so a per-band figure has no sound denominator to divide by; the single
+per-verdict rate above stays the only rate the panel states. Rows are ranked
+most-rejected first and capped like the day/model table (`VERDICT_ROWS_MAX`),
+with the overflow stated rather than silent. A rejected verdict logged before
+spec 3x's `bands` object existed carries no band breakdown at all; it lands
+under an explicit `unknown` row rather than vanishing from the tally or being
+guessed into a real band, its `unaccounted` taken from the event's own
+`unaccounted_total` where it carries one, else from its cycle's sibling
+`warning` — the same fallback the newest-rejection panel uses — since a
+pre-3v `none-selected` carries no figure at all.
 
 Its three empty states mean three different things and are rendered as three
 different things: **no Co-Ordinator runs in the retained log** (missing data
@@ -1024,6 +1050,14 @@ number's twins elsewhere on the page.
   it happened on; and a log holding no Co-Ordinator record at all still ships
   the aggregate zeroed with a `null` rate, since the page can only distinguish
   a clean window from missing data if an empty window is still an object.
+  The per-band tally (issue #345) sums `rejected` and `unaccounted` per band
+  from a mix of shapes in the same synthetic log: one rejection naming two
+  bands at once (counted in both), a second rejection naming one of the same
+  bands again (summed, not overwritten), and a rejection logged with no
+  `bands` at all, which lands under `unknown` rather than being dropped or
+  folded into a real band, its `unaccounted` read from the sibling `warning`
+  of its cycle since the legacy event carries no figure of its own.
+
 - `test/dashboard-render.test.sh` passes its plain-`grep` check, run without
   `node` and independent of the harness below, that the header's documentation
   nav carries all six `blob/main/<path>` links (README, the three pipeline
