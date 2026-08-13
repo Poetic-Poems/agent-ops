@@ -1691,6 +1691,20 @@ runs unattended.
      `UNKNOWN` for a beat. Treating that as a conflict would send the Implementor
      to rebase a PR that may not conflict; skipping it means the PR is simply
      reconsidered next cycle, once GitHub has settled the answer.
+   - **Both listings are bounded, their truncation is noticed, and the head
+     arrives as a scalar.** The ours-by-label listing and the Dependabot
+     listing each ask for `GITHUB_PR_LIST_LIMIT` pull requests
+     (`lib/github-limit.sh`) rather than inheriting `gh`'s undeclared default
+     of 30, and each says on stderr when its response came back at that cap.
+     Truncation here is cost, never damage: a conflicted PR beyond the cap is
+     simply not offered this cycle, and a newer bump beyond it is not counted
+     as superseding — the conflicted bump it would have excused is minted as
+     the conflict shape instead, whose treatment (nudge, then take over,
+     requirement 3s) closes nothing. The head SHA is read from `headRefOid`,
+     not `commits[-1].oid`, for requirement 3e's two reasons: the collection
+     read costs `--limit`-slots × 100 nodes where the scalar measures 1 point,
+     and at the collection's 100-item cap `commits[-1]` was the hundredth
+     commit rather than the head.
    - **The ref is scoped to the head SHA** — `pr-<n>-conflict-<head-sha>`, not
      `pr-<n>-conflict` — so a block recorded against one conflicted state does not
      swallow a later, possibly-resolvable one after fresh commits land, while a
@@ -1736,8 +1750,12 @@ runs unattended.
      to corroborate it: `void_finishing_pr_reason` reads a `pr-<n>-superseded-…`
      item against **both** whether its author is still Dependabot and whether
      `dependabot_newer_open_pr`, re-run live against the repository's
-     currently-open Dependabot pull requests, still names a strictly-newer open
-     bump of the same family — the mergeability test a `-conflict-` item gets
+     currently-open Dependabot pull requests — a listing bounded at the same
+     stated `GITHUB_PR_LIST_LIMIT` cap the gatherer read at, where an empty
+     answer that came back at the cap refuses naming the cap, since "no newer
+     bump in the first N" is not "no newer bump" — still names a
+     strictly-newer open bump of the same family; the mergeability test a
+     `-conflict-` item gets
      proves nothing here, since a superseded bump can be superseded whether or
      not it still conflicts) and the superseding
      PR only by its branch name — never as "PR #M" and never by its URL (both
@@ -7360,9 +7378,10 @@ What exists, and the requirements each part answers to:
    `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
    wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
    `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
-   three callers — the back-pressure gate and the two PR-listing gatherers —
-   must agree on what a truncated page is even though they treat one
-   differently. Sourced by both cycle scripts, `lib/claim.sh` and every
+   callers — the back-pressure gate, the three PR-listing gatherers, and the
+   void guard's supersession corroboration (requirement 3s) — must agree on
+   what a truncated page is even though they treat one differently. Sourced by
+   both cycle scripts, `lib/claim.sh`, `lib/void-guard.sh` and every
    `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
    `test/github-limit.test.sh`),
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both

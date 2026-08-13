@@ -199,22 +199,40 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
-# The open, agent-raised, non-draft, definitively-conflicting PRs, with their
-# commits so the head SHA arrives in the same call. stderr is shown, not
-# swallowed: a `gh` that rejects a field name otherwise degrades to an empty
-# array indistinguishable from "no conflicts", and the source silently never
-# fires — the `[]`-on-error trap in the Gotchas table that cost the sibling
-# gatherers a debugging round. `mergeable` is selected against `== "CONFLICTING"`
-# exactly (never UNKNOWN — see the header). Heads may be `agent/…` or — for
-# tech-debt items, whose claim branch is the human protocol's own `td/<ID>` —
-# `td/…`; the label filter is the primary "ours" signal either way.
-ours="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
-        --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body \
-        --jq "[.[] | select(.isDraft | not)
-                   | select(.mergeable == \"CONFLICTING\")
-                   | select((.headRefName | startswith(\"$branch_prefix\"))
-                            or (.headRefName | startswith(\"td/\")))]" \
+# The open, agent-raised PRs, fetched raw — the filter runs afterwards, so the
+# truncation check below counts what GitHub returned rather than what the
+# filter kept. `headRefOid`, not the `commits` collection, for requirement 3e's
+# two reasons: the collection read costs `--limit`-slots × 100 nodes where the
+# scalar measures 1 point (the Gotchas table's slots-not-rows entry, and the
+# bulk of the 2026-08-12 budget exhaustion), and at the collection's 100-item
+# cap `commits[-1]` was the hundredth commit rather than the head — the scalar
+# is the head at any branch length. stderr is shown, not swallowed: a `gh` that
+# rejects a field name otherwise degrades to an empty array indistinguishable
+# from "no conflicts", and the source silently never fires — the `[]`-on-error
+# trap in the Gotchas table that cost the sibling gatherers a debugging round.
+ours_all="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
+        --limit "$GITHUB_PR_LIST_LIMIT" \
+        --json number,title,headRefName,headRefOid,baseRefName,isDraft,mergeable,updatedAt,url,body \
         || true)"
+jq -e 'type == "array"' <<<"$ours_all" >/dev/null 2>&1 || ours_all='[]'
+
+# A listing at the cap may be missing entries (lib/github-limit.sh). Here the
+# loss is a conflicted PR that is simply not offered this cycle — the safe
+# direction every exclusion in this source takes — so it is said out loud and
+# the run continues.
+if github_pr_list_truncated "$(jq 'length' <<<"$ours_all")"; then
+  echo "gather-merge-conflicts: $slug: the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a conflict beyond it is not offered this cycle" >&2
+fi
+
+# `mergeable` is selected against `== "CONFLICTING"` exactly (never UNKNOWN —
+# see the header). Heads may be `agent/…` or — for tech-debt items, whose claim
+# branch is the human protocol's own `td/<ID>` — `td/…`; the label filter is
+# the primary "ours" signal either way.
+ours="$(jq -c "[.[] | select(.isDraft | not)
+                    | select(.mergeable == \"CONFLICTING\")
+                    | select((.headRefName | startswith(\"$branch_prefix\"))
+                             or (.headRefName | startswith(\"td/\")))]" \
+        <<<"$ours_all" 2>/dev/null || echo '[]')"
 jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
 
 # Dependabot's whole active-bump set for this repo, every mergeable state, read
@@ -224,9 +242,19 @@ jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
 # is fetched here (and nowhere in the `ours` call above) purely to compute
 # `rebase_requested` — our own PRs have no such field to read.
 dependabot_open="$("$GH" pr list -R "$slug" --state open --author "$DEPENDABOT_LOGIN" \
-        --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body,comments \
+        --limit "$GITHUB_PR_LIST_LIMIT" \
+        --json number,title,headRefName,headRefOid,baseRefName,isDraft,mergeable,updatedAt,url,body,comments \
         || true)"
 jq -e 'type == "array"' <<<"$dependabot_open" >/dev/null 2>&1 || dependabot_open='[]'
+
+# Truncation here can hide more than a candidate: a newer bump beyond the cap
+# is not counted as superseding, so a conflicted bump it would have excused is
+# minted as the conflict shape instead. Still cost, not damage — the conflict
+# shape's treatment (nudge, then take over) closes nothing, and a supersession
+# void is corroborated live by lib/void-guard.sh before anything closes.
+if github_pr_list_truncated "$(jq 'length' <<<"$dependabot_open")"; then
+  echo "gather-merge-conflicts: $slug: the Dependabot listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a bump beyond it is neither offered nor counted as superseding this cycle" >&2
+fi
 
 bot_conflicts="$(jq -c '[.[] | select(.isDraft | not) | select(.mergeable == "CONFLICTING")]' \
                  <<<"$dependabot_open" 2>/dev/null || echo '[]')"
@@ -237,7 +265,7 @@ emit() {  # <pr-json> <bot: true|false>
   local pr="$1" bot="$2" number head_sha item cand
   local rebase_requested="false" superseded_by="" superseded_evidence=""
   number="$(jq -r '.number' <<<"$pr")"
-  head_sha="$(jq -r '.commits[-1].oid // ""' <<<"$pr")"
+  head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || return 0
 
   # The originating item, so the Implementor can find the tech-debt entry, issue,

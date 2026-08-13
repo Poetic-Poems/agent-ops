@@ -53,7 +53,7 @@ assert_eq() {
 
 # --- The candidate filter: which ready PRs are ours to rebase? ---
 
-# The shape `gh pr list --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body`
+# The shape `gh pr list --json number,title,headRefName,headRefOid,baseRefName,isDraft,mergeable,updatedAt,url,body`
 # returns (the `--label` filter is applied by gh, so every row here already
 # carries pr_label). One of each kind we must accept or reject. A PR is a
 # candidate when it is open, *not* a draft, `mergeable` is exactly `CONFLICTING`,
@@ -158,6 +158,7 @@ trap 'rm -rf "$tmp_dir"' EXIT
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
+printf '%s\n' "$*" >> "$d/calls.log"
 if [[ "$1 $2" == "pr list" ]]; then
   for a in "$@"; do
     if [[ "$a" == "--label" ]]; then cat "$d/ours.json"; exit 0; fi
@@ -177,19 +178,19 @@ cat > "$tmp_dir/dependabot.json" <<'JSON'
 [
   {"number": 129, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.8.0",
    "headRefName": "dependabot/npm_and_yarn/eslint-10.8.0", "baseRefName": "main",
-   "commits": [{"oid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4"}],
+   "headRefOid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4",
    "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-03T00:48:14Z",
    "url": "https://github.com/o/r/pull/129", "body": "Bumps eslint from 9.39.5 to 10.8.0.",
    "comments": []},
   {"number": 135, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.9.0",
    "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0", "baseRefName": "main",
-   "commits": [{"oid": "deadbeefcafebabe0000000000000000000000"}],
+   "headRefOid": "deadbeefcafebabe0000000000000000000000",
    "isDraft": false, "mergeable": "MERGEABLE", "updatedAt": "2026-08-05T00:00:00Z",
    "url": "https://github.com/o/r/pull/135", "body": "Bumps eslint from 9.39.5 to 10.9.0.",
    "comments": []},
   {"number": 170, "title": "chore(ci): bump codeql-action",
    "headRefName": "dependabot/github_actions/github/codeql-action-4.37.3", "baseRefName": "main",
-   "commits": [{"oid": "1111111111111111111111111111111111111"}],
+   "headRefOid": "1111111111111111111111111111111111111",
    "isDraft": false, "mergeable": "UNKNOWN", "updatedAt": "2026-08-01T00:00:00Z",
    "url": "https://github.com/o/r/pull/170", "body": "", "comments": []}
 ]
@@ -224,12 +225,33 @@ assert_eq "  ... and never writes #135's URL either (issue #300: the guard now r
 assert_contains_json "  ... naming #135 by its branch name instead, which the guard's extractors do not match" \
   "dependabot/npm_and_yarn/eslint-10.9.0" "$(jq -r '.[0].superseded_evidence' <<<"$out")"
 
+# --- The listings state their cap and notice truncation (PR #352) ---
+#
+# Both `gh pr list` calls must ask for GITHUB_PR_LIST_LIMIT slots rather than
+# inheriting `gh`'s undeclared default of 30: lib/void-guard.sh's supersession
+# corroboration re-reads the same set at the same stated cap, and the two
+# reads must not page differently. The stub records its argv for this. With
+# the cap forced down to the fixture's own size, the Dependabot listing reads
+# as truncated — said on stderr, while the run still completes and the
+# supersession (whose newer bump is inside the cap, so genuinely seen) is
+# still minted: truncation is cost, not damage.
+: > "$tmp_dir/calls.log"
+err_file="$tmp_dir/stderr.txt"
+out="$(MERGE_CONFLICTS_GH="$tmp_dir/gh" GITHUB_PR_LIST_LIMIT=3 \
+  "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>"$err_file")"
+assert_eq "both listings state the cap instead of inheriting gh's default of 30" \
+  "2" "$(grep -c -- '--limit 3 ' "$tmp_dir/calls.log" || true)"
+assert_contains_json "a Dependabot listing at the cap is said out loud, not trusted silently" \
+  "came back at its 3-item cap" "$(cat "$err_file")"
+assert_eq "  ... while the candidate, whose newer bump was genuinely seen, is still minted superseded" \
+  "pr-129-superseded-c96c8ef9d31a" "$(jq -r '.[0].ref' <<<"$out")"
+
 # --- A marker comment scoped to the current head makes it rebase_requested ---
 cat > "$tmp_dir/dependabot.json" <<'JSON'
 [
   {"number": 129, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.8.0",
    "headRefName": "dependabot/npm_and_yarn/eslint-10.8.0", "baseRefName": "main",
-   "commits": [{"oid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4"}],
+   "headRefOid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4",
    "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-03T00:48:14Z",
    "url": "https://github.com/o/r/pull/129", "body": "Bumps eslint from 9.39.5 to 10.8.0.",
    "comments": [{"body": "@dependabot rebase\n\n<!-- agent-ops:dependabot-rebase-requested head=c96c8ef9d31a -->"}]}
@@ -248,7 +270,7 @@ cat > "$tmp_dir/dependabot.json" <<'JSON'
 [
   {"number": 129, "title": "chore(deps-dev): Bump eslint from 9.39.5 to 10.8.0",
    "headRefName": "dependabot/npm_and_yarn/eslint-10.8.0", "baseRefName": "main",
-   "commits": [{"oid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4"}],
+   "headRefOid": "c96c8ef9d31a8928b39d963f1de3b92dbea256c4",
    "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-03T00:48:14Z",
    "url": "https://github.com/o/r/pull/129", "body": "Bumps eslint from 9.39.5 to 10.8.0.",
    "comments": [{"body": "@dependabot rebase\n\n<!-- agent-ops:dependabot-rebase-requested head=000000000000 -->"}]}

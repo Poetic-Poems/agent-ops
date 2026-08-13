@@ -83,8 +83,9 @@ assert_contains() {
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
-# `gh pr list -R <slug> --state open --author <login> --json number,headRefName`
-# — the superseded-shape corroboration's re-derivation of the repository's
+printf '%s\n' "$*" >> "$d/calls.log"
+# `gh pr list -R <slug> --state open --author <login> --limit <n> --json
+# number,headRefName` — the superseded-shape corroboration's re-derivation of the repository's
 # *currently* open Dependabot pull requests (void_finishing_pr_reason). A
 # fixture `prlist-<slug, / replaced by _>.json` holds the array; none means no
 # open Dependabot PRs right now, an ordinary answer, not a failure.
@@ -695,6 +696,27 @@ printf '[]' >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
 out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff")"; rc=$?
 assert_eq "  ... but not once no newer bump is open" "1" "$rc"
 assert_contains "  ... naming the missing bump" "has none open now" "$out"
+
+# The listing that answers it is bounded at GITHUB_PR_LIST_LIMIT (PR #352) —
+# the same stated cap the gatherer that minted the item read at, so the two
+# reads cannot page differently — and an empty answer that came back at the
+# cap refuses naming the cap: "no newer bump in the first N" is not "no newer
+# bump". A newer bump *found* in a listing at the cap is real regardless of
+# what the cap hid, so that one still corroborates. The cap is forced down to
+# the fixture's own size per call, never reassigned for the file.
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/prettier-4.0.0"}, {"number": 222, "headRefName": "dependabot/github_actions/github/codeql-action-4.37.3"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+out="$(GITHUB_PR_LIST_LIMIT=2 void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff")"; rc=$?
+assert_eq "  ... and an empty answer from a listing at its cap still refuses" "1" "$rc"
+assert_contains "  ... naming the cap rather than asserting absence" "came back at its 2-item cap" "$out"
+
+: >"$tmp_dir/calls.log"
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}, {"number": 222, "headRefName": "dependabot/npm_and_yarn/prettier-4.0.0"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+assert_eq "  ... while a newer bump found in a listing at the cap corroborates — present is real" \
+  "0" "$(GITHUB_PR_LIST_LIMIT=2 void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff"; echo $?)"
+assert_eq "  ... and the listing asked for the stated cap, not gh's default" \
+  "1" "$(grep -c -- '--limit 2 ' "$tmp_dir/calls.log" || true)"
 
 # The author test runs first, and independently: a superseded-shaped item
 # citing a PR that is not Dependabot's own is refused on the author alone. The

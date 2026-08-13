@@ -120,6 +120,16 @@ VOID_GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/dependabot-bump.sh
 . "$VOID_GUARD_DIR/lib/dependabot-bump.sh"
 
+# `GITHUB_PR_LIST_LIMIT` and `github_pr_list_truncated` — the stated bound the
+# superseded-shape corroboration's listing asks for, and the check that notices
+# when it came back at that bound — are lib/github-limit.sh's, sourced for the
+# same self-containment reason as above. Sourcing it also shadows `gh` with its
+# rate-limit-aware wrapper, which changes nothing for any current consumer:
+# agent-cycle.sh sources the same file itself before this one, and the tests
+# that source this file alone reach their stubs through `VOID_GUARD_GH`.
+# shellcheck source=lib/github-limit.sh
+. "$VOID_GUARD_DIR/lib/github-limit.sh"
+
 # entry_field_text ENTRY_JSON FIELD
 # Print one field of a model-supplied entry as a single string — objects and
 # arrays are rendered as JSON so a caller can test emptiness without caring
@@ -492,7 +502,11 @@ void_finishing_item_shape() {
 #     `lib/dependabot-bump.sh`), and `dependabot_newer_open_pr`, re-run now
 #     against the repository's *currently* open Dependabot pull requests,
 #     still names a strictly-newer open bump of the same family. Either half
-#     failing refuses with a reason naming which one. This is the excuse
+#     failing refuses with a reason naming which one. The listing that answers
+#     the second half is bounded at `GITHUB_PR_LIST_LIMIT` — the same stated
+#     cap the gatherer read at (lib/github-limit.sh) — and an empty answer
+#     from a listing at that cap refuses naming the cap, because "no newer
+#     bump in the first N" is not "no newer bump". This is the excuse
 #     `-conflict-` used to carry for Dependabot before this shape existed
 #     (TD-PPagop-26081304) — moved here because the claim it excuses
 #     ("superseded") now has its own shape to be corroborated against, rather
@@ -533,10 +547,23 @@ void_finishing_pr_reason() {
       return 1
     fi
     head_ref="$(jq -r '.head.ref // ""' <<<"$pr_json" 2>/dev/null || true)"
+    # Bounded at the same stated cap as the gatherer that minted the item
+    # (lib/github-limit.sh), never `gh`'s undeclared default of 30 — an
+    # unpaged read deciding whether a pull request gets closed must not page
+    # differently from the read that made the claim. A bump *found* in a
+    # listing at the cap is real regardless of what the cap hid, so a
+    # truncated listing can only make the refusal below more common, never a
+    # close — and when it is the reason for the refusal, the reason says so.
     dependabot_open="$("$gh_bin" pr list -R "$slug" --state open --author "$DEPENDABOT_LOGIN" \
+      --limit "$GITHUB_PR_LIST_LIMIT" \
       --json number,headRefName 2>/dev/null)" || dependabot_open=""
     jq -e 'type == "array"' <<<"$dependabot_open" >/dev/null 2>&1 || dependabot_open='[]'
     if [[ -z "$(dependabot_newer_open_pr "$num" "$head_ref" "$dependabot_open")" ]]; then
+      if github_pr_list_truncated "$(jq 'length' <<<"$dependabot_open")"; then
+        printf 'refuted: PR #%s in %s, whose supersession item %s claims a newer open Dependabot bump of the same family, shows none in a listing that came back at its %s-item cap — the bump may sit beyond it, so this refuses rather than guesses' \
+          "$num" "$slug" "$item" "$GITHUB_PR_LIST_LIMIT"
+        return 1
+      fi
       printf 'refuted: PR #%s in %s, whose supersession item %s claims a newer open Dependabot bump of the same family, has none open now' \
         "$num" "$slug" "$item"
       return 1
