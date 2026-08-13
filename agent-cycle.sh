@@ -532,12 +532,28 @@ cycle_dir="$state_dir/cycles/$cycle_id"
 [[ -n "$MANAGE_ACTION" ]] || mkdir -p "$cycle_dir"
 
 # --- Logging ---
+# FIELDS must be a JSON object: the envelope merge below is jq's `+`, and jq
+# cannot add an object and an array — it raises a runtime error, exit 5, and
+# under `set -e` that was the whole cycle's exit. Not hypothetical: the one
+# call site that passed an array (`enabler-stale-refs-skipped`, a guard that
+# had never fired) took every node down in a pre-selection crash loop the
+# first time it did (issue #361). So the logger holds the contract itself
+# rather than trusting 168 call sites to: a non-object payload is recorded
+# wrapped under `fields` — the event still lands, readable, rather than
+# vanishing — and the append is `|| true` because recording an event is never
+# worth a cycle. stderr stays unredirected on the final jq for the same
+# reason the wrap exists: if this still fails somehow, cron.log should show
+# it, not swallow it.
 log_event() {
   local event="$1" fields="${2:-{\}}"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
+    fields="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null \
+      || jq -nc --arg f "$fields" '{fields: $f}')"
+  fi
   jq -nc --arg ts "$ts" --arg cycle "$cycle_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file"
+    '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file" || true
 }
 
 # --- Management commands (--disable / --enable / --status) ---
@@ -5255,7 +5271,10 @@ stale_enabler_refs_json='[]'
                  and (($live | index($repo + "#" + $item)) == null)) ]
   ' <<<"$enabler_eligible_json" 2>/dev/null || echo '[]')"
 if [[ "$(jq 'length' <<<"$stale_enabler_refs_json" 2>/dev/null || echo 0)" != "0" ]]; then
-  log_event "enabler-stale-refs-skipped" "$(jq -c '[.[] | {repo, item}]' <<<"$stale_enabler_refs_json")"
+  # An *object* payload ({skipped: [...]}), never the bare array: log_event's
+  # envelope merge can only add objects, and the bare-array form of this exact
+  # line is what crash-looped the fleet on 2026-08-13 (issue #361).
+  log_event "enabler-stale-refs-skipped" "$(jq -c '{skipped: [.[] | {repo, item}]}' <<<"$stale_enabler_refs_json")"
   enabler_eligible_json="$(jq -c --argjson stale "$stale_enabler_refs_json" '
     ($stale | map((.repo // "") + "#" + (.item // ""))) as $staleset
     | [ .[] | (.repo // "") as $repo | (.item // "") as $item

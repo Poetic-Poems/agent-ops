@@ -6327,7 +6327,10 @@ runs unattended.
     (already assembled into `ordered_repos_json` for the Co-Ordinator, requirement
     3g): if that exact ref is not among them — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
-    (`enabler-stale-refs-skipped`) rather than silent. Both merge-conflicts
+    (`enabler-stale-refs-skipped`, an object payload `{skipped: [{repo,
+    item}…]}` — log_event's envelope merge can only add objects, and the
+    bare-array form of this exact payload crash-looped the fleet
+    pre-selection on 2026-08-13, issue #361) rather than silent. Both merge-conflicts
     shapes are tested, not just `-conflict-`: `pr-<n>-superseded-<sha>`
     (requirement 3g) is scoped to the same head SHA and comes from the same
     gather, and a supersession void requirement 34d refuses is recorded

@@ -202,12 +202,21 @@ mkdir -p "$review_dir"
 # --- Logging ---
 # Operational events go to our own review-log.jsonl (keyed by review id), so the
 # dashboard's log.jsonl parser is unaffected and the two pipelines stay separable.
+# FIELDS must be a JSON object — the same contract, coercion and `|| true` as
+# agent-cycle.sh's log_event, for the same reason: jq's `+` cannot add an
+# object and an array, and a payload mistake at one call site must cost that
+# event's shape, never the review cycle (issue #361 was the implementation
+# pipeline dying exactly this way).
 log_event() {
   local event="$1" fields="${2:-{\}}"
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
+    fields="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null \
+      || jq -nc --arg f "$fields" '{fields: $f}')"
+  fi
   jq -nc --arg ts "$ts" --arg review "$review_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
-    '{ts: $ts, review: $review, node: $node, event: $event} + $fields' >> "$review_log_file"
+    '{ts: $ts, review: $review, node: $node, event: $event} + $fields' >> "$review_log_file" || true
 }
 
 # The one shared signal: a usage-limit hit is written to log.jsonl in the exact
