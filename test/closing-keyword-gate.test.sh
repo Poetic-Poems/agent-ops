@@ -9,9 +9,14 @@
 # test/review-gate.test.sh's stub uses. The checker itself is exercised
 # end to end against the real scripts/check-closing-keyword.sh — this test
 # is about the gate's own plumbing (does it read the right PR fields, does
-# it report `clean`/`dirty<TAB>reason` correctly), not a re-test of the
-# checker's own rules (test/check-closing-keyword.test.sh already covers
-# those).
+# it report `clean`/`dirty<TAB>reason`/`unknown<TAB>reason` correctly), not a
+# re-test of the checker's own rules (test/check-closing-keyword.test.sh
+# already covers those).
+#
+# The three-way verdict is the point of half of what follows: a fault in the
+# pull request is `dirty`, but a question that could not be *put* — an
+# unreadable pull request, an unrunnable checker — is `unknown`, so a caller
+# warns instead of stalling every item on a node with a degraded `gh`.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -113,13 +118,36 @@ assert_eq "  ... with no ::error:: workflow-command prefix left in it" \
   "0" "$(grep -c '::error::' <<<"$out")"
 
 # --- gh itself failing to resolve the PR -------------------------------------
+# `unknown`, not `dirty`: a `gh` that cannot answer says something about this
+# node, not about the pull request, and reading one as the other would stall
+# every item on a node with a degraded `gh` (see the file header).
 
 set_pr 'ERROR'
 out="$(closing_keyword_gate "$URL")"; rc=$?
-assert_eq "  ... exits 1" "1" "$rc"
-assert_eq "an unreadable pull request is dirty" "dirty" "${out%%$'\t'*}"
+assert_eq "an unreadable pull request is unknown, not dirty" "unknown" "${out%%$'\t'*}"
+assert_eq "  ... and exits 0, so a caller warns rather than blocks" "0" "$rc"
+assert_contains "  ... naming the pull request it could not read" "$URL" "$out"
+
+# A payload that parses but carries no head branch — a truncated or otherwise
+# unexpected answer — must not read as clean: an empty body on an empty branch
+# name is exactly the shape of a *passing* non-issue-sourced pull request.
+set_pr '{}'
+out="$(closing_keyword_gate "$URL")"; rc=$?
+assert_eq "a payload with no head branch is unknown, never clean" "unknown" "${out%%$'\t'*}"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# --- the checker itself unrunnable -------------------------------------------
+# Same class again: a missing or non-executable checker is this node's
+# checkout, not this pull request.
+
+set_pr '{"body": "A plain PR body.", "headRefName": "agent/199"}'
+out="$(CLOSING_KEYWORD_GATE_CHECK="$tmp_dir/not-a-real-checker" closing_keyword_gate "$URL")"; rc=$?
+assert_eq "an unrunnable checker is unknown, not dirty" "unknown" "${out%%$'\t'*}"
+assert_eq "  ... and exits 0" "0" "$rc"
 
 # --- an empty URL is dirty, not a crash --------------------------------------
+# The one unanswerable case that stays `dirty`: a caller asking about nothing
+# is a bug in the caller, not a degraded node.
 
 out="$(closing_keyword_gate "")"; rc=$?
 assert_eq "  ... exits 1" "1" "$rc"
