@@ -202,7 +202,7 @@ if ((local_retained < cycles_retained)); then
 fi
 
 if [[ "$(cfg '.crash_loop_after')" != "0" && -z "$(cfg '.crash_loop_repo')" ]]; then
-  warn "crash_loop_after is set but crash_loop_repo is empty, which disables the check anyway — a fleet-wide Co-Ordinator crash loop would surface nowhere"
+  warn "crash_loop_after is set but crash_loop_repo is empty, which disables both checks anyway — a fleet-wide crash loop would surface nowhere"
 fi
 
 # --- Models ---
