@@ -428,18 +428,31 @@ confirm_review_requested() {
 # wearing the review-request mechanism, not a second review being solicited.
 #
 # The target is `_handoff_known_reviewers` (whoever has ever reviewed this
-# pull request, in any state) before it is ever ASSIGNEE. That order matters
-# on this system's own pull requests specifically: they are authored under
-# the same account `enabler_assignee` routinely names (issue assignment has
-# no such conflict; PR review does), and GitHub will refuse a review request
-# aimed at a pull request's own author with a 422. CODEOWNERS already solved
-# this once, automatically, the moment the pull request went ready — it never
-# proposes the author as a reviewer of their own change — so reading who it
-# already picked is both correct and one API call, where re-deriving the same
-# answer from CODEOWNERS' file and org membership would be many. ASSIGNEE is
-# the fallback for the one case that leaves nobody to read: a pull request
-# CODEOWNERS never touched at all (no matching rule, or the repo does not use
-# one).
+# pull request, in any state) before it is ever a currently pending review
+# request, before it is ever ASSIGNEE. That order matters on this system's own
+# pull requests specifically: they are authored under the same account
+# `enabler_assignee` routinely names (issue assignment has no such conflict;
+# PR review does), and GitHub will refuse a review request aimed at a pull
+# request's own author with a 422. CODEOWNERS already solved this once,
+# automatically, the moment the pull request went ready — it never proposes
+# the author as a reviewer of their own change — so reading who it already
+# picked is both correct and one API call, where re-deriving the same answer
+# from CODEOWNERS' file and org membership would be many.
+#
+# `_handoff_known_reviewers` only sees a candidate once they have *submitted*
+# a review, though, and CODEOWNERS' own request lands in `requested_reviewers`
+# the moment the pull request goes ready — before anyone has reviewed it at
+# all. Treating `known` as empty in that window and falling straight to
+# ASSIGNEE is exactly the false "no candidate" agent-ops PR #350/#355 hit: a
+# live, legitimate request to a non-author collaborator already existed, put
+# there by CODEOWNERS hours before this function ever ran, and `known` alone
+# could not see it. So a currently pending request is checked next, before
+# ASSIGNEE: if one already names a non-author candidate, the guarantee this
+# function exists for already holds, and it is reported precisely as the
+# `already` case below is — nothing to request. ASSIGNEE remains the fallback
+# for the one case that leaves nobody to read at all: a pull request
+# CODEOWNERS never touched (no matching rule, no pending request, or the repo
+# does not use one).
 #
 # Either way the author is struck off the candidates before anything is asked,
 # never asked-for-and-refused: a 422 is not a transient failure worth warning
@@ -464,9 +477,13 @@ confirm_review_requested() {
 #                       (confirm_review_requested's job, not this one's).
 #   skip<TAB>no-candidate
 #                       the only candidate target is the pull request's own
-#                       author — there is nobody left to ask.
+#                       author, nobody has yet submitted a review, and no
+#                       request is currently pending either — there is nobody
+#                       left to ask.
 #   already             every candidate target already has a pending review
-#                       request.
+#                       request — including the case where nobody has
+#                       reviewed yet but a request (CODEOWNERS' own, usually)
+#                       already names a non-author candidate.
 #   requested           this call asked, and GitHub now shows it pending.
 #   failed              the request could not be read, or did not take.
 #
@@ -530,19 +547,30 @@ ensure_human_reviewer() {
     known="$(grep -Fxv -e "$author" <<<"$known" || true)"
   fi
 
+  # Fetched once, up front, rather than only after `targets` is chosen: an
+  # empty `known` does not mean nobody has been asked — CODEOWNERS' own
+  # request (or a human's) lands in `requested_reviewers` the moment the pull
+  # request goes ready, before anyone has *submitted* a review for `known` to
+  # see. GitHub already refused the author a place on this list, the same way
+  # it refuses one on `known`, so nothing further needs filtering here.
+  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
+                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+    printf 'failed'
+    return 1
+  fi
+
   if [[ -n "$known" ]]; then
     targets="$known"
+  elif [[ -n "$pending" ]]; then
+    # A live request already names a legitimate candidate — the guarantee
+    # this function exists for already holds, with nothing further to POST.
+    printf 'already\t%s' "$(paste -sd, <<<"$pending")"
+    return 0
   elif [[ -n "$assignee" && "$assignee" != "$author" ]]; then
     targets="$assignee"
   else
     printf 'skip\tno-candidate'
     return 0
-  fi
-
-  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
-    printf 'failed'
-    return 1
   fi
 
   joined="$(paste -sd, <<<"$targets")"

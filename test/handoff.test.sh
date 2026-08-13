@@ -580,6 +580,22 @@ assert_eq "an author-only reviews list leaves nobody to ask" \
   "$(printf 'skip\tno-candidate')" "$out"
 assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
 
+# Nobody has submitted a review yet, so `known` is empty and ASSIGNEE is the
+# author too — the same shape as the `no-candidate` case above — but a request
+# is already pending against a non-author collaborator (CODEOWNERS' own,
+# landed the moment the pull request went ready, before anyone reviewed it).
+# agent-ops PR #350/#355: that pending request is already the guarantee this
+# function exists for, and must read as `already`, never `no-candidate`.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'Warwick-Allen\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a pending request already satisfies an otherwise-empty known list" \
+  "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+assert_eq "  ... having asked GitHub nothing" "0" "$(wc -l <"$tmp_dir/posts" | tr -d ' ')"
+
 # CHANGES_REQUESTED still blocking: confirm_review_requested's job, not this
 # one's — this function must stay out of the way rather than also requesting a
 # review from ASSIGNEE alongside it.
