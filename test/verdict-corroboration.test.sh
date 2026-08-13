@@ -1,20 +1,28 @@
 #!/usr/bin/env bash
 #
-# test/tech-debt-eligibility.test.sh — regression tests for requirement 3t's
-# two Script-side pieces (issue #310), both lifted whole out of agent-cycle.sh
-# rather than reimplemented, so a change to the real function is what this
-# suite exercises:
+# test/verdict-corroboration.test.sh — regression tests for the Script-side
+# pieces of requirements 3t/3u/3x (issues #310, #320, #322), all lifted whole
+# out of agent-cycle.sh rather than reimplemented, so a change to the real
+# function is what this suite exercises:
 #
-#   - exclude_blocked_or_void_items: the tech_debt array's second exclusion
+#   - exclude_blocked_or_void_items: every pre-fetched band's second exclusion
 #     pass, applied once blocked_json/void_json are final — a candidate whose
 #     ref is blocked or void for its own repo never reaches the Co-Ordinator,
 #     the same deterministic-code decision exclude_claimed_items already makes
 #     for claims (requirement 3q).
-#   - tech_debt_unaccounted_items: the machine corroboration a `selected:
-#     false` verdict is tested against — which eligible tech-debt items were
-#     neither reported in needs_refinement nor voided, the evidence a
-#     none-selected verdict misdescribing the band leaves behind (the
-#     2026-08-10..12 incident this requirement exists for).
+#   - coordinator_eligible_items: the Script's own answer to "what could the
+#     Co-Ordinator actually have selected this cycle", across every band it
+#     pre-fetches — the denominator the corroboration below is tested against
+#     (requirement 3x). Its three non-obvious bands are the point: `issues` is
+#     banded per entry and still carries blocked entries, and
+#     `merge_conflicts` carries the one shape the prompt tells the model to
+#     skip in silence.
+#   - unaccounted_items: the machine corroboration a `selected: false` verdict
+#     is tested against — which eligible items were neither reported in
+#     needs_refinement under their own source nor voided, the evidence a
+#     none-selected verdict misdescribing a band leaves behind (the
+#     2026-08-10..12 incident requirement 3t exists for, generalised off the
+#     one band it was proven on by requirement 3x).
 #   - log_needs_refinement_items / log_voided_items: the recording loops whose
 #     own collections (`coord_recorded_refinement_json`,
 #     `coord_recorded_voided_json`) are what the corroboration is actually fed
@@ -29,7 +37,7 @@
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
 #
-#   ./test/tech-debt-eligibility.test.sh
+#   ./test/verdict-corroboration.test.sh
 #
 # Exit status is 0 iff every assertion passed.
 
@@ -59,19 +67,24 @@ extract_function() {  # extract_function <name>
 }
 
 exclude_blocked_or_void_items_src="$(extract_function exclude_blocked_or_void_items)"
-tech_debt_unaccounted_items_src="$(extract_function tech_debt_unaccounted_items)"
+unaccounted_items_src="$(extract_function unaccounted_items)"
+coordinator_eligible_items_src="$(extract_function coordinator_eligible_items)"
 
-if [[ "$exclude_blocked_or_void_items_src" != *"exclude_blocked_or_void_items()"* ]]; then
-  printf 'FAIL - could not extract exclude_blocked_or_void_items from agent-cycle.sh (renamed or moved?)\n'
-  exit 1
-fi
-if [[ "$tech_debt_unaccounted_items_src" != *"tech_debt_unaccounted_items()"* ]]; then
-  printf 'FAIL - could not extract tech_debt_unaccounted_items from agent-cycle.sh (renamed or moved?)\n'
-  exit 1
-fi
+for pair in \
+  "exclude_blocked_or_void_items_src:exclude_blocked_or_void_items()" \
+  "unaccounted_items_src:unaccounted_items()" \
+  "coordinator_eligible_items_src:coordinator_eligible_items()"; do
+  name="${pair%%:*}"
+  needle="${pair#*:}"
+  if [[ "${!name}" != *"$needle"* ]]; then
+    printf 'FAIL - could not extract %s from agent-cycle.sh (renamed or moved?)\n' "$needle"
+    exit 1
+  fi
+done
 
 eval "$exclude_blocked_or_void_items_src"
-eval "$tech_debt_unaccounted_items_src"
+eval "$unaccounted_items_src"
+eval "$coordinator_eligible_items_src"
 
 # =================================================================================
 # exclude_blocked_or_void_items
@@ -125,60 +138,166 @@ assert_eq "a void extract past the argv cap still drops the void item" \
   "$(jq -c 'map(.ref)' <<<"$(exclude_blocked_or_void_items "$cands" "org/a" '[]' "$BIG_VOID")")"
 
 # =================================================================================
-# tech_debt_unaccounted_items
+# coordinator_eligible_items
 # =================================================================================
 
-eligible='[{"repo":"org/a","item":"TD1"},{"repo":"org/a","item":"TD2"}]'
+# One repo listing every band it has an array for, bar `code-quality` and the
+# Medium/Low issue ranks — so the two assertions that matter most (a band whose
+# token is absent is not eligible; an issue outside its own listed rank is not
+# either) have something to be absent from.
+eligible_repos='[{"slug":"org/a","default_branch":"main",
+  "sources":["security","review-feedback","merge-conflicts","issues:high","abandoned-drafts",
+             "human-visibility","tech-debt","register-hygiene"],
+  "findings":[{"source":"security","ref":"dependabot-alert-1"},{"source":"code-quality","ref":"code-scanning-alert-4"}],
+  "review_feedback":[{"ref":"pr-1-review-9"}],
+  "merge_conflicts":[{"ref":"pr-2-conflict-aa","bot":true,"rebase_requested":false,"superseded_by":null},
+                     {"ref":"pr-3-conflict-bb","bot":true,"rebase_requested":false,"superseded_by":"dependabot/npm/foo-2"},
+                     {"ref":"pr-4-conflict-cc","bot":true,"rebase_requested":true,"superseded_by":null},
+                     {"ref":"pr-5-conflict-dd"}],
+  "abandoned_drafts":[{"ref":"pr-6-abandoned-ee"}],
+  "human_visibility":[{"ref":"human-visibility-ff"}],
+  "register_hygiene":[{"ref":"register-hygiene-gg"}],
+  "issues":[{"ref":"11","priority":"High"},{"ref":"12","priority":"Medium"},{"ref":"13","priority":"High"}],
+  "tech_debt":[{"ref":"TD1"},{"ref":"TD2"}]}]'
+
+el="$(coordinator_eligible_items "$eligible_repos" '[{"repo":"org/a","item":"13"}]')"
+band_of() { jq -c --arg s "$1" '[.[] | select(.source == $s) | .item]' <<<"$el"; }
+
+assert_eq "a security finding is eligible under its own source token" '["dependabot-alert-1"]' "$(band_of security)"
+assert_eq "the code-quality half of the same array is not — its token is unlisted" '[]' "$(band_of code-quality)"
+assert_eq "review-feedback: presence in the array is the candidate test" '["pr-1-review-9"]' "$(band_of review-feedback)"
+assert_eq "abandoned-drafts likewise" '["pr-6-abandoned-ee"]' "$(band_of abandoned-drafts)"
+assert_eq "human-visibility likewise" '["human-visibility-ff"]' "$(band_of human-visibility)"
+assert_eq "register-hygiene likewise" '["register-hygiene-gg"]' "$(band_of register-hygiene)"
+assert_eq "tech-debt likewise, in id order" '["TD1","TD2"]' "$(band_of tech-debt)"
+
+# merge-conflicts is the band with a Script-computable non-candidate in it: a
+# never-nudged Dependabot PR is "not a candidate of any kind" per the prompt,
+# so demanding an account for it would reject every verdict that correctly
+# skipped it. Its superseded sibling is the opposite case — the prompt
+# *requires* that one in `voided`, so it stays eligible and owes an account.
+assert_eq "merge-conflicts drops the never-nudged Dependabot entry only" \
+  '["pr-3-conflict-bb","pr-4-conflict-cc","pr-5-conflict-dd"]' "$(band_of merge-conflicts)"
+
+# issues: banded per entry (requirement 15e), and still carrying blocked
+# entries after requirement 3u's own narrower pass — neither of which any
+# other band has to reckon with.
+assert_eq "an issue outside its own listed rank is not eligible, and a blocked one is not either" \
+  '["11"]' "$(band_of issues)"
+
+# A blank `repo` on an old, pre-scoping event matches every repo — the same
+# fallback exclude_blocked_or_void_items gives, mirrored here so the two
+# passes cannot disagree about which issues the Co-Ordinator was offered.
+assert_eq "a repo-less blocked entry suppresses that issue in every repo" '["13"]' \
+  "$(jq -c '[.[] | select(.source == "issues") | .item]' \
+     <<<"$(coordinator_eligible_items "$eligible_repos" '[{"item":"11"}]')")"
+
+assert_eq "the plain issues token admits every band" '["11","12","13"]' \
+  "$(jq -c '[.[] | select(.source == "issues") | .item]' \
+     <<<"$(coordinator_eligible_items "$(jq -c 'map(.sources = ["issues"])' <<<"$eligible_repos")" '[]')")"
+
+# Back-pressure (requirement 2.2a) narrows `sources` to the three finishing
+# bands and empties `issues`/`tech_debt`, but leaves `findings`,
+# `register_hygiene` and `human_visibility` populated. Reading the list rather
+# than the arrays is what stops a restricted cycle owing an account of bands it
+# was forbidden to select from.
+bp_repos="$(jq -c 'map(.sources = ["review-feedback","merge-conflicts","abandoned-drafts"]
+                      | .issues = [] | .tech_debt = [])' <<<"$eligible_repos")"
+assert_eq "back-pressure's narrowed sources list bounds eligibility" \
+  '["abandoned-drafts","merge-conflicts","review-feedback"]' \
+  "$(jq -c '[.[].source] | unique' <<<"$(coordinator_eligible_items "$bp_repos" '[]')")"
+
+assert_eq "a repo listing no sources at all offers nothing" "0" \
+  "$(jq 'length' <<<"$(coordinator_eligible_items "$(jq -c 'map(.sources = [])' <<<"$eligible_repos")" '[]')")"
+assert_eq "an entry with no ref is dropped, not emitted with an empty item" "0" \
+  "$(jq 'length' <<<"$(coordinator_eligible_items '[{"slug":"org/a","sources":["tech-debt"],"tech_debt":[{"title":"no ref"}]}]' '[]')")"
+assert_eq "malformed repos JSON degrades to []" "[]" "$(coordinator_eligible_items 'not json' '[]')"
+assert_eq "malformed blocked JSON degrades to filtering nothing, not everything" "1" \
+  "$(jq 'length' <<<"$(coordinator_eligible_items '[{"slug":"org/a","sources":["issues"],"issues":[{"ref":"11"}]}]' 'not json')")"
+
+# =================================================================================
+# unaccounted_items
+# =================================================================================
+
+eligible='[{"repo":"org/a","item":"TD1","source":"tech-debt"},{"repo":"org/a","item":"TD2","source":"tech-debt"}]'
 
 # The exact shape of the incident: nothing selected, nothing reported, nothing
 # voided — every eligible item is unaccounted for.
 wo_silent='{"selected": false, "reason": "requires per-item evaluation", "needs_refinement": [], "voided": []}'
-out="$(tech_debt_unaccounted_items "$wo_silent" "$eligible" '{}')"
+out="$(unaccounted_items "$wo_silent" "$eligible" '{}')"
 assert_eq "a verdict that reports nothing leaves every eligible item unaccounted" "2" \
   "$(jq 'length' <<<"$out")"
 
 # One properly reported, one still silently dropped.
 wo_partial='{"selected": false, "reason": "one under-specified", "needs_refinement": [{"repo": "org/a", "item": "TD1", "source": "tech-debt"}], "voided": []}'
-out="$(tech_debt_unaccounted_items "$wo_partial" "$eligible" '{}')"
+out="$(unaccounted_items "$wo_partial" "$eligible" '{}')"
 assert_eq "a reported item is accounted for" "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... and the unreported one is what's left" "TD2" "$(jq -r '.[0].item' <<<"$out")"
 
 # needs_refinement from a different source does not account for a tech-debt item.
 wo_wrong_source='{"selected": false, "needs_refinement": [{"repo": "org/a", "item": "TD1", "source": "issues"}], "voided": []}'
-out="$(tech_debt_unaccounted_items "$wo_wrong_source" "$eligible" '{}')"
+out="$(unaccounted_items "$wo_wrong_source" "$eligible" '{}')"
 assert_eq "a report for a different source does not account for a tech-debt item" "2" \
   "$(jq 'length' <<<"$out")"
 
+# A report for the right item in the right band of a *different repo* is not an
+# account either: requirement 20 keys everything on repo+item, and issue
+# numbers collide across repos constantly.
+wo_wrong_repo='{"selected": false, "needs_refinement": [{"repo": "org/b", "item": "TD1", "source": "tech-debt"}], "voided": []}'
+assert_eq "a report against another repo does not account for this repo's item" "2" \
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_wrong_repo" "$eligible" '{}')")"
+
 # Voiding accounts for an item exactly like reporting it.
 wo_voided='{"selected": false, "needs_refinement": [], "voided": [{"repo": "org/a", "item": "TD1"}]}'
-out="$(tech_debt_unaccounted_items "$wo_voided" "$eligible" '{}')"
+out="$(unaccounted_items "$wo_voided" "$eligible" '{}')"
 assert_eq "a voided item is accounted for" "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... and the untouched one is what's left" "TD2" "$(jq -r '.[0].item' <<<"$out")"
+
+# `voided` carries no source (requirement 34c's shape), so it accounts for its
+# repo+item in whichever band that item was eligible in.
+mixed_eligible='[{"repo":"org/a","item":"11","source":"issues"},
+                 {"repo":"org/a","item":"pr-3-conflict-bb","source":"merge-conflicts"},
+                 {"repo":"org/a","item":"TD1","source":"tech-debt"}]'
+wo_mixed_bands='{"selected": false,
+  "needs_refinement": [{"repo": "org/a", "item": "11", "source": "issues"},
+                       {"repo": "org/a", "item": "TD1", "source": "tech-debt"}],
+  "voided": [{"repo": "org/a", "item": "pr-3-conflict-bb"}]}'
+assert_eq "one verdict accounts for three different bands at once" "0" \
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_mixed_bands" "$mixed_eligible" '{}')")"
+
+# The band survives onto the output, which is what lets the caller tag the
+# rejection with it (requirement 3x) instead of reporting a bare count.
+out="$(unaccounted_items '{}' "$mixed_eligible" '{}')"
+assert_eq "every unaccounted entry carries the band it was eligible in" \
+  '["issues","merge-conflicts","tech-debt"]' "$(jq -c '[.[].source] | sort' <<<"$out")"
 
 # Both reported and voided: nothing left unaccounted.
 wo_both='{"selected": false, "needs_refinement": [{"repo": "org/a", "item": "TD1", "source": "tech-debt"}], "voided": [{"repo": "org/a", "item": "TD2"}]}'
 assert_eq "every eligible item accounted for leaves nothing unaccounted" "0" \
-  "$(jq 'length' <<<"$(tech_debt_unaccounted_items "$wo_both" "$eligible" '{}')")"
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_both" "$eligible" '{}')")"
 
-# refinement_policy.tech-debt == "required" is the one legitimate silent skip:
-# nothing is ever unaccounted under it, however loud the silence.
+# refinement_policy[<source>] == "required" is the one legitimate silent skip:
+# nothing is ever unaccounted in that band, however loud the silence — and it
+# is applied per entry's own source, so it exempts that band and no other.
 policy_required='{"tech-debt": "required"}'
-assert_eq "a required refinement policy exempts every eligible item" "0" \
-  "$(jq 'length' <<<"$(tech_debt_unaccounted_items "$wo_silent" "$eligible" "$policy_required")")"
+assert_eq "a required refinement policy exempts every eligible item in its band" "0" \
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" "$policy_required")")"
+assert_eq "  ... and only its band" '["issues","merge-conflicts"]' \
+  "$(jq -c '[.[].source] | sort' <<<"$(unaccounted_items '{}' "$mixed_eligible" "$policy_required")")"
 # "preferred" and "exempt" are not the silent-skip policy — only "required" is.
 policy_preferred='{"tech-debt": "preferred"}'
 assert_eq "a preferred refinement policy does not exempt anything" "2" \
-  "$(jq 'length' <<<"$(tech_debt_unaccounted_items "$wo_silent" "$eligible" "$policy_preferred")")"
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" "$policy_preferred")")"
 
 # An empty eligible set has nothing to be unaccounted.
 assert_eq "an empty eligible set is never unaccounted" "0" \
-  "$(jq 'length' <<<"$(tech_debt_unaccounted_items "$wo_silent" '[]' '{}')")"
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" '[]' '{}')")"
 
 # Malformed input degrades to [] (no false positive), not a crash.
 assert_eq "malformed eligible JSON degrades to []" "[]" \
-  "$(tech_debt_unaccounted_items "$wo_silent" "not json" '{}')"
+  "$(unaccounted_items "$wo_silent" "not json" '{}')"
 assert_eq "malformed policy JSON degrades to treating the policy as absent" "2" \
-  "$(jq 'length' <<<"$(tech_debt_unaccounted_items "$wo_silent" "$eligible" "not json")")"
+  "$(jq 'length' <<<"$(unaccounted_items "$wo_silent" "$eligible" "not json")")"
 
 # =================================================================================
 # The corroboration is fed what the Script recorded, never what the message
@@ -252,7 +371,7 @@ assert_eq "  ... and it is the complete one" "TD1" \
 # is withheld and the next cycle re-asks instead of standing down.
 recorded="$(jq -nc --argjson nr "$coord_recorded_refinement_json" \
   '{needs_refinement: $nr, voided: []}')"
-out="$(tech_debt_unaccounted_items "$recorded" "$eligible" '{}')"
+out="$(unaccounted_items "$recorded" "$eligible" '{}')"
 assert_eq "a report dropped at requirement 34d's bar does not account for its item" "1" \
   "$(jq 'length' <<<"$out")"
 assert_eq "  ... and the dropped report's item is what's left" "TD2" \
@@ -277,11 +396,11 @@ assert_eq "  ... the refused one included, because its refusal is recorded as a 
 assert_eq "  ... but an entry naming no item, which records nothing, is not" "0" \
   "$(jq '[.[] | select(has("item") | not)] | length' <<<"$coord_recorded_voided_json")"
 
-eligible_voids='[{"repo":"org/a","item":"TD1"},{"repo":"org/a","item":"TD-REFUSED"}]'
+eligible_voids='[{"repo":"org/a","item":"TD1","source":"tech-debt"},{"repo":"org/a","item":"TD-REFUSED","source":"tech-debt"}]'
 recorded="$(jq -nc --argjson v "$coord_recorded_voided_json" \
   '{needs_refinement: [], voided: $v}')"
 assert_eq "a refused void still accounts for its item (the block de-eligibles it)" "0" \
-  "$(jq 'length' <<<"$(tech_debt_unaccounted_items "$recorded" "$eligible_voids" '{}')")"
+  "$(jq 'length' <<<"$(unaccounted_items "$recorded" "$eligible_voids" '{}')")"
 
 printf '\n'
 if (( failures > 0 )); then

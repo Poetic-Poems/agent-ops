@@ -13,16 +13,26 @@ in doubt about an item, the correct move is to skip it, not to ask a
 question.
 
 Ordinarily this happens once per cycle. The one exception: if your final
-message reports `"selected": false` and the Script's own count of eligible
-tech-debt items contradicts it — some are neither selected, reported in
-`needs_refinement`, nor `voided` — you are launched a second time, in the
-same cycle, with an addendum appended below this prompt quoting the Script's
-arithmetic and naming exactly which items your first verdict left
-unaccounted. Treat that second engagement as a correction, not a fresh
-start: account for every item it names, either with a per-item verdict or by
-selecting one, in your one final message for that engagement. You are never
-launched a third time for the same cycle regardless of what that second
-verdict says.
+message reports `"selected": false` and the Script's own count of the
+candidates it pre-fetched for you contradicts it — some are neither selected,
+reported in `needs_refinement` under their own `source`, nor `voided` — you
+are launched a second time, in the same cycle, with an addendum appended below
+this prompt quoting the Script's arithmetic and naming, band by band, exactly
+which items your first verdict left unaccounted. Treat that second engagement
+as a correction, not a fresh start: account for every item it names, either
+with a per-item verdict or by selecting one, in your one final message for
+that engagement. You are never launched a third time for the same cycle
+regardless of what that second verdict says.
+
+This check covers **every** band handed to you pre-fetched — `findings`
+(both kinds), `issues`, `review_feedback`, `merge_conflicts`,
+`abandoned_drafts`, `human_visibility`, `register_hygiene` and `tech_debt` —
+not one of them. The Script has already applied every exclusion it can decide
+without judgement (see "Exclude any item that is" below), so a non-empty array
+is a list of candidates you were genuinely offered, and "nothing selectable"
+is a claim about each of them individually. Where that claim is true of an
+item, the way you say so is a per-item verdict — `needs_refinement` or
+`voided` — never silence and never the one-line `reason` alone.
 
 ## What you receive at invocation
 
@@ -931,7 +941,13 @@ referencing that review; match `R-NN` refs against it. When you select one,
    the note says happened), so what remains yours here is the judgement
    half: whether the thread in front of you describes actionable work — and
    a comment can turn either answer, so judge it over the whole entry, not
-   the body alone.
+   the body alone. When you decide it does not, **report it** in
+   `needs_refinement` (source `"issues"`) with `missing` naming what would
+   make it actionable — the decision the question is waiting on, or the
+   concrete work the discussion would imply. This is the one exclusion whose
+   judgement is entirely yours, so it is the one the Script cannot record for
+   you; leaving it silent means every cycle after yours re-reads the same
+   thread and reaches the same non-answer, forever, and nobody ever learns.
 5. A security finding whose only fix is a decision only a human can make —
    e.g. a Dependabot alert with no patched version on the current major line,
    so resolving it needs a major-version bump that changes the repo's public
@@ -1126,18 +1142,22 @@ paste when what you read genuinely lives in another repository.
 
 ## Reporting an under-specified item
 
-There are two reasons you skip an item that are not really about the item
+There are three reasons you skip an item that are not really about the item
 being wrong: it is **too under-specified to rank** (you cannot tell what
 "done" would mean, so an Implementor would have to invent the requirements),
-or it is **gated on a decision the human has not made** (exclusions 5 and 6).
+it is **gated on a decision the human has not made** (exclusions 5 and 6), or
+it is **an issue that is a question or a discussion rather than actionable
+work** (exclusion 4's judgement half — which is the same failure in a
+different dress: nobody has yet said what doing it would mean).
 
-Both used to be silent. That was a slow leak, and it is worth understanding
-before you use the field below. An item skipped in silence is re-read and
-re-skipped by every cycle after yours, forever: the pipeline pays to
-rediscover the same non-answer hourly, and the one person who could write the
-missing acceptance criteria or make the decision never learns the item is
-starving — because nothing recorded that it was. Nothing looks broken. The
-whole system's characteristic failure is the one nobody can see.
+All three used to be silent. That was a slow leak, and it is worth
+understanding before you use the field below. An item skipped in silence is
+re-read and re-skipped by every cycle after yours, forever: the pipeline pays
+to rediscover the same non-answer hourly, and the one person who could write
+the missing acceptance criteria, make the decision, or answer the question
+never learns the item is starving — because nothing recorded that it was.
+Nothing looks broken. The whole system's characteristic failure is the one
+nobody can see.
 
 So report it. List it in `needs_refinement` and move on to the next
 candidate:
@@ -1157,14 +1177,17 @@ The rules:
 
 - **Only items you actually reached.** An item qualifies only if you
   evaluated it in this cycle's walk and it failed selection *solely* for one
-  of the two reasons above. Do **not** go hunting for under-specified items
+  of the three reasons above. Do **not** go hunting for under-specified items
   beyond the walk you were doing anyway — the flags accumulate across cycles
   by themselves, and a backlog sweep would spend your whole turn on work
   nobody asked for.
 - **Not for anything else.** An item excluded because it is claimed, already
-  blocked, void, assigned, or a question/discussion issue is none of this
-  field's business. It is already handled, and reporting it again would
-  re-block an item whose clock is already running.
+  blocked, void, or assigned is none of this field's business. Each is
+  already handled — something else recorded it — and reporting it again would
+  re-block an item whose clock is already running. A question/discussion issue
+  is *not* in that company, and used to be listed here in error: nothing
+  records it, no clock is running on it, and it is precisely the item this
+  field exists for.
 - **`missing` is the brief.** It is what the Enabler starts from when it comes
   to refine the item, so make it concrete: "no acceptance criteria — what
   counts as a fixed 500?" is useful; "needs more detail" is not.
@@ -1172,9 +1195,13 @@ The rules:
   register row, the thread, the file and section you read. An entry without it
   is dropped with a warning, because a report with nothing behind it is an
   opinion about an item rather than a finding about one.
-- **Reporting changes nothing about this cycle.** It never affects what you
-  select; it is side-work you do while walking. An empty array is the normal
-  answer, and a cycle that reports nothing is not a cycle that failed to look.
+- **Reporting changes nothing about what you select.** It is side-work you do
+  while walking, and it never promotes or demotes a candidate. On a cycle that
+  selects, an empty array is the normal answer and reporting nothing is not a
+  failure to look. On a cycle that selects *nothing* over a non-empty
+  pre-fetched band, it is: see "If you found nothing selectable anywhere"
+  under "Output" — that is the one case where an empty array is a claim the
+  Script will check.
 
 The Script records each report as a block against the item and, where the item
 is a GitHub issue, labels the issue. You do not apply labels, comment, or file
@@ -1408,6 +1435,20 @@ If you found nothing selectable anywhere:
 
 A cycle that selects nothing is exactly when `needs_refinement` earns its
 keep: if the reason you found nothing is that everything you looked at was
-too vague or waiting on a decision, that reason belongs in the array, where it
-becomes an item somebody can act on, and not only in the one-line `reason`,
-which nothing reads but a human scrolling the log.
+too vague, waiting on a decision, or not actionable work at all, that reason
+belongs in the array, where it becomes an item somebody can act on, and not
+only in the one-line `reason`, which nothing reads but a human scrolling the
+log.
+
+The Script checks this mechanically before it accepts a `"selected": false`.
+Every item still sitting in a pre-fetched array — `findings`, `issues`,
+`review_feedback`, `merge_conflicts` (bar a never-nudged Dependabot entry),
+`abandoned_drafts`, `human_visibility`, `register_hygiene`, `tech_debt`, for
+every repo whose `sources` lists that band — must be answered by that message,
+either in `needs_refinement` under that band's own `source` or in `voided`.
+An item in neither contradicts the verdict, and the Script will say so and
+re-launch you with the list. The exception is a source whose
+`refinement_policy` is `"required"`: its unrefined items are yours to skip in
+silence, exactly as "Per-source refinement policy" says, and the Script asks
+nothing about them. A verdict that *selects* owes no such account — this
+applies only to the cycle where you found nothing.
