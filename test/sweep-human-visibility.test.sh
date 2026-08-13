@@ -90,6 +90,8 @@ URL="https://github.com/o/r/pull/1"
 #   $tmp_dir/comment-fail present -> `pr comment` fails
 #   $tmp_dir/posts        one line per POST
 #   $tmp_dir/comments.log one paragraph per posted comment body
+#   $tmp_dir/pages        how many pages `--paginate` splits a listing over
+#                          (default 1) — each emitted as its own document
 #
 # `/reviews` and `/issues/…/comments` GET calls apply the *real* `--jq`
 # filter the caller passed to the raw fixture, rather than a filter of the
@@ -150,10 +152,15 @@ for a in "$@"; do
   prev="$a"
 done
 
+# `--paginate` emits the filter's result once per page, as separate documents;
+# `pages` makes the stub do that so a caller that wraps an aggregate inside
+# `--jq` is caught here rather than in production past thirty items.
+pages="$(cat "$d/pages" 2>/dev/null || printf 1)"
+
 if [[ "$path" == */reviews ]]; then
-  jq -c "$jqfilter" "$d/reviews"
+  for (( p = 0; p < pages; p++ )); do jq -c "$jqfilter" "$d/reviews"; done
 elif [[ "$path" == */comments ]]; then
-  jq -c "$jqfilter" "$d/issue-comments.json"
+  for (( p = 0; p < pages; p++ )); do jq -c "$jqfilter" "$d/issue-comments.json"; done
 elif [[ "$*" == *"user.login"* ]]; then
   cat "$d/author"
 else
@@ -212,7 +219,7 @@ reset_stub() {
   printf '[]' > "$tmp_dir/issue-comments.json"
   : > "$tmp_dir/pending"; : > "$tmp_dir/posts"; : > "$tmp_dir/comments.log"
   rm -f "$tmp_dir/api-fail" "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
-        "$tmp_dir/view-fail" "$tmp_dir/comment-fail"
+        "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages"
   idle_view "" "" "" "" no
 }
 
@@ -294,6 +301,34 @@ idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an unreadable round is a warning" "warning" "$(jq -r '.action' <<<"$out")"
 assert_contains "  ... naming the pull request" "$URL" "$(jq -r '.pr_url' <<<"$out")"
+assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
+
+# --- Self-heal: the reads survive a paginated listing ---------------------------
+# `gh api --paginate` emits the `--jq` filter's result once per page, as
+# separate documents — so an aggregate written inside the filter is computed
+# per page and disagrees with itself past the endpoint's thirty-item default
+# (the hazard `_handoff_blocking_reviewers` documents in lib/handoff.sh). Both
+# of `_sweep_round_answered`'s reads therefore stream one object per line and
+# slurp afterwards. Getting this wrong fails *open*: two documents pass a
+# `type == "array"` check and then break the extraction, and an extraction
+# that cannot run must never reach the branch that re-requests a human.
+reset_stub
+printf '2' > "$tmp_dir/pages"
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "a paginated answered round still self-heals" "human-review-requested" \
+  "$(jq -r '.action' <<<"$out")"
+
+# The same listing paginated, with nothing answering it, must stay silent —
+# not warn, and above all not re-request.
+reset_stub
+printf '2' > "$tmp_dir/pages"
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "a paginated unanswered round is neither warned about nor re-requested" "" "$out"
 assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
 
 # --- Approved, idle, and never re-asked: both halves fire together --------------

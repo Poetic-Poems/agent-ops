@@ -150,27 +150,36 @@ _sweep_round_answered() {
   local slug="$1" number="$2" gh_bin="${SWEEP_GH:-gh}"
   local reviews issue_comments blocking blocking_at
 
+  # One JSON object per line, slurped into an array here rather than wrapped
+  # inside `--jq`: `--paginate` concatenates a separate document per page, so
+  # an aggregate written in the filter is computed per page and disagrees with
+  # itself past the endpoint's thirty-item default — the hazard
+  # `_handoff_blocking_reviewers` (lib/handoff.sh) documents, and the reason
+  # both reads below are streamed. It matters more here than there: two
+  # documents pass a `type == "array"` check and then fail `--argjson` inside
+  # `handoff_round_answered`, and a round that cannot be computed must never
+  # reach the `answered` branch that re-requests a human's review.
   reviews="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
-              --jq '[.[] | select(.submitted_at != null)
-                         | {state, at: .submitted_at, who: .user.login, body: (.body // "")}]' \
-              2>/dev/null)" || true
-  jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || { printf 'unknown'; return; }
+              --jq '.[] | select(.submitted_at != null)
+                        | {state, at: .submitted_at, who: .user.login, body: (.body // "")}' \
+              2>/dev/null)" || { printf 'unknown'; return; }
+  reviews="$(jq -s -c '.' <<<"$reviews" 2>/dev/null)" || { printf 'unknown'; return; }
 
   blocking="$(jq -c '
     ([.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
      | group_by(.who) | map(last)) as $latest_per_reviewer
     | ($latest_per_reviewer | map(select(.state == "CHANGES_REQUESTED")) | sort_by(.at) | last) // null
-  ' <<<"$reviews")"
-  if [[ "$blocking" == "null" ]]; then
+  ' <<<"$reviews" 2>/dev/null)" || { printf 'unknown'; return; }
+  if [[ "$blocking" == "null" || -z "$blocking" ]]; then
     printf 'unknown'
     return
   fi
-  blocking_at="$(jq -r '.at' <<<"$blocking")"
+  blocking_at="$(jq -r '.at // ""' <<<"$blocking" 2>/dev/null)" || { printf 'unknown'; return; }
 
   issue_comments="$("$gh_bin" api "repos/$slug/issues/$number/comments" --paginate \
-                      --jq '[.[] | {at: .created_at, body: (.body // "")}]' \
-                      2>/dev/null)" || true
-  jq -e 'type == "array"' <<<"$issue_comments" >/dev/null 2>&1 || { printf 'unknown'; return; }
+                      --jq '.[] | {at: .created_at, body: (.body // "")}' \
+                      2>/dev/null)" || { printf 'unknown'; return; }
+  issue_comments="$(jq -s -c '.' <<<"$issue_comments" 2>/dev/null)" || { printf 'unknown'; return; }
 
   handoff_round_answered "$blocking_at" "$reviews" "$issue_comments"
 }

@@ -608,9 +608,11 @@ handoff_answer_events() {
 # handoff_round_answered BLOCKING_AT REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]
 # Print `answered`, `unanswered` or `unknown` — whether the review round that
 # began with the blocking review submitted at BLOCKING_AT has since been
-# answered, per `handoff_answer_events` above. `unknown` means REVIEWS_JSON,
-# COMMENTS_JSON or (when given) REREQUESTS_JSON was not a JSON array — the
-# same "could not ask" convention every other reader in this file follows.
+# answered, per `handoff_answer_events` above. `unknown` means the question
+# could not be put at all — BLOCKING_AT was empty, one of REVIEWS_JSON,
+# COMMENTS_JSON or (when given) REREQUESTS_JSON was not a single JSON array,
+# or the extraction over them failed — the same "could not ask" convention
+# every other reader in this file follows.
 # The caller must not read `unknown` as `unanswered`: a read failure must not
 # look exactly like a human still waiting, and must not look exactly like a
 # round safe to re-request either.
@@ -628,12 +630,32 @@ handoff_round_answered() {
   local blocking_at="${1:-}" reviews="${2:-}" comments="${3:-}" rerequests="${4:-[]}"
   local events count
 
+  # Every failure below answers `unknown`, never `answered`. The tri-state is
+  # asymmetric: `answered` is the verdict that *acts* — it is what has
+  # scripts/sweep-human-visibility.sh re-request a human's review — so a
+  # verdict reached by accident there costs requirement 3c's silent
+  # starvation, while the same accident landing on `unknown` costs one
+  # warning and a retry next cycle. Anything this cannot compute is therefore
+  # a read it could not make.
+  #
+  # `jq -e 'type == "array"'` alone does not establish that: `jq` evaluates
+  # the filter once per input document and exits on the last one's truth, so
+  # two concatenated arrays — exactly what `gh api --paginate` emits per page
+  # — pass it, and then fail `--argjson` inside `handoff_answer_events`. A
+  # caller must hand these arguments over as one document each (see
+  # `_handoff_blocking_reviewers` above for the streaming read that
+  # guarantees it); the guards here are what stops one that does not from
+  # being read as an answer.
+  [[ -n "$blocking_at" ]] || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$rerequests" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
 
-  events="$(handoff_answer_events "$reviews" "$comments" "$rerequests")"
-  count="$(jq -r --arg c "$blocking_at" '[.[] | select(. > $c)] | length' <<<"$events")"
+  events="$(handoff_answer_events "$reviews" "$comments" "$rerequests" 2>/dev/null)" \
+    || { printf 'unknown'; return 0; }
+  count="$(jq -r --arg c "$blocking_at" '[.[] | select(. > $c)] | length' <<<"$events" 2>/dev/null)" \
+    || { printf 'unknown'; return 0; }
+  [[ "$count" =~ ^[0-9]+$ ]] || { printf 'unknown'; return 0; }
   if [[ "$count" != "0" ]]; then
     printf 'answered'
   else

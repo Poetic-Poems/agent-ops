@@ -37,6 +37,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
 
@@ -629,6 +631,55 @@ out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 out2="$(ensure_human_reviewer "" "warwickallen")"; rc2=$?
 assert_eq "an empty PR url is a skip, not a failure" "skip" "$out2"
 assert_eq "  ... and exits 0" "0" "$rc2"
+
+# --- handoff_round_answered: the tri-state, and which way it fails ------------
+# The shared answered-from-events predicate two callers agree on
+# (scripts/gather-review-feedback.sh's requirement 3c candidate rule and
+# scripts/sweep-human-visibility.sh's requirement 38c self-heal). It needs its
+# own assertions here rather than only its callers' because the two read
+# opposite halves of it, and because its failure direction is the whole point:
+# `answered` is the verdict that acts — it re-requests a human's review — so
+# anything this cannot compute must land on `unknown`, never there. A read
+# failure that reads as `answered` re-requests an unanswered round, which is
+# PR #205's silent starvation reintroduced fleet-wide.
+BLOCK_AT="2026-08-03T10:01:00Z"
+marked_reply() {  # <at>
+  jq -cn --arg at "$1" \
+    --arg body "Addressed. $PIPELINE_COMMENT_MARKER_PREFIX cycle=X actor=implementor -->" \
+    '{at: $at, body: $body}'
+}
+
+assert_eq "no events at all is unanswered" "unanswered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' '[]')"
+assert_eq "a marked implementor reply after the blocking review answers it" "answered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' "[$(marked_reply 2026-08-03T10:05:00Z)]")"
+assert_eq "the same reply before the blocking review answers a previous round" "unanswered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' "[$(marked_reply 2026-08-03T09:00:00Z)]")"
+assert_eq "an unmarked comment never answers" "unanswered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' '[{"at":"2026-08-03T10:05:00Z","body":"looks close"}]')"
+assert_eq "another actor's marked comment never answers" "unanswered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' \
+      "[{\"at\":\"2026-08-03T10:05:00Z\",\"body\":\"$PIPELINE_COMMENT_MARKER_PREFIX cycle=X actor=reviewer -->\"}]")"
+assert_eq "a rerequest event answers only when the caller passes that signal" "answered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' '[]' '[{"at":"2026-08-03T10:05:00Z"}]')"
+assert_eq "  ... and the caller that omits it is not answered by one" "unanswered" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' '[]')"
+
+# Every unreadable input is `unknown`, and specifically not `answered`.
+assert_eq "a non-array reviews argument is unknown" "unknown" \
+  "$(handoff_round_answered "$BLOCK_AT" 'oops' '[]')"
+assert_eq "a non-array comments argument is unknown" "unknown" \
+  "$(handoff_round_answered "$BLOCK_AT" '[]' '{"not":"an array"}')"
+assert_eq "an empty blocking timestamp is unknown, not a match on everything" "unknown" \
+  "$(handoff_round_answered "" '[]' "[$(marked_reply 2026-08-03T10:05:00Z)]")"
+# A `gh api --paginate --jq '[…]'` read of a PR past the endpoint's thirty-item
+# default emits one array *per page*. Two documents satisfy a `type == "array"`
+# check — jq evaluates the filter once per document — and then break the
+# extraction. That must not read as an answered round.
+assert_eq "two concatenated pages are unknown, never answered" "unknown" \
+  "$(handoff_round_answered "$BLOCK_AT" "$(printf '[]\n[]')" '[]' 2>/dev/null)"
+assert_eq "an array whose elements break the extraction is unknown" "unknown" \
+  "$(handoff_round_answered "$BLOCK_AT" '[1,2,3]' '[]' 2>/dev/null)"
 
 printf '\n'
 if (( failures == 0 )); then

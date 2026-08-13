@@ -5963,6 +5963,25 @@ runs unattended.
     crash between the Implementor's push and the Reviewer's verdict now heals
     on the sweep's next pass rather than sitting unrequested indefinitely.
 
+    The tri-state is asymmetric, and the implementation must fail towards
+    `unknown`: `answered` is the verdict that *acts*, so a verdict reached by
+    accident costs the queue inversion and the silent starvation above, where
+    the same accident landing on `unknown` costs one warning and a retry next
+    cycle. Anything `handoff_round_answered` cannot compute — an empty
+    blocking timestamp, an argument that is not a single JSON array, an
+    extraction that errors — is therefore `unknown`. That places a
+    requirement on its callers' reads: `gh api --paginate` emits its `--jq`
+    filter's result once per page as separate documents, so an aggregate
+    written inside the filter is computed per page and disagrees with itself
+    past the endpoint's thirty-item default, and two documents satisfy a
+    `type == "array"` check before failing the extraction. Both of
+    `_sweep_round_answered`'s reads therefore stream one object per line and
+    slurp with `jq -s` afterwards, as `_handoff_blocking_reviewers`
+    (requirement 31b) does. `scripts/gather-review-feedback.sh`'s four reads
+    do not yet, which is recorded as `tech-debt/TD-PPagop-26081304.md`; the
+    predicate's `unknown` is what keeps that failure on the safe side of the
+    line meanwhile.
+
     The Script logs what the sweep did under the sweep's own event names —
     `human-review-requested` and `human-nudged`, each
     carrying the `repo` swept and the `pr_url` acted on — exactly as
@@ -8532,7 +8551,16 @@ pull request, run the ones the change touches and any it could regress.
     human beside them, and an author-only reviews list is a `skip`; `skip`s
     while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
     pull request is a draft; and an unreadable reviews list or pending list is
-    `failed`, never an assumed `skip`. `test/needs-refinement.test.sh` passes:
+    `failed`, never an assumed `skip`. `handoff_round_answered` is asserted
+    directly there too, both callers' halves at once: a marked
+    `actor=implementor` reply after the blocking review is `answered`, the
+    same reply before it is `unanswered`, an unmarked comment and another
+    actor's marked comment never answer, and a `review_requested` event
+    answers only the caller that passes that signal. Its failure direction is
+    asserted as its own group, because that is where the requirement lives —
+    an empty blocking timestamp, an argument that is not a single JSON array,
+    two concatenated pages, and an array whose elements break the extraction
+    are each `unknown`, never `answered`. `test/needs-refinement.test.sh` passes:
     `refinement_block_fields`'s third argument records `needs_refinement_assignee`
     independent of the label argument; `refinement_assignee_add`/`_remove` each
     make one `gh issue edit --add-assignee`/`--remove-assignee` call and fail
@@ -8555,7 +8583,10 @@ pull request, run the ones the change touches and any it could regress.
     `reviewDecision == APPROVED` gate holds it off regardless); a reply
     predating the blocking review, or one carrying no marker at all, does not
     self-heal it; a round this cannot read (`handoff_round_answered`
-    returning `unknown`) is a `warning`, never a guessed request; a pull
+    returning `unknown`) is a `warning`, never a guessed request; a listing
+    the stub splits across two pages — the shape `--paginate` produces — still
+    self-heals when answered and is still silent when unanswered, which is
+    what holds `_sweep_round_answered`'s reads to the streamed form; a pull
     request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
