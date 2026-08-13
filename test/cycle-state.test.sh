@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 #
 # test/cycle-state.test.sh — self-contained regression test for
-# lib/cycle-state.sh.
+# lib/cycle-state.sh, plus (requirement 3u, issue #320) the agent-cycle.sh
+# functions that read this file's `blocked_items`/`void_items` output to
+# decide what the Co-Ordinator is allowed to see, since that decision is what
+# requirement 18a's mandatory re-check depends on and belongs alongside it.
 #
 # Covers the two defects that let a stale work order (review-2026-07-11-R-01,
 # "Add a licence" — already done on main) be re-selected nine times, each time
@@ -560,6 +563,114 @@ assert_eq "no grade at all: trivial work order is low by classification" \
   "low" "$(reviewer_complexity "" 1)"
 assert_eq "a real grade outranks the trivial fallback" \
   "high" "$(reviewer_complexity "high" 1)"
+
+# --- exclude_blocked_or_void_items / exclude_blocked_or_void_issues / -----------
+# --- coordinator_blocked_view, extended to every pre-fetched band -------------
+# --- (requirement 3u, issue #320) ----------------------------------------------
+#
+# Lifted whole out of agent-cycle.sh, the same way
+# test/tech-debt-eligibility.test.sh lifts exclude_blocked_or_void_items — a
+# change to the real functions is what these assertions exercise, not a
+# reimplementation that could drift from them.
+
+extract_function() {  # extract_function <name>
+  awk -v fn="$1" '
+    $0 ~ ("^" fn "\\(\\) \\{") { on = 1 }
+    on                          { print }
+    on && /^}$/                 { exit }
+  ' "$SCRIPT_DIR/agent-cycle.sh"
+}
+
+for fn in exclude_blocked_or_void_items exclude_blocked_or_void_issues coordinator_blocked_view; do
+  fn_src="$(extract_function "$fn")"
+  if [[ "$fn_src" != *"$fn()"* ]]; then
+    printf 'FAIL - could not extract %s from agent-cycle.sh (renamed or moved?)\n' "$fn"
+    exit 1
+  fi
+  eval "$fn_src"
+done
+
+# --- exclude_blocked_or_void_items applies to every band, not just tech-debt ---
+# The function itself is unchanged by requirement 3u — only its call sites
+# grew, from `tech_debt` alone to every pre-fetched band but `issues`. Proven
+# here against a `findings`-shaped array (a Dependabot alert ref), not a
+# tech-debt one, so a future reader can see the exclusion was never
+# tech-debt-specific.
+finding_cands='[{"ref":"dependabot-alert-1"},{"ref":"dependabot-alert-2"},{"ref":"code-scanning-alert-4"}]'
+finding_blocked='[{"repo":"org/a","item":"dependabot-alert-1","ts":"2026-08-01T00:00:00Z"}]'
+finding_void='[{"repo":"org/a","item":"dependabot-alert-2","ts":"2026-08-01T00:00:00Z"}]'
+out="$(exclude_blocked_or_void_items "$finding_cands" "org/a" "$finding_blocked" "$finding_void")"
+assert_eq "a blocked finding is dropped, the same as a blocked tech-debt item" \
+  '["code-scanning-alert-4"]' "$(jq -c 'map(.ref)' <<<"$out")"
+out="$(exclude_blocked_or_void_items "$finding_cands" "org/b" "$finding_blocked" "$finding_void")"
+assert_eq "the same block/void does not reach a different repo's findings" \
+  "3" "$(jq 'length' <<<"$out")"
+
+# --- exclude_blocked_or_void_issues: void is dropped unconditionally ----------
+iss_cands='[{"ref":"52","updated_at":"2026-08-01T00:00:00Z"},{"ref":"53","updated_at":"2026-08-01T00:00:00Z"}]'
+iss_void='[{"repo":"org/a","item":"53","ts":"2026-07-01T00:00:00Z"}]'
+out="$(exclude_blocked_or_void_issues "$iss_cands" "org/a" '[]' "$iss_void")"
+assert_eq "a void issue is dropped, exactly like every other band" \
+  '["52"]' "$(jq -c 'map(.ref)' <<<"$out")"
+
+# --- exclude_blocked_or_void_issues: only a *stale* block is dropped ----------
+# The threshold is requirement 18a's own comparison, already pinned above by
+# `needs_mandatory_reread` against the same `blocked_items` output — asserted
+# here to *agree* with that mirror on identical fixtures, rather than
+# reimplemented as a second, driftable definition of "stale".
+cat > "$log" <<'EOF'
+{"ts":"2026-07-28T08:00:00Z","event":"attempt-failed","stage":"coordinator","repo":"o/r","item":"52","detail":"waiting on maintainer"}
+{"ts":"2026-07-29T10:30:00Z","event":"recheck-clean","repo":"o/r","item":"52"}
+EOF
+block_52="$(blocked_items "$log" | jq -c '.[0]')"
+blocked_52="$(jq -c '[.]' <<<"$block_52")"
+
+stale_cands='[{"ref":"52","updated_at":"2026-07-29T10:00:00Z"}]'
+fresh_cands='[{"ref":"52","updated_at":"2026-07-30T00:00:00Z"}]'
+
+assert_eq "a stale blocked issue (per needs_mandatory_reread) is dropped" \
+  "false" "$(needs_mandatory_reread "2026-07-29T10:00:00Z" "$block_52")"
+assert_eq "  ... and exclude_blocked_or_void_issues drops it too" \
+  "0" "$(jq 'length' <<<"$(exclude_blocked_or_void_issues "$stale_cands" "o/r" "$blocked_52" '[]')")"
+
+assert_eq "a fresh blocked issue (per needs_mandatory_reread) is due a re-read" \
+  "true" "$(needs_mandatory_reread "2026-07-30T00:00:00Z" "$block_52")"
+assert_eq "  ... and exclude_blocked_or_void_issues keeps it, for that re-read" \
+  '["52"]' "$(jq -c 'map(.ref)' <<<"$(exclude_blocked_or_void_issues "$fresh_cands" "o/r" "$blocked_52" '[]')")"
+
+# --- exclude_blocked_or_void_issues: the general fail-safe terms --------------
+assert_eq "the block/void does not apply to a different repo's issues" \
+  "1" "$(jq 'length' <<<"$(exclude_blocked_or_void_issues "$stale_cands" "o/other" "$blocked_52" '[]')")"
+assert_eq "malformed blocked/void degrades to unfiltered" "$stale_cands" \
+  "$(exclude_blocked_or_void_issues "$stale_cands" "o/r" 'not json' 'also not json')"
+assert_eq "an issue candidate with no ref is dropped, not crashed on" "0" \
+  "$(jq 'length' <<<"$(exclude_blocked_or_void_issues '[{"title":"no ref"}]' "o/r" '[]' '[]')")"
+
+# The void extract past MAX_ARG_STRLEN, delivered on stdin (requirement 4g) —
+# the same pin as test/tech-debt-eligibility.test.sh's own oversized-void case,
+# proving this new function shares that call's stdin-only delivery rather than
+# reintroducing an `--argjson` that would fail open past the cap.
+BIG_VOID="$(jq -nc --argjson keep "$iss_void" '
+  [range(1300) | {repo: "Poetic-Poems/filler", item: ("R-fill-" + tostring),
+                  ts: "2026-07-01T00:00:00Z", detail: ("pad " + ("x" * 80)),
+                  event: "item-void"}] + $keep')"
+assert_eq "the oversized void fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$BIG_VOID" | wc -c) > 131072 ))"
+assert_eq "a void extract past the argv cap still drops the void issue" \
+  '["52"]' "$(jq -c 'map(.ref)' <<<"$(exclude_blocked_or_void_issues "$iss_cands" "org/a" '[]' "$BIG_VOID")")"
+
+# --- coordinator_blocked_view: the Co-Ordinator's own copy is trimmed ---------
+rich_blocked='[{"repo":"o/r","item":"52","ts":"2026-08-01T00:00:00Z","detail":"waiting","stage":"coordinator","cycle":"c1","event":"attempt-failed","unblock_condition":"merge #9","recheck_clean_ts":"2026-08-02T00:00:00Z"},{"item":"53","ts":"2026-08-01T00:00:00Z","detail":"d"}]'
+out="$(coordinator_blocked_view "$rich_blocked")"
+assert_eq "the trimmed view keeps repo/item/ts/detail/recheck_clean_ts" \
+  '{"item":"52","ts":"2026-08-01T00:00:00Z","detail":"waiting","repo":"o/r","recheck_clean_ts":"2026-08-02T00:00:00Z"}' \
+  "$(jq -c '.[0]' <<<"$out")"
+assert_eq "  ... and drops stage/cycle/event/unblock_condition" \
+  "false" "$(jq '.[0] | has("stage") or has("cycle") or has("event") or has("unblock_condition")' <<<"$out")"
+assert_eq "an entry with no repo/recheck_clean_ts carries neither key" \
+  '{"item":"53","ts":"2026-08-01T00:00:00Z","detail":"d"}' "$(jq -c '.[1]' <<<"$out")"
+assert_eq "malformed input degrades to the untrimmed array" "not an array" \
+  "$(coordinator_blocked_view "not an array")"
 
 printf '\n'
 if (( failures > 0 )); then
