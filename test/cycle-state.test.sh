@@ -601,6 +601,106 @@ rp_actioned="$(void_review_plan_actioned "$rp_void" "$review_status" "$plan_stat
 assert_eq "review-plan liveness feeding retire_void_items: actioned and old retires" \
   "0" "$(retire_void_items "$rp_void" "$rp_actioned" 30 "$rp_now_epoch" | jq 'length')"
 
+# --- void_config_actioned (requirement 34n's config signal, PR #340 review) ---
+#
+# The residue liveness cannot reach, because liveness needs the source's own
+# successful gather and an ungathered source never writes one: a repo that
+# dropped the source that mints a shape, and a repo the config no longer names
+# at all.
+cfg_void='[
+  {"repo":"o/kept","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"code-scanning-alert-2","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"register-hygiene-aaaaaaaaaaaa","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"pr-13-conflict-9f8e7d6c5b4a","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"failed-run-ci","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"review-2026-07-11-R-02","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"TD-PPagop-26081303","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"W10-breach-handling","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"42","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"pr-7-stale","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/gone","item":"99","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/gone","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
+  {"item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"}
+]'
+# Every mapped source still listed: nothing here is the config's business.
+cfg_all='[{"slug":"o/kept","sources":["security","code-quality","register-hygiene","merge-conflicts","failed-runs","project-review","tech-debt","implementation-plan","issues:high","review-feedback","abandoned-drafts","human-visibility"]},{"slug":"o/gone","sources":["security"]}]'
+assert_eq "a repo still listing every mapped source actions nothing" \
+  "0" "$(void_config_actioned "$cfg_void" "$cfg_all" | jq '[.[] | select(.repo == "o/kept")] | length')"
+
+# The same repo with every mapped source dropped, `issues:high` and the three
+# unmapped finishing sources left behind.
+cfg_stripped='[{"slug":"o/kept","sources":["issues:high","review-feedback","abandoned-drafts","human-visibility"]}]'
+cfg_out="$(void_config_actioned "$cfg_void" "$cfg_stripped")"
+# Scoped to o/kept: the same fixture's o/gone entries are repo-dropped, which
+# is the next block's subject and would otherwise answer these assertions.
+by_item() { jq -r --arg i "$2" '.[] | select(.repo == "o/kept" and .item == $i) | .by' <<<"$1"; }
+
+assert_eq "alert: both security and code-quality gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" dependabot-alert-1)"
+assert_eq "  ... and the code-scanning half of that shape too" \
+  "source-dropped" "$(by_item "$cfg_out" code-scanning-alert-2)"
+assert_eq "register-hygiene: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" register-hygiene-aaaaaaaaaaaa)"
+assert_eq "merge-conflict: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" pr-13-conflict-9f8e7d6c5b4a)"
+assert_eq "failed-run: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" failed-run-ci)"
+assert_eq "project-review: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" review-2026-07-11-R-02)"
+assert_eq "tech-debt: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" TD-PPagop-26081303)"
+assert_eq "implementation-plan: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" W10-breach-handling)"
+assert_eq "a bare issue number names no single source, so it is never source-dropped" \
+  "0" "$(jq '[.[] | select(.item == "42")] | length' <<<"$cfg_out")"
+assert_eq "  ... nor is a non-conflict pr-<n>- shape, offered by three sources" \
+  "0" "$(jq '[.[] | select(.item == "pr-7-stale")] | length' <<<"$cfg_out")"
+assert_eq "a repo-less (hand-appended) void is left for a human" \
+  "0" "$(jq '[.[] | select(has("repo") | not)] | length' <<<"$cfg_out")"
+
+# The alert shape is the one served by two sources: either alone keeps it live.
+assert_eq "alert: code-quality alone still keeps the shape live" \
+  "0" "$(void_config_actioned '[{"repo":"o/r","item":"dependabot-alert-1"}]' \
+         '[{"slug":"o/r","sources":["code-quality"]}]' | jq 'length')"
+assert_eq "alert: security alone still keeps the shape live" \
+  "0" "$(void_config_actioned '[{"repo":"o/r","item":"dependabot-alert-1"}]' \
+         '[{"slug":"o/r","sources":["security"]}]' | jq 'length')"
+
+# A repo the config no longer names: every shape goes, including the two no
+# `source-dropped` verdict can be read off.
+cfg_gone_out="$(void_config_actioned "$cfg_void" '[{"slug":"o/kept","sources":["security"]}]')"
+assert_eq "a repo absent from the config is repo-dropped, bare issue number and all" \
+  "repo-dropped" "$(jq -r '.[] | select(.repo == "o/gone" and .item == "99") | .by' <<<"$cfg_gone_out")"
+assert_eq "  ... for every shape it carries" \
+  "2" "$(jq '[.[] | select(.repo == "o/gone")] | length' <<<"$cfg_gone_out")"
+
+# The failure this rule must never have: reading an empty or unreadable repo
+# array as "every repo has been dropped" and retiring the whole extract.
+assert_eq "an empty repo array decides nothing" \
+  "0" "$(void_config_actioned "$cfg_void" '[]' | jq 'length')"
+assert_eq "a repo array of the wrong type decides nothing" \
+  "0" "$(void_config_actioned "$cfg_void" '{}' | jq 'length')"
+assert_eq "a repo array whose entries name no slug decides nothing" \
+  "0" "$(void_config_actioned "$cfg_void" '[{"sources":["security"]}]' | jq 'length')"
+assert_eq "malformed REPOS_JSON fails safe to []" \
+  "[]" "$(void_config_actioned "$cfg_void" "not valid json")"
+assert_eq "malformed VOID_JSON fails safe to []" \
+  "[]" "$(void_config_actioned "not valid json" "$cfg_stripped")"
+
+# The age half, as for every other signal: liveness is not the age test.
+cfg_now_epoch=1786579200
+cfg_age_void='[
+  {"ts":"2026-07-01T00:00:00Z","repo":"o/kept","item":"register-hygiene-aaaaaaaaaaaa","detail":"actioned and old"},
+  {"ts":"2026-08-10T00:00:00Z","repo":"o/kept","item":"register-hygiene-bbbbbbbbbbbb","detail":"actioned but young"}
+]'
+cfg_age_actioned="$(void_config_actioned "$cfg_age_void" "$cfg_stripped")"
+assert_eq "config signal feeding retire_void_items: actioned and old retires" \
+  "0" "$(retire_void_items "$cfg_age_void" "$cfg_age_actioned" 30 "$cfg_now_epoch" \
+         | jq '[.[] | select(.item == "register-hygiene-aaaaaaaaaaaa")] | length')"
+assert_eq "config signal feeding retire_void_items: actioned but young is kept" \
+  "1" "$(retire_void_items "$cfg_age_void" "$cfg_age_actioned" 30 "$cfg_now_epoch" \
+         | jq '[.[] | select(.item == "register-hygiene-bbbbbbbbbbbb")] | length')"
+
 # --- open_blocked_items (requirement 34h) ---
 # Where the two states meet, void wins. The shape is not exotic: `item-void`
 # clears no block, so every `void` verdict the Enabler reaches leaves the

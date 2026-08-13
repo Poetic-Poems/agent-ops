@@ -31,10 +31,26 @@
 # `scripts/gather-plan-status.sh`) are the actioned signal, read for the void
 # residue the same way they already are for the blocked one.
 #
+# A third rule sits alongside those two, for the residue neither can reach
+# (PR #340 review, decided 2026-08-13): liveness decides nothing without the
+# source's own successful gather, and a source is only gathered for a repo
+# whose configured `sources` still list it — so a repo that drops
+# `merge-conflicts` (or `security`, or `register-hygiene`) freezes every void
+# of that shape it had already accumulated, and a repo dropped from the config
+# altogether freezes every shape but the closed-object one. `void_config_
+# actioned` reads that config fact directly. It is not a weakening of
+# "unknown is not gone": that rule is about a *failed read*, which is
+# indistinguishable from absence, whereas a source missing from `sources` is a
+# definite fact the cycle reads locally for free — the pipeline is not
+# uncertain whether the alert is still open, it has decided it will not look.
+# What a void buys is suppression of a candidate the Co-Ordinator would
+# otherwise be offered; an ungathered source offers nothing, so the void buys
+# nothing and retiring it costs nothing.
+#
 # A void naming no repo at all (the hand-appended form requirement 34c allows)
 # matches none of these shapes by construction — a repo-scoped GATHER_JSON
-# lookup on an empty repo key finds nothing — so it is left, as it always was,
-# for a human to retract.
+# lookup on an empty repo key finds nothing, and the config rule below skips it
+# explicitly — so it is left, as it always was, for a human to retract.
 #
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail`.
@@ -167,6 +183,93 @@ void_review_plan_actioned() {
           else empty
           end ]
   ' <<<"$void_json"$'\n'"$review_json"$'\n'"$plan_json" 2>/dev/null || true)"
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
+# void_config_actioned VOID_JSON REPOS_JSON
+# Print, as a JSON array of `{repo, item, by}`, the pairs the configuration
+# itself retires, for the residue the two rules above cannot reach: an entry
+# whose repo the config no longer names at all (`by: "repo-dropped"`), or
+# whose item is shaped like a source's own id and whose repo no longer lists
+# that source (`by: "source-dropped"`).
+#
+# REPOS_JSON is the configured repo array — `[{slug, sources: […]}, …]` — and
+# it must be the **unnarrowed** one (`all_repos_json`, straight off
+# `cfg_json '.repos'`). Two things narrow that array later in a cycle and
+# neither means what this rule reads it as: `--repo`'s own filter, which
+# would make every other repo read as dropped, and back-pressure, which
+# rewrites `sources` down to the three finishing sources for a repo with work
+# waiting and would mint a spurious `source-dropped` for `security` and
+# `register-hygiene` on every back-pressured cycle.
+#
+# The shape -> source map is the inverse of the repo walk's own gating: each
+# shape is minted by exactly one gather, and that gather runs only for a repo
+# whose `sources` list the entry named here. The alert shape is the one with
+# two, because `scripts/gather-findings.sh` serves `security` and
+# `code-quality` together — either alone keeps its voids live.
+#
+# Deliberately scoped to the shapes whose id *form* names the source that
+# mints them. A bare issue number or a non-`-conflict-` `pr-<n>-…` is offered
+# by several sources (`issues:<band>`, `review-feedback`, `abandoned-drafts`,
+# `human-visibility`), so no such inverse exists and no `source-dropped`
+# verdict can be read off the id — those keep the closed-object signal they
+# already had. The `repo-dropped` half needs no map at all and so applies to
+# every shape: nothing in a repo the config does not name can be offered by
+# any source.
+#
+# Fails safe to `[]`: on malformed input, and — the case worth naming — on a
+# REPOS_JSON that is empty or not an array, which would otherwise read as
+# "every repo has been dropped" and retire the whole extract at once.
+#
+# Both inputs travel on stdin, never in argv (requirement 4g): VOID_JSON is
+# the unbounded extract. The review/register/plan shape regexes are
+# `lib/work-gone.sh`'s own (requirement 34a's one-definition rule), so a
+# caller must source that file first.
+# shellcheck disable=SC2016  # jq's $void/$repos/$cfg/$e et al., not the shell's.
+void_config_actioned() {
+  local void_json="${1:-[]}" repos_json="${2:-[]}" out=""
+  out="$(jq -c -n \
+    --arg alert_re "$VOID_LIVENESS_ALERT_RE" \
+    --arg rh_re "$VOID_LIVENESS_REGISTER_HYGIENE_RE" \
+    --arg fr_re "$VOID_LIVENESS_FAILED_RUN_RE" \
+    --arg mc_re "$VOID_LIVENESS_MERGE_CONFLICT_RE" \
+    --arg review_re "$WORK_GONE_REVIEW_RE" \
+    --arg register_re "$WORK_GONE_REGISTER_RE" \
+    --arg plan_re "$WORK_GONE_PLAN_RE" '
+    input as $void | input as $repos
+    | def minted_by($item):
+        if ($item | test($alert_re)) then ["security", "code-quality"]
+        elif ($item | test($rh_re)) then ["register-hygiene"]
+        elif ($item | test($fr_re)) then ["failed-runs"]
+        elif ($item | test($mc_re)) then ["merge-conflicts"]
+        elif ($item | test($review_re)) then ["project-review"]
+        elif ($item | test($register_re)) then ["tech-debt"]
+        elif ($item | test($plan_re)) then ["implementation-plan"]
+        else null end;
+      ( if ($repos | type) == "array"
+        then [ $repos[] | select((type == "object") and ((.slug // "") != "")) ]
+        else [] end ) as $cfg
+    | if ($cfg | length) == 0 then []
+      else
+        ($cfg | map({key: .slug, value: [ (.sources // [])[] | tostring ]})
+              | from_entries) as $by_repo
+        | [ $void[]
+            | . as $e
+            | ($e.repo // "") as $repo
+            | ($e.item // "") as $item
+            | select($repo != "" and $item != "")
+            | if ($by_repo | has($repo) | not) then
+                {repo: $repo, item: $item, by: "repo-dropped"}
+              else
+                ($by_repo[$repo]) as $srcs
+                | minted_by($item) as $need
+                | select($need != null)
+                | select((($need - $srcs) | length) == ($need | length))
+                | {repo: $repo, item: $item, by: "source-dropped"}
+              end ]
+      end
+  ' <<<"$void_json"$'\n'"$repos_json" 2>/dev/null || true)"
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
 }
