@@ -5978,7 +5978,7 @@ runs unattended.
     `_sweep_round_answered`'s reads therefore stream one object per line and
     slurp with `jq -s` afterwards, as `_handoff_blocking_reviewers`
     (requirement 31b) does. `scripts/gather-review-feedback.sh`'s four reads
-    do not yet, which is recorded as `tech-debt/TD-PPagop-26081304.md`; the
+    do not yet, which is recorded as `tech-debt/TD-PPagop-26081306.md`; the
     predicate's `unknown` is what keeps that failure on the safe side of the
     line meanwhile.
 
