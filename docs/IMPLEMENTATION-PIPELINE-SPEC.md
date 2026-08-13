@@ -3034,8 +3034,7 @@ runs unattended.
    Delivery is a here-string, not a pipe, for requirement 4c's reason: under
    `pipefail` a producer's SIGPIPE must not become the reader's status.
    `test/unvoid-label.test.sh` anchors the acceptance check with a void
-   array built past the cap; `tech-debt/TD-PPagop-26081301.md` records the
-   remaining `--argjson` sites whose inputs are bounded today.
+   array built past the cap.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
