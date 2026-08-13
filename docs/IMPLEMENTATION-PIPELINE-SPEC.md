@@ -92,7 +92,12 @@ a node updates by pulling a new image rather than by pulling a branch.
   `~`-relative `state_dir` and `workspace_root` resolve under that home.
 - Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
   `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
-  the flags the pipelines use); Node.js from NodeSource at the same major as
+  the flags the pipelines use), installed unpinned and therefore guarded at
+  build time by a fixed-string `grep -aF` over the installed binary for both
+  stderr diagnoses `review_gate_required_checks` keys on (requirement 31c) —
+  a `gh` that reworded either one fails the image build rather than reaching a
+  node, where it would quietly demote every conflicting pull request from the
+  trap it is to a node-level `unknown`; Node.js from NodeSource at the same major as
   the laptop; the `claude` CLI from `@anthropic-ai/claude-code`;
   `supercronic`, a pinned release binary verified by SHA-1 (one pin per
   architecture), which runs the container's crontab as an ordinary process
@@ -7903,6 +7908,13 @@ What exists, and the requirements each part answers to:
     security-alert read failed. A caller must inspect this exit status rather
     than discard it, or it will silently let an unreadable required-check
     list through the same way it safely can for the alerts-only `unknown`.
+    Keying on another tool's wording is a dependency, and `gh` is installed
+    unpinned on a node, so the node image's build asserts it: both diagnoses
+    are grepped out of the installed `gh` binary and a release that reworded
+    either fails the build (acceptance check 1b), which is where a lost
+    discriminator is cheap to notice — on a node it would be silent, every
+    conflicting pull request quietly demoted from the trap it is to a
+    node-level `unknown`.
 
     The pull request's alerts are read on its **merge** ref
     (`refs/pull/<n>/merge`) — the ref its `pull_request`-triggered analysis
@@ -7944,7 +7956,14 @@ pull request, run the ones the change touches and any it could regress.
    `.github/workflows/shellcheck.yml` pins; `supercronic -test
    /app/deploy/docker/crontab` reports the crontab valid; the `test/` suite
    passes inside the container; and `/app/agent-cycle.sh` with no role set
-   exits 0 through the requirement 2.4 guard. `.github/workflows/build-image.yml`
+   exits 0 through the requirement 2.4 guard. The build itself asserts one
+   thing about `gh` beyond its version, because `gh` is the one part of the
+   toolchain installed unpinned: a `grep -aF` over the installed binary for
+   each of the two stderr diagnoses `review_gate_required_checks` splits its
+   verdict on (requirement 31c) — a release that reworded either fails the
+   build at that step, here rather than on a node. Misspelling either
+   substring must make the build fail there, which is how the guard is
+   verified to be doing anything at all. `.github/workflows/build-image.yml`
    runs every one of these against both the `linux/amd64` and the `linux/arm64`
    build on every pull request that touches the image — each architecture in
    its own job, natively on a runner of that same architecture
