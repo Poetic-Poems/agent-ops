@@ -181,8 +181,20 @@ assert_eq "the default cap is the shared constant, not gh's undeclared 30" \
 # The stub counts its own calls in a file, so "was it retried?" is an
 # observation rather than an inference. It answers `api rate_limit` too,
 # because the wrapper consults it to find a primary limit's reset — and the
-# reset it reports is deliberately in the very near future, so the retry path
-# is exercised without the test sitting through a real GitHub window.
+# reset it reports is deliberately in the near future, so the retry path is
+# exercised without the test sitting through a real GitHub window.
+#
+# "Near" is three seconds and not one, because the wrapper reads its own clock
+# twice after this stub read its clock once (`now_epoch` for the still-ahead
+# filter, then `date +%s` again for `github_limit_wait_plan`), and both compare
+# strictly: `(( reset > now ))`. A reset one second out is therefore invalidated
+# by a single second elapsing between those reads — not by anything slow, just
+# by the second boundary happening to fall in the gap — and the wrapper then
+# plans no wait, makes no retry, and the three assertions below all fail
+# together. That is a coin toss on a loaded runner, and it lost twice running on
+# CI's amd64 leg. Three seconds is still one clock read's worth of window
+# (`wait` comes to 4, inside the 5-second `GITHUB_LIMIT_MAX_WAIT_SECONDS` bound
+# set below) and costs the suite two more seconds of real sleep.
 stub_bin="$tmp_dir/bin"
 mkdir -p "$stub_bin"
 cat > "$stub_bin/gh" <<'STUB'
@@ -192,7 +204,7 @@ count_file="$GH_STUB_COUNT"
 if [[ "${1:-}" == "api" && "${2:-}" == "rate_limit" ]]; then
   # Not counted: the wrapper's own lookup is not the caller's call.
   printf '{"resources":{"core":{"remaining":0,"reset":%s},"graphql":{"remaining":0,"reset":%s}}}\n' \
-    "$(( $(date +%s) + 1 ))" "$(( $(date +%s) + 1 ))"
+    "$(( $(date +%s) + 3 ))" "$(( $(date +%s) + 3 ))"
   exit 0
 fi
 n=$(( $(cat "$count_file" 2>/dev/null || echo 0) + 1 ))

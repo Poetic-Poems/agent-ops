@@ -137,10 +137,33 @@
 # covers. Same reasoning as the review-dated `review-<date>-R-NN` refs: these
 # expire by irrelevance, which is the only expiry an unattended system performs.
 #
+# ## Every `gh api --paginate` read streams; none aggregates inside `--jq`
+#
+# `--paginate` re-runs the `--jq` filter once per page and prints each page's
+# result as its own JSON document — it does not concatenate pages before
+# filtering. A filter that builds an aggregate itself (`[.[] | …]`) is
+# therefore computed *per page* and disagrees with itself past the endpoint's
+# default page size (thirty, for every endpoint this script reads): two or
+# more array literals land in the variable instead of one, `jq -e 'type ==
+# "array"'` cannot catch it (jq evaluates the filter once per input document
+# and exits on the last one's truth, so the guard only establishes "every
+# document is an array", never "this is one array"), and `--argjson`
+# downstream fails to parse the multi-document value.
+#
+# So every read below — reviews, issue comments, the timeline, inline PR
+# comments — has its `--jq` filter emit one object per matching item, with no
+# enclosing `[...]`, and the four resulting streams are slurped into a single
+# array afterwards with `jq -s -c '.'`. This is the rule the whole script
+# follows, not a per-call detail: the same pattern `_handoff_blocking_
+# reviewers` (lib/handoff.sh) and `_sweep_round_answered`
+# (scripts/sweep-human-visibility.sh) already use, for the same reason.
+#
 # Fails safe: always prints a valid JSON array and exits 0. A repo where nothing
 # is under review contributes `[]`; an API that will not answer contributes `[]`
 # too, and the cycle simply does not see this source (see gather-source-state.sh
 # for why the *fingerprint* must not be so relaxed).
+#
+# Environment: REVIEW_FEEDBACK_GH overrides `gh` (tests stub it).
 
 set -uo pipefail
 
@@ -151,6 +174,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/github-limit.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
+GH="${REVIEW_FEEDBACK_GH:-gh}"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -181,7 +205,7 @@ fi
 # Heads may be `agent/…` or — for tech-debt items, whose claim branch is the
 # human protocol's own `td/<ID>` — `td/…`; the label filter above is the
 # primary "ours" signal either way.
-all_prs="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+all_prs="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
         --limit "$GITHUB_PR_LIST_LIMIT" \
         --json number,title,headRefName,headRefOid,isDraft,reviewDecision,url,body \
         || true)"
@@ -216,11 +240,13 @@ while IFS= read -r pr; do
 
   # Every review, so the round can be assembled and the blocking review found.
   # `submitted_at` is null on a pending review; those are drafts nobody has
-  # sent and must not count as feedback.
-  reviews="$(gh api "repos/$slug/pulls/$number/reviews" --paginate \
-              --jq '[.[] | select(.submitted_at != null)
-                         | {id, state, at: .submitted_at, who: .user.login, body: (.body // "")}]' \
+  # sent and must not count as feedback. One object per line — see "Every
+  # `gh api --paginate` read streams" above — slurped into one array below.
+  reviews="$("$GH" api "repos/$slug/pulls/$number/reviews" --paginate \
+              --jq '.[] | select(.submitted_at != null)
+                        | {id, state, at: .submitted_at, who: .user.login, body: (.body // "")}' \
               2>/dev/null || true)"
+  reviews="$(jq -s -c '.' <<<"$reviews" 2>/dev/null)"
   if [[ -z "$reviews" ]] || ! jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1; then
     continue
   fi
@@ -249,18 +275,22 @@ while IFS= read -r pr; do
 
   # General PR conversation comments, where the Implementor's own reply lands
   # (`gh pr comment`) carrying `lib/pipeline-marker.sh`'s invisible marker.
-  issue_comments="$(gh api "repos/$slug/issues/$number/comments" --paginate \
-                      --jq '[.[] | {at: .created_at, body: (.body // "")}]' \
+  # Streamed one object per line, slurped below (see the header note).
+  issue_comments="$("$GH" api "repos/$slug/issues/$number/comments" --paginate \
+                      --jq '.[] | {at: .created_at, body: (.body // "")}' \
                       2>/dev/null || true)"
+  issue_comments="$(jq -s -c '.' <<<"$issue_comments" 2>/dev/null)" || issue_comments='[]'
   jq -e 'type == "array"' <<<"$issue_comments" >/dev/null 2>&1 || issue_comments='[]'
 
   # Review-requested timeline events: GitHub's own record of
   # `confirm_review_requested` (lib/handoff.sh) asking a reviewer to look
   # again, stamped by GitHub at request time — nothing a rebase can produce.
-  rerequests="$(gh api "repos/$slug/issues/$number/timeline" --paginate \
-                 --jq '[.[] | select(.event == "review_requested" and .created_at != null)
-                            | {at: .created_at}]' \
+  # Streamed one object per line, slurped below (see the header note).
+  rerequests="$("$GH" api "repos/$slug/issues/$number/timeline" --paginate \
+                 --jq '.[] | select(.event == "review_requested" and .created_at != null)
+                           | {at: .created_at}' \
                  2>/dev/null || true)"
+  rerequests="$(jq -s -c '.' <<<"$rerequests" 2>/dev/null)" || rerequests='[]'
   jq -e 'type == "array"' <<<"$rerequests" >/dev/null 2>&1 || rerequests='[]'
 
   # Every answer event in the PR's life, oldest first: a marked review or
@@ -306,10 +336,12 @@ while IFS= read -r pr; do
 
   # Inline comments, which carry the file-and-line specifics that a review body
   # often only gestures at. Restricted to this round for the same reason.
-  comments="$(gh api "repos/$slug/pulls/$number/comments" --paginate \
-               --jq '[.[] | {at: .created_at, who: .user.login,
-                             path: .path, line: (.line // .original_line),
-                             body: (.body // "")}]' 2>/dev/null || echo '[]')"
+  # Streamed one object per line, slurped below (see the header note).
+  comments="$("$GH" api "repos/$slug/pulls/$number/comments" --paginate \
+               --jq '.[] | {at: .created_at, who: .user.login,
+                            path: .path, line: (.line // .original_line),
+                            body: (.body // "")}' 2>/dev/null || true)"
+  comments="$(jq -s -c '.' <<<"$comments" 2>/dev/null)" || comments='[]'
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || comments='[]'
   fresh_comments="$(jq -c --arg c "$round_start" '[.[] | select(.at > $c)] | sort_by(.at)' <<<"$comments")"
 

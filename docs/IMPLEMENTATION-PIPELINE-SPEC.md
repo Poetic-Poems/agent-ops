@@ -1529,6 +1529,24 @@ runs unattended.
      field name otherwise degrades to an empty array indistinguishable from
      "nothing is under review", and the source silently never fires. That cost
      a debugging round when this was built.
+   - **Every `gh api --paginate` read streams one object per line and is
+     slurped afterward; none aggregates inside `--jq`.** `--paginate` re-runs
+     the `--jq` filter once per page and prints each page's result as its own
+     JSON document, rather than concatenating pages before filtering. A
+     filter that builds its own aggregate (`[.[] | …]`) is therefore computed
+     *per page* and disagrees with itself past the endpoint's thirty-item
+     default page size: two or more array literals land in the variable
+     instead of one. `jq -e 'type == "array"'` does not catch it — `jq`
+     evaluates the filter once per input document and exits on the last
+     one's truth, so the guard only establishes "every document is an
+     array", never "this is one array" — and `--argjson` downstream then
+     fails to parse the multi-document value. All four reads here (reviews,
+     issue comments, the timeline, inline PR comments) emit one object per
+     matching item and are slurped into a single array with `jq -s -c '.'`
+     immediately after, the same pattern `_handoff_blocking_reviewers`
+     (`lib/handoff.sh`) and `_sweep_round_answered`
+     (`scripts/sweep-human-visibility.sh`) already use
+     (tech-debt/TD-PPagop-26081306.md).
 3e. **Abandoned-drafts pre-fetch.** For each configured repo whose `sources`
    include `abandoned-drafts`, run `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
@@ -1679,15 +1697,21 @@ runs unattended.
    - `superseded_evidence` — present only alongside `superseded_by`:
      pre-formatted evidence text a Co-Ordinator pastes **verbatim** into a
      `voided` entry. It names this PR's own number as "PR #N" (which
-     `lib/void-guard.sh`'s `void_pr_matches_item` trusts on the id alone for a
-     `pr-<n>-…` item cited in the entry's own repo, as a bare citation always
-     is — the id is minted from that very PR) and the superseding PR only by
-     its branch name — never as "PR #M" and never by its URL (both of which
-     the guard resolves live and would refuse, since a different, independent
-     bump will never carry this item's id in its own body or branch). This is
-     the one piece of free-text evidence in the whole pipeline a writer must
-     not compose itself — see the "Dependabot's own conflicted PRs" entry in
-     Design decisions.
+     `lib/void-guard.sh`'s `void_pr_matches_item` reads off the item's own id
+     for a `pr-<n>-…` item cited in the entry's own repo, as a bare citation
+     always is — the id is minted from that very PR — and fetches PR #N live
+     to corroborate it: `void_finishing_pr_reason` reads a `-conflict-` item
+     against its pull request's *mergeability*, and excuses Dependabot's own
+     from even that, since supersession is the one route by which a still-
+     conflicting PR is void and no mergeability reading can confirm it) and
+     the superseding
+     PR only by its branch name — never as "PR #M" and never by its URL (both
+     of which the guard resolves live against that *other* pull request's own
+     body and branch, and would refuse, since a different, independent bump
+     will never carry this item's id in either). This is the one piece of
+     free-text evidence in the whole pipeline a writer must not compose
+     itself — see the "Dependabot's own conflicted PRs" entry in Design
+     decisions.
 
    The write side is `scripts/nudge-dependabot-rebase.sh` (requirement 3s
    continued below); the read side above computes every field fresh each
@@ -4772,28 +4796,82 @@ runs unattended.
       resolve it against is refused naming the citation, exactly as before —
       a URL citation is unaffected, since it carries its own `owner/repo`
       regardless of whether the entry names one. One item shape is decided by
-      its id alone, with no fetch: a finishing-source item **is** a pull
-      request — requirements 3e, 3g and 23 mint its id as
+      its id, rather than by the free-text body/branch test: a finishing-source
+      item **is** a pull request — requirements 3e, 3g and 23 mint its id as
       `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>` or
       `pr-<n>-conflict-<head-sha>` — so a citation of pull request `<n>`
-      corroborates item `pr-<n>-…` by the id's own construction. The id names
-      a pull request in the repository that minted it, so this shortcut fires
-      only when the citation resolves against the entry's own `repo` (the two
-      slugs compared case-insensitively, as GitHub treats them); a citation
-      resolving against any other repository, or one made by an entry that
-      names no `repo` at all, shares only the number with the id and is
-      tested against the cited pull request's body and branch like any other
-      citation — corroborated when the fetch names the item, refused when it
-      does not, never decided on the number alone. Any other pull request is
-      tested as usual. Nothing writes that synthetic id into the pull
-      request's body or branch, so without the shortcut the test would refuse
-      the one citation these items can honestly make, on exactly the sources
-      the candidate test below corroborates best. Evidence citing
-      neither a PR nor a commit is untouched by this test — the two tests
-      above are what govern free prose. This is what a citation that merely
-      *exists* was missing: the shipped defect that motivated it (below)
-      cited a PR that was real, open, and entirely unrelated to the item
-      being voided.
+      names item `pr-<n>-…`'s own pull request by the id's own construction,
+      and the id, not the citation text, decides which live check applies to
+      it (`void_finishing_item_pr`, `void_finishing_item_shape`,
+      `void_finishing_pr_reason`, `lib/void-guard.sh`). That check fetches PR
+      `<n>` and reads its own state. A pull request the API will not answer
+      for is refused as unreadable, never treated as innocent. `merged` or
+      otherwise `closed` corroborates every shape outright — there is no more
+      finishing to do on a pull request that will never land this way,
+      whatever became of the underlying work. An `open` one is read against
+      what its own shape claims, and **the strictness is calibrated to what
+      requirement 34k then does with the void**:
+
+      - `pr-<n>-abandoned-…` and `pr-<n>-review-…` — a corroborated void of
+        these makes 34k *close pull request `<n>`*, with a comment. So the
+        only `open` reading accepted is an **empty diff against its base**:
+        whatever the item was to finish is already on the base, and closing
+        the PR discards nothing. An open pull request that still changes
+        files is refused, naming the file count still outstanding — even
+        when the void's claim ("obsolete", "no longer wanted") may well be
+        true, because that claim is a judgement no API call can corroborate
+        and closing a live branch on an unexamined one is exactly how pull
+        request #264 was lost (TD-PPagop-26080901). Such a void is escalated
+        instead of recorded; TD-PPagop-26081308 records what that costs 34k.
+      - `pr-<n>-conflict-…` — a corroborated void of this shape closes
+        **nothing** (34k excludes it, for the same #264 reason: the void says
+        the *conflict* resolved, not the pull request, which stays a live PR
+        of ours carrying its full diff). An empty diff is therefore not the
+        claim being made, and demanding one would refuse every honest void
+        this source can write. The test mirrors the one that minted the item
+        instead (requirement 3g, `gather-merge-conflicts.sh`): the void is
+        refused only while the API still reports the PR **definitively
+        conflicting** (`mergeable: false`). A `mergeable` GitHub has not
+        finished computing (`null`) reads as not definitively conflicting and
+        is accepted — the same asymmetry the gatherer chose in the other
+        direction, admitting a candidate on `CONFLICTING` and never on the
+        transient `UNKNOWN`. One author is excused from even that: a
+        Dependabot-authored PR still `open` and still conflicting can be void
+        when a newer Dependabot pull request supersedes it (requirement 3s) —
+        that claim is "a newer bump replaces this one", which no mergeability
+        reading can confirm, and 3s is the only route by which a
+        still-conflicting pull request becomes void at all. The excuse is
+        scoped to this shape, where that route lives, and applies only after
+        the state test has run; Dependabot's authorship buys nothing on a
+        shape whose void closes the pull request.
+
+      An id of no recognised shape takes the strict reading, never the
+      permissive one. The id names a pull request in the repository that
+      minted it, so this
+      check fires only when the citation resolves against the entry's own
+      `repo` (the two slugs compared case-insensitively, as GitHub treats
+      them); a citation resolving against any other repository, or one made
+      by an entry that names no `repo` at all, shares only the number with
+      the id and is tested against the cited pull request's body and branch
+      like any other citation — corroborated when the fetch names the item,
+      refused when it does not, never decided on the number alone. Any other
+      pull request is tested as usual. Nothing writes that synthetic id into
+      the pull request's body or branch, so the body/branch test would refuse
+      the one citation these items can honestly make — which is why the id
+      chooses the live-state test instead, rather than being skipped
+      (TD-PPagop-26080807: this shortcut fired with no fetch at all, and so
+      corroborated nothing but the id's own construction). That live check is
+      the whole of the corroboration this shape gets, in **every** stage: the
+      candidate test below never backstopped it and cannot. It matches a
+      candidate's `item`, and a finishing-source id is never a candidate's
+      `item` — the gatherers put it in `ref` and leave `item` as whatever
+      register id the branch or body named, or `null` — so the Co-Ordinator's
+      extra test is as silent on this shape as the Enabler's and the
+      Implementor's `repos: []` calls are. Evidence citing neither a PR
+      nor a commit is untouched by this test — the two tests above are what
+      govern free prose. This is what a citation that merely *exists* was
+      missing: the shipped defect that motivated it (below) cited a PR that
+      was real, open, and entirely unrelated to the item being voided.
     - **This cycle's own candidates must not refute it (Co-Ordinator only).**
       Where the voided repo+item matches a gathered candidate carrying a
       `pr_number`, the guard reads that PR's changed files: a non-empty diff
@@ -5263,6 +5341,22 @@ runs unattended.
     do would have the Script log that warning every cycle in perpetuity,
     since a shape this never closes never earns the `void-object-closed`
     that would retire it under requirement 34n.
+
+    **Which obsolete pull requests this can actually reach.** The close above
+    fires on a *corroborated* void, and requirement 34d corroborates the two
+    closing shapes strictly for this reason: a `pr-<n>-abandoned-…` or
+    `pr-<n>-review-…` void whose pull request is still open and still changes
+    files against its base is refused, so an open draft that is obsolete
+    rather than already-landed never reaches this close at all. It is
+    escalated to a human instead — the Enabler adjudicates through the same
+    guard, refuses it for the same reason, and raises the issue. That is the
+    deliberate trade #264 bought: "this draft is no longer wanted" is a
+    judgement no API call corroborates, and a pipeline that closes live
+    branches on an uncorroborated judgement destroys work. It does narrow the
+    leading example above — the obsolete draft that stayed open — to the
+    cases the API can confirm: the pull request already closed, or its diff
+    already empty against the base. TD-PPagop-26081308 records the gap and
+    what closing it would take.
 
     Every other void shape — a tech-debt register id, a project-review ref,
     an implementation-plan task id — names something that is not a GitHub
@@ -8094,15 +8188,39 @@ pull request, run the ones the change touches and any it could regress.
    entry's, so a PR number that would match in the wrong repository is not
    corroboration. Assert the finishing sources are not caught by it: an item
    `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
-   request `<n>` in the entry's own repo is allowed on the id alone, while
-   the same item citing a different pull request is refused. Assert the id
-   shortcut is slug-gated: the same item citing number `<n>` by a URL naming
+   request `<n>` in the entry's own repo is corroborated by fetching that PR's
+   own live state, while the same item citing a *different* pull request is
+   still refused by the ordinary body/branch test. Assert every live state
+   `void_finishing_pr_reason` decides between, and that the item's own shape
+   selects which reading it gets: a merged PR is allowed and a
+   closed-but-unmerged PR is allowed, whatever the shape; a PR the API will
+   not answer for is refused as unreadable. For the two closing shapes
+   (`-abandoned-`, `-review-`, and any id of no recognised shape), an open PR
+   with an empty diff against its base is allowed and one with a non-empty
+   diff is refused, naming the file count still outstanding — Dependabot's
+   authorship buying nothing here. For `-conflict-`, an open PR is allowed
+   whatever its diff unless `mergeable` is `false`, so assert all three
+   readings of that field: `true` allowed, `null` allowed (not yet computed
+   is not definitively conflicting), `false` refused naming the conflict
+   rather than the diff — and `false` allowed after all when
+   `user.login` is `dependabot[bot]`, the supersession case of requirement
+   3s. Assert the id shortcut is
+   slug-gated: the same item citing number `<n>` by a URL naming
    a *different* repository is fetched — refused when the fetch fails, and
    refused when the fetched body and branch name no item — and an entry
    naming no `repo` at all whose URL citation's fetched body does name the
    item is allowed, corroborated by the live test it fell through to rather
    than by the number. Assert it runs with `repos: []` exactly
-   as the Enabler's and the Implementor's calls do. Then drive it end to end: a
+   as the Enabler's and the Implementor's calls do, and with `repos`
+   populated exactly as the Co-Ordinator's own call is — the candidate
+   carrying the synthetic id in `ref` and its `item` as the gatherers leave
+   it, so that both call shapes reach the same finishing-source verdict, in
+   both directions: the live-state fetch needs no candidate list, and the
+   candidate test can never match one of these items. Assert the shape split
+   end to end on the case that separates them: a `-conflict-` void of a pull
+   request that is open, mergeable again and still carrying its full diff is
+   recorded, while an `-abandoned-` void of a pull request in that same state
+   is refused. Then drive it end to end: a
    Co-Ordinator returning a `voided` entry the guard refuses must produce an
    `attempt-failed` for that item and **no** `item-void`, and the next cycle
    must list the item as blocked rather than void. The negative matters as
@@ -9008,9 +9126,16 @@ requirements above, which state only what is.
   fetches whichever form a cited superseding PR uses, and correctly refuses
   it (a different, independent bump will never carry the superseded item's
   id). So `gather-merge-conflicts.sh` pre-formats the evidence itself, citing
-  the superseded PR's *own* number — which the guard trusts on the id alone
-  for a `pr-<n>-…` item cited in the entry's own repo, as a bare citation
-  always is (issue #290) — and naming the superseding PR only by its branch
+  the superseded PR's *own* number — which the guard reads off the item's own
+  id for a `pr-<n>-…` item cited in the entry's own repo, as a bare citation
+  always is (issue #290), and fetches live: `void_finishing_pr_reason`
+  (TD-PPagop-26080807) reads a `-conflict-` item against its pull request's
+  mergeability, and excuses Dependabot's own from even that, because
+  supersession is the only route by which a still-conflicting pull request is
+  void and no reading of `mergeable` can confirm it. That excuse is scoped to
+  this one shape, where that route lives, rather than to the author alone: on
+  a shape whose void *closes* the pull request, Dependabot's name buys
+  nothing — and naming the superseding PR only by its branch
   name, never as "PR #M" and never by URL (issue #300: PR #281 taught the
   guard to resolve a URL citation live too, so citing the superseding PR by
   URL started failing the same live body/branch test a bare "PR #M" always
@@ -9032,8 +9157,26 @@ requirements above, which state only what is.
   citations corroborable via the live fetch, so refusing would have
   reintroduced the "names no repo" dead end that improvement removed. It
   falls through to the ordinary body/branch test instead — the empty-repo
-  entry loses only the no-fetch shortcut, never the ability to be
-  corroborated.
+  entry loses only the id shortcut, never the ability to be corroborated.
+  The shortcut itself stopped being no-fetch shortly after: TD-PPagop-26080807
+  found that firing it with no live check at all left this shape corroborated
+  by nothing but the id's own construction — in *every* stage, not only in the
+  two that call with `repos: []`. The Co-Ordinator's candidate-diff test looks
+  like a backstop and is not: it matches a candidate's `item`, and the
+  gatherers put the synthetic id in `ref`, leaving `item` as whatever register
+  id the branch or body named, or `null`. `void_finishing_pr_reason` now
+  fetches the gated PR and reads its state, so the gate still needs no
+  free-text match but no longer takes the citation on faith.
+  What that fetch demands is deliberately not uniform: it is calibrated to what
+  requirement 34k does with the void it corroborates. The two shapes whose void
+  *closes* the pull request (`-abandoned-`, `-review-`) must show an empty diff
+  or a closed PR, because closing a live branch on an uncorroborated "no longer
+  wanted" is what cost pull request #264; the shape whose void closes nothing
+  (`-conflict-`) is read against mergeability instead, because for it an empty
+  diff is not the claim being made and demanding one would refuse every honest
+  void the merge-conflicts source can write. Refusing is still the guard's
+  preferred direction of failure — but only where a wrong acceptance is
+  destructive, which is exactly where the strict reading now sits.
 - **A register that lies about itself is repaired by the pipeline, and prevented
   by CI — two layers, because one was demonstrably not enough.** The register
   now keeps one convention throughout: a `tech-debt/<id>.md` file per record,
