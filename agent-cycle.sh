@@ -934,6 +934,86 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
   ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
+# Requirement 3u/issue #320: the fields of a `blocked` entry
+# "Re-checking blocked items" and "A blocked issue with fresh evidence must be
+# re-read" (prompts/coordinator.md) actually read — `item`, `ts`, `detail`,
+# and `repo`/`recheck_clean_ts` where present — and nothing else. Every
+# pre-fetched band but `issues` has already had its own blocked entries
+# excluded before the Co-Ordinator ever sees the candidate (the loop that
+# calls exclude_blocked_or_void_items/exclude_blocked_or_void_issues, below),
+# so what remains of `blocked`'s purpose in the Co-Ordinator's own input is
+# `issues`' live re-check duty and the exclusion-1 check on the three sources
+# it still derives itself — neither reads `stage`, `cycle`, `event`, or an
+# Implementor's `unblock_condition`, so there is nothing lost by leaving them
+# off a list the model pays token cost to read every cycle. Malformed input
+# degrades to the untrimmed array, on the same fail-open terms as
+# exclude_blocked_or_void_items: a parse failure here must not silently empty
+# the Co-Ordinator's only remaining view of blocked state.
+coordinator_blocked_view() {  # <blocked-json>
+  jq -c \
+    '[.[] | {item, ts, detail}
+            + (if has("repo") then {repo} else {} end)
+            + (if has("recheck_clean_ts") then {recheck_clean_ts} else {} end)]' \
+    <<<"$1" 2>/dev/null || printf '%s' "$1"
+}
+
+# Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
+# exclusion as exclude_blocked_or_void_items above, purpose-built for the one
+# pre-fetched band that function cannot be reused for as-is. Requirement 3t
+# left `issues` out of the blanket exclusion on purpose — requirement 18a
+# obliges the Co-Ordinator to re-read a blocked issue's live thread when its
+# `updated_at` carries evidence posted after the block was last confirmed
+# current, and a candidate dropped before the Co-Ordinator ever saw it cannot
+# be re-read. Dropping every blocked issue here, the way `tech_debt` and every
+# other band now are (see the loop below), would silently retire that
+# mandatory re-check — precisely the live judgement 18a exists to keep in
+# front of a human-in-the-loop model, not remove it.
+#
+# So this drops only what the prompt's own "Re-checking blocked items" and "A
+# blocked issue with fresh evidence must be re-read" sections already tell the
+# Co-Ordinator to skip *without* a re-read: an issue whose `updated_at` is no
+# newer than the later of the block's own `ts` and its newest
+# `recheck_clean_ts` (requirement 18a's own threshold, mirrored verbatim —
+# `test/cycle-state.test.sh`'s `needs_mandatory_reread` pins the same
+# comparison against the same field). That is exactly the "skip it on the
+# marker alone, no re-read needed" case the prompt already states is
+# mechanical, so removing it from the Co-Ordinator's judgement removes no
+# judgement at all. A blocked issue whose `updated_at` *is* newer survives
+# this filter and reaches the Co-Ordinator exactly as before, for the live
+# re-read only it can perform. Void issues are dropped unconditionally, like
+# every other band: unlike a block, a void has no re-check to preserve
+# (requirement 34c — only a human's `unvoided` ever reopens one).
+#
+# Malformed input degrades to passing the array through unfiltered, and a
+# candidate missing `ref` is dropped rather than crashed on — the same
+# fail-open terms as exclude_blocked_or_void_items. Both extracts arrive on
+# stdin, never in argv, for requirement 4g's reason (see
+# exclude_blocked_or_void_items's own comment): this function shares that
+# call's oversized-void exposure exactly.
+exclude_blocked_or_void_issues() {  # <candidates-json> <repo> <blocked-json> <void-json>
+  local candidates="$1" repo="$2" blocked="${3:-[]}" void="${4:-[]}" docs
+  jq -e 'type == "array"' <<<"$blocked" >/dev/null 2>&1 || blocked='[]'
+  jq -e 'type == "array"' <<<"$void" >/dev/null 2>&1 || void='[]'
+  docs="$(printf '%s\n' "$candidates" "$blocked" "$void")"
+  jq -nc --arg repo "$repo" '
+    def in_repo($e): ($e.repo // "") == "" or ($e.repo // "") == $repo;
+    input as $candidates | input as $blocked | input as $void
+    | [ $candidates[] | . as $c | (($c.ref // null) as $r
+        | select($r != null)
+        | select(($void | any(((.item // "") | tostring) == $r and in_repo(.))) == false)
+        | ([ $blocked[] | select(((.item // "") | tostring) == $r and in_repo(.)) ]) as $matches
+        | select(
+            ($matches | length) == 0
+            or (
+              ($matches | map([(.ts // empty), (.recheck_clean_ts // empty)]) | flatten) as $thresholds
+              | (($thresholds | max) // "") as $threshold
+              | (($c.updated_at // "") > $threshold)
+            )
+          )
+        | $c) ]
+  ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
+}
+
 # Requirement 3t's machine corroboration: which of this cycle's eligible
 # tech-debt items (ELIGIBLE_JSON, `{repo, item}` entries — the Script's own
 # post-exclusion `tech_debt` arrays, flattened) a `selected: false`
@@ -1590,8 +1670,8 @@ gather_issues() {
 # errand. Claimed-item exclusion is applied by the caller via
 # exclude_claimed_items, like every other pre-fetched array; blocked/void
 # exclusion is applied by a second pass once blocked_json/void_json exist (see
-# "3c. Tech-debt eligibility" below) — this function only ever returns the raw
-# open set.
+# "3c/3u. Pre-fetched-band eligibility" below) — this function only ever
+# returns the raw open set.
 gather_tech_debt() {
   local slug="$1" branch="$2" out safe
   safe="${slug//\//_}"
@@ -3482,6 +3562,13 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # exact string a claim on that item is keyed on, so the match needs no
   # re-derivation.
   claimed_item_refs_json="$(jq -c '[.[].item]' <<<"$repo_claimed_json")"
+  # Claim exclusion only, in this pass: blocked/void exclusion needs
+  # `blocked_json`/`void_json`, which do not exist yet this early in the cycle
+  # (they depend on this same loop's `ordered_repos_json` for the work-gone
+  # reconciliation passes below) — see "3c/3u. Pre-fetched-band eligibility"
+  # further down, which filters every one of these arrays in place, a second
+  # time, once they do.
+  #
   # Pre-fetch security/code-quality findings only when this repo lists either
   # source, so a repo that opts out of them costs no gh calls.
   findings="[]"
@@ -3511,11 +3598,6 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
     issues="$(exclude_claimed_items "$(gather_issues "$slug")" "$claimed_item_refs_json")"
   fi
-  # Claim exclusion only, here: blocked/void exclusion for tech-debt needs
-  # `blocked_json`/`void_json`, which do not exist yet this early in the cycle
-  # (they depend on this same loop's `ordered_repos_json` for the work-gone
-  # reconciliation passes below) — see "3c. Tech-debt eligibility" further down,
-  # which filters this array in place once they do.
   tech_debt="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
     tech_debt="$(exclude_claimed_items "$(gather_tech_debt "$slug" "$default_branch")" "$claimed_item_refs_json")"
@@ -4099,28 +4181,63 @@ if (( void_json_bytes > 100000 )); then
                + " entries after retirement — approaching the 131072-byte MAX_ARG_STRLEN cap; check void_retire_after_days and whether requirements 34k/34l are actioning items")}')"
 fi
 
-# --- 3c. Tech-debt eligibility, decided (requirement 3t, issue #310) ---
+# --- 3c/3u. Pre-fetched-band eligibility, decided (requirement 3t, issue ---
+# --- #310; extended to every other pre-fetched band by requirement 3u, ---
+# --- issue #320) ---
 # Deferred from step 3 for the same reason 2.2a's back-pressure decision and
 # 3b's no-op fingerprint are deferred from their own numbers: the repo loop
-# (section 3) attached each repo's open tech-debt items, claim-filtered,
-# before `blocked_json`/`void_json` existed to filter them further. Now that
-# both are final — void_json has had every reconciliation pass and its own
-# retirement applied — finish the job: drop any item this
-# repo's own blocked or void record names, exactly as exclude_claimed_items
-# already dropped claimed ones. What remains in each repo's `tech_debt` array
-# is the Script's own answer to "what could the Co-Ordinator actually select
-# from this band" — open, unclaimed, unblocked, not void — with no per-item
-# judgement left for it to apply, and no room for a verdict like "requires
-# per-item evaluation against blocked/void/claimed records" to be true.
-while IFS= read -r td_slug; do
-  [[ -n "$td_slug" ]] || continue
-  td_current="$(jq -c --arg s "$td_slug" 'map(select(.slug == $s)) | .[0].tech_debt // []' \
+# (section 3) attached each repo's pre-fetched bands, claim-filtered, before
+# `blocked_json`/`void_json` existed to filter them further. Now that both
+# are final — void_json has had every reconciliation pass and its own
+# retirement applied — finish the job for every band the Script hands the
+# Co-Ordinator whole: drop any entry this repo's own blocked or void record
+# names, exactly as exclude_claimed_items already dropped claimed ones.
+# `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
+# `register_hygiene`, `human_visibility` and `tech_debt` all get the identical
+# second pass `exclude_blocked_or_void_items` first gave `tech_debt` alone
+# (issue #310) — there is nothing about that exclusion tech-debt-specific,
+# only tech-debt was the band it was first proven on. Every band the repo
+# entry carries is in this list but `issues`; a band added to that entry and
+# not to this list would keep handing the Co-Ordinator blocked and void
+# candidates it has no list left to check them against, which is why
+# `test/cycle-state.test.sh` pins the list itself.
+#
+# `issues` gets its own, narrower pass
+# below instead, via `exclude_blocked_or_void_issues`: unlike every other
+# band, a blocked issue can carry fresh evidence requirement 18a obliges the
+# Co-Ordinator to re-read live, so dropping it here — before that re-read can
+# ever happen — would silently retire the mandatory re-check rather than
+# apply it (see that function's own comment).
+#
+# What remains in each band after this block is the Script's own answer to
+# "what could the Co-Ordinator actually select from this band" — open,
+# unclaimed, unblocked (or, for `issues`, blocked-but-due-a-re-read), not
+# void — with no per-item judgement left for it to apply, and no room for a
+# verdict like "requires per-item evaluation against blocked/void/claimed
+# records" to be true of any of them.
+for eligibility_band in findings review_feedback abandoned_drafts merge_conflicts register_hygiene human_visibility tech_debt; do
+  while IFS= read -r eb_slug; do
+    [[ -n "$eb_slug" ]] || continue
+    eb_current="$(jq -c --arg s "$eb_slug" --arg f "$eligibility_band" \
+      'map(select(.slug == $s)) | .[0][$f] // []' <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+    eb_filtered="$(exclude_blocked_or_void_items "$eb_current" "$eb_slug" "$blocked_json" "$void_json")"
+    ordered_repos_json="$(jq -c --arg r "$eb_slug" --arg f "$eligibility_band" --argjson v "$eb_filtered" \
+      'map(if .slug == $r then .[$f] = $v else . end)' \
+      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+  done < <(jq -r --arg f "$eligibility_band" \
+           '[.[] | select(((.[$f] // []) | length) > 0) | .slug] | unique[]' \
+           <<<"$ordered_repos_json" 2>/dev/null || true)
+done
+
+while IFS= read -r iss_slug; do
+  [[ -n "$iss_slug" ]] || continue
+  iss_current="$(jq -c --arg s "$iss_slug" 'map(select(.slug == $s)) | .[0].issues // []' \
     <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
-  td_filtered="$(exclude_blocked_or_void_items "$td_current" "$td_slug" "$blocked_json" "$void_json")"
-  ordered_repos_json="$(jq -c --arg r "$td_slug" --argjson td "$td_filtered" \
-    'map(if .slug == $r then .tech_debt = $td else . end)' \
+  iss_filtered="$(exclude_blocked_or_void_issues "$iss_current" "$iss_slug" "$blocked_json" "$void_json")"
+  ordered_repos_json="$(jq -c --arg r "$iss_slug" --argjson iss "$iss_filtered" \
+    'map(if .slug == $r then .issues = $iss else . end)' \
     <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
-done < <(jq -r '[.[] | select(((.tech_debt // []) | length) > 0) | .slug] | unique[]' \
+done < <(jq -r '[.[] | select(((.issues // []) | length) > 0) | .slug] | unique[]' \
          <<<"$ordered_repos_json" 2>/dev/null || true)
 
 # The third extract (requirement 3h): what a previous Enabler engagement
@@ -4251,12 +4368,12 @@ if (( backpressure_tripped )); then
   #
   # Emptying `tech_debt` is also what keeps requirement 3t's corroboration
   # honest, which is why `eligible_tech_debt_json` is computed below this and
-  # not back at "3c. Tech-debt eligibility": a back-pressured cycle forbids the
-  # tech-debt source outright, so its `selected: false` owes no account of the
-  # band, and measuring eligibility before the narrowing would report every
-  # eligible item as unaccounted — a false contradiction every restricted
-  # cycle, and one that would strip the no-op fingerprint exactly when the gate
-  # is fullest.
+  # not back at "3c/3u. Pre-fetched-band eligibility": a back-pressured cycle
+  # forbids the tech-debt source outright, so its `selected: false` owes no
+  # account of the band, and measuring eligibility before the narrowing would
+  # report every eligible item as unaccounted — a false contradiction every
+  # restricted cycle, and one that would strip the no-op fingerprint exactly
+  # when the gate is fullest.
   ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))
                                     | .issues = []
                                     | .tech_debt = []]' \
@@ -4271,10 +4388,10 @@ fi
 # baseline "5a. Tech-debt verdict corroboration" below tests the Co-Ordinator's
 # verdict against, and requirement 3b's fingerprint (below) hashes as part of
 # `repos[].tech_debt` regardless, verbatim like `register_hygiene`. Taken here
-# rather than at "3c. Tech-debt eligibility" so that it reads the array the
-# Co-Ordinator is actually about to be given: back-pressure empties `tech_debt`
-# just above, and an eligible set counted before that would hold items this
-# cycle forbids it to select (see that block's own comment).
+# rather than at "3c/3u. Pre-fetched-band eligibility" so that it reads the
+# array the Co-Ordinator is actually about to be given: back-pressure empties
+# `tech_debt` just above, and an eligible set counted before that would hold
+# items this cycle forbids it to select (see that block's own comment).
 eligible_tech_debt_json="$(jq -c '[.[] | .slug as $s | (.tech_debt // [])[] | {repo: $s, item: .ref}]' \
   <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
 eligible_tech_debt_total="$(jq 'length' <<<"$eligible_tech_debt_json" 2>/dev/null || echo 0)"
@@ -4427,19 +4544,41 @@ if [[ -n "$noop_skip" ]]; then
   exit 0
 fi
 
-# The five fleet-state arrays on stdin, never in argv (requirement 4g) —
-# the same delivery, order coupling and here-string reasoning as the no-op
+# Requirement 3u/issue #320: `void` is never sent to the Co-Ordinator at all.
+# Every band the Script pre-fetches whole is already void-filtered before this
+# point (the loop above), and the three sources the Co-Ordinator still derives
+# itself — project-review, failed-runs, implementation-plan — have no
+# pre-fetched array for the Script to filter, exactly as before this change;
+# what has stopped is handing the model a raw list to apply that same
+# judgement to by eye. "Voiding an item yourself" (prompts/coordinator.md) is
+# unaffected: the model can still report a fresh `voided` entry from evidence
+# it read this cycle, and the Script's own void corroboration (requirement
+# 34d) validates it independently, with no existing list to compare against.
+# `void_json` still joins the no-op fingerprint above unchanged — a fresh void
+# state must still buy the next cycle a fresh look even though the model
+# itself never reads it.
+#
+# `blocked` stays, but trimmed by coordinator_blocked_view (above) to the
+# fields "Re-checking blocked items" and "A blocked issue with fresh evidence
+# must be re-read" actually read. Every other pre-fetched band's own blocked
+# entries never reach the Co-Ordinator either (the loop above already
+# excluded them), so what remains of this list's purpose is `issues`' live
+# re-check duty and the three Co-Ordinator-derived sources' own exclusion-1
+# check.
+coordinator_blocked_json="$(coordinator_blocked_view "$blocked_json")"
+
+# The four fleet-state arrays on stdin, never in argv (requirement 4g) — the
+# same delivery, order coupling and here-string reasoning as the no-op
 # fingerprint's build above.
 coordinator_stdin="$(printf '%s\n' \
-  "$ordered_repos_json" "$blocked_json" "$void_json" "$refinements_json" "$claimed_json")"
+  "$ordered_repos_json" "$coordinator_blocked_json" "$refinements_json" "$claimed_json")"
 coordinator_input="$(jq -nc \
   --arg model_default "$implementor_model_default" \
   --arg model_trivial "$implementor_model_trivial" \
   --argjson cmax "$candidates_max" \
   --argjson policies "$refinement_policy_json" \
-  'input as $repos | input as $blocked | input as $void
-   | input as $refinements | input as $claimed
-   | {repos: $repos, blocked: $blocked, void: $void, refinements: $refinements, claimed: $claimed,
+  'input as $repos | input as $blocked | input as $refinements | input as $claimed
+   | {repos: $repos, blocked: $blocked, refinements: $refinements, claimed: $claimed,
       models: {default: $model_default, trivial: $model_trivial},
       candidates_max: $cmax, refinement_policy: $policies}' <<<"$coordinator_stdin")"
 
