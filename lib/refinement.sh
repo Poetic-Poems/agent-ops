@@ -449,8 +449,15 @@ refinement_second_pass_refused() {
 # non-zero status; the caller holds the fleet's lock and writes to the log
 # unconditionally afterwards.
 refinement_hand_flag_new() {
-  local labelled="${1:-[]}" blocked="${2:-[]}" out
-  out="$(jq -nc --argjson l "$labelled" --argjson b "$blocked" '
+  local labelled="${1:-[]}" blocked="${2:-[]}" out docs
+  # Both arrays arrive on stdin, one document per line, never in argv
+  # (requirement 4g): the open blocked set grows with the fleet's history, and
+  # past MAX_ARG_STRLEN an `--argjson` delivery makes this call fail into its
+  # `2>/dev/null || true` — hand-applied refinement flags silently stop being
+  # noticed.
+  docs="$labelled"$'\n'"$blocked"
+  out="$(jq -nc '
+    input as $l | input as $b |
     [ $l[]?
       | select(((.state // "open") == "open"))
       | select(((.repo // "") != "") and ((.number // "") != ""))
@@ -460,7 +467,7 @@ refinement_hand_flag_new() {
                      (.repo // "") == ($e.repo // "") and
                      ((.item // "") | tostring) == (($e.number // "") | tostring))) | not
         )
-    ]' 2>/dev/null || true)"
+    ]' <<<"$docs" 2>/dev/null || true)"
   [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
   printf '%s' "$out"
 }
@@ -510,8 +517,15 @@ refinement_hand_flag_fields() {
 # that as a removal would clear a block requirement 34g never earned the right
 # to touch by itself.
 refinement_hand_flag_cleared() {
-  local labelled="${1:-[]}" blocked="${2:-[]}" out
-  out="$(jq -nc --argjson l "$labelled" --argjson b "$blocked" --arg kind "$REFINEMENT_BLOCK_KIND" '
+  local labelled="${1:-[]}" blocked="${2:-[]}" out docs
+  # Both arrays arrive on stdin, one document per line, never in argv
+  # (requirement 4g): the open blocked set grows with the fleet's history, and
+  # past MAX_ARG_STRLEN an `--argjson` delivery makes this call fail into its
+  # `2>/dev/null || true` — hand-applied refinement flags silently stop being
+  # cleared.
+  docs="$labelled"$'\n'"$blocked"
+  out="$(jq -nc --arg kind "$REFINEMENT_BLOCK_KIND" '
+    input as $l | input as $b |
     [ $b[]?
       | select((.kind // "") == $kind)
       | select((.hand_flagged // false) == true)
@@ -523,7 +537,7 @@ refinement_hand_flag_cleared() {
                      ((.number // "") | tostring) == (($e.item // "") | tostring))) | not
         )
       | {repo: $e.repo, item: $e.item}
-    ] | unique' 2>/dev/null || true)"
+    ] | unique' <<<"$docs" 2>/dev/null || true)"
   [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 || out='[]'
   printf '%s' "$out"
 }
