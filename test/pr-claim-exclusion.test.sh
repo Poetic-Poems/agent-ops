@@ -319,11 +319,12 @@ run_stale_ref_block() {  # run_stale_ref_block <ordered-repos-json> <enabler-eli
   # ordered_repos_json and log_event are consumed by the eval'd block below,
   # which shellcheck cannot see into.
   # shellcheck disable=SC2034
-  ordered_repos_json="$1" enabler_eligible_json="$2" logged=""
+  ordered_repos_json="$1" enabler_eligible_json="$2" logged="" logged_fields=""
   # shellcheck disable=SC2317
-  log_event() { logged="$logged$1 $2\n"; }
+  log_event() { logged="$logged$1 $2\n"; logged_fields="$2"; }
   eval "$stale_ref_block_src"
-  jq -c -n --argjson e "$enabler_eligible_json" --arg l "$logged" '{eligible: $e, logged: $l}'
+  jq -c -n --argjson e "$enabler_eligible_json" --arg l "$logged" --arg f "$logged_fields" \
+    '{eligible: $e, logged: $l, fields: $f}'
 }
 
 ordered='[{"slug": "o/r",
@@ -343,6 +344,14 @@ assert_eq "an unrelated blocked item kind (tech-debt) is untouched" "1" \
   "$(jq '[.eligible[] | select(.item == "TD123")] | length' <<<"$result")"
 assert_eq "the drop is logged, not silent" "true" \
   "$(jq -r '.logged | test("enabler-stale-refs-skipped")' <<<"$result")"
+# The payload's *type* is load-bearing: log_event's envelope merge is jq `+`,
+# which cannot add an object and an array, and the bare-array form of this
+# payload is what crash-looped the whole fleet pre-selection on 2026-08-13
+# (issue #361) — the first time the guard above ever fired in production.
+assert_eq "  ... and the logged payload is a JSON object, never a bare array (issue #361)" "object" \
+  "$(jq -r '.fields | fromjson | type' <<<"$result")"
+assert_eq "  ... carrying the dropped refs under .skipped" "pr-205-conflict-305ca060016d" \
+  "$(jq -r '.fields | fromjson | .skipped[0].item' <<<"$result")"
 
 # The merge-conflicts gather's *other* shape, `pr-<n>-superseded-<sha>`
 # (requirement 3g, TD-PPagop-26081304), is scoped to the same head SHA and comes
