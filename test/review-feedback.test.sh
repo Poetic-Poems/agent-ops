@@ -18,9 +18,16 @@
 # and each one paying a Sonnet run to redo work already pushed. The pipeline
 # would never look broken.
 #
-# The gatherer's `gh` calls aren't reachable from a unit test, so the rule is
-# tested where it lives — as jq over the same shapes the GitHub API returns.
-# Keep this in step with the filters in the script.
+# Most of the rule is tested where it lives — as jq over the same shapes the
+# GitHub API returns, with the gatherer's `gh` calls out of reach of a unit
+# test. Keep this in step with the filters in the script.
+#
+# The pagination hazard below is the exception: it is a property of how the
+# script's four `gh api --paginate` reads combine across page boundaries, so
+# it can only be caught by running the real script (via REVIEW_FEEDBACK_GH)
+# against a stub `gh` that actually pages a fixture, the way
+# test/merge-conflicts.test.sh's Dependabot section already does for its own
+# script (see "The gatherer itself, exercised via a stub gh" below).
 #
 # Run directly:
 #
@@ -302,6 +309,137 @@ assert_eq "with nothing waiting, the count is 0 and the cycle stands down as bef
 assert_eq "an unknown repo yields [] and exit 0, never a broken cycle" "[]" \
   "$("$SCRIPT_DIR/scripts/gather-review-feedback.sh" "Poetic-Poems/does-not-exist" autonomous-agent 'agent/' 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
+
+# --- Pagination past thirty items (TD-PPagop-26081306) ---
+#
+# `gh api --paginate` re-runs its `--jq` filter once per page and prints each
+# page's result as its own JSON document; it never concatenates pages before
+# filtering. A `--jq` filter that builds its own aggregate (`[.[] | …]`) is
+# therefore computed *per page* and disagrees with itself past the endpoint's
+# thirty-item default page size — the exact hazard test/handoff.test.sh already
+# pins for `handoff_round_answered` itself ("two concatenated pages are
+# unknown, never answered"). This section pins the other half: that the four
+# `gh api --paginate` reads in the script feed that function one correct,
+# fully-aggregated array each, no matter which page an item lands on.
+#
+# Reached only by running the real script through a stub `gh`
+# (REVIEW_FEEDBACK_GH) that pages a fixture for real — 30 items per page,
+# GitHub's own default — the way test/merge-conflicts.test.sh's Dependabot
+# section already does for gather-merge-conflicts.sh. A plain jq assertion
+# over an already-assembled array cannot exercise a page boundary; only a `gh`
+# call that actually splits the fixture and re-invokes the filter per page can.
+tmp_dir="$(mktemp -d)"
+trap 'rm -rf "$tmp_dir"' EXIT
+
+cat > "$tmp_dir/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+d="$(dirname "$0")"
+
+if [[ "${1:-} ${2:-}" == "pr list" ]]; then
+  cat "$d/prs.json"
+  exit 0
+fi
+
+if [[ "${1:-}" == "api" ]]; then
+  endpoint="$2"
+  shift 2
+  filter=""
+  args=("$@")
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    if [[ "${args[$i]}" == "--jq" ]]; then
+      filter="${args[$((i + 1))]}"
+      break
+    fi
+  done
+  case "$endpoint" in
+    */pulls/*/reviews) fixture="$d/reviews.json" ;;
+    */issues/*/comments) fixture="$d/issue-comments.json" ;;
+    */issues/*/timeline) fixture="$d/timeline.json" ;;
+    */pulls/*/comments) fixture="$d/pr-comments.json" ;;
+    *) exit 1 ;;
+  esac
+  # Reproduce gh api --paginate's own behaviour for real: split the fixture
+  # into 30-item pages (GitHub's own default) and run the --jq filter once per
+  # page, printing each page's result as its own JSON document — never merged
+  # across pages. A filter that aggregates internally (`[.[] | …]`) would
+  # therefore emit one array per page here, not one array overall; the fixed
+  # script's filters emit one object per matching item instead, which stays
+  # correct regardless of where the split falls.
+  jq -c '[range(0; (. | length); 30) as $i | .[$i:($i + 30)]]' "$fixture" \
+    | jq -c '.[]' \
+    | while IFS= read -r page; do
+        jq -c "$filter" <<<"$page"
+      done
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$tmp_dir/gh"
+
+cat > "$tmp_dir/prs.json" <<'JSON'
+[
+  {"number": 200, "title": "fix(pagination): stream every gh api --paginate read",
+   "headRefName": "agent/td-pagination-fix", "headRefOid": "abc123def456",
+   "isDraft": false, "reviewDecision": "CHANGES_REQUESTED",
+   "url": "https://github.com/o/r/pull/200", "body": ""}
+]
+JSON
+
+# 31 reviews: 30 COMMENTED fillers fill page one exactly, so the sole
+# CHANGES_REQUESTED review — the blocking review the whole candidate rule
+# hinges on — lands alone on page two, as isolated as a page boundary can put
+# it.
+jq -n '[range(0; 30) | {id: (. + 1), state: "COMMENTED",
+        submitted_at: ("2026-08-01T00:00:" + (if . < 10 then "0" else "" end) + (. | tostring) + "Z"),
+        user: {login: ("filler-reviewer-" + (. | tostring))}, body: "noise"}]' \
+  | jq '. + [{"id": 999, "state": "CHANGES_REQUESTED", "submitted_at": "2026-08-01T00:05:00Z",
+              "user": {"login": "Warwick-Allen"},
+              "body": "Please fix the pagination handling."}]' \
+  > "$tmp_dir/reviews.json"
+
+jq -n '[range(0; 30) | {created_at: ("2026-08-01T00:00:" + (if . < 10 then "0" else "" end) + (. | tostring) + "Z"),
+        body: "unrelated chatter"}]' > "$tmp_dir/issue-comments-unanswered.json"
+
+jq '. + [{"created_at": "2026-08-01T00:06:00Z", "body": "still not it"}]' \
+  "$tmp_dir/issue-comments-unanswered.json" > "$tmp_dir/issue-comments.json"
+
+printf '[]' > "$tmp_dir/timeline.json"
+
+jq -n '[range(0; 30) | {created_at: ("2026-08-01T00:00:" + (if . < 10 then "0" else "" end) + (. | tostring) + "Z"),
+        user: {login: "filler"}, path: "README.md", line: 1, body: "noise"}]' \
+  | jq '. + [{"created_at": "2026-08-01T00:07:00Z", "user": {"login": "Warwick-Allen"},
+              "path": "scripts/gather-review-feedback.sh", "line": 220,
+              "body": "this is the inline comment on the second page"}]' \
+  > "$tmp_dir/pr-comments.json"
+
+out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
+assert_eq "an unanswered round is still found with the blocking review alone on page two" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... the ref pins to the blocking review found on page two, not a filler's" \
+  "pr-200-review-999" "$(jq -r '.[0].ref' <<<"$out")"
+assert_eq "  ... the body carries the blocking review's own text" \
+  "1" "$(jq -r '.[0].body' <<<"$out" | grep -c 'Please fix the pagination handling')"
+assert_eq "  ... and the inline comment that itself landed on page two" \
+  "1" "$(jq -r '.[0].body' <<<"$out" | grep -c 'this is the inline comment on the second page')"
+
+# Now the answer — the Implementor's own marked reply — is what lands alone on
+# page two of the issue-comments read. Before the fix this is exactly the
+# read whose --argjson downstream failed on a multi-page value; after it, the
+# round must read cleanly as answered and the PR must drop out of the
+# candidate list.
+marker="$PIPELINE_COMMENT_MARKER_PREFIX"
+implementor_reply="$(printf '**Implementor** · autonomous pipeline · node `poetic-1`\n\nAddressed the pagination bug.\n\n%s cycle=X actor=implementor -->' "$marker")"
+jq --arg body "$implementor_reply" \
+  '. + [{"created_at": "2026-08-01T00:10:00Z", "body": $body}]' \
+  "$tmp_dir/issue-comments-unanswered.json" > "$tmp_dir/issue-comments.json"
+
+out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
+assert_eq "a marked reply isolated alone on page two of the comments read answers the round" \
+  "0" "$(jq 'length' <<<"$out")"
+
+rm -rf "$tmp_dir"
+trap - EXIT
 
 printf '\n'
 if (( failures > 0 )); then
