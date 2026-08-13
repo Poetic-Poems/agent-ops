@@ -618,8 +618,8 @@ and the schema must carry every one of them.
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
-| `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check. |
-| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issue is filed — the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check. |
+| `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
+| `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
 | `timeout_implementor` | *(unset)* | As `timeout_coordinator`, for the Implementor. The interim raise to 120 this key carried (#203, #209) has gone with the fixed cap it belonged to: the shipped prior is 150 and the derivation moves from there. |
 | `timeout_reviewer` | *(unset)* | As `timeout_coordinator`, for the Reviewer. This is the key #203 was opened about: it was raised 30 → 45 → 60 in two days, and 45 lasted six hours before a complex-model review of a 16-file diff consumed all of it. Complex-model reviews are killed roughly six times as often as default-model ones, so a single fixed number spans two quite different populations — which is why the derivation keys on the model. |
@@ -1369,26 +1369,55 @@ runs unattended.
    have said so. So the Script reads the one signal that class does leave.
    After the requirement-2.5 union snapshot and before the stand-down
    checks (a fleet that is also standing down must still raise the alarm),
-   `lib/crash-loop.sh`'s `crash_loop_verdict` scans the union for
-   `crash_loop_after` or more **consecutive** Co-Ordinator `attempt-failed`
-   events carrying **one identical detail**, with no Co-Ordinator success
-   (`stage-end`, stage `coordinator`, exit 0) anywhere in the fleet in
-   between. Identical detail is what separates the deterministic class from
-   transient noise; any success resets the count. On a verdict, and unless
-   `crash_loop_escalated_since` finds a `crash-loop-escalated` event with
-   the same detail at or after the run's own first failure (so the same
-   loop is never escalated twice, while a fresh loop with an old detail
-   escalates anew), the Script files an issue on `crash_loop_repo` through
-   the Enabler's own `create_escalation_issue` — same open-issue dedup
-   (item ref `crash-loop:coordinator`), same label, same load-bearing
-   assignee that keeps the pipeline from selecting its own SOS as work —
-   and logs `crash-loop-escalated` with the verdict's fields and the
-   issue's number and URL. If the issue cannot be filed the Script logs a
-   `warning` and leaves no `crash-loop-escalated` event, so the next cycle
-   retries. The cycle then proceeds normally either way: detection must
-   never suppress the recovery attempt that might end the loop.
-   `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
-   `enabler_assignee`, disables the check; `--dry-run` never files.
+   `lib/crash-loop.sh` scans the union for two independent failure
+   classes, each escalated through the shared `crash_loop_escalate` path:
+
+   - `crash_loop_verdict` scans for `crash_loop_after` or more
+     **consecutive** Co-Ordinator `attempt-failed` events carrying **one
+     identical detail**, with no Co-Ordinator success (`stage-end`, stage
+     `coordinator`, exit 0) anywhere in the fleet in between. Identical
+     detail is what separates the deterministic class from transient
+     noise; any success resets the count.
+   - `crash_loop_preselection_verdict` scans for `crash_loop_after` or
+     more **consecutive** cycles that each logged `cycle-start` followed by
+     a `cycle-end` with a **non-zero `exit_code`** and *no* `stage-start`
+     for any stage anywhere in between, grouped by that `exit_code` (there
+     is no `detail` string on this path). This is the class the
+     Co-Ordinator check above cannot see: a cycle that dies while
+     assembling its own runtime input — `execve` failing on an oversized
+     argv, the shape of both the 2026-08-01 argv-cap outage and the
+     2026-08-12 void-extract one — writes no `attempt-failed` for any
+     stage, so the union shows only the `cycle-start` / `cycle-end`
+     pair. A completed cycle that starts a **selection-path** stage
+     (`coordinator`, `implementor` or `reviewer`) resets the count,
+     whatever that stage then does — reaching selection is itself proof
+     the systemic block is not reproducing right now, and what happens to
+     an item once a stage is running already has its own recovery ladder.
+     A `stage-start` from the Enabler or the Refiner never resets the
+     count: both run from the cycle's cleanup path, after any
+     pre-selection death has already happened, so counting them as
+     recovery would blind this check the moment their non-zero-exit
+     guards (the "a cycle that ended badly" bail-outs in requirements 35
+     and 39) were ever relaxed. A cycle with no `cycle-end` at all (still
+     running, or killed too abruptly to log one) is dropped, counted
+     neither way.
+
+   On a verdict from either reader, and unless `crash_loop_escalated_since`
+   finds a `crash-loop-escalated` event with the same detail at or after the
+   run's own first failure (so the same loop is never escalated twice,
+   while a fresh loop with an old detail escalates anew), the Script files
+   an issue on `crash_loop_repo` through the Enabler's own
+   `create_escalation_issue` — same open-issue dedup (item ref
+   `crash-loop:coordinator` for the first class, `crash-loop:pre-selection`
+   for the second, so either can escalate independently of the other), same
+   label, same load-bearing assignee that keeps the pipeline from selecting
+   its own SOS as work — and logs `crash-loop-escalated` with the verdict's
+   fields and the issue's number and URL. If the issue cannot be filed the
+   Script logs a `warning` and leaves no `crash-loop-escalated` event, so
+   the next cycle retries. The cycle then proceeds normally either way:
+   detection must never suppress the recovery attempt that might end the
+   loop. `crash_loop_after` 0 (or absent), or an empty `crash_loop_repo` or
+   `enabler_assignee`, disables both checks; `--dry-run` never files.
 3. **Repo ordering.** For each configured repo, fetch the timestamp of the
    most recent commit on its default branch via `gh api`. A repo entry may
    also carry `nice`, an optional integer from `-19` to `19` (absent means
@@ -2990,7 +3019,10 @@ runs unattended.
    pull-request churn in somebody else's repository. The corollary is that a
    configured cap pins itself permanently, which `scripts/doctor.sh` warns
    about, because a number set once and forgotten looks exactly like a system
-   still adapting.
+   still adapting — at every level of the precedence above, not only the
+   plain `timeout_<actor>` / `inactivity_<actor>` keys: the Refiner's own
+   pair, and each repository's `stage_timeouts` / `stage_inactivity` entry,
+   named by that repository's slug so the warning says which entry to edit.
    **Every value is announced.** The `stage-start` /
    `review-stage-start` event carries `backstop_min`, `inactivity_min`,
    `source` (`config`, `cell`, `pooled` or `prior`) and `basis` (`own`,
@@ -3039,9 +3071,16 @@ runs unattended.
    sha, one repo's register ids) may still travel as `--arg`/`--argjson`.
    Delivery is a here-string, not a pipe, for requirement 4c's reason: under
    `pipefail` a producer's SIGPIPE must not become the reader's status.
-   `test/unvoid-label.test.sh` anchors the acceptance check with a void
-   array built past the cap; `tech-debt/TD-PPagop-26081301.md` records the
-   remaining `--argjson` sites whose inputs are bounded today.
+   Every converted site carries its own regression pin, built from an input
+   the assertion beside it first proves is genuinely past the cap and asserted
+   in the direction that site fails — silent `[]`, or silent pass-through —
+   so a reintroduced `--argjson` fails a test rather than a fleet:
+   `test/unvoid-label.test.sh`, `test/verdict-corroboration.test.sh` and
+   `test/cycle-state.test.sh` for the void extract, `test/work-gone.test.sh`,
+   `test/needs-refinement.test.sh`, `test/label-marker.test.sh`,
+   `test/pr-claim-exclusion.test.sh` and `test/enabler-eligibility.test.sh`
+   for the blocked extract, the own-actions map, the claims arrays and the
+   open-issues map.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -6467,6 +6506,15 @@ runs unattended.
     filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
     them — under the account that raised the pull request.
 
+    The no-candidate `skip` carries its own detail, `skip\tno-candidate`,
+    distinguishable from the other two `skip` reasons — a draft, or something
+    `CHANGES_REQUESTED`-blocking it — which `confirm_review_requested` already
+    covers with its own actor and its own clock. Nothing else will ever ask
+    this human, so the periodic sweep (requirement 38c) reads the distinction
+    to log its own `warning`, closing the gap tech-debt/TD-PPagop-26081001.md
+    recorded: before this, all three reasons shared one bare `skip`, so this
+    one could not be told apart from the other two to surface at all.
+
     Called from both places `confirm_review_requested` already is — the
     Reviewer's own handoff and the Enabler's `complete_handoff` — whenever
     that call answers `none`, and from the periodic sweep of requirement 38c
@@ -6613,8 +6661,10 @@ runs unattended.
 38e. **A violation the sweep cannot heal is selectable work, not only a log
     line.** `scripts/sweep-human-visibility.sh` (requirement 38c) fixes almost
     every violation it finds in the same pass; what it cannot fix — a `gh`
-    read, the review-request POST, or the nudge-comment POST itself failing —
-    was, before this requirement, only a `warning` event: no selectable work,
+    read, the review-request POST, or the nudge-comment POST itself failing,
+    or requirement 38a's own no-candidate `skip` (no POST even attempted,
+    tech-debt/TD-PPagop-26081001.md) — was, before this requirement, only a
+    `warning` event: no selectable work,
     nothing tracking whether it recurred, and the human it concerns by
     definition not looking (tech-debt/TD-PPagop-26080801.md, the gap
     requirement 38d's scope note names). `scripts/gather-human-visibility-hygiene.sh`,
@@ -6649,19 +6699,30 @@ runs unattended.
       having worked after all); a `could not post the idle nudge comment`
       warning survives only while the `<!-- agent-ops:human-nudge -->` marker
       comment `scripts/sweep-human-visibility.sh` itself checks for is still
-      absent. The two classes are told apart deliberately: every pull request
-      a nudge warning is logged against is already `APPROVED` (the nudge's own
-      gate), so the request-class check alone would read every nudge-class
-      warning as resolved the moment it was created, silently dropping the one
-      class this requirement exists to keep visible. A warning shape neither
-      check recognises is kept for as long as its pull request stays open and
-      not a draft, the same fail-safe default an unreadable re-check gets — the
-      log alone cannot tell a persisting problem from one that has quietly
-      resolved (a repo-level listing success with nothing to act on logs
-      nothing at all; a merged, closed or now-answered pull request is never
-      visited again either way). An answer this re-check itself cannot get is
-      never read as "resolved" — the violation is kept, the same reasoning the
-      sweep itself applies to its own reads.
+      absent; a `no legal review-request candidate` warning (requirement 38a's
+      `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
+      while `gh pr view --json author,reviews` still shows no non-author,
+      non-bot, submitted review, and `enabler_assignee` — carried in the
+      warning's own detail text, at the value it held when the sweep warned —
+      still names the pull request's own author: either is
+      `ensure_human_reviewer`'s own candidate rule, generalised read-only,
+      resolving itself, since the sweep's own next pass would request that
+      candidate before this gatherer runs again. The three classes are told apart deliberately:
+      every pull request a nudge warning is logged against is already
+      `APPROVED` (the nudge's own gate), so the request-class check alone
+      would read every nudge-class warning as resolved the moment it was
+      created, silently dropping the one class this requirement exists to
+      keep visible — and a no-candidate warning has no live request to find at
+      all, so neither of the other two checks would ever clear it. A warning
+      shape none of the three recognises is kept for as long as its pull
+      request stays open and not a draft, the same fail-safe default an
+      unreadable re-check gets — the log alone cannot tell a persisting
+      problem from one that has quietly resolved (a repo-level listing
+      success with nothing to act on logs nothing at all; a merged, closed or
+      now-answered pull request is never visited again either way). An answer
+      this re-check itself cannot get is never read as "resolved" — the
+      violation is kept, the same reasoning the sweep itself applies to its
+      own reads.
     - A survivor becomes a candidate carrying its own source,
       `source: "human-visibility"` — ranked immediately after
       `merge-conflicts` (config.schema.json's `sources` enum and priority-order
@@ -6692,14 +6753,15 @@ runs unattended.
       array, hashed verbatim (`lib/noop-skip.sh`) — its own key because it no
       longer rides `register_hygiene`'s.
 
-    Left deliberately unaddressed, as adjacent gaps rather than this one: a
-    pull request whose only legal review-request candidate is its own author
-    (`ensure_human_reviewer` correctly returns the same `skip` it would for a
-    draft or a `CHANGES_REQUESTED`-blocked pull request, so this cannot be told
-    apart from those without changing that function's contract for every one
-    of its callers) is tracked as `tech-debt/TD-PPagop-26081001.md`; an issue
-    human-blocked by a classification other than the two requirement 38b and
-    36a cover remains requirement 38d's own, deliberate, scope limit.
+    A pull request whose only legal review-request candidate is its own
+    author is covered by requirement 38a's own `skip\tno-candidate` and this
+    requirement's `no_candidate` warning class above
+    (tech-debt/TD-PPagop-26081001.md) — the one `skip` reason nothing else
+    will ever ask a human about, unlike a draft or a `CHANGES_REQUESTED`-
+    blocked pull request, each of which has its own actor and its own clock.
+    Left deliberately unaddressed, as an adjacent gap rather than this one: an
+    issue human-blocked by a classification other than the two requirement
+    38b and 36a cover remains requirement 38d's own, deliberate, scope limit.
 
 ### The Refiner
 
@@ -7047,8 +7109,13 @@ What exists, and the requirements each part answers to:
    while `gh pr view --json reviewDecision,reviewRequests` shows no live
    request and no review yet given; a `could not post the idle nudge comment`
    warning only while the `agent-ops:human-nudge` marker comment is still
-   absent; any other warning shape for as long as the pull request stays open
-   and not a draft; an unreadable re-check is kept, not dropped) — carrying a
+   absent; a `no legal review-request candidate` warning
+   (tech-debt/TD-PPagop-26081001.md) only while `gh pr view --json
+   author,reviews` still shows no non-author, non-bot, submitted review and
+   `enabler_assignee` — read back out of the warning's own detail text —
+   still names the pull request's own author; any other warning shape for as
+   long as the pull request stays open and not a draft; an unreadable
+   re-check is kept, not dropped) — carrying a
    ref scoped to the surviving violations' own identities and details
    (`human-visibility-<hash>`, disjoint from `register-hygiene-<hash>`), a
    `problems` line per violation and a body naming each one and the timestamp
@@ -7303,8 +7370,9 @@ What exists, and the requirements each part answers to:
    `lib/toggle.sh`, `lib/noop-skip.sh`, `lib/role.sh`, `lib/void-guard.sh`,
    `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`,
    `lib/void-liveness.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
-   `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
-   `crash_loop_escalated_since`, both pure readers of the union stream),
+   `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict`,
+   `crash_loop_preselection_verdict` and `crash_loop_escalated_since`, all
+   pure readers of the union stream),
    `lib/human-visibility-hygiene.sh` (requirement 38e's
    `human_visibility_violations`, another pure reader of the union stream,
    reducing requirement 38c's `warning` events to the identities — pull
@@ -7328,8 +7396,11 @@ What exists, and the requirements each part answers to:
    `lib/stage-budget.sh` (requirement 4f's derivation:
    `stage_budget_observations` over the log union, `stage_budget_table`
    holding the estimator, the controller and the shrinkage,
-   `stage_budget_resolve` applying the precedence, and
-   `stage_budget_lock_seconds` deriving the lock; sourced by both cycle
+   `stage_budget_resolve` applying the precedence,
+   `stage_budget_all_overrides` taking the widest configured cap per actor
+   across the plain `timeout_<actor>` / `inactivity_<actor>` keys and every
+   repository's own `stage_timeouts` / `stage_inactivity`, and
+   `stage_budget_lock_seconds` deriving the lock from it; sourced by both cycle
    scripts, by `scripts/doctor.sh` and by the dashboard publisher, all four of
    which must agree about what a stage is allowed) and
    `lib/metering.sh`) holding every
@@ -8121,8 +8192,13 @@ pull request, run the ones the change touches and any it could regress.
    fleet-wide widest for that actor and then to the shipped prior, and makes
    no claim at all about a stage none of those names.
    `test/config-schema.test.sh` passes: `scripts/doctor.sh` reports the
-   derived lock rather than checking a configured one, and warns that a
-   configured cap pins itself.
+   derived lock rather than checking a configured one — reading
+   `stage_budget_all_overrides` from `lib/stage-budget.sh`, the same
+   function `agent-cycle.sh` derives the cycle lock from, so the two never
+   disagree — and warns that a configured cap pins itself, at every level of
+   the precedence: the plain `timeout_<actor>` / `inactivity_<actor>` keys
+   including the Refiner's, and a repository's own `stage_timeouts` /
+   `stage_inactivity` entry, naming that repository in the warning.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to
@@ -8463,8 +8539,8 @@ pull request, run the ones the change touches and any it could regress.
    with no output changes no limit state and the reason ends
    `(probe: inconclusive)`. `--dry-run` with the same injected event launches
    no probe.
-5a. **A fleet-wide Co-Ordinator crash loop is detected once and escalated
-   once (requirement 2.7).** `test/crash-loop.test.sh` passes: for
+5a. **A fleet-wide crash loop, of either class, is detected once and
+   escalated once (requirement 2.7).** `test/crash-loop.test.sh` passes: for
    `crash_loop_verdict`, a stream of threshold-many consecutive same-detail
    Co-Ordinator failures yields a verdict carrying the count, the window and
    every failing node; one fewer yields nothing; a Co-Ordinator success
@@ -8472,10 +8548,22 @@ pull request, run the ones the change touches and any it could regress.
    precedes an `unparseable final message` failure, which counts as one, not
    threshold-plus); a detail change restarts the count at one; item-stage
    failures and other nodes' noise never contribute; a threshold of 0 is the
-   off switch. For `crash_loop_escalated_since`, an escalation event for the
-   same detail after the run's first failure suppresses re-escalation, while
-   an older one — a closed issue from a past loop — does not, and a
-   different detail never matches.
+   off switch. `crash_loop_preselection_verdict` passes the same shape of
+   cases against the class `crash_loop_verdict` cannot see: threshold-many
+   consecutive cycles that each logged `cycle-start` then `cycle-end` with
+   the same non-zero `exit_code` and no `stage-start` anywhere between them
+   yields a verdict carrying the count, the window, every failing node and
+   the `exit_code`; one fewer yields nothing; a completed cycle that reaches
+   a selection-path stage (`coordinator`, `implementor` or `reviewer`)
+   resets the count whatever that stage then exits, as does a clean
+   (`exit_code` 0) cycle, while an Enabler or Refiner `stage-start` never
+   counts as recovery; an exit-code change restarts the count at
+   one; a cycle with no `cycle-end` at all is dropped, counted neither way;
+   item-stage failures and other nodes' noise never contribute; a threshold
+   of 0 is the off switch. For `crash_loop_escalated_since`, an escalation
+   event for the same detail after the run's first failure suppresses
+   re-escalation, while an older one — a closed issue from a past loop —
+   does not, and a different detail never matches.
    back-pressure, and the logged reason states the count's composition
    (`N ready + N draft + N unraised claim(s)`).
 6a. **The switch stops both pipelines and lets go by itself.**
@@ -9368,10 +9456,13 @@ pull request, run the ones the change touches and any it could regress.
     `assignee` only when nobody ever has; strikes the pull request's own author
     off both lists before asking, so an author's `COMMENT` review on their own
     pull request neither becomes a request target nor 422s the request for the
-    human beside them, and an author-only reviews list is a `skip`; `skip`s
-    while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
-    pull request is a draft; and an unreadable reviews list or pending list is
-    `failed`, never an assumed `skip`. `handoff_round_answered` is asserted
+    human beside them, and an author-only reviews list, or `assignee` equal to
+    the author with nobody else known, is the distinguishable
+    `skip\tno-candidate` (tech-debt/TD-PPagop-26081001.md), never a bare
+    `skip`; `skip`s (bare) while something is genuinely
+    `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; and
+    an unreadable reviews list or pending list is `failed`, never an assumed
+    `skip`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
     `actor=implementor` reply after the blocking review is `answered`, the
     same reply before it is `unanswered`, an unmarked comment and another
@@ -9412,7 +9503,12 @@ pull request, run the ones the change touches and any it could regress.
     approved pull request is never nudged, and neither is one with an empty
     check rollup; `human_nudge_idle_hours: 0` disables the nudge while leaving
     the review-request self-heal unconditional; and a listing, a view, or a
-    reviews read that fails is a `warning`, never silence. Confirm the nudge
+    reviews read that fails is a `warning`, never silence. A pull request
+    whose only legal candidate is its own author is a `warning` naming
+    `enabler_assignee`, not silence — the one `skip` reason the sweep itself
+    surfaces, read off requirement 38a's `skip\tno-candidate` detail, unlike a
+    still-`CHANGES_REQUESTED`-blocked pull request's bare `skip`, which
+    produces no action at all. Confirm the nudge
     comment carries the visible attribution header and both markers
     (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
 38e. **A violation the sweep cannot heal is read back and re-verified, not
@@ -9432,10 +9528,16 @@ pull request, run the ones the change touches and any it could regress.
     `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
     `could not post the idle nudge comment` violation on an `APPROVED` pull
     request survives while the `agent-ops:human-nudge` marker comment is
-    absent — confirming the two classes are told apart, not read off the same
+    absent — confirming the classes are told apart, not read off the same
     "has a human reviewed this" check, which would otherwise drop every
-    nudge-class violation on sight — and is dropped once the marker appears;
-    an unrecognised warning shape survives for as long as its pull request
+    nudge-class violation on sight — and is dropped once the marker appears; a
+    `no legal review-request candidate` violation
+    (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
+    show no non-author, non-bot, submitted review and no pending (unsubmitted)
+    review counts either, is dropped the moment such a reviewer appears, and
+    is dropped separately once the assignee named in its own detail text no
+    longer names the pull request's author; an unrecognised warning shape
+    survives for as long as its pull request
     stays open and not a draft; an unreadable live re-check keeps the
     violation rather than dropping it; a repo-level and a pull-request
     violation for the same repo combine into one candidate; and every

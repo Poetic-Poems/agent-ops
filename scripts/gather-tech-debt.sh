@@ -165,7 +165,12 @@ while IFS= read -r name; do
     --arg url "https://github.com/$slug/blob/$default_branch/tech-debt/$name" --arg body "$body" \
     '{source: "tech-debt", ref: $id, id: $id, title: $title, filed: $filed, url: $url, body: $body}')" \
     || degrade "entry assembly failed for $name"
-  out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")" || degrade "array assembly failed at $name"
+  # $entry and the accumulator both arrive on stdin, one document per line,
+  # bound positionally with `input as $name` in the order printed (requirement
+  # 4g) — never in argv: a single item file past MAX_ARG_STRLEN must not
+  # degrade this repo's entire tech_debt array to `[]`.
+  out="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$out"$'\n'"$entry")" \
+    || degrade "array assembly failed at $name"
 done < <(cd "$root/tech-debt" && find . -maxdepth 1 -name '*.md' -printf '%f\n' 2>/dev/null | sort)
 
 out="$(jq -c 'sort_by(.id)' <<<"$out" 2>/dev/null || printf '%s' "$out")"

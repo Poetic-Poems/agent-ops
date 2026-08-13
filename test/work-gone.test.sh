@@ -136,6 +136,27 @@ assert_eq "an empty review map clears no review recommendation" \
 assert_eq "an empty plan map clears no plan task" \
   "0" "$(work_gone_clearances "$(blocked_of W10-breach-handling)" "$states" '{}' '{}' '{}' | jq 'length')"
 
+# --- The argv cap (requirement 4g) ----------------------------------------------
+# The open blocked set grows with the fleet's history — block entries carry
+# their evidence payloads — and so does the source-states array with the repo
+# list. Delivered via `--argjson`, past MAX_ARG_STRLEN (131072 bytes, the
+# kernel's per-entry argv cap) this call failed into its `2>/dev/null || true`
+# and printed `[]`, which reads exactly like "nothing is demonstrably finished":
+# every block held open forever, with no error anywhere to say the reconciler
+# had stopped running. Requirement 4g puts both arrays on stdin; this pins it,
+# with a fixture the first assertion proves is genuinely past the cap. The
+# padding names a repo no digest covers, so it clears nothing of its own and
+# the sole clearance is still the closed issue's.
+big_blocked="$(jq -nc --argjson keep "$(blocked_of 125)" \
+  '[range(3000) | {repo: "o/filler", item: ("TD-fill-" + tostring),
+    ts: "2026-07-01T00:00:00Z", detail: ("pad " + ("x" * 40))}] + $keep')"
+assert_eq "the oversized blocked fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_blocked" | wc -c) > 131072 ))"
+assert_eq "a blocked extract past the argv cap still clears the closed issue's block" \
+  "issue #125 is closed" "$(reason_of "$(work_gone_clearances "$big_blocked" "$states")")"
+assert_eq "  ... and the padding, whose repo no digest covers, clears nothing" "1" \
+  "$(work_gone_clearances "$big_blocked" "$states" | jq 'length')"
+
 # The classes deliberately left to the Enabler: a security finding, a
 # code-quality finding, a register-hygiene item. A finding is the one that must
 # never be inferred from absence — gather-findings.sh degrades to [] on an API

@@ -252,6 +252,34 @@ assert_eq "…and is ignored when the derivation already exceeds it" \
 assert_eq "an empty table still derives a lock, from the priors alone" \
   "$(( (20 + 150 + 90 + 30 + 30 + 30) * 60 ))" "$(stage_budget_lock_seconds '{}' '{}' 30 0)"
 
+# --- 9a. All-actor overrides, the shared input scripts/doctor.sh and --------------------
+#         agent-cycle.sh both derive the lock from (requirement 4f)
+# A plain fleet-wide key and a per-repository one both count, and a repo's is
+# never dropped just because it happens to be narrower than the fleet-wide key
+# for a different actor.
+cfg='{"timeout_reviewer": 45,
+      "repos": [{"slug": "a/one", "stage_timeouts": {"implementor": 200}},
+                {"slug": "a/two", "stage_inactivity": {"reviewer": 7}}]}'
+overrides="$(stage_budget_all_overrides "$cfg")"
+assert_eq "the plain fleet-wide key is picked up" \
+  "45" "$(jq -r '.reviewer.backstop' <<<"$overrides")"
+assert_eq "a per-repository stage_timeouts entry is picked up for its actor" \
+  "200" "$(jq -r '.implementor.backstop' <<<"$overrides")"
+assert_eq "a per-repository stage_inactivity entry is picked up for its actor" \
+  "7" "$(jq -r '.reviewer.inactivity' <<<"$overrides")"
+assert_eq "an actor nobody configured answers null, not zero" \
+  "null" "$(jq -r '.enabler.backstop' <<<"$overrides")"
+assert_eq "the Refiner is covered too, fleet-wide only (no per-repo form)" \
+  "20" "$(jq -r '.refiner.backstop' <<<"$(stage_budget_all_overrides '{"timeout_refiner": 20}')")"
+wide_cfg='{"repos": [{"slug": "a/one", "stage_timeouts": {"reviewer": 10}},
+                     {"slug": "a/two", "stage_timeouts": {"reviewer": 99}}]}'
+wide_overrides="$(stage_budget_all_overrides "$wide_cfg")"
+assert_eq "the *largest* configured value wins across repositories, not the last one read" \
+  "99" "$(jq -r '.reviewer.backstop' <<<"$wide_overrides")"
+assert_eq "…so the lock derived from it clears that widest per-repo backstop, exactly as scripts/doctor.sh reports" \
+  "$(( (20 + 150 + 99 + 30 + 30 + 30) * 60 ))" \
+  "$(stage_budget_lock_seconds '{}' "$wide_overrides" 30 0)"
+
 # --- 10. Degradation ---------------------------------------------------------------------
 # The caller launches a stage with whatever comes back, so nothing here may
 # answer with nothing.

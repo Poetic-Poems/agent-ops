@@ -420,32 +420,6 @@ stage_budget_overrides() {
       }' 2>/dev/null || printf '{}'
 }
 
-# stage_budget_all_overrides
-# The same, for every implementation actor at once, taking the *largest*
-# configured value for each — the lock derivation has to cover whichever
-# repository this cycle lands on, and a per-repository override may be wider
-# than the plain key.
-stage_budget_all_overrides() {
-  jq -nc --slurpfile c "$CONFIG_FILE" '
-    ($c[0] // {}) as $cfg
-    | ["coordinator", "implementor", "reviewer", "enabler", "refiner"]
-    | map(. as $a
-          | {
-              key: $a,
-              value: {
-                backstop: ([ $cfg["timeout_" + $a],
-                             (($cfg.repos // [])[] | (.stage_timeouts // {})[$a]) ]
-                           | map(select(type == "number"))
-                           | if length == 0 then null else max end),
-                inactivity: ([ $cfg["inactivity_" + $a],
-                               (($cfg.repos // [])[] | (.stage_inactivity // {})[$a]) ]
-                             | map(select(type == "number"))
-                             | if length == 0 then null else max end)
-              }
-            })
-    | from_entries' 2>/dev/null || printf '{}'
-}
-
 # stage_budget_apply ACTOR REPO MODEL
 # Resolve this launch's two caps, announce them on the stage-start event, and
 # leave them in `stage_backstop_min` / `stage_inactivity_min` for the launch.
@@ -865,12 +839,21 @@ gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours, pr_number
 # reason past. Malformed input degrades to passing the array through
 # unfiltered — this is a visibility layer over the atomic PR-level claim taken
 # in the selection loop below, never itself the exclusion's hard gate.
+#
+# Both arrays arrive on stdin, one JSON document per line, bound positionally
+# in the order printed (requirement 4g) — never in argv: the claims array
+# grows with the fleet's live claim count, and past MAX_ARG_STRLEN an
+# `--argjson` delivery would fail into the fail-open fallback below and pass
+# every candidate through unfiltered, reopening exactly the claimed-work
+# proposals #305 closed.
 exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
-  local candidates="$1" claimed_prs="${2:-[]}"
+  local candidates="$1" claimed_prs="${2:-[]}" docs
   jq -e 'type == "array"' <<<"$claimed_prs" >/dev/null 2>&1 || claimed_prs='[]'
-  jq -c --argjson claimed "$claimed_prs" \
-    '[.[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
-    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+  docs="$(printf '%s\n' "$candidates" "$claimed_prs")"
+  jq -nc '
+    input as $candidates | input as $claimed
+    | [ $candidates[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
+    <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
 # The item-ref sibling of exclude_claimed_prs above, and the same design
@@ -885,12 +868,18 @@ exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
 # left to reason past. Malformed input degrades to passing the array through
 # unfiltered, exactly as exclude_claimed_prs does and for the same reason:
 # this is a visibility layer over the atomic claim, never the hard gate.
+#
+# Both arrays arrive on stdin, one JSON document per line, bound positionally
+# in the order printed (requirement 4g) — never in argv, for the same reason
+# and on the same fail-open terms as exclude_claimed_prs above.
 exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
-  local candidates="$1" claimed_items="${2:-[]}"
+  local candidates="$1" claimed_items="${2:-[]}" docs
   jq -e 'type == "array"' <<<"$claimed_items" >/dev/null 2>&1 || claimed_items='[]'
-  jq -c --argjson claimed "$claimed_items" \
-    '[.[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
-    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+  docs="$(printf '%s\n' "$candidates" "$claimed_items")"
+  jq -nc '
+    input as $candidates | input as $claimed
+    | [ $candidates[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
+    <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
 # Requirement 3t/issue #310: drop any candidate whose `ref` is recorded
@@ -3036,6 +3025,55 @@ create_escalation_issue() {
   printf '%s\t%s' "$number" "$url"
 }
 
+# crash_loop_escalate VERDICT_JSON ITEM_REF KIND_LABEL TITLE_PREFIX EVIDENCE_LINE
+# Shared by both requirement-2.7 crash-loop classes: same dedup
+# (`crash_loop_escalated_since`), same label, same load-bearing assignee, same
+# `crash-loop-escalated` event shape — only the wording, the item ref that
+# keys `create_escalation_issue`'s open-issue dedup, and where a human should
+# start reading differ between them. KIND_LABEL is the plural noun phrase for
+# "N consecutive KIND_LABEL"; EVIDENCE_LINE is a prose line naming what to
+# read first.
+crash_loop_escalate() {
+  local verdict_json="$1" item_ref="$2" kind_label="$3" title_prefix="$4" evidence_line="$5"
+  local cl_detail cl_first_ts cl_body cl_created
+  cl_detail="$(jq -r '.detail // ""' <<<"$verdict_json")"
+  cl_first_ts="$(jq -r '.first_ts // ""' <<<"$verdict_json")"
+  if crash_loop_escalated_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
+    return 0
+  fi
+  cl_body="$cycle_dir/crash-loop-issue-${item_ref#crash-loop:}.md"
+  {
+    printf '## What the fleet log shows\n\n'
+    jq -r --arg k "$kind_label" \
+      '"- **\(.count) consecutive \($k)**, every one `\(.detail)`\n- first at `\(.first_ts)`, still failing at `\(.last_ts)`\n- nodes affected: \(.nodes | join(", "))"' \
+      <<<"$verdict_json"
+    cat <<CRASH_LOOP_BODY
+
+No recovery — a success, or (for a pre-selection death) a cycle reaching a
+selection stage — has happened anywhere in the fleet since the first of these.
+A failure this uniform is almost certainly deterministic — something that
+ships in the image or the config, not a transient — so no amount of retrying
+will clear it, and until it clears the fleet selects no work at all.
+
+$evidence_line
+
+---
+Filed automatically by agent-cycle.sh (requirement 2.7).
+ref: $item_ref
+CRASH_LOOP_BODY
+  } > "$cl_body"
+  if cl_created="$(create_escalation_issue "$crash_loop_repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "$title_prefix ($cl_detail)" \
+        "$cl_body")" && [[ -n "$cl_created" ]]; then
+    log_event "crash-loop-escalated" "$(jq -c \
+      --argjson n "${cl_created%%$'\t'*}" --arg u "${cl_created#*$'\t'}" \
+      '. + {issue_number: $n, issue_url: $u}' <<<"$verdict_json")"
+  else
+    log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
+  fi
+}
+
 # maybe_run_enabler CYCLE_EXIT_CODE
 # Engage the Enabler if this cycle should, and translate its verdicts into log
 # events and issues. Always returns without disturbing the cycle's outcome.
@@ -3118,10 +3156,17 @@ maybe_run_enabler() {
   # `$lbl`, not `$label`: `label` is a jq keyword, and a jq program that fails to
   # compile here would leave the runtime input empty — which the guard below turns
   # into a silently skipped engagement.
-  input="$(jq -nc --argjson items "$claimed_json" --arg lbl "$enabler_escalation_label" \
+  # The claimed items arrive on stdin, bound with `input as $items`
+  # (requirement 4g) — never in argv. Only the refinement class is capped per
+  # engagement (see the claim loop above); ordinary blocked items are not, and
+  # each carries its block's evidence payload, so past MAX_ARG_STRLEN this
+  # build would fail into the guard below and skip the engagement silently —
+  # disabling the very stage that retires blocked state.
+  input="$(jq -nc --arg lbl "$enabler_escalation_label" \
     --arg assignee "$enabler_assignee" --arg cycle "$cycle_id" --arg node "$node_name" \
-    '{items: $items, escalation_label: $lbl, assignee: $assignee, cycle: $cycle, node: $node}' \
-    2>/dev/null || true)"
+    'input as $items
+     | {items: $items, escalation_label: $lbl, assignee: $assignee, cycle: $cycle, node: $node}' \
+    <<<"$claimed_json" 2>/dev/null || true)"
   [[ -n "$input" ]] || return 0
 
   prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" enabler "$prompt_overrides_json")
@@ -3306,7 +3351,7 @@ $(jq . <<<"$input")
                   '{pr_url: $u, handoff: "enabler", state: $h}
                    + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
                    + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
-                   + (if $hr == "" or $hr == "skip" then {}
+                   + (if $hr == "" or ($hr | startswith("skip")) then {}
                       else {human_review_requested: $hr, human_reviewer: $ha} end)')"
                 ;;
               *)
@@ -3484,9 +3529,15 @@ maybe_run_refiner() {
   (( n_claimed > 0 )) || return 0
 
   # --- One engagement over every claimed item ---
-  input="$(jq -nc --argjson items "$claimed_json" --arg lbl "$refined_label" \
+  # The claimed items arrive on stdin, bound with `input as $items`
+  # (requirement 4g) — never in argv, on the same terms as the Enabler's build
+  # above: past MAX_ARG_STRLEN this would fail into the guard below and skip
+  # the engagement silently.
+  input="$(jq -nc --arg lbl "$refined_label" \
     --arg cycle "$cycle_id" --arg node "$node_name" \
-    '{items: $items, refined_label: $lbl, cycle: $cycle, node: $node}' 2>/dev/null || true)"
+    'input as $items
+     | {items: $items, refined_label: $lbl, cycle: $cycle, node: $node}' \
+    <<<"$claimed_json" 2>/dev/null || true)"
   [[ -n "$input" ]] || return 0
 
   prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" refiner "$prompt_overrides_json")
@@ -3786,7 +3837,7 @@ stage_budget_json="$(stage_budget_table \
 # than asserted against them by hand (requirement 4f). A configured
 # `lock_stale_after` is a floor, never a ceiling.
 lock_stale_after_sec="$(stage_budget_lock_seconds "$stage_budget_json" \
-  "$(stage_budget_all_overrides)" "$LOCK_SLACK_MIN" "$lock_stale_configured_hours")"
+  "$(stage_budget_all_overrides "$stage_budget_config")" "$LOCK_SLACK_MIN" "$lock_stale_configured_hours")"
 
 acquire_lock
 
@@ -3806,44 +3857,32 @@ acquire_lock
 # raises the alarm; after the union snapshot, because the loop is a property
 # of the fleet's memory, not this node's. The cycle then proceeds normally —
 # detection must never suppress the recovery attempt that might end the loop.
+#
+# Two classes share this block, through the one `crash_loop_escalate` path:
+# a Co-Ordinator that runs and fails identically (`crash_loop_verdict`), and
+# a cycle that dies before any stage — Co-Ordinator included — ever starts
+# (`crash_loop_preselection_verdict`, TD-PPagop-26081302). The second exists
+# because the first is blind to exactly the shape both real outages took:
+# `execve` failing on an oversized argv kills the cycle before `stage-start`
+# for any stage is ever logged, so no `attempt-failed` exists for
+# `crash_loop_verdict` to count. Each class keys its own item ref, so either
+# can escalate independently of the other.
 if ! (( DRY_RUN )) && (( crash_loop_after > 0 )) \
     && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" && -s "$union_log" ]]; then
   crash_loop_json="$(crash_loop_verdict "$crash_loop_after" < "$union_log")"
   if [[ -n "$crash_loop_json" ]]; then
-    cl_detail="$(jq -r '.detail // ""' <<<"$crash_loop_json")"
-    cl_first_ts="$(jq -r '.first_ts // ""' <<<"$crash_loop_json")"
-    if ! crash_loop_escalated_since "$cl_first_ts" "$cl_detail" < "$union_log"; then
-      cl_body="$cycle_dir/crash-loop-issue.md"
-      {
-        printf '## What the fleet log shows\n\n'
-        jq -r '"- **\(.count) consecutive Co-Ordinator failures**, every one `\(.detail)`\n- first at `\(.first_ts)`, still failing at `\(.last_ts)`\n- nodes affected: \(.nodes | join(", "))"' \
-          <<<"$crash_loop_json"
-        cat <<'CRASH_LOOP_BODY'
+    crash_loop_escalate "$crash_loop_json" "crash-loop:coordinator" \
+      "Co-Ordinator failures" \
+      "Crash loop: the Co-Ordinator is failing fleet-wide" \
+      "Start with the newest failing cycle's \`coordinator.out.stderr\` under \`state_dir/cycles/\`; the stage transcripts survive every failure."
+  fi
 
-No Co-Ordinator has succeeded anywhere in the fleet since the first of these.
-A failure this uniform is almost certainly deterministic — something that ships
-in the image or the config, not a transient — so no amount of retrying will
-clear it, and until it clears the fleet selects no work at all.
-
-Start with the newest failing cycle's `coordinator.out.stderr` under
-`state_dir/cycles/`; the stage transcripts survive every failure.
-
----
-Filed automatically by agent-cycle.sh (requirement 2.7).
-ref: crash-loop:coordinator
-CRASH_LOOP_BODY
-      } > "$cl_body"
-      if cl_created="$(create_escalation_issue "$crash_loop_repo" "crash-loop:coordinator" \
-            "$enabler_escalation_label" \
-            "Crash loop: the Co-Ordinator is failing fleet-wide ($cl_detail)" \
-            "$cl_body")" && [[ -n "$cl_created" ]]; then
-        log_event "crash-loop-escalated" "$(jq -c \
-          --argjson n "${cl_created%%$'\t'*}" --arg u "${cl_created#*$'\t'}" \
-          '. + {issue_number: $n, issue_url: $u}' <<<"$crash_loop_json")"
-      else
-        log_event "warning" "$(jq -nc --arg d "crash loop detected ($cl_detail) but the escalation issue could not be filed — will retry next cycle" '{detail: $d}')"
-      fi
-    fi
+  crash_loop_preselection_json="$(crash_loop_preselection_verdict "$crash_loop_after" < "$union_log")"
+  if [[ -n "$crash_loop_preselection_json" ]]; then
+    crash_loop_escalate "$crash_loop_preselection_json" "crash-loop:pre-selection" \
+      "cycles dying before any stage started" \
+      "Crash loop: cycles are dying before any stage starts" \
+      "No stage transcript exists for a cycle that dies before any stage begins — start with the newest failing cycle's entry in \`cron.log\` (or \`cron.log.1\` after rotation) under \`state_dir/\`."
   fi
 fi
 
@@ -4361,25 +4400,34 @@ while IFS=$'\t' read -r _ slug default_branch; do
     --arg ipp "$implementation_plan_path" \
     '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)')"
-  ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
+  # $entry — one repo's whole pre-fetched sources, including issue threads
+  # (requirement 3d/#118) and its open tech-debt register (requirement
+  # 3t/#310) — is the least bounded value in this loop, and the accumulator it
+  # joins only grows every iteration. Both arrive on stdin, one document per
+  # line, bound positionally with `input as $name` in the order printed
+  # (requirement 4g) — never in argv, where past MAX_ARG_STRLEN this append
+  # would silently drop the repo from the Co-Ordinator's whole input.
+  ordered_repos_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+    <<<"$ordered_repos_json"$'\n'"$entry")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
   # byte the Co-Ordinator pays to read. A cost-control feature that grows the
   # prompt it is meant to avoid buying has not saved anything.
   state="$(gather_source_state "$slug" "$default_branch")"
-  source_states_json="$(jq -c --argjson s "$state" '. + [$s]' <<<"$source_states_json")"
+  source_states_json="$(jq -nc 'input as $arr | input as $s | $arr + [$s]' \
+    <<<"$source_states_json"$'\n'"$state")"
   # Requirement 34f, gathered here for the repo loop's one `gh` budget but read
   # below, before the skip-lists: a human's instruction to reopen a void has to
   # land *before* the extract the Co-Ordinator is handed, not after it.
-  unvoid_requests_json="$(jq -c --argjson r "$(gather_unvoid_requests "$slug")" '. + $r' \
-    <<<"$unvoid_requests_json")"
+  unvoid_requests_json="$(jq -nc 'input as $arr | input as $r | $arr + $r' \
+    <<<"$unvoid_requests_json"$'\n'"$(gather_unvoid_requests "$slug")")"
   # Requirement 34g, same reasoning: a human's hand-applied label has to reach
   # the skip-list before the Co-Ordinator is handed it. An empty
   # `needs_refinement_label` disables the projection entirely (README.md), so
   # there is nothing to scan for and no `gh` call to spend.
   if [[ -n "$needs_refinement_label" ]]; then
-    hand_flagged_refinements_json="$(jq -c --argjson r "$(gather_hand_flagged_refinements "$slug")" '. + $r' \
-      <<<"$hand_flagged_refinements_json")"
+    hand_flagged_refinements_json="$(jq -nc 'input as $arr | input as $r | $arr + $r' \
+      <<<"$hand_flagged_refinements_json"$'\n'"$(gather_hand_flagged_refinements "$slug")")"
   fi
 done < <(repo_order_by_effective_age "$repo_order_now" "$repos_json" < "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
@@ -6276,7 +6324,7 @@ if [[ "$rev_status" == "ready" ]]; then
     '{pr_url: $u, handoff: $h}
      + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
      + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
-     + (if $hr == "" or $hr == "skip" then {}
+     + (if $hr == "" or ($hr | startswith("skip")) then {}
         else {human_review_requested: $hr, human_reviewer: $ha} end)')"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
