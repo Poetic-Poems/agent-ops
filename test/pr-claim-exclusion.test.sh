@@ -233,6 +233,29 @@ assert_eq "gather_claimed's item ref is exactly what excludes a candidate on the
 assert_eq "…and the survivor is the unclaimed one" "TD2" \
   "$(jq -r '.[0].ref' <<<"$issues_after")"
 
+# --- The argv cap (requirement 4g) ---------------------------------------------
+# Both claims arrays grow with the fleet's live claim count, and both functions
+# degrade fail-*open*: on a jq failure the candidate array passes through
+# unfiltered. Delivered via `--argjson`, that made the cap's arrival past
+# MAX_ARG_STRLEN (131072 bytes, the kernel's per-entry argv cap) reopen exactly
+# the claimed-work proposals #305 closed — silently, because passing a
+# candidate through is what this function does on purpose in every other
+# failure. Requirement 4g puts both arrays on stdin; these pin it, with
+# fixtures the size assertions prove are genuinely past the cap. The filler PR
+# numbers start well above the fixture's own so the padding cannot do the
+# filtering the assertion is attributing to the claim.
+big_claimed_prs="$(jq -nc '[range(200000; 230000)] + [57]')"
+assert_eq "the oversized claimed-PR fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_claimed_prs" | wc -c) > 131072 ))"
+assert_eq "a claims array past the argv cap still drops the claimed PR" "2" \
+  "$(jq 'length' <<<"$(exclude_claimed_prs "$candidates" "$big_claimed_prs")")"
+
+big_claimed_items="$(jq -nc '[range(12000) | "fill-" + tostring] + ["247", "register-hygiene-422a6ef41c6f"]')"
+assert_eq "the oversized claimed-item fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_claimed_items" | wc -c) > 131072 ))"
+assert_eq "a claimed-item array past the argv cap still drops both claimed refs" "2" \
+  "$(jq 'length' <<<"$(exclude_claimed_items "$item_candidates" "$big_claimed_items")")"
+
 # --- candidate_preclaimed: the claim loop's own pre-claim check (17a) -----------
 claims_fixture='[
   {"repo": "o/r", "item": "247", "age_hours": 2},
@@ -320,6 +343,27 @@ assert_eq "an unrelated blocked item kind (tech-debt) is untouched" "1" \
   "$(jq '[.eligible[] | select(.item == "TD123")] | length' <<<"$result")"
 assert_eq "the drop is logged, not silent" "true" \
   "$(jq -r '.logged | test("enabler-stale-refs-skipped")' <<<"$result")"
+
+# The merge-conflicts gather's *other* shape, `pr-<n>-superseded-<sha>`
+# (requirement 3g, TD-PPagop-26081304), is scoped to the same head SHA and comes
+# from the same array, so requirement 35e's filter must reach it identically. It
+# is not hypothetical: a supersession void requirement 34d refuses — the newer
+# bump merged between the gather and the void, or `gh pr list` failed — is
+# recorded blocked under exactly this ref (requirement 32a), and a shape this
+# filter cannot see would sit `enabler_eligible` forever, which is the
+# `pr-205-conflict-305ca060016d` engagement-per-recheck failure issue #238 closed.
+sup_ordered='[{"slug": "o/r",
+               "merge_conflicts": [{"ref": "pr-129-superseded-c96c8ef9d31a"}],
+               "abandoned_drafts": []}]'
+sup_eligible='[
+  {"repo": "o/r", "item": "pr-129-superseded-aaaaaaaaaaaa", "reason": "threshold"},
+  {"repo": "o/r", "item": "pr-129-superseded-c96c8ef9d31a", "reason": "threshold"}
+]'
+sup_result="$(run_stale_ref_block "$sup_ordered" "$sup_eligible")"
+assert_eq "a stale superseded-shape ref is dropped too" "0" \
+  "$(jq '[.eligible[] | select(.item == "pr-129-superseded-aaaaaaaaaaaa")] | length' <<<"$sup_result")"
+assert_eq "  ... while the one this cycle's gather still reports survives" "1" \
+  "$(jq '[.eligible[] | select(.item == "pr-129-superseded-c96c8ef9d31a")] | length' <<<"$sup_result")"
 
 # A PR fully resolved (no longer conflicted or abandoned at all) supersedes its
 # blocked ref exactly as a moved head does — absent from the live set either way.

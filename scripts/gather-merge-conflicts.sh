@@ -18,7 +18,11 @@
 # Candidate shape (our own PRs):
 #   {
 #     "source": "merge-conflicts",
-#     "ref": "pr-57-conflict-1a2b3c4d5e6f", // stable, and scoped to THIS head
+#     "ref": "pr-57-conflict-1a2b3c4d5e6f", // stable, scoped to THIS head; a
+#                                             // Dependabot candidate superseded
+#                                             // by a newer bump instead mints
+#                                             // "pr-57-superseded-1a2b3c4d5e6f"
+#                                             // (see the "superseded_by" note below)
 #     "number": 57,
 #     "pr_number": 57,
 #     "url": "https://github.com/…/pull/57",
@@ -42,7 +46,14 @@
 #                                 // the head SHA — see lib/dependabot-bump.sh)
 #   "superseded_by": null        // another open Dependabot PR's number, when
 #                                 // it bumps the same dependency to a newer
-#                                 // version than this one — this PR is moot
+#                                 // version than this one — this PR is moot.
+#                                 // When set, `ref` above mints the distinct
+#                                 // "pr-<n>-superseded-<head-sha>" shape
+#                                 // instead of "pr-<n>-conflict-<head-sha>",
+#                                 // so requirement 34k can close this PR on
+#                                 // the void without re-admitting an
+#                                 // unrelated, merely-conflicted PR of ours
+#                                 // that happens to share the conflict shape
 #   "superseded_evidence": null  // present only when superseded_by is —
 #                                 // pre-formatted, corroboration-safe evidence
 #                                 // text a Co-Ordinator can copy verbatim into
@@ -154,6 +165,12 @@
 # review-feedback's per-round refs: an unattended system expires items by
 # irrelevance.
 #
+# The same head-sha scoping applies to the `pr-<n>-superseded-<head-sha>` shape
+# a superseded Dependabot candidate mints instead: a fresh commit on that PR's
+# branch (a rebase, say) mints a fresh ref just as it would for the conflict
+# shape, so a stale void of an earlier head never suppresses a state nobody has
+# looked at.
+#
 # Fails safe: always prints a valid JSON array and exits 0. A repo with no
 # conflicted PRs contributes `[]`; an API that will not answer contributes `[]`
 # too (the source simply does not fire this cycle) — but note gather-source-state.sh
@@ -182,22 +199,40 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
-# The open, agent-raised, non-draft, definitively-conflicting PRs, with their
-# commits so the head SHA arrives in the same call. stderr is shown, not
-# swallowed: a `gh` that rejects a field name otherwise degrades to an empty
-# array indistinguishable from "no conflicts", and the source silently never
-# fires — the `[]`-on-error trap in the Gotchas table that cost the sibling
-# gatherers a debugging round. `mergeable` is selected against `== "CONFLICTING"`
-# exactly (never UNKNOWN — see the header). Heads may be `agent/…` or — for
-# tech-debt items, whose claim branch is the human protocol's own `td/<ID>` —
-# `td/…`; the label filter is the primary "ours" signal either way.
-ours="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
-        --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body \
-        --jq "[.[] | select(.isDraft | not)
-                   | select(.mergeable == \"CONFLICTING\")
-                   | select((.headRefName | startswith(\"$branch_prefix\"))
-                            or (.headRefName | startswith(\"td/\")))]" \
+# The open, agent-raised PRs, fetched raw — the filter runs afterwards, so the
+# truncation check below counts what GitHub returned rather than what the
+# filter kept. `headRefOid`, not the `commits` collection, for requirement 3e's
+# two reasons: the collection read costs `--limit`-slots × 100 nodes where the
+# scalar measures 1 point (the Gotchas table's slots-not-rows entry, and the
+# bulk of the 2026-08-12 budget exhaustion), and at the collection's 100-item
+# cap `commits[-1]` was the hundredth commit rather than the head — the scalar
+# is the head at any branch length. stderr is shown, not swallowed: a `gh` that
+# rejects a field name otherwise degrades to an empty array indistinguishable
+# from "no conflicts", and the source silently never fires — the `[]`-on-error
+# trap in the Gotchas table that cost the sibling gatherers a debugging round.
+ours_all="$("$GH" pr list -R "$slug" --state open --label "$pr_label" \
+        --limit "$GITHUB_PR_LIST_LIMIT" \
+        --json number,title,headRefName,headRefOid,baseRefName,isDraft,mergeable,updatedAt,url,body \
         || true)"
+jq -e 'type == "array"' <<<"$ours_all" >/dev/null 2>&1 || ours_all='[]'
+
+# A listing at the cap may be missing entries (lib/github-limit.sh). Here the
+# loss is a conflicted PR that is simply not offered this cycle — the safe
+# direction every exclusion in this source takes — so it is said out loud and
+# the run continues.
+if github_pr_list_truncated "$(jq 'length' <<<"$ours_all")"; then
+  echo "gather-merge-conflicts: $slug: the pull-request listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a conflict beyond it is not offered this cycle" >&2
+fi
+
+# `mergeable` is selected against `== "CONFLICTING"` exactly (never UNKNOWN —
+# see the header). Heads may be `agent/…` or — for tech-debt items, whose claim
+# branch is the human protocol's own `td/<ID>` — `td/…`; the label filter is
+# the primary "ours" signal either way.
+ours="$(jq -c "[.[] | select(.isDraft | not)
+                    | select(.mergeable == \"CONFLICTING\")
+                    | select((.headRefName | startswith(\"$branch_prefix\"))
+                             or (.headRefName | startswith(\"td/\")))]" \
+        <<<"$ours_all" 2>/dev/null || echo '[]')"
 jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
 
 # Dependabot's whole active-bump set for this repo, every mergeable state, read
@@ -207,9 +242,19 @@ jq -e 'type == "array"' <<<"$ours" >/dev/null 2>&1 || ours='[]'
 # is fetched here (and nowhere in the `ours` call above) purely to compute
 # `rebase_requested` — our own PRs have no such field to read.
 dependabot_open="$("$GH" pr list -R "$slug" --state open --author "$DEPENDABOT_LOGIN" \
-        --json number,title,headRefName,baseRefName,commits,isDraft,mergeable,updatedAt,url,body,comments \
+        --limit "$GITHUB_PR_LIST_LIMIT" \
+        --json number,title,headRefName,headRefOid,baseRefName,isDraft,mergeable,updatedAt,url,body,comments \
         || true)"
 jq -e 'type == "array"' <<<"$dependabot_open" >/dev/null 2>&1 || dependabot_open='[]'
+
+# Truncation here can hide more than a candidate: a newer bump beyond the cap
+# is not counted as superseding, so a conflicted bump it would have excused is
+# minted as the conflict shape instead. Still cost, not damage — the conflict
+# shape's treatment (nudge, then take over) closes nothing, and a supersession
+# void is corroborated live by lib/void-guard.sh before anything closes.
+if github_pr_list_truncated "$(jq 'length' <<<"$dependabot_open")"; then
+  echo "gather-merge-conflicts: $slug: the Dependabot listing came back at its ${GITHUB_PR_LIST_LIMIT}-item cap; a bump beyond it is neither offered nor counted as superseding this cycle" >&2
+fi
 
 bot_conflicts="$(jq -c '[.[] | select(.isDraft | not) | select(.mergeable == "CONFLICTING")]' \
                  <<<"$dependabot_open" 2>/dev/null || echo '[]')"
@@ -220,7 +265,7 @@ emit() {  # <pr-json> <bot: true|false>
   local pr="$1" bot="$2" number head_sha item cand
   local rebase_requested="false" superseded_by="" superseded_evidence=""
   number="$(jq -r '.number' <<<"$pr")"
-  head_sha="$(jq -r '.commits[-1].oid // ""' <<<"$pr")"
+  head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || return 0
 
   # The originating item, so the Implementor can find the tech-debt entry, issue,
@@ -247,9 +292,12 @@ emit() {  # <pr-json> <bot: true|false>
     fi
   fi
 
+  local ref_kind="conflict"
+  [[ -n "$superseded_by" ]] && ref_kind="superseded"
+
   cand="$(jq -nc \
     --argjson pr "$pr" \
-    --arg ref "pr-${number}-conflict-${head_sha:0:12}" \
+    --arg ref "pr-${number}-${ref_kind}-${head_sha:0:12}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
     --argjson bot "$bot" \

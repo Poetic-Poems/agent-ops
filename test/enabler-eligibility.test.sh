@@ -348,6 +348,23 @@ printf '%s' '{"ts":"2026-07-23T09:00:00Z","cycle":"c4","event":"cycle-e' >> "$lo
 assert_eq "a malformed trailing line does not lose an eligible item" "threshold" \
   "$(reason_for TD1)"
 
+# --- The argv cap (requirement 4g) ---
+# The open-issues map carries one number per open issue per repo, so it grows
+# with the fleet's issue count rather than with anything this rule bounds.
+# Delivered via `--argjson` it would, past MAX_ARG_STRLEN (131072 bytes, the
+# kernel's per-entry argv cap), make the whole rule's jq fail into its
+# `|| true` and print `[]` — every blocked item read as ineligible, which is
+# the direction that silently retires the Enabler rather than one that shows up
+# as an error anywhere. Requirement 4g puts the map on stdin; this pins it,
+# with a fixture the first assertion proves is genuinely past the cap.
+escalated_log
+big_open="$(jq -nc --argjson keep "$open_none" \
+  '$keep + ([range(9000) | {("o/filler-" + tostring): [1, 2, 3]}] | add)')"
+assert_eq "the oversized open-issues fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_open" | wc -c) > 131072 ))"
+assert_eq "an open-issues map past the argv cap still reads the escalation as closed" \
+  "issue-closed" "$(reason_for TD1 3 0 "$big_open")"
+
 # The call-site shape under `set -e`: the Script computes this inside a cycle
 # that must survive whatever the log contains, and calls it from the exit trap's
 # path. An unreadable log is a normal outcome, not a reason to die.

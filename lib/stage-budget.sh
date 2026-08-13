@@ -424,6 +424,46 @@ stage_budget_resolve() {
   printf '%s\n' "$out"
 }
 
+# stage_budget_all_overrides CONFIG_JSON
+# What the configuration says about every implementation actor at once, in
+# the OVERRIDES_JSON shape stage_budget_lock_seconds takes — taking the
+# *largest* configured value for each, across the plain `timeout_<actor>` /
+# `inactivity_<actor>` key and every repository's `stage_timeouts` /
+# `stage_inactivity`: the lock derivation has to cover whichever repository
+# this cycle lands on, and a per-repository override may be wider than the
+# plain key.
+#
+# CONFIG_JSON is the parsed content of config.json, not a path, so this stays
+# a pure function like the rest of this file. agent-cycle.sh (deriving the
+# cycle lock a running cycle will hold) and scripts/doctor.sh (reporting that
+# same threshold before any cycle runs) both call this rather than each
+# keeping its own expression of "the widest configured cap per actor" — two
+# independently maintained lists is exactly how they drifted before: doctor's
+# own read once covered the plain key alone, so a per-repository override
+# could pin an actor's backstop while the reported lock silently stayed
+# narrower than the one agent-cycle.sh actually derived.
+stage_budget_all_overrides() {
+  local cfg="${1:-{\}}"
+  jq -nc --argjson c "$cfg" '
+    ($c // {}) as $cfg
+    | ["coordinator", "implementor", "reviewer", "enabler", "refiner"]
+    | map(. as $a
+          | {
+              key: $a,
+              value: {
+                backstop: ([ $cfg["timeout_" + $a],
+                             (($cfg.repos // [])[] | (.stage_timeouts // {})[$a]) ]
+                           | map(select(type == "number"))
+                           | if length == 0 then null else max end),
+                inactivity: ([ $cfg["inactivity_" + $a],
+                               (($cfg.repos // [])[] | (.stage_inactivity // {})[$a]) ]
+                             | map(select(type == "number"))
+                             | if length == 0 then null else max end)
+              }
+            })
+    | from_entries' 2>/dev/null || printf '{}'
+}
+
 # stage_budget_lock_seconds TABLE OVERRIDES_JSON SLACK_MIN [CONFIGURED_HOURS]
 # The cycle lock must outlast a cycle that runs every stage to its limits, and
 # every stage limit now moves. So the lock is *derived* from the backstops in

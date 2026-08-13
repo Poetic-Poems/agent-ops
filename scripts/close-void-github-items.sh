@@ -28,7 +28,16 @@
 #                             would discard live work — it did, for real, to
 #                             pull request #264 — so this one shape is left
 #                             alone exactly like a non-GitHub-object void
-#                             (TD-PPagop-26080901).
+#                             (TD-PPagop-26080901). Its sibling shape,
+#                             `pr-<n>-superseded-<head-sha>` (a Dependabot bump
+#                             a newer open bump has made moot, requirement 3s),
+#                             makes the opposite claim — the pull request
+#                             itself is moot, not merely its conflict — so it
+#                             is *not* excluded: it closes through the ordinary
+#                             `pr-<n>-…` branch above like any other pull
+#                             request void (TD-PPagop-26081304). No logic in
+#                             this file distinguishes the two shapes; the
+#                             exclusion below matches `-conflict-` alone.
 # Every other void shape (a tech-debt register id, a review ref, a plan task
 # id) names something that is not a GitHub object to close and is left alone
 # here entirely.
@@ -132,17 +141,20 @@ while IFS=$'\t' read -r item detail evidence stage; do
     *) continue ;;
   esac
 
-  # A merge-conflicts void names the pull request only to say the *conflict*
-  # on it resolved — the PR itself is not the work that is gone, and closing
-  # it here would discard a live, unconflicted PR of ours (requirement 34k,
-  # TD-PPagop-26080901). Left unprocessed, exactly like a void shape that
-  # names no GitHub object at all — and skipped here, before the action cap,
-  # for the same reason the stage gate above is: this script will never
-  # action this shape on any cycle, so it must not eat a slot, nor count as
-  # deferred work a later pass could do. Counting it would report
+  # A `pr-<n>-conflict-…` void names the pull request only to say the
+  # *conflict* on it resolved — the PR itself is not the work that is gone,
+  # and closing it here would discard a live, unconflicted PR of ours
+  # (requirement 34k, TD-PPagop-26080901). Left unprocessed, exactly like a
+  # void shape that names no GitHub object at all — and skipped here, before
+  # the action cap, for the same reason the stage gate above is: this script
+  # will never action this shape on any cycle, so it must not eat a slot, nor
+  # count as deferred work a later pass could do. Counting it would report
   # `remaining: N` for items nothing will ever do, every cycle forever, since
   # a shape this never closes never earns the `void-object-closed` that would
-  # retire it (requirement 34n).
+  # retire it (requirement 34n). This exclusion matches `-conflict-` alone —
+  # its sibling shape `pr-<n>-superseded-…` makes the opposite claim (the pull
+  # request itself is moot) and falls through to the ordinary `pr-<n>-…`
+  # close branch below (TD-PPagop-26081304).
   if grep -qE '^pr-[0-9]+-conflict-' <<<"$item"; then
     continue
   fi

@@ -476,6 +476,8 @@ void_shapes='[
   {"repo":"o/r","item":"failed-run-sync-framework","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/r","item":"pr-12-conflict-1a2b3c4d5e6f","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/r","item":"pr-13-conflict-9f8e7d6c5b4a","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"pr-14-superseded-1234567890ab","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"pr-15-superseded-abcdef123456","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/other","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
   {"item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"}
 ]'
@@ -484,7 +486,7 @@ gather_map='{
     "alert": {"ok": true, "ids": ["dependabot-alert-1"]},
     "register-hygiene": {"ok": true, "ids": ["register-hygiene-aaaaaaaaaaaa"]},
     "failed-run": {"ok": false, "ids": []},
-    "merge-conflict": {"ok": true, "ids": ["pr-12-conflict-1a2b3c4d5e6f"]}
+    "merge-conflict": {"ok": true, "ids": ["pr-12-conflict-1a2b3c4d5e6f", "pr-14-superseded-1234567890ab"]}
   }
 }'
 liveness_out="$(void_liveness_actioned "$void_shapes" "$gather_map")"
@@ -524,6 +526,13 @@ assert_eq "merge-conflict-resolved: a conflict still reported by this cycle's ga
 assert_eq "merge-conflict-resolved: a conflict no longer reported is actioned" \
   "liveness-merge-conflict" \
   "$(jq -r '.[] | select(.item == "pr-13-conflict-9f8e7d6c5b4a") | .by' <<<"$liveness_out")"
+# The broadened regex (TD-PPagop-26081304) covers the sibling `-superseded-`
+# shape identically — same source, same gather, same rule.
+assert_eq "merge-conflict-resolved: a superseded bump still reported this cycle is kept" \
+  "0" "$(jq '[.[] | select(.item == "pr-14-superseded-1234567890ab")] | length' <<<"$liveness_out")"
+assert_eq "merge-conflict-resolved: a superseded bump no longer reported is actioned" \
+  "liveness-merge-conflict" \
+  "$(jq -r '.[] | select(.item == "pr-15-superseded-abcdef123456") | .by' <<<"$liveness_out")"
 assert_eq "a same-id void in a different repo, absent from GATHER_JSON, decides nothing" \
   "0" "$(jq '[.[] | select(.repo == "o/other")] | length' <<<"$liveness_out")"
 assert_eq "a repo-less (hand-appended) void matches no shape's repo lookup" \
