@@ -251,18 +251,21 @@ assert_eq "one under the cap, the data is complete and the draft is judged norma
 #
 # `lib/pipeline-marker.sh` is the single definition (requirement 34a), and the
 # reader — and agent-cycle.sh's and review-cycle.sh's own comments — source it.
-# Three places cannot: the fixtures above, and the comment instructions in
-# prompts/implementor.md, prompts/enabler.md and prompts/reviewer.md, which a
-# model reads and types out. Change the prefix without changing those and the
-# Implementor, Enabler and Reviewer go on stamping a marker the gatherer no
-# longer recognises — the clock resets TD26072605 removed, back again, with
-# every test still green. These assertions are what makes the one-definition
-# claim hold for the three copies that must be spelled out.
+# Five places cannot: the fixtures above, and the comment instructions in
+# prompts/implementor.md, prompts/enabler.md, prompts/reviewer.md and
+# prompts/refiner.md, which a model reads and types out. Change the prefix
+# without changing those and the Implementor, Enabler and Reviewer go on
+# stamping a marker the gatherer no longer recognises — the clock resets
+# TD26072605 removed, back again, with every test still green. The Refiner
+# comments on issues rather than pull requests, so nothing it writes reaches
+# this gatherer at all; its copy is asserted here for the same one-definition
+# reason, not for the draft clock. These assertions are what makes the
+# one-definition claim hold for the copies that must be spelled out.
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
 assert_eq "the fixtures above carry the marker prefix the library defines" \
   "$PIPELINE_COMMENT_MARKER_PREFIX" "$marker"
-for prompt in implementor enabler reviewer; do
+for prompt in implementor enabler reviewer refiner; do
   assert_eq "prompts/$prompt.md tells its stage to write that same prefix" "yes" \
     "$(grep -qF -- "$PIPELINE_COMMENT_MARKER_PREFIX" "$SCRIPT_DIR/prompts/$prompt.md" \
        && echo yes || echo no)"

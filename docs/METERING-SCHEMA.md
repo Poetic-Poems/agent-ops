@@ -132,12 +132,15 @@ across the cycle's three rendered stages — Co-Ordinator, Implementor,
 Reviewer — treating a stage that never ran (`cost_usd: null`) as `0`. It is
 the cost of the cycle's own attempt at its item, which is what the card
 reporting it is about: spend the cycle incurred outside those three stages is
-not in it. Two things fall outside today — the Enabler, which runs from the
+not in it. Three things fall outside today — the Enabler, which runs from the
 exit trap over items other cycles left blocked (requirement 35a) and is
-rendered as its own verdict rather than as a fourth stage, and the usage-limit
-probe of requirement 1b. Both are counted in the roll-ups below, which scan
-transcripts rather than stages, so neither goes missing from a spend total;
-they are simply not attributed to one cycle's attempt.
+rendered as its own verdict rather than as a fourth stage; the Refiner, which
+runs from that same exit trap over items no cycle has specified yet
+(requirement 39) and is no more one of a cycle's rendered stages than the
+Enabler is; and the usage-limit probe of requirement 1b. All three are counted
+in the roll-ups below, which scan transcripts rather than stages, so none goes
+missing from a spend total; they are simply not attributed to one cycle's
+attempt.
 
 No other per-cycle field is currently aggregated from the per-stage token
 counts; a cycle's token totals can be derived by the same sum over `tokens.*`
@@ -158,7 +161,7 @@ recent `log.jsonl` retains. Their fields:
 | `spend_today_usd` | number | US dollars | The same sum, restricted to today (UTC). |
 | `by_day[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one UTC day. |
 | `by_model[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one model id. |
-| `by_actor[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one actor. The actor is the transcript's own filename stem, so the set is open, not enumerated: `coordinator`, `implementor`, `reviewer`, `enabler` and `limit-probe` from a cycle directory, `project-reviewer` normalised from a review's `reviewer-<repo>.out`, and any other stem verbatim — see the dashboard spec's note on actor naming. |
+| `by_actor[].usd`, `.n` | number, integer | US dollars, count | Cost and transcript count for one actor. The actor is the transcript's own filename stem, so the set is open, not enumerated: `coordinator`, `implementor`, `reviewer`, `enabler`, `refiner` and `limit-probe` from a cycle directory, `project-reviewer` normalised from a review's `reviewer-<repo>.out`, and any other stem verbatim — see the dashboard spec's note on actor naming. |
 
 ## Stability policy
 
