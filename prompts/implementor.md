@@ -480,8 +480,9 @@ takeover" above.)*
      merge, and is caught deterministically — by
      `.github/workflows/closing-keyword.yml` in agent-ops, and in every
      target repo by the Script itself, which runs the same check the moment
-     your PR is raised and refuses to hand it to the Reviewer at all if it
-     fails. Both read your branch name too, so leaving marker and keyword
+     your PR is raised (handing what it finds to the Reviewer to fix) and
+     again at the Reviewer's handoff, where a PR still missing it goes no
+     further. Both read your branch name too, so leaving marker and keyword
      both off fails the same way.
    - Implementation-plan task: mark it done where the plan tracks that
      (e.g. a checklist or status line).

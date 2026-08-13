@@ -5038,6 +5038,12 @@ if (( impl_rc != 0 )) || [[ -z "$impl_status_json" ]] || [[ "$impl_status" != "c
   exit 0
 fi
 
+# Requirement 25a's finding from the Implementor-side gate below, empty when
+# it found nothing — handed to the Reviewer as a `## Script findings` section
+# rather than acted on here. Declared before the gate can set it, since the
+# prompt that reads it is built unconditionally under `set -u`.
+closing_keyword_finding=""
+
 if [[ -n "$impl_pr_url" ]]; then
   log_event "pr-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$repo_slug" '{pr_url: $u, repo: $r}')"
   # The open PR is now the visible claim; the registry entry has done its job
@@ -5051,22 +5057,33 @@ if [[ -n "$impl_pr_url" ]]; then
   # pull request in poetic or poetic-fiddle — which carry no such workflow —
   # cannot slip through on prompt instruction alone either
   # (TD-PPagop-26080803, the same silent-skip shape issue #240 was filed
-  # over). Refuses the handoff to the Reviewer stage outright rather than
-  # spending a review on a pull request this deterministic check already
-  # knows is wrong.
+  # over).
+  #
+  # A dirty verdict here is review feedback, not a refusal. What it finds is
+  # a pull-request *body* edit — the exact class of defect the Reviewer's own
+  # step 4 fixes and pushes within the same cycle, and nothing about the diff
+  # it is about to read. Refusing the handoff would turn a self-healing case
+  # into an item recorded `attempt-failed` and blocked pending an Enabler
+  # engagement, and buy no safety: the same gate is asked again at the
+  # Reviewer's `ready` handoff, which is the only way a pull request reaches
+  # a human or a merge. What this call buys is that the Reviewer *knows* —
+  # it cannot see the later gate's verdict from inside its own session
+  # (prompts/reviewer.md step 7 says so), so unwarned it would hand off and
+  # be handed back, spending the review either way and losing the item too.
   ck_result="$(closing_keyword_gate "$impl_pr_url")" || true
   ck_word=""; ck_reason=""
   IFS=$'\t' read -r ck_word ck_reason <<<"$ck_result" || true
-  if [[ "$ck_word" == "dirty" ]]; then
-    gh pr comment "$impl_pr_url" --body "$(pipeline_comment_header script "$node_name")
-
-This pull request cannot be handed to the Reviewer: $ck_reason. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
-
-$(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
-    log_attempt_failed "implementor" "$ck_reason" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u}')"
-    release_claim have-pr
-    exit 0
-  fi
+  case "$ck_word" in
+    dirty)
+      closing_keyword_finding="$ck_reason"
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$ck_reason" \
+        '{detail: ($u + " fails the closing-keyword check as raised: " + $d + " — handed to the Reviewer to fix"), pr_url: $u}')"
+      ;;
+    unknown)
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$ck_reason" \
+        '{detail: ("could not check whether " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
+      ;;
+  esac
 fi
 
 # --- 8. Reviewer stage ---
@@ -5089,6 +5106,18 @@ rev_complexity="$(reviewer_complexity "$impl_complexity" "$impl_trivial" ${label
 rev_model="$reviewer_model_default"
 [[ "$rev_complexity" == "high" ]] && rev_model="$reviewer_model_complex"
 
+# The `## Script findings` section, present only when a script-side check has
+# something the Reviewer needs to act on — carrying its own leading newline so
+# an empty one leaves the surrounding sections spaced exactly as before.
+script_findings_section=""
+if [[ -n "$closing_keyword_finding" ]]; then
+  script_findings_section="
+## Script findings
+
+- **Closing keyword (requirement 25a):** $closing_keyword_finding
+"
+fi
+
 reviewer_prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" reviewer "$prompt_overrides_json")
 
 ## Work order
@@ -5102,7 +5131,7 @@ $(jq . <<<"$work_order_json")
 \`\`\`json
 $(jq . <<<"$impl_status_json")
 \`\`\`
-
+$script_findings_section
 ## Cycle
 
 $cycle_id
@@ -5167,7 +5196,8 @@ if [[ "$rev_status" == "ready" ]]; then
   # between the two handoffs (a pushed fix, an edited description), and this
   # is the last point before a human ever sees it. Every target repository
   # gets the same deterministic gate agent-ops's own CI workflow gives it
-  # (TD-PPagop-26080803).
+  # (TD-PPagop-26080803). This is the layer that actually gates: the earlier
+  # call only tells the Reviewer, so a Reviewer that ignored it stops here.
   ck_result="$(closing_keyword_gate "$impl_pr_url")" || true
   ck_word=""; ck_reason=""
   IFS=$'\t' read -r ck_word ck_reason <<<"$ck_result" || true
@@ -5176,6 +5206,15 @@ if [[ "$rev_status" == "ready" ]]; then
       "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $ck_reason" \
       "$impl_pr_url" "Add the missing closing keyword (Closes/Fixes/Resolves #N) for the issue this PR claims to close, then let the Reviewer re-examine it."
     exit 0
+  fi
+  # `unknown` is "the question could not be put" — a degraded `gh` on this
+  # node, not a fault in this pull request — so it warns rather than blocks,
+  # the same way an unreadable alert list does just below. A node degraded
+  # enough for this to matter does not get past `review_gate_required_checks`
+  # above in any case, which does fail closed on a check list it cannot read.
+  if [[ "$ck_word" == "unknown" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$ck_reason" \
+      '{detail: ("could not confirm " + $u + " carries its closing keyword: " + $d), pr_url: $u}')"
   fi
 
   if [[ "$gate_word" == "unknown" ]]; then

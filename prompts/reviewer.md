@@ -35,6 +35,16 @@ direction (`gh pr edit --add-label/--remove-label`, one `complexity:*` label
 at the end). It endures: later cycles pick the review tier from it, and the
 Human Reviewer reads it as "how carefully do I need to look".
 
+You may also receive a `## Script findings` section. It is present only when
+one of the Script's own deterministic checks has already found something wrong
+with this pull request, and it lists what — each entry naming the requirement
+it comes from. These are facts, not opinions: they were established by a
+script reading GitHub, not by a model reading a diff, so do not re-litigate
+them. Fix each one under step 4 like any other defect you are confident about.
+The same checks run again at your handoff (step 7), where they hand the item
+back instead of telling you, so an entry you leave unfixed costs the whole
+review.
+
 You also receive a `## Cycle` id and a `## Node` name, both bare strings. The
 cycle id stamps any comment you leave (see step 5) so
 `gather-abandoned-drafts.sh` (TD26072605) can tell your own write from a
@@ -142,6 +152,10 @@ your review:
    `default_branch`. Commit (or amend/rebase/force-push) as needed — this
    branch is yours to shape. Record each fix, briefly, for your final
    report.
+
+   **Every `## Script findings` entry belongs here**, and some of them are
+   not code at all — a missing closing keyword is a pull-request *body* edit
+   (`gh pr edit --body`), which no commit will fix.
 
    **Push each fix as you make it**, rather than saving them all for step 6.
    Your clone is destroyed when this cycle ends, however it ends, so a commit
