@@ -367,16 +367,21 @@ set_pr_alerts ''
 set_base_alerts ''
 
 # --- Survives the caller's shell options ---------------------------------------
-# agent-cycle.sh runs under `set -euo pipefail`, and reads this the same way it
-# reads confirm_pr_ready: `x="$(review_gate_verdict …)" || true`.
+# agent-cycle.sh runs under `set -euo pipefail` and, since TD-PPagop-26081305,
+# reads this by capturing the exit status rather than discarding it the way it
+# still can for confirm_pr_ready — `if x="$(review_gate_verdict …)"; then …`,
+# because the two `unknown`s are told apart by nothing else. That shape has to
+# survive `set -e` (a command substitution in an `if` condition does, the same
+# way `|| true` did), and it has to actually hand the status back.
 set_required '[{"name":"CI","bucket":"fail"}]'
 (
   set -euo pipefail
   . "$SCRIPT_DIR/lib/review-gate.sh"
   # shellcheck disable=SC2030
   REVIEW_GATE_GH="$tmp_dir/gh"
-  x="$(review_gate_verdict "$URL" "main")" || true
+  if x="$(review_gate_verdict "$URL" "main")"; then rc=0; else rc=$?; fi
   [[ "${x%%$'\t'*}" == "dirty" ]] || exit 9
+  [[ "$rc" == "1" ]] || exit 10
   exit 0
 ) >/dev/null 2>&1
 assert_eq "the real call-site shape survives set -e" "0" "$?"
