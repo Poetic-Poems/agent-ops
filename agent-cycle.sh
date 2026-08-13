@@ -83,6 +83,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/handoff.sh"
 # shellcheck source=lib/review-gate.sh
 . "$SCRIPT_DIR/lib/review-gate.sh"
+# shellcheck source=lib/closing-keyword-gate.sh
+. "$SCRIPT_DIR/lib/closing-keyword-gate.sh"
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
 # shellcheck source=lib/unvoid-label.sh
@@ -5041,6 +5043,30 @@ if [[ -n "$impl_pr_url" ]]; then
   # The open PR is now the visible claim; the registry entry has done its job
   # (and back-pressure counts the PR from here on, not the claim).
   release_claim have-pr
+
+  # Requirement 25a: `.github/workflows/closing-keyword.yml` guards this
+  # repository alone — a workflow file protects the repository that ships
+  # it, and only agent-ops does. Run the same deterministic check here,
+  # against the PR the Script already has the URL for, so an issue-sourced
+  # pull request in poetic or poetic-fiddle — which carry no such workflow —
+  # cannot slip through on prompt instruction alone either
+  # (TD-PPagop-26080803, the same silent-skip shape issue #240 was filed
+  # over). Refuses the handoff to the Reviewer stage outright rather than
+  # spending a review on a pull request this deterministic check already
+  # knows is wrong.
+  ck_result="$(closing_keyword_gate "$impl_pr_url")" || true
+  ck_word=""; ck_reason=""
+  IFS=$'\t' read -r ck_word ck_reason <<<"$ck_result" || true
+  if [[ "$ck_word" == "dirty" ]]; then
+    gh pr comment "$impl_pr_url" --body "$(pipeline_comment_header script "$node_name")
+
+This pull request cannot be handed to the Reviewer: $ck_reason. Recorded blocked; the pipeline's Enabler will re-examine it, and will raise an issue if a human is needed.
+
+$(pipeline_comment_marker "$cycle_id" script)" >/dev/null 2>&1 || true
+    log_attempt_failed "implementor" "$ck_reason" "$(jq -nc --arg u "$impl_pr_url" '{pr_url: $u}')"
+    release_claim have-pr
+    exit 0
+  fi
 fi
 
 # --- 8. Reviewer stage ---
@@ -5134,6 +5160,24 @@ if [[ "$rev_status" == "ready" ]]; then
       "$impl_pr_url" "Get every required check green and clear the named security-severity code-scanning alert, then let the Reviewer re-examine it."
     exit 0
   fi
+
+  # Requirement 25a, asked again here for the same reason requirement 31c
+  # asks the checks-and-alerts gate again at this point rather than trusting
+  # the Implementor-side pass above still holds: the PR body can change
+  # between the two handoffs (a pushed fix, an edited description), and this
+  # is the last point before a human ever sees it. Every target repository
+  # gets the same deterministic gate agent-ops's own CI workflow gives it
+  # (TD-PPagop-26080803).
+  ck_result="$(closing_keyword_gate "$impl_pr_url")" || true
+  ck_word=""; ck_reason=""
+  IFS=$'\t' read -r ck_word ck_reason <<<"$ck_result" || true
+  if [[ "$ck_word" == "dirty" ]]; then
+    log_reviewer_handback \
+      "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $ck_reason" \
+      "$impl_pr_url" "Add the missing closing keyword (Closes/Fixes/Resolves #N) for the issue this PR claims to close, then let the Reviewer re-examine it."
+    exit 0
+  fi
+
   if [[ "$gate_word" == "unknown" ]]; then
     log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
       '{detail: ("could not confirm " + $u + " carries no new security-severity code-scanning alert: " + $d), pr_url: $u}')"
