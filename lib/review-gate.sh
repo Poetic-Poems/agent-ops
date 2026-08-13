@@ -107,7 +107,7 @@ _review_gate_pr_parts() {
 # stderr test — not the shape of stdout — is what separates them.
 review_gate_required_checks() {
   local url="${1:-}" gh_bin="${REVIEW_GATE_GH:-gh}" parts slug number raw failing
-  local err_file diagnosis
+  local err_file diagnosis no_checks
 
   if [[ -z "$url" ]] || ! parts="$(_review_gate_pr_parts "$url")"; then
     printf 'dirty\tcould not resolve a pull request from %s' "$url"
@@ -125,17 +125,22 @@ review_gate_required_checks() {
   diagnosis="$(cat "$err_file" 2>/dev/null || true)"
   [[ "$err_file" == /dev/null ]] || rm -f "$err_file"
 
+  # One reason, two ways of arriving at it: `gh`'s refusal to answer for a
+  # pull request that has no required checks, and the empty array no `gh` on
+  # record actually emits but which would mean exactly the same thing.
+  printf -v no_checks 'dirty\t%s reports no required checks at all against its head commit — the conflicting-PR-runs-no-CI trap' "$url"
+
   if ! jq -e 'type == "array"' <<<"$raw" >/dev/null 2>&1; then
     if [[ "$diagnosis" == *"no required checks reported on the"* \
        || "$diagnosis" == *"no checks reported on the"* ]]; then
-      printf 'dirty\t%s reports no required checks at all against its head commit — the conflicting-PR-runs-no-CI trap' "$url"
+      printf '%s' "$no_checks"
       return 1
     fi
     printf 'unknown\tcould not read %s'\''s required checks against its current head commit' "$url"
     return 1
   fi
   if ! jq -e 'length > 0' <<<"$raw" >/dev/null 2>&1; then
-    printf 'dirty\t%s reports no required checks at all against its head commit — the conflicting-PR-runs-no-CI trap' "$url"
+    printf '%s' "$no_checks"
     return 1
   fi
   if jq -e 'all(.[]; .bucket == "pass")' <<<"$raw" >/dev/null 2>&1; then
