@@ -6216,12 +6216,18 @@ runs unattended.
     voided three minutes later, after the PR's head had already moved twice.)
 
     Before `enabler_allowed` is set, every eligible entry whose `item` matches
-    `pr-<n>-conflict-<sha>` or `pr-<n>-abandoned-<sha>` is tested against this
+    `pr-<n>-conflict-<sha>`, `pr-<n>-superseded-<sha>` or
+    `pr-<n>-abandoned-<sha>` is tested against this
     cycle's own freshly gathered `merge_conflicts`/`abandoned_drafts` arrays
     (already assembled into `ordered_repos_json` for the Co-Ordinator, requirement
     3g): if that exact ref is not among them — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
-    (`enabler-stale-refs-skipped`) rather than silent. No other blocked item kind
+    (`enabler-stale-refs-skipped`) rather than silent. Both merge-conflicts
+    shapes are tested, not just `-conflict-`: `pr-<n>-superseded-<sha>`
+    (requirement 3g) is scoped to the same head SHA and comes from the same
+    gather, and a supersession void requirement 34d refuses is recorded
+    blocked under it (requirement 32a) exactly as a refused conflict void is
+    under `-conflict-`. No other blocked item kind
     is touched: a tech-debt id, an issue number, or a review-feedback round has
     no such re-detectable "current" state to compare against, and none of their
     refs match the pattern. A jq failure leaves the eligible set unfiltered — this
