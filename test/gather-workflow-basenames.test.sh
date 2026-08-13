@@ -49,13 +49,24 @@ cat >"$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
 [[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected call: $*" >&2; exit 1; }
+# The real `--jq` filter is applied here rather than short-circuited, so this
+# test covers the filter itself and not merely the wrapper around it. `--slurp`
+# is what the script passes, and its shape — one array holding every page's
+# response object — is what the pages below are folded into, so a filter that
+# only ever reads page one fails this test.
+filter=""
+while (( $# )); do
+  [[ "$1" == "--jq" ]] && { filter="$2"; break; }
+  shift
+done
 case "${STUB_MODE:-hit}" in
   hit)
-    # Pre-filtered, the same shape `gh api --jq '...'` itself would print —
-    # the stub does not interpret the real script's `--jq` argument, so it
-    # prints the filter's own output shape directly (`id` already stringified
-    # by the script's own `(.id | tostring)`).
-    printf '[{"id":"123","path":".github/workflows/ci.yml"},{"id":"456","path":".github/workflows/sync-framework.yaml"}]\n'
+    # Two pages, as a repository with more workflows than one page holds
+    # would answer.
+    printf '%s\n' \
+      '[{"total_count":3,"workflows":[{"id":123,"path":".github/workflows/ci.yml"},{"id":456,"path":".github/workflows/sync-framework.yaml"}]},
+        {"total_count":3,"workflows":[{"id":789,"path":".github/workflows/codeql.yml"}]}]' \
+      | jq -c "${filter:-.}"
     ;;
   error)
     echo '{"message":"rate limit exceeded","status":"403"}'
@@ -71,7 +82,9 @@ export STUB_MODE=hit
 out="$("$GATHER" "Poetic-Poems/poetic")"
 assert_eq "a successful read reports ok: true" "true" "$(jq -r '.ok' <<<"$out")"
 assert_eq "each workflow id maps to its file's basename, extension and directory stripped" \
-  '{"123":"ci","456":"sync-framework"}' "$(jq -c '.basenames' <<<"$out")"
+  '{"123":"ci","456":"sync-framework","789":"codeql"}' "$(jq -c '.basenames' <<<"$out")"
+assert_eq "  ... and every page is read, not just the first" \
+  "codeql" "$(jq -r '.basenames["789"]' <<<"$out")"
 
 export STUB_MODE=error
 out="$("$GATHER" "Poetic-Poems/poetic" 2>/dev/null)"

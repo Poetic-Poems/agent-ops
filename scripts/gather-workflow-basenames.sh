@@ -47,9 +47,17 @@ if [[ -z "$slug" ]]; then
   exit 0
 fi
 
+# --paginate --slurp, the same pairing lib/claim.sh's own listing uses and for
+# the same reason: this endpoint pages at GitHub's default size, and bare
+# --paginate emits one document per page, so a repository with more workflows
+# than one page holds would hand `--argjson` several concatenated arrays, fail
+# it, and degrade this whole read to `ok: false` — leaving every `failed-run-`
+# void in exactly the busiest repositories unretirable, which is the growth
+# this gatherer exists to stop. --slurp folds the pages into one array of
+# response objects, flattened by the filter below.
 out=""
-if out="$(gh api --paginate "repos/$slug/actions/workflows" \
-          --jq '[.workflows[] | {id: (.id | tostring), path}]' 2>/dev/null)" \
+if out="$(gh api --paginate --slurp "repos/$slug/actions/workflows" \
+          --jq '[.[].workflows[] | {id: (.id | tostring), path}]' 2>/dev/null)" \
    && [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
   jq -nc --argjson w "$out" \
     '{ok: true, basenames: (reduce $w[] as $e ({}; .[$e.id] = ($e.path | sub("^.*/"; "") | sub("\\.ya?ml$"; ""))))}'
