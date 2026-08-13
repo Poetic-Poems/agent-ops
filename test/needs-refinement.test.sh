@@ -684,6 +684,33 @@ assert_eq "an ordinary block carrying no refinement kind is untouched regardless
   "$(refinement_hand_flag_cleared '[]' \
        '[{"repo": "o/r", "item": "52", "kind": "", "hand_flagged": true}]')"
 
+# --- The argv cap (requirement 4g) ------------------------------------------------
+# The open blocked set grows with the fleet's history — block entries carry
+# their evidence payloads — and both halves of the hand-flag scan take it.
+# Delivered via `--argjson`, past MAX_ARG_STRLEN (131072 bytes, the kernel's
+# per-entry argv cap) each call failed into its `2>/dev/null || true` and
+# printed `[]`: hand-applied refinement flags silently stopped being noticed
+# *and* silently stopped being cleared, which between them is the whole of
+# requirement 34g. Requirement 4g puts the arrays on stdin; these pin it, with
+# fixtures the size assertions prove are genuinely past the cap. The padding
+# names a repo and items the fixtures do not, so it can neither block the fresh
+# entry nor supply the cleared one.
+big_unrelated_blocked="$(jq -nc '[range(3000) | {repo: "o/filler", item: ("TD-fill-" + tostring),
+  kind: "", detail: ("pad " + ("x" * 40))}]')"
+assert_eq "the oversized blocked fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_unrelated_blocked" | wc -c) > 131072 ))"
+assert_eq "a blocked extract past the argv cap still earns the fresh hand-flag entry" \
+  "$hand_flagged_compact" "$(refinement_hand_flag_new "$hand_flagged" "$big_unrelated_blocked")"
+
+big_hand_flagged_blocked="$(jq -nc --argjson keep "$hand_flagged_block" \
+  '[range(3000) | {repo: "o/filler", item: ("TD-fill-" + tostring),
+    kind: "", detail: ("pad " + ("x" * 40))}] + $keep')"
+assert_eq "the oversized hand-flagged blocked fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_hand_flagged_blocked" | wc -c) > 131072 ))"
+assert_eq "a blocked extract past the argv cap still clears the hand-flagged block" \
+  '[{"repo":"o/r","item":"52"}]' \
+  "$(refinement_hand_flag_cleared '[]' "$big_hand_flagged_blocked")"
+
 # --- Robustness at the call sites -------------------------------------------------
 # agent-cycle.sh calls all of this from a cycle running under `set -euo pipefail`,
 # and the verdict half of it from inside the exit trap, where an unguarded

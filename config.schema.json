@@ -589,24 +589,24 @@
       }
     },
     "crash_loop_after": {
-      "description": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue. 0 disables the check.",
+      "description": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. 0 disables both checks.",
       "type": "integer",
       "minimum": 0,
       "default": 0,
       "x-docs": {
-        "readme": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure \u2014 the dashboard shows a healthy idle fleet. `0` (or absent) disables the check.",
-        "spec": "Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script escalates the crash loop as an issue (requirement 2.7). At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables the check.",
+        "readme": "Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure \u2014 the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks.",
+        "spec": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks.",
         "value": "`4`"
       }
     },
     "crash_loop_repo": {
-      "description": "Where the crash-loop escalation issue is filed, as `owner/name` \u2014 the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check.",
+      "description": "Where the crash-loop escalation issues are filed, as `owner/name` \u2014 the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
       "type": "string",
       "pattern": "^$|^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$",
       "default": "",
       "x-docs": {
-        "readme": "Where the crash-loop escalation issue is filed \u2014 the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check.",
-        "spec": "Where requirement 2.7's escalation issue is filed \u2014 the pipeline's own repository, because a Co-Ordinator that cannot run belongs to no target repo's backlog. Empty disables the check.",
+        "readme": "Where the crash-loop escalation issues are filed \u2014 the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks.",
+        "spec": "Where requirement 2.7's escalation issues are filed \u2014 the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks.",
         "value": "`Poetic-Poems/agent-ops`"
       }
     },
