@@ -364,6 +364,17 @@ assert_doctor "doctor reports the derived lock rather than checking a configured
   '.lock_stale_after = 1' 0 'the cycle lock is derived at'
 assert_doctor "doctor warns that a configured cap pins itself" \
   '.timeout_reviewer = 60' 0 'turns off its self-tuning'
+assert_doctor "doctor warns that a configured Refiner cap pins itself, not only the four repo-scoped actors" \
+  '.timeout_refiner = 15' 0 "timeout_refiner is set, which pins"
+assert_doctor "doctor warns on a per-repo stage_timeouts override, naming the repo" \
+  '.repos[0].stage_timeouts = {"implementor": 90}' 0 \
+  "Poetic-Poems/poetic's stage_timeouts.implementor is set, which pins"
+assert_doctor "doctor warns on a per-repo stage_inactivity override, naming the repo" \
+  '.repos[0].stage_inactivity = {"reviewer": 5}' 0 \
+  "Poetic-Poems/poetic's stage_inactivity.reviewer is set, which pins"
+assert_doctor "a per-repo override wider than every prior widens the reported lock, matching what agent-cycle.sh derives" \
+  '.repos[0].stage_timeouts = {"implementor": 300}' 0 \
+  "the cycle lock is derived at 500 min"
 assert_doctor "doctor warns when the review label collides with the implementation one" \
   '.review.pr_label = .pr_label' 0 'review.pr_label equals pr_label'
 assert_doctor "doctor warns when the mirror would outlive the node that writes it" \

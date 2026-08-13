@@ -3013,7 +3013,10 @@ runs unattended.
    pull-request churn in somebody else's repository. The corollary is that a
    configured cap pins itself permanently, which `scripts/doctor.sh` warns
    about, because a number set once and forgotten looks exactly like a system
-   still adapting.
+   still adapting — at every level of the precedence above, not only the
+   plain `timeout_<actor>` / `inactivity_<actor>` keys: the Refiner's own
+   pair, and each repository's `stage_timeouts` / `stage_inactivity` entry,
+   named by that repository's slug so the warning says which entry to edit.
    **Every value is announced.** The `stage-start` /
    `review-stage-start` event carries `backstop_min`, `inactivity_min`,
    `source` (`config`, `cell`, `pooled` or `prior`) and `basis` (`own`,
@@ -7318,8 +7321,11 @@ What exists, and the requirements each part answers to:
    `lib/stage-budget.sh` (requirement 4f's derivation:
    `stage_budget_observations` over the log union, `stage_budget_table`
    holding the estimator, the controller and the shrinkage,
-   `stage_budget_resolve` applying the precedence, and
-   `stage_budget_lock_seconds` deriving the lock; sourced by both cycle
+   `stage_budget_resolve` applying the precedence,
+   `stage_budget_all_overrides` taking the widest configured cap per actor
+   across the plain `timeout_<actor>` / `inactivity_<actor>` keys and every
+   repository's own `stage_timeouts` / `stage_inactivity`, and
+   `stage_budget_lock_seconds` deriving the lock from it; sourced by both cycle
    scripts, by `scripts/doctor.sh` and by the dashboard publisher, all four of
    which must agree about what a stage is allowed) and
    `lib/metering.sh`) holding every
@@ -8109,8 +8115,13 @@ pull request, run the ones the change touches and any it could regress.
    fleet-wide widest for that actor and then to the shipped prior, and makes
    no claim at all about a stage none of those names.
    `test/config-schema.test.sh` passes: `scripts/doctor.sh` reports the
-   derived lock rather than checking a configured one, and warns that a
-   configured cap pins itself.
+   derived lock rather than checking a configured one — reading
+   `stage_budget_all_overrides` from `lib/stage-budget.sh`, the same
+   function `agent-cycle.sh` derives the cycle lock from, so the two never
+   disagree — and warns that a configured cap pins itself, at every level of
+   the precedence: the plain `timeout_<actor>` / `inactivity_<actor>` keys
+   including the Refiner's, and a repository's own `stage_timeouts` /
+   `stage_inactivity` entry, naming that repository in the warning.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to
