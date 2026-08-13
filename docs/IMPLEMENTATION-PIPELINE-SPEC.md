@@ -661,6 +661,27 @@ A repo entry may also carry `implementation_plan_path` — the path, relative to
 
 A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
+A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
+
+Every optional key sits on the repository's own entry, beside `slug` and `sources`:
+
+```json
+"repos": [
+  {
+    "slug": "Poetic-Poems/poetic",
+    "sources": ["security", "issues:urgent", "tech-debt", "issues:low"]
+  },
+  {
+    "slug": "Poetic-Poems/poetic-fiddle",
+    "sources": ["security", "issues:urgent", "implementation-plan", "issues:low"],
+    "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md",
+    "nice": -5,
+    "stage_timeouts": { "implementor": 90 },
+    "stage_inactivity": { "implementor": 20 }
+  }
+]
+```
+
 ### Extended notes: `needs_refinement_label`
 
 The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears.

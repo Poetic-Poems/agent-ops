@@ -257,6 +257,18 @@ startup and refuse to run at all on a config that fails it, so `doctor.sh` is
 how you catch a misconfiguration before it costs you a cycle, not the only
 thing standing between you and one.
 
+Every key below is set the same way — as a key of the JSON object in
+`config.json`, and `repos`' per-repo keys (`nice`,
+`implementation_plan_path`, `stage_timeouts`, `stage_inactivity`) on the
+repo's own entry inside that array. Editing that file is the whole of it:
+there is no command that sets a key, and the pipeline never writes to
+`config.json` itself — not even the values that tune themselves — so a value
+stays exactly what you left it. On a fleet already running, the edit is a
+change to a file the container reads, and reaches the nodes like any other:
+merge it, and each node restarts into the new image between cycles, per
+[Making a change when every instance is a
+container](#making-a-change-when-every-instance-is-a-container).
+
 Keys:
 
 <!-- config-table:start id=main -->
@@ -301,12 +313,12 @@ Keys:
 | `human_nudge_idle_hours` | `24` | Hours an approved, green pull request may sit idle — nothing left for the pipeline to do, only a merge click nobody was asked for — before `scripts/sweep-human-visibility.sh` posts one nudge comment naming `enabler_assignee`. `0` disables the nudge; the sweep still keeps a live review request on every such PR regardless (see [Configuration](#configuration) → `enabler_assignee`). |
 | `crash_loop_after` | `4` | Consecutive same-detail Co-Ordinator failures, fleet-wide with no intervening success, before the Script files a crash-loop escalation issue. A Co-Ordinator failure blames no repo or item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables the check. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issue is filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables the check. |
-| `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. |
+| `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `timeout_implementor` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_enabler` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_refiner` | *(unset)* | Minutes, and an override. As above. |
-| `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `inactivity_implementor` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_reviewer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_enabler` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
@@ -367,6 +379,29 @@ A repo entry that lists `implementation-plan` must also carry `implementation_pl
 A repo entry may also carry `nice` — an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo — the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.
 
 A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.
+
+A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers the fleet-wide keys alone, so a per-repo override is yours to remember.
+
+Every optional key goes on the repo's own entry, beside `slug` and `sources`:
+
+```json
+"repos": [
+  {
+    "slug": "Poetic-Poems/poetic",
+    "sources": ["security", "issues:urgent", "tech-debt", "issues:low"]
+  },
+  {
+    "slug": "Poetic-Poems/poetic-fiddle",
+    "sources": ["security", "issues:urgent", "implementation-plan", "issues:low"],
+    "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md",
+    "nice": -5,
+    "stage_timeouts": { "implementor": 90 },
+    "stage_inactivity": { "implementor": 20 }
+  }
+]
+```
+
+Each of them is set by editing `config.json`, like every other key here — see [Configuration](#configuration) for how that edit reaches a fleet already running.
 
 ### Extended notes: `needs_refinement_label`
 

@@ -140,13 +140,26 @@
           "At runtime, repos are ordered most-overdue first \u2014 each repo's default-branch staleness age scaled by `1.25^(-nice)` \u2014 ahead of this list order; with no `nice` set anywhere that is least-recently-updated first, exactly as before.",
           "A repo entry that lists `implementation-plan` must also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document (poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`); the Co-Ordinator reads whatever this says, so a repo with a differently named or located plan needs no prompt change, only its own path. The Script refuses to start a cycle if a repo lists the source without it \u2014 a repo that doesn't list `implementation-plan` needs no such key.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
-          "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged."
+          "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers the fleet-wide keys alone, so a per-repo override is yours to remember.",
+          "Every optional key goes on the repo's own entry, beside `slug` and `sources`:",
+          {
+            "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
+            "lang": "json"
+          },
+          "Each of them is set by editing `config.json`, like every other key here — see [Configuration](#configuration) for how that edit reaches a fleet already running."
         ],
         "spec": [
           "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
           "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
           "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
-          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range."
+          "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
+          "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
+          "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
+          {
+            "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
+            "lang": "json"
+          }
         ],
         "value": {
           "readme": "see `config.json`",
@@ -601,7 +614,7 @@
       "$ref": "#/$defs/timeoutMinutes",
       "description": "Override for the Co-Ordinator's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
       "x-docs": {
-        "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself, and a key set here outranks the derivation for as long as it is there.",
+        "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone \u2014 see [`repos`](#extended-notes-repos).",
         "spec": "An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor.",
         "value": {
           "readme": "*(unset)*",
@@ -661,7 +674,7 @@
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Co-Ordinator's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
-        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone \u2014 see [`repos`](#extended-notes-repos).",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
         "value": {
           "readme": "*(unset)*",
