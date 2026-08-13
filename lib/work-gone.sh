@@ -165,13 +165,20 @@ work_gone_plan_ids() {
 # cycle.
 work_gone_clearances() {
   local blocked="${1:-[]}" states="${2:-[]}" register="${3:-{\}}" \
-        review="${4:-{\}}" plan="${5:-{\}}" out=""
+        review="${4:-{\}}" plan="${5:-{\}}" out="" docs
+  # The open blocked set and the source-states array arrive on stdin, one
+  # document per line, never in argv (requirement 4g): both grow with the
+  # fleet's history, and past MAX_ARG_STRLEN an `--argjson` delivery makes
+  # this call fail into its `2>/dev/null || true` — blocks silently stop
+  # clearing.
+  docs="$blocked"$'\n'"$states"
   # shellcheck disable=SC2016  # every $ below is jq's.
   out="$(jq -nc \
-    --argjson blocked "$blocked" --argjson states "$states" --argjson register "$register" \
+    --argjson register "$register" \
     --argjson review "$review" --argjson plan "$plan" \
     --arg issue_re "$WORK_GONE_ISSUE_RE" --arg pr_re "$WORK_GONE_PR_RE" \
     --arg review_re "$WORK_GONE_REVIEW_RE" --arg plan_re "$WORK_GONE_PLAN_RE" '
+    input as $blocked | input as $states |
     def digest($slug): [ $states[] | select((.slug // "") == $slug and .ok == true) ] | first;
     [ $blocked[]
       | . as $b
@@ -205,7 +212,8 @@ work_gone_clearances() {
              else null end
          end) as $reason
       | select($reason != null)
-      | {repo: $repo, item: $item, reason: $reason} ]' 2>/dev/null || true)"
+      | {repo: $repo, item: $item, reason: $reason} ]' \
+    <<<"$docs" 2>/dev/null || true)"
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"
 }

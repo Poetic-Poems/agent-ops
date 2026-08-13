@@ -98,8 +98,14 @@ label_own_actions_map() {
 # direction: it leaves the caller with exactly the behaviour it had before
 # this file existed rather than swallowing a human's flag.
 label_filter_own_applications() {
-  local candidates="${1:-[]}" own_map="${2:-{\}}" out=""
-  out="$(jq -nc --argjson c "$candidates" --argjson o "$own_map" '
+  local candidates="${1:-[]}" own_map="${2:-{\}}" out="" docs
+  # Both arrive on stdin, one document per line, never in argv (requirement
+  # 4g): the candidate list and the own-actions map both grow with the
+  # fleet's history, and past MAX_ARG_STRLEN an `--argjson` delivery makes
+  # this call fail into the "not ours" fallback below.
+  docs="$candidates"$'\n'"$own_map"
+  out="$(jq -nc '
+    input as $c | input as $o |
     [ $c[]?
       | . as $e
       | ((($o // {})[(($e.repo // "") | tostring) + "|" + (($e.number // "") | tostring)])
@@ -107,7 +113,8 @@ label_filter_own_applications() {
       | select(((($own.action // "") == "add")
                 and (($own.ts // "") != "")
                 and (($e.labelled_at // "") != "")
-                and (($e.labelled_at) <= ($own.ts))) | not) ]' 2>/dev/null || true)"
+                and (($e.labelled_at) <= ($own.ts))) | not) ]' \
+    <<<"$docs" 2>/dev/null || true)"
   if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     if jq -e 'type == "array"' <<<"$candidates" >/dev/null 2>&1; then
       out="$candidates"
@@ -149,10 +156,17 @@ label_filter_own_applications() {
 # reading, because here that default suppresses a GitHub write rather than a
 # block.
 label_own_stale_applications() {
-  local candidates="${1:-[]}" own_map="${2:-{\}}" blocked="${3:-[]}" kept out
+  local candidates="${1:-[]}" own_map="${2:-{\}}" blocked="${3:-[]}" kept out docs
   [[ -n "$blocked" ]] || blocked='[]'
   kept="$(label_filter_own_applications "$candidates" "$own_map")"
-  out="$(jq -nc --argjson c "$candidates" --argjson k "$kept" --argjson b "$blocked" '
+  # The candidate list, the kept set and the blocked set all arrive on
+  # stdin, one document per line, never in argv (requirement 4g): all three
+  # grow with the fleet's history, and past MAX_ARG_STRLEN an `--argjson`
+  # delivery makes this call fail into the "nothing to retry" fallback below
+  # — the safe direction for a write, but silent.
+  docs="$candidates"$'\n'"$kept"$'\n'"$blocked"
+  out="$(jq -nc '
+    input as $c | input as $k | input as $b |
     ($k | map((.repo // "") + "|" + ((.number // "") | tostring))) as $keep
     | ($b | map((((.repo // "") | tostring)) + "|" + (((.item // "") | tostring)))) as $open
     | [ $c[]?
@@ -160,7 +174,7 @@ label_own_stale_applications() {
         | (($e.repo // "") + "|" + (($e.number // "") | tostring)) as $key
         | select(($keep | index($key)) == null)
         | select(($open | index($key)) == null) ]' \
-    2>/dev/null || true)"
+    <<<"$docs" 2>/dev/null || true)"
   if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     out='[]'
   fi

@@ -3062,9 +3062,16 @@ runs unattended.
    sha, one repo's register ids) may still travel as `--arg`/`--argjson`.
    Delivery is a here-string, not a pipe, for requirement 4c's reason: under
    `pipefail` a producer's SIGPIPE must not become the reader's status.
-   `test/unvoid-label.test.sh` anchors the acceptance check with a void
-   array built past the cap; `tech-debt/TD-PPagop-26081301.md` records the
-   remaining `--argjson` sites whose inputs are bounded today.
+   Every converted site carries its own regression pin, built from an input
+   the assertion beside it first proves is genuinely past the cap and asserted
+   in the direction that site fails — silent `[]`, or silent pass-through —
+   so a reintroduced `--argjson` fails a test rather than a fleet:
+   `test/unvoid-label.test.sh`, `test/verdict-corroboration.test.sh` and
+   `test/cycle-state.test.sh` for the void extract, `test/work-gone.test.sh`,
+   `test/needs-refinement.test.sh`, `test/label-marker.test.sh`,
+   `test/pr-claim-exclusion.test.sh` and `test/enabler-eligibility.test.sh`
+   for the blocked extract, the own-actions map, the claims arrays and the
+   open-issues map.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
