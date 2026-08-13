@@ -1529,6 +1529,24 @@ runs unattended.
      field name otherwise degrades to an empty array indistinguishable from
      "nothing is under review", and the source silently never fires. That cost
      a debugging round when this was built.
+   - **Every `gh api --paginate` read streams one object per line and is
+     slurped afterward; none aggregates inside `--jq`.** `--paginate` re-runs
+     the `--jq` filter once per page and prints each page's result as its own
+     JSON document, rather than concatenating pages before filtering. A
+     filter that builds its own aggregate (`[.[] | …]`) is therefore computed
+     *per page* and disagrees with itself past the endpoint's thirty-item
+     default page size: two or more array literals land in the variable
+     instead of one. `jq -e 'type == "array"'` does not catch it — `jq`
+     evaluates the filter once per input document and exits on the last
+     one's truth, so the guard only establishes "every document is an
+     array", never "this is one array" — and `--argjson` downstream then
+     fails to parse the multi-document value. All four reads here (reviews,
+     issue comments, the timeline, inline PR comments) emit one object per
+     matching item and are slurped into a single array with `jq -s -c '.'`
+     immediately after, the same pattern `_handoff_blocking_reviewers`
+     (`lib/handoff.sh`) and `_sweep_round_answered`
+     (`scripts/sweep-human-visibility.sh`) already use
+     (tech-debt/TD-PPagop-26081306.md).
 3e. **Abandoned-drafts pre-fetch.** For each configured repo whose `sources`
    include `abandoned-drafts`, run `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
