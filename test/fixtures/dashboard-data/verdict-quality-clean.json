@@ -1,0 +1,53 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": [],
+    "coordinator_verdicts": {
+      "window_from": "@ago:2d",
+      "window_to": "@now",
+      "runs": 5,
+      "retries": 0,
+      "selections": 2,
+      "fallbacks": 0,
+      "none_selected": 3,
+      "corroborated": 3,
+      "rejected": 0,
+      "rate": 0,
+      "by_day": [
+        {"day": "20260813", "model": "claude-haiku-4-5-20251001",
+         "runs": 5, "retries": 0, "selections": 2, "fallbacks": 0,
+         "none_selected": 3, "corroborated": 3, "rejected": 0, "rate": 0}
+      ],
+      "by_model": [
+        {"model": "claude-haiku-4-5-20251001", "runs": 5, "retries": 0,
+         "selections": 2, "fallbacks": 0, "none_selected": 3,
+         "corroborated": 3, "rejected": 0, "rate": 0}
+      ],
+      "last_rejection": null
+    }
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {"ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {}, "inputs": {}},
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 3
+}

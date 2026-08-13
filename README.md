@@ -1385,7 +1385,10 @@ stand-downs, open agent PRs and their CI status,
 recent cycles with per-stage cost/duration/model (substantive cycles only —
 the no-op ticks the `*/15` cadence mostly produces are summarised in one
 count beneath the table instead of holding rows), failures, blocked and void
-items, the work sources the Co-Ordinator sees, estimated token cost by day, by
+items, the work sources the Co-Ordinator sees, how often the Script rejects
+a Co-Ordinator verdict — by day and by the model that produced it, with what
+the fleet spent recovering, so it is visible whether the cheap Co-Ordinator
+model is paying for itself — estimated token cost by day, by
 model and by actor, and the raw log — with each stage's transcript viewable
 inline.
 

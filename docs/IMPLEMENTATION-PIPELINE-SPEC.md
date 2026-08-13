@@ -2350,6 +2350,66 @@ runs unattended.
      `coordinator_model` upgrade instead, is a configuration decision for
      later, informed by data this requirement's own `corroboration` events
      now make visible.
+3w. **Verdict quality is a rate, and every verdict pays for its own
+   denominator (issue #319).** Requirement 3t made a confabulated verdict
+   detectable and requirement 3v made it recoverable, and between them they
+   answer "did it happen on this cycle, and did the fleet survive it". Neither
+   can answer the question the detection exists to serve: *how often does this
+   happen, and does that rate justify changing `coordinator_model`?* A rate
+   needs both terms, and only the rejections were ever counted.
+
+   **The unit is the verdict, not the cycle.** Requirement 3v made a cycle
+   able to produce two — the first engagement and its one retry are two
+   separate answers from the model, each corroborated against the same
+   eligible set on its own — and a retry rejected in turn is a second wrong
+   answer, not the same one restated. Requirement 3v's `corroboration` events
+   are therefore the record a rate is computed from: one per verdict, already
+   carrying `attempt`, `verdict` and the Script's own `eligible_total`.
+
+   What they did not carry, and now do, is **`coordinator_model`** — the model
+   id the stage was *invoked* with, not a key of its envelope's `modelUsage`
+   map. The invocation id is what an operator sets, what requirement 33a's
+   `stage-end` metering already records for the same run, and what an
+   installation changing this setting on one node needs the two rates
+   attributed to; `modelUsage` names whatever the session actually reached
+   for, subagents included, so keying on it would split one setting across
+   several labels and disagree with every other record of the same run. This
+   is the same choice, for the same reason, that `lib/metering.sh` documents.
+   Both attempts of a cycle run under the same id, so the retry's verdict is
+   attributed to the model that produced the first.
+
+   Two `corroboration` events gain a field alongside it. The
+   `accepted-by-selection` verdict — the retry getting it right — carries
+   `eligible_total` too, because it is a verdict that survived corroboration
+   and a denominator that counted only the ones still phrased as
+   `none-selected` would credit the recovery to nobody and flatter every model
+   that recovers that way.
+
+   **`none-selected` carries `eligible_total` and `coordinator_model` on every
+   branch**, which matters for the cycles that log no `corroboration` at all:
+   requirement 3t only corroborates a verdict when the Script found something
+   to corroborate it against, so a cycle whose band was genuinely empty has
+   only its `none-selected` to say so. Without the figure there, "nothing was
+   eligible" — a clean verdict that is no part of any rate — cannot be told
+   from an event written before any of this existed.
+
+   Neither field changes what the fingerprint covers or how requirements 3t
+   and 3v decide: a rejected verdict still omits `fingerprint` entirely, an
+   accepted one still carries it, and the retry and fallback still fire on
+   exactly the same condition. They are a record of the decision, not an input
+   to it.
+
+   A reader that meets a verdict from before this requirement may fall back to
+   the model on that cycle's own coordinator `stage-end` — the same invocation
+   id, so the fallback never disagrees with the field — which is what lets the
+   dashboard's aggregate (`docs/DASHBOARD-SPEC.md`,
+   `counts.coordinator_verdicts`) populate from history already on disk rather
+   than only from cycles run after this shipped. What it must **not** do is
+   count a cycle's `corroboration` and its `none-selected` as two verdicts:
+   requirement 3v writes both for the same answer whenever a rejection reaches
+   the fallback path with nothing to pick, and both for a clean stand-down, so
+   the two records are read per cycle and the `corroboration` wins where there
+   is one.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -4551,7 +4611,7 @@ runs unattended.
     Script translates those into log events). The lock in requirement 1
     guarantees a single writer. Events: `cycle-start`, `cycle-skipped`,
     `stand-down`, `selection`, `claim-lost`, `claim-skipped`, `none-selected`,
-    `stage-start`,
+    `corroboration`, `stage-start`,
     `stage-end`, `pr-raised`, `pr-ready`, `attempt-failed`, `unblocked`,
     `recheck-clean`, `item-void`, `unvoided`, `item-refined`,
     `enabler-examined`, `refiner-examined`, `own-label-action`, `escalated`,
@@ -4650,6 +4710,27 @@ runs unattended.
     `unvoided` written from a label (requirement 34f) carries `repo`,
     `by: "label"`, the `request_url` that authorised it, `labelled_at`, and the
     `cleared_void_ts` it reopened; the bare hand-appended form remains valid.
+    A `corroboration` (requirement 3v) is one Co-Ordinator verdict measured
+    against the Script's own eligible tech-debt set: `attempt` (1 for the
+    original engagement, 2 for its one retry), `verdict` — `accepted`,
+    `rejected`, or `accepted-by-selection` where the retry selected work
+    instead of restating a verdict — `eligible_total`, `unaccounted_total`,
+    and, on a rejection, the `unaccounted` `{repo, item}` pairs and the
+    verdict's own `reason`. The attempt-2 events carry requirement 33a's
+    metering for the retry engagement, and every one of them carries
+    requirement 3w's `coordinator_model`. This is the record a rejection
+    *rate* is computed from, one event per verdict; the cycle's outcome is
+    `none-selected` or `selection`, which is a different question and
+    deliberately a different event.
+    A `none-selected` carries the Co-Ordinator's own `reason`; the
+    `fingerprint` requirement 3b arms the no-op short-circuit with, omitted
+    where there was nothing to fingerprint or where requirement 3t rejected
+    the verdict — which carries `td_verdict_rejected: true`, and `retried:
+    true` where requirement 3v's retry was spent, instead; and, on **every**
+    branch, requirement 3w's `eligible_total` and `coordinator_model`, so a
+    cycle whose band was genuinely empty — which logs no `corroboration` at
+    all — still says so on the record rather than being indistinguishable
+    from an event written before any of this existed.
     The Reviewer's `stage-start` additionally carries the resolved
     `complexity` and the `model` it selected (requirement 8a) — the record
     that lets the distribution of complexity self-assessments be audited for

@@ -1650,15 +1650,163 @@
     return wrap;
   }
 
+  // ---------- Co-Ordinator verdict quality (#319) ----------
+  // Implementation spec 3t corroborates a `selected: false` verdict against
+  // the Script's own eligible tech-debt set and rejects one that cannot
+  // account for the band; spec 3v then retries it once and, failing that,
+  // picks mechanically. Both act one cycle at a time, and per cycle they can
+  // only ever answer "did it happen"; whether `coordinator_model` is the
+  // wrong model for the job is a *rate*, and a rate needs the accepted
+  // verdicts counted too. So this panel leads with the counts and keeps the
+  // newest contradiction beneath them — a rate with no example is not
+  // actionable, and an example with no rate is what the page already had.
+  //
+  // The unit is the verdict, not the cycle: 3v lets one cycle produce two,
+  // and a retry that is rejected in turn is a second wrong answer from the
+  // model, not the same one. What the fleet then did about it is the
+  // recovery line — retries spent, and picks the Script had to make itself.
+  //
+  // Three empty states, meaning three different things, and the page must not
+  // collapse them: no Co-Ordinator activity in the window at all (a log too
+  // short or too new — missing data); activity, but no verdict yet met a
+  // non-empty eligible set (nothing to corroborate, so no rate exists);
+  // and corroborated verdicts with none rejected — the healthy answer, which
+  // must read as an answer rather than as silence.
+  function pct(r) { return r == null ? "—" : (Math.round(r * 1000) / 10) + "%"; }
+  // Model ids are long and their date suffix is noise in a table cell; the
+  // full id stays as the title so nothing is actually hidden.
+  function shortModel(m) { return String(m == null ? "unknown" : m).replace("claude-", "").replace(/-\d{8}$/, ""); }
+  function dayLabel(d) { return String(d || "").slice(4,6) + "/" + String(d || "").slice(6,8); }
+
+  var VERDICT_ROWS_MAX = 30;
+
+  // What became of the cycle a rejection happened on (spec 3v). Failing open
+  // like every other vocabulary table on this page: an outcome this page has
+  // not heard of renders as its own token rather than as nothing.
+  var VERDICT_OUTCOME = {
+    "recovered-by-retry":    ["recovered — the retry selected", "b-green"],
+    "recovered-by-fallback": ["recovered — the Script picked", "b-blue"],
+    "accepted-on-retry":     ["retry accepted, nothing selected", "b-grey"],
+    "stood-down":            ["cycle selected nothing", "b-amber"]
+  };
+
+  function verdictQualityPanel() {
+    var v = (D.counts && D.counts.coordinator_verdicts) || null;
+    if (!v) return el("div", {class:"panel"}, el("div", {class:"empty",
+      text:"No verdict-quality data in this page — it was written by a Publisher that did not record it yet."}));
+    var wrap = el("div");
+    var head = el("div", {class:"panel", style:"padding:14px; margin-bottom:12px"});
+
+    if (!v.runs && !v.none_selected) {
+      head.appendChild(el("div", {class:"empty", style:"padding:0",
+        text:"No Co-Ordinator runs in the retained log — nothing to measure yet."}));
+    } else if (!v.corroborated) {
+      head.appendChild(el("div", {}, [
+        el("span", {class:"badge b-grey", text:"no rate yet"}),
+        document.createTextNode(" " + v.none_selected + " nothing-selected verdict(s), none over a non-empty " +
+          "eligible tech-debt set — there was nothing for the Script to corroborate against.")
+      ]));
+    } else if (!v.rejected) {
+      head.appendChild(el("div", {}, [
+        el("span", {class:"badge b-green", text:"no rejected verdicts in this window"}),
+        document.createTextNode(" 0 of " + v.corroborated + " corroborated verdicts rejected.")
+      ]));
+    } else {
+      head.appendChild(el("div", {}, [
+        el("span", {class:"badge " + (v.rate >= 0.5 ? "b-red" : "b-amber"), text: pct(v.rate) + " rejected"}),
+        document.createTextNode(" " + v.rejected + " of " + v.corroborated +
+          " corroborated verdicts rejected.")
+      ]));
+    }
+    // What the fleet did about it (spec 3v). A rejection costs a retry, and
+    // twice-rejected costs the Script a pick of its own — both are the price
+    // of the rate above, and both are invisible in it.
+    if (v.retries || v.fallbacks) {
+      head.appendChild(el("div", {style:"margin-top:4px"}, [
+        el("span", {class:"badge b-blue", text:"recovered"}),
+        document.createTextNode(" " + v.retries + " retry engagement(s)" +
+          (v.fallbacks ? ", " + v.fallbacks + " item(s) the Script had to pick itself" : "") + ".")
+      ]));
+    }
+    head.appendChild(el("div", {class:"muted", style:"margin-top:6px; font-size:11.5px", text:
+      v.runs + " Co-Ordinator run(s), " + v.selections + " selected, " + v.none_selected +
+      " nothing-selected · window " + (v.window_from ? fmtTime(v.window_from) : "—") + " → " +
+      (v.window_to ? fmtTime(v.window_to) : "—") +
+      " (the retained log union; older cycles are rotated away, not counted as clean)"}));
+    wrap.appendChild(head);
+
+    // Newest day first — the operator question is "is it happening now" — but
+    // models in a stable order within a day, so a fleet running two of them
+    // does not shuffle its rows between publishes.
+    var days = (v.by_day || []).slice().sort(function (a, b) {
+      if (a.day !== b.day) return a.day < b.day ? 1 : -1;
+      return String(a.model) < String(b.model) ? -1 : String(a.model) > String(b.model) ? 1 : 0;
+    });
+    if (days.length) {
+      var rows = days.slice(0, VERDICT_ROWS_MAX).map(function (d) {
+        return el("tr", {}, [
+          el("td", {class:"mono muted", text: dayLabel(d.day)}),
+          el("td", {class:"mono", title: d.model, text: shortModel(d.model)}),
+          el("td", {class:"mono", text: String(d.runs) + (d.retries ? " (" + d.retries + "r)" : "")}),
+          el("td", {class:"mono", text: String(d.selections) +
+            (d.fallbacks ? " (" + d.fallbacks + " by Script)" : "")}),
+          el("td", {class:"mono", text: String(d.none_selected)}),
+          el("td", {class:"mono", text: String(d.corroborated)}),
+          el("td", {}, d.rejected
+            ? el("span", {class:"badge b-red", text: String(d.rejected)})
+            : el("span", {class:"mono muted", text:"0"})),
+          el("td", {class:"mono", text: pct(d.rate)})
+        ]);
+      });
+      wrap.appendChild(tableOf(["Day","Co-Ord model","Runs","Selected","Nothing selected","Corroborated","Rejected","Rate"], rows));
+      if (days.length > VERDICT_ROWS_MAX) {
+        wrap.appendChild(el("div", {class:"muted", style:"font-size:11.5px; margin-top:6px",
+          text:"… and " + (days.length - VERDICT_ROWS_MAX) + " older day/model row(s) not shown"}));
+      }
+    }
+
+    var r = v.last_rejection;
+    if (r) {
+      var box = el("div", {class:"panel", style:"padding:14px; margin-top:12px"});
+      box.appendChild(el("div", {style:"font-weight:650; margin-bottom:6px"}, [
+        el("span", {class:"badge b-amber", text:"most recent contradiction"}),
+        document.createTextNode(" " + fmtAgo(r.ts) + " "),
+        el("span", {class:"mono muted", text: (r.node || "—") + " · " + shortModel(r.model) +
+          (r.attempt ? " · attempt " + r.attempt : "")}),
+        document.createTextNode(" "),
+        // What the fleet did next: spec 3v means a contradiction is no longer
+        // the same thing as a lost cycle, and the badge must not imply it is.
+        el("span", {class: "badge " + (VERDICT_OUTCOME[r.outcome] || ["", "b-grey"])[1],
+                    text: (VERDICT_OUTCOME[r.outcome] || [r.outcome || "outcome unknown"])[0]})
+      ]));
+      if (r.reason) box.appendChild(el("div", {class:"wrap", style:"margin:2px 0",
+        text:"Its stated reason: “" + esc(r.reason) + "”"}));
+      if (r.detail) box.appendChild(el("div", {class:"muted wrap", style:"margin:2px 0; font-size:11.5px", text: esc(r.detail)}));
+      if (r.unaccounted && r.unaccounted.length) {
+        box.appendChild(el("div", {class:"muted", style:"margin:6px 0 2px", text:
+          "Unaccounted items (" + r.unaccounted_total + " of " + (r.eligible_total == null ? "?" : r.eligible_total) + " eligible):"}));
+        r.unaccounted.forEach(function (u) {
+          box.appendChild(el("div", {class:"mono", style:"font-size:11.5px",
+            text: (u.repo ? u.repo.split("/").pop() + " " : "") + u.item}));
+        });
+        if (r.unaccounted_total > r.unaccounted.length) {
+          box.appendChild(el("div", {class:"muted", style:"font-size:11.5px",
+            text:"… and " + (r.unaccounted_total - r.unaccounted.length) + " more"}));
+        }
+      }
+      wrap.appendChild(box);
+    }
+    return wrap;
+  }
+
   // ---------- spend charts ----------
   function spendByDay() {
     var days = (D.counts && D.counts.by_day) || [];
     if (!days.length) return el("div", {class:"empty", text:"No token cost recorded."});
     var max = Math.max.apply(null, days.map(function (d){ return d.usd; })) || 1;
     return el("div", {class:"bars"}, days.map(function (d) {
-      var label = d.day.slice(4,6) + "/" + d.day.slice(6,8);
       return el("div", {class:"bar"}, [
-        el("span", {class:"mono muted", text: label}),
+        el("span", {class:"mono muted", text: dayLabel(d.day)}),
         el("div", {class:"track"}, el("div", {class:"fill", style:"width:" + (d.usd/max*100) + "%"})),
         el("span", {class:"mono", style:"text-align:right", text: usd(d.usd) + " · " + d.n})
       ]);
@@ -1669,9 +1817,8 @@
     if (!ms.length) return el("div", {class:"empty", text:"No token cost recorded."});
     var max = Math.max.apply(null, ms.map(function (m){ return m.usd; })) || 1;
     return el("div", {class:"bars"}, ms.map(function (m) {
-      var short = m.model.replace("claude-","").replace(/-\d{8}$/,"");
       return el("div", {class:"bar"}, [
-        el("span", {class:"mono muted", title:m.model, text: short}),
+        el("span", {class:"mono muted", title:m.model, text: shortModel(m.model)}),
         el("div", {class:"track"}, el("div", {class:"fill", style:"width:" + (m.usd/max*100) + "%"})),
         el("span", {class:"mono", style:"text-align:right", text: usd(m.usd) + " · " + m.n})
       ]);
@@ -2033,6 +2180,12 @@
 
     // ---------- inputs ----------
     app.appendChild(sectionOf("Work sources (what the Co-Ordinator sees)", inputsPanel()));
+
+    // ---------- verdict quality ----------
+    // Directly under the work sources, and deliberately: that panel is what
+    // the Co-Ordinator was handed, this one is how often its answer about
+    // that input survived the Script checking it.
+    app.appendChild(sectionOf("Co-Ordinator verdict quality", verdictQualityPanel()));
 
     // ---------- cost & cadence + log ----------
     // By day on the left, and the two short cuts stacked on the right: the
