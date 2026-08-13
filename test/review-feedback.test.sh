@@ -429,6 +429,7 @@ assert_eq "  ... and the inline comment that itself landed on page two" \
 # round must read cleanly as answered and the PR must drop out of the
 # candidate list.
 marker="$PIPELINE_COMMENT_MARKER_PREFIX"
+# shellcheck disable=SC2016  # the backtick is literal Markdown, not command substitution
 implementor_reply="$(printf '**Implementor** · autonomous pipeline · node `poetic-1`\n\nAddressed the pagination bug.\n\n%s cycle=X actor=implementor -->' "$marker")"
 jq --arg body "$implementor_reply" \
   '. + [{"created_at": "2026-08-01T00:10:00Z", "body": $body}]' \
