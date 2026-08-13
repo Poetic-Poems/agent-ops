@@ -83,6 +83,23 @@ assert_contains() {
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
+printf '%s\n' "$*" >> "$d/calls.log"
+# `gh pr list -R <slug> --state open --author <login> --limit <n> --json
+# number,headRefName` — the superseded-shape corroboration's re-derivation of the repository's
+# *currently* open Dependabot pull requests (void_finishing_pr_reason). A
+# fixture `prlist-<slug, / replaced by _>.json` holds the array; none means no
+# open Dependabot PRs right now, an ordinary answer, not a failure.
+if [[ "$1" == "pr" && "$2" == "list" ]]; then
+  slug=""
+  shift 2
+  while (( $# )); do
+    if [[ "$1" == "-R" ]]; then slug="$2"; break; fi
+    shift
+  done
+  f="$d/prlist-${slug//\//_}.json"
+  if [[ -f "$f" ]]; then cat "$f"; else printf '[]'; fi
+  exit 0
+fi
 [[ "$1" == "api" ]] || exit 1
 if [[ "$2" == */contents/* ]]; then
   rest="${2#*/contents/}"
@@ -546,6 +563,8 @@ assert_eq "a review-feedback id yields its PR number" \
   "205" "$(void_finishing_item_pr "pr-205-review-2071883842")"
 assert_eq "a merge-conflict id yields its PR number" \
   "205" "$(void_finishing_item_pr "pr-205-conflict-1a2b3c4d5e6f")"
+assert_eq "a superseded-bump id yields its PR number" \
+  "205" "$(void_finishing_item_pr "pr-205-superseded-1a2b3c4d5e6f")"
 assert_eq "an ordinary tech-debt id yields nothing" \
   "" "$(void_finishing_item_pr "TD26051201")"
 assert_eq "a bare issue number yields nothing" "" "$(void_finishing_item_pr "224")"
@@ -564,6 +583,8 @@ assert_eq "a review-feedback id names its source" \
   "review" "$(void_finishing_item_shape "pr-205-review-2071883842")"
 assert_eq "a merge-conflict id names its source" \
   "conflict" "$(void_finishing_item_shape "pr-205-conflict-1a2b3c4d5e6f")"
+assert_eq "a superseded-bump id names its source" \
+  "superseded" "$(void_finishing_item_shape "pr-205-superseded-1a2b3c4d5e6f")"
 assert_eq "an unrecognised middle word names no source" \
   "" "$(void_finishing_item_shape "pr-205-something-else")"
 assert_eq "the shape is read case-insensitively, as item ids are throughout" \
@@ -583,6 +604,8 @@ assert_eq "an ordinary tech-debt id names no source" \
 printf '{"state": "closed", "merged_at": "2026-08-01T00:00:00Z"}' >"$tmp_dir/pr-210.json"
 assert_eq "a merged PR corroborates outright" \
   "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "210" "pr-210-abandoned-aaaaaaaaaaaa"; echo $?)"
+assert_eq "  ... and so does a merged PR cited by a superseded-bump item" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "210" "pr-210-superseded-aaaaaaaaaaaa"; echo $?)"
 
 printf '{"state": "closed", "merged_at": null}' >"$tmp_dir/pr-211.json"
 assert_eq "a closed, unmerged PR corroborates too — there is nothing left to finish on it" \
@@ -637,21 +660,91 @@ out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "216" "pr-216-conflict-000
 assert_eq "a conflict item whose PR is still conflicting is refused" "1" "$rc"
 assert_contains "  ... on the conflict, never on the diff" "still conflicting" "$out"
 
-# One author is excused from that last test, and only within this shape: a
-# superseded Dependabot bump is void while its own PR is still open *and* still
-# conflicting (`superseded_by`, requirement 3s). The claim is "a newer bump
-# replaces this one", which no mergeability reading can confirm, and 3s is the
-# only route by which a still-conflicting PR becomes void at all.
+# `-superseded-` (TD-PPagop-26081304) is the shape requirement 34k *does*
+# close the pull request for, and the `-conflict-` shape's mergeability test
+# proves the wrong claim here — a superseded bump can be superseded whether or
+# not it still conflicts. So this shape gets its own live test instead:
+# accepted only when both the PR's author is still Dependabot's and a
+# strictly-newer open bump of the same family is still open, re-derived now
+# rather than trusted from the entry's own `superseded_evidence`.
+printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+  >"$tmp_dir/pr-219.json"
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+assert_eq "a Dependabot bump with a newer open bump of the same family corroborates" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff"; echo $?)"
+
+# `mergeable` decides nothing on this shape, in either direction — a bump is
+# superseded whether or not it still conflicts, and reading the field here
+# would be the `-conflict-` test smuggled back in. The fixture above pins
+# `false`; these pin the other two readings, so a regression that started
+# consulting the field fails on one of the three rather than passing by
+# whichever one it happened to be given.
+for mergeable in true null; do
+  printf '{"state": "open", "mergeable": %s, "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+    "$mergeable" >"$tmp_dir/pr-219.json"
+  assert_eq "  ... whatever mergeable reads ($mergeable)" \
+    "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff"; echo $?)"
+done
+printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+  >"$tmp_dir/pr-219.json"
+
+# Re-derived live, not read off the void's own claim: no newer bump open now
+# (Dependabot merged it, or it was closed) refuses even though the item still
+# says superseded.
+printf '[]' >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff")"; rc=$?
+assert_eq "  ... but not once no newer bump is open" "1" "$rc"
+assert_contains "  ... naming the missing bump" "has none open now" "$out"
+
+# The listing that answers it is bounded at GITHUB_PR_LIST_LIMIT (PR #352) —
+# the same stated cap the gatherer that minted the item read at, so the two
+# reads cannot page differently — and an empty answer that came back at the
+# cap refuses naming the cap: "no newer bump in the first N" is not "no newer
+# bump". A newer bump *found* in a listing at the cap is real regardless of
+# what the cap hid, so that one still corroborates. The cap is forced down to
+# the fixture's own size per call, never reassigned for the file.
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/prettier-4.0.0"}, {"number": 222, "headRefName": "dependabot/github_actions/github/codeql-action-4.37.3"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+out="$(GITHUB_PR_LIST_LIMIT=2 void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff")"; rc=$?
+assert_eq "  ... and an empty answer from a listing at its cap still refuses" "1" "$rc"
+assert_contains "  ... naming the cap rather than asserting absence" "came back at its 2-item cap" "$out"
+
+: >"$tmp_dir/calls.log"
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}, {"number": 222, "headRefName": "dependabot/npm_and_yarn/prettier-4.0.0"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+assert_eq "  ... while a newer bump found in a listing at the cap corroborates — present is real" \
+  "0" "$(GITHUB_PR_LIST_LIMIT=2 void_finishing_pr_reason "Poetic-Poems/poetic" "219" "pr-219-superseded-ffffffffffff"; echo $?)"
+assert_eq "  ... and the listing asked for the stated cap, not gh's default" \
+  "1" "$(grep -c -- '--limit 2 ' "$tmp_dir/calls.log" || true)"
+
+# The author test runs first, and independently: a superseded-shaped item
+# citing a PR that is not Dependabot's own is refused on the author alone. The
+# newer bump is deliberately present in the live list for this one, and the
+# head ref deliberately of that same family, so the refusal cannot be the
+# no-newer-bump half passing itself off as the author half — the fourth of the
+# four author x newer-bump combinations, and the only one where the two tests
+# would disagree.
+printf '[{"number": 220, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic.json"
+printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}, "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
+  >"$tmp_dir/pr-221.json"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "221" "pr-221-superseded-ffffffffffff")"; rc=$?
+assert_eq "a superseded item whose PR is not Dependabot's own is refused" "1" "$rc"
+assert_contains "  ... naming the author" "authored by someone-else" "$out"
+
+# Dependabot's authorship buys nothing on a shape whose corroborated void
+# closes the pull request for a reason other than supersession: `-conflict-`
+# still reads its own mergeability, unmoved by who authored the PR.
 printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}}' \
   >"$tmp_dir/pr-215.json"
-assert_eq "a still-conflicting Dependabot bump is excused, for the supersession case" \
-  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "215" "pr-215-conflict-ffffffffffff"; echo $?)"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "215" "pr-215-conflict-ffffffffffff")"; rc=$?
+assert_eq "a still-conflicting Dependabot bump is no longer excused on the conflict shape" "1" "$rc"
+assert_contains "  ... refused on the conflict, same as any other author" "still conflicting" "$out"
 
-# The excuse is scoped to the shape that route lives in: Dependabot's authorship
-# buys nothing on a shape whose corroborated void closes the pull request.
 printf '5' >"$tmp_dir/files-215"
 out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "215" "pr-215-abandoned-ffffffffffff")"; rc=$?
-assert_eq "  ... but buys nothing on an abandoned-draft or review item" "1" "$rc"
+assert_eq "  ... and buys nothing on an abandoned-draft or review item either" "1" "$rc"
 assert_contains "  ... which is still read on its diff" "still changes 5 file(s)" "$out"
 
 # --- void_pr_matches_item: the finishing-source id shortcut --------------------
@@ -665,7 +758,7 @@ assert_contains "  ... which is still read on its diff" "still changes 5 file(s)
 # coincidence.
 printf '{"state": "closed", "body": "Draft implementing the widget.", "head": {"ref": "agent/widget"}}' \
   >"$tmp_dir/pr-205.json"
-for shape in "pr-205-abandoned-1a2b3c4d5e6f" "pr-205-review-2071883842" "pr-205-conflict-1a2b3c4d5e6f"; do
+for shape in "pr-205-abandoned-1a2b3c4d5e6f" "pr-205-review-2071883842" "pr-205-conflict-1a2b3c4d5e6f" "pr-205-superseded-1a2b3c4d5e6f"; do
   assert_eq "a finishing-source item citing its own PR matches ($shape)" \
     "0" "$(void_pr_matches_item "Poetic-Poems/poetic" "205" "$shape" "Poetic-Poems/poetic"; echo $?)"
 done
@@ -948,25 +1041,30 @@ assert_eq "void_guard_reason refuses a cross-repo URL citation of a coinciding n
 assert_contains "  ... not corroborated" "not corroborated" "$out"
 
 # --- Dependabot-superseded evidence, the exact shape gather-merge-conflicts.sh
-# produces (issue #300). Before the fix it named the superseding PR by URL,
-# which PR #281 made the guard resolve live — and refuse, since a superseding
-# bump never carries the superseded item's id. The repaired format cites the
-# superseded PR's own number (corroborated via the finishing-source id
-# shortcut) and names the superseding PR only by its branch name, which
-# neither the PR-number nor the commit-SHA extractor matches.
+# produces (issue #300, TD-PPagop-26081304). Before the id-shape split (issue
+# #300) it named the superseding PR by URL, which PR #281 made the guard
+# resolve live — and refuse, since a superseding bump never carries the
+# superseded item's id. The repaired format cites the superseded PR's own
+# number (corroborated via the finishing-source id shortcut) and names the
+# superseding PR only by its branch name, which neither the PR-number nor the
+# commit-SHA extractor matches.
 #
-# The superseded PR is still open, still conflicting and still carrying a real
-# diff at the moment this void is recorded — superseding a bump neither resolves
-# its conflict nor empties it — so the shortcut's live fetch must read it as
-# Dependabot's own and excuse it from the mergeability test
-# (TD-PPagop-26080807). `mergeable` is deliberately `false` here, matching the
-# only state gather-merge-conflicts.sh ever gathers from, so a regression that
-# stops excusing it fails loudly rather than passing on an unset field.
+# The superseded PR is still open and still carrying a real diff at the moment
+# this void is recorded — superseding a bump does not empty it — so the
+# shortcut's live fetch must corroborate on the supersession test
+# (Dependabot's own authorship, a newer open bump of the same family still
+# open), never on the diff. `mergeable` is deliberately `false` here too,
+# matching the only state gather-merge-conflicts.sh ever gathers from, but it
+# is irrelevant to this shape's own test — a regression that started reading
+# it here would still pass by coincidence, which the file-129 fixture below
+# guards against on the diff side.
 printf '{"state": "open", "mergeable": false, "user": {"login": "dependabot[bot]"}, "body": "", "head": {"ref": "dependabot/npm_and_yarn/eslint-9.39.5"}}' \
   >"$tmp_dir/pr-Poetic-Poems_poetic-fiddle-129.json"
 printf '2' >"$tmp_dir/files-129"
+printf '[{"number": 130, "headRefName": "dependabot/npm_and_yarn/eslint-10.9.0"}]' \
+  >"$tmp_dir/prlist-Poetic-Poems_poetic-fiddle.json"
 entry_superseded="$(jq -n \
-  --arg item "pr-129-conflict-c96c8ef9d31a" \
+  --arg item "pr-129-superseded-c96c8ef9d31a" \
   --arg repo "Poetic-Poems/poetic-fiddle" \
   --arg reason "a newer Dependabot bump of the same dependency supersedes this one" \
   --arg evidence "PR #129's own branch (dependabot/npm_and_yarn/eslint at 9.39.5) is superseded: a newer open Dependabot pull request on branch dependabot/npm_and_yarn/eslint-10.9.0 bumps dependabot/npm_and_yarn/eslint to 10.9.0. Both cannot land — the older bump (this PR) is redundant now that the newer one exists." \
@@ -974,6 +1072,14 @@ entry_superseded="$(jq -n \
 assert_eq "a Dependabot-superseded void, cited exactly as gather-merge-conflicts.sh formats it, survives the guard" \
   "0" "$(void_guard_reason "$entry_superseded" '[]'; echo $?)"
 assert_eq "  ... silently" "" "$(void_guard_reason "$entry_superseded" '[]')"
+
+# Once the newer bump is no longer open, the same void — unchanged, evidence
+# and all — is refused: corroboration is re-derived live at void time, never
+# trusted from the entry's own say-so.
+printf '[]' >"$tmp_dir/prlist-Poetic-Poems_poetic-fiddle.json"
+out="$(void_guard_reason "$entry_superseded" '[]')"; rc=$?
+assert_eq "  ... but not once the newer bump is no longer open" "1" "$rc"
+assert_contains "  ... naming the missing bump" "has none open now" "$out"
 
 printf '\n'
 if (( failures == 0 )); then

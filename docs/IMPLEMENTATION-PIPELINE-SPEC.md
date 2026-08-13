@@ -1691,11 +1691,29 @@ runs unattended.
      `UNKNOWN` for a beat. Treating that as a conflict would send the Implementor
      to rebase a PR that may not conflict; skipping it means the PR is simply
      reconsidered next cycle, once GitHub has settled the answer.
+   - **Both listings are bounded, their truncation is noticed, and the head
+     arrives as a scalar.** The ours-by-label listing and the Dependabot
+     listing each ask for `GITHUB_PR_LIST_LIMIT` pull requests
+     (`lib/github-limit.sh`) rather than inheriting `gh`'s undeclared default
+     of 30, and each says on stderr when its response came back at that cap.
+     Truncation here is cost, never damage: a conflicted PR beyond the cap is
+     simply not offered this cycle, and a newer bump beyond it is not counted
+     as superseding — the conflicted bump it would have excused is minted as
+     the conflict shape instead, whose treatment (nudge, then take over,
+     requirement 3s) closes nothing. The head SHA is read from `headRefOid`,
+     not `commits[-1].oid`, for requirement 3e's two reasons: the collection
+     read costs `--limit`-slots × 100 nodes where the scalar measures 1 point,
+     and at the collection's 100-item cap `commits[-1]` was the hundredth
+     commit rather than the head.
    - **The ref is scoped to the head SHA** — `pr-<n>-conflict-<head-sha>`, not
      `pr-<n>-conflict` — so a block recorded against one conflicted state does not
      swallow a later, possibly-resolvable one after fresh commits land, while a
      resolution (which moves the head) retires the ref and a conflict re-detected
-     at the same head keeps it. Same reasoning as requirements 3c and 3e.
+     at the same head keeps it. Same reasoning as requirements 3c and 3e. A
+     Dependabot entry superseded by a newer open bump of the same dependency
+     (requirement 3s) mints the sibling shape `pr-<n>-superseded-<head-sha>`
+     instead, so requirement 34k's act-on-void close can tell the two claims
+     apart on the id alone (TD-PPagop-26081304).
    - **Its candidacy turns on the base moving**, an event no signal on the PR
      itself carries, which is the deciding reason it is pre-fetched rather than
      left to the Co-Ordinator: the base advance moves the repo head SHA one cycle,
@@ -1729,11 +1747,17 @@ runs unattended.
      `lib/void-guard.sh`'s `void_pr_matches_item` reads off the item's own id
      for a `pr-<n>-…` item cited in the entry's own repo, as a bare citation
      always is — the id is minted from that very PR — and fetches PR #N live
-     to corroborate it: `void_finishing_pr_reason` reads a `-conflict-` item
-     against its pull request's *mergeability*, and excuses Dependabot's own
-     from even that, since supersession is the one route by which a still-
-     conflicting PR is void and no mergeability reading can confirm it) and
-     the superseding
+     to corroborate it: `void_finishing_pr_reason` reads a `pr-<n>-superseded-…`
+     item against **both** whether its author is still Dependabot and whether
+     `dependabot_newer_open_pr`, re-run live against the repository's
+     currently-open Dependabot pull requests — a listing bounded at the same
+     stated `GITHUB_PR_LIST_LIMIT` cap the gatherer read at, where an empty
+     answer that came back at the cap refuses naming the cap, since "no newer
+     bump in the first N" is not "no newer bump" — still names a
+     strictly-newer open bump of the same family; the mergeability test a
+     `-conflict-` item gets
+     proves nothing here, since a superseded bump can be superseded whether or
+     not it still conflicts) and the superseding
      PR only by its branch name — never as "PR #M" and never by its URL (both
      of which the guard resolves live against that *other* pull request's own
      body and branch, and would refuse, since a different, independent bump
@@ -1800,16 +1824,16 @@ runs unattended.
    - **Superseded** (`superseded_by` non-null, either state of
      `rebase_requested`): never nudged (nothing to gain by asking Dependabot
      to rebase a PR that has nothing left to do) and never a takeover
-     candidate. The Co-Ordinator instead records it in `voided`, copying
-     `superseded_evidence` verbatim as `evidence`, so it is never offered
-     again — but this no longer closes the pull request. Requirement 34k
-     excludes every `pr-<n>-conflict-…` ref, this superseded one included,
-     from its act-on-void close (TD-PPagop-26080901): the same shape also
-     covers a live, unconflicted PR of ours whose conflict merely resolved,
-     and closing *that* one destroys real work, so the shape is left alone
-     across the board rather than closed for some voids and not others. The
-     superseded pull request is voided but stays open until a human closes it
-     by hand.
+     candidate. Its ref mints the distinct shape `pr-<n>-superseded-<head-sha>`
+     (requirement 3g), not `pr-<n>-conflict-<head-sha>`. The Co-Ordinator
+     instead records it in `voided`, copying `superseded_evidence` verbatim as
+     `evidence`, so it is never offered again — and, because the id shape says
+     which claim is being made, requirement 34k's act-on-void step *does* close
+     the pull request (TD-PPagop-26081304): unlike `pr-<n>-conflict-…`, which
+     stays excluded because that shape also covers a live, unconflicted PR of
+     ours whose conflict merely resolved, `pr-<n>-superseded-…` names only a
+     Dependabot bump the void itself says is moot, so closing it discards
+     nothing.
 
    `prompts/coordinator.md` states the first-sighting case explicitly, as a
    named third treatment alongside superseded and takeover, rather than
@@ -4142,7 +4166,8 @@ runs unattended.
     PR-derived sources do have one, but they do not need this rule, because
     their refs are scoped to the round or the head SHA that produced them
     (`pr-<n>-review-<review-id>`, `pr-<n>-conflict-<head-sha>`,
-    `pr-<n>-abandoned-<head-sha>` — requirement 20): a human reviewing again,
+    `pr-<n>-superseded-<head-sha>`, `pr-<n>-abandoned-<head-sha>` —
+    requirement 20): a human reviewing again,
     or a commit landing on the branch, mints a fresh item id that no block
     covers, so evidence arriving there is never held behind a stale marker.
 19. Chooses the Implementor's model: `implementor_model_trivial` only when
@@ -5088,8 +5113,9 @@ runs unattended.
       regardless of whether the entry names one. One item shape is decided by
       its id, rather than by the free-text body/branch test: a finishing-source
       item **is** a pull request — requirements 3e, 3g and 23 mint its id as
-      `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>` or
-      `pr-<n>-conflict-<head-sha>` — so a citation of pull request `<n>`
+      `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
+      `pr-<n>-conflict-<head-sha>` or `pr-<n>-superseded-<head-sha>` — so a
+      citation of pull request `<n>`
       names item `pr-<n>-…`'s own pull request by the id's own construction,
       and the id, not the citation text, decides which live check applies to
       it (`void_finishing_item_pr`, `void_finishing_item_shape`,
@@ -5125,15 +5151,28 @@ runs unattended.
         finished computing (`null`) reads as not definitively conflicting and
         is accepted — the same asymmetry the gatherer chose in the other
         direction, admitting a candidate on `CONFLICTING` and never on the
-        transient `UNKNOWN`. One author is excused from even that: a
-        Dependabot-authored PR still `open` and still conflicting can be void
-        when a newer Dependabot pull request supersedes it (requirement 3s) —
-        that claim is "a newer bump replaces this one", which no mergeability
-        reading can confirm, and 3s is the only route by which a
-        still-conflicting pull request becomes void at all. The excuse is
-        scoped to this shape, where that route lives, and applies only after
-        the state test has run; Dependabot's authorship buys nothing on a
-        shape whose void closes the pull request.
+        transient `UNKNOWN`.
+      - `pr-<n>-superseded-…` — a corroborated void of this shape *does* close
+        pull request `<n>` (34k's ordinary act-on-void path, once the id shape
+        distinguishes it from `-conflict-`, TD-PPagop-26081304). The
+        `-conflict-` shape's mergeability test proves the wrong claim here — a
+        superseded bump can be superseded whether or not it still conflicts —
+        so this shape gets its own live test instead, calibrated to the same
+        closing act #264 was lost to: accepted only when **both** hold, at
+        void time, never read off the entry's own `evidence`: the PR's author
+        is Dependabot's own account — read here off a REST fetch, which spells
+        it `dependabot[bot]`, not the `DEPENDABOT_LOGIN` spelling
+        `lib/dependabot-bump.sh` holds for the GraphQL surface `gh --json`
+        reads (the same account, two surfaces, and only the listing call below
+        takes the GraphQL one) — and
+        `dependabot_newer_open_pr`, re-run against the repository's
+        *currently* open Dependabot pull requests, still names a
+        strictly-newer open bump of the same family. Either half failing
+        refuses, naming which one. This is the excuse `-conflict-` used to
+        grant Dependabot before this shape existed — moved here because the
+        claim it excuses ("superseded") now has its own shape to be
+        corroborated against, rather than riding on a shape whose own
+        mergeability test it can never honestly pass.
 
       An id of no recognised shape takes the strict reading, never the
       permissive one. The id names a pull request in the repository that
@@ -5450,7 +5489,9 @@ runs unattended.
 
     - **an issue** (a bare number) — the number is not in that repo's open-issue
       digest (requirement 3b);
-    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-review-…`) —
+    - **a pull request** (`pr-<n>-abandoned-…`, `-conflict-…`, `-superseded-…`,
+      `-review-…` — `WORK_GONE_PR_RE` reads the number off any `pr-<n>-…` shape,
+      which is what keeps this rule indifferent to which source minted it) —
       the number is not in that repo's open-PR digest;
     - **a register item** (`TD<date><nn>` or `TD-<scope>-<date><nn>`) — the
       item's own file on the default branch says `status: resolved` or
@@ -5609,19 +5650,19 @@ runs unattended.
     - **an issue** (a bare number) — closed, with a comment carrying the
       void's own `detail` (the reason) and `evidence`, iff GitHub still
       reports it open;
-    - **a pull request** (`pr-<n>-abandoned-…`, `-review-…`) — closed the
-      same way, iff still open.
+    - **a pull request** (`pr-<n>-abandoned-…`, `-review-…`, `-superseded-…`)
+      — closed the same way, iff still open.
 
-    **The `-conflict-` shape is excluded from the pull-request case above.**
-    `pr-<n>-conflict-<head-sha>` names the pull request only to say the
-    *conflict* on it resolved — the void is about the conflict, not about the
-    pull request, which stays a live, ready PR of ours the moment the shape
-    is voided. Closing it here would discard exactly the work requirement
-    34's `merge-conflicts` source exists to protect, and did, for real:
-    pull request #264 — the first raising of the branch that became #273,
-    carrying a human `CHANGES_REQUESTED` review round — was closed unmerged
-    when the unrelated item `pr-264-conflict-…` was voided after its conflict
-    resolved, and both the PR and the review round were lost
+    **The `-conflict-` shape alone is excluded from the pull-request case
+    above.** `pr-<n>-conflict-<head-sha>` names the pull request only to say
+    the *conflict* on it resolved — the void is about the conflict, not about
+    the pull request, which stays a live, ready PR of ours the moment the
+    shape is voided. Closing it here would discard exactly the work
+    requirement 34's `merge-conflicts` source exists to protect, and did, for
+    real: pull request #264 — the first raising of the branch that became
+    #273, carrying a human `CHANGES_REQUESTED` review round — was closed
+    unmerged when the unrelated item `pr-264-conflict-…` was voided after its
+    conflict resolved, and both the PR and the review round were lost
     (TD-PPagop-26080901). So a void of this shape closes nothing: it is left
     exactly like a void shape that names no GitHub object at all, below. The
     exclusion is decided before the per-call action cap, exactly as the
@@ -5631,6 +5672,19 @@ runs unattended.
     do would have the Script log that warning every cycle in perpetuity,
     since a shape this never closes never earns the `void-object-closed`
     that would retire it under requirement 34n.
+
+    **`pr-<n>-superseded-<head-sha>` is not excluded.** A Dependabot bump a
+    newer open bump has made moot (requirement 3s) mints this sibling shape
+    instead of `-conflict-`, and its void makes the opposite claim — the pull
+    request itself is moot, not merely its conflict — so closing it discards
+    nothing (TD-PPagop-26081304). It closes through the ordinary
+    pull-request branch above, with requirement 34d's own live corroboration
+    (author still Dependabot, a newer open bump of the same family still
+    open) standing in the same place #264's empty-diff test does for
+    `-abandoned-`/`-review-`. Distinguishing the two shapes at the id, rather
+    than reading the void's reason, is what lets this close resume without
+    re-admitting the `-conflict-` shape #264 cost this pipeline: the two
+    claims never share an id again.
 
     **Which obsolete pull requests this can actually reach.** The close above
     fires on a *corroborated* void, and requirement 34d corroborates the two
@@ -5838,8 +5892,12 @@ runs unattended.
       - **liveness**, for the four shapes the cycle already gathers as
         structured data each cycle (TD-PPagop-26081303): a
         `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
-        `register-hygiene-<hash>`, a `pr-<n>-conflict-<head-sha>` (the shape
-        34k deliberately excludes from its own close), or a
+        `register-hygiene-<hash>`, either merge-conflicts shape
+        (`pr-<n>-conflict-<head-sha>`, which 34k deliberately excludes from its
+        own close, and `pr-<n>-superseded-<head-sha>`, which it closes — both
+        come from the same gather, so the same absent-from-it test decides
+        both, redundantly for the second, which also earns a
+        `void-object-closed` once that close lands), or a
         `failed-run-<…>` is actioned once its id is (a) absent from this
         cycle's own gather for its source, decided only when that source's
         gather succeeded this cycle, and (b) nothing else — liveness is not
@@ -5916,7 +5974,8 @@ runs unattended.
         `scripts/gather-findings.sh` serves both and either alone keeps its
         voids live. The `source-dropped` half is deliberately confined to the
         shapes whose id *form* names the source that mints them: a bare issue
-        number or a non-`-conflict-` `pr-<n>-…` is offered by several sources
+        number or a `pr-<n>-…` shaped neither `-conflict-` nor `-superseded-`
+        is offered by several sources
         (`issues:<band>`, `review-feedback`, `abandoned-drafts`,
         `human-visibility`), so no inverse exists and no verdict can be read
         off the id — those keep the closed-object signal they already had.
@@ -6226,12 +6285,18 @@ runs unattended.
     voided three minutes later, after the PR's head had already moved twice.)
 
     Before `enabler_allowed` is set, every eligible entry whose `item` matches
-    `pr-<n>-conflict-<sha>` or `pr-<n>-abandoned-<sha>` is tested against this
+    `pr-<n>-conflict-<sha>`, `pr-<n>-superseded-<sha>` or
+    `pr-<n>-abandoned-<sha>` is tested against this
     cycle's own freshly gathered `merge_conflicts`/`abandoned_drafts` arrays
     (already assembled into `ordered_repos_json` for the Co-Ordinator, requirement
     3g): if that exact ref is not among them — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
-    (`enabler-stale-refs-skipped`) rather than silent. No other blocked item kind
+    (`enabler-stale-refs-skipped`) rather than silent. Both merge-conflicts
+    shapes are tested, not just `-conflict-`: `pr-<n>-superseded-<sha>`
+    (requirement 3g) is scoped to the same head SHA and comes from the same
+    gather, and a supersession void requirement 34d refuses is recorded
+    blocked under it (requirement 32a) exactly as a refused conflict void is
+    under `-conflict-`. No other blocked item kind
     is touched: a tech-debt id, an issue number, or a review-feedback round has
     no such re-detectable "current" state to compare against, and none of their
     refs match the pattern. A jq failure leaves the eligible set unfiltered — this
@@ -7313,9 +7378,10 @@ What exists, and the requirements each part answers to:
    `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
    wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
    `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
-   three callers — the back-pressure gate and the two PR-listing gatherers —
-   must agree on what a truncated page is even though they treat one
-   differently. Sourced by both cycle scripts, `lib/claim.sh` and every
+   callers — the back-pressure gate, the three PR-listing gatherers, and the
+   void guard's supersession corroboration (requirement 3s) — must agree on
+   what a truncated page is even though they treat one differently. Sourced by
+   both cycle scripts, `lib/claim.sh`, `lib/void-guard.sh` and every
    `scripts/gather-*`/`scripts/sweep-*` that calls GitHub. Unit-tested,
    `test/github-limit.test.sh`),
    `lib/repo-clone.sh` (requirement 6's `clone_repo`, the one clone both
@@ -7746,11 +7812,13 @@ What exists, and the requirements each part answers to:
     open object with a comment carrying the void's `detail`/`evidence`,
     printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
     `"already"` — `deferred`, `warning`) for the Script to log as
-    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` shape is excluded
-    from the pull-request case — it names a live PR the void says nothing
-    about closing — and left untouched exactly like any other id shape.
-    Capped at three actions per call, the overflow reported rather than
-    silent. `SWEEP_GH` stubs `gh` for tests. Unit-tested
+    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` shape alone is
+    excluded from the pull-request case — it names a live PR the void says
+    nothing about closing — and left untouched exactly like any other id
+    shape; its sibling `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304)
+    carries no such exclusion and closes through the ordinary `pr-<n>-…`
+    branch. Capped at three actions per call, the overflow reported rather
+    than silent. `SWEEP_GH` stubs `gh` for tests. Unit-tested
     (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
 20. `lib/review-gate.sh` implementing requirement 31c: given a pull request
     URL and the repository's default branch, `review_gate_verdict` prints
@@ -8723,24 +8791,33 @@ pull request, run the ones the change touches and any it could regress.
    entry's own `repo` is resolved against the URL's own `owner/repo`, not the
    entry's, so a PR number that would match in the wrong repository is not
    corroboration. Assert the finishing sources are not caught by it: an item
-   `pr-<n>-abandoned-…`, `pr-<n>-review-…` or `pr-<n>-conflict-…` citing pull
-   request `<n>` in the entry's own repo is corroborated by fetching that PR's
-   own live state, while the same item citing a *different* pull request is
-   still refused by the ordinary body/branch test. Assert every live state
-   `void_finishing_pr_reason` decides between, and that the item's own shape
-   selects which reading it gets: a merged PR is allowed and a
-   closed-but-unmerged PR is allowed, whatever the shape; a PR the API will
-   not answer for is refused as unreadable. For the two closing shapes
-   (`-abandoned-`, `-review-`, and any id of no recognised shape), an open PR
-   with an empty diff against its base is allowed and one with a non-empty
-   diff is refused, naming the file count still outstanding — Dependabot's
-   authorship buying nothing here. For `-conflict-`, an open PR is allowed
-   whatever its diff unless `mergeable` is `false`, so assert all three
-   readings of that field: `true` allowed, `null` allowed (not yet computed
-   is not definitively conflicting), `false` refused naming the conflict
-   rather than the diff — and `false` allowed after all when
-   `user.login` is `dependabot[bot]`, the supersession case of requirement
-   3s. Assert the id shortcut is
+   `pr-<n>-abandoned-…`, `pr-<n>-review-…`, `pr-<n>-conflict-…` or
+   `pr-<n>-superseded-…` citing pull request `<n>` in the entry's own repo is
+   corroborated by fetching that PR's own live state, while the same item
+   citing a *different* pull request is still refused by the ordinary
+   body/branch test. Assert every live state `void_finishing_pr_reason`
+   decides between, and that the item's own shape selects which reading it
+   gets: a merged PR is allowed and a closed-but-unmerged PR is allowed,
+   whatever the shape; a PR the API will not answer for is refused as
+   unreadable. For the two closing shapes (`-abandoned-`, `-review-`, and any
+   id of no recognised shape), an open PR with an empty diff against its base
+   is allowed and one with a non-empty diff is refused, naming the file count
+   still outstanding. For `-conflict-`, an open PR is allowed whatever its
+   diff unless `mergeable` is `false`, so assert all three readings of that
+   field: `true` allowed, `null` allowed (not yet computed is not
+   definitively conflicting), `false` refused naming the conflict rather than
+   the diff — including when `user.login` is `dependabot[bot]`, which buys
+   this shape nothing since TD-PPagop-26081304 moved that excuse to
+   `-superseded-`. For `-superseded-` (requirement 3s, TD-PPagop-26081304), an
+   open PR is corroborated only when **both**, re-derived live, hold: assert
+   all four combinations — `user.login` is `dependabot[bot]` and
+   `dependabot_newer_open_pr` (re-run against a stubbed currently-open
+   Dependabot PR list) still names a strictly-newer open bump of the same
+   family is allowed; either the author is not Dependabot's, or no such newer
+   bump is open now, is refused naming which half failed; the PR's own
+   `mergeable` field is irrelevant to this shape, so assert a still-open,
+   still-superseded PR is allowed whether `mergeable` reads `true`, `false`
+   or `null`. Assert the id shortcut is
    slug-gated: the same item citing number `<n>` by a URL naming
    a *different* repository is fetched — refused when the fetch fails, and
    refused when the fetched body and branch name no item — and an entry
@@ -8937,9 +9014,12 @@ pull request, run the ones the change touches and any it could regress.
    which names a pull request but is not about closing it (TD-PPagop-26080901)
    — is left entirely alone too, with no API call made, exactly like the
    register id, and is excluded before the action cap, so it neither spends a
-   slot nor appears in the deferred count; a void carrying no reason still
-   reaches the comment with its evidence intact; and the per-call action cap
-   defers rather than floods.
+   slot nor appears in the deferred count; its sibling shape
+   `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304) carries no such
+   exclusion and closes through the ordinary pull-request branch, so assert
+   it *does* make the `gh` call and is reported `closed`; a void carrying no
+   reason still reaches the comment with its evidence intact; and the
+   per-call action cap defers rather than floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract
@@ -9101,8 +9181,9 @@ pull request, run the ones the change touches and any it could regress.
    `test/cycle-state.test.sh`'s `void_config_actioned` section passes,
    against `lib/void-liveness.sh`: an entry naming a repo the configured
    array does not list is actioned as `repo-dropped` whatever its shape,
-   including the bare-issue and non-`-conflict-` `pr-<n>-…` shapes no
-   `source-dropped` verdict can be read off; an entry whose shape names a
+   including the bare-issue shape and the `pr-<n>-…` shapes that are neither
+   `-conflict-` nor `-superseded-`, off which no
+   `source-dropped` verdict can be read; an entry whose shape names a
    source the repo still lists is never actioned; an entry whose shape names
    a source the repo no longer lists is actioned as `source-dropped`, tested
    for each of the seven mapped shapes; the alert shape stays live while
@@ -9708,29 +9789,16 @@ requirements above, which state only what is.
   Dependabot PR already covers the same dependency) is voided rather than
   nudged or taken over, through the *existing* void-recording path rather
   than a new one — so it stops being offered as a candidate every cycle,
-  which is the problem this half of the fix set out to solve. It does
-  **not** also close the pull request: `close-void-github-items.sh`
-  (requirement 34k) excludes every `pr-<n>-conflict-…` void, this superseded
-  one included, from its act-on-void close, because the identical shape also
-  covers a live PR of ours whose conflict merely resolved, and closing that
-  one destroys real work (TD-PPagop-26080901) — a superseded bot PR now
-  waits for a human to close it, the same as before requirement 34k existed.
-  Recording the void correctly still needed the same one piece of care with
-  the evidence text: void corroboration (`lib/void-guard.sh`) reads "PR #N" — bare, or as a
+  which is the problem this half of the fix set out to solve. Recording the
+  void correctly needed one piece of care with the evidence text: void
+  corroboration (`lib/void-guard.sh`) reads "PR #N" — bare, or as a
   `.../pull/N` URL — in evidence as a claim that PR *implements* the item,
   fetches whichever form a cited superseding PR uses, and correctly refuses
   it (a different, independent bump will never carry the superseded item's
   id). So `gather-merge-conflicts.sh` pre-formats the evidence itself, citing
   the superseded PR's *own* number — which the guard reads off the item's own
   id for a `pr-<n>-…` item cited in the entry's own repo, as a bare citation
-  always is (issue #290), and fetches live: `void_finishing_pr_reason`
-  (TD-PPagop-26080807) reads a `-conflict-` item against its pull request's
-  mergeability, and excuses Dependabot's own from even that, because
-  supersession is the only route by which a still-conflicting pull request is
-  void and no reading of `mergeable` can confirm it. That excuse is scoped to
-  this one shape, where that route lives, rather than to the author alone: on
-  a shape whose void *closes* the pull request, Dependabot's name buys
-  nothing — and naming the superseding PR only by its branch
+  always is (issue #290) — and naming the superseding PR only by its branch
   name, never as "PR #M" and never by URL (issue #300: PR #281 taught the
   guard to resolve a URL citation live too, so citing the superseding PR by
   URL started failing the same live body/branch test a bare "PR #M" always
@@ -9739,6 +9807,28 @@ requirements above, which state only what is.
   instead would have every such void refused, silently, forever;
   pre-formatting the one sentence that must not vary was cheaper than
   teaching every future writer the distinction.
+
+  **It originally did not also close the pull request** — TD-PPagop-26080901
+  fixed the human-visibility gap above (issue #240) by excluding every
+  `pr-<n>-conflict-…` void from `close-void-github-items.sh`'s act-on-void
+  close (requirement 34k), because the identical shape also covers a live PR
+  of ours whose conflict merely resolved, and closing that one destroys real
+  work — pull request #264. The exclusion was on the id shape, not on the
+  reason for the void, so it necessarily disabled the supersession auto-close
+  too: a superseded bot PR was left to wait for a human to close it by hand,
+  and these accumulated one per superseded bump, the same
+  "visible to every human and every tool that reads GitHub rather than this
+  pipeline's log" complaint issue #240 was filed against. TD-PPagop-26081304
+  paid down that cost by minting the superseded case a distinct id shape,
+  `pr-<n>-superseded-<head-sha>`, so `pr-<n>-conflict-…` could keep meaning
+  only "the conflict resolved" while the new shape means "the bump itself is
+  moot" — a claim closing the pull request never discards anything for. Its
+  own corroboration is not the `-conflict-` shape's mergeability test, which
+  cannot distinguish the two claims: it re-derives, live, whether the PR is
+  still Dependabot's own and still superseded by a strictly-newer open bump of
+  the same family, moving the Dependabot excuse `-conflict-` used to carry off
+  a shape whose void closes nothing and onto the one shape that actually needs
+  it.
 - **The void guard's finishing-source id shortcut is slug-gated, and an entry
   naming no repo falls through rather than refuses.** PR #281 made URL
   citations resolve against the `owner/repo` the URL itself names, which

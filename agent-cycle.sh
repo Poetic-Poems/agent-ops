@@ -4886,9 +4886,11 @@ fi
 #     residue, and so this read, bounded;
 #   - liveness, for the four shapes the cycle already gathers as structured
 #     data each cycle (TD-PPagop-26081303): a `dependabot-alert-<n>`/
-#     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, a
-#     `pr-<n>-conflict-<head-sha>` (the merge-conflicts shape requirement 34k
-#     deliberately excludes from its own close), or a `failed-run-<…>` is
+#     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, either
+#     merge-conflicts shape (`pr-<n>-conflict-<head-sha>`, which requirement
+#     34k deliberately excludes from its own close, and
+#     `pr-<n>-superseded-<head-sha>`, which it closes — same gather, so the
+#     same test decides both), or a `failed-run-<…>` is
 #     actioned once its id is absent from this cycle's own gather for that
 #     source, and that gather succeeded (`void_liveness_actioned`,
 #     lib/void-liveness.sh) — read off the same tee files the repo loop
@@ -5217,9 +5219,14 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
 # already gathered into `ordered_repos_json` above — are the current truth for
 # every PR still in either state; a SHA-scoped ref absent from them has been
 # superseded (a newer push) or resolved outright, either way stale. Only refs
-# shaped `pr-<n>-conflict-<sha>`/`pr-<n>-abandoned-<sha>` are tested — every
-# other blocked item kind (a tech-debt id, an issue number, a review-feedback
-# round) has no such re-detectable "current" state to compare against, and
+# shaped `pr-<n>-conflict-<sha>`/`pr-<n>-superseded-<sha>`/
+# `pr-<n>-abandoned-<sha>` are tested — the merge-conflicts gather mints the
+# first two (requirement 3g) and both are scoped to the same head SHA, so both
+# go stale the same way, and a refused supersession void is recorded blocked
+# under the second (requirement 32a) exactly as a refused conflict void is
+# under the first. Every other blocked item kind (a tech-debt id, an issue
+# number, a review-feedback round) has no such re-detectable "current" state
+# to compare against, and
 # `test` on a plain id or number simply never matches the pattern. A jq
 # failure leaves the set unfiltered: this is a cost saving, never the
 # correctness gate (the Enabler still voids a stale item it does reach).
@@ -5244,7 +5251,7 @@ live_pr_refs_json="$(jq -c \
 stale_enabler_refs_json='[]'
 [[ -z "$live_pr_refs_json" ]] || stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
   [ .[] | (.repo // "") as $repo | (.item // "") as $item
-        | select(($item | test("^pr-[0-9]+-(conflict|abandoned)-[0-9a-f]+$"))
+        | select(($item | test("^pr-[0-9]+-(conflict|superseded|abandoned)-[0-9a-f]+$"))
                  and (($live | index($repo + "#" + $item)) == null)) ]
   ' <<<"$enabler_eligible_json" 2>/dev/null || echo '[]')"
 if [[ "$(jq 'length' <<<"$stale_enabler_refs_json" 2>/dev/null || echo 0)" != "0" ]]; then

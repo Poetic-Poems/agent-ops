@@ -344,6 +344,27 @@ assert_eq "an unrelated blocked item kind (tech-debt) is untouched" "1" \
 assert_eq "the drop is logged, not silent" "true" \
   "$(jq -r '.logged | test("enabler-stale-refs-skipped")' <<<"$result")"
 
+# The merge-conflicts gather's *other* shape, `pr-<n>-superseded-<sha>`
+# (requirement 3g, TD-PPagop-26081304), is scoped to the same head SHA and comes
+# from the same array, so requirement 35e's filter must reach it identically. It
+# is not hypothetical: a supersession void requirement 34d refuses — the newer
+# bump merged between the gather and the void, or `gh pr list` failed — is
+# recorded blocked under exactly this ref (requirement 32a), and a shape this
+# filter cannot see would sit `enabler_eligible` forever, which is the
+# `pr-205-conflict-305ca060016d` engagement-per-recheck failure issue #238 closed.
+sup_ordered='[{"slug": "o/r",
+               "merge_conflicts": [{"ref": "pr-129-superseded-c96c8ef9d31a"}],
+               "abandoned_drafts": []}]'
+sup_eligible='[
+  {"repo": "o/r", "item": "pr-129-superseded-aaaaaaaaaaaa", "reason": "threshold"},
+  {"repo": "o/r", "item": "pr-129-superseded-c96c8ef9d31a", "reason": "threshold"}
+]'
+sup_result="$(run_stale_ref_block "$sup_ordered" "$sup_eligible")"
+assert_eq "a stale superseded-shape ref is dropped too" "0" \
+  "$(jq '[.eligible[] | select(.item == "pr-129-superseded-aaaaaaaaaaaa")] | length' <<<"$sup_result")"
+assert_eq "  ... while the one this cycle's gather still reports survives" "1" \
+  "$(jq '[.eligible[] | select(.item == "pr-129-superseded-c96c8ef9d31a")] | length' <<<"$sup_result")"
+
 # A PR fully resolved (no longer conflicted or abandoned at all) supersedes its
 # blocked ref exactly as a moved head does — absent from the live set either way.
 resolved_ordered='[{"slug": "o/r", "merge_conflicts": [], "abandoned_drafts": []}]'
