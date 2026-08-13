@@ -420,32 +420,6 @@ stage_budget_overrides() {
       }' 2>/dev/null || printf '{}'
 }
 
-# stage_budget_all_overrides
-# The same, for every implementation actor at once, taking the *largest*
-# configured value for each — the lock derivation has to cover whichever
-# repository this cycle lands on, and a per-repository override may be wider
-# than the plain key.
-stage_budget_all_overrides() {
-  jq -nc --slurpfile c "$CONFIG_FILE" '
-    ($c[0] // {}) as $cfg
-    | ["coordinator", "implementor", "reviewer", "enabler", "refiner"]
-    | map(. as $a
-          | {
-              key: $a,
-              value: {
-                backstop: ([ $cfg["timeout_" + $a],
-                             (($cfg.repos // [])[] | (.stage_timeouts // {})[$a]) ]
-                           | map(select(type == "number"))
-                           | if length == 0 then null else max end),
-                inactivity: ([ $cfg["inactivity_" + $a],
-                               (($cfg.repos // [])[] | (.stage_inactivity // {})[$a]) ]
-                             | map(select(type == "number"))
-                             | if length == 0 then null else max end)
-              }
-            })
-    | from_entries' 2>/dev/null || printf '{}'
-}
-
 # stage_budget_apply ACTOR REPO MODEL
 # Resolve this launch's two caps, announce them on the stage-start event, and
 # leave them in `stage_backstop_min` / `stage_inactivity_min` for the launch.
@@ -3786,7 +3760,7 @@ stage_budget_json="$(stage_budget_table \
 # than asserted against them by hand (requirement 4f). A configured
 # `lock_stale_after` is a floor, never a ceiling.
 lock_stale_after_sec="$(stage_budget_lock_seconds "$stage_budget_json" \
-  "$(stage_budget_all_overrides)" "$LOCK_SLACK_MIN" "$lock_stale_configured_hours")"
+  "$(stage_budget_all_overrides "$stage_budget_config")" "$LOCK_SLACK_MIN" "$lock_stale_configured_hours")"
 
 acquire_lock
 
