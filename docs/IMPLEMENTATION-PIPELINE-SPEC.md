@@ -2025,12 +2025,29 @@ runs unattended.
    ways a bar-clearing item may be declined without being selected — unless
    `refinement_policy.tech-debt == "required"`, where an unrefined item is
    silently skippable by design (requirement 39a) and needs no report. Once
-   the Co-Ordinator's final message is in hand, the Script tests every eligible
-   entry against `needs_refinement` and `voided`; any left unaccounted for is
-   logged as a `warning` event (`eligible_total`, the unaccounted `{repo,
-   item}` pairs, and the verdict's own `reason`) — the machine-readable trace
-   of exactly the contradiction this requirement's history section describes,
-   available on the dashboard without a human re-deriving it from prose.
+   the Co-Ordinator's final message is in hand, the Script tests every
+   eligible entry against **what it recorded from those two arrays, never the
+   arrays verbatim**: an account is the state the report left behind, not the
+   report itself. A `needs_refinement` entry therefore counts only if
+   `record_needs_refinement_block` accepted it — one dropped at requirement
+   34d's five-field bar records nothing but a warning, so its item stays
+   open, unclaimed and eligible, and letting it count anyway would satisfy
+   the corroboration, arm the fingerprint, and stand the next byte-identical
+   cycle down on a verdict that never engaged with the band: this incident's
+   freeze, reached again through the narrow door of every eligible item
+   reported and every report malformed (`missing` and `evidence` are exactly
+   the fields a small model omits). A `voided` entry counts whichever way the
+   void guard rules, and this asymmetry is deliberate rather than a gap:
+   both of the guard's outcomes write state — a pass records the void, a
+   refusal records a block (requirement 34d) — so either way the item leaves
+   the next cycle's eligible set, and the guard's live-evidence rejection,
+   which no shape test could reproduce in a projection, needs no reproducing.
+   One rule covers both arrays: count what was recorded. Any eligible entry
+   left unaccounted for is logged as a `warning` event (`eligible_total`, the
+   unaccounted `{repo, item}` pairs, and the verdict's own `reason`) — the
+   machine-readable trace of exactly the contradiction this requirement's
+   history section describes, available on the dashboard without a human
+   re-deriving it from prose.
 
    When any item is unaccounted for, the `none-selected` event this cycle logs
    omits the `fingerprint` field entirely (carrying `td_verdict_rejected: true`
@@ -7285,7 +7302,13 @@ pull request, run the ones the change touches and any it could regress.
    `selected: false` verdict neither reported in `needs_refinement` (source
    `"tech-debt"`, not another source's) nor voided, reports none under
    `refinement_policy.tech-debt == "required"`, and degrades to `[]` rather
-   than a false positive on malformed input. Assert the wiring both ways, which
+   than a false positive on malformed input; and the corroboration is fed the
+   recording loops' own collections, never the message's arrays verbatim — a
+   `needs_refinement` entry dropped at requirement 34d's bar leaves its item
+   unaccounted (the fingerprint is then withheld and the next cycle re-asks),
+   while a `voided` entry the guard refuses still accounts, because the
+   refusal is itself recorded as a block, and an entry naming no item, which
+   records nothing, is not collected at all. Assert the wiring both ways, which
    the unit tests cannot: a `none-selected` with an item unaccounted for logs
    the `warning` **and** omits `fingerprint` from the event (carrying
    `td_verdict_rejected: true`), so the next cycle re-asks rather than skipping

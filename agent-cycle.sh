@@ -923,7 +923,7 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
 # Requirement 3t's machine corroboration: which of this cycle's eligible
 # tech-debt items (ELIGIBLE_JSON, `{repo, item}` entries — the Script's own
 # post-exclusion `tech_debt` arrays, flattened) a `selected: false`
-# WORK_ORDER_JSON left completely unaccounted for. A bar-clearing item may be
+# verdict left completely unaccounted for. A bar-clearing item may be
 # declined without being selected only two ways: reported in
 # `needs_refinement` (source "tech-debt") or voided this same cycle — the same
 # two the prompt's own "Reporting an under-specified item" and "Void items"
@@ -933,6 +933,24 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
 # returns `[]` unconditionally under that policy rather than flagging every
 # eligible item as unaccounted.
 #
+# RECORDED_JSON is what the Script *recorded* from the Co-Ordinator's message
+# — `log_needs_refinement_items`' and `log_voided_items`' own collections —
+# never the message's `needs_refinement`/`voided` arrays verbatim. The
+# difference is the whole point: `record_needs_refinement_block` drops an
+# entry that fails requirement 34d's five-field bar with nothing but a
+# warning, so a claimed-but-dropped report leaves its item open, unclaimed
+# and eligible — and had it still counted as accounting for that item, the
+# corroboration would have been satisfied, the fingerprint armed, and the
+# next cycle's byte-identical inputs would have stood the fleet down on a
+# verdict that never engaged with the band: issue #310's freeze, reopened
+# through a narrow door (every eligible item reported, every report
+# malformed — precisely the fields a small model omits). A `voided` entry, by
+# contrast, is counted whichever way the void guard rules, because both
+# outcomes are recorded state: a pass writes the void, a refusal writes a
+# block (requirement 34d), and either removes the item from the next cycle's
+# eligible set — so the two arrays are hardened by the one rule "count what
+# was recorded", not by two different shape tests.
+#
 # Any entry this prints is evidence the Co-Ordinator's verdict did not
 # actually engage with the band it is declining — exactly the shape of the
 # incident this requirement exists for (issue #310), where the stated reason
@@ -941,8 +959,8 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
 # Malformed input degrades to `[]` — silence, not a false positive — on the
 # same fail-open terms as exclude_claimed_items and
 # exclude_blocked_or_void_items above.
-tech_debt_unaccounted_items() {  # <work-order-json> <eligible-json> <refinement-policy-json>
-  local work_order="$1" eligible="${2:-[]}" policy="${3:-{\}}"
+tech_debt_unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>
+  local recorded="$1" eligible="${2:-[]}" policy="${3:-{\}}"
   jq -e 'type == "array"' <<<"$eligible" >/dev/null 2>&1 || eligible='[]'
   jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
   jq -c --argjson eligible "$eligible" --argjson policy "$policy" '
@@ -954,7 +972,7 @@ tech_debt_unaccounted_items() {  # <work-order-json> <eligible-json> <refinement
           + ((.voided // []) | map({repo, item: (.item | tostring)})))) as $accounted
         | ($eligible - $accounted)
       end
-    ' <<<"$work_order" 2>/dev/null || echo '[]'
+    ' <<<"$recorded" 2>/dev/null || echo '[]'
 }
 
 # Whether a candidate the Co-Ordinator returned is one this same cycle's own
@@ -1207,10 +1225,24 @@ record_needs_refinement_block() {
 # log_needs_refinement_items WORK_ORDER
 # Record every one of the Co-Ordinator's `needs_refinement` reports via
 # `record_needs_refinement_block`, attributed to `stage: "coordinator"`.
+#
+# Collects the entries the recorder actually accepted into
+# `coord_recorded_refinement_json` for requirement 3t's corroboration, which
+# must count what was recorded and never what was claimed: an entry dropped
+# at requirement 34d's bar records nothing, so its item stays eligible, and
+# letting it account for that item anyway would arm the no-op fingerprint on
+# a verdict that never engaged with the band (see
+# tech_debt_unaccounted_items). The already-blocked refusal also lands here
+# uncounted, harmlessly — a blocked item was never in the eligible set to
+# need accounting for.
 log_needs_refinement_items() {
   local wo="$1" entry
+  coord_recorded_refinement_json="[]"
   while IFS= read -r entry; do
-    record_needs_refinement_block "$entry" "coordinator" || true
+    if record_needs_refinement_block "$entry" "coordinator"; then
+      coord_recorded_refinement_json="$(jq -c --argjson e "$entry" '. + [$e]' \
+        <<<"$coord_recorded_refinement_json")"
+    fi
   done < <(jq -c '.needs_refinement[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
@@ -1232,13 +1264,24 @@ log_needs_refinement_items() {
 # the tree gets to adjudicate rather than the item disappearing on an unchecked
 # claim. See lib/void-guard.sh for what the guard tests and why it is not a
 # prompt instruction.
+#
+# Collects every entry it disposed of into `coord_recorded_voided_json` for
+# requirement 3t's corroboration — and "disposed of" deliberately includes a
+# refusal, unlike log_needs_refinement_items' collection just above, because
+# here both outcomes write state: a pass records the void, a refusal records
+# a block, and either takes the item out of the next cycle's eligible set. An
+# entry naming no item is the one thing that records nothing, and it is the
+# one thing not collected.
 log_voided_items() {
   local wo="$1" repos="${2:-[]}" entry item repo reason refusal
+  coord_recorded_voided_json="[]"
   while IFS= read -r entry; do
     item="$(jq -r '.item // ""' <<<"$entry")"
     [[ -n "$item" ]] || continue
     repo="$(jq -r '.repo // ""' <<<"$entry")"
     reason="$(jq -r '.reason // "no reason given"' <<<"$entry")"
+    coord_recorded_voided_json="$(jq -c --argjson e "$entry" '. + [$e]' \
+      <<<"$coord_recorded_voided_json")"
 
     if refusal="$(void_guard_reason "$entry" "$repos")"; then
       log_event "item-void" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
@@ -4462,10 +4505,15 @@ if [[ "$selected" != "true" ]]; then
   # --- 5a. Tech-debt verdict corroboration (requirement 3t, issue #310) ---
   # See tech_debt_unaccounted_items's own comment above for the rule; only
   # worth computing at all when the Script found something eligible to check
-  # the verdict against.
+  # the verdict against. Fed the recording loops' own collections (steps
+  # above), never $work_order_json's arrays verbatim: the account is what the
+  # Script put on the record, not what the message claimed to.
   td_unaccounted_json="[]"
   if (( eligible_tech_debt_total > 0 )); then
-    td_unaccounted_json="$(tech_debt_unaccounted_items "$work_order_json" \
+    td_unaccounted_json="$(tech_debt_unaccounted_items \
+      "$(jq -nc --argjson nr "${coord_recorded_refinement_json:-[]}" \
+                --argjson v "${coord_recorded_voided_json:-[]}" \
+                '{needs_refinement: $nr, voided: $v}')" \
       "$eligible_tech_debt_json" "$refinement_policy_json")"
   fi
   td_unaccounted_n="$(jq 'length' <<<"$td_unaccounted_json" 2>/dev/null || echo 0)"
@@ -4493,7 +4541,8 @@ if [[ "$selected" != "true" ]]; then
       '{detail: ("tech-debt verdict contradiction: the Script found " + ($total | tostring)
                  + " eligible open tech-debt item(s) (unclaimed, unblocked, not void), but "
                  + ($n | tostring)
-                 + " of them were neither selected, reported in needs_refinement, nor voided this cycle"
+                 + " of them were neither selected, covered by a needs_refinement report the Script"
+                 + " recorded, nor by a voided entry it disposed of this cycle"
                  + " — the Co-Ordinator'"'"'s stated reason (\"" + $r + "\") does not account for the band"),
         eligible_total: $total, unaccounted: $items}')"
     log_event "none-selected" "$(jq -nc --arg r "$reason" '{reason: $r, td_verdict_rejected: true}')"
