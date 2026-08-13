@@ -6502,15 +6502,31 @@ runs unattended.
     request back in the one queue a human actually watches.
 
     The target is whoever has ever reviewed the pull request, in any state
-    (`_handoff_known_reviewers`), before it is ever `assignee`
-    (`enabler_assignee`). That order is load-bearing, not stylistic: this
-    system's own pull requests are authored under the same account
-    `enabler_assignee` routinely names — issue assignment has no such
-    conflict, pull-request review does — and GitHub refuses a review request
-    aimed at a pull request's own author with a 422. CODEOWNERS already solved
-    that once, automatically, the moment the pull request went ready; reading
-    who it already picked is both correct and one API call. `assignee` is the
-    fallback for a pull request CODEOWNERS never touched at all.
+    (`_handoff_known_reviewers`), before it is ever a currently pending
+    review request, before it is ever `assignee` (`enabler_assignee`). That
+    order is load-bearing, not stylistic: this system's own pull requests are
+    authored under the same account `enabler_assignee` routinely names —
+    issue assignment has no such conflict, pull-request review does — and
+    GitHub refuses a review request aimed at a pull request's own author with
+    a 422. CODEOWNERS already solved that once, automatically, the moment the
+    pull request went ready; reading who it already picked is both correct
+    and one API call.
+
+    `_handoff_known_reviewers` only sees a candidate once they have
+    *submitted* a review, though, and CODEOWNERS' own request lands in
+    `requested_reviewers` the moment the pull request goes ready — before
+    anyone has reviewed it at all. Treating that window's empty `known` as
+    "nobody yet" and falling straight to `assignee` is exactly what happened
+    to agent-ops PR #350/#355: both authored under `enabler_assignee`'s own
+    account, both already carrying a live request to a non-author collaborator
+    CODEOWNERS had already named, and both still read as
+    `skip\tno-candidate` because nobody had submitted a review yet. A
+    currently pending request naming a non-author is checked next, before
+    `assignee`: if one already exists, the guarantee this requirement asks
+    for already holds, and `ensure_human_reviewer` reports it exactly as the
+    already-satisfied case is — nothing to request. `assignee` remains the
+    fallback for the one case that leaves nobody to read at all: a pull
+    request CODEOWNERS never touched, with no pending request either.
 
     The author is struck off the candidates whichever list proposed them,
     before anything is asked, and a request left with no candidate is a `skip`
@@ -6719,13 +6735,14 @@ runs unattended.
       comment `scripts/sweep-human-visibility.sh` itself checks for is still
       absent; a `no legal review-request candidate` warning (requirement 38a's
       `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
-      while `gh pr view --json author,reviews` still shows no non-author,
-      non-bot, submitted review, and `enabler_assignee` — carried in the
-      warning's own detail text, at the value it held when the sweep warned —
-      still names the pull request's own author: either is
-      `ensure_human_reviewer`'s own candidate rule, generalised read-only,
-      resolving itself, since the sweep's own next pass would request that
-      candidate before this gatherer runs again. The three classes are told apart deliberately:
+      while `gh pr view --json author,reviews,reviewRequests` still shows no
+      request already pending, no non-author, non-bot, submitted review, and
+      `enabler_assignee` — carried in the warning's own detail text, at the
+      value it held when the sweep warned — still names the pull request's
+      own author: any of the three is `ensure_human_reviewer`'s own candidate
+      rule, generalised read-only, resolving itself, since the sweep's own
+      next pass would request that candidate before this gatherer runs again.
+      The three classes are told apart deliberately:
       every pull request a nudge warning is logged against is already
       `APPROVED` (the nudge's own gate), so the request-class check alone
       would read every nudge-class warning as resolved the moment it was
@@ -7129,9 +7146,10 @@ What exists, and the requirements each part answers to:
    warning only while the `agent-ops:human-nudge` marker comment is still
    absent; a `no legal review-request candidate` warning
    (tech-debt/TD-PPagop-26081001.md) only while `gh pr view --json
-   author,reviews` still shows no non-author, non-bot, submitted review and
-   `enabler_assignee` — read back out of the warning's own detail text —
-   still names the pull request's own author; any other warning shape for as
+   author,reviews,reviewRequests` still shows no request already pending, no
+   non-author, non-bot, submitted review, and `enabler_assignee` — read back
+   out of the warning's own detail text — still names the pull request's own
+   author; any other warning shape for as
    long as the pull request stays open and not a draft; an unreadable
    re-check is kept, not dropped) — carrying a
    ref scoped to the surviving violations' own identities and details
@@ -9471,14 +9489,18 @@ pull request, run the ones the change touches and any it could regress.
 
 38. **Human-visibility (requirements 38a–38c).** `test/handoff.test.sh` passes:
     `ensure_human_reviewer` re-requests review from whoever has ever reviewed
-    the pull request (any state) in preference to `assignee`; falls back to
-    `assignee` only when nobody ever has; strikes the pull request's own author
-    off both lists before asking, so an author's `COMMENT` review on their own
-    pull request neither becomes a request target nor 422s the request for the
-    human beside them, and an author-only reviews list, or `assignee` equal to
-    the author with nobody else known, is the distinguishable
-    `skip\tno-candidate` (tech-debt/TD-PPagop-26081001.md), never a bare
-    `skip`; `skip`s (bare) while something is genuinely
+    the pull request (any state) in preference to a currently pending review
+    request, in preference to `assignee`; reports a pending request naming a
+    non-author as already satisfied — `already`, not `skip\tno-candidate` —
+    even when nobody has yet submitted a review; falls back to `assignee`
+    only when nobody has ever reviewed and no request is currently pending;
+    strikes the pull request's own author off both lists before asking, so an
+    author's `COMMENT` review on their own pull request neither becomes a
+    request target nor 422s the request for the human beside them, and an
+    author-only reviews list with no request pending, or `assignee` equal to
+    the author with nobody else known and no request pending, is the
+    distinguishable `skip\tno-candidate` (tech-debt/TD-PPagop-26081001.md),
+    never a bare `skip`; `skip`s (bare) while something is genuinely
     `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; and
     an unreadable reviews list or pending list is `failed`, never an assumed
     `skip`. `handoff_round_answered` is asserted
@@ -9551,11 +9573,13 @@ pull request, run the ones the change touches and any it could regress.
     "has a human reviewed this" check, which would otherwise drop every
     nudge-class violation on sight — and is dropped once the marker appears; a
     `no legal review-request candidate` violation
-    (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
-    show no non-author, non-bot, submitted review and no pending (unsubmitted)
-    review counts either, is dropped the moment such a reviewer appears, and
-    is dropped separately once the assignee named in its own detail text no
-    longer names the pull request's author; an unrecognised warning shape
+    (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews`/
+    `reviewRequests` still show no request already pending, no non-author,
+    non-bot, submitted review — a pending (unsubmitted) review counts as
+    neither — and is dropped the moment a request is already pending or such
+    a reviewer appears, and is dropped separately once the assignee named in
+    its own detail text no longer names the pull request's author; an
+    unrecognised warning shape
     survives for as long as its pull request
     stays open and not a draft; an unreadable live re-check keeps the
     violation rather than dropping it; a repo-level and a pull-request
