@@ -8988,6 +8988,19 @@ pull request, run the ones the change touches and any it could regress.
    say to retry once a node can read GitHub again — never the required-checks-
    specific wording a genuine failure earns, which would send an Enabler
    looking for a defect that is not there.
+
+   What `agent-cycle.sh` then *does* with each verdict is asserted separately,
+   by `test/review-gate-wiring.test.sh`, against the ready-gate block lifted
+   verbatim from the script — every one of the four verdicts leaves the same
+   word on stdout as at least one other, so the consequence is where they are
+   actually distinguishable: `dirty` records the handback naming the fault and
+   ends the cycle; the blocking `unknown` ends it too but logs the node-level
+   `warning` first and hands back the retry `unblock_condition` rather than
+   the required-checks one; the non-blocking `unknown` and `clean` both carry
+   on into the rest of the handoff, recording nothing against the item. The
+   last of those is what pins the exit status as the discriminator: a block
+   that read the word alone would stall every pull request on a node whose
+   token cannot see code-scanning alerts.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
