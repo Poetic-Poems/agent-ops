@@ -2239,17 +2239,25 @@ runs unattended.
      requirement 3t's gate (against the union of both attempts' recorded
      arrays), the Script selects mechanically — no third Co-Ordinator
      engagement. `fallback_select_candidate` walks a fixed source-band
-     priority order over `ordered_repos_json` — the same order
-     `prompts/coordinator.md`'s "Selection algorithm" describes: the five
-     cross-repo overrides (security, urgent issues, review-feedback,
-     merge-conflicts, abandoned-drafts) ahead of the residual repo-then-source
-     walk (human-visibility, high issues, tech-debt, medium issues, low
-     issues, code-quality, register-hygiene) — restricted to the bands the
+     priority order over `ordered_repos_json`, approximating
+     `prompts/coordinator.md`'s "Selection algorithm": the five cross-repo
+     overrides (security, urgent issues, review-feedback, merge-conflicts,
+     abandoned-drafts) ahead of the residual bands (human-visibility, high
+     issues, tech-debt, medium issues, low issues, code-quality,
+     register-hygiene) — restricted to the bands the
      Script has a pre-fetched array for; `failed-runs`, `implementation-plan`
      and `project-review` have none and are skipped rather than approximated
      (each would need a live `gh` read or a tree fetch the Co-Ordinator
-     performs for itself, which this mechanical path does not). This is a
-     deliberate, bounded narrowing: `eligible_tech_debt_total > 0` is what let
+     performs for itself, which this mechanical path does not). It is an
+     approximation in two further respects, both of which cost at most a
+     less-preferred pick on a path that exists to pick *something*: the walk
+     is band-major across the whole fleet rather than the Co-Ordinator's
+     repo-then-source walk (so a lower-ranked repo's higher band outranks a
+     higher-ranked repo's lower one), and each repo's own configured
+     `sources` list is not consulted — the pre-fetched arrays are what bound
+     it, and for `findings` and `issues` those are coarser than the source
+     list (one fetch serves both finding kinds and all four issue bands).
+     This is a deliberate, bounded narrowing: `eligible_tech_debt_total > 0` is what let
      the gate reject a verdict at all, so the `tech-debt` rank always has
      something to fall to even when every higher-priority band is empty and
      every lower one unreachable — the one guarantee this path depends on.
@@ -2278,11 +2286,14 @@ runs unattended.
    - **Fingerprint un-arming is unchanged.** Requirement 3t's own rule —
      omit `fingerprint` from `none-selected` whenever any eligible item is
      left unaccounted — applies identically to the retry's own rejected
-     verdict (`retried: true` added to `none-selected` for that case) and to
-     a fallback selection, which never logs `none-selected` at all (a
-     candidate was claimed instead). Only a `none-selected` fully accounted
-     for on the first attempt, or accepted on the retry, ever carries a
-     fingerprint.
+     verdict, whose `none-selected` carries `retried: true` and no
+     fingerprint. That event records the *verdict*, not the cycle's outcome:
+     it is written before fallback selection is attempted, so a cycle that
+     then falls back carries both it and the `selection` event the
+     mechanical pick wins, and nothing about the fallback re-arms the
+     fingerprint the rejected verdict was denied. Only a `none-selected`
+     fully accounted for on the first attempt, or accepted on the retry,
+     ever carries a fingerprint.
    - **Explicitly deferred.** Escalating the retry to a stronger model (a
      `coordinator_model` override for the retry invocation only) is not part
      of this requirement — whether the rejection rate observed through issue

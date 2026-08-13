@@ -2064,12 +2064,17 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # the Script itself picks: the highest-priority non-empty source band, its
 # first item in repo order, with no per-item judgement applied.
 #
-# The band order mirrors `prompts/coordinator.md`'s own "Selection algorithm"
-# — the five cross-repo overrides (security, urgent issues, review-feedback,
-# merge-conflicts, abandoned-drafts) ahead of the residual repo-then-source
-# walk (human-visibility, high issues, tech-debt, medium issues, low issues,
+# The band order approximates `prompts/coordinator.md`'s own "Selection
+# algorithm" — the five cross-repo overrides (security, urgent issues,
+# review-feedback, merge-conflicts, abandoned-drafts) ahead of the residual
+# bands (human-visibility, high issues, tech-debt, medium issues, low issues,
 # code-quality, register-hygiene) — restricted to the bands the Script has a
-# pre-fetched array for. `failed-runs`, `implementation-plan` and
+# pre-fetched array for. Approximates, not mirrors, in two respects a
+# mechanical pick can afford: the walk is band-major across the whole fleet
+# rather than the Co-Ordinator's repo-then-source walk, and it reads each
+# repo's pre-fetched arrays rather than its configured `sources` list (which
+# for `findings` and `issues` is the finer of the two — one fetch serves both
+# finding kinds and all four issue bands). `failed-runs`, `implementation-plan` and
 # `project-review` have none — enumerating their candidates means a live `gh`
 # read or a tree fetch the Co-Ordinator does for itself, which this mechanical
 # fallback does not perform — so those three ranks are skipped rather than
