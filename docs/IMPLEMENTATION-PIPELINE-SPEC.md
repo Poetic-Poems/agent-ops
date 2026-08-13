@@ -6512,8 +6512,25 @@ runs unattended.
     who it already picked is both correct and one API call. `assignee` is the
     fallback for a pull request CODEOWNERS never touched at all.
 
+    Between those two, an already-pending `requested_reviewers` entry is its
+    own candidate source, read before `assignee` is ever considered: it is
+    what a fresh CODEOWNERS auto-request leaves behind before anyone has
+    reviewed, which `_handoff_known_reviewers` — reviews *submitted*, not
+    requested — cannot see. Omitting this check misread three of this
+    system's own pull requests (agent-ops #350, #353, #355): each already
+    carried a live request for `Warwick-Allen`, this repository's
+    human-review identity, made by CODEOWNERS the moment the pull request
+    opened, but with nobody's review submitted yet and `assignee` equal to
+    the author (`warwickallen`, this repository's commit and comment
+    identity), `ensure_human_reviewer` fell all the way to `skip\tno-candidate`
+    — a live human review request already sitting on the pull request,
+    reported as if none existed. A non-empty pending list at this point
+    already answers the requirement — a human has already been asked — so it
+    is reported `already`, not requested again.
+
     The author is struck off the candidates whichever list proposed them,
-    before anything is asked, and a request left with no candidate is a `skip`
+    before anything is asked, and a request left with no candidate — nothing
+    known, nothing pending, and `assignee` equal to the author — is a `skip`
     rather than an attempt: a 422 is not a transient failure worth a `warning`
     every cycle, it is a fact about the configuration that will not change
     tomorrow, and one invalid login fails the whole POST rather than its own
@@ -6522,7 +6539,9 @@ runs unattended.
     GitHub closes `APPROVE` and `REQUEST_CHANGES` to a pull request's author
     but leaves `COMMENT` open to them, and a Reviewer's own findings may be
     filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
-    them — under the account that raised the pull request.
+    them — under the account that raised the pull request. The pending list
+    needs no such filter: GitHub never lets a review request name the pull
+    request's own author to begin with.
 
     The no-candidate `skip` carries its own detail, `skip\tno-candidate`,
     distinguishable from the other two `skip` reasons — a draft, or something
@@ -6719,13 +6738,17 @@ runs unattended.
       comment `scripts/sweep-human-visibility.sh` itself checks for is still
       absent; a `no legal review-request candidate` warning (requirement 38a's
       `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
-      while `gh pr view --json author,reviews` still shows no non-author,
-      non-bot, submitted review, and `enabler_assignee` — carried in the
+      while `gh pr view --json author,reviews,reviewRequests` still shows no
+      non-author, non-bot, submitted review, no review request already
+      pending (most often CODEOWNERS' own auto-request, live before anyone
+      has reviewed — agent-ops #350, #353, #355 were each already
+      live-requested this way), and `enabler_assignee` — carried in the
       warning's own detail text, at the value it held when the sweep warned —
-      still names the pull request's own author: either is
+      still names the pull request's own author: any of the three is
       `ensure_human_reviewer`'s own candidate rule, generalised read-only,
-      resolving itself, since the sweep's own next pass would request that
-      candidate before this gatherer runs again. The three classes are told apart deliberately:
+      resolving itself, since the sweep's own next pass would report
+      `already` or `requested` for that candidate, never `no-candidate`
+      again, before this gatherer runs again. The three classes are told apart deliberately:
       every pull request a nudge warning is logged against is already
       `APPROVED` (the nudge's own gate), so the request-class check alone
       would read every nudge-class warning as resolved the moment it was
@@ -7129,7 +7152,8 @@ What exists, and the requirements each part answers to:
    warning only while the `agent-ops:human-nudge` marker comment is still
    absent; a `no legal review-request candidate` warning
    (tech-debt/TD-PPagop-26081001.md) only while `gh pr view --json
-   author,reviews` still shows no non-author, non-bot, submitted review and
+   author,reviews,reviewRequests` still shows no non-author, non-bot,
+   submitted review, no review request already pending, and
    `enabler_assignee` — read back out of the warning's own detail text —
    still names the pull request's own author; any other warning shape for as
    long as the pull request stays open and not a draft; an unreadable
@@ -9553,9 +9577,12 @@ pull request, run the ones the change touches and any it could regress.
     `no legal review-request candidate` violation
     (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
     show no non-author, non-bot, submitted review and no pending (unsubmitted)
-    review counts either, is dropped the moment such a reviewer appears, and
-    is dropped separately once the assignee named in its own detail text no
-    longer names the pull request's author; an unrecognised warning shape
+    review counts either, is dropped the moment such a reviewer appears, is
+    dropped separately once `reviewRequests` is non-empty (a candidate a
+    CODEOWNERS auto-request already named, before anyone has reviewed —
+    agent-ops #350, #353, #355), and is dropped separately once the assignee
+    named in its own detail text no longer names the pull request's author;
+    an unrecognised warning shape
     survives for as long as its pull request
     stays open and not a draft; an unreadable live re-check keeps the
     violation rather than dropping it; a repo-level and a pull-request

@@ -441,6 +441,24 @@ confirm_review_requested() {
 # CODEOWNERS never touched at all (no matching rule, or the repo does not use
 # one).
 #
+# `_handoff_known_reviewers` only sees a reviewer who has *submitted* a
+# review, which is not what CODEOWNERS' own auto-request actually leaves
+# behind on a fresh pull request — a pending `requested_reviewers` entry,
+# nobody having reviewed yet. Before this function existed to fall through to
+# ASSIGNEE, that gap was invisible: this system's own pull requests have
+# `assignee` equal to the author, so a first-round pull request with nobody's
+# submitted review yet, but a live CODEOWNERS request already out for a
+# *different* account, was misread as `skip\tno-candidate` — a live human
+# review request already sitting on the pull request, reported as if none
+# existed at all (agent-ops PRs #350, #353, #355; the two accounts are
+# `@warwickallen`, this repo's own commit and comment identity, and
+# `@Warwick-Allen`, its distinct human-review identity — both named in
+# CODEOWNERS, so GitHub's own author-exclusion picks the latter without this
+# function's help). So the already-pending `requested_reviewers` list is read
+# too, before ASSIGNEE is ever considered: if it already names anyone,
+# nothing needs asking — that candidate is reported as `already`, exactly the
+# same shape a fresh request that turns out to already be pending gets below.
+#
 # Either way the author is struck off the candidates before anything is asked,
 # never asked-for-and-refused: a 422 is not a transient failure worth warning
 # about every cycle, it is a fact about the configuration that will not change
@@ -464,9 +482,12 @@ confirm_review_requested() {
 #                       (confirm_review_requested's job, not this one's).
 #   skip<TAB>no-candidate
 #                       the only candidate target is the pull request's own
-#                       author — there is nobody left to ask.
+#                       author, and nobody else has a pending request
+#                       either — there is nobody left to ask.
 #   already             every candidate target already has a pending review
-#                       request.
+#                       request — including the case where nobody has
+#                       reviewed yet, but somebody (typically CODEOWNERS)
+#                       already has a request pending.
 #   requested           this call asked, and GitHub now shows it pending.
 #   failed              the request could not be read, or did not take.
 #
@@ -530,19 +551,26 @@ ensure_human_reviewer() {
     known="$(grep -Fxv -e "$author" <<<"$known" || true)"
   fi
 
+  # Read once, ahead of the candidate decision: a pending request already
+  # answers requirement 38a on its own, whoever put it there (CODEOWNERS, at
+  # PR-open time, most often) — and GitHub never lets it name the author, so
+  # it needs no filtering to be trusted the same way `known` does.
+  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
+                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+    printf 'failed'
+    return 1
+  fi
+
   if [[ -n "$known" ]]; then
     targets="$known"
+  elif [[ -n "$pending" ]]; then
+    printf 'already\t%s' "$(paste -sd, <<<"$pending")"
+    return 0
   elif [[ -n "$assignee" && "$assignee" != "$author" ]]; then
     targets="$assignee"
   else
     printf 'skip\tno-candidate'
     return 0
-  fi
-
-  if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
-    printf 'failed'
-    return 1
   fi
 
   joined="$(paste -sd, <<<"$targets")"
