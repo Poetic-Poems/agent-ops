@@ -48,7 +48,11 @@
 # pick; pull requests (which the issues endpoint also returns) are dropped
 # the same way. The *judgement* half — "a question or discussion rather than
 # actionable work", read over the whole thread — cannot be a jq filter, and
-# stays the Co-Ordinator's (requirement 16.4). Items blocked in the shared
+# stays the Co-Ordinator's (requirement 16.4), which is exactly why
+# requirement 3x obliges it to *report* that judgement in `needs_refinement`
+# rather than skip in silence: it is the one decline in any pre-fetched band
+# nothing here can record, and an unrecorded decline is a band the Script's
+# own verdict corroboration cannot check. Items blocked in the shared
 # log are NOT dropped here: the Co-Ordinator holds the blocked list and
 # requirement 18a's re-check needs the issue's thread and `updated_at` in
 # front of it to decide whether fresh evidence unblocks it.

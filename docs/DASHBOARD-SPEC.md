@@ -431,7 +431,8 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                             none_selected, corroborated, rejected, rate} ],
                last_rejection: { ts, node, cycle, attempt, model, reason,
                                  detail, eligible_total, unaccounted_total,
-                                 unaccounted:[{repo,item}],
+                                 bands,  // {source: count}, spec 3x; null pre-3x
+                                 unaccounted:[{repo,item,source}],
                                  outcome } } },  // what became of that cycle
   cycles:  [ { id, node, started_at, ended_at, outcome, repo, item, source, title,
                pr_url, reason, fail_detail, warning, total_cost_usd, limit_hit,

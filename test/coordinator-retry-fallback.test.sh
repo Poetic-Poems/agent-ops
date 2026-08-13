@@ -10,11 +10,11 @@
 # `coordinator_corroborate_retry_or_fallback` are lifted verbatim out of
 # agent-cycle.sh with awk, the same technique test/enabler-verdicts.test.sh
 # uses for `maybe_run_enabler` — this cannot pass against a copy the script
-# has since moved on from. `tech_debt_unaccounted_items`,
+# has since moved on from. `unaccounted_items`,
 # `log_needs_refinement_items`, `log_voided_items`, `log_unblocked_items` and
 # `log_recheck_clean_items` are lifted the same way, real, so the
 # corroboration math under test is the genuine accounting rather than a
-# paraphrase of it (test/tech-debt-eligibility.test.sh already covers those
+# paraphrase of it (test/verdict-corroboration.test.sh already covers those
 # five in isolation; this file's job is the retry/fallback orchestration
 # built on top of them). `run_claude_stage` is stubbed to answer a queued
 # sequence of canned verdicts — one per call — so a scenario's first and
@@ -68,7 +68,7 @@ extract_fn() {
   ' "$file"
 }
 
-tech_debt_unaccounted_items_fn="$(extract_fn 'tech_debt_unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>' "$SCRIPT_DIR/agent-cycle.sh")"
+unaccounted_items_fn="$(extract_fn 'unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>' "$SCRIPT_DIR/agent-cycle.sh")"
 log_unblocked_items_fn="$(extract_fn 'log_unblocked_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 log_recheck_clean_items_fn="$(extract_fn 'log_recheck_clean_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
 log_needs_refinement_items_fn="$(extract_fn 'log_needs_refinement_items() {' "$SCRIPT_DIR/agent-cycle.sh")"
@@ -79,7 +79,7 @@ fallback_select_candidate_fn="$(extract_fn 'fallback_select_candidate() {  # <or
 coordinator_corroborate_retry_or_fallback_fn="$(extract_fn 'coordinator_corroborate_retry_or_fallback() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 for pair in \
-  "tech_debt_unaccounted_items_fn:\$eligible" \
+  "unaccounted_items_fn:\$eligible" \
   "log_unblocked_items_fn:release_refinement_label" \
   "log_recheck_clean_items_fn:recheck-clean" \
   "log_needs_refinement_items_fn:coord_recorded_refinement_json" \
@@ -87,7 +87,7 @@ for pair in \
   "extract_json_result_fn:awk" \
   "run_coordinator_stage_attempt_fn:coord_attempt_result_json" \
   "fallback_select_candidate_fn:script-fallback" \
-  "coordinator_corroborate_retry_or_fallback_fn:td_unaccounted_json"; do
+  "coordinator_corroborate_retry_or_fallback_fn:unaccounted_json"; do
   name="${pair%%:*}"
   needle="${pair#*:}"
   val="${!name}"
@@ -97,7 +97,7 @@ for pair in \
   fi
 done
 
-eval "$tech_debt_unaccounted_items_fn"
+eval "$unaccounted_items_fn"
 eval "$log_unblocked_items_fn"
 eval "$log_recheck_clean_items_fn"
 eval "$log_needs_refinement_items_fn"
@@ -187,18 +187,20 @@ events_named() {  # events_named LOG NAME -> each matching event's JSON payload,
 }
 
 # eligible: two open tech-debt items this cycle, both unclaimed/unblocked/not void
-eligible='[{"repo":"acme/widgets","item":"TD1"},{"repo":"acme/widgets","item":"TD2"}]'
+eligible='[{"repo":"acme/widgets","item":"TD1","source":"tech-debt"},{"repo":"acme/widgets","item":"TD2","source":"tech-debt"}]'
 
 # ordered_repos_json: one repo, a tech-debt band carrying both eligible items
 # plus a security finding that outranks them, for the fallback band-order
 # assertions below.
 repos_with_security='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],
   "findings":[{"source":"security","kind":"dependabot","severity":"high","ref":"dependabot-alert-1","title":"bump foo","package":"foo","url":"https://x/1"}],
   "review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],
   "tech_debt":[{"source":"tech-debt","ref":"TD1","id":"TD1","title":"fix TD1","filed":"2026-08-01","url":"https://x/TD1.md","body":"TD1 body"},
                {"source":"tech-debt","ref":"TD2","id":"TD2","title":"fix TD2","filed":"2026-08-01","url":"https://x/TD2.md","body":"TD2 body"}],
   "register_hygiene":[]}]'
 repos_tech_debt_only='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],
   "findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],
   "tech_debt":[{"source":"tech-debt","ref":"TD1","id":"TD1","title":"fix TD1","filed":"2026-08-01","url":"https://x/TD1.md","body":"TD1 body"},
                {"source":"tech-debt","ref":"TD2","id":"TD2","title":"fix TD2","filed":"2026-08-01","url":"https://x/TD2.md","body":"TD2 body"}],
@@ -228,9 +230,9 @@ run_full_scenario() {
   # shellcheck disable=SC2034
   STUB_QUEUE_JSON_2="$attempt2_json"
   # shellcheck disable=SC2034  # read only by the eval'd functions
-  eligible_tech_debt_json="$eligible"
+  eligible_items_json="$eligible"
   # shellcheck disable=SC2034
-  eligible_tech_debt_total="$(jq 'length' <<<"$eligible")"
+  eligible_items_total="$(jq 'length' <<<"$eligible")"
   # shellcheck disable=SC2034
   ordered_repos_json="$repos_json"
 
@@ -272,10 +274,12 @@ assert_eq "tech-debt pick is the first eligible ref (id order)" "TD1" "$(jq -r '
 assert_eq "a mechanical pick names its own model" "claude-fallback-model" "$(jq -r '.model' <<<"$td_pick")"
 assert_contains "a mechanical pick's context pastes the item's own body" "TD1 body" "$(jq -r '.context' <<<"$td_pick")"
 
-empty_repos='[{"slug":"acme/widgets","default_branch":"main","findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],"tech_debt":[],"register_hygiene":[]}]'
+empty_repos='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],"findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],"tech_debt":[],"register_hygiene":[]}]'
 assert_eq "every band empty prints null, not a crash" "null" "$(fallback_select_candidate "$empty_repos" "m")"
 
-takeover_repos='[{"slug":"acme/widgets","default_branch":"main","findings":[],"review_feedback":[],
+takeover_repos='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],"findings":[],"review_feedback":[],
   "merge_conflicts":[{"ref":"pr-9-conflict-abc","pr_number":9,"pr_url":"https://x/pull/9","title":"bump foo","branch":"dependabot/npm/foo","base":"main","body":"bump","bot":true,"rebase_requested":true,"superseded_by":null}],
   "abandoned_drafts":[],"human_visibility":[],"issues":[],"tech_debt":[],"register_hygiene":[]}]'
 tk_pick="$(fallback_select_candidate "$takeover_repos" "m")"
@@ -283,7 +287,8 @@ assert_eq "a Dependabot takeover candidate carries takeover:true" "true" "$(jq -
 assert_eq "…and omits branch" "null" "$(jq -r '.branch // null' <<<"$tk_pick")"
 assert_eq "…but keeps pr_number" "9" "$(jq -r '.pr_number' <<<"$tk_pick")"
 
-never_nudged_repos='[{"slug":"acme/widgets","default_branch":"main","findings":[],"review_feedback":[],
+never_nudged_repos='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],"findings":[],"review_feedback":[],
   "merge_conflicts":[{"ref":"pr-9-conflict-abc","pr_number":9,"pr_url":"https://x/pull/9","title":"bump foo","branch":"dependabot/npm/foo","base":"main","body":"bump","bot":true,"rebase_requested":false,"superseded_by":null}],
   "abandoned_drafts":[],"human_visibility":[],"issues":[],
   "tech_debt":[{"source":"tech-debt","ref":"TD1","id":"TD1","title":"fix TD1","filed":"2026-08-01","url":"https://x/TD1.md","body":"TD1 body"}],
@@ -291,7 +296,8 @@ never_nudged_repos='[{"slug":"acme/widgets","default_branch":"main","findings":[
 nn_pick="$(fallback_select_candidate "$never_nudged_repos" "m")"
 assert_eq "a never-nudged Dependabot entry is skipped, not a candidate" "tech-debt" "$(jq -r '.source' <<<"$nn_pick")"
 
-rf_repos='[{"slug":"acme/widgets","default_branch":"main","findings":[],
+rf_repos='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],"findings":[],
   "review_feedback":[{"ref":"pr-57-review-1","pr_number":57,"pr_url":"https://x/pull/57","title":"fix x","branch":"agent/td1","item":"TD1","body":"review body"}],
   "merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],"tech_debt":[],"register_hygiene":[]}]'
 rf_pick="$(fallback_select_candidate "$rf_repos" "m")"
@@ -306,6 +312,7 @@ assert_eq "no internal ranking key leaks onto the winning candidate" "null" \
 # a *lower* band wins instead of it — the mechanical path must not be able to
 # select what no Co-Ordinator engagement was allowed to rank.
 td_and_hygiene='[{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],
   "findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],
   "tech_debt":[{"source":"tech-debt","ref":"TD1","id":"TD1","title":"fix TD1","filed":"2026-08-01","url":"https://x/TD1.md","body":"TD1 body"}],
   "register_hygiene":[{"source":"register-hygiene","ref":"RH1","body":"stale row","url":"https://x/rh","blob_sha":"abc","problems":["orphan"]}]}]'
@@ -331,6 +338,34 @@ assert_eq "a required source with nothing refined anywhere leaves no candidate" 
   "$(fallback_select_candidate "$repos_tech_debt_only" "m" '{}' '{"tech-debt":"required"}')"
 assert_eq "an unreadable refinements/policy argument degrades to exempt, not to a crash" "tech-debt" \
   "$(jq -r '.source' <<<"$(fallback_select_candidate "$repos_tech_debt_only" "m" 'not json' 'not json')")"
+
+# --- `sources` bounds the mechanical pick exactly as it bounds the model ----
+# Requirement 3x. Before it, the gate could only fire over `tech_debt`, which
+# requirement 2.2a's back-pressure *empties*, so this path was unreachable on
+# a restricted cycle; a gate that also counts the finishing sources makes it
+# reachable, and a fallback reading only the arrays would answer it by
+# starting fresh work through a full human gate — the one thing back-pressure
+# exists to stop.
+bp_repos="$(jq -c 'map(.sources = ["review-feedback","merge-conflicts","abandoned-drafts"]
+                      | .issues = [] | .tech_debt = [])' <<<"$repos_with_security")"
+assert_eq "a band narrowed out of sources is not a band the fallback may pick from" "null" \
+  "$(fallback_select_candidate "$bp_repos" "m")"
+assert_eq "…and the same repo with the token restored picks it again" "security" \
+  "$(jq -r '.source' <<<"$(fallback_select_candidate "$repos_with_security" "m")")"
+
+# An issue is banded per entry, so its *rank token* gates it, not the plain
+# `issues` one — a repo configured `issues:high` alone was never offered its
+# Medium issues, and the mechanical pick must not offer them either.
+issue_repos='[{"slug":"acme/widgets","default_branch":"main","sources":["issues:high","tech-debt"],
+  "findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],
+  "issues":[{"source":"issues","ref":"12","number":12,"priority":"Medium","title":"medium one","body":"b","comments":[]},
+            {"source":"issues","ref":"11","number":11,"priority":"High","title":"high one","body":"b","comments":[]}],
+  "tech_debt":[{"source":"tech-debt","ref":"TD1","id":"TD1","title":"fix TD1","filed":"2026-08-01","url":"https://x/TD1.md","body":"TD1 body"}],
+  "register_hygiene":[]}]'
+assert_eq "only the listed issue rank is reachable — High outranks tech-debt" "11" \
+  "$(jq -r '.item' <<<"$(fallback_select_candidate "$issue_repos" "m")")"
+assert_eq "…and the unlisted Medium rank never wins, even with tech-debt gone" "null" \
+  "$(fallback_select_candidate "$(jq -c 'map(.issues = [.issues[] | select(.priority == "Medium")] | .tech_debt = [])' <<<"$issue_repos")" "m")"
 
 # ============================================================================
 # run_coordinator_stage_attempt: launch, parse, and retry-tagging mechanics
@@ -460,7 +495,7 @@ assert_eq "fallback fires: candidates_json is a one-candidate array of the pick"
   "$(jq 'length' <<<"$candidates_json")"
 
 # --- Fallback finds nothing: the one branch that still logs none-selected ---
-# Contrived — `eligible_tech_debt_total > 0` with an empty tech-debt band defies
+# Contrived — `eligible_items_total > 0` with every band empty defies
 # the guarantee fallback_select_candidate's own comment rests on — but the code
 # fails closed rather than assuming it away, and this is the branch that does.
 run_full_scenario "fallback finds nothing" "$attempt1" 0 "$attempt2_stillrejected" "$empty_repos" > "$tmp_dir/scenario.out"
@@ -510,6 +545,72 @@ assert_eq "scoped recording: TD2's void guard is called exactly once (the retry'
   "$(grep -cE '^void_guard_reason TD2$' <<<"$calls")"
 assert_eq "scoped recording: this fully accounts for the band — retry accepted" "1" \
   "$(events_named "$calls" corroboration | jq -s '[.[] | select(.attempt == 2 and .verdict == "accepted")] | length')"
+
+# ============================================================================
+# The gate is no longer tech-debt-only (requirement 3x, issue #322)
+# ============================================================================
+# The failure #322 was filed for: a `none-selected` over a non-empty `issues`
+# array. Before this requirement `eligible_tech_debt_total` was 0 here — the
+# tech-debt band really is empty — so the verdict was accepted un-corroborated
+# and the fingerprint armed on it, exactly as #310's freeze did one band over.
+issues_repos='[{"slug":"acme/widgets","default_branch":"main","sources":["issues:high","review-feedback"],
+  "findings":[],
+  "review_feedback":[{"source":"review-feedback","ref":"pr-57-review-1","pr_number":57,"pr_url":"https://x/pull/57","title":"fix x","branch":"agent/x","body":"review body"}],
+  "merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],
+  "issues":[{"source":"issues","ref":"11","number":11,"priority":"High","title":"an issue","body":"b","comments":[]}],
+  "tech_debt":[],"register_hygiene":[]}]'
+mixed_eligible='[{"repo":"acme/widgets","item":"11","source":"issues"},
+                 {"repo":"acme/widgets","item":"pr-57-review-1","source":"review-feedback"}]'
+
+# `eligible` is what run_full_scenario copies into the globals, so point it at
+# the two-band set for these scenarios and restore nothing — this is the last
+# section in the file.
+eligible="$mixed_eligible"
+
+silent_over_issues='{"selected":false,"reason":"no candidates in any source"}'
+run_full_scenario "issues band confabulated away" "$silent_over_issues" 0 "$silent_over_issues" "$issues_repos" \
+  > "$tmp_dir/scenario.out"
+calls="$(cat "$tmp_dir/scenario.out")"
+
+c1="$(events_named "$calls" corroboration | sed -n '1p')"
+assert_eq "a silent verdict over a non-empty issues band is rejected" "rejected" "$(jq -r '.verdict' <<<"$c1")"
+assert_eq "…counting both bands in eligible_total" "2" "$(jq -r '.eligible_total' <<<"$c1")"
+assert_eq "…and tagging the rejection with each band's own share" '{"issues":1,"review-feedback":1}' \
+  "$(jq -c '.bands' <<<"$c1")"
+assert_eq "…with every unaccounted ref carrying its band" '["issues","review-feedback"]' \
+  "$(jq -c '[.unaccounted[].source] | sort' <<<"$c1")"
+w1="$(events_named "$calls" warning | sed -n '1p')"
+assert_eq "the sibling warning carries the same band tally" '{"issues":1,"review-feedback":1}' \
+  "$(jq -c '.bands' <<<"$w1")"
+assert_contains "…and its detail names the bands rather than just a count" \
+  "issues 1, review-feedback 1" "$(jq -r '.detail' <<<"$w1")"
+assert_eq "twice rejected, so the fallback picks the highest reachable band" "review-feedback" \
+  "$(jq -r '.source' <<<"$work_order_json")"
+
+# A report under the wrong `source` is not an account: the same ref, filed
+# against the wrong band, leaves the band it was actually eligible in exactly
+# as unaccounted as silence would.
+wrong_band='{"selected":false,"reason":"reported","needs_refinement":[
+  {"repo":"acme/widgets","item":"11","source":"tech-debt","reason":"r","missing":"m","evidence":"e"},
+  {"repo":"acme/widgets","item":"pr-57-review-1","source":"review-feedback","reason":"r","missing":"m","evidence":"e"}]}'
+run_full_scenario "wrong band" "$wrong_band" 0 "$silent_over_issues" "$issues_repos" > "$tmp_dir/scenario.out"
+calls="$(cat "$tmp_dir/scenario.out")"
+c1="$(events_named "$calls" corroboration | sed -n '1p')"
+assert_eq "a report filed under the wrong source accounts for nothing" '{"issues":1}' \
+  "$(jq -c '.bands' <<<"$c1")"
+
+# Every band accounted for, across two different arrays and by two different
+# routes — the clean stand-down, fingerprint armed.
+accounted='{"selected":false,"reason":"all reported",
+  "needs_refinement":[{"repo":"acme/widgets","item":"11","source":"issues","reason":"r","missing":"m","evidence":"e"}],
+  "voided":[{"repo":"acme/widgets","item":"pr-57-review-1","reason":"already answered","evidence":"e"}]}'
+run_full_scenario "every band accounted" "$accounted" 0 "" "$issues_repos" > "$tmp_dir/scenario.out"
+calls="$(cat "$tmp_dir/scenario.out")"
+assert_eq "a per-item verdict in each band is corroborated on the first attempt" "1" \
+  "$(events_named "$calls" corroboration | jq -s '[.[] | select(.attempt == 1 and .verdict == "accepted")] | length')"
+assert_eq "…so no retry is bought" "1" "$(grep -cE '^run_claude_stage call=' <<<"$calls")"
+assert_eq "…and the none-selected carries the fingerprint" "fp-abc123" \
+  "$(events_named "$calls" none-selected | head -n1 | jq -r '.fingerprint')"
 
 printf '\n'
 if (( failures > 0 )); then

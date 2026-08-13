@@ -1887,7 +1887,11 @@ runs unattended.
      pick — the assignment drop also covers the Enabler's escalation issues,
      which are always assigned. The judgement half ("a question or discussion
      rather than actionable work", over the whole thread) stays the
-     Co-Ordinator's. This gatherer itself never reads the shared log, so it
+     Co-Ordinator's — and because it stays there, requirement 3x makes it a
+     *reported* judgement (requirement 16a) rather than a silent one: it is
+     the only decline in any pre-fetched band that the Script cannot record
+     for itself, and an unrecorded decline is a band that cannot be
+     corroborated. This gatherer itself never reads the shared log, so it
      drops nothing for being blocked or void there — that exclusion runs as a
      later, second pass over this array, once the log's extracts are final
      (requirement 3u), and even then only a *stale* block is dropped: a
@@ -2065,9 +2069,8 @@ runs unattended.
    describes, once `blocked_json`/`void_json` are final at this same point in
    the cycle.
 
-   What remains in each repo's `tech_debt` array after both passes —
-   `eligible_tech_debt_json` (Script-internal; requirement 3t's own reader,
-   below) — is the Script's complete, no-per-item-judgement-required answer to
+   What remains in each repo's `tech_debt` array after both passes is the
+   Script's complete, no-per-item-judgement-required answer to
    "what could the Co-Ordinator actually select from this band this cycle".
    `prompts/coordinator.md`'s exclusions 1–3 are already applied for it before
    the Co-Ordinator ever runs. It is read *after* requirement 2.2a's
@@ -2075,7 +2078,12 @@ runs unattended.
    the array the Co-Ordinator is actually handed: a back-pressured cycle
    narrows every repo to the three finishing sources and empties `tech_debt`
    with them, and the eligible set is then correctly empty for a verdict that
-   was never allowed to consider the band.
+   was never allowed to consider the band. Requirement 3x extends that reading
+   to every other pre-fetched band and folds all of them into one
+   Script-internal set, `eligible_items_json`
+   (`coordinator_eligible_items`); the tech-debt band described here is one
+   band of it, and what follows is stated for tech-debt because that is the
+   band it was proven on, not because anything about it is tech-debt-specific.
 
    **Why this source is pre-fetched at all.** It used to be the Co-Ordinator's
    own read: the prompt told it to unpack the register tarball itself
@@ -2098,11 +2106,12 @@ runs unattended.
    judgement step that kept getting reasoned past.
 
    **Machine corroboration, and fingerprint rejection.** A `selected: false`
-   verdict owes an account of every item `eligible_tech_debt_json` names: each
-   must have been reported in `needs_refinement` (source `"tech-debt"`,
-   requirement 16a) or voided this same cycle (requirement 34c) — the only two
+   verdict owes an account of every item the eligible set names: each
+   must have been reported in `needs_refinement` (under that item's own
+   `source`, requirement 16a) or voided this same cycle (requirement 34c) —
+   the only two
    ways a bar-clearing item may be declined without being selected — unless
-   `refinement_policy.tech-debt == "required"`, where an unrefined item is
+   that source's `refinement_policy` is `"required"`, where an unrefined item is
    silently skippable by design (requirement 39a) and needs no report. Once
    the Co-Ordinator's final message is in hand, the Script tests every
    eligible entry against **what it recorded from those two arrays, never the
@@ -2130,7 +2139,8 @@ runs unattended.
 
    When any item is unaccounted for, the `none-selected` event this cycle logs
    omits the `fingerprint` field entirely (carrying `td_verdict_rejected: true`
-   instead) — the same treatment requirement 3b's own "an empty fingerprint is
+   instead — a name requirement 3x keeps for its readers' sake though the gate
+   is no longer tech-debt-only) — the same treatment requirement 3b's own "an empty fingerprint is
    omitted, not stored" already gives a fingerprint with nothing to compare,
    extended to a fingerprint that exists but is not trustworthy. Requirement
    3b's `noop_last_none_selected` only ever matches against a `none-selected`
@@ -2236,13 +2246,15 @@ runs unattended.
    most one extra Co-Ordinator engagement, never the cycle, and in the limit
    selection liveness does not depend on the model at all:
 
-   - **The retry.** When requirement 3t's gate rejects the first verdict
-     (`td_unaccounted_n > 0`), the Script re-invokes the Co-Ordinator once
+   - **The retry.** When the gate rejects the first verdict
+     (`unaccounted_n > 0`), the Script re-invokes the Co-Ordinator once
      more in the same cycle, same model, same base prompt, with an addendum
      stating the Script's own arithmetic verbatim — the eligible total, how
      many the first verdict accounted for, and the exact refs still
-     unaccounted — and asking for a per-item verdict on each of them or a
-     selection. `stage_budget_apply`/`run_claude_stage`/`stage-end`/
+     unaccounted, grouped by the band each was eligible in (requirement 3x),
+     since a `needs_refinement` entry only accounts for an item under that
+     item's own `source` — and asking for a per-item verdict on each of them
+     or a selection. `stage_budget_apply`/`run_claude_stage`/`stage-end`/
      `attempt-failed` are the same mechanism the first attempt uses (factored
      into `run_coordinator_stage_attempt`, called with `{"retry": true}` for
      this second engagement), so a retry's own launch failure or unparseable
@@ -2273,18 +2285,32 @@ runs unattended.
      and `project-review` have none and are skipped rather than approximated
      (each would need a live `gh` read or a tree fetch the Co-Ordinator
      performs for itself, which this mechanical path does not). It is an
-     approximation in two further respects, both of which cost at most a
+     approximation in one further respect, which costs at most a
      less-preferred pick on a path that exists to pick *something*: the walk
      is band-major across the whole fleet rather than the Co-Ordinator's
      repo-then-source walk (so a lower-ranked repo's higher band outranks a
-     higher-ranked repo's lower one), and each repo's own configured
-     `sources` list is not consulted — the pre-fetched arrays are what bound
-     it, and for `findings` and `issues` those are coarser than the source
-     list (one fetch serves both finding kinds and all four issue bands).
-     This is a deliberate, bounded narrowing: `eligible_tech_debt_total > 0` is what let
-     the gate reject a verdict at all, so the `tech-debt` rank always has
-     something to fall to even when every higher-priority band is empty and
-     every lower one unreachable — the one guarantee this path depends on.
+     higher-ranked repo's lower one). It is **not** an approximation of what
+     the cycle was allowed to select from: each repo's own configured
+     `sources` list bounds every band, and an issue's `Priority` band must
+     have its own `issues:<band>` token listed, exactly as for the
+     Co-Ordinator. Requirement 3x made that necessary as well as tidy — the
+     pre-fetched arrays stopped being the authority the moment requirement
+     2.2a's back-pressure began narrowing the *list* while leaving `findings`,
+     `register_hygiene` and `human_visibility` populated. Under requirement 3t
+     the point could not arise (back-pressure empties `tech_debt`, so a
+     tech-debt-only gate could never reject during a restricted cycle, and
+     this function was unreachable); under a gate that also counts the
+     finishing sources it can, and a fallback blind to `sources` would answer
+     a back-pressured cycle by starting fresh work through a full human gate.
+     `eligible_items_total > 0` is what let
+     the gate reject a verdict at all, and every band that set counts has a
+     rank in this walk, so there is always something to fall to — the one
+     guarantee this path depends on. Its single exception is a superseded
+     Dependabot merge-conflict entry, which the gate counts (the prompt
+     requires it in `voided`) but this walk declines exactly as the prompt
+     does; a cycle whose only unaccounted item is one of those reaches the
+     no-candidate branch below, which stands down rather than assuming the
+     guarantee.
      `refinement_policy` (requirement 39a) binds the mechanical pick exactly
      as it binds the Co-Ordinator: an unrefined item from a `"required"`
      source is never a fallback candidate, and a `"preferred"` source's
@@ -2297,11 +2323,10 @@ runs unattended.
      the generic `acceptance` string above and nothing else, which is the
      outcome requirement 39a exists to prevent, and it buys no liveness the
      guarantee above does not already provide. Nor does it cost that
-     guarantee anything: `refinement_policy["tech-debt"] == "required"` makes
-     `tech_debt_unaccounted_items` return `[]` unconditionally, so the gate
-     can never reject and this whole path is unreachable — wherever it *is*
-     reachable, the `tech-debt` rank is both non-empty and unfiltered by the
-     exclusion.
+     guarantee anything, band by band: `unaccounted_items` drops an eligible
+     entry whose own source is `"required"` before it can make the gate
+     reject at all, so a band that could send a cycle here is by construction
+     a band this exclusion does not empty.
      Each candidate is built straight from its own pre-fetched entry's own
      fields — the same `item`/`branch`/`pr_url`/`pr_number`/`takeover` shape
      `prompts/coordinator.md`'s "Output" section requires per source — with
@@ -2320,7 +2345,8 @@ runs unattended.
      Every corroboration check — both attempts, accepted or rejected — logs
      its own `corroboration` event (`attempt: 1|2`, `verdict:
      "accepted"|"rejected"|"accepted-by-selection"`, `eligible_total`,
-     `unaccounted_total`, and (attempt 2 only) `lib/metering.sh`'s cost/time
+     `unaccounted_total`, requirement 3x's per-band `bands` tally on a
+     rejection, and (attempt 2 only) `lib/metering.sh`'s cost/time
      fields for that retry engagement), so the retry's own cost is visible on
      the event that explains why it ran, not only inferable by
      cross-referencing `stage-end` timestamps by hand.
@@ -2387,11 +2413,19 @@ runs unattended.
 
    **`none-selected` carries `eligible_total` and `coordinator_model` on every
    branch**, which matters for the cycles that log no `corroboration` at all:
-   requirement 3t only corroborates a verdict when the Script found something
-   to corroborate it against, so a cycle whose band was genuinely empty has
+   the gate only corroborates a verdict when the Script found something
+   to corroborate it against, so a cycle whose bands were genuinely empty has
    only its `none-selected` to say so. Without the figure there, "nothing was
    eligible" — a clean verdict that is no part of any rate — cannot be told
    from an event written before any of this existed.
+
+   `eligible_total` is the Script's count across **every** pre-fetched band
+   from requirement 3x onward, where it used to be the tech-debt band alone.
+   That is a change of denominator, not of meaning — it was always "what the
+   Script handed over that this verdict owes an account of" — but a reader
+   comparing a figure from before and after should expect it to step up, and
+   the rejection rate computed from it to become a rate over verdicts about
+   the whole input rather than about one band of it.
 
    Neither field changes what the fingerprint covers or how requirements 3t
    and 3v decide: a rejected verdict still omits `fingerprint` entirely, an
@@ -2410,6 +2444,98 @@ runs unattended.
    the fallback path with nothing to pick, and both for a clean stand-down, so
    the two records are read per cycle and the `corroboration` wins where there
    is one.
+3x. **Verdict corroboration, generalised to every pre-fetched band (issue
+   #322).** Requirement 3t machine-checks a `none-selected` verdict against
+   exactly one band. A verdict claiming "no candidates" over a non-empty
+   `issues` array — or `findings`, `review_feedback`, `abandoned_drafts`,
+   `merge_conflicts`, `register_hygiene`, `human_visibility` — went entirely
+   un-corroborated, which is the same failure shape as issue #310 one band
+   over: requirement 3j's pre-fetch closed the "model declines to read the
+   source live" hole for `issues`, and nothing closed the "model misdescribes
+   what it was handed" one. Nothing would even have *detected* the issues band
+   being confabulated away; the fleet would have stood down cycle after cycle
+   with a well-formed reason, exactly as it did on 2026-08-11.
+
+   The principle, stated once so it does not have to be rediscovered a third
+   time: **every load-bearing negative the model asserts must be corroborated
+   against the Script's own count of what it handed over.**
+
+   **The eligible set is one set, computed once** (`coordinator_eligible_items`
+   → `eligible_items_json`), `{repo, item, source}` per entry, with `source`
+   the same token the repo's `sources` list, a `needs_refinement` entry and
+   `refinement_policy` all use. It is read at the same point requirement 3t's
+   tech-debt-only predecessor was — after requirement 2.2a's back-pressure
+   decision — and each band is gated on the repo's own **`sources` list**
+   rather than merely on its array being non-empty. The list is the authority
+   because back-pressure narrows it without emptying `findings`,
+   `register_hygiene` or `human_visibility`, and a verdict owes no account of
+   a band the cycle forbade it to select from. Three bands need more than
+   "every entry in the array", and each for a reason already written down
+   elsewhere:
+
+   - `issues` is one source at four ranks (requirement 15e), so an issue is
+     eligible only under its own `Priority` band's token: a repo configured
+     `issues:high` alone was never offered its Medium issues.
+   - `issues` also still carries blocked entries after requirement 3u's own
+     pass, which deliberately keeps the ones whose thread has moved so
+     requirement 18a's live re-read can happen. A blocked issue is not
+     selectable until that re-read unblocks it, so it is dropped here — on
+     exactly `exclude_blocked_or_void_items`' matching rule, blank `repo`
+     included, so the two passes cannot disagree about what was offered.
+   - `merge_conflicts` carries the one entry shape `prompts/coordinator.md`
+     tells the Co-Ordinator to skip in silence: a Dependabot PR this system
+     has not yet asked to rebase is "not a candidate of any kind" (requirement
+     3s). Its *superseded* sibling is the opposite case — the prompt requires
+     that one in `voided` — so it stays eligible and owes an account.
+
+   Every other band is exactly "an entry's presence in this array is the
+   candidate test", which is the prompt's own words for all six of them.
+
+   **The rule is one rule** (`unaccounted_items`, requirement 3t's
+   `tech_debt_unaccounted_items` generalised and renamed): an eligible entry is
+   accounted for by a `needs_refinement` report the Script *recorded* under
+   that entry's own `source`, or by a `voided` entry it disposed of, and by
+   nothing else; an entry whose source's `refinement_policy` is `"required"`
+   is exempt (requirement 39a), per source rather than per call. Requirement
+   3t's "count what was recorded, never what was claimed" property is
+   preserved band by band rather than re-argued per band — the corroboration
+   is fed `log_needs_refinement_items`' and `log_voided_items`' own
+   collections, as before. Deliberately *not* six copies of one rule: the only
+   thing that varies by band is which items are eligible, and that is the
+   eligible set's job.
+
+   **Rejections are tagged with the band.** The `warning` and the rejected
+   `corroboration` both carry a `bands` object (`{"issues": 3, "tech-debt":
+   1}`), every `unaccounted` entry carries its own `source`, and the
+   `none-selected` written when a rejection reaches the fallback with nothing
+   to pick carries `bands` too. There is still exactly **one**
+   `corroboration` event per verdict, never one per band: requirement 3w's
+   rate has the verdict as its unit, and a per-band event would inflate its
+   denominator by however many bands a cycle happened to have work in. The
+   `td_verdict_rejected` field keeps its now-inaccurate name — it is what
+   `scripts/publish-dashboard.sh` and every such event already in the retained
+   log key on, and renaming it would silently zero the rejection count for the
+   history the dashboard can still see.
+
+   **One prompt change is load-bearing, and it is the reason `issues` can be
+   corroborated at all.** Every other pre-fetched band's decline routes are
+   already exhaustive: report it, void it, or select it. The `issues` band had
+   a third — requirement 16's judgement half, "a question or discussion rather
+   than actionable work", which `scripts/gather-issues.sh` cannot filter and
+   requirement 16a explicitly told the Co-Ordinator *not* to report. Left as
+   it was, either the issues band stays un-corroborated (the hole this
+   requirement exists to close) or every discussion issue is flagged
+   unaccounted forever, rejecting every verdict and driving requirement 3v's
+   fallback to hand an Implementor a discussion thread as work. So requirement
+   16a's exclusion list loses that one case: a question or discussion issue is
+   reported in `needs_refinement` like any other item nobody has yet said what
+   "done" would mean for. It is not company for the other four on that list —
+   claimed, blocked, void and assigned are all cases where something else
+   already recorded the item, and nothing records a question. The cost is one
+   `needs-refinement` label and one Enabler engagement per discussion issue,
+   once (requirement 34e refuses a re-report of an already-blocked item); the
+   alternative was a band nobody could check.
+
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -3617,12 +3743,26 @@ runs unattended.
 
     An item qualifies only if it was **reached and evaluated in this cycle's own
     priority walk** and failed selection *solely* because it is too
-    under-specified to rank against requirement 17's bar, or because it is gated
-    on an unmade human decision (the last two exclusions of requirement 16).
+    under-specified to rank against requirement 17's bar, because it is gated
+    on an unmade human decision (the last two exclusions of requirement 16), or
+    because it is an issue that is a question or a discussion rather than
+    actionable work (requirement 16's issue exclusion, judgement half).
     Items excluded for any other reason — claimed, already blocked, void,
-    assigned, a question or discussion issue — are not reported: they are
-    already handled, and reporting one would re-block an item whose clock is
-    already running.
+    assigned — are not reported: they are already handled, and reporting one
+    would re-block an item whose clock is already running.
+
+    The question-or-discussion case was itself on that not-reported list until
+    requirement 3x, and being there was an error of exactly the kind the
+    paragraph below describes. The other four are all cases where *something
+    else already recorded the item*: a claim, a block, a void, an assignee.
+    Nothing records a question. No clock runs on it. It is re-read and
+    re-skipped every cycle, forever, and it is the one issue exclusion the
+    Script cannot decide for itself (`scripts/gather-issues.sh` applies the
+    other three; this one "cannot be a jq filter"), so it is also the one whose
+    silence requirement 3x's corroboration would otherwise have to be blind
+    to. Reporting it makes the judgement a record: the Enabler can adjudicate
+    it (requirement 35a), a human sees the label, and the band becomes
+    corroboratable like every other.
 
     Three limits keep it side-work. The Co-Ordinator must **not** sweep for
     under-specified items beyond the walk it was doing anyway (flags accumulate
@@ -4711,11 +4851,13 @@ runs unattended.
     `by: "label"`, the `request_url` that authorised it, `labelled_at`, and the
     `cleared_void_ts` it reopened; the bare hand-appended form remains valid.
     A `corroboration` (requirement 3v) is one Co-Ordinator verdict measured
-    against the Script's own eligible tech-debt set: `attempt` (1 for the
+    against the Script's own eligible set across every pre-fetched band
+    (requirement 3x; the tech-debt band alone before it): `attempt` (1 for the
     original engagement, 2 for its one retry), `verdict` — `accepted`,
     `rejected`, or `accepted-by-selection` where the retry selected work
     instead of restating a verdict — `eligible_total`, `unaccounted_total`,
-    and, on a rejection, the `unaccounted` `{repo, item}` pairs and the
+    and, on a rejection, a `bands` object counting the unaccounted per source,
+    the `unaccounted` `{repo, item, source}` triples and the
     verdict's own `reason`. The attempt-2 events carry requirement 33a's
     metering for the retry engagement, and every one of them carries
     requirement 3w's `coordinator_model`. This is the record a rejection
@@ -4724,11 +4866,14 @@ runs unattended.
     deliberately a different event.
     A `none-selected` carries the Co-Ordinator's own `reason`; the
     `fingerprint` requirement 3b arms the no-op short-circuit with, omitted
-    where there was nothing to fingerprint or where requirement 3t rejected
-    the verdict — which carries `td_verdict_rejected: true`, and `retried:
+    where there was nothing to fingerprint or where the corroboration gate
+    rejected
+    the verdict — which carries `td_verdict_rejected: true` (a name requirement
+    3x keeps though the gate is no longer tech-debt-only), requirement 3x's
+    `bands`, and `retried:
     true` where requirement 3v's retry was spent, instead; and, on **every**
     branch, requirement 3w's `eligible_total` and `coordinator_model`, so a
-    cycle whose band was genuinely empty — which logs no `corroboration` at
+    cycle whose bands were genuinely empty — which logs no `corroboration` at
     all — still says so on the record rather than being indistinguishable
     from an event written before any of this existed.
     The Reviewer's `stage-start` additionally carries the resolved
@@ -8043,14 +8188,14 @@ pull request, run the ones the change touches and any it could regress.
    sorted by id — while `in-progress`, `resolved` and `not-debt` rows and a
    repo with no `tech-debt` tree yield nothing, and a failing API degrades to
    `[]` (exit 0) with the failure on stderr.
-   `test/tech-debt-eligibility.test.sh` passes:
+   `test/verdict-corroboration.test.sh` passes:
    `exclude_blocked_or_void_items` drops a candidate blocked or void for its
    own repo, leaves the same ref alone for a different repo, honours a
    repo-less entry against every repo, and degrades to the unfiltered array on
-   malformed input; `tech_debt_unaccounted_items` reports every eligible item a
-   `selected: false` verdict neither reported in `needs_refinement` (source
-   `"tech-debt"`, not another source's) nor voided, reports none under
-   `refinement_policy.tech-debt == "required"`, and degrades to `[]` rather
+   malformed input; `unaccounted_items` reports every eligible item a
+   `selected: false` verdict neither reported in `needs_refinement` (under the
+   item's own source, not another's) nor voided, reports none from a source
+   whose `refinement_policy` is `"required"`, and degrades to `[]` rather
    than a false positive on malformed input; and the corroboration is fed the
    recording loops' own collections, never the message's arrays verbatim — a
    `needs_refinement` entry dropped at requirement 34d's bar leaves its item
@@ -8071,7 +8216,7 @@ pull request, run the ones the change touches and any it could regress.
 2k. **Blocked/void exclusion reaches every pre-fetched band, `issues`
    included, and `void` never reaches the Co-Ordinator (requirement 3u, issue
    #320).** `test/cycle-state.test.sh` passes: `exclude_blocked_or_void_items`,
-   lifted the same way `test/tech-debt-eligibility.test.sh` already lifts it,
+   lifted the same way `test/verdict-corroboration.test.sh` already lifts it,
    drops a candidate blocked or void for its own repo from a `findings`-shaped
    array exactly as it does from a `tech_debt`-shaped one — the exclusion
    itself is not tech-debt-specific, only its first proof was. The new
@@ -8085,7 +8230,7 @@ pull request, run the ones the change touches and any it could regress.
    on the blocked/void entry matches every repo); drops a candidate with no
    `ref` rather than crashing on it; and degrades to the unfiltered array on
    malformed `blocked`/`void` input, delivered on stdin and proven past
-   `MAX_ARG_STRLEN` the same way `test/tech-debt-eligibility.test.sh`'s own
+   `MAX_ARG_STRLEN` the same way `test/verdict-corroboration.test.sh`'s own
    oversized-void fixture is. The band list the generic pass loops over is
    pinned too — `findings`, `review_feedback`, `abandoned_drafts`,
    `merge_conflicts`, `register_hygiene`, `human_visibility`, `tech_debt`,
@@ -8160,6 +8305,44 @@ pull request, run the ones the change touches and any it could regress.
      carries its own `branch`/`pr_url`/`pr_number` verbatim; every band empty
      prints `null`, not a crash or an empty-string candidate accepted
      downstream as one.
+   - **`sources` bounds the mechanical pick (requirement 3x).** The same
+     fixture with its `sources` narrowed to the three finishing bands and its
+     `issues`/`tech_debt` emptied — requirement 2.2a's own back-pressure
+     shape — yields `null` rather than the security finding still sitting in
+     its `findings` array, and yields that finding again the moment the token
+     is restored. A repo listing `issues:high` alone offers its High issue and
+     never its Medium one, whatever else is empty.
+2j-ii. **The corroboration covers every pre-fetched band (requirement 3x,
+   issue #322).** `test/verdict-corroboration.test.sh` passes:
+   `coordinator_eligible_items` emits `{repo, item, source}` for each band the
+   repo's own `sources` lists and nothing for a band it does not (the
+   `code-quality` half of a `findings` array whose repo lists only `security`
+   is the case that separates the two); drops a `merge_conflicts` entry that
+   is a never-nudged Dependabot PR while keeping its superseded sibling, which
+   the prompt requires in `voided`; admits an issue only under its own
+   `Priority` band's token and drops one recorded blocked (repo-scoped exactly
+   as `exclude_blocked_or_void_items` scopes it, blank `repo` included); bounds
+   everything by the narrowed `sources` list a back-pressured cycle leaves
+   behind, so a restricted cycle owes no account of `findings`,
+   `register_hygiene` or `human_visibility` still sitting populated; and
+   degrades to `[]` on malformed repos, and to filtering nothing rather than
+   everything on a malformed `blocked`. `unaccounted_items` matches a
+   `needs_refinement` report on repo **and** item **and** source — the same
+   ref filed under another band, or against another repo, accounts for
+   nothing — while a `voided` entry, which carries no source, accounts for its
+   repo+item in whichever band it was eligible in; it applies
+   `refinement_policy` per entry's own source, so `"required"` exempts that
+   band and no other; and every entry it returns carries the band it was
+   eligible in. `test/coordinator-retry-fallback.test.sh` passes the wiring:
+   a silent `selected: false` over a non-empty `issues` array and a non-empty
+   `review_feedback` array — with the tech-debt band empty, so requirement 3t
+   alone would have accepted it — is rejected, `eligible_total` counts both
+   bands, and the `warning` and `corroboration` both carry a `bands` tally
+   naming each; a report filed under the wrong `source` leaves its band
+   unaccounted; and a verdict answering each band by its own route (a
+   `needs_refinement` for the issue, a `voided` for the review-feedback entry)
+   is accepted on the first attempt, buys no retry, and keeps its
+   fingerprint.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
@@ -9825,3 +10008,4 @@ confident, recurring no-op.
 | A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |
 | Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
+| A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |

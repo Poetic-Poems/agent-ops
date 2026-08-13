@@ -1786,8 +1786,13 @@
         box.appendChild(el("div", {class:"muted", style:"margin:6px 0 2px", text:
           "Unaccounted items (" + r.unaccounted_total + " of " + (r.eligible_total == null ? "?" : r.eligible_total) + " eligible):"}));
         r.unaccounted.forEach(function (u) {
+          // The band each unaccounted item was eligible in (implementation
+          // spec 3x): a rejection over `issues` and one over `tech-debt` are
+          // different failures with different fixes, and the refs alone do
+          // not say which this was. Absent on events from before 3x.
           box.appendChild(el("div", {class:"mono", style:"font-size:11.5px",
-            text: (u.repo ? u.repo.split("/").pop() + " " : "") + u.item}));
+            text: (u.repo ? u.repo.split("/").pop() + " " : "") + u.item +
+                  (u.source ? "  (" + u.source + ")" : "")}));
         });
         if (r.unaccounted_total > r.unaccounted.length) {
           box.appendChild(el("div", {class:"muted", style:"font-size:11.5px",

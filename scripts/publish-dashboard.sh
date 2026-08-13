@@ -990,7 +990,9 @@ jq -c --arg cut "$day_cut" '
           detail: (($w // {}).detail // ""),
           eligible_total: ($r.eligible_total // ($w // {}).eligible_total // null),
           unaccounted_total: ($r.unaccounted_total // ($un | length)),
-          unaccounted: ($un | map({repo: (.repo // ""), item: (.item // "")}) | .[0:20]),
+          unaccounted: ($un | map({repo: (.repo // ""), item: (.item // ""),
+                                   source: (.source // "")}) | .[0:20]),
+          bands: ($r.bands // ($w // {}).bands // null),
           outcome: (if   ($after | any(.event == "selection" and .selected_by == "script-fallback"))
                          then "recovered-by-fallback"
                     elif ($after | any(.event == "selection")) then "recovered-by-retry"
