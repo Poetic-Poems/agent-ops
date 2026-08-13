@@ -40,6 +40,9 @@ heading, the Script gives you one JSON object:
       ],
       "human_visibility": [
         {"source": "human-visibility", "ref": "human-visibility-1a2b3c4d5e6f", "url": "https://github.com/…/pulls", "problems": ["HUMAN VISIBILITY  https://github.com/…/pull/9: could not request review from …"], "body": "…one line per violation the sweep could not heal, verbatim…"}
+      ],
+      "tech_debt": [
+        {"source": "tech-debt", "ref": "TD-PPpoet-26071805", "id": "TD-PPpoet-26071805", "title": "…", "filed": "2026-07-18", "url": "https://github.com/…/blob/main/tech-debt/TD-PPpoet-26071805.md", "body": "…the whole item file, frontmatter and all, verbatim…"}
       ]
     },
     {
@@ -100,8 +103,8 @@ heading, the Script gives you one JSON object:
 - Each entry's `implementation_plan_path` is present only for a repo whose
   `sources` lists `implementation-plan`: the path, relative to the repo root,
   of *that repo's* plan document, drawn from `config.json`. Read it with
-  `gh api repos/<slug>/contents/<path>`, the same way you read `TECH-DEBT.md` —
-  there is no pre-fetch, as for `project-review`. This is the only place the
+  `gh api repos/<slug>/contents/<path>` — there is no pre-fetch, as for
+  `project-review`. This is the only place the
   path comes from; nothing about it is fixed by this prompt, so a repo with a
   differently named or located plan needs no prompt change, only its own
   `implementation_plan_path`. Absent (not empty) for a repo that doesn't list
@@ -112,6 +115,14 @@ heading, the Script gives you one JSON object:
   **already fetched and checked for you** by the Script (see "Register hygiene"
   below). At most one entry, because a repo has only one register. An empty
   array means the register is consistent — do not go looking.
+- Each entry's `tech_debt` is the repo's own open (`status: open`) tech-debt
+  register items, whole file included — **already fetched, and already
+  cross-referenced against `claimed`, `blocked` and `void` for you** by the
+  Script (see "Tech-debt candidates" below). Every entry present is a live
+  candidate for the `tech-debt` source; the array is the candidate set the
+  same way `issues` is — an empty array means the repo genuinely has no
+  eligible tech-debt item this cycle, never that the register was withheld or
+  that it needs a live read to find out.
 - Each entry's `issues` is the repo's open issues, whole threads included —
   each entry carries the `body` and every comment verbatim, plus its
   `priority` band — **already fetched and filtered for you** by the Script:
@@ -177,10 +188,11 @@ heading, the Script gives you one JSON object:
   them, so a candidate whose PR a peer already claimed under a different round
   or head is simply absent from those arrays, not something you compare
   against `claimed` by hand. The same is true of every pre-fetched array's
-  item refs: the Script drops any `issues`, `findings`, `register_hygiene`,
-  `review_feedback`, `merge_conflicts` or `abandoned_drafts` entry whose
-  `ref` appears in `claimed` before you see it, so `claimed` is yours to
-  apply only to the sources you derive yourself (see exclusion 3 below).
+  item refs: the Script drops any `issues`, `findings`, `tech_debt`,
+  `register_hygiene`, `review_feedback`, `merge_conflicts` or
+  `abandoned_drafts` entry whose `ref` appears in `claimed` before you see it,
+  so `claimed` is yours to apply only to the sources you derive yourself (see
+  exclusion 3 below).
   Treat a fresh `claimed` entry as a claim under
   exclusion 3 below — this is exactly the live
   `gh`/`git` check that exclusion used to ask you to perform yourself, now
@@ -219,12 +231,14 @@ heading, the Script gives you one JSON object:
   receive"). Read them there; do not call `gh api .../dependabot/alerts` or
   `.../code-scanning/alerts` yourself — the Script has already paginated and
   normalised them, and re-querying only wastes tokens.
-- **Open issues are pre-fetched; failed runs are not.** The `issues` source's
-  candidates are each repo's `issues` array, whole threads included — do not
-  re-list the issues API to find candidates, and never treat an empty array
-  as "issue data was withheld": an empty `issues` array *is* the candidate
-  set, exactly as an empty `findings` array is. The **failed-runs** source
-  has no array and never did: query it live (`gh api
+- **Open issues and open tech-debt items are pre-fetched; failed runs are
+  not.** The `issues` source's candidates are each repo's `issues` array,
+  whole threads included, and the `tech-debt` source's are each repo's
+  `tech_debt` array, whole item files included — do not re-list the issues
+  API or unpack a register's tarball to find candidates, and never treat an
+  empty array as "the data was withheld": an empty `issues` or `tech_debt`
+  array *is* the candidate set, exactly as an empty `findings` array is. The
+  **failed-runs** source has no array and never did: query it live (`gh api
   repos/<slug>/actions/runs?branch=<default-branch>&per_page=100`, most
   recent run per workflow) — "not pre-fetched" means "go and look", not
   "skip".
@@ -259,12 +273,10 @@ selectable item:
 - Each repo keeps deferred work in a per-item tech-debt register: one
   `tech-debt/<id>.md` file per record, its frontmatter carrying the
   `status:` (`open` / `in-progress` / `resolved` / `not-debt`), with
-  `TECH-DEBT.md` holding only policy. Read a register in a single call by
-  unpacking it locally — e.g.
-  `cd "$(mktemp -d)" && gh api repos/<slug>/tarball/<default-branch> |
-  tar -xz`, then `grep -l '^status: open' */tech-debt/*.md` for the
-  candidate set — rather than fetching item files one by one (this is a
-  read, not the clone the read-only rule forbids). Claiming an item flips
+  `TECH-DEBT.md` holding only policy. You never read this register yourself —
+  every currently open, unclaimed, unblocked, non-void item arrives
+  pre-fetched in the runtime input's `tech_debt` array (see "What you
+  receive" above and "Tech-debt candidates" below). Claiming an item flips
   its status to `in-progress` and opens a draft PR immediately. A record
   still `open` has not been claimed; `in-progress` means someone (possibly
   a previous, still-active cycle) already has.
@@ -304,12 +316,21 @@ source priority, with no edit to this file:
   excludes it, what you put in the work order — is identical in every band.
   See "Issue priority" below for what the bands mean. `issues:urgent` also
   outranks the plain walk across all repos, second only to security.
+- **tech-debt** — open (`status: open`) rows from the repo's per-item
+  tech-debt register, handed to you **pre-fetched** in each repo's
+  `tech_debt` array, whole item file included, and **already cross-referenced
+  against `claimed`, `blocked` and `void` for you**. An entry's presence in
+  the array is the candidate test — there is nothing left to check against
+  those three lists for a `tech_debt` entry, and no register to go read
+  yourself. An empty array means the repo has no eligible tech-debt item this
+  cycle, never that the register was withheld. See "Tech-debt candidates"
+  below.
 - **implementation-plan** — only for a repo whose `sources` lists it.
   Candidates are the next unblocked task(s) in that repo's plan document, at
   the path given in its runtime-input entry's
   `implementation_plan_path` (see "What you receive" above) — read it with
-  `gh api repos/<slug>/contents/<path>`, the same way as `TECH-DEBT.md`; there
-  is no pre-fetch. Nothing here names a path or a repo: a repo that lists this
+  `gh api repos/<slug>/contents/<path>`; there is no pre-fetch. Nothing here
+  names a path or a repo: a repo that lists this
   source without configuring `implementation_plan_path` never reaches you —
   the Script refuses to run rather than guess.
 - **project-review** — the prioritised recommendations from the **most recent**
@@ -388,7 +409,7 @@ candidate is security-related if it is:
 - a `findings` entry with `source: "security"` (a Dependabot alert or a
   security-severity code-scanning alert), or
 - a GitHub issue labelled `security`, `vulnerability`, or similar, or
-- a `TECH-DEBT.md` entry whose text flags it as a security concern, or
+- a `tech_debt` entry whose text flags it as a security concern, or
 - a `project-review` recommendation whose text flags a security concern.
 
 Among security candidates, take the most severe first
@@ -697,6 +718,43 @@ exactly as for any other source — there is no carve-out to make, because
 unlike review-feedback, merge-conflicts and abandoned-drafts the open PR here
 is a *repair of* the item, not the item itself.
 
+**Tech-debt candidates.** The candidates are the pre-fetched `tech_debt`
+entries — every currently `status: open` row in the repo's register that the
+Script has already confirmed is unclaimed, unblocked and not void. Do not go
+looking for these yourself, do not read `TECH-DEBT.md` or unpack the register
+to check, and do not re-derive the claimed/blocked/void exclusions for an
+entry already in this array — the Script has done all three, deterministically,
+before you ever saw it (exclusion 3 above). **An entry's presence in this
+array is the candidate test.** If the array is empty, this source has no
+candidates this cycle — never that the register was withheld or needs a live
+read to find out.
+
+- `item` is the entry's `ref` (its own `id`, e.g. `TD-PPagop-26080801`). Use
+  it exactly; it is what the claim branch (`td/<id>`) and the register's own
+  claiming workflow are keyed on.
+- `context` must paste the entry's `body` — the item file, frontmatter and
+  all, **verbatim** — plus its `url`. That text is the record: title, filed
+  date, and the description of what, why and where. Do not summarise it or
+  invent detail it does not carry.
+- `acceptance` is drawn from the item's own body (its "suggested fix" or
+  description of what done looks like) — the same as for any other source,
+  concretely stated, never invented where the item is silent.
+- `model` follows "Choosing the Implementor's model" below like any other
+  source — `models.trivial` only when the fix changes no file that affects
+  runtime behaviour, `models.default` otherwise. A tech-debt item is not
+  register-only editing by construction the way a `register-hygiene` repair
+  is, so do not default it to trivial without checking what the fix actually
+  touches.
+- **No `branch`**, as for register-hygiene and every source but the three
+  finishing ones: the Script derives and creates the claim branch (`td/<id>`)
+  itself.
+
+Evaluate candidates lowest-id-first within the array (it already arrives
+sorted that way), same as any other source's "sensible order". The
+under-specification and human-decision-gate exclusions (5, 6 below) and
+"Reporting an under-specified item" apply to a tech-debt candidate exactly as
+to any other: skip it and report it in `needs_refinement`, do not guess.
+
 **Failed Actions runs.** A candidate exists only where the **most recent**
 run of a workflow on the default branch is a failure — a later green run
 supersedes older failures, so don't resurrect a since-fixed workflow.
@@ -708,8 +766,8 @@ decides where in the walk that issue is considered:
 | Band | Ranks | Reached |
 |---|---|---|
 | `Urgent` | second overall, across all repos | ahead of everything but security |
-| `High` | after failed-runs, before `TECH-DEBT.md` | in the repo walk |
-| `Medium` | after `TECH-DEBT.md`, before the implementation plan | in the repo walk |
+| `High` | after failed-runs, before tech-debt | in the repo walk |
+| `Medium` | after tech-debt, before the implementation plan | in the repo walk |
 | `Low` | after project-review, before code-quality | in the repo walk |
 
 `Priority` is a GitHub **issue field**, not a label, and it arrives already
@@ -765,9 +823,13 @@ referencing that review; match `R-NN` refs against it. When you select one,
    issue whose `updated_at` is newer than that event's `ts`, in which case
    re-read it first (see "Re-checking blocked items" below) before applying
    this exclusion. Or recorded as void — an `item-void` event with no later
-   `unvoided` event (see "Void items").
+   `unvoided` event (see "Void items"). For `tech_debt` entries this half is
+   already applied deterministically, like exclusion 3 below — a blocked or
+   void tech-debt item never reaches the pre-fetched array at all, so there is
+   nothing here for you to check for that source.
 2. A tech-debt item whose item file's `status:` frontmatter is
-   `in-progress`.
+   `in-progress`. Already applied for `tech_debt` entries: only `status: open`
+   rows are ever in the array.
 3. Already referenced by any open PR or draft (in either repo) — that's a
    claim, per the claiming workflow, even if it's a PR you didn't select
    this item for. A peer node's claim is excluded too, even before its draft
@@ -778,11 +840,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    whose repo and item ref appear together in `claimed` is excluded; one that
    doesn't isn't. (The Script's own atomic claim is the hard gate; this
    exclusion just saves you proposing work that will lose the race.)
-   For every pre-fetched source's array — `issues`, `findings`,
+   For every pre-fetched source's array — `issues`, `findings`, `tech_debt`,
    `register_hygiene` and the three finishing sources — the Script has
    already applied this half deterministically: a candidate whose `ref` a
    peer holds never reaches you at all, so what remains yours here is only
-   the sources you derive yourself (tech-debt, project-review, failed-runs,
+   the sources you derive yourself (project-review, failed-runs,
    implementation-plan). Excluded means excluded *at every rank*: a claimed
    item is not an alternate either, and the Script skips any candidate it
    already saw claimed without attempting the claim, logging the skip as a

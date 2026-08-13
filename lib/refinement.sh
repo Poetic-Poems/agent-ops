@@ -567,11 +567,14 @@ refiner_policy_value() {
 # told to query it.
 #
 # `tech-debt`, `project-review` and `implementation-plan` items are never
-# candidates here, whatever their policy says: the Script does not pre-fetch
-# them as structured data (TD-PPagop-26080809), so there is nothing in
-# REPOS_JSON to offer the Refiner for them. Setting a policy for one of those
-# three still shapes the Co-Ordinator's own ranking; it just finds no
-# engagement here to act on it.
+# candidates here, whatever their policy says: the six arrays named above are
+# the whole of what this function reads, and none of the three is among them
+# (TD-PPagop-26080809). `project-review` and `implementation-plan` have
+# nothing in REPOS_JSON to offer the Refiner in any case; `tech_debt` is there
+# (requirement 3t) but is deliberately not drawn on here — widening this to
+# read it is that item's own scope, not requirement 3t's. Setting a policy for
+# one of those three still shapes the Co-Ordinator's own ranking; it just
+# finds no engagement here to act on it.
 refiner_candidate_items() {
   local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
         blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}"

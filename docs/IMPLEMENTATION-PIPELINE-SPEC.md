@@ -593,7 +593,7 @@ and the schema must carry every one of them.
 | `refiner_model` | `claude-haiku-4-5-20251001` | The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage. |
 | `refined_label` | `refined` | The label the Script projects onto an issue-type item once the Refiner records it `refined` (requirement 39c). One-way and never read back — unlike `needs_refinement_label`'s hand-flag path, there is no hand-applied form of this label: the shared log is the sole record of whether an item is refined, exactly as requirement 34e already establishes for the negative marker. Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
-| `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement...[continued below](#extended-notes-refinement_policy) |
+| `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and `issues` arrays — so a policy set for `tech-debt`, `project-review`...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
@@ -681,7 +681,7 @@ It must not be `blocked`, for the reason given against `enabler_escalation_label
 
 ### Extended notes: `refinement_policy`
 
-Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering can reach: `tech-debt`, `project-review` and `implementation-plan` are not pre-fetched as structured data, so a policy set for them shapes selection only, never engagement (TD-PPagop-26080809).
+Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and `issues` arrays — so a policy set for `tech-debt`, `project-review` or `implementation-plan` shapes selection only, never engagement (TD-PPagop-26080809); `tech_debt` is pre-fetched (requirement 3t) but is not one of the arrays that gathering reads.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -1080,11 +1080,17 @@ runs unattended.
    flag: the Co-Ordinator is already told the runtime input's `sources` are
    authoritative over its own table (requirement 15), so a source it cannot see
    is a source it cannot select — no new prompt concept, and nothing for it to
-   reason around. The pre-fetched `issues` array (requirement 3j) is emptied
-   along with the narrowing — it is the one array that carries whole threads,
-   and paying the Co-Ordinator to read candidates it cannot pick is the exact
-   spend this gate exists to stop; the other non-finishing arrays are compact
-   enough that stripping them would buy nothing.
+   reason around. The pre-fetched `issues` (requirement 3j) and `tech_debt`
+   (requirement 3t) arrays are emptied along with the narrowing — they are the
+   two that carry a whole document each, an issue's entire thread and a
+   tech-debt item's entire file, and paying the Co-Ordinator to read candidates
+   it cannot pick is the exact spend this gate exists to stop; the other
+   non-finishing arrays are compact enough that stripping them would buy
+   nothing. Emptying `tech_debt` here also settles requirement 3t's
+   corroboration for a restricted cycle: the eligible set it measures is read
+   after this narrowing, so a back-pressured `selected: false` — which forbade
+   the tech-debt source outright and therefore owes no account of it — is never
+   scored as contradicting a band it was not allowed to walk.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
@@ -1920,14 +1926,14 @@ runs unattended.
 3q. **Item-level candidate exclusion.** The same deterministic-code-not-
    model-judgement decision as 3p, extended from PR numbers to item refs and
    from the three finishing sources to every array the Script pre-fetches:
-   for each repo, before its `issues`, `findings`, `register_hygiene`,
-   `review_feedback`, `merge_conflicts` and `abandoned_drafts` arrays are
-   assembled into the runtime input, the Script drops any entry whose `ref`
-   — the exact string a claim on that item is keyed on, minted by every
-   gather script by construction — appears among that repo's freshly
-   gathered `claimed` items. What remains of the prompt's claimed-item
-   exclusion is only the sources the Co-Ordinator derives itself (tech-debt,
-   project-review, failed-runs, implementation-plan), which have no
+   for each repo, before its `issues`, `findings`, `tech_debt`,
+   `register_hygiene`, `review_feedback`, `merge_conflicts` and
+   `abandoned_drafts` arrays are assembled into the runtime input, the Script
+   drops any entry whose `ref` — the exact string a claim on that item is
+   keyed on, minted by every gather script by construction — appears among
+   that repo's freshly gathered `claimed` items. What remains of the prompt's
+   claimed-item exclusion is only the sources the Co-Ordinator derives itself
+   (project-review, failed-runs, implementation-plan), which have no
    pre-fetched array to filter.
 
    The incident that makes this a requirement rather than a tidy-up: on
@@ -1943,6 +1949,116 @@ runs unattended.
    atomic claim still arbitrates anything that lands in the gather-to-claim
    window, and 17a's pre-claim skip is the same principle applied on the
    claim side for the derived sources this filter cannot reach.
+3t. **Tech-debt pre-fetch, and deterministic blocked/void exclusion (issue
+   #310).** For each configured repo whose `sources` include `tech-debt`, run
+   `scripts/gather-tech-debt.sh <slug> <default-branch>` and attach the array
+   to that repo's entry as `tech_debt`. Each entry is one candidate: every
+   `status: open` row in the repo's tech-debt register, `source: "tech-debt"`,
+   the item's own id as `ref` (and as `id`), `title`, `filed`, `url`, and the
+   whole item file — frontmatter and body — verbatim as `body`. Sorted by id
+   ascending. Degrades to `[]` (exit 0) on any failure, like requirements 3a
+   and 3j: this array is *given to* the Co-Ordinator, so an empty array
+   faithfully records what it saw, and the repo's `head_sha` (already in the
+   no-op fingerprint, requirement 3b) still busts the fingerprint when a real
+   commit changes the register out from under a transient failure.
+
+   Claimed-item exclusion is applied the same way as for every other
+   pre-fetched array (requirement 3q, above) — `exclude_claimed_items` against
+   that repo's freshly gathered `claimed` set, during the same repo-loop pass
+   that gathers `tech_debt`.
+
+   Blocked/void exclusion, uniquely among the pre-fetched arrays, is applied
+   in a **second** pass, once `blocked_json`/`void_json` are final — after
+   every reconciliation requirement 34 runs (34f, 34g, 34i, 34j) and after
+   requirement 34n's retirement — because both extracts depend on this same
+   repo loop's `ordered_repos_json` for their own work-gone reconciliation and
+   so do not exist yet at gather time. `exclude_blocked_or_void_items` drops
+   any `tech_debt` entry whose `ref` is recorded blocked or void for that
+   repo, scoped by repo exactly as the Co-Ordinator's own reading of
+   `blocked`/`void` always has been (a blank `repo` on an old, pre-scoping
+   event still matches every repo). This is safe to do deterministically,
+   unlike the `issues` source's blocked exclusion (requirement 3j), which is
+   deliberately left for the Co-Ordinator's judgement because requirement
+   18a's re-check needs a live issue thread to decide whether fresh evidence
+   unblocks it: a tech-debt item has no such re-check, because requirement
+   34i's work-gone reconciliation already clears a block whose register row
+   has actually flipped to `resolved`/`not-debt` before `blocked_json` is
+   computed, reading the very same register this array is drawn from. Nothing
+   filtered out here is ever a block that needed a second look.
+
+   What remains in each repo's `tech_debt` array after both passes —
+   `eligible_tech_debt_json` (Script-internal; requirement 3t's own reader,
+   below) — is the Script's complete, no-per-item-judgement-required answer to
+   "what could the Co-Ordinator actually select from this band this cycle".
+   `prompts/coordinator.md`'s exclusions 1–3 are already applied for it before
+   the Co-Ordinator ever runs. It is read *after* requirement 2.2a's
+   back-pressure decision, not at the second pass above, so that it describes
+   the array the Co-Ordinator is actually handed: a back-pressured cycle
+   narrows every repo to the three finishing sources and empties `tech_debt`
+   with them, and the eligible set is then correctly empty for a verdict that
+   was never allowed to consider the band.
+
+   **Why this source is pre-fetched at all.** It used to be the Co-Ordinator's
+   own read: the prompt told it to unpack the register tarball itself
+   (`gh api repos/<slug>/tarball/<default-branch> | tar -xz`, then
+   `grep -l '^status: open'`) and cross-reference each row against
+   `blocked`/`void`/`claimed` by its own judgement. Between 2026-08-10 and
+   2026-08-12, with roughly 30 eligible items sitting in the register
+   (29 of them fully eligible by the Script's own later count), the
+   Co-Ordinator returned `none-selected` with reasons that misdescribed the
+   band — "remaining tech-debt candidates require per-item evaluation against
+   blocked/void/claimed records", "open tech-debt heavily voided or blocked"
+   (29 of 30 were neither) — the same failure shape as the incident 3q's
+   history section describes, applied to a source 3q's own fix never reached
+   because tech-debt had no pre-fetched array for it to filter. Requirement
+   3b's no-op fingerprint then cemented one such wrong answer for a full day
+   (see 3b's own note on rejected verdicts, below): 6 selections on 08-10, 0
+   on 08-11 (240 stand-downs, not one Co-Ordinator invocation), 9 on 08-12.
+   Handing the candidates over pre-fetched and pre-filtered, exactly as every
+   other drifted source got before it (3a, 3c, 3e, 3g, 3i, 3j), removes the
+   judgement step that kept getting reasoned past.
+
+   **Machine corroboration, and fingerprint rejection.** A `selected: false`
+   verdict owes an account of every item `eligible_tech_debt_json` names: each
+   must have been reported in `needs_refinement` (source `"tech-debt"`,
+   requirement 16a) or voided this same cycle (requirement 34c) — the only two
+   ways a bar-clearing item may be declined without being selected — unless
+   `refinement_policy.tech-debt == "required"`, where an unrefined item is
+   silently skippable by design (requirement 39a) and needs no report. Once
+   the Co-Ordinator's final message is in hand, the Script tests every
+   eligible entry against **what it recorded from those two arrays, never the
+   arrays verbatim**: an account is the state the report left behind, not the
+   report itself. A `needs_refinement` entry therefore counts only if
+   `record_needs_refinement_block` accepted it — one dropped at requirement
+   34d's five-field bar records nothing but a warning, so its item stays
+   open, unclaimed and eligible, and letting it count anyway would satisfy
+   the corroboration, arm the fingerprint, and stand the next byte-identical
+   cycle down on a verdict that never engaged with the band: this incident's
+   freeze, reached again through the narrow door of every eligible item
+   reported and every report malformed (`missing` and `evidence` are exactly
+   the fields a small model omits). A `voided` entry counts whichever way the
+   void guard rules, and this asymmetry is deliberate rather than a gap:
+   both of the guard's outcomes write state — a pass records the void, a
+   refusal records a block (requirement 34d) — so either way the item leaves
+   the next cycle's eligible set, and the guard's live-evidence rejection,
+   which no shape test could reproduce in a projection, needs no reproducing.
+   One rule covers both arrays: count what was recorded. Any eligible entry
+   left unaccounted for is logged as a `warning` event (`eligible_total`, the
+   unaccounted `{repo, item}` pairs, and the verdict's own `reason`) — the
+   machine-readable trace of exactly the contradiction this requirement's
+   history section describes, available on the dashboard without a human
+   re-deriving it from prose.
+
+   When any item is unaccounted for, the `none-selected` event this cycle logs
+   omits the `fingerprint` field entirely (carrying `td_verdict_rejected: true`
+   instead) — the same treatment requirement 3b's own "an empty fingerprint is
+   omitted, not stored" already gives a fingerprint with nothing to compare,
+   extended to a fingerprint that exists but is not trustworthy. Requirement
+   3b's `noop_last_none_selected` only ever matches against a `none-selected`
+   event that carries a `fingerprint`, so a rejected verdict cannot arm the
+   no-op short-circuit: the very next cycle asks the Co-Ordinator again,
+   unconditionally, rather than replaying the wrong answer until
+   `none_selected_recheck_hours` forces a recheck.
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
    identical answers a day, every one of them paid for. Before launching it,
@@ -1963,15 +2079,20 @@ runs unattended.
      the pipeline, and the symptom is nothing at all: no error, no failed
      stage, just tidy `stand-down` events and no PRs. Map each source to a
      signal and keep the map in the shared library: `head_sha` covers every
-     file-backed source at once (tech-debt, implementation-plan,
-     project-review, the code); the pre-fetched `findings` cover security and
-     code-quality verbatim; the pre-fetched `review_feedback`, `merge_conflicts`
+     file-backed source at once (implementation-plan, project-review, the
+     code); the pre-fetched `findings` cover security and code-quality
+     verbatim; the pre-fetched `review_feedback`, `merge_conflicts`
      and `abandoned_drafts` arrays cover those three finishing sources verbatim,
-     and `register_hygiene` covers register-hygiene the same way (belt and
-     braces there — `head_sha` already moves whenever the register does, but a
-     source exempted from the map is one nobody re-checks when the map changes,
-     and an edit to `td-check.pl` moves candidacy with no repo commit at all) —
-     and the latter two matter especially, because each turns on a transition the
+     `register_hygiene` covers register-hygiene the same way, and `tech_debt`
+     (requirement 3t) covers the tech-debt band the same way again (belt and
+     braces in both cases — `head_sha` already moves whenever the register
+     does, but a source exempted from the map is one nobody re-checks when the
+     map changes, and an edit to `td-check.pl` moves register-hygiene's own
+     candidacy with no repo commit at all; `tech_debt`'s belt-and-braces is
+     what lets requirement 3t's machine corroboration compare the
+     Co-Ordinator's verdict against the Script's own eligible count without a
+     stale fingerprint standing in the way) — the latter two matter especially
+     among the finishing sources, because each turns on a transition the
      open-PR digest does not carry: `abandoned_drafts` gains an entry the cycle a
      draft goes stale (the mere passage of time), and `merge_conflicts` the cycle a
      ready PR's `mergeable` resolves to `CONFLICTING` after its base moved. Hashing
@@ -5738,9 +5859,15 @@ runs unattended.
        `merge_conflicts`, `register_hygiene`, `issues` (requirement 3) — the
        same arrays the Co-Ordinator reads, keyed the same way (`source`,
        `ref`). `tech-debt`, `project-review` and `implementation-plan` items
-       are never candidates, whatever their policy says: the Script does not
-       pre-fetch them as structured data, so there is nothing here to offer
-       the Refiner for them (`tech-debt/TD-PPagop-26080809.md`);
+       are never candidates, whatever their policy says: this clause's list
+       is the whole of what `refiner_candidate_items` reads, and none of the
+       three is in it. For `project-review` and `implementation-plan` there
+       is nothing to offer the Refiner either way, the Script pre-fetching
+       neither as structured data; `tech_debt` it does pre-fetch (requirement
+       3t), but for the Co-Ordinator's candidate set only — widening this
+       clause to draw on it is the follow-up work
+       `tech-debt/TD-PPagop-26080809.md` records, not something requirement 3t
+       carries;
     2. its source's `refinement_policy` (config) is not `"exempt"` — the
        default for a source the object does not name, and the correct default
        for a source whose items already carry their own specification (a
@@ -6080,6 +6207,21 @@ What exists, and the requirements each part answers to:
    failures loud on stderr. Its filter and shape are regression-tested in
    `test/issues-prefetch.test.sh` and `test/dependency-gate.test.sh`; must
    pass `shellcheck`.
+3t. `scripts/gather-tech-debt.sh` implementing requirement 3t: given a repo
+   slug and default branch, reads the register in one tarball fetch (like
+   `scripts/gather-register-hygiene.sh`) and prints the JSON array of the
+   repo's candidate tech-debt items — every `status: open` row, each
+   carrying its own id as `ref`/`id`, `title`, `filed`, `url`, and the whole
+   item file verbatim as `body` — sorted by id ascending. A repo with no
+   `tech-debt` tree prints `[]` silently; an API failure prints `[]` with
+   `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Claimed/blocked/
+   void exclusion is deliberately not this script's job — `agent-cycle.sh`
+   applies `exclude_claimed_items` and the new `exclude_blocked_or_void_items`
+   (both in `agent-cycle.sh` itself, alongside `exclude_claimed_prs`) once the
+   repo's claim/blocked/void state is in hand, so there is one definition of
+   each exclusion rather than one per gatherer. Its shape is
+   regression-tested in `test/gather-tech-debt.test.sh`; must pass
+   `shellcheck`.
 3q. `lib/dependency-gate.sh` implementing requirement 34j: `dependency_refs`,
    which parses every `Blocked-by:` reference out of a body of text into a
    normalized JSON array (same-repo references as a bare number, cross-repo
@@ -7144,6 +7286,39 @@ pull request, run the ones the change touches and any it could regress.
    carries. Against the real API, `scripts/gather-issues.sh
    Poetic-Poems/poetic-fiddle` prints an array whose entries all carry
    `comments` and a four-name `priority`.
+2j. **Tech-debt arrives pre-fetched, pre-excluded, and its verdict is
+   corroborated (requirement 3t).** `test/gather-tech-debt.test.sh` passes:
+   against a stubbed tarball, `scripts/gather-tech-debt.sh` prints one entry
+   per `status: open` item — `source: "tech-debt"`, the item's own id as `ref`
+   and `id`, its `title`, `filed`, `url` and the whole file verbatim as `body`,
+   sorted by id — while `in-progress`, `resolved` and `not-debt` rows and a
+   repo with no `tech-debt` tree yield nothing, and a failing API degrades to
+   `[]` (exit 0) with the failure on stderr.
+   `test/tech-debt-eligibility.test.sh` passes:
+   `exclude_blocked_or_void_items` drops a candidate blocked or void for its
+   own repo, leaves the same ref alone for a different repo, honours a
+   repo-less entry against every repo, and degrades to the unfiltered array on
+   malformed input; `tech_debt_unaccounted_items` reports every eligible item a
+   `selected: false` verdict neither reported in `needs_refinement` (source
+   `"tech-debt"`, not another source's) nor voided, reports none under
+   `refinement_policy.tech-debt == "required"`, and degrades to `[]` rather
+   than a false positive on malformed input; and the corroboration is fed the
+   recording loops' own collections, never the message's arrays verbatim — a
+   `needs_refinement` entry dropped at requirement 34d's bar leaves its item
+   unaccounted (the fingerprint is then withheld and the next cycle re-asks),
+   while a `voided` entry the guard refuses still accounts, because the
+   refusal is itself recorded as a block, and an entry naming no item, which
+   records nothing, is not collected at all. Assert the wiring both ways, which
+   the unit tests cannot: a `none-selected` with an item unaccounted for logs
+   the `warning` **and** omits `fingerprint` from the event (carrying
+   `td_verdict_rejected: true`), so the next cycle re-asks rather than skipping
+   — the whole point of the requirement — while a fully accounted-for
+   `none-selected` still carries its fingerprint and still skips. And assert
+   the back-pressure case does not cry wolf: with `max_open_agent_prs` tripped
+   and a finishing candidate present (acceptance check 6d's setup), a
+   `none-selected` logs **no** contradiction warning and keeps its fingerprint,
+   because requirement 2.2a empties `tech_debt` along with `issues` and the
+   eligible set is read after that narrowing.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not
@@ -8653,3 +8828,4 @@ confident, recurring no-op.
 | A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
 | A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |
+| A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |

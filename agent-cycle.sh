@@ -889,6 +889,92 @@ exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
     <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
 }
 
+# Requirement 3t/issue #310: drop any candidate whose `ref` is recorded
+# blocked or void for THIS_REPO in the fleet's shared log — the same
+# deterministic-code-not-model-judgement decision exclude_claimed_items above
+# makes for claims, applied to the two other exclusions requirement 16's
+# exclusion 1 asks the Co-Ordinator to apply by eye. Unlike `issues`
+# (requirement 3j), which deliberately leaves blocked items in the array
+# because requirement 18a's re-check needs the live thread to decide whether
+# fresh evidence unblocks one, a tech-debt item has no such re-check: a block
+# whose underlying work has actually landed is already cleared before this
+# runs, by requirement 34i's work-gone reconciliation reading the very same
+# register this array was drawn from — so nothing here is ever filtered out
+# only to need putting back a moment later. Scoped to the repo the block/void
+# was recorded against, matching BLOCKED_ITEMS_JQ's own repo-or-blank match:
+# a blank `repo` (an old, pre-scoping event) still matches every repo, exactly
+# as the Co-Ordinator's own reading of `blocked`/`void` always has. Malformed
+# input degrades to passing the array through unfiltered, on the same fail-open
+# terms as exclude_claimed_items.
+exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <void-json>
+  local candidates="$1" repo="$2" blocked="${3:-[]}" void="${4:-[]}"
+  jq -e 'type == "array"' <<<"$blocked" >/dev/null 2>&1 || blocked='[]'
+  jq -e 'type == "array"' <<<"$void" >/dev/null 2>&1 || void='[]'
+  jq -c --arg repo "$repo" --argjson blocked "$blocked" --argjson void "$void" '
+    [ .[] | select(((.ref // null) as $r
+                     | $r != null
+                       and ($blocked | any(((.item // "") | tostring) == $r
+                                           and ((.repo // "") == "" or (.repo // "") == $repo))) == false
+                       and ($void | any(((.item // "") | tostring) == $r
+                                        and ((.repo // "") == "" or (.repo // "") == $repo))) == false)) ]
+  ' <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+}
+
+# Requirement 3t's machine corroboration: which of this cycle's eligible
+# tech-debt items (ELIGIBLE_JSON, `{repo, item}` entries — the Script's own
+# post-exclusion `tech_debt` arrays, flattened) a `selected: false`
+# verdict left completely unaccounted for. A bar-clearing item may be
+# declined without being selected only two ways: reported in
+# `needs_refinement` (source "tech-debt") or voided this same cycle — the same
+# two the prompt's own "Reporting an under-specified item" and "Void items"
+# sections give every source. `refinement_policy.tech-debt == "required"` is a
+# third, legitimate silent skip (requirement 39a: an unrefined item there is
+# never selectable, so the Co-Ordinator owes it no report), which is why this
+# returns `[]` unconditionally under that policy rather than flagging every
+# eligible item as unaccounted.
+#
+# RECORDED_JSON is what the Script *recorded* from the Co-Ordinator's message
+# — `log_needs_refinement_items`' and `log_voided_items`' own collections —
+# never the message's `needs_refinement`/`voided` arrays verbatim. The
+# difference is the whole point: `record_needs_refinement_block` drops an
+# entry that fails requirement 34d's five-field bar with nothing but a
+# warning, so a claimed-but-dropped report leaves its item open, unclaimed
+# and eligible — and had it still counted as accounting for that item, the
+# corroboration would have been satisfied, the fingerprint armed, and the
+# next cycle's byte-identical inputs would have stood the fleet down on a
+# verdict that never engaged with the band: issue #310's freeze, reopened
+# through a narrow door (every eligible item reported, every report
+# malformed — precisely the fields a small model omits). A `voided` entry, by
+# contrast, is counted whichever way the void guard rules, because both
+# outcomes are recorded state: a pass writes the void, a refusal writes a
+# block (requirement 34d), and either removes the item from the next cycle's
+# eligible set — so the two arrays are hardened by the one rule "count what
+# was recorded", not by two different shape tests.
+#
+# Any entry this prints is evidence the Co-Ordinator's verdict did not
+# actually engage with the band it is declining — exactly the shape of the
+# incident this requirement exists for (issue #310), where the stated reason
+# ("requires per-item evaluation…", "heavily voided or blocked") was
+# demonstrably false against data the Script itself had already filtered.
+# Malformed input degrades to `[]` — silence, not a false positive — on the
+# same fail-open terms as exclude_claimed_items and
+# exclude_blocked_or_void_items above.
+tech_debt_unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>
+  local recorded="$1" eligible="${2:-[]}" policy="${3:-{\}}"
+  jq -e 'type == "array"' <<<"$eligible" >/dev/null 2>&1 || eligible='[]'
+  jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
+  jq -c --argjson eligible "$eligible" --argjson policy "$policy" '
+    (($policy["tech-debt"] // "exempt") == "required") as $required
+    | if $required then []
+      else
+        ((((.needs_refinement // []) | map(select((.source // "") == "tech-debt")
+                                            | {repo, item: (.item | tostring)}))
+          + ((.voided // []) | map({repo, item: (.item | tostring)})))) as $accounted
+        | ($eligible - $accounted)
+      end
+    ' <<<"$recorded" 2>/dev/null || echo '[]'
+}
+
 # Whether a candidate the Co-Ordinator returned is one this same cycle's own
 # gather already saw claimed (requirement 17a). The claim attempt below would
 # lose anyway — GitHub still arbitrates — but a loss that was knowable from
@@ -1139,10 +1225,24 @@ record_needs_refinement_block() {
 # log_needs_refinement_items WORK_ORDER
 # Record every one of the Co-Ordinator's `needs_refinement` reports via
 # `record_needs_refinement_block`, attributed to `stage: "coordinator"`.
+#
+# Collects the entries the recorder actually accepted into
+# `coord_recorded_refinement_json` for requirement 3t's corroboration, which
+# must count what was recorded and never what was claimed: an entry dropped
+# at requirement 34d's bar records nothing, so its item stays eligible, and
+# letting it account for that item anyway would arm the no-op fingerprint on
+# a verdict that never engaged with the band (see
+# tech_debt_unaccounted_items). The already-blocked refusal also lands here
+# uncounted, harmlessly — a blocked item was never in the eligible set to
+# need accounting for.
 log_needs_refinement_items() {
   local wo="$1" entry
+  coord_recorded_refinement_json="[]"
   while IFS= read -r entry; do
-    record_needs_refinement_block "$entry" "coordinator" || true
+    if record_needs_refinement_block "$entry" "coordinator"; then
+      coord_recorded_refinement_json="$(jq -c --argjson e "$entry" '. + [$e]' \
+        <<<"$coord_recorded_refinement_json")"
+    fi
   done < <(jq -c '.needs_refinement[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
 
@@ -1164,13 +1264,24 @@ log_needs_refinement_items() {
 # the tree gets to adjudicate rather than the item disappearing on an unchecked
 # claim. See lib/void-guard.sh for what the guard tests and why it is not a
 # prompt instruction.
+#
+# Collects every entry it disposed of into `coord_recorded_voided_json` for
+# requirement 3t's corroboration — and "disposed of" deliberately includes a
+# refusal, unlike log_needs_refinement_items' collection just above, because
+# here both outcomes write state: a pass records the void, a refusal records
+# a block, and either takes the item out of the next cycle's eligible set. An
+# entry naming no item is the one thing that records nothing, and it is the
+# one thing not collected.
 log_voided_items() {
   local wo="$1" repos="${2:-[]}" entry item repo reason refusal
+  coord_recorded_voided_json="[]"
   while IFS= read -r entry; do
     item="$(jq -r '.item // ""' <<<"$entry")"
     [[ -n "$item" ]] || continue
     repo="$(jq -r '.repo // ""' <<<"$entry")"
     reason="$(jq -r '.reason // "no reason given"' <<<"$entry")"
+    coord_recorded_voided_json="$(jq -c --argjson e "$entry" '. + [$e]' \
+      <<<"$coord_recorded_voided_json")"
 
     if refusal="$(void_guard_reason "$entry" "$repos")"; then
       log_event "item-void" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
@@ -1452,6 +1563,28 @@ gather_issues() {
         2>"$cycle_dir/issues-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
+# Pre-fetch the repo's open tech-debt register items (requirement 3t, issue
+# #310) — the same move issues, findings, review-feedback, merge-conflicts,
+# abandoned-drafts and register-hygiene already got: a source the model could
+# silently misdescribe or decline to re-derive becomes an input instead of an
+# errand. Claimed-item exclusion is applied by the caller via
+# exclude_claimed_items, like every other pre-fetched array; blocked/void
+# exclusion is applied by a second pass once blocked_json/void_json exist (see
+# "3c. Tech-debt eligibility" below) — this function only ever returns the raw
+# open set.
+gather_tech_debt() {
+  local slug="$1" branch="$2" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-tech-debt.sh" "$slug" "$branch" \
+        2>"$cycle_dir/tech-debt-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/tech-debt-$safe.json"
     printf '%s' "$out"
   else
     printf '[]'
@@ -3364,6 +3497,15 @@ while IFS=$'\t' read -r _ slug default_branch; do
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
     issues="$(exclude_claimed_items "$(gather_issues "$slug")" "$claimed_item_refs_json")"
   fi
+  # Claim exclusion only, here: blocked/void exclusion for tech-debt needs
+  # `blocked_json`/`void_json`, which do not exist yet this early in the cycle
+  # (they depend on this same loop's `ordered_repos_json` for the work-gone
+  # reconciliation passes below) — see "3c. Tech-debt eligibility" further down,
+  # which filters this array in place once they do.
+  tech_debt="[]"
+  if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
+    tech_debt="$(exclude_claimed_items "$(gather_tech_debt "$slug" "$default_branch")" "$claimed_item_refs_json")"
+  fi
   # The implementation-plan source's path is per-repo config, never a path
   # fixed in the prompt (issue #77): echo it into the runtime-input entry only
   # when the repo actually lists the source, so the Co-Ordinator reads it from
@@ -3377,8 +3519,9 @@ while IFS=$'\t' read -r _ slug default_branch; do
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
     --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" --argjson issues "$issues" \
+    --argjson td "$tech_debt" \
     --arg ipp "$implementation_plan_path" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues}
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
@@ -3942,6 +4085,30 @@ if (( void_json_bytes > 100000 )); then
                + " entries after retirement — approaching the 131072-byte MAX_ARG_STRLEN cap; check void_retire_after_days and whether requirements 34k/34l are actioning items")}')"
 fi
 
+# --- 3c. Tech-debt eligibility, decided (requirement 3t, issue #310) ---
+# Deferred from step 3 for the same reason 2.2a's back-pressure decision and
+# 3b's no-op fingerprint are deferred from their own numbers: the repo loop
+# (section 3) attached each repo's open tech-debt items, claim-filtered,
+# before `blocked_json`/`void_json` existed to filter them further. Now that
+# both are final — void_json has had every reconciliation pass and its own
+# retirement applied — finish the job: drop any item this
+# repo's own blocked or void record names, exactly as exclude_claimed_items
+# already dropped claimed ones. What remains in each repo's `tech_debt` array
+# is the Script's own answer to "what could the Co-Ordinator actually select
+# from this band" — open, unclaimed, unblocked, not void — with no per-item
+# judgement left for it to apply, and no room for a verdict like "requires
+# per-item evaluation against blocked/void/claimed records" to be true.
+while IFS= read -r td_slug; do
+  [[ -n "$td_slug" ]] || continue
+  td_current="$(jq -c --arg s "$td_slug" 'map(select(.slug == $s)) | .[0].tech_debt // []' \
+    <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+  td_filtered="$(exclude_blocked_or_void_items "$td_current" "$td_slug" "$blocked_json" "$void_json")"
+  ordered_repos_json="$(jq -c --arg r "$td_slug" --argjson td "$td_filtered" \
+    'map(if .slug == $r then .tech_debt = $td else . end)' \
+    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+done < <(jq -r '[.[] | select(((.tech_debt // []) | length) > 0) | .slug] | unique[]' \
+         <<<"$ordered_repos_json" 2>/dev/null || true)
+
 # The third extract (requirement 3h): what a previous Enabler engagement
 # specified for an item nobody had specified well enough to work on. For an
 # issue the refinement is a comment and travels in the thread the Co-Ordinator
@@ -4060,18 +4227,43 @@ if (( backpressure_tripped )); then
       '{reason: $r}')"
     exit 0
   fi
-  # `issues` is emptied along with the narrowing, not merely left unwalked:
-  # it is the one array that carries whole threads, and a restricted cycle
-  # paying the Co-Ordinator to read candidates it is forbidden to pick is the
-  # exact spend back-pressure exists to stop. The other non-finishing arrays
-  # are compact enough that stripping them buys nothing.
+  # `issues` and `tech_debt` are emptied along with the narrowing, not merely
+  # left unwalked: they are the two arrays that carry a whole document each —
+  # an issue's entire thread, a tech-debt item's entire file (requirement 3t) —
+  # and a restricted cycle paying the Co-Ordinator to read candidates it is
+  # forbidden to pick is the exact spend back-pressure exists to stop. The
+  # other non-finishing arrays are compact enough that stripping them buys
+  # nothing.
+  #
+  # Emptying `tech_debt` is also what keeps requirement 3t's corroboration
+  # honest, which is why `eligible_tech_debt_json` is computed below this and
+  # not back at "3c. Tech-debt eligibility": a back-pressured cycle forbids the
+  # tech-debt source outright, so its `selected: false` owes no account of the
+  # band, and measuring eligibility before the narrowing would report every
+  # eligible item as unaccounted — a false contradiction every restricted
+  # cycle, and one that would strip the no-op fingerprint exactly when the gate
+  # is fullest.
   ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))
-                                    | .issues = []]' \
+                                    | .issues = []
+                                    | .tech_debt = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
     --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
+
+# The Script's own count of what the tech-debt band could actually offer this
+# cycle, and which repo+item pairs make it up — the machine-corroboration
+# baseline "5a. Tech-debt verdict corroboration" below tests the Co-Ordinator's
+# verdict against, and requirement 3b's fingerprint (below) hashes as part of
+# `repos[].tech_debt` regardless, verbatim like `register_hygiene`. Taken here
+# rather than at "3c. Tech-debt eligibility" so that it reads the array the
+# Co-Ordinator is actually about to be given: back-pressure empties `tech_debt`
+# just above, and an eligible set counted before that would hold items this
+# cycle forbids it to select (see that block's own comment).
+eligible_tech_debt_json="$(jq -c '[.[] | .slug as $s | (.tech_debt // [])[] | {repo: $s, item: .ref}]' \
+  <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+eligible_tech_debt_total="$(jq 'length' <<<"$eligible_tech_debt_json" 2>/dev/null || echo 0)"
 
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
@@ -4309,6 +4501,23 @@ log_needs_refinement_items "$work_order_json"
 selected="$(jq -r '.selected' <<<"$work_order_json")"
 if [[ "$selected" != "true" ]]; then
   reason="$(jq -r '.reason // "no reason given"' <<<"$work_order_json")"
+
+  # --- 5a. Tech-debt verdict corroboration (requirement 3t, issue #310) ---
+  # See tech_debt_unaccounted_items's own comment above for the rule; only
+  # worth computing at all when the Script found something eligible to check
+  # the verdict against. Fed the recording loops' own collections (steps
+  # above), never $work_order_json's arrays verbatim: the account is what the
+  # Script put on the record, not what the message claimed to.
+  td_unaccounted_json="[]"
+  if (( eligible_tech_debt_total > 0 )); then
+    td_unaccounted_json="$(tech_debt_unaccounted_items \
+      "$(jq -nc --argjson nr "${coord_recorded_refinement_json:-[]}" \
+                --argjson v "${coord_recorded_voided_json:-[]}" \
+                '{needs_refinement: $nr, voided: $v}')" \
+      "$eligible_tech_debt_json" "$refinement_policy_json")"
+  fi
+  td_unaccounted_n="$(jq 'length' <<<"$td_unaccounted_json" 2>/dev/null || echo 0)"
+
   # The fingerprint recorded here is the one taken *before* the Co-Ordinator
   # ran, which is the only correct choice. Anything that changed while it was
   # working is, by definition, something it may not have seen — so it must be
@@ -4317,9 +4526,30 @@ if [[ "$selected" != "true" ]]; then
   #
   # An empty fingerprint is omitted, not stored: the next cycle must find no
   # fingerprint here rather than an empty one it might match against an equally
-  # empty sample of its own (see gather-source-state.sh).
-  log_event "none-selected" "$(jq -nc --arg r "$reason" --arg f "$noop_fingerprint_value" \
-    '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end)')"
+  # empty sample of its own (see gather-source-state.sh). A verdict this cycle
+  # found to contradict the Script's own eligible tech-debt count is omitted
+  # the same way and for the same reason a failed sample is unfingerprintable
+  # (requirement 3b's "a sample that failed is not a sample"): a wrong
+  # `none-selected` cemented into the fingerprint would freeze the fleet on
+  # that wrong answer until `none_selected_recheck_hours` forced a recheck —
+  # which is exactly what held the whole fleet down for a full day on
+  # 2026-08-11. Rejecting the fingerprint here instead means the very next
+  # cycle asks again, unconditionally.
+  if (( td_unaccounted_n > 0 )); then
+    log_event "warning" "$(jq -nc --argjson n "$td_unaccounted_n" --argjson total "$eligible_tech_debt_total" \
+      --argjson items "$td_unaccounted_json" --arg r "$reason" \
+      '{detail: ("tech-debt verdict contradiction: the Script found " + ($total | tostring)
+                 + " eligible open tech-debt item(s) (unclaimed, unblocked, not void), but "
+                 + ($n | tostring)
+                 + " of them were neither selected, covered by a needs_refinement report the Script"
+                 + " recorded, nor by a voided entry it disposed of this cycle"
+                 + " — the Co-Ordinator'"'"'s stated reason (\"" + $r + "\") does not account for the band"),
+        eligible_total: $total, unaccounted: $items}')"
+    log_event "none-selected" "$(jq -nc --arg r "$reason" '{reason: $r, td_verdict_rejected: true}')"
+  else
+    log_event "none-selected" "$(jq -nc --arg r "$reason" --arg f "$noop_fingerprint_value" \
+      '{reason: $r} + (if $f == "" then {} else {fingerprint: $f} end)')"
+  fi
   exit 0
 fi
 
