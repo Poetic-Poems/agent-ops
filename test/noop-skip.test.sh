@@ -223,6 +223,14 @@ assert_eq "a claim ageing out of the array changes the fingerprint" "1" \
 assert_ne "a human requesting changes changes the fingerprint" \
   "$(fp_with '.repos[0].review_feedback += [{"ref": "pr-57-review-99", "number": 57, "reviewed_at": "2026-07-17T01:22:54Z", "body": "please fix the gitignore gap"}]')"
 
+# human-visibility (requirement 38e). A violation surfaces off a `warning`
+# scripts/sweep-human-visibility.sh already logged, and its live re-check
+# (scripts/gather-human-visibility-hygiene.sh) resolving it moves no commit,
+# issue, alert or open-PR digest field of its own — the same gap
+# abandoned_drafts and merge_conflicts close for their own transitions.
+assert_ne "a fresh human-visibility violation changes the fingerprint" \
+  "$(fp_with '.repos[0].human_visibility += [{"source": "human-visibility", "ref": "human-visibility-1a2b3c4d5e6f", "url": "https://github.com/o/one/pulls", "problems": ["HUMAN VISIBILITY  https://github.com/o/one/pull/9: could not request review from foo"], "body": "…"}]')"
+
 # Config and prompt: the two inputs that aren't repo state, and the two most
 # likely to be left out. Without them, editing the selection rules does nothing
 # until an unrelated commit lands and you spend the afternoon debugging an edit

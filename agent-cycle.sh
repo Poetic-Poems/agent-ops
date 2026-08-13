@@ -89,6 +89,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/unvoid-label.sh"
 # shellcheck source=lib/work-gone.sh
 . "$SCRIPT_DIR/lib/work-gone.sh"
+# shellcheck source=lib/human-visibility-hygiene.sh
+. "$SCRIPT_DIR/lib/human-visibility-hygiene.sh"
 # shellcheck source=lib/preflight.sh
 # Sourced after work-gone.sh, whose work_gone_clearances it wraps.
 . "$SCRIPT_DIR/lib/preflight.sh"
@@ -1409,6 +1411,27 @@ gather_register_hygiene() {
         2>"$cycle_dir/register-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/register-hygiene-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
+# Pre-fetch this repo's still-live human-visibility violations (requirement
+# 38e) — its own source, `human-visibility` (issue #284's decision 2), never
+# `gather_register_hygiene`'s: a violation is a fact about GitHub's live
+# pull-request state, unrelated to the register content that source reasons
+# about, so the two never share a candidate or a ref (see
+# scripts/gather-human-visibility-hygiene.sh). `violations` is the fleet-wide
+# array `human_visibility_violations` produced from the union log; the script
+# itself filters to this repo's slice.
+gather_human_visibility_hygiene() {
+  local slug="$1" violations="${2:-[]}" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-human-visibility-hygiene.sh" "$slug" "$violations" "$pr_label" \
+        2>"$cycle_dir/human-visibility-hygiene-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/human-visibility-hygiene-$safe.json"
     printf '%s' "$out"
   else
     printf '[]'
@@ -3130,7 +3153,17 @@ fi
 # reading, so a sweep that re-asked for a review on some other repo's
 # long-since-ready pull request would rewrite the outcome of a cycle that stood
 # down or selected nothing.
+#
+# Its `warning` events are appended into `union_log` the moment the sweep
+# finishes (below), the same technique requirement 34j's own reconciliation
+# uses to see its own cycle's freshly-logged events: `human_visibility_json`,
+# computed later this cycle from `union_log` (requirement 38e), must see a
+# violation this very sweep just found, not only one a previous cycle logged —
+# otherwise the register-hygiene pre-fetch a few hundred lines below would
+# never catch what its own cycle's sweep just discovered, and the violation
+# would sit one full cycle behind its own detection for no reason.
 if ! (( DRY_RUN )); then
+  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
   while IFS= read -r sweep_slug; do
     [[ -n "$sweep_slug" ]] || continue
     while IFS= read -r sweep_action; do
@@ -3147,6 +3180,7 @@ if ! (( DRY_RUN )); then
     done < <(timeout 120 "$SCRIPT_DIR/scripts/sweep-human-visibility.sh" "$sweep_slug" "$cycle_id" "$node_name" \
                2>>"$cycle_dir/human-visibility-sweep.err" || true)
   done < <(jq -r '.repos[].slug' "$CONFIG_FILE" 2>/dev/null || true)
+  tail -n "+$(( log_lines_before + 1 ))" "$log_file" >> "$union_log" 2>/dev/null || true
 fi
 
 # 2.2 Back-pressure — across ALL configured repos, regardless of --repo.
@@ -3344,7 +3378,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
     --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
     --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" --argjson issues "$issues" \
     --arg ipp "$implementation_plan_path" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, issues: $issues}
+    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)')"
   ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
   # Kept in a separate array, never folded into the entry above: this is the
@@ -3742,6 +3776,41 @@ while IFS= read -r vr_slug; do
     'map(if .slug == $r then .register_hygiene = $rh else . end)' \
     <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
 done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
+
+# Human-visibility hygiene, requirement 38e — the read-back half of
+# tech-debt/TD-PPagop-26080801.md's fix: a violation requirement 38c's sweep
+# could not self-heal (logged above as a `warning`) is read back out of
+# `union_log`, re-verified live by scripts/gather-human-visibility-hygiene.sh
+# (a stale or already-resolved one is dropped there, never here), and — where
+# one survives — assigned into that repo's own `human_visibility` array. Its
+# own source (issue #284's decision 2), never register-hygiene's: a violation
+# here means finished work is invisible to the human whose merge everything
+# waits on, ranked immediately after `merge-conflicts` (config.schema.json),
+# the same "finishing beats starting" class as the three sources around it —
+# register-hygiene's cosmetic-repair, last-place rationale does not describe
+# it. Assigned, not appended: unlike `register_hygiene` above (which two
+# passes can each contribute to — the plain gather and the void
+# re-derivation) this array has exactly one writer, so there is nothing a
+# plain assignment could clobber. Only for repos whose `sources` actually
+# list `human-visibility`, and only for repos this reduction found a
+# violation for at all — everywhere else costs nothing beyond the one
+# reduction over `union_log` below, already read once each for `blocked_json`
+# and `void_json` above.
+human_visibility_json="$(human_visibility_violations "$union_log")"
+if [[ "$(jq 'length' <<<"$human_visibility_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  while IFS= read -r hv_slug; do
+    [[ -n "$hv_slug" ]] || continue
+    jq -e --arg r "$hv_slug" \
+      'any(.[]; .slug == $r and ((.sources // []) | any(.[]; . == "human-visibility")))' \
+      <<<"$ordered_repos_json" >/dev/null 2>&1 || continue
+    hv_candidates_json="$(jq -c --arg r "$hv_slug" '[.[] | select(.repo == $r)]' <<<"$human_visibility_json")"
+    hv_finding_json="$(gather_human_visibility_hygiene "$hv_slug" "$hv_candidates_json")"
+    [[ "$(jq 'length' <<<"$hv_finding_json" 2>/dev/null || echo 0)" != "0" ]] || continue
+    ordered_repos_json="$(jq -c --arg r "$hv_slug" --argjson hv "$hv_finding_json" \
+      'map(if .slug == $r then .human_visibility = $hv else . end)' \
+      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+  done < <(jq -r '[.[].repo] | unique[]' <<<"$human_visibility_json" 2>/dev/null || true)
+fi
 
 # Requirement 34n: retire every void entry that is both fully actioned and
 # old enough out of `void_json` before anything else reads it — from here on

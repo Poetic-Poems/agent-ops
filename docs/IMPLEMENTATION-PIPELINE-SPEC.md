@@ -375,8 +375,8 @@ file and carries placeholders only; `.env` itself is never committed.
 
 | Repo | GitHub | Work sources, in priority order |
 |---|---|---|
-| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. project-review recommendations · 11. `issues:low` · 12. code-quality findings · 13. register-hygiene |
-| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **abandoned-drafts** · 6. failed Actions runs on `main` · 7. `issues:high` · 8. `TECH-DEBT.md` · 9. `issues:medium` · 10. `implementation-plan` (its configured plan document, `docs/IMPLEMENTATION-PLAN.md`; next milestone task) · 11. project-review recommendations · 12. `issues:low` · 13. code-quality findings · 14. register-hygiene |
+| poetic (framework) | `Poetic-Poems/poetic` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **human-visibility** · 6. **abandoned-drafts** · 7. failed Actions runs on `main` · 8. `issues:high` · 9. `TECH-DEBT.md` · 10. `issues:medium` · 11. project-review recommendations · 12. `issues:low` · 13. code-quality findings · 14. register-hygiene |
+| poetic-fiddle (web app) | `Poetic-Poems/poetic-fiddle` | 1. **security findings** · 2. **`issues:urgent`** · 3. **review-feedback** · 4. **merge-conflicts** · 5. **human-visibility** · 6. **abandoned-drafts** · 7. failed Actions runs on `main` · 8. `issues:high` · 9. `TECH-DEBT.md` · 10. `issues:medium` · 11. `implementation-plan` (its configured plan document, `docs/IMPLEMENTATION-PLAN.md`; next milestone task) · 12. project-review recommendations · 13. `issues:low` · 14. code-quality findings · 15. register-hygiene |
 
 This is this installation's current `config.json`: its `repos` array names
 these two repos and each one's `sources`, in this order. Unlike this document,
@@ -404,6 +404,19 @@ analysis, not just files in the tree:
   quality suggestions are more speculative and higher-volume than curated
   tech-debt or filed issues, so they are picked up only when nothing more
   deliberate is waiting.
+
+The `human-visibility` source draws on `scripts/sweep-human-visibility.sh`'s
+own log (requirement 38c), read back and re-verified live:
+
+- **`human-visibility`** — a violation requirement 38c's periodic sweep found
+  but could not self-heal (a `gh` read, the review-request POST, or the
+  nudge-comment POST itself failing), still true once
+  `scripts/gather-human-visibility-hygiene.sh` re-checks it live (requirement
+  38e). **Ranked immediately after `merge-conflicts`**, the same "finishing
+  beats starting" class as `review-feedback`, `merge-conflicts` and
+  `abandoned-drafts`: finished work invisible to the human whose merge
+  everything waits on is not a cosmetic repair, and must not sit behind the
+  full repo walk on a rationale that does not describe it.
 
 The `register-hygiene` source draws on the repo's own per-item tech-debt
 register, checked against the convention that register states for itself:
@@ -555,7 +568,7 @@ and the schema must carry every one of them.
 <!-- config-table:start id=main -->
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks...[continued below](#extended-notes-repos) |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues`...[continued below](#extended-notes-repos) |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -640,7 +653,7 @@ same value; no other qualifier is accepted.
 
 ### Extended notes: `repos`
 
-Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.
+Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.
 
 The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.
 
@@ -4676,10 +4689,13 @@ runs unattended.
       (requirement 3), because a Co-Ordinator that sees no findings declines and
       the two agree. Read as a clearing signal the same `[]` says "every alert
       is fixed", so one 403 would clear every alert block on the fleet. A
-      register-hygiene item (`register-hygiene-<hash>`) is excluded for the
-      plainer reason that it has no completion signal to read at all — the
-      register *is* the item, and its file shape is what `register-hygiene`
-      itself repairs. Both remain the Enabler's, exactly as before.
+      register-hygiene item (`register-hygiene-<hash>`) or a human-visibility
+      item (`human-visibility-<hash>` — requirement 38e) is excluded for the
+      plainer reason that neither has a completion signal to read at all —
+      the register, or GitHub's own live pull-request state, *is* the item,
+      and its own re-derivation is what `gather-register-hygiene.sh` or
+      `gather-human-visibility-hygiene.sh` itself repairs. Both remain the
+      Enabler's, exactly as before.
     - **It clears, it never voids.** The event is `unblocked`, which requirement
       34 calls the safe direction — a wrongly cleared item becomes a candidate
       again, is offered by no source, and nothing happens. A void is terminal
@@ -5546,8 +5562,10 @@ runs unattended.
     guarantee, made self-healing rather than merely reported: a violation this
     script can fix, it fixes in the same pass, so there is never a gap between
     detection and correction for a human to fall through. What it cannot fix —
-    a listing or a read that fails — is a `warning`, never a silent skip.
-    Skipped on `--dry-run`, like every sweep that writes.
+    a listing or a read that fails — is a `warning`, never a silent skip; and
+    a `warning` that does not clear on its own becomes ordinary selectable
+    work rather than sitting unread in the log (requirement 38e). Skipped on
+    `--dry-run`, like every sweep that writes.
 
     A pull request something is still `CHANGES_REQUESTED`-blocking is left
     entirely alone — the sweep never calls `confirm_review_requested`
@@ -5588,9 +5606,101 @@ runs unattended.
     human can make. What requirements 38a–38c add is continuity (the guarantee
     holds between the moments a model-driven stage would otherwise renew it)
     and one further origin (a Co-Ordinator's own `needs_refinement` report)
-    that previously reached only a label. Nor does a violation the sweep cannot
-    itself heal become selectable work: it is a `warning` and no more, which is
-    the gap `tech-debt/TD-PPagop-26080801.md` records.
+    that previously reached only a label. This scope limit is deliberate and
+    stays a limit: requirement 38e (below) closes the *other* gap 38a–38c left
+    — a violation the sweep finds but cannot itself heal — without extending
+    the guarantee to either of these already-otherwise-handled classes.
+
+38e. **A violation the sweep cannot heal is selectable work, not only a log
+    line.** `scripts/sweep-human-visibility.sh` (requirement 38c) fixes almost
+    every violation it finds in the same pass; what it cannot fix — a `gh`
+    read, the review-request POST, or the nudge-comment POST itself failing —
+    was, before this requirement, only a `warning` event: no selectable work,
+    nothing tracking whether it recurred, and the human it concerns by
+    definition not looking (tech-debt/TD-PPagop-26080801.md, the gap
+    requirement 38d's scope note names). `scripts/gather-human-visibility-hygiene.sh`,
+    run for every configured repo whose `sources` include `human-visibility`,
+    closes it:
+
+    - `lib/human-visibility-hygiene.sh`'s `human_visibility_violations` reduces
+      the log union (`union_log`) to one entry per identity — a pull request's
+      `pr_url` where the warning named one, the bare `repo` for a listing
+      failure that named none — keeping only the latest event for each,
+      exactly as `blocked_items`/`void_items` (`lib/cycle-state.sh`) keep the
+      latest attempt-failed/item-void per item. A later
+      `human-review-requested` or `human-nudged` event for the same identity —
+      the sweep succeeding next time — clears it; an unrelated warning never
+      does.
+    - The Script appends this cycle's own freshly-logged human-visibility
+      events into `union_log` the moment the sweep (requirement 38c) finishes,
+      the same technique requirement 34j's own reconciliation uses, so a
+      violation this cycle's sweep just found is caught this same cycle rather
+      than sitting one cycle behind its own detection.
+    - For each repo with at least one violation, `gather-human-visibility-hygiene.sh`
+      re-verifies every one live before treating it as a candidate, read-only
+      throughout — never `confirm_review_requested` or `ensure_human_reviewer`
+      (`lib/handoff.sh`), which POST. A repo-level listing failure only
+      survives if the listing still fails right now. A pull-request violation
+      first survives only while that pull request is still open and not a
+      draft, then survives its own warning class's own live check: a
+      `could not request review from …` warning survives only while no human
+      review is currently requested or already given (`gh pr view --json
+      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, or a
+      `reviewDecision` of `APPROVED` or `CHANGES_REQUESTED`, is the request
+      having worked after all); a `could not post the idle nudge comment`
+      warning survives only while the `<!-- agent-ops:human-nudge -->` marker
+      comment `scripts/sweep-human-visibility.sh` itself checks for is still
+      absent. The two classes are told apart deliberately: every pull request
+      a nudge warning is logged against is already `APPROVED` (the nudge's own
+      gate), so the request-class check alone would read every nudge-class
+      warning as resolved the moment it was created, silently dropping the one
+      class this requirement exists to keep visible. A warning shape neither
+      check recognises is kept for as long as its pull request stays open and
+      not a draft, the same fail-safe default an unreadable re-check gets — the
+      log alone cannot tell a persisting problem from one that has quietly
+      resolved (a repo-level listing success with nothing to act on logs
+      nothing at all; a merged, closed or now-answered pull request is never
+      visited again either way). An answer this re-check itself cannot get is
+      never read as "resolved" — the violation is kept, the same reasoning the
+      sweep itself applies to its own reads.
+    - A survivor becomes a candidate carrying its own source,
+      `source: "human-visibility"` — ranked immediately after
+      `merge-conflicts` (config.schema.json's `sources` enum and priority-order
+      notes), the same "finishing beats starting" class as `review-feedback`,
+      `merge-conflicts` and `abandoned-drafts`: a violation here means finished
+      work is invisible to the human whose merge everything waits on, which
+      `register-hygiene`'s deterministic-cosmetic-repair, last-place rationale
+      does not describe. Selection, branch derivation (`agent/<ref>`) and the
+      block/void escape hatch all work exactly as `register-hygiene`'s own
+      still do — only the source name and its rank differ. Its `ref` —
+      `human-visibility-<hash>`, a digest of the surviving violations'
+      identities and details — is its own namespace, so a repeat detection of
+      the *same* set of violations stays correctly blocked while a later,
+      disjoint set gets a fresh ref.
+    - **The work order is its own kind, not register-content's.** A
+      `human-visibility-<hash>` entry has no `blob_sha`; its `acceptance` is
+      that each named violation no longer holds — or that the Implementor
+      reports `blocked` naming a cause outside the repository (a token's
+      scopes, an `enabler_assignee` who is not a collaborator, a GitHub
+      outage) — never that `td-check.pl` exits 0, which does not apply to it;
+      and its `model` is `models.default`, not the `models.trivial` that
+      register-only editing always takes. `prompts/coordinator.md` and
+      `prompts/implementor.md` give this source its own section, distinct from
+      `register-hygiene`'s, so the Co-Ordinator does not emit an
+      already-satisfied acceptance test, a trivial model tier or a `blob_sha`
+      that does not exist for a diagnosis of GitHub's API and permissions.
+    - Fed to the no-op fingerprint (requirement 3b) via its own `human_visibility`
+      array, hashed verbatim (`lib/noop-skip.sh`) — its own key because it no
+      longer rides `register_hygiene`'s.
+
+    Left deliberately unaddressed, as adjacent gaps rather than this one: a
+    pull request whose only legal review-request candidate is its own author
+    (`ensure_human_reviewer` correctly returns the same `skip` it would for a
+    draft or a `CHANGES_REQUESTED`-blocked pull request, so this cannot be told
+    apart from those without changing that function's contract for every one
+    of its callers) is tracked as `tech-debt/TD-PPagop-26081001.md`; an issue
+    human-blocked by a classification other than the two requirement 38b and
+    36a cover remains requirement 38d's own, deliberate, scope limit.
 
 ### The Refiner
 
@@ -5925,6 +6035,40 @@ What exists, and the requirements each part answers to:
    `.github/workflows/tech-debt-register.yml` runs the check (argless) on this
    repository's own register on every pull request, the deterministic layer
    that keeps this source's volume near zero.
+3t. `scripts/gather-human-visibility-hygiene.sh` implementing requirement 38e:
+   given a repo slug and this repo's slice of
+   `human_visibility_violations` (`lib/human-visibility-hygiene.sh`, a pure
+   reduction over the log union), prints a JSON array holding at most one
+   candidate — the violations that survive a live, read-only re-check (a
+   repo-level listing failure only if the listing still fails; a pull request
+   only if it is still open and not a draft, and its own warning class's own
+   live signal still holds: a `could not request review from …` warning only
+   while `gh pr view --json reviewDecision,reviewRequests` shows no live
+   request and no review yet given; a `could not post the idle nudge comment`
+   warning only while the `agent-ops:human-nudge` marker comment is still
+   absent; any other warning shape for as long as the pull request stays open
+   and not a draft; an unreadable re-check is kept, not dropped) — carrying a
+   ref scoped to the surviving violations' own identities and details
+   (`human-visibility-<hash>`, disjoint from `register-hygiene-<hash>`), a
+   `problems` line per violation and a body naming each one and the timestamp
+   of the latest event that carried it (the one the reduction kept). Its own
+   source, `source: "human-visibility"` — not `gather-register-hygiene.sh`'s
+   (3i above) — ranked immediately after `merge-conflicts`
+   (config.schema.json); the Co-Ordinator's and Implementor's prompts give it
+   its own section, distinct from `register-hygiene`'s, because the work
+   order the two kinds deserve is not the same one. Called for every repo
+   whose `sources` include `human-visibility`, whenever
+   `human_visibility_violations` names that repo, and assigned to that
+   repo's own `human_visibility` array. Sources `lib/github-limit.sh` like
+   every other gatherer (requirement 2.0a), which matters more here than most:
+   an unreadable re-check keeps its violation, so a rate-limit refusal taken
+   at face value would offer a candidate for a violation that had already
+   resolved. No violations, or none surviving the
+   live re-check, is `[]` (exit 0) — the ordinary answer almost every cycle
+   gets. Regression-tested in `test/gather-human-visibility-hygiene.test.sh`,
+   (the reduction) `test/human-visibility-hygiene.test.sh` and (the Script's
+   own gate and assignment between the two) `test/human-visibility-wiring.test.sh`;
+   must pass `shellcheck`.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
    prints the JSON array of the repo's candidate issues — open, unassigned,
    not labelled `blocked`, naming no unresolved `Blocked-by:` reference
@@ -6108,6 +6252,10 @@ What exists, and the requirements each part answers to:
    `lib/refinement.sh`, `lib/label-marker.sh`, `lib/work-gone.sh`, `lib/preflight.sh`, `lib/model-id.sh`,
    `lib/crash-loop.sh` (requirement 2.7's `crash_loop_verdict` and
    `crash_loop_escalated_since`, both pure readers of the union stream),
+   `lib/human-visibility-hygiene.sh` (requirement 38e's
+   `human_visibility_violations`, another pure reader of the union stream,
+   reducing requirement 38c's `warning` events to the identities — pull
+   request or bare repo — still unresolved),
    `lib/handoff.sh` (requirement 31a's `confirm_pr_ready`, shared with
    requirement 32b; requirement 31b's `confirm_review_requested`, the same
    promise for the round after the first; requirement 38a's
@@ -7884,6 +8032,41 @@ pull request, run the ones the change touches and any it could regress.
     reviews read that fails is a `warning`, never silence. Confirm the nudge
     comment carries the visible attribution header and both markers
     (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
+38e. **A violation the sweep cannot heal is read back and re-verified, not
+    guessed at.** `test/human-visibility-hygiene.test.sh` passes:
+    `human_visibility_violations` keeps a repo-level (empty `pr_url`) warning
+    with nothing to clear it; a later `human-review-requested` or
+    `human-nudged` event clears a same-`pr_url` warning but leaves a
+    different `pr_url`'s or a different sweep's warning untouched; a repeated
+    identity keeps only its latest detail; and a torn log line is skipped, not
+    fatal. `test/gather-human-visibility-hygiene.test.sh` passes against a
+    stubbed `gh`: violations naming a different repo are ignored; a
+    repo-level violation survives only while its listing still fails live and
+    is dropped the moment a fresh listing succeeds; a pull-request violation
+    of any class is dropped once it is merged, closed, or back in draft; a
+    `could not request review from …` violation is dropped once
+    `reviewRequests` is non-empty, and separately once `reviewDecision` reads
+    `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
+    `could not post the idle nudge comment` violation on an `APPROVED` pull
+    request survives while the `agent-ops:human-nudge` marker comment is
+    absent — confirming the two classes are told apart, not read off the same
+    "has a human reviewed this" check, which would otherwise drop every
+    nudge-class violation on sight — and is dropped once the marker appears;
+    an unrecognised warning shape survives for as long as its pull request
+    stays open and not a draft; an unreadable live re-check keeps the
+    violation rather than dropping it; a repo-level and a pull-request
+    violation for the same repo combine into one candidate; and every
+    surviving candidate carries `source: "human-visibility"` and a
+    `human-visibility-`-prefixed ref, never `register-hygiene-`.
+    `test/human-visibility-wiring.test.sh` passes against the block lifted
+    verbatim out of `agent-cycle.sh` — the gate and the assignment that join
+    the reduction to the gatherer, which neither test either side of it can
+    reach: a repo whose `sources` list `human-visibility` is gated in and its
+    entry's `human_visibility` array carries the candidate; a repo whose
+    `sources` omit it is left at `[]` with the gatherer never called for it;
+    each repo is handed its own slice of the violations rather than the
+    fleet-wide array; and a re-check that drops everything, or a cycle with no
+    violations at all, still leaves every entry a valid `[]`.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed

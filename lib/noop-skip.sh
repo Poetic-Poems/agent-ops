@@ -42,6 +42,7 @@
 #   merge-conflicts                                      | merge_conflicts (verbatim)
 #   abandoned-drafts                                     | abandoned_drafts (verbatim)
 #   register-hygiene                                     | register_hygiene (verbatim)
+#   human-visibility                                     | human_visibility (verbatim)
 #   issues (incl. their Priority band, req. 15e)         | issues (verbatim) + issues digest
 #   failed-runs                                          | workflows digest
 #   claims (requirement 16.3)                            | open_prs digest
@@ -110,6 +111,17 @@
 # depends on the checker as well as the file, so an edit to
 # `scripts/td-check.pl` can add or retire the item with no commit to the target
 # repo at all, and only this array carries that.
+#
+# `human_visibility` is hashed verbatim for the same class of reason
+# `abandoned_drafts` and `merge_conflicts` are (requirement 38e): a violation
+# becomes live re-checkable candidacy off a `warning` event
+# scripts/sweep-human-visibility.sh already logged, which moves no commit,
+# issue, alert or open-PR digest field of its own — and the live re-check
+# scripts/gather-human-visibility-hygiene.sh performs (a merged, closed or
+# now-reviewed pull request drops it) is itself a transition nothing else
+# here samples. Without this line a violation appearing, or quietly
+# resolving, would sit unnoticed behind a matching fingerprint until the
+# forced recheck.
 #
 # `issues` (the pre-fetched array of requirement 3j) is hashed verbatim, and
 # it is the only cover for one real transition: an *edit* to an existing
@@ -216,6 +228,7 @@ NOOP_CANON_JQ='
         merge_conflicts: (.merge_conflicts // []),
         abandoned_drafts: (.abandoned_drafts // []),
         register_hygiene: (.register_hygiene // []),
+        human_visibility: (.human_visibility // []),
         issues_prefetched: (.issues // []),
         head_sha: (.state.head_sha // ""),
         issues: (.state.issues // []),

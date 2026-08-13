@@ -262,7 +262,7 @@ Keys:
 <!-- config-table:start id=main -->
 | Key | Default | Notes |
 |---|---|---|
-| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all...[continued below](#extended-notes-repos) |
+| `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is...[continued below](#extended-notes-repos) |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones. Each cycle gets its own subdirectory, and the state repository keeps its mirror here. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | Private repository through which `state_dir` replicates between nodes. See [Keeping every node warm](#keeping-every-node-warm). Leave it out and nothing syncs — a single-node install behaves exactly as before. |
@@ -347,13 +347,14 @@ The `review` object configures the separate weekly project-review pipeline — s
 
 ### Extended notes: `repos`
 
-Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`).
+Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`).
 
 - `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work.
 - `issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert.
 - `review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk — finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever.
 - `merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason — a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly.
-- `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes fifth for the same reason — finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.
+- `human-visibility` (an agent PR the sweep could not confirm a human was actually asked to review, or nudge, after `human_nudge_idle_hours` idle) comes fifth, ranked with the sources around it rather than beside `register-hygiene`: finished work invisible to the human whose merge everything waits on is the same "finishing beats starting" gap, not a cosmetic repair.
+- `abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes sixth for the same reason — finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.
 - `project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings).
 - `register-hygiene` (the repo's tech-debt register failing its own consistency check — an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway.
 
