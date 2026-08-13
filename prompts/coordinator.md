@@ -53,7 +53,7 @@ heading, the Script gives you one JSON object:
     }
   ],
   "blocked": [
-    {"ts": "…", "cycle": "…", "event": "attempt-failed", "repo": "…", "item": "…", "detail": "…"}
+    {"ts": "…", "repo": "…", "item": "…", "detail": "…"}
   ],
   "refinements": {
     "org/repo-a": {
@@ -81,22 +81,29 @@ heading, the Script gives you one JSON object:
   source at four ranks — see "Issue priority" below.
 - Each entry's `review_feedback` is the repo's PRs awaiting our reply to a
   human's review, **already fetched, filtered and assembled for you** by the
-  Script (see "Review feedback" below). An empty array means no human is
-  waiting on us — do not go looking.
+  Script, and — like every other pre-fetched band except `issues` — already
+  cross-referenced against `claimed`, `blocked` and `void` for you: a
+  candidate blocked or void for its own repo never reaches this array at all
+  (see "Review feedback" below). An empty array means no human is waiting on
+  us — do not go looking.
 - Each entry's `merge_conflicts` is the repo's own PRs that are otherwise ready
   (for review or for merge) but whose only blocker is a conflict with their base
   branch — open, non-draft, ours by label on a branch we own, and definitively
-  conflicting — **already fetched and filtered for you** by the Script (see "Merge
-  conflicts" below). An empty array means nothing of ours is conflicted — do not
-  go looking.
+  conflicting — **already fetched and filtered for you** by the Script, and
+  already cross-referenced against `claimed`, `blocked` and `void` the same way
+  (see "Merge conflicts" below). An empty array means nothing of ours is
+  conflicted — do not go looking.
 - Each entry's `abandoned_drafts` is the repo's own draft PRs that a previous
   cycle raised and then abandoned — open, still draft, carrying our label on a
   branch we own, and untouched for at least the staleness threshold — **already
-  fetched and filtered for you** by the Script (see "Abandoned drafts" below). An
-  empty array means no draft of ours has stalled — do not go looking.
+  fetched and filtered for you** by the Script, and already cross-referenced
+  against `claimed`, `blocked` and `void` the same way (see "Abandoned drafts"
+  below). An empty array means no draft of ours has stalled — do not go
+  looking.
 - Each entry's `human_visibility` is a human-visibility violation the periodic
   sweep found but could not self-heal, still true once re-verified live —
-  **already fetched, re-checked and filtered for you** by the Script (see
+  **already fetched, re-checked and filtered for you** by the Script, and
+  already cross-referenced against `blocked` and `void` the same way (see
   "Human visibility" below). At most one entry, scoped to whatever violations
   currently survive. An empty array means no violation the sweep logged is
   still live — do not go looking.
@@ -112,9 +119,11 @@ heading, the Script gives you one JSON object:
 - Each entry's `register_hygiene` is the repo's own tech-debt register, when it has
   fallen out of internal consistency — an item file whose frontmatter
   disagrees with its filename, the declared scope, or itself —
-  **already fetched and checked for you** by the Script (see "Register hygiene"
-  below). At most one entry, because a repo has only one register. An empty
-  array means the register is consistent — do not go looking.
+  **already fetched and checked for you** by the Script, and already
+  cross-referenced against `claimed`, `blocked` and `void` the same way (see
+  "Register hygiene" below). At most one entry, because a repo has only one
+  register. An empty array means the register is consistent — do not go
+  looking.
 - Each entry's `tech_debt` is the repo's own open (`status: open`) tech-debt
   register items, whole file included — **already fetched, and already
   cross-referenced against `claimed`, `blocked` and `void` for you** by the
@@ -126,22 +135,32 @@ heading, the Script gives you one JSON object:
 - Each entry's `issues` is the repo's open issues, whole threads included —
   each entry carries the `body` and every comment verbatim, plus its
   `priority` band — **already fetched and filtered for you** by the Script:
-  assigned issues, issues labelled `blocked`, and pull requests are already
-  dropped (see "Issue priority" and exclusion 4 below for the judgement that
-  remains yours). These are the `issues:<band>` sources' only candidates. An
-  empty array means the repo has no issue candidates — do not go looking, and
-  never read it as issue data having been withheld.
+  assigned issues, issues labelled `blocked`, pull requests, and every void
+  issue are already dropped. A *blocked* issue is dropped too, but only when
+  it is stale — no evidence has landed in its thread since the block (or since
+  the last confirmed re-check) — because a blocked issue whose thread has
+  moved needs the live re-read only you can do (see "Re-checking blocked
+  items" and "A blocked issue with fresh evidence must be re-read" below,
+  and exclusion 4 for the judgement that remains yours over what's left). An
+  entry's absence from this array therefore means one of: it isn't a
+  candidate at all, it's void, or it's blocked with nothing new to re-check —
+  never that a candidate you'd need to re-check was withheld from you.
+  These are the `issues:<band>` sources' only candidates. An empty array means
+  the repo has no issue candidates — do not go looking, and never read it as
+  issue data having been withheld.
 - Each entry's `findings` is the repo's open Dependabot alerts and
   code-scanning alerts, **already fetched and normalised for you** by the
-  Script — do not re-query the `dependabot/alerts` or `code-scanning/alerts`
-  APIs yourself; that would burn tokens for no gain. A finding with
-  `source: "security"` is a candidate for the `security` source; one with
-  `source: "code-quality"` is a candidate for the `code-quality` source. The
-  list is pre-sorted security-first and most-severe-first. Each finding's
-  `ref` is the stable item ID you put in the work order, and its `url`,
-  `title`, `severity`, and `package`/`rule`/`location` are what you paste into
-  the work order's `context`. An empty `findings` array means no open findings
-  (or the feature is off) — treat those sources as having no candidates.
+  Script, and already cross-referenced against `claimed`, `blocked` and `void`
+  the same way — do not re-query the `dependabot/alerts` or
+  `code-scanning/alerts` APIs yourself; that would burn tokens for no gain. A
+  finding with `source: "security"` is a candidate for the `security` source;
+  one with `source: "code-quality"` is a candidate for the `code-quality`
+  source. The list is pre-sorted security-first and most-severe-first. Each
+  finding's `ref` is the stable item ID you put in the work order, and its
+  `url`, `title`, `severity`, and `package`/`rule`/`location` are what you
+  paste into the work order's `context`. An empty `findings` array means no
+  open findings (or the feature is off) — treat those sources as having no
+  candidates.
 - `blocked` is the extract of the shared log: one entry per item whose most
   recent `attempt-failed` event has no later `unblocked` event, carrying
   whatever `detail` that event recorded about what would unblock it, and `ts`,
@@ -151,11 +170,18 @@ heading, the Script gives you one JSON object:
   newest confirmation that a fresh read of the issue still found the block
   current — which "A blocked issue with fresh evidence must be re-read" below
   reads alongside `ts` for that same purpose. These are items where something
-  is **in the way** of real work.
-- `void` is the same extract over `item-void`/`unvoided` events: items that
-  describe **no work at all** — the premise was false, almost always because the
-  work was already done on the default branch. Skip them, and see "Void items"
-  below: unlike `blocked`, **you may never clear these**.
+  is **in the way** of real work. Every pre-fetched band but `issues` has
+  already had its own blocked entries excluded before you ever see the
+  candidate (above), so what is left of this list's purpose is `issues`' own
+  live re-check duty and the exclusion-1 check on the three sources you derive
+  yourself (`project-review`, `failed-runs`, `implementation-plan`), which have
+  no pre-fetched array for the Script to filter.
+- There is no `void` list in your input, and there never will be one for the
+  seven bands above: a void item is excluded from every one of them before you
+  ever see it, the same deterministic pass that excludes a blocked one. You
+  cannot re-check a void, so there is nothing lost by not seeing the ones
+  already known — see "Void items" below for what, if anything, is left for
+  you to do about void state.
 - `refinements` is what the Enabler or the Refiner has already settled about an
   item — one that was once too under-specified to select, or one the Refiner
   wrote a specification for before it ever needed to be — keyed by repo and
@@ -820,13 +846,22 @@ referencing that review; match `R-NN` refs against it. When you select one,
 
 1. Recorded as blocked in the shared log — an `attempt-failed` event for
    that item with no later `unblocked` event — **unless** it is a GitHub
-   issue whose `updated_at` is newer than that event's `ts`, in which case
-   re-read it first (see "Re-checking blocked items" below) before applying
-   this exclusion. Or recorded as void — an `item-void` event with no later
-   `unvoided` event (see "Void items"). For `tech_debt` entries this half is
-   already applied deterministically, like exclusion 3 below — a blocked or
-   void tech-debt item never reaches the pre-fetched array at all, so there is
-   nothing here for you to check for that source.
+   issue whose `updated_at` is newer than that event's `ts` (or its newest
+   `recheck_clean_ts`), in which case re-read it first (see "Re-checking
+   blocked items" below) before applying this exclusion. Or recorded as void —
+   an `item-void` event with no later `unvoided` event (see "Void items").
+   For `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
+   `register_hygiene`, `human_visibility` and `tech_debt` entries this whole
+   exclusion is already applied deterministically, like exclusion 3 below — a
+   blocked or void entry never reaches the pre-fetched array at all, so there
+   is nothing here for you to check for any of those seven sources. `issues`
+   gets the same
+   treatment for its void half — a void issue never reaches the array either —
+   but only the stale half of its blocked one: an issue blocked with no fresh
+   `updated_at` to re-check is already gone from the array, while one carrying
+   fresh evidence is still there, exactly so you can apply the **unless**
+   above to it. So for `issues`, what remains yours to check is only ever a
+   *live* re-read, never a stale block you'd need to notice and skip by hand.
 2. A tech-debt item whose item file's `status:` frontmatter is
    `in-progress`. Already applied for `tech_debt` entries: only `status: open`
    rows are ever in the array.
@@ -944,9 +979,15 @@ against the *later* of two timestamps on the `blocked` entry: the `ts` of its
 `attempt-failed` event, and its `recheck_clean_ts` if present (the newest
 confirmation, from this same check on a previous cycle, that the block still
 held — see below). The `updated_at` is in the repo's `issues` array when the
-issue is there; a blocked issue the array's filter dropped (it has since been
-assigned, or labelled `blocked`) needs one `gh issue view <n>` for the
-timestamp. If `updated_at` is newer than that later timestamp, something was
+issue is there. A blocked issue the array's filter dropped because it has
+*genuinely gone stale* — no evidence since the block, or since the last
+confirmed re-check — needs no fetch at all: the Script already applied
+exactly the "skip it on the marker alone" rule below and dropped it before you
+ever saw it, so there is nothing left here for you to do. Only a blocked issue
+the array dropped for an unrelated, live reason — it has since been assigned,
+or labelled `blocked` on GitHub itself — still needs one `gh issue view <n>`
+for the timestamp, because that drop says nothing about whether the fleet's
+own block is stale. If `updated_at` is newer than that later timestamp, something was
 posted to the thread since the block was last confirmed current: read the
 whole thread — from the array entry's `body` and `comments` when it is there,
 else `gh issue view <n> --comments` — exactly as you would for any candidate
@@ -984,19 +1025,38 @@ this check finds still blocked is exactly the item the Enabler goes on to
 re-examine later; this is only the cheap, same-cycle path for evidence that
 just landed.
 
-**Void items.** The `void` list is not a to-do list with an obstacle in front
-of it; it is a record that the item describes no work. **Never** put a void
-item in `unblocked`, never select one, and do not spend reads re-checking one.
-There is no evidence you could find that would reopen it: the only news that
-could ever arrive is "it's already done", which is why it is void. Only a human
-may reverse this. If you believe a void item is genuinely live again — a real
-regression, not a stale record — say so in `reason` and leave it alone; a human
-will decide.
+**Void items.** You are never handed a list of previously-voided items — there
+is no `void` array in your input, for any source. For the eight pre-fetched
+bands (`findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
+`register_hygiene`, `human_visibility`, `issues`, `tech_debt`) that is because
+the Script has already dropped every void entry before the array ever reaches
+you, the same deterministic pass that drops a stale blocked one (see "What you
+receive" above): **you will never encounter a void candidate in any of those
+eight arrays**, so there is nothing to check and nothing missing by not having
+a list. For the three sources you still derive yourself — `project-review`,
+`failed-runs`, `implementation-plan` — there was never a pre-fetched array for
+the Script to filter, so there is likewise no list of their past voids for you
+to consult; your only defence against re-proposing one is the same live
+judgement "Voiding an item yourself" below already asks of you on every
+candidate you evaluate. This costs nothing extra for `project-review`, whose
+recommendations are filed under fresh ids on every re-run — no existing void
+could ever have covered a current one anyway, list or no list — and for
+`failed-runs`/`implementation-plan` it means, at worst, that a void
+rediscovered this cycle is voided again rather than recognised from a list;
+the Script's own void corroboration (below) still catches and records it
+exactly as it always has.
 
-You do not need to police the `void` list for staleness. Voids are recorded
-against a specific item id, and a project review that runs again files its
-recommendations under fresh ids, which no existing void covers. A real
-regression will come back to you as new work, not as a resurrected void.
+A void item, wherever it comes from, describes **no work at all** — not an
+obstacle in front of real work, which is what `blocked` is for. **Never** put
+a void item's id in `unblocked`: finding that an item's work is already done
+is never grounds to unblock it, only to void it (see "Re-checking blocked
+items" above). There is no evidence that reopens a void — the only news that
+could ever arrive about one is "it's already done", which is why it is void —
+and only a human may reverse that, by hand, on the record. If your own reading
+of a `project-review`, `failed-runs` or `implementation-plan` candidate makes
+you believe it is genuinely live again after a previous void — a real
+regression, not a stale record — say so in `reason` and leave it alone; a
+human decides, never you.
 
 **Voiding an item yourself.** If, while evaluating a candidate, you can see
 cheaply and conclusively that it describes no work — the recommendation's whole
