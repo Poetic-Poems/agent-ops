@@ -906,18 +906,32 @@ exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
 # as the Co-Ordinator's own reading of `blocked`/`void` always has. Malformed
 # input degrades to passing the array through unfiltered, on the same fail-open
 # terms as exclude_claimed_items.
+#
+# All three arrays arrive on stdin, one JSON document per line, bound
+# positionally in the order printed (requirement 4g) — never in argv. Two of
+# them are the very aggregates that crossed MAX_ARG_STRLEN on 2026-08-12: the
+# void extract measured 133615 bytes that day, and the blocked extract already
+# carries its entries' evidence payloads. Past the cap an `--argjson` delivery
+# here would fail into the fail-open fallback below and pass every candidate
+# through unfiltered — silently restoring the unfiltered band this requirement
+# exists to remove, and doing it precisely when the void record is at its
+# largest and its "heavily voided" misreading most tempting. A here-string
+# rather than a pipe, for requirement 4c's reason: under `pipefail` a
+# producer's SIGPIPE must not become this call's status.
 exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <void-json>
-  local candidates="$1" repo="$2" blocked="${3:-[]}" void="${4:-[]}"
+  local candidates="$1" repo="$2" blocked="${3:-[]}" void="${4:-[]}" docs
   jq -e 'type == "array"' <<<"$blocked" >/dev/null 2>&1 || blocked='[]'
   jq -e 'type == "array"' <<<"$void" >/dev/null 2>&1 || void='[]'
-  jq -c --arg repo "$repo" --argjson blocked "$blocked" --argjson void "$void" '
-    [ .[] | select(((.ref // null) as $r
+  docs="$(printf '%s\n' "$candidates" "$blocked" "$void")"
+  jq -nc --arg repo "$repo" '
+    input as $candidates | input as $blocked | input as $void
+    | [ $candidates[] | select(((.ref // null) as $r
                      | $r != null
                        and ($blocked | any(((.item // "") | tostring) == $r
                                            and ((.repo // "") == "" or (.repo // "") == $repo))) == false
                        and ($void | any(((.item // "") | tostring) == $r
                                         and ((.repo // "") == "" or (.repo // "") == $repo))) == false)) ]
-  ' <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+  ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
 # Requirement 3t's machine corroboration: which of this cycle's eligible

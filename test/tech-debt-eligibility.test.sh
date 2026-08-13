@@ -104,6 +104,26 @@ assert_eq "malformed blocked/void degrades to unfiltered" "$cands" \
 assert_eq "a candidate with no ref is dropped, not crashed on" "0" \
   "$(jq 'length' <<<"$(exclude_blocked_or_void_items '[{"title":"no ref"}]' "org/a" '[]' '[]')")"
 
+# --- The argv cap (requirement 4g) ---
+# The blocked and void extracts are the two aggregates that crossed
+# MAX_ARG_STRLEN (131072 bytes, the kernel's per-entry argv cap) on 2026-08-12
+# — the void extract measured 133615 bytes that day. Delivered via `--argjson`,
+# that made this function's jq die at execve and fall into its fail-open
+# fallback, passing every candidate through *unfiltered*: blocked and void
+# items back in front of the Co-Ordinator, which is exactly the unfiltered band
+# requirement 3t exists to remove, restored precisely when the void record is
+# largest. Requirement 4g moves the arrays onto stdin; this pins it, with a
+# fixture the first assertion proves is genuinely past the cap.
+BIG_VOID="$(jq -nc --argjson keep "$void" '
+  [range(1300) | {repo: "Poetic-Poems/filler", item: ("TD-fill-" + tostring),
+                  ts: "2026-07-01T00:00:00Z", detail: ("pad " + ("x" * 80)),
+                  event: "item-void"}] + $keep')"
+assert_eq "the oversized void fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$BIG_VOID" | wc -c) > 131072 ))"
+assert_eq "a void extract past the argv cap still drops the void item" \
+  '["TD1","TD3"]' \
+  "$(jq -c 'map(.ref)' <<<"$(exclude_blocked_or_void_items "$cands" "org/a" '[]' "$BIG_VOID")")"
+
 # =================================================================================
 # tech_debt_unaccounted_items
 # =================================================================================
