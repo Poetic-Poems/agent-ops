@@ -117,11 +117,13 @@ review_gate_required_checks() {
 
   # stderr is kept rather than discarded because it carries the only signal
   # that tells "this pull request has no required checks" apart from "this
-  # node could not ask" — see the header.
-  err_file="$(mktemp)"
+  # node could not ask" — see the header. A `mktemp` that fails leaves the
+  # diagnosis empty, which lands on `unknown`: the conservative word, and the
+  # honest one, since nothing was read.
+  err_file="$(mktemp 2>/dev/null || printf '/dev/null')"
   raw="$("$gh_bin" pr checks "$number" -R "$slug" --required --json name,bucket 2>"$err_file")" || true
   diagnosis="$(cat "$err_file" 2>/dev/null || true)"
-  rm -f "$err_file"
+  [[ "$err_file" == /dev/null ]] || rm -f "$err_file"
 
   if ! jq -e 'type == "array"' <<<"$raw" >/dev/null 2>&1; then
     if [[ "$diagnosis" == *"no required checks reported on the"* \
