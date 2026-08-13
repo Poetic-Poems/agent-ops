@@ -56,12 +56,27 @@
 # the queue the moment they answered (requirement 38 in
 # docs/IMPLEMENTATION-PIPELINE-SPEC.md).
 #
+# `handoff_answer_events` and `handoff_round_answered` are a different kind
+# of promise again: not an action, but the judgement two callers must agree
+# on before either acts — whether a review round is *answered* at all
+# (requirement 3c's candidate rule, `scripts/gather-review-feedback.sh`, and
+# requirement 38c's sweep, `scripts/sweep-human-visibility.sh`). The two used
+# to compute this independently — one script had it, the other deliberately
+# did not, because a naive second copy would have read the sweep's own past
+# re-request as an answer to itself (tech-debt/TD-PPagop-26080804.md). One
+# definition, two callers, each passing what it is and is not allowed to
+# treat as an answer, is requirement 34a applied to a predicate instead of an
+# action.
+#
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail` and a library that re-sets options silently
 # changes its caller.
 #
 # Environment:
 #   HANDOFF_GH  override `gh` (tests stub it).
+#   `handoff_answer_events` and `handoff_round_answered` read
+#   `PIPELINE_COMMENT_MARKER_PREFIX` — source lib/pipeline-marker.sh before
+#   this file, or before calling either.
 
 # pr_url_for_branch TARGET_SLUG BRANCH
 # Print the URL of the open pull request whose head is BRANCH in TARGET_SLUG,
@@ -548,4 +563,80 @@ ensure_human_reviewer() {
 
   printf 'requested\t%s' "$joined"
   return 0
+}
+
+# handoff_answer_events REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]
+# Print, sorted oldest first, the timestamp of every event that answers a
+# review round: a marked reply from the Implementor — a review or general PR
+# comment carrying `lib/pipeline-marker.sh`'s marker with `actor=implementor`
+# — found in REVIEWS_JSON or COMMENTS_JSON, and, only where REREQUESTS_JSON
+# names one, a review-requested timeline event. REVIEWS_JSON and
+# COMMENTS_JSON are arrays of objects carrying at least `at` (a timestamp)
+# and `body`; extra fields (`id`, `state`, `who`, …) are ignored, so a caller
+# may pass whatever shape it already fetched. REREQUESTS_JSON is an array of
+# objects carrying `at`; omit it (or pass `[]`) to read the marked-reply
+# signal alone.
+#
+# This is the extraction requirement 3c's candidate rule
+# (scripts/gather-review-feedback.sh) has always made; it lives here so a
+# second caller — `handoff_round_answered` below, and through it
+# scripts/sweep-human-visibility.sh (requirement 38c) — shares the one
+# definition (requirement 34a) instead of re-deriving it
+# (tech-debt/TD-PPagop-26080804.md). See gather-review-feedback.sh's own
+# header for why events, not a commit's `committedDate`, are what "answered"
+# reads: a force-push re-stamps every commit's date to push time without a
+# human, or the agent, having answered anything (agent-ops#239, PR #205).
+#
+# Only `actor=implementor` closes a round. The marker also carries
+# `actor=script`, `actor=enabler`, `actor=reviewer` and `actor=refiner` for
+# other pipeline writes, and two of those are by definition not answers:
+# `actor=script` records a stage giving up, `actor=enabler` a stall being
+# diagnosed. On PR #269 exactly those two comments closed a round under the
+# old "any marked reply" rule, and the work sat stranded until a human was
+# escalated (agent-ops#278). A legacy marker with no `actor=` field at all
+# does not answer the round either, for the same reason.
+handoff_answer_events() {
+  local reviews="${1:-[]}" comments="${2:-[]}" rerequests="${3:-[]}"
+  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" \
+      --argjson reviews "$reviews" --argjson comments "$comments" --argjson rr "$rerequests" '
+    ([$reviews[]  | select((.body // "") | contains($marker) and contains($actor)) | .at]
+     + [$comments[] | select((.body // "") | contains($marker) and contains($actor)) | .at]
+     + [$rr[] | .at]) | sort
+  '
+}
+
+# handoff_round_answered BLOCKING_AT REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]
+# Print `answered`, `unanswered` or `unknown` — whether the review round that
+# began with the blocking review submitted at BLOCKING_AT has since been
+# answered, per `handoff_answer_events` above. `unknown` means REVIEWS_JSON,
+# COMMENTS_JSON or (when given) REREQUESTS_JSON was not a JSON array — the
+# same "could not ask" convention every other reader in this file follows.
+# The caller must not read `unknown` as `unanswered`: a read failure must not
+# look exactly like a human still waiting, and must not look exactly like a
+# round safe to re-request either.
+#
+# Omit REREQUESTS_JSON (or pass `[]`) when the caller's own action might
+# itself create a review-requested event —
+# scripts/sweep-human-visibility.sh calling `confirm_review_requested` on an
+# `answered` verdict, specifically — or that later request would read back
+# next cycle as the round having already been answered, defeating the point
+# of asking (the discriminating predicate this function exists to be —
+# tech-debt/TD-PPagop-26080804.md). scripts/gather-review-feedback.sh, which
+# never requests anything itself, passes the timeline's `review_requested`
+# events too.
+handoff_round_answered() {
+  local blocking_at="${1:-}" reviews="${2:-}" comments="${3:-}" rerequests="${4:-[]}"
+  local events count
+
+  jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+  jq -e 'type == "array"' <<<"$rerequests" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
+
+  events="$(handoff_answer_events "$reviews" "$comments" "$rerequests")"
+  count="$(jq -r --arg c "$blocking_at" '[.[] | select(. > $c)] | length' <<<"$events")"
+  if [[ "$count" != "0" ]]; then
+    printf 'answered'
+  else
+    printf 'unanswered'
+  fi
 }

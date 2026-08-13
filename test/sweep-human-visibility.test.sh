@@ -7,9 +7,11 @@
 # every open, ready pull request this system raised, whichever review request
 # `lib/handoff.sh` would ensure at the moment of handoff (requirement 38a) is
 # re-ensured here too, on a cycle that never touches that pull request through
-# any stage — and an approved, mergeable, green pull request idle past
-# `human_nudge_idle_hours` gets one nudge comment (requirement 38c), never a
-# second one for the same approval.
+# any stage — a CHANGES_REQUESTED pull request whose round the Implementor has
+# already answered gets requirement 31b's re-request repeated too (the
+# self-heal, tech-debt/TD-PPagop-26080804.md) — and an approved, mergeable,
+# green pull request idle past `human_nudge_idle_hours` gets one nudge comment
+# (requirement 38c), never a second one for the same approval.
 #
 # `gh` is stubbed through SWEEP_GH; the underlying `lib/handoff.sh` functions
 # have their own dedicated regression test (test/handoff.test.sh) and are
@@ -27,6 +29,8 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SWEEP="$SCRIPT_DIR/scripts/sweep-human-visibility.sh"
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -72,7 +76,10 @@ URL="https://github.com/o/r/pull/1"
 #                          `--jq` filter would leave: a bare array of URLs
 #   $tmp_dir/list-fail    present -> `pr list` fails
 #   $tmp_dir/draft        "true" | "false" — the draft flag `pr view` reports
-#   $tmp_dir/reviews      the reviews array, verbatim JSON
+#   $tmp_dir/reviews      the reviews array, verbatim JSON (raw GitHub shape:
+#                          user.login, user.type, state, submitted_at, body)
+#   $tmp_dir/issue-comments.json  the PR's general (issue) comments, verbatim
+#                          JSON: an array of {created_at, body}
 #   $tmp_dir/pending      the requested_reviewers logins, one per line
 #   $tmp_dir/author       the pull request author's login
 #   $tmp_dir/post-fail    present -> the POST changes nothing
@@ -83,6 +90,13 @@ URL="https://github.com/o/r/pull/1"
 #   $tmp_dir/comment-fail present -> `pr comment` fails
 #   $tmp_dir/posts        one line per POST
 #   $tmp_dir/comments.log one paragraph per posted comment body
+#
+# `/reviews` and `/issues/…/comments` GET calls apply the *real* `--jq`
+# filter the caller passed to the raw fixture, rather than a filter of the
+# stub's own — `_handoff_blocking_reviewers` (login/bot/state) and
+# `_sweep_round_answered` (state/at/who/body) both read `/reviews`, with
+# different shapes, and only running each caller's own filter serves both
+# correctly from one fixture.
 cat > "$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -128,11 +142,18 @@ fi
 path="$2"
 fail="$(cat "$d/api-fail" 2>/dev/null || true)"
 [[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
-if [[ "$path" == *"/reviews" ]]; then
-  jq -c '.[] | select(.submitted_at != null)
-             | {login: .user.login,
-                bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
-                state: .state}' "$d/reviews"
+
+jqfilter=""
+prev=""
+for a in "$@"; do
+  [[ "$prev" == "--jq" ]] && jqfilter="$a"
+  prev="$a"
+done
+
+if [[ "$path" == */reviews ]]; then
+  jq -c "$jqfilter" "$d/reviews"
+elif [[ "$path" == */comments ]]; then
+  jq -c "$jqfilter" "$d/issue-comments.json"
 elif [[ "$*" == *"user.login"* ]]; then
   cat "$d/author"
 else
@@ -142,14 +163,25 @@ STUB
 chmod +x "$tmp_dir/gh"
 
 review_n=0
-review() {  # <login> <state> [type]
-  printf '{"user":{"login":"%s","type":"%s"},"state":"%s","submitted_at":"2026-08-03T10:%02d:00Z"}' \
-    "$1" "${3:-User}" "$2" "$(( ++review_n ))"
+review() {  # <login> <state> [type] [body]
+  jq -cn --arg login "$1" --arg type "${3:-User}" --arg state "$2" \
+      --arg at "$(printf '2026-08-03T10:%02d:00Z' "$(( ++review_n ))")" --arg body "${4:-}" \
+    '{user: {login: $login, type: $type}, state: $state, submitted_at: $at, body: $body}'
 }
 set_reviews() {
   review_n=0
   local IFS=,
   printf '[%s]' "$*" > "$tmp_dir/reviews"
+}
+
+# issue_comment AT BODY — a general PR comment (`gh pr comment`), the shape
+# the Implementor's marked reply lands as (issue #, not review #).
+issue_comment() {
+  jq -cn --arg at "$1" --arg body "$2" '{created_at: $at, body: $body}'
+}
+set_issue_comments() {
+  local IFS=,
+  printf '[%s]' "$*" > "$tmp_dir/issue-comments.json"
 }
 
 comments() { cat "$tmp_dir/comments.log" 2>/dev/null || true; }
@@ -177,6 +209,7 @@ reset_stub() {
   printf '["%s"]\n' "$URL" > "$tmp_dir/prlist.json"
   printf 'false' > "$tmp_dir/draft"
   printf 'warwickallen\n' > "$tmp_dir/author"
+  printf '[]' > "$tmp_dir/issue-comments.json"
   : > "$tmp_dir/pending"; : > "$tmp_dir/posts"; : > "$tmp_dir/comments.log"
   rm -f "$tmp_dir/api-fail" "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
         "$tmp_dir/view-fail" "$tmp_dir/comment-fail"
@@ -202,20 +235,66 @@ out="$(run_sweep)"
 assert_eq "no enabler_assignee means nothing to request or nudge" "" "$out"
 write_config warwickallen 24
 
-# --- Still CHANGES_REQUESTED-blocked: left entirely alone -----------------------
-# The sweep never calls confirm_review_requested (see the script's design
-# note): it cannot judge whether the round has been answered, a premature
-# re-request inverts the queue, and gather-review-feedback.sh would read the
-# request event itself as the round having been answered. The blocked PR's
-# next actor is the pipeline, not the human, so nothing is requested and
-# nothing is nudged.
+# --- Still CHANGES_REQUESTED-blocked, unanswered: left entirely alone -----------
+# The self-heal (see the script's design note; tech-debt/TD-PPagop-26080804.md)
+# only fires on an *answered* round. With no marked Implementor reply at all —
+# the ordinary case, a human still waiting on the pipeline — nothing is
+# requested and nothing is nudged: the blocked PR's next actor is the
+# pipeline, not the human.
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
 idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
-assert_eq "a still-blocked PR is left entirely alone" "" "$out"
+assert_eq "a still-blocked, unanswered PR is left entirely alone" "" "$out"
 assert_eq "  ... no review request POSTed" "" "$(cat "$tmp_dir/posts")"
 assert_eq "  ... no nudge comment posted" "0" "$(comment_count)"
+
+# --- Self-heal: an answered CHANGES_REQUESTED round is re-requested -------------
+# Requirement 31b's re-request, repeated here for the round the Reviewer's own
+# handoff lost to a crash. Only a marked reply from the Implementor turns this
+# on — never a review-requested event, since this call's own request would
+# otherwise read back next cycle as an answer to itself (the queue-inversion
+# and silent-starvation failures the script's design note explains).
+implementor_reply="$(printf 'Addressed the review.\n\n%s cycle=X actor=implementor -->' "$PIPELINE_COMMENT_MARKER_PREFIX")"
+
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered CHANGES_REQUESTED round is re-requested" "human-review-requested" \
+  "$(jq -r '.action' <<<"$out")"
+assert_eq "  ... naming the blocking reviewer" "Warwick-Allen" \
+  "$(jq -r '.reviewers[0]' <<<"$out")"
+assert_contains "  ... POSTed the re-request" "reviewers[]=Warwick-Allen" "$(cat "$tmp_dir/posts")"
+assert_eq "  ... and never nudges a still-CHANGES_REQUESTED pull request" "0" "$(comment_count)"
+
+# A reply that predates the blocking review answered a *previous* round, not
+# this one, and must not self-heal it.
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2020-01-01T00:00:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "a reply predating the blocking review does not self-heal" "" "$out"
+
+# An unmarked comment — a human chiming in, or an unrelated bot — never counts.
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "looks close")"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an unmarked comment does not self-heal" "" "$out"
+
+# --- Self-heal: an unreadable round is a warning, never a guessed request -------
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+printf '/comments' > "$tmp_dir/api-fail"
+idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an unreadable round is a warning" "warning" "$(jq -r '.action' <<<"$out")"
+assert_contains "  ... naming the pull request" "$URL" "$(jq -r '.pr_url' <<<"$out")"
+assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
 
 # --- Approved, idle, and never re-asked: both halves fire together --------------
 # ensure_human_reviewer re-requests the approver (nobody CHANGES_REQUESTED-
