@@ -830,6 +830,40 @@ assert_eq "an abandoned-draft void citing its own PR survives the guard" \
     "repo": "Poetic-Poems/poetic", "reason": "the draft is finished",
     "evidence": "PR #205 has an empty diff against its base; nothing remains"}' '[]'; echo $?)"
 
+# ... and the Co-Ordinator's own call shape reaches the identical verdict, in
+# both directions, because the live-state fetch needs no candidate list
+# (TD-PPagop-26080807). The populated `repos` here carries the very candidate
+# the item was minted from, in the shape the gatherers actually emit it: the
+# synthetic `pr-<n>-abandoned-…` id is the candidate's `ref`, while its `item`
+# is whatever id the branch and body named — so `void_candidate_prs` matches
+# nothing for a finishing-source item, and the id-driven fetch is the whole of
+# what decides these either way, for every stage.
+REPOS_FINISHING='[
+  {"slug": "Poetic-Poems/poetic", "default_branch": "main",
+   "findings": [], "review_feedback": [], "merge_conflicts": [],
+   "abandoned_drafts": [
+     {"source": "abandoned-drafts", "ref": "pr-206-abandoned-1a2b3c4d5e6f",
+      "number": 206, "pr_number": 206, "item": null,
+      "title": "feat(widget): the draft this item is"}]}
+]'
+entry_finishing='{"item": "pr-206-abandoned-1a2b3c4d5e6f",
+  "repo": "Poetic-Poems/poetic", "reason": "the draft is finished",
+  "evidence": "PR #206 has an empty diff against its base; nothing remains"}'
+printf '{"state": "open", "body": "", "head": {"ref": "agent/widget"}}' >"$tmp_dir/pr-206.json"
+printf '0' >"$tmp_dir/files-206"
+assert_eq "an open, empty-diff finishing-source void is allowed on the \`[]\` call shape" \
+  "0" "$(void_guard_reason "$entry_finishing" '[]'; echo $?)"
+assert_eq "  ... and identically on the Co-Ordinator's populated \`repos\`" \
+  "0" "$(void_guard_reason "$entry_finishing" "$REPOS_FINISHING"; echo $?)"
+
+printf '4' >"$tmp_dir/files-206"
+out="$(void_guard_reason "$entry_finishing" '[]')"; rc=$?
+assert_eq "the same void once its PR changes files again is refused on \`[]\`" "1" "$rc"
+assert_contains "  ... naming the count still outstanding" "still changes 4 file(s)" "$out"
+out="$(void_guard_reason "$entry_finishing" "$REPOS_FINISHING")"; rc=$?
+assert_eq "  ... and identically on the Co-Ordinator's populated \`repos\`" "1" "$rc"
+assert_contains "  ... for the same reason" "still changes 4 file(s)" "$out"
+
 # ... while the cross-repo number coincidence (issue #290) is refused end to
 # end, on the Enabler's and Implementor's own `[]` call shape — the shape the
 # no-fetch shortcut used to corroborate.
