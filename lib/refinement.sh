@@ -554,27 +554,23 @@ refiner_policy_value() {
 # refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON
 # Print, as a JSON array, every item from this cycle's pre-fetched source
 # arrays — `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-# `register_hygiene`, `issues`, the same per-repo arrays requirement 3
-# assembles for the Co-Ordinator — that the Refiner may spend an engagement on:
-# its source's policy is not `exempt` (requirement 39a), it carries no
-# refinement yet (REFINEMENTS_JSON, requirement 3h), and it is not already
-# blocked, void, or held by an ordinary implementation claim.
+# `register_hygiene`, `issues`, `tech_debt`, the same per-repo arrays
+# requirement 3 assembles for the Co-Ordinator — that the Refiner may spend an
+# engagement on: its source's policy is not `exempt` (requirement 39a), it
+# carries no refinement yet (REFINEMENTS_JSON, requirement 3h), and it is not
+# already blocked, void, or held by an ordinary implementation claim.
 #
 # Each entry is `{repo, source, item, entry}` — `entry` is the gatherer's own
-# object verbatim (an issue's full thread, a finding's title and severity),
-# because the Refiner needs it to write a specification without a second
-# fetch, the same reason the Co-Ordinator is handed it pre-fetched rather than
-# told to query it.
+# object verbatim (an issue's full thread, a finding's title and severity, a
+# tech-debt item's whole file), because the Refiner needs it to write a
+# specification without a second fetch, the same reason the Co-Ordinator is
+# handed it pre-fetched rather than told to query it.
 #
-# `tech-debt`, `project-review` and `implementation-plan` items are never
-# candidates here, whatever their policy says: the six arrays named above are
-# the whole of what this function reads, and none of the three is among them
-# (TD-PPagop-26080809). `project-review` and `implementation-plan` have
-# nothing in REPOS_JSON to offer the Refiner in any case; `tech_debt` is there
-# (requirement 3t) but is deliberately not drawn on here — widening this to
-# read it is that item's own scope, not requirement 3t's. Setting a policy for
-# one of those three still shapes the Co-Ordinator's own ranking; it just
-# finds no engagement here to act on it.
+# `project-review` and `implementation-plan` items are never candidates here,
+# whatever their policy says: the Script pre-fetches neither as structured
+# data, so REPOS_JSON has nothing to offer the Refiner for either. Setting a
+# policy for one of those two still shapes the Co-Ordinator's own ranking; it
+# just finds no engagement here to act on it (TD-PPagop-26081307).
 refiner_candidate_items() {
   local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
         blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}"
@@ -596,7 +592,8 @@ refiner_candidate_items() {
       | ($r.slug // "") as $repo
       | ( ($r.findings // [])[]?, ($r.review_feedback // [])[]?,
           ($r.abandoned_drafts // [])[]?, ($r.merge_conflicts // [])[]?,
-          ($r.register_hygiene // [])[]?, ($r.issues // [])[]? )
+          ($r.register_hygiene // [])[]?, ($r.issues // [])[]?,
+          ($r.tech_debt // [])[]? )
       | . as $e
       | ($e.source // "") as $source
       | ($e.ref // "" | tostring) as $item
