@@ -286,6 +286,15 @@ injecting the fault rather than by waiting for it.
       stop being free and Apps stay free. Evaluate under both organisation
       shapes and state which one the recommendation assumes.
       *[interactive]*
+- [ ] Event-driven dispatch: GitHub webhooks, or a lightweight poller on the
+      state repo, wake an idle node when a source-relevant event lands,
+      instead of leaving it to wait for the next cron firing. Staged behind
+      finish-then-continue and the sub-hourly heartbeat, both of which
+      shipped in #268, since shrinking the pickup interval further widens
+      the concurrent-claim window those two already had to account for.
+      Unblocked now that its prerequisite — WI-2's PR-level claim exclusion
+      (#238) — closed 2026-08-09. Issue #248 stage 3, WI-12 of #236.
+      *[fleet]*
 - [ ] Kubernetes deployment: manifests or a Helm chart, with the scheduler
       as a CronJob so scale-to-zero falls out naturally; Compose remains a
       supported option. *[interactive]*
