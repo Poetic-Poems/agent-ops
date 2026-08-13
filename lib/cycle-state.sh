@@ -578,11 +578,13 @@ refinements_map() {
 # — the thrash guard's input, and the record of what the last engagement already
 # said, so a second one need not guess at it.
 # shellcheck disable=SC2016  # jq's $ vars ($all/$b/$open/…), not the shell's.
+
+# $all is bound by the caller, via `input as $all` (requirement 4g) — never a
+# leading `. as $all` here, since the caller runs this body with `jq -n`.
 ENABLER_ELIGIBLE_JQ='
   def same_item($e): (.item // "") == ($e.item // "")
                      and ((.repo // "") == "" or (.repo // "") == ($e.repo // ""));
-  . as $all
-  | ($all | ('"$OPEN_BLOCKED_JQ"')) as $blocked
+  ($all | ('"$OPEN_BLOCKED_JQ"')) as $blocked
   | [ $blocked[]
       | . as $b
       | ([ $all[]
@@ -666,24 +668,27 @@ ENABLER_ELIGIBLE_JQ='
 # an unreadable setting is not a licence to spend.
 enabler_eligible_items() {
   local src="${1:--}" min_coord="${2:-}" recheck_hours="${3:-0}" open_issues="${4:-{\}}" now="${5:-}" refinement_min_coord="${6:-}"
-  local out=""
+  local out="" all_json="" docs
   [[ "$min_coord" =~ ^[0-9]+$ ]] || { printf '[]'; return 0; }
   [[ "$recheck_hours" =~ ^[0-9]+$ ]] || recheck_hours=0
   [[ "$now" =~ ^[0-9]+$ ]] || now="$(date +%s)"
   [[ "$refinement_min_coord" =~ ^[0-9]+$ ]] || refinement_min_coord="$min_coord"
   jq -e 'type == "object"' <<<"$open_issues" >/dev/null 2>&1 || open_issues='{}'
   if [[ "$src" == "-" ]]; then
-    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
-      | jq -sc --argjson min_coord "$min_coord" --argjson recheck_hours "$recheck_hours" \
-          --argjson open "$open_issues" --argjson now "$now" \
-          --argjson refinement_min_coord "$refinement_min_coord" \
-          "$ENABLER_ELIGIBLE_JQ" 2>/dev/null || true)"
+    all_json="$(jq -c -R 'fromjson? // empty' 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
   elif [[ -s "$src" ]]; then
-    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
-      | jq -sc --argjson min_coord "$min_coord" --argjson recheck_hours "$recheck_hours" \
-          --argjson open "$open_issues" --argjson now "$now" \
-          --argjson refinement_min_coord "$refinement_min_coord" \
-          "$ENABLER_ELIGIBLE_JQ" 2>/dev/null || true)"
+    all_json="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null | jq -sc '.' 2>/dev/null || true)"
+  fi
+  if [[ -n "$all_json" ]]; then
+    # $all (the log, arbitrary in length) and $open (the open-issues map, one
+    # number per open issue per repo) arrive on stdin, one document per line,
+    # bound positionally with `input as $name` in the order printed
+    # (requirement 4g) — never in argv.
+    docs="$all_json"$'\n'"$open_issues"
+    out="$(jq -nc --argjson min_coord "$min_coord" --argjson recheck_hours "$recheck_hours" \
+        --argjson now "$now" --argjson refinement_min_coord "$refinement_min_coord" \
+        'input as $all | input as $open | ('"$ENABLER_ELIGIBLE_JQ"')' \
+        <<<"$docs" 2>/dev/null || true)"
   fi
   [[ -n "$out" ]] || out='[]'
   printf '%s' "$out"

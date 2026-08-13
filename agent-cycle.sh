@@ -865,12 +865,21 @@ gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours, pr_number
 # reason past. Malformed input degrades to passing the array through
 # unfiltered — this is a visibility layer over the atomic PR-level claim taken
 # in the selection loop below, never itself the exclusion's hard gate.
+#
+# Both arrays arrive on stdin, one JSON document per line, bound positionally
+# in the order printed (requirement 4g) — never in argv: the claims array
+# grows with the fleet's live claim count, and past MAX_ARG_STRLEN an
+# `--argjson` delivery would fail into the fail-open fallback below and pass
+# every candidate through unfiltered, reopening exactly the claimed-work
+# proposals #305 closed.
 exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
-  local candidates="$1" claimed_prs="${2:-[]}"
+  local candidates="$1" claimed_prs="${2:-[]}" docs
   jq -e 'type == "array"' <<<"$claimed_prs" >/dev/null 2>&1 || claimed_prs='[]'
-  jq -c --argjson claimed "$claimed_prs" \
-    '[.[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
-    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+  docs="$(printf '%s\n' "$candidates" "$claimed_prs")"
+  jq -nc '
+    input as $candidates | input as $claimed
+    | [ $candidates[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
+    <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
 # The item-ref sibling of exclude_claimed_prs above, and the same design
@@ -885,12 +894,18 @@ exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
 # left to reason past. Malformed input degrades to passing the array through
 # unfiltered, exactly as exclude_claimed_prs does and for the same reason:
 # this is a visibility layer over the atomic claim, never the hard gate.
+#
+# Both arrays arrive on stdin, one JSON document per line, bound positionally
+# in the order printed (requirement 4g) — never in argv, for the same reason
+# and on the same fail-open terms as exclude_claimed_prs above.
 exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
-  local candidates="$1" claimed_items="${2:-[]}"
+  local candidates="$1" claimed_items="${2:-[]}" docs
   jq -e 'type == "array"' <<<"$claimed_items" >/dev/null 2>&1 || claimed_items='[]'
-  jq -c --argjson claimed "$claimed_items" \
-    '[.[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
-    <<<"$candidates" 2>/dev/null || printf '%s' "$candidates"
+  docs="$(printf '%s\n' "$candidates" "$claimed_items")"
+  jq -nc '
+    input as $candidates | input as $claimed
+    | [ $candidates[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
+    <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
 # Requirement 3t/issue #310: drop any candidate whose `ref` is recorded
@@ -4361,25 +4376,34 @@ while IFS=$'\t' read -r _ slug default_branch; do
     --arg ipp "$implementation_plan_path" \
     '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)')"
-  ordered_repos_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$ordered_repos_json")"
+  # $entry — one repo's whole pre-fetched sources, including issue threads
+  # (requirement 3d/#118) and its open tech-debt register (requirement
+  # 3t/#310) — is the least bounded value in this loop, and the accumulator it
+  # joins only grows every iteration. Both arrive on stdin, one document per
+  # line, bound positionally with `input as $name` in the order printed
+  # (requirement 4g) — never in argv, where past MAX_ARG_STRLEN this append
+  # would silently drop the repo from the Co-Ordinator's whole input.
+  ordered_repos_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+    <<<"$ordered_repos_json"$'\n'"$entry")"
   # Kept in a separate array, never folded into the entry above: this is the
   # Script's own bookkeeping, and every byte added to `ordered_repos_json` is a
   # byte the Co-Ordinator pays to read. A cost-control feature that grows the
   # prompt it is meant to avoid buying has not saved anything.
   state="$(gather_source_state "$slug" "$default_branch")"
-  source_states_json="$(jq -c --argjson s "$state" '. + [$s]' <<<"$source_states_json")"
+  source_states_json="$(jq -nc 'input as $arr | input as $s | $arr + [$s]' \
+    <<<"$source_states_json"$'\n'"$state")"
   # Requirement 34f, gathered here for the repo loop's one `gh` budget but read
   # below, before the skip-lists: a human's instruction to reopen a void has to
   # land *before* the extract the Co-Ordinator is handed, not after it.
-  unvoid_requests_json="$(jq -c --argjson r "$(gather_unvoid_requests "$slug")" '. + $r' \
-    <<<"$unvoid_requests_json")"
+  unvoid_requests_json="$(jq -nc 'input as $arr | input as $r | $arr + $r' \
+    <<<"$unvoid_requests_json"$'\n'"$(gather_unvoid_requests "$slug")")"
   # Requirement 34g, same reasoning: a human's hand-applied label has to reach
   # the skip-list before the Co-Ordinator is handed it. An empty
   # `needs_refinement_label` disables the projection entirely (README.md), so
   # there is nothing to scan for and no `gh` call to spend.
   if [[ -n "$needs_refinement_label" ]]; then
-    hand_flagged_refinements_json="$(jq -c --argjson r "$(gather_hand_flagged_refinements "$slug")" '. + $r' \
-      <<<"$hand_flagged_refinements_json")"
+    hand_flagged_refinements_json="$(jq -nc 'input as $arr | input as $r | $arr + $r' \
+      <<<"$hand_flagged_refinements_json"$'\n'"$(gather_hand_flagged_refinements "$slug")")"
   fi
 done < <(repo_order_by_effective_age "$repo_order_now" "$repos_json" < "$cycle_dir/.repo_ts")
 rm -f "$cycle_dir/.repo_ts"
