@@ -6618,10 +6618,10 @@ runs unattended.
       while `gh pr view --json author,reviews` still shows no non-author,
       non-bot, submitted review, and `enabler_assignee` — carried in the
       warning's own detail text, at the value it held when the sweep warned —
-      still names the pull request's own author: either is `ensure_human_
-      reviewer`'s own candidate rule, generalised read-only, resolving itself,
-      since the sweep's own next pass would request that candidate before this
-      gatherer runs again. The three classes are told apart deliberately:
+      still names the pull request's own author: either is
+      `ensure_human_reviewer`'s own candidate rule, generalised read-only,
+      resolving itself, since the sweep's own next pass would request that
+      candidate before this gatherer runs again. The three classes are told apart deliberately:
       every pull request a nudge warning is logged against is already
       `APPROVED` (the nudge's own gate), so the request-class check alone
       would read every nudge-class warning as resolved the moment it was
@@ -9335,11 +9335,12 @@ pull request, run the ones the change touches and any it could regress.
     off both lists before asking, so an author's `COMMENT` review on their own
     pull request neither becomes a request target nor 422s the request for the
     human beside them, and an author-only reviews list, or `assignee` equal to
-    the author with nobody else known, is the distinguishable `skip\tno-
-    candidate` (tech-debt/TD-PPagop-26081001.md), never a bare `skip`; `skip`s
-    (bare) while something is genuinely `CHANGES_REQUESTED`-blocking, and
-    while the pull request is a draft; and an unreadable reviews list or
-    pending list is `failed`, never an assumed `skip`. `handoff_round_answered` is asserted
+    the author with nobody else known, is the distinguishable
+    `skip\tno-candidate` (tech-debt/TD-PPagop-26081001.md), never a bare
+    `skip`; `skip`s (bare) while something is genuinely
+    `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; and
+    an unreadable reviews list or pending list is `failed`, never an assumed
+    `skip`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
     `actor=implementor` reply after the blocking review is `answered`, the
     same reply before it is `unanswered`, an unmarked comment and another
@@ -9382,9 +9383,10 @@ pull request, run the ones the change touches and any it could regress.
     the review-request self-heal unconditional; and a listing, a view, or a
     reviews read that fails is a `warning`, never silence. A pull request
     whose only legal candidate is its own author is a `warning` naming
-    `enabler_assignee`, not silence — the one bare-`skip` reason the sweep
-    itself surfaces, unlike a still-`CHANGES_REQUESTED`-blocked pull request,
-    which produces no action at all. Confirm the nudge
+    `enabler_assignee`, not silence — the one `skip` reason the sweep itself
+    surfaces, read off requirement 38a's `skip\tno-candidate` detail, unlike a
+    still-`CHANGES_REQUESTED`-blocked pull request's bare `skip`, which
+    produces no action at all. Confirm the nudge
     comment carries the visible attribution header and both markers
     (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
 38e. **A violation the sweep cannot heal is read back and re-verified, not
