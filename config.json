@@ -69,7 +69,7 @@
     "model": "claude-sonnet-5",
     "pr_label": "project-review",
     "branch_prefix": "review/",
-    "min_days_between_reviews": 6,
+    "min_days_between_reviews": 13,
     "not_before": "2026-07-30T16:00:00Z"
   }
 }

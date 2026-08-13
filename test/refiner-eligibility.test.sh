@@ -68,9 +68,12 @@ repos='[
    ],
    "register_hygiene": [
      {"source": "register-hygiene", "ref": "register-hygiene-abc", "title": "opted in"}
+   ],
+   "tech_debt": [
+     {"source": "tech-debt", "ref": "TD-PPagop-1", "title": "opted in"}
    ]}
 ]'
-policy='{"issues": "preferred", "register-hygiene": "required"}'
+policy='{"issues": "preferred", "register-hygiene": "required", "tech-debt": "required"}'
 refinements='{"o/r": {"6": {"ts": "2026-08-01T00:00:00Z", "comment_url": "https://x/6"}}}'
 blocked='[{"repo": "o/r", "item": "7"}]'
 void='[{"repo": "o/r", "item": "8"}]'
@@ -92,7 +95,9 @@ assert_eq "a merge conflict, exempt by default, is not a candidate" "no" \
   "$(jq -r 'any(.[]; .source == "merge-conflicts") | if . then "yes" else "no" end' <<<"$candidates")"
 assert_eq "a register-hygiene item, opted into required, is a candidate" "yes" \
   "$(jq -r 'any(.[]; .source == "register-hygiene") | if . then "yes" else "no" end' <<<"$candidates")"
-assert_eq "exactly two candidates survive" "2" "$(jq 'length' <<<"$candidates")"
+assert_eq "a tech-debt item, opted into required, is a candidate" "yes" \
+  "$(jq -r 'any(.[]; .source == "tech-debt") | if . then "yes" else "no" end' <<<"$candidates")"
+assert_eq "exactly three candidates survive" "3" "$(jq 'length' <<<"$candidates")"
 assert_eq "the candidate carries the gatherer's own entry verbatim" "unrefined issue" \
   "$(jq -r '.[] | select(.item == "5") | .entry.title' <<<"$candidates")"
 
@@ -101,12 +106,12 @@ assert_eq "an empty repos array yields no candidates" "[]" \
 assert_eq "unreadable inputs yield an empty array rather than failing" "[]" \
   "$(refiner_candidate_items 'garbage' 'garbage' 'garbage' 'garbage' 'garbage' 'garbage')"
 
-# tech-debt, project-review and implementation-plan are never reachable here,
-# whatever their policy says — the Script does not pre-fetch them as arrays.
-repos_with_td='[{"slug": "o/r", "issues": []}]'
-policy_td='{"tech-debt": "required"}'
-assert_eq "a tech-debt policy finds nothing to gather — there is no array for it" "[]" \
-  "$(refiner_candidate_items "$repos_with_td" "$policy_td" '{}' '[]' '[]' '[]')"
+# project-review and implementation-plan are never reachable here, whatever
+# their policy says — the Script does not pre-fetch either as an array.
+repos_with_pr='[{"slug": "o/r", "issues": []}]'
+policy_pr='{"project-review": "required", "implementation-plan": "required"}'
+assert_eq "a project-review/implementation-plan policy finds nothing to gather — there is no array for either" "[]" \
+  "$(refiner_candidate_items "$repos_with_pr" "$policy_pr" '{}' '[]' '[]' '[]')"
 
 # --- refiner_engagement_set ---------------------------------------------------
 
