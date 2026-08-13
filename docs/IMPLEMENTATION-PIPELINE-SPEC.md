@@ -1080,11 +1080,17 @@ runs unattended.
    flag: the Co-Ordinator is already told the runtime input's `sources` are
    authoritative over its own table (requirement 15), so a source it cannot see
    is a source it cannot select — no new prompt concept, and nothing for it to
-   reason around. The pre-fetched `issues` array (requirement 3j) is emptied
-   along with the narrowing — it is the one array that carries whole threads,
-   and paying the Co-Ordinator to read candidates it cannot pick is the exact
-   spend this gate exists to stop; the other non-finishing arrays are compact
-   enough that stripping them would buy nothing.
+   reason around. The pre-fetched `issues` (requirement 3j) and `tech_debt`
+   (requirement 3t) arrays are emptied along with the narrowing — they are the
+   two that carry a whole document each, an issue's entire thread and a
+   tech-debt item's entire file, and paying the Co-Ordinator to read candidates
+   it cannot pick is the exact spend this gate exists to stop; the other
+   non-finishing arrays are compact enough that stripping them would buy
+   nothing. Emptying `tech_debt` here also settles requirement 3t's
+   corroboration for a restricted cycle: the eligible set it measures is read
+   after this narrowing, so a back-pressured `selected: false` — which forbade
+   the tech-debt source outright and therefore owes no account of it — is never
+   scored as contradicting a band it was not allowed to walk.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
@@ -1985,7 +1991,12 @@ runs unattended.
    below) — is the Script's complete, no-per-item-judgement-required answer to
    "what could the Co-Ordinator actually select from this band this cycle".
    `prompts/coordinator.md`'s exclusions 1–3 are already applied for it before
-   the Co-Ordinator ever runs.
+   the Co-Ordinator ever runs. It is read *after* requirement 2.2a's
+   back-pressure decision, not at the second pass above, so that it describes
+   the array the Co-Ordinator is actually handed: a back-pressured cycle
+   narrows every repo to the three finishing sources and empties `tech_debt`
+   with them, and the eligible set is then correctly empty for a verdict that
+   was never allowed to consider the band.
 
    **Why this source is pre-fetched at all.** It used to be the Co-Ordinator's
    own read: the prompt told it to unpack the register tarball itself
@@ -7258,6 +7269,33 @@ pull request, run the ones the change touches and any it could regress.
    carries. Against the real API, `scripts/gather-issues.sh
    Poetic-Poems/poetic-fiddle` prints an array whose entries all carry
    `comments` and a four-name `priority`.
+2j. **Tech-debt arrives pre-fetched, pre-excluded, and its verdict is
+   corroborated (requirement 3t).** `test/gather-tech-debt.test.sh` passes:
+   against a stubbed tarball, `scripts/gather-tech-debt.sh` prints one entry
+   per `status: open` item — `source: "tech-debt"`, the item's own id as `ref`
+   and `id`, its `title`, `filed`, `url` and the whole file verbatim as `body`,
+   sorted by id — while `in-progress`, `resolved` and `not-debt` rows and a
+   repo with no `tech-debt` tree yield nothing, and a failing API degrades to
+   `[]` (exit 0) with the failure on stderr.
+   `test/tech-debt-eligibility.test.sh` passes:
+   `exclude_blocked_or_void_items` drops a candidate blocked or void for its
+   own repo, leaves the same ref alone for a different repo, honours a
+   repo-less entry against every repo, and degrades to the unfiltered array on
+   malformed input; `tech_debt_unaccounted_items` reports every eligible item a
+   `selected: false` verdict neither reported in `needs_refinement` (source
+   `"tech-debt"`, not another source's) nor voided, reports none under
+   `refinement_policy.tech-debt == "required"`, and degrades to `[]` rather
+   than a false positive on malformed input. Assert the wiring both ways, which
+   the unit tests cannot: a `none-selected` with an item unaccounted for logs
+   the `warning` **and** omits `fingerprint` from the event (carrying
+   `td_verdict_rejected: true`), so the next cycle re-asks rather than skipping
+   — the whole point of the requirement — while a fully accounted-for
+   `none-selected` still carries its fingerprint and still skips. And assert
+   the back-pressure case does not cry wolf: with `max_open_agent_prs` tripped
+   and a finishing candidate present (acceptance check 6d's setup), a
+   `none-selected` logs **no** contradiction warning and keeps its fingerprint,
+   because requirement 2.2a empties `tech_debt` along with `issues` and the
+   eligible set is read after that narrowing.
 2f. **A preview nobody can reach is never reported as a healthy one
    (requirement 24a).** `test/preview-deploy.test.sh` passes: against a stubbed
    `gh` and a stubbed Vercel that answers the login flow to any request not

@@ -4066,15 +4066,6 @@ while IFS= read -r td_slug; do
 done < <(jq -r '[.[] | select(((.tech_debt // []) | length) > 0) | .slug] | unique[]' \
          <<<"$ordered_repos_json" 2>/dev/null || true)
 
-# The Script's own count of what the tech-debt band could actually offer this
-# cycle, and which repo+item pairs make it up — the machine-corroboration
-# baseline "5a. Tech-debt verdict corroboration" below tests the Co-Ordinator's
-# verdict against, and requirement 3b's fingerprint (below) hashes as part of
-# `repos[].tech_debt` regardless, verbatim like `register_hygiene`.
-eligible_tech_debt_json="$(jq -c '[.[] | .slug as $s | (.tech_debt // [])[] | {repo: $s, item: .ref}]' \
-  <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
-eligible_tech_debt_total="$(jq 'length' <<<"$eligible_tech_debt_json" 2>/dev/null || echo 0)"
-
 # The third extract (requirement 3h): what a previous Enabler engagement
 # specified for an item nobody had specified well enough to work on. For an
 # issue the refinement is a comment and travels in the thread the Co-Ordinator
@@ -4193,18 +4184,43 @@ if (( backpressure_tripped )); then
       '{reason: $r}')"
     exit 0
   fi
-  # `issues` is emptied along with the narrowing, not merely left unwalked:
-  # it is the one array that carries whole threads, and a restricted cycle
-  # paying the Co-Ordinator to read candidates it is forbidden to pick is the
-  # exact spend back-pressure exists to stop. The other non-finishing arrays
-  # are compact enough that stripping them buys nothing.
+  # `issues` and `tech_debt` are emptied along with the narrowing, not merely
+  # left unwalked: they are the two arrays that carry a whole document each —
+  # an issue's entire thread, a tech-debt item's entire file (requirement 3t) —
+  # and a restricted cycle paying the Co-Ordinator to read candidates it is
+  # forbidden to pick is the exact spend back-pressure exists to stop. The
+  # other non-finishing arrays are compact enough that stripping them buys
+  # nothing.
+  #
+  # Emptying `tech_debt` is also what keeps requirement 3t's corroboration
+  # honest, which is why `eligible_tech_debt_json` is computed below this and
+  # not back at "3c. Tech-debt eligibility": a back-pressured cycle forbids the
+  # tech-debt source outright, so its `selected: false` owes no account of the
+  # band, and measuring eligibility before the narrowing would report every
+  # eligible item as unaccounted — a false contradiction every restricted
+  # cycle, and one that would strip the no-op fingerprint exactly when the gate
+  # is fullest.
   ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))
-                                    | .issues = []]' \
+                                    | .issues = []
+                                    | .tech_debt = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
     --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
+
+# The Script's own count of what the tech-debt band could actually offer this
+# cycle, and which repo+item pairs make it up — the machine-corroboration
+# baseline "5a. Tech-debt verdict corroboration" below tests the Co-Ordinator's
+# verdict against, and requirement 3b's fingerprint (below) hashes as part of
+# `repos[].tech_debt` regardless, verbatim like `register_hygiene`. Taken here
+# rather than at "3c. Tech-debt eligibility" so that it reads the array the
+# Co-Ordinator is actually about to be given: back-pressure empties `tech_debt`
+# just above, and an eligible set counted before that would hold items this
+# cycle forbids it to select (see that block's own comment).
+eligible_tech_debt_json="$(jq -c '[.[] | .slug as $s | (.tech_debt // [])[] | {repo: $s, item: .ref}]' \
+  <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+eligible_tech_debt_total="$(jq 'length' <<<"$eligible_tech_debt_json" 2>/dev/null || echo 0)"
 
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
