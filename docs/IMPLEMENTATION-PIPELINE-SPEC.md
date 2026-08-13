@@ -6420,6 +6420,15 @@ runs unattended.
     filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
     them — under the account that raised the pull request.
 
+    The no-candidate `skip` carries its own detail, `skip\tno-candidate`,
+    distinguishable from the other two `skip` reasons — a draft, or something
+    `CHANGES_REQUESTED`-blocking it — which `confirm_review_requested` already
+    covers with its own actor and its own clock. Nothing else will ever ask
+    this human, so the periodic sweep (requirement 38c) reads the distinction
+    to log its own `warning`, closing the gap tech-debt/TD-PPagop-26081001.md
+    recorded: before this, all three reasons shared one bare `skip`, so this
+    one could not be told apart from the other two to surface at all.
+
     Called from both places `confirm_review_requested` already is — the
     Reviewer's own handoff and the Enabler's `complete_handoff` — whenever
     that call answers `none`, and from the periodic sweep of requirement 38c
@@ -6566,8 +6575,10 @@ runs unattended.
 38e. **A violation the sweep cannot heal is selectable work, not only a log
     line.** `scripts/sweep-human-visibility.sh` (requirement 38c) fixes almost
     every violation it finds in the same pass; what it cannot fix — a `gh`
-    read, the review-request POST, or the nudge-comment POST itself failing —
-    was, before this requirement, only a `warning` event: no selectable work,
+    read, the review-request POST, or the nudge-comment POST itself failing,
+    or requirement 38a's own no-candidate `skip` (no POST even attempted,
+    tech-debt/TD-PPagop-26081001.md) — was, before this requirement, only a
+    `warning` event: no selectable work,
     nothing tracking whether it recurred, and the human it concerns by
     definition not looking (tech-debt/TD-PPagop-26080801.md, the gap
     requirement 38d's scope note names). `scripts/gather-human-visibility-hygiene.sh`,
@@ -6602,19 +6613,30 @@ runs unattended.
       having worked after all); a `could not post the idle nudge comment`
       warning survives only while the `<!-- agent-ops:human-nudge -->` marker
       comment `scripts/sweep-human-visibility.sh` itself checks for is still
-      absent. The two classes are told apart deliberately: every pull request
-      a nudge warning is logged against is already `APPROVED` (the nudge's own
-      gate), so the request-class check alone would read every nudge-class
-      warning as resolved the moment it was created, silently dropping the one
-      class this requirement exists to keep visible. A warning shape neither
-      check recognises is kept for as long as its pull request stays open and
-      not a draft, the same fail-safe default an unreadable re-check gets — the
-      log alone cannot tell a persisting problem from one that has quietly
-      resolved (a repo-level listing success with nothing to act on logs
-      nothing at all; a merged, closed or now-answered pull request is never
-      visited again either way). An answer this re-check itself cannot get is
-      never read as "resolved" — the violation is kept, the same reasoning the
-      sweep itself applies to its own reads.
+      absent; a `no legal review-request candidate` warning (requirement 38a's
+      `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
+      while `gh pr view --json author,reviews` still shows no non-author,
+      non-bot, submitted review, and `enabler_assignee` — carried in the
+      warning's own detail text, at the value it held when the sweep warned —
+      still names the pull request's own author: either is `ensure_human_
+      reviewer`'s own candidate rule, generalised read-only, resolving itself,
+      since the sweep's own next pass would request that candidate before this
+      gatherer runs again. The three classes are told apart deliberately:
+      every pull request a nudge warning is logged against is already
+      `APPROVED` (the nudge's own gate), so the request-class check alone
+      would read every nudge-class warning as resolved the moment it was
+      created, silently dropping the one class this requirement exists to
+      keep visible — and a no-candidate warning has no live request to find at
+      all, so neither of the other two checks would ever clear it. A warning
+      shape none of the three recognises is kept for as long as its pull
+      request stays open and not a draft, the same fail-safe default an
+      unreadable re-check gets — the log alone cannot tell a persisting
+      problem from one that has quietly resolved (a repo-level listing
+      success with nothing to act on logs nothing at all; a merged, closed or
+      now-answered pull request is never visited again either way). An answer
+      this re-check itself cannot get is never read as "resolved" — the
+      violation is kept, the same reasoning the sweep itself applies to its
+      own reads.
     - A survivor becomes a candidate carrying its own source,
       `source: "human-visibility"` — ranked immediately after
       `merge-conflicts` (config.schema.json's `sources` enum and priority-order
@@ -6645,14 +6667,15 @@ runs unattended.
       array, hashed verbatim (`lib/noop-skip.sh`) — its own key because it no
       longer rides `register_hygiene`'s.
 
-    Left deliberately unaddressed, as adjacent gaps rather than this one: a
-    pull request whose only legal review-request candidate is its own author
-    (`ensure_human_reviewer` correctly returns the same `skip` it would for a
-    draft or a `CHANGES_REQUESTED`-blocked pull request, so this cannot be told
-    apart from those without changing that function's contract for every one
-    of its callers) is tracked as `tech-debt/TD-PPagop-26081001.md`; an issue
-    human-blocked by a classification other than the two requirement 38b and
-    36a cover remains requirement 38d's own, deliberate, scope limit.
+    A pull request whose only legal review-request candidate is its own
+    author is covered by requirement 38a's own `skip\tno-candidate` and this
+    requirement's `no_candidate` warning class above
+    (tech-debt/TD-PPagop-26081001.md) — the one `skip` reason nothing else
+    will ever ask a human about, unlike a draft or a `CHANGES_REQUESTED`-
+    blocked pull request, each of which has its own actor and its own clock.
+    Left deliberately unaddressed, as an adjacent gap rather than this one: an
+    issue human-blocked by a classification other than the two requirement
+    38b and 36a cover remains requirement 38d's own, deliberate, scope limit.
 
 ### The Refiner
 
@@ -7000,8 +7023,13 @@ What exists, and the requirements each part answers to:
    while `gh pr view --json reviewDecision,reviewRequests` shows no live
    request and no review yet given; a `could not post the idle nudge comment`
    warning only while the `agent-ops:human-nudge` marker comment is still
-   absent; any other warning shape for as long as the pull request stays open
-   and not a draft; an unreadable re-check is kept, not dropped) — carrying a
+   absent; a `no legal review-request candidate` warning
+   (tech-debt/TD-PPagop-26081001.md) only while `gh pr view --json
+   author,reviews` still shows no non-author, non-bot, submitted review and
+   `enabler_assignee` — read back out of the warning's own detail text —
+   still names the pull request's own author; any other warning shape for as
+   long as the pull request stays open and not a draft; an unreadable
+   re-check is kept, not dropped) — carrying a
    ref scoped to the surviving violations' own identities and details
    (`human-visibility-<hash>`, disjoint from `register-hygiene-<hash>`), a
    `problems` line per violation and a body naming each one and the timestamp
@@ -9306,10 +9334,12 @@ pull request, run the ones the change touches and any it could regress.
     `assignee` only when nobody ever has; strikes the pull request's own author
     off both lists before asking, so an author's `COMMENT` review on their own
     pull request neither becomes a request target nor 422s the request for the
-    human beside them, and an author-only reviews list is a `skip`; `skip`s
-    while something is genuinely `CHANGES_REQUESTED`-blocking, and while the
-    pull request is a draft; and an unreadable reviews list or pending list is
-    `failed`, never an assumed `skip`. `handoff_round_answered` is asserted
+    human beside them, and an author-only reviews list, or `assignee` equal to
+    the author with nobody else known, is the distinguishable `skip\tno-
+    candidate` (tech-debt/TD-PPagop-26081001.md), never a bare `skip`; `skip`s
+    (bare) while something is genuinely `CHANGES_REQUESTED`-blocking, and
+    while the pull request is a draft; and an unreadable reviews list or
+    pending list is `failed`, never an assumed `skip`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
     `actor=implementor` reply after the blocking review is `answered`, the
     same reply before it is `unanswered`, an unmarked comment and another
@@ -9350,7 +9380,11 @@ pull request, run the ones the change touches and any it could regress.
     approved pull request is never nudged, and neither is one with an empty
     check rollup; `human_nudge_idle_hours: 0` disables the nudge while leaving
     the review-request self-heal unconditional; and a listing, a view, or a
-    reviews read that fails is a `warning`, never silence. Confirm the nudge
+    reviews read that fails is a `warning`, never silence. A pull request
+    whose only legal candidate is its own author is a `warning` naming
+    `enabler_assignee`, not silence — the one bare-`skip` reason the sweep
+    itself surfaces, unlike a still-`CHANGES_REQUESTED`-blocked pull request,
+    which produces no action at all. Confirm the nudge
     comment carries the visible attribution header and both markers
     (`agent-ops:pipeline-comment` and `agent-ops:human-nudge`).
 38e. **A violation the sweep cannot heal is read back and re-verified, not
@@ -9370,10 +9404,16 @@ pull request, run the ones the change touches and any it could regress.
     `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
     `could not post the idle nudge comment` violation on an `APPROVED` pull
     request survives while the `agent-ops:human-nudge` marker comment is
-    absent — confirming the two classes are told apart, not read off the same
+    absent — confirming the classes are told apart, not read off the same
     "has a human reviewed this" check, which would otherwise drop every
-    nudge-class violation on sight — and is dropped once the marker appears;
-    an unrecognised warning shape survives for as long as its pull request
+    nudge-class violation on sight — and is dropped once the marker appears; a
+    `no legal review-request candidate` violation
+    (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
+    show no non-author, non-bot, submitted review and no pending (unsubmitted)
+    review counts either, is dropped the moment such a reviewer appears, and
+    is dropped separately once the assignee named in its own detail text no
+    longer names the pull request's author; an unrecognised warning shape
+    survives for as long as its pull request
     stays open and not a draft; an unreadable live re-check keeps the
     violation rather than dropping it; a repo-level and a pull-request
     violation for the same repo combine into one candidate; and every
