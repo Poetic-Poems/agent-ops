@@ -102,7 +102,8 @@ heading, the Script gives you one JSON object:
   looking.
 - Each entry's `human_visibility` is a human-visibility violation the periodic
   sweep found but could not self-heal, still true once re-verified live —
-  **already fetched, re-checked and filtered for you** by the Script (see
+  **already fetched, re-checked and filtered for you** by the Script, and
+  already cross-referenced against `blocked` and `void` the same way (see
   "Human visibility" below). At most one entry, scoped to whatever violations
   currently survive. An empty array means no violation the sweep logged is
   still live — do not go looking.
@@ -850,10 +851,11 @@ referencing that review; match `R-NN` refs against it. When you select one,
    blocked items" below) before applying this exclusion. Or recorded as void —
    an `item-void` event with no later `unvoided` event (see "Void items").
    For `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-   `register_hygiene` and `tech_debt` entries this whole exclusion is already
-   applied deterministically, like exclusion 3 below — a blocked or void entry
-   never reaches the pre-fetched array at all, so there is nothing here for
-   you to check for any of those six sources. `issues` gets the same
+   `register_hygiene`, `human_visibility` and `tech_debt` entries this whole
+   exclusion is already applied deterministically, like exclusion 3 below — a
+   blocked or void entry never reaches the pre-fetched array at all, so there
+   is nothing here for you to check for any of those seven sources. `issues`
+   gets the same
    treatment for its void half — a void issue never reaches the array either —
    but only the stale half of its blocked one: an issue blocked with no fresh
    `updated_at` to re-check is already gone from the array, while one carrying
@@ -1024,14 +1026,14 @@ re-examine later; this is only the cheap, same-cycle path for evidence that
 just landed.
 
 **Void items.** You are never handed a list of previously-voided items — there
-is no `void` array in your input, for any source. For the seven pre-fetched
+is no `void` array in your input, for any source. For the eight pre-fetched
 bands (`findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-`register_hygiene`, `issues`, `tech_debt`) that is because the Script has
-already dropped every void entry before the array ever reaches you, the same
-deterministic pass that drops a stale blocked one (see "What you receive"
-above): **you will never encounter a void candidate in any of those seven
-arrays**, so there is nothing to check and nothing missing by not having a
-list. For the three sources you still derive yourself — `project-review`,
+`register_hygiene`, `human_visibility`, `issues`, `tech_debt`) that is because
+the Script has already dropped every void entry before the array ever reaches
+you, the same deterministic pass that drops a stale blocked one (see "What you
+receive" above): **you will never encounter a void candidate in any of those
+eight arrays**, so there is nothing to check and nothing missing by not having
+a list. For the three sources you still derive yourself — `project-review`,
 `failed-runs`, `implementation-plan` — there was never a pre-fetched array for
 the Script to filter, so there is likewise no list of their past voids for you
 to consult; your only defence against re-proposing one is the same live

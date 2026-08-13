@@ -2100,7 +2100,8 @@ runs unattended.
    3t's own second pass runs, after every reconciliation requirement 34 runs
    and after requirement 34n's retirement — the Script re-applies
    `exclude_blocked_or_void_items` to `findings`, `review_feedback`,
-   `abandoned_drafts`, `merge_conflicts` and `register_hygiene`, exactly as it
+   `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and
+   `human_visibility`, exactly as it
    already did to `tech_debt`: any entry whose `ref` is recorded blocked or
    void for that repo is dropped, scoped by repo exactly as
    `BLOCKED_ITEMS_JQ`'s own repo-or-blank match (a blank `repo` on an old,
@@ -2138,7 +2139,7 @@ runs unattended.
    **`void` is removed from `coordinator_input` entirely.** Every band the
    Script pre-fetches whole is now void-filtered before the Co-Ordinator ever
    runs, so a raw list for it to apply that same judgement to by eye no
-   longer has a use the seven pre-fetched bands need — and the three sources
+   longer has a use the eight pre-fetched bands need — and the three sources
    the Co-Ordinator still derives itself (`project-review`, `failed-runs`,
    `implementation-plan`) never had a pre-fetched array for the Script to
    check a list against in the first place, so withholding the list changes
@@ -3301,11 +3302,12 @@ runs unattended.
       found the recorded blocker still holds — or recorded as void (an
       `item-void` event not followed by `unvoided`), which has no re-check to
       preserve for any source. For `findings`, `review_feedback`,
-      `abandoned_drafts`, `merge_conflicts`, `register_hygiene` and
+      `abandoned_drafts`, `merge_conflicts`, `register_hygiene`,
+      `human_visibility` and
       `tech_debt`, both halves are already applied deterministically by the
       Script (requirement 3u) before the runtime input is assembled — there
-      is nothing left here for the Co-Ordinator to check for any of those six
-      sources. `issues` gets the same treatment for its void half and for a
+      is nothing left here for the Co-Ordinator to check for any of those
+      seven sources. `issues` gets the same treatment for its void half and for a
       *stale* blocked entry; only a blocked issue carrying evidence fresh
       enough to warrant requirement 18a's live re-check ever reaches the
       Co-Ordinator;
@@ -7461,12 +7463,18 @@ pull request, run the ones the change touches and any it could regress.
    `ref` rather than crashing on it; and degrades to the unfiltered array on
    malformed `blocked`/`void` input, delivered on stdin and proven past
    `MAX_ARG_STRLEN` the same way `test/tech-debt-eligibility.test.sh`'s own
-   oversized-void fixture is. Separately, `agent-cycle.sh`'s own
+   oversized-void fixture is. The band list the generic pass loops over is
+   pinned too — `findings`, `review_feedback`, `abandoned_drafts`,
+   `merge_conflicts`, `register_hygiene`, `human_visibility`, `tech_debt`,
+   every pre-fetched band but `issues` — because it is inline shell rather
+   than a function, and a band added to a repo entry but not to it would keep
+   handing the Co-Ordinator blocked and void candidates it has no `void` list
+   left to check them against. Separately, `agent-cycle.sh`'s own
    `coordinator_input` build carries no `void` key at all, and its `blocked`
    entries carry only `repo`, `item`, `ts`, `detail` and `recheck_clean_ts` —
-   asserted by extracting the coordinator-input jq program the same way and
-   feeding it a `blocked_json` entry with extra fields (`stage`, `cycle`,
-   `event`, `unblock_condition`), which must not survive into what the
+   asserted by lifting that build verbatim the same way and running it over a
+   `blocked_json` entry with extra fields (`stage`, `cycle`, `event`,
+   `unblock_condition`), which must not survive into what the
    Co-Ordinator reads — while the no-op fingerprint's own input
    (`test/noop-skip.test.sh`) is unaffected and still hashes both extracts,
    untrimmed, exactly as before this requirement.

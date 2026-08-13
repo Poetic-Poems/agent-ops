@@ -4193,10 +4193,16 @@ fi
 # Co-Ordinator whole: drop any entry this repo's own blocked or void record
 # names, exactly as exclude_claimed_items already dropped claimed ones.
 # `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-# `register_hygiene` and `tech_debt` all get the identical second pass
-# `exclude_blocked_or_void_items` first gave `tech_debt` alone (issue #310) —
-# there is nothing about that exclusion tech-debt-specific, only tech-debt
-# was the band it was first proven on. `issues` gets its own, narrower pass
+# `register_hygiene`, `human_visibility` and `tech_debt` all get the identical
+# second pass `exclude_blocked_or_void_items` first gave `tech_debt` alone
+# (issue #310) — there is nothing about that exclusion tech-debt-specific,
+# only tech-debt was the band it was first proven on. Every band the repo
+# entry carries is in this list but `issues`; a band added to that entry and
+# not to this list would keep handing the Co-Ordinator blocked and void
+# candidates it has no list left to check them against, which is why
+# `test/cycle-state.test.sh` pins the list itself.
+#
+# `issues` gets its own, narrower pass
 # below instead, via `exclude_blocked_or_void_issues`: unlike every other
 # band, a blocked issue can carry fresh evidence requirement 18a obliges the
 # Co-Ordinator to re-read live, so dropping it here — before that re-read can
@@ -4209,7 +4215,7 @@ fi
 # void — with no per-item judgement left for it to apply, and no room for a
 # verdict like "requires per-item evaluation against blocked/void/claimed
 # records" to be true of any of them.
-for eligibility_band in findings review_feedback abandoned_drafts merge_conflicts register_hygiene tech_debt; do
+for eligibility_band in findings review_feedback abandoned_drafts merge_conflicts register_hygiene human_visibility tech_debt; do
   while IFS= read -r eb_slug; do
     [[ -n "$eb_slug" ]] || continue
     eb_current="$(jq -c --arg s "$eb_slug" --arg f "$eligibility_band" \

@@ -672,6 +672,58 @@ assert_eq "an entry with no repo/recheck_clean_ts carries neither key" \
 assert_eq "malformed input degrades to the untrimmed array" "not an array" \
   "$(coordinator_blocked_view "not an array")"
 
+# --- the generic pass covers every pre-fetched band but `issues` -------------
+# The band list is inline shell, not a function, so this is the one assertion
+# that can hold it to the repo entry it filters. `human_visibility` is the band
+# that makes the point: it is assigned into the entry well after the repo loop
+# (requirement 38e's read-back), so it is easy to add a band in one place and
+# not the other — and a band left off this list keeps handing the Co-Ordinator
+# blocked and void candidates it no longer has any `void` list to check them
+# against (requirement 3u). `issues` is absent by design: it has its own,
+# narrower pass through exclude_blocked_or_void_issues.
+band_list="$(sed -n 's/^for eligibility_band in \(.*\); do$/\1/p' "$SCRIPT_DIR/agent-cycle.sh")"
+assert_eq "every pre-fetched band but issues reaches exclude_blocked_or_void_items" \
+  "findings review_feedback abandoned_drafts merge_conflicts register_hygiene human_visibility tech_debt" \
+  "$band_list"
+
+# --- coordinator_input itself: no `void` key, and a trimmed `blocked` --------
+# The build is lifted verbatim out of agent-cycle.sh, the same way the three
+# functions above are: what the Co-Ordinator is handed is the claim requirement
+# 3u makes, and it is made by this block rather than by any of them.
+ci_src="$(awk '
+  /^coordinator_blocked_json="\$\(coordinator_blocked_view/ { on = 1 }
+  on                                                        { print }
+  on && /<<<"\$coordinator_stdin"\)"$/                       { exit }
+' "$SCRIPT_DIR/agent-cycle.sh")"
+if [[ "$ci_src" != *coordinator_input=* ]]; then
+  printf 'FAIL - could not extract the coordinator_input build from agent-cycle.sh\n'
+  exit 1
+fi
+# All eight are consumed by the eval'd block, which shellcheck cannot see into
+# — as is `coordinator_input`, which that block is what assigns.
+# shellcheck disable=SC2034
+{
+  blocked_json="$rich_blocked"
+  ordered_repos_json='[{"slug":"o/r"}]'
+  refinements_json='{}'
+  claimed_json='[]'
+  implementor_model_default="claude-sonnet-5"
+  implementor_model_trivial="claude-haiku-4-5-20251001"
+  candidates_max=3
+  refinement_policy_json='{}'
+}
+eval "$ci_src"
+# shellcheck disable=SC2154
+assert_eq "the Co-Ordinator's input carries no void key at all" \
+  "false" "$(jq 'has("void")' <<<"$coordinator_input")"
+assert_eq "  ... and its blocked entries are the trimmed view" \
+  '{"item":"52","ts":"2026-08-01T00:00:00Z","detail":"waiting","repo":"o/r","recheck_clean_ts":"2026-08-02T00:00:00Z"}' \
+  "$(jq -c '.blocked[0]' <<<"$coordinator_input")"
+assert_eq "  ... with no stage/cycle/event/unblock_condition surviving" \
+  "false" \
+  "$(jq '.blocked | any(has("stage") or has("cycle") or has("event") or has("unblock_condition"))' \
+     <<<"$coordinator_input")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
