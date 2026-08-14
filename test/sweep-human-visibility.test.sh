@@ -502,8 +502,8 @@ printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE yes "" no
 set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
 out="$(run_sweep)"
-assert_eq "a checks-failure dequeue is nudged even with idle_hours 0" "nudged" \
-  "$(jq -r '.action' <<<"$out")"
+assert_eq "a checks-failure dequeue posts its own dequeue-notice action even with idle_hours 0" \
+  "dequeue-notice" "$(jq -r '.action' <<<"$out")"
 assert_contains "  ... the notice names the removal time" "2026-08-14T10:00:00Z" "$(comments)"
 assert_contains "  ... and the reason" "CI_FAILURE" "$(comments)"
 assert_contains "  ... marked idempotent per removal event" \
@@ -529,8 +529,8 @@ printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE yes "" no "2026-08-14T09:00:00Z"
 set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
 out="$(run_sweep)"
-assert_eq "a fresh dequeue after an already-notified one still nudges" "nudged" \
-  "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
+assert_eq "a fresh dequeue after an already-notified one still posts its own dequeue-notice" \
+  "dequeue-notice" "$(jq -r 'select(.action == "dequeue-notice") | .action' <<<"$out")"
 assert_contains "  ... naming the new removal time" "2026-08-14T10:00:00Z" "$(comments)"
 
 # Re-queued at the same head since the recorded dequeue: nothing fresh to
