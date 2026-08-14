@@ -411,6 +411,80 @@ STUB
   rm -rf "$malformed_tmp"
 fi
 
+# --- A pull-request body past MAX_ARG_STRLEN does not kill the candidate fold
+# (requirement 4g, TD-PPagop-26081401) ---
+#
+# emit()'s per-candidate append used to deliver $cand to jq as `--argjson c`,
+# an argv entry capped at 131072 bytes. Nothing bounds a PR body, so a
+# CONFLICTING PR with an oversized body used to die the whole gather under
+# `set -e` at `execve`, losing this repo's entire merge_conflicts band. The
+# fix moves the append to stdin, which has no such cap: this PR proves a
+# 150000-byte body candidate still comes out the other end.
+big_tmp="$(mktemp -d)"
+
+cat > "$big_tmp/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+if [[ "$1 $2" == "pr list" ]]; then
+  for a in "$@"; do
+    if [[ "$a" == "--label" ]]; then cat "$d/ours.json"; exit 0; fi
+    if [[ "$a" == "--author" ]]; then printf '[]\n'; exit 0; fi
+  done
+fi
+exit 1
+STUB
+chmod +x "$big_tmp/gh"
+
+printf 'x%.0s' $(seq 1 150000) > "$big_tmp/body.txt"
+jq -nc --rawfile body "$big_tmp/body.txt" '[{
+  "number": 210, "title": "fix: something", "headRefName": "agent/big-body",
+  "baseRefName": "main", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+  "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-14T00:00:00Z",
+  "url": "https://github.com/o/r/pull/210", "body": $body
+}]' > "$big_tmp/ours.json"
+
+out="$(MERGE_CONFLICTS_GH="$big_tmp/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>/dev/null)"
+exit_status=$?
+assert_eq "an oversized PR body (150000 bytes, past MAX_ARG_STRLEN) does not abort the gather" \
+  "0" "$exit_status"
+assert_eq "  ... the oversized candidate is still folded into the output" \
+  "1" "$(jq 'length' <<<"$out" 2>/dev/null || echo 0)"
+assert_eq "  ... carrying its full, untruncated body" \
+  "150000" "$(jq -r '.[0].body | length' <<<"$out" 2>/dev/null || echo 0)"
+
+rm -rf "$big_tmp"
+
+# --- Neither converted site drops a candidate silently --------------------------
+# Both sites fail open per candidate, which is right: this gather losing one
+# conflicted pull request beats it losing every other one alongside. Failing
+# open *silently* is not — this is the band whose whole job is visibility, and
+# a candidate that leaves it with no stderr, no event and nothing in the output
+# cannot be told from a candidate that was never there. The reference
+# conversion named in TD-PPagop-26081401's own record,
+# scripts/gather-tech-debt.sh's `|| degrade "array assembly failed at …"`,
+# keeps its converted append loud for exactly that reason.
+#
+# A source-level pin because emit()'s two jq calls have no reachable failure
+# left to provoke from outside: what they read is jq's own output either way,
+# so the argv cap this item removed was how they failed. Read the function
+# rather than the behaviour — a reintroduced `2>/dev/null` fails here.
+emit_body="$(awk '/^emit\(\) \{/ { on = 1 } on { print } on && /^\}$/ { exit }' \
+  "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh")"
+# shellcheck disable=SC2016  # source text to search for, not an expansion.
+{
+  emit_probe='input as $pr'
+  emit_warn_build='warn "candidate assembly failed for pr #$number"'
+  emit_warn_fold='warn "array assembly failed at pr #$number"'
+}
+assert_eq "emit() was found in the source" "1" \
+  "$(( $(grep -cF "$emit_probe" <<<"$emit_body") > 0 ))"
+assert_eq "emit() suppresses no jq stderr" "0" \
+  "$(grep -cF '2>/dev/null' <<<"$emit_body")"
+assert_eq "the candidate build names the pull request it could not assemble" "1" \
+  "$(grep -cF "$emit_warn_build" <<<"$emit_body")"
+assert_eq "and so does the fold" "1" \
+  "$(grep -cF "$emit_warn_fold" <<<"$emit_body")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

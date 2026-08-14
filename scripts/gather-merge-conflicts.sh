@@ -199,6 +199,19 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
+# Say so, then carry on. Deliberately *not* `degrade` as scripts/gather-tech-debt.sh
+# and scripts/gather-issues.sh define it: theirs prints `[]` and exits, which is
+# right where the failure is the whole band's (a register listing that would not
+# answer) and wrong here, where it is one candidate's — losing a pull request
+# this gather could not assemble is a far smaller thing than losing every other
+# conflicted pull request alongside it. What the two idioms share is the only
+# part that matters: neither is silent. This is the band whose whole job is
+# visibility, so a candidate that drops out of it leaves a trace, and jq's own
+# message on stderr goes with it rather than into `2>/dev/null`.
+warn() {
+  echo "gather-merge-conflicts: $slug: $*" >&2
+}
+
 # The open, agent-raised PRs, fetched raw — the filter runs afterwards, so the
 # truncation check below counts what GitHub returned rather than what the
 # filter kept. `headRefOid`, not the `commits` collection, for requirement 3e's
@@ -262,7 +275,7 @@ bot_conflicts="$(jq -c '[.[] | select(.isDraft | not) | select(.mergeable == "CO
 out='[]'
 
 emit() {  # <pr-json> <bot: true|false>
-  local pr="$1" bot="$2" number head_sha item cand
+  local pr="$1" bot="$2" number head_sha item cand docs
   local rebase_requested="false" superseded_by="" superseded_evidence=""
   number="$(jq -r '.number' <<<"$pr")"
   head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
@@ -295,8 +308,16 @@ emit() {  # <pr-json> <bot: true|false>
   local ref_kind="conflict"
   [[ -n "$superseded_by" ]] && ref_kind="superseded"
 
+  # requirement 4g: $pr carries a whole pull-request body (TD-PPagop-26081401),
+  # unbounded by anything in this system, so it travels to jq on stdin — a
+  # here-string, not a pipe, for requirement 4c's reason: under pipefail a
+  # producer's SIGPIPE must not become this call's status — rather than as
+  # the --argjson it used to be. Only the values requirement 4g leaves as
+  # configuration-bounded (the minted ref, the extracted item, a head sha,
+  # two booleans, the supersession strings) still travel as --arg/--argjson.
+  # Fails open, and loudly: a candidate this build cannot parse is skipped
+  # rather than aborting the whole gather, and says which one on stderr.
   cand="$(jq -nc \
-    --argjson pr "$pr" \
     --arg ref "pr-${number}-${ref_kind}-${head_sha:0:12}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
@@ -304,7 +325,7 @@ emit() {  # <pr-json> <bot: true|false>
     --argjson rebase_requested "$rebase_requested" \
     --arg superseded_by "$superseded_by" \
     --arg superseded_evidence "$superseded_evidence" \
-    '{source: "merge-conflicts",
+    'input as $pr | {source: "merge-conflicts",
       ref: $ref,
       number: $pr.number,
       pr_number: $pr.number,
@@ -322,8 +343,20 @@ emit() {  # <pr-json> <bot: true|false>
            rebase_requested: $rebase_requested,
            superseded_by: (if $superseded_by == "" then null else ($superseded_by | tonumber) end),
            superseded_evidence: (if $superseded_evidence == "" then null else $superseded_evidence end)
-         } else {} end)')"
-  out="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$out")"
+         } else {} end)' <<<"$pr")" \
+    || { warn "candidate assembly failed for pr #$number"; return 0; }
+
+  # The per-candidate array append: $out itself was already delivered on
+  # stdin (it grows with every candidate this run has emitted so far), but
+  # the new $cand rode in as a second --argjson — also past MAX_ARG_STRLEN
+  # once its body is large enough. Both now arrive as one stdin document,
+  # bound positionally, on the same fail-open-and-say-so terms as the build
+  # above: the accumulator keeps what it already had, minus this candidate.
+  docs="$(printf '%s\n' "$out" "$cand")"
+  out="$(jq -nc '
+    input as $out | input as $c
+    | $out + [$c]
+  ' <<<"$docs" || { warn "array assembly failed at pr #$number"; printf '%s' "$out"; })"
 }
 
 while IFS= read -r pr; do

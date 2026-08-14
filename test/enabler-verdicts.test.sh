@@ -439,6 +439,51 @@ assert_eq "missing verdict: no enabler-examined at all" "0" \
 assert_contains "missing verdict: a warning names the claimed-but-unanswered item" \
   "no verdict for claimed item acme/widgets TD001" "$calls"
 
+# ============================================================================
+# The argv cap (requirement 4g, TD-PPagop-26081401): the claim accumulator
+# ============================================================================
+# The claim loop's own `claimed_json="$(jq -c --argjson e "$entry" ...)"`
+# used to deliver each blocked item's evidence payload as a second --argjson,
+# an argv entry capped at MAX_ARG_STRLEN. A 150000-byte block reason (padding
+# past a human ever writes, but nothing in this system bounds one) proves the
+# fold now survives it — not a crash, not a silently dropped claim.
+printf 'x%.0s' $(seq 1 150000) > "$tmp_dir/big_reason.txt"
+eligible_big="$(jq -nc --rawfile r "$tmp_dir/big_reason.txt" \
+  '[{"repo":"acme/widgets","item":"TDBIG","blocked_ts":"2026-08-01T00:00:00Z","kind":"","reason":$r}]')"
+assert_eq "the oversized blocked-item fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$eligible_big" | wc -c) > 131072 ))"
+examined_big='[{"repo":"acme/widgets","item":"TDBIG","verdict":"void","reason":"already fixed upstream",
+                "evidence":"The failing script was deleted in an earlier change and its only caller removed."}]'
+calls="$(run_case "argv cap: oversized blocked-item reason" "$eligible_big" "$examined_big")"
+assert_eq "the oversized claim still reaches the claim fold: exactly one item-void event" "1" \
+  "$(grep -cE '^event item-void ' <<<"$calls")"
+void_evt="$(events_named "$calls" item-void | head -n1)"
+assert_eq "  ... naming the oversized item, not dropped or corrupted" "TDBIG" "$(jq -r '.item' <<<"$void_evt")"
+
+# ============================================================================
+# The argv cap (requirement 4g, TD-PPagop-26081401): the unparseable-verdict warning
+# ============================================================================
+# `items_named_json` — every claimed item trimmed to {repo, item} — used to
+# ride into the "no verdicts recorded" warning as a second --argjson. Ordinary
+# blocked items are not capped per engagement (requirement 35d — only the
+# refinement class is), so 50 claimed items with a heavily padded item ref
+# prove the warning still carries every one of them, past the cap, when the
+# stage itself fails outright.
+pad_ref="$(printf 'x%.0s' $(seq 1 2700))"
+eligible_many="$(jq -nc --arg p "$pad_ref" \
+  '[range(1; 51) | {repo: "acme/widgets", item: ("TD-" + $p + "-" + (. | tostring)),
+    blocked_ts: "2026-08-01T00:00:00Z", kind: "", reason: "threshold"}]')"
+STUB_RUN_RC=3
+calls="$(run_case "non-zero stage exit, oversized claim set" "$eligible_many" '[]')"
+STUB_RUN_RC=0
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_eq "the oversized items_named_json fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(jq -c '.items' <<<"$warn_evt" | wc -c) > 131072 ))"
+assert_eq "the warning still carries every one of the 50 claimed items" \
+  "50" "$(jq '.items | length' <<<"$warn_evt")"
+assert_eq "  ... and no enabler-examined/item-void/unblocked/attempt-failed at all" "0" \
+  "$(grep -cE '^event (enabler-examined|item-void|unblocked|attempt-failed) ' <<<"$calls")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

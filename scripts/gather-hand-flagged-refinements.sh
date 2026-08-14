@@ -71,6 +71,16 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
+# Per-issue, not whole-band: `degrade` as scripts/gather-tech-debt.sh and
+# scripts/gather-issues.sh define it prints `[]` and exits, which would throw
+# away every other hand-flagged issue to report one. What carries across from
+# that idiom is that the failure is loud — a human's own label is a request
+# made by hand (requirement 34g), and one going unanswered is the last thing
+# this script may do quietly.
+warn() {
+  echo "gather-hand-flagged-refinements: $slug: $*" >&2
+}
+
 # One call for the whole set. `repos/<slug>/issues` returns pull requests too
 # when a label happens to sit on one, but this label only ever means something
 # on an issue (requirement 34e's own scope), so pull requests are dropped here
@@ -113,7 +123,15 @@ while IFS= read -r hit; do
     --arg at "$at" --arg by "$by" \
     '{repo: $repo, number: $hit.number, url: $hit.url, label: $label,
       state: $hit.state, labelled_at: $at, by: $by}')"
-  out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")"
+  # $out and $entry both arrive on stdin, one document per line, bound
+  # positionally with `input as $name` in the order printed (requirement
+  # 4g) — never in argv, the same conversion scripts/gather-tech-debt.sh
+  # already carries (TD-PPagop-26081301) for the identically-shaped
+  # per-item append: $out grows with every hand-flagged issue this repo has
+  # ever carried the label on, unbounded by anything in this script.
+  # Fail-open per issue and loud, never silent — see `warn` above.
+  out="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$out"$'\n'"$entry" \
+    || { warn "array assembly failed at issue #$number"; printf '%s' "$out"; })"
 done < <(jq -c '.[]' <<<"$hits" 2>/dev/null || true)
 
 jq -c 'sort_by(.number)' <<<"$out"

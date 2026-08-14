@@ -351,6 +351,12 @@ assert_doctor "doctor fails an implementation-plan source with no path, as agent
   '.repos[0].sources += ["implementation-plan"]' 1 'list the implementation-plan source with no implementation_plan_path'
 assert_doctor "doctor fails a label set to blocked, which would make its item unselectable" \
   '.unvoid_label = "blocked"' 1 'unvoid_label is "blocked"'
+assert_doctor "doctor fails the refined label set to blocked — the projection would bury the item as it became workable" \
+  '.refined_label = "blocked"' 1 'refined_label is "blocked"'
+assert_doctor "doctor fails a PR label named obsolete, which every draft would then carry as its own close corroboration" \
+  '.pr_label = "obsolete"' 1 'pr_label is "obsolete"'
+assert_doctor "doctor fails a label named Obsolete case-insensitively, as the void guard reads it" \
+  '.review.pr_label = "Obsolete"' 1 'review.pr_label is "Obsolete"'
 assert_doctor "doctor fails an excluded_minutes that leaves the renderer no minute" \
   '.schedule.excluded_minutes = [range(60)]' 1 'excludes every minute of the hour'
 # The stale-lock assertion this used to make is gone, and deliberately: the

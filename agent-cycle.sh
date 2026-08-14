@@ -1072,7 +1072,7 @@ exclude_blocked_or_void_issues() {  # <candidates-json> <repo> <blocked-json> <v
 # same fail-open terms as exclude_claimed_items and
 # exclude_blocked_or_void_items above.
 unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json>
-  local recorded="$1" eligible="${2:-[]}" policy="${3:-{\}}"
+  local recorded="$1" eligible="${2:-[]}" policy="${3:-{\}}" docs
   jq -e 'type == "array"' <<<"$eligible" >/dev/null 2>&1 || eligible='[]'
   jq -e 'type == "object"' <<<"$policy" >/dev/null 2>&1 || policy='{}'
   # Keyed on joined strings through two lookup maps rather than on jq's own
@@ -1080,16 +1080,30 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
   # *subsequence*, not an element, so the obvious `[$repo,$item] | index` form
   # matches things it should not. `\u0000` cannot occur in a repo slug or an
   # item ref minted by any gatherer here, so the join is unambiguous.
-  jq -c --argjson eligible "$eligible" --argjson policy "$policy" '
-    def ikey: ((.repo // "") + "\u0000" + ((.item // "") | tostring));
-    def skey: (ikey + "\u0000" + (.source // ""));
-    (((.needs_refinement // []) | map({key: skey, value: true}) | from_entries)) as $reported
-    | (((.voided // []) | map({key: ikey, value: true}) | from_entries)) as $disposed
-    | [ $eligible[]
-        | select((($policy[(.source // "")] // "exempt") != "required")
-                 and (($reported[skey] // false) | not)
-                 and (($disposed[ikey] // false) | not)) ]
-    ' <<<"$recorded" 2>/dev/null || echo '[]'
+  #
+  # requirement 4g (TD-PPagop-26081401): $eligible is the Script's own
+  # pre-fetched-band denominator (requirement 3x) and grows with every
+  # eligible item across every band and repo this cycle -- unbounded past
+  # this call, and it is what the four verdict-contradiction logging sites
+  # downstream (site 3 of TD-PPagop-26081401) filter into
+  # $unaccounted_json/$unaccounted_retry_json. Leaving this call on argv
+  # would fail it first, silently, into this same function's own fail-open
+  # [] -- an oversized eligible set would then read as "everything is
+  # accounted for" rather than the argv failure it actually is, exactly the
+  # silent-degradation failure mode requirement 4g exists to remove.
+  # $recorded travels alongside it on the same stdin document.
+  docs="$(printf '%s\n' "$recorded" "$eligible")"
+  jq -nc --argjson policy "$policy" '
+    input as $recorded | input as $eligible
+    | def ikey: ((.repo // "") + "\u0000" + ((.item // "") | tostring));
+      def skey: (ikey + "\u0000" + (.source // ""));
+      (($recorded.needs_refinement // []) | map({key: skey, value: true}) | from_entries) as $reported
+      | (($recorded.voided // []) | map({key: ikey, value: true}) | from_entries) as $disposed
+      | [ $eligible[]
+          | select((($policy[(.source // "")] // "exempt") != "required")
+                   and (($reported[skey] // false) | not)
+                   and (($disposed[ikey] // false) | not)) ]
+    ' <<<"$docs" 2>/dev/null || echo '[]'
 }
 
 # Requirement 3x (issue #322): the Script's own answer to "what could the
@@ -2528,20 +2542,25 @@ coordinator_corroborate_retry_or_fallback() {
     return 1
   fi
 
+  # requirement 4g (TD-PPagop-26081401): $unaccounted_json is the unaccounted
+  # eligible items carried whole out of the pre-fetched bands, unbounded past
+  # this jq call, so it arrives on stdin — the only unbounded value at each
+  # call site, everything else (n, total, bands, reason, model fields) stays
+  # bounded by configuration and travels as --arg/--argjson as before.
   log_event "warning" "$(jq -nc --argjson n "$unaccounted_n" --argjson total "$eligible_items_total" \
-    --argjson items "$unaccounted_json" --argjson bands "$unaccounted_bands_json" --arg r "$reason" \
-    '{detail: ("verdict contradiction: the Script found " + ($total | tostring)
+    --argjson bands "$unaccounted_bands_json" --arg r "$reason" \
+    'input as $items | {detail: ("verdict contradiction: the Script found " + ($total | tostring)
                + " eligible item(s) across the pre-fetched bands (unclaimed, unblocked, not void), but "
                + ($n | tostring)
                + " of them — " + (($bands | to_entries | map(.key + " " + (.value | tostring)) | join(", ")))
                + " — were neither selected, covered by a needs_refinement report the Script"
                + " recorded under that item'"'"'s own source, nor by a voided entry it disposed of this cycle"
                + " — the Co-Ordinator'"'"'s stated reason (\"" + $r + "\") does not account for them"),
-      eligible_total: $total, bands: $bands, unaccounted: $items}')"
+      eligible_total: $total, bands: $bands, unaccounted: $items}' <<<"$unaccounted_json")"
   log_event "corroboration" "$(jq -nc --argjson a 1 --arg v "rejected" --argjson total "$eligible_items_total" \
-    --argjson n "$unaccounted_n" --argjson items "$unaccounted_json" --arg r "$reason" \
+    --argjson n "$unaccounted_n" --arg r "$reason" \
     --argjson bands "$unaccounted_bands_json" --argjson m "$coord_model_json" \
-    '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, bands: $bands, unaccounted: $items, reason: $r} + $m')"
+    'input as $items | {attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, bands: $bands, unaccounted: $items, reason: $r} + $m' <<<"$unaccounted_json")"
 
   # --- 5a-retry. One re-prompt, quoting the contradiction (requirement 3v, issue #321) ---
   # A confabulated `none-selected` costs the Script nothing to detect (above),
@@ -2626,13 +2645,24 @@ object, nothing else.
   # decides what gets *processed*, and a report the retry mis-attributes to
   # the wrong source is still a report about an item the addendum asked about
   # — recording it is right even though it will not account for anything.
-  retry_work_order_filtered_json="$(jq -c --argjson unaccounted "$unaccounted_json" '
-    ($unaccounted | map(.item | tostring)) as $u
-    | . + {
-        needs_refinement: ((.needs_refinement // []) | map(select((.item | tostring) as $i | $u | index($i) != null))),
-        voided: ((.voided // []) | map(select((.item | tostring) as $i | $u | index($i) != null)))
+  # requirement 4g (TD-PPagop-26081401): $unaccounted_json is the same
+  # unbounded aggregate site 3's log_event calls above deliver on stdin — a
+  # fifth consumer in this same function, previously still riding in as an
+  # --argjson. Unguarded, so past MAX_ARG_STRLEN this used to die the whole
+  # cycle under set -e rather than degrade. On a jq failure here, falling
+  # back to the unfiltered retry_work_order_json costs at most some
+  # redundant void-guard/refinement-label processing for an item attempt 1
+  # already accounted for — never the silent loss a fallback to "nothing
+  # filtered" would risk.
+  retry_filter_docs="$(printf '%s\n' "$retry_work_order_json" "$unaccounted_json")"
+  retry_work_order_filtered_json="$(jq -nc '
+    input as $wo | input as $unaccounted
+    | ($unaccounted | map(.item | tostring)) as $u
+    | $wo + {
+        needs_refinement: (($wo.needs_refinement // []) | map(select((.item | tostring) as $i | $u | index($i) != null))),
+        voided: (($wo.voided // []) | map(select((.item | tostring) as $i | $u | index($i) != null)))
       }
-    ' <<<"$retry_work_order_json")"
+    ' <<<"$retry_filter_docs" 2>/dev/null || printf '%s' "$retry_work_order_json")"
   log_voided_items "$retry_work_order_filtered_json" "$ordered_repos_json"
   log_needs_refinement_items "$retry_work_order_filtered_json"
 
@@ -2678,19 +2708,22 @@ object, nothing else.
     return 1
   fi
 
+  # requirement 4g (TD-PPagop-26081401): $unaccounted_retry_json is the same
+  # shape as $unaccounted_json above, and just as unbounded, so it too
+  # arrives on stdin rather than as an --argjson.
   log_event "warning" "$(jq -nc --argjson n "$unaccounted_retry_n" --argjson total "$eligible_items_total" \
-    --argjson items "$unaccounted_retry_json" --argjson bands "$unaccounted_retry_bands_json" --arg r "$retry_reason" \
-    '{detail: ("verdict contradiction (retry): the Script found " + ($total | tostring)
+    --argjson bands "$unaccounted_retry_bands_json" --arg r "$retry_reason" \
+    'input as $items | {detail: ("verdict contradiction (retry): the Script found " + ($total | tostring)
                + " eligible item(s) across the pre-fetched bands, but " + ($n | tostring)
                + " — " + (($bands | to_entries | map(.key + " " + (.value | tostring)) | join(", ")))
                + " — remain unaccounted for after the one retry this cycle allows"
                + " — the Co-Ordinator'"'"'s retried reason (\"" + $r + "\") does not account for them"),
-      eligible_total: $total, bands: $bands, unaccounted: $items}')"
+      eligible_total: $total, bands: $bands, unaccounted: $items}' <<<"$unaccounted_retry_json")"
   log_event "corroboration" "$(jq -nc --argjson a 2 --arg v "rejected" --argjson total "$eligible_items_total" \
-    --argjson n "$unaccounted_retry_n" --argjson items "$unaccounted_retry_json" --arg r "$retry_reason" \
+    --argjson n "$unaccounted_retry_n" --arg r "$retry_reason" \
     --argjson bands "$unaccounted_retry_bands_json" \
     --argjson m "$retry_metering_json" --argjson cm "$coord_model_json" \
-    '{attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, bands: $bands, unaccounted: $items, reason: $r} + $m + $cm')"
+    'input as $items | {attempt: $a, verdict: $v, eligible_total: $total, unaccounted_total: $n, bands: $bands, unaccounted: $items, reason: $r} + $m + $cm' <<<"$unaccounted_retry_json")"
 
   # --- 5a-fallback. Deterministic selection (requirement 3v, issue #321) ---
   # Both engagements this cycle failed to corroborate a `none-selected`
@@ -3155,8 +3188,12 @@ maybe_run_enabler() {
     if CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$item" CLAIM_SOURCE="enabler" \
          "$SCRIPT_DIR/lib/claim.sh" claim file enabler "$key" \
          >>"$cycle_dir/claim.log" 2>&1; then
-      claimed_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$claimed_json" 2>/dev/null \
-        || printf '%s' "$claimed_json")"
+      # requirement 4g (TD-PPagop-26081401): $claimed_json grows by one
+      # blocked entry, evidence payload included, per Enabler claim this
+      # cycle — unbounded past this call, so $entry joins it on stdin
+      # rather than riding in as a second --argjson.
+      claimed_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+        <<<"$claimed_json"$'\n'"$entry" 2>/dev/null || printf '%s' "$claimed_json")"
     fi
   done
   n_claimed="$(jq 'length' <<<"$claimed_json" 2>/dev/null || echo 0)"
@@ -3237,8 +3274,12 @@ $(jq . <<<"$input")
     fi
     detect_and_log_limit_hit "$out" || true
     items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>/dev/null || echo '[]')"
+    # requirement 4g (TD-PPagop-26081401): trimmed to {repo, item} per entry,
+    # the most bounded aggregate on TD-PPagop-26081401's list, but it still
+    # grows with the number of items this engagement claimed, so it arrives
+    # on stdin rather than as a second --argjson.
     log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
-      --argjson items "$items_named_json" '{detail: $d, items: $items}')"
+      'input as $items | {detail: $d, items: $items}' <<<"$items_named_json")"
     # The tombstone (requirement 35c) stays a tombstone — releasing it outright
     # would let the next cycle re-engage the same still-unchanged items at
     # Opus prices with nothing new to show for it. Backdating each entry's
@@ -3538,8 +3579,11 @@ maybe_run_refiner() {
     if CLAIM_NODE="$node_name" CLAIM_CYCLE="$cycle_id" CLAIM_ITEM="$item" CLAIM_SOURCE="refiner" \
          "$SCRIPT_DIR/lib/claim.sh" claim file refiner "$key" \
          >>"$cycle_dir/claim.log" 2>&1; then
-      claimed_json="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$claimed_json" 2>/dev/null \
-        || printf '%s' "$claimed_json")"
+      # requirement 4g (TD-PPagop-26081401): same conversion as the
+      # Enabler's own claim accumulator above — $entry joins $claimed_json
+      # on stdin rather than riding in as a second --argjson.
+      claimed_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+        <<<"$claimed_json"$'\n'"$entry" 2>/dev/null || printf '%s' "$claimed_json")"
     fi
   done
   n_claimed="$(jq 'length' <<<"$claimed_json" 2>/dev/null || echo 0)"
@@ -3598,8 +3642,11 @@ $(jq . <<<"$input")
     fi
     detect_and_log_limit_hit "$out" || true
     items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>/dev/null || echo '[]')"
+    # requirement 4g (TD-PPagop-26081401): same conversion as the Enabler's
+    # own unparseable-verdict warning above — $items_named_json arrives on
+    # stdin rather than as a second --argjson.
     log_event "warning" "$(jq -nc --arg d "$detail — no verdicts recorded; the claims stand until gc lets a later cycle retry" \
-      --argjson items "$items_named_json" '{detail: $d, items: $items}')"
+      'input as $items | {detail: $d, items: $items}' <<<"$items_named_json")"
     for (( i = 0; i < n_claimed; i++ )); do
       entry="$(jq -c --argjson i "$i" '.[$i]' <<<"$claimed_json" 2>/dev/null || true)"
       [[ -n "$entry" ]] || continue
@@ -4345,8 +4392,18 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # it: unconditional, regardless of `sources`, because any starting source's
   # item can be claimed.
   repo_claimed_json="$(gather_claimed "$slug")"
-  claimed_json="$(jq -c --arg r "$slug" --argjson items "$repo_claimed_json" \
-    '. + ($items | map({repo: $r} + .))' <<<"$claimed_json")"
+  # requirement 4g (TD-PPagop-26081401): $claimed_json is one of the five
+  # aggregates requirement 4g names as growing with the fleet's own history —
+  # already delivered on stdin — but this repo's own increment,
+  # $repo_claimed_json, used to ride in as a second --argjson, past
+  # MAX_ARG_STRLEN once enough repos' claims had accumulated into it. Both now
+  # arrive as one stdin document. Unguarded — same as before the conversion —
+  # because a claims-fold failure here must not be silently swallowed.
+  claimed_fold_docs="$(printf '%s\n' "$claimed_json" "$repo_claimed_json")"
+  claimed_json="$(jq -nc --arg r "$slug" '
+    input as $claimed | input as $items
+    | $claimed + ($items | map({repo: $r} + .))
+  ' <<<"$claimed_fold_docs")"
   # Requirement 3p/issue #238: the PR numbers a peer already holds a claim on,
   # for this repo. Filtered into the three finishing sources' own arrays below —
   # deterministic code, not something the Co-Ordinator is asked to notice and

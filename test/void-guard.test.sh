@@ -637,6 +637,62 @@ out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "214" "pr-214-abandoned-ee
 assert_eq "an unreadable PR is refused, not treated as innocent" "1" "$rc"
 assert_contains "  ... saying so" "could not be read" "$out"
 
+# The human-applied `obsolete` label (TD-PPagop-26081308) is the other reading
+# an open `-abandoned-`/`-review-` PR can be accepted on: checked live off the
+# same fetch that already read `state`, before the `/files` diff count is ever
+# asked for. `files-222`/`files-223` are deliberately absent, so a stray diff
+# fetch on a labelled PR would fail loudly rather than pass by coincidence.
+: >"$tmp_dir/calls.log"
+printf '{"state": "open", "labels": [{"name": "obsolete"}]}' >"$tmp_dir/pr-222.json"
+assert_eq "an open, still-diff-carrying PR labelled obsolete corroborates an abandoned-draft void" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "222" "pr-222-abandoned-ffffffffffff"; echo $?)"
+assert_eq "  ... without ever fetching its diff" "0" \
+  "$(grep -c 'pulls/222/files' "$tmp_dir/calls.log" || true)"
+
+printf '{"state": "open", "labels": [{"name": "obsolete"}]}' >"$tmp_dir/pr-223.json"
+assert_eq "  ... and the review-feedback shape is read exactly the same way" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "223" "pr-223-review-2071883842"; echo $?)"
+
+# The label match is case-insensitive on the label's own name, and unmoved by
+# other labels sharing the PR — the same "any of the listed labels" reading
+# GitHub's own UI gives a labelled object.
+printf '{"state": "open", "labels": [{"name": "bug"}, {"name": "Obsolete"}]}' >"$tmp_dir/pr-222.json"
+assert_eq "  ... case-insensitively, and alongside other labels" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "222" "pr-222-abandoned-ffffffffffff"; echo $?)"
+
+# The label buys nothing on its own — a PR with a non-empty diff and no
+# `obsolete` label is still refused, whether or not other labels are present.
+printf '{"state": "open", "labels": [{"name": "bug"}]}' >"$tmp_dir/pr-222.json"
+printf '2' >"$tmp_dir/files-222"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "222" "pr-222-abandoned-ffffffffffff")"; rc=$?
+assert_eq "  ... but an unlabelled PR still falls to the diff test" "1" "$rc"
+assert_contains "  ... refused on the outstanding diff" "still changes 2 file(s)" "$out"
+
+# An id of no recognised shape gets the strict reading even when the PR is
+# labelled — the label corroborates only the two shapes 34k actually closes
+# for on the diff claim.
+printf '{"state": "open", "labels": [{"name": "obsolete"}]}' >"$tmp_dir/pr-225.json"
+printf '4' >"$tmp_dir/files-225"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "225" "pr-225-something-else")"; rc=$?
+assert_eq "an id of no recognised shape ignores the label" "1" "$rc"
+assert_contains "  ... and is still refused on the diff" "still changes 4 file(s)" "$out"
+
+# The label is equally inert on the two shapes it was never meant to
+# corroborate: `-conflict-` still reads its own mergeability, and
+# `-superseded-` still reads its own author/newer-bump pair, whatever the PR
+# is labelled.
+printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}, "labels": [{"name": "obsolete"}]}' \
+  >"$tmp_dir/pr-226.json"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "226" "pr-226-conflict-000000000000")"; rc=$?
+assert_eq "a labelled but still-conflicting PR is refused on the conflict shape" "1" "$rc"
+assert_contains "  ... on the conflict, not the label" "still conflicting" "$out"
+
+printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}, "labels": [{"name": "obsolete"}]}' \
+  >"$tmp_dir/pr-227.json"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "227" "pr-227-superseded-000000000000")"; rc=$?
+assert_eq "a labelled PR that is not Dependabot's own is refused on the superseded shape" "1" "$rc"
+assert_contains "  ... on the author, not the label" "authored by someone-else" "$out"
+
 # `-conflict-` is the shape requirement 34k closes *nothing* for
 # (TD-PPagop-26080901): the void says the conflict resolved, not the pull
 # request, which stays a live PR of ours carrying its full diff. So the diff
