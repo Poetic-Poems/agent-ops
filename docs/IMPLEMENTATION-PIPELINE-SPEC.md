@@ -5076,7 +5076,30 @@ runs unattended.
     and the blocked/void pass further down (3u), so an item claimed, blocked
     or voided the same cycle it first appears still gets one — those
     exclusions only ever narrow what the Co-Ordinator is shown, never what
-    this fleet has seen. `bootstrap` exists because a node's first cycle
+    this fleet has seen. Seven sources, not all eleven that produce
+    selections, and by construction rather than by oversight: the event
+    exists only where a pre-fetched candidate array does, so the other four
+    are outside it and their pickups land permanently in
+    `coverage.selection_only` (component 21). Three of the four —
+    `implementation-plan`, `project-review` and `failed-runs` — requirement
+    3q itself names as Co-Ordinator-derived, with no pre-fetched array to
+    hang the event on. The fourth, `human-visibility` (requirement 38e), has
+    an array but is deliberately left out: `gather_human_visibility_hygiene`
+    returns at most one candidate per repo whose `ref` is a digest of the
+    *whole* surviving violation set
+    (`scripts/gather-human-visibility-hygiene.sh`), so a violation appearing
+    or clearing beside another mints a fresh `ref` — a fresh `first-seen`,
+    dated now — and restarts the clock on a violation that had in truth been
+    visible for days, understating the
+    latency the figure exists to report. Nor is the upstream array an anchor:
+    `human_visibility_violations` (`lib/human-visibility-hygiene.sh`) carries
+    no `ref` at all, so `emit_first_seen` would log nothing there, and a
+    synthetic one keyed on `pr_url` could never pair with the composite `ref`
+    the eventual `selection` carries. Measuring this source honestly means
+    re-scoping its `ref` to per-violation identity, which requirement 3i's
+    expiry-by-irrelevance rule for that ref depends on; until that is done
+    the boundary stands and is disclosed rather than papered over.
+    `bootstrap` exists because a node's first cycle
     emitting `first-seen` at all — freshly onboarded, or the cycle this
     feature first deployed to it — reports nearly everything its gather sees
     as "new", when most of it has in truth existed for a while;
@@ -8434,7 +8457,14 @@ What exists, and the requirements each part answers to:
     half of the pair is reported instead under `coverage`: `paired`,
     `first_seen_only` (seen, not yet claimed) and `selection_only` (claimed,
     but never `first-seen` — most often an item that predates this
-    instrumentation). `cadence_bound_minutes` echoes `config.json`'s
+    instrumentation). `selection_only` is also where every pickup from the
+    four sources requirement 33 leaves uncovered lands, and lands
+    permanently: `pickup_latency` describes the seven pre-fetched arrays that
+    emit `first-seen`, not the fleet's whole intake, so a reader comparing
+    `median_seconds` against issue #248's own target is reading a
+    7-of-11-source figure by construction — `coverage` is what says so, and
+    requirement 33 is where the four are named.
+    `cadence_bound_minutes` echoes `config.json`'s
     `schedule.cycle_interval_minutes` — the floor under every latency figure
     above, since a poll-based `first-seen` is only as fresh as the gather
     that logged it.
