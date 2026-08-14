@@ -4867,7 +4867,28 @@ runs unattended.
     that says to retry once a node can read GitHub again, not the generic
     "fix your required checks" wording a real failure earns, so an Enabler
     reading a queue of these does not mistake a degraded node for N unrelated
-    broken pull requests. A code-scanning read that could not be asked at all
+    broken pull requests.
+
+    A `gh` degraded enough to fail this read is rarely wrong only once
+    (TD-PPagop-26081404): the Script logs a `review-gate-checks-read`
+    bookkeeping event — `{ok: true}` or `{ok: false}` — on every evaluation of
+    this gate regardless of outcome, and passes this node's own slice of its
+    log to `lib/review-gate.sh`'s `review_gate_unknown_streak_verdict`, which
+    reuses `lib/crash-loop.sh`'s consecutive-run-resets-on-success shape
+    (requirement 2.7) scoped to one node rather than the whole fleet — a peer's
+    successful read must never reset this node's own streak, and a
+    successful read of its own (a `dirty` verdict from either check, or the
+    non-blocking alerts `unknown`, all three prove the required-checks read
+    itself succeeded) does. Once this node's own run of consecutive
+    required-checks-unreadable events reaches three, the per-item `warning`
+    above is replaced by one `review-gate-checks-degraded` event naming the
+    node, the gate and the streak's count — not filed as an issue, unlike
+    requirement 2.7's crash loop, since this is a pattern worth a human's
+    attention in the log, not (yet) worth paging one over — and echoed to
+    stderr so it is visible in `cron.log` as well as the union log. The
+    handback itself is unchanged either way: an unread required-check list
+    still refuses the handoff exactly like a genuinely failing one. A code-
+    scanning read that could not be asked at all
     (no `security_events` permission on this token, code scanning not
     enabled, an unreachable API) is the *other* `unknown`, unrelated to the
     node's ability to read required checks: it exits 0, so the handoff
@@ -4962,7 +4983,12 @@ runs unattended.
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
     `disabled`, `enabled`, `salvage`, `chained`,
-    `warning`, `cycle-end`. A `dependabot-rebase-requested` (requirement 3s)
+    `review-gate-checks-read`, `review-gate-checks-degraded`,
+    `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
+    TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
+    `ok: true|false`; `review-gate-checks-degraded` is the escalation
+    `review_gate_unknown_streak_verdict` triggers, carrying the verdict's own
+    `node`, `gate`, `count`, `first_ts` and `last_ts`. A `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
     `warning` whose `detail` names the same repo and number instead, since
@@ -8115,8 +8141,21 @@ What exists, and the requirements each part answers to:
     `unknown`, never `clean` (agent-ops#270). An alerts API that
     cannot be asked at all is `unknown`, never `clean` — the same "could not
     check is not a pass" contract requirement 24a's `scripts/preview-deploy.sh`
-    already keeps. `REVIEW_GATE_GH` stubs `gh` for tests. Unit-tested
-    (`test/review-gate.test.sh`); must pass `shellcheck`.
+    already keeps. `REVIEW_GATE_GH` stubs `gh` for tests.
+
+    `review_gate_unknown_streak_verdict THRESHOLD NODE` (TD-PPagop-26081404),
+    reading a `review-gate-checks-read` event stream on stdin, prints one
+    `{node, gate, count, first_ts, last_ts}` object when NODE's own most
+    recent run of consecutive `{ok: false}` events reaches THRESHOLD or more,
+    with no `{ok: true}` from the same node in between; prints nothing
+    otherwise, including for a THRESHOLD under 1 (the off switch, matching
+    `lib/crash-loop.sh`'s `crash_loop_verdict`). It reuses that function's
+    reduce-over-a-filtered-stream, run-resets-on-success shape rather than
+    calling into it, because `crash_loop_verdict` counts fleet-wide — one run
+    shared by every node — where a `gh` degraded on one node is a per-node
+    fact a peer's success must never reset.
+
+    Unit-tested (`test/review-gate.test.sh`); must pass `shellcheck`.
 21. `scripts/pickup-metrics.sh` — a read-only operator report, like
     `scripts/watch-node.sh` (component 11) and `scripts/check-node-compose.sh`
     (component 12): answers issue #248's acceptance 5 (no increase in
@@ -9219,6 +9258,16 @@ pull request, run the ones the change touches and any it could regress.
    specific wording a genuine failure earns, which would send an Enabler
    looking for a defect that is not there.
 
+   The same file also passes for `review_gate_unknown_streak_verdict`
+   (TD-PPagop-26081404): one occurrence, and two, both print nothing — the
+   threshold is not reached yet; a third *consecutive* occurrence for the same
+   node prints one object naming that node, `gate: "required-checks"` and
+   `count: 3`; a different node's own run stays a separate count, asserted
+   both ways — the first node's run still escalates when interleaved with a
+   second node's, and the second node's own count is its own, not the
+   interleaved total; and a successful read (`{ok: true}`) resets a node's
+   streak, seeding the next run at one rather than continuing the old one.
+
    What `agent-cycle.sh` then *does* with each verdict is asserted separately,
    by `test/review-gate-wiring.test.sh`, against the ready-gate block lifted
    verbatim from the script — every one of the four verdicts leaves the same
@@ -9226,11 +9275,16 @@ pull request, run the ones the change touches and any it could regress.
    actually distinguishable: `dirty` records the handback naming the fault and
    ends the cycle; the blocking `unknown` ends it too but logs the node-level
    `warning` first and hands back the retry `unblock_condition` rather than
-   the required-checks one; the non-blocking `unknown` and `clean` both carry
-   on into the rest of the handoff, recording nothing against the item. The
-   last of those is what pins the exit status as the discriminator: a block
-   that read the word alone would stall every pull request on a node whose
-   token cannot see code-scanning alerts.
+   the required-checks one — unless `review_gate_unknown_streak_verdict`
+   (stubbed here, covered by its own test above) reports this node's streak
+   has crossed the threshold, in which case the block logs one
+   `review-gate-checks-degraded` event naming the count instead of the
+   per-item `warning`, while the handback is unchanged; the non-blocking
+   `unknown` and `clean` both carry on into the rest of the handoff, recording
+   only the `review-gate-checks-read` bookkeeping event the streak verdict
+   needs against the item. The last of those is what pins the exit status as
+   the discriminator: a block that read the word alone would stall every pull
+   request on a node whose token cannot see code-scanning alerts.
 8e. **A pull request nobody could hand off reaches the Enabler, not the human
    (requirement 32a).** Drive a cycle whose Reviewer answers `blocked` (and again
    with the legacy `needs-human`): the cycle must log an `attempt-failed` for the
