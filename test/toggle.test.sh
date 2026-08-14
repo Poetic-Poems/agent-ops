@@ -519,6 +519,17 @@ assert_eq "--disable --this-node writes the local record" "1" \
 assert_eq "--disable --this-node writes no fleet flag" "0" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
 
+# `--status` has to say which of the two levels is down and which command
+# lifts it (requirement 2.3) — an operator who finds a node stopped learns
+# nothing from "DISABLED" alone. Here only the local record is set.
+local_only_status="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status reports the node-scoped switch as disabled" \
+  "switch:   DISABLED" "$local_only_status"
+assert_contains "and reports no fleet switch alongside it" \
+  "fleet:    not set" "$local_only_status"
+assert_contains "naming --enable --this-node as what clears it" \
+  "--enable --this-node clears it" "$local_only_status"
+
 # A peer is unaffected: no fleet flag was ever set, so its own cycle runs.
 # (The log is reset first: it still carries the fleet-switch stand-downs the
 # earlier block in this file logged, before that flag was cleared.)
@@ -540,9 +551,33 @@ assert_eq "--enable --this-node leaves the fleet flag set" "1" \
 assert_eq "--enable --this-node clears the local record" "0" \
   "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
 
+# The mirror image of the `--status` case above: the fleet flag alone is set,
+# so what this node needs told is that a plain `--enable` is the one that
+# lifts it, and that nothing local is holding it down as well.
+fleet_only_status="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status reports a fleet switch this node did not set" \
+  "fleet:    DISABLED" "$fleet_only_status"
+assert_contains "carrying the record's own reason" "fleet freeze" "$fleet_only_status"
+assert_contains "and says this node adds no node-scoped disable of its own" \
+  "no node-scoped disable of its own" "$fleet_only_status"
+assert_contains "so a plain --enable resumes the whole fleet" \
+  "every node resumes" "$fleet_only_status"
+
 # A node carrying both a node-scoped disable and the (still-set) fleet switch
 # stays down when only the node-scoped one is cleared.
 run_node "$a_home" agent-cycle.sh --disable "editing again" --this-node --for 1h >/dev/null 2>&1
+
+# With both set, `--status` has to spell out the asymmetry rather than
+# reporting two disables and leaving the operator to guess which `--enable`
+# undoes which — the case the distinction exists for.
+both_status="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status under both switches reports the node-scoped one" \
+  "switch:   DISABLED" "$both_status"
+assert_contains "and the fleet one beside it" "fleet:    DISABLED" "$both_status"
+assert_contains "saying --enable clears both" "--enable clears both" "$both_status"
+assert_contains "and that --enable --this-node leaves the node down under the fleet switch" \
+  "leaving the fleet switch" "$both_status"
+
 rm -f "$a_log"
 run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
 assert_eq "a node under both switches exits cleanly" "0" "$?"

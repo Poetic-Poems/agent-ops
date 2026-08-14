@@ -8839,7 +8839,13 @@ pull request, run the ones the change touches and any it could regress.
    the fleet one next; a node-scoped disable clears itself and logs `disable
    expired` on the same TTL terms as the fleet switch; and `--this-node`
    given with a command other than `--disable`/`--enable` (`--status` here)
-   exits 64 naming the two it modifies.
+   exits 64 naming the two it modifies. It covers `--status`'s own
+   distinction in all three combinations: with only the local record set it
+   reports no fleet switch and names `--enable --this-node` as what clears
+   it; with only the fleet flag set it reports that record, its reason, and
+   that this node adds no node-scoped disable of its own; with both set it
+   reports both and spells out that `--enable` clears both while `--enable
+   --this-node` leaves the node down under the fleet switch.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
