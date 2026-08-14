@@ -27,11 +27,20 @@
 #     read `review_gate_verdict`'s exit status; a `|| true` here is the
 #     regression this file exists to catch.
 #
+# TD-PPagop-26081404 added one more property: the blocking `unknown`'s own
+# `warning` is a per-item event, and a `gh` degraded enough to earn one rarely
+# earns only one — once `review_gate_unknown_streak_verdict` (its own test in
+# test/review-gate.test.sh) reports this node's run has crossed the
+# threshold, the block must log one `review-gate-checks-degraded` escalation
+# instead of piling another `warning` on top, while still refusing the
+# handoff exactly as before.
+#
 # The block is lifted verbatim out of agent-cycle.sh, the same way
 # test/closing-keyword-wiring.test.sh lifts its own, so the assertions are
 # about the shipped code rather than a copy of its logic. Its callees are
-# stubbed: `review_gate_verdict` (covered by its own test), `log_event` and
-# `log_reviewer_handback`.
+# stubbed: `review_gate_verdict` and `review_gate_unknown_streak_verdict`
+# (each covered by its own test in test/review-gate.test.sh), `log_event`
+# and `log_reviewer_handback`.
 #
 # No test framework is used (none exists elsewhere in this repo). Run
 # directly:
@@ -99,24 +108,36 @@ fi
 
 URL="https://github.com/Poetic-Poems/poetic-fiddle/pull/198"
 
-# run_gate_block VERDICT RC
+# run_gate_block VERDICT RC [STREAK_JSON]
 # Runs the block under the same `set -euo pipefail` agent-cycle.sh runs under,
 # with `review_gate_verdict` stubbed to print VERDICT (a literal `clean` /
-# `dirty<TAB>reason` / `unknown<TAB>reason`) and exit RC. Prints every
-# `log_event` call as `<kind><TAB><detail>`, every `log_reviewer_handback` as
-# `handback<TAB><detail><TAB><unblock_condition>`, then `--` if the block ran
-# to the end rather than ending the cycle.
+# `dirty<TAB>reason` / `unknown<TAB>reason`) and exit RC, and
+# `review_gate_unknown_streak_verdict` (TD-PPagop-26081404) stubbed to print
+# STREAK_JSON (empty by default — no streak reached). `node_name`,
+# `log_file` and `review_gate_unknown_streak_after` are defined the way
+# agent-cycle.sh's own top level defines them; the streak function is
+# stubbed rather than run for real, so their values only need to exist, not
+# to be meaningful — `log_file` still has to be a real, readable path, since
+# the block redirects it into the (stubbed) function exactly as it would the
+# real one. Prints every `log_event` call as `<kind><TAB><detail-or-count>`,
+# every `log_reviewer_handback` as `handback<TAB><detail><TAB><unblock_condition>`,
+# then `--` if the block ran to the end rather than ending the cycle.
 # shellcheck disable=SC2016  # The harness's own `$1`/`$2`/`$3`, written out literally for it to expand, not this shell's.
 run_gate_block() {
-  local verdict="$1" rc="$2" harness="$tmp_dir/gate-harness.sh"
-  local events="$tmp_dir/events"
+  local verdict="$1" rc="$2" streak_json="${3:-}" harness="$tmp_dir/gate-harness.sh"
+  local events="$tmp_dir/events" node_log="$tmp_dir/node-log.jsonl"
+  : > "$node_log"
   {
     printf '%s\n' 'set -euo pipefail'
     printf 'impl_pr_url=%q\n' "$URL"
     printf '%s\n' 'work_order_json='"'"'{"default_branch":"main"}'"'"''
-    printf '%s\n' 'log_event() { printf "%s\t%s\n" "$1" "$(jq -r ".detail // \"\"" <<<"$2")" >>'"$(printf '%q' "$events")"'; }'
+    printf 'node_name=%q\n' "n1"
+    printf 'log_file=%q\n' "$node_log"
+    printf '%s\n' 'review_gate_unknown_streak_after=3'
+    printf '%s\n' 'log_event() { printf "%s\t%s\n" "$1" "$(jq -r ".detail // .count // \"\"" <<<"$2")" >>'"$(printf '%q' "$events")"'; }'
     printf '%s\n' 'log_reviewer_handback() { printf "handback\t%s\t%s\n" "$1" "${3:-}" >>'"$(printf '%q' "$events")"'; }'
     printf 'review_gate_verdict() { printf %%s %q; return %q; }\n' "$verdict" "$rc"
+    printf 'review_gate_unknown_streak_verdict() { cat >/dev/null; printf %%s %q; }\n' "$streak_json"
     printf '%s\n' "$gate_block"
     printf '%s\n' 'printf -- "--\n" >>'"$(printf '%q' "$events")"''
   } > "$harness"
@@ -154,6 +175,22 @@ assert_contains "  ... and a handback pointing at retrying once GitHub can be re
 assert_lacks "  ... never the required-checks wording, which names nothing to fix here" \
   "Get every required check green" "$out"
 
+# --- the blocking unknown, streak escalated: one loud event, not another warning
+# TD-PPagop-26081404: once `review_gate_unknown_streak_verdict` reports this
+# node's run has crossed the threshold, the per-item node-level `warning`
+# above is replaced by one `review-gate-checks-degraded` event naming the
+# streak — the handback itself is unchanged (still refuses the handoff, still
+# points at retrying, never at the pull request).
+STREAK='{"node":"n1","gate":"required-checks","count":3,"first_ts":"2026-08-14T10:00:00Z","last_ts":"2026-08-14T10:30:00Z"}'
+out="$(run_gate_block "unknown	$UNREADABLE" 1 "$STREAK")"
+assert_eq "an escalated streak still refuses the handoff" "no" "$(reached_end "$out")"
+assert_contains "  ... logging the escalation event naming the count" \
+  "review-gate-checks-degraded	3" "$out"
+assert_lacks "  ... instead of the per-item node-level warning" \
+  "warning	" "$out"
+assert_contains "  ... and still hands back with the same retry unblock_condition" \
+  "Retry once a node can read GitHub" "$out"
+
 # --- the non-blocking unknown: exit 0, same word, opposite consequence --------
 # The alerts read could not be asked. Its own warning is logged further down
 # agent-cycle.sh, past this extract; what must hold here is that the handoff
@@ -167,11 +204,16 @@ assert_lacks "  ... and records nothing against the item" "handback" "$out"
 assert_lacks "  ... nor the node-level warning the blocking unknown earns" \
   "could not read" "$out"
 
-# --- clean: nothing at all ----------------------------------------------------
+# --- clean: nothing but the streak bookkeeping ---------------------------------
+# TD-PPagop-26081404's bookkeeping event fires on every evaluation regardless
+# of outcome — `review_gate_unknown_streak_verdict` needs it to tell a reset
+# from a continuation — but it carries no warning or handback of its own.
 out="$(run_gate_block "clean" 0)"
 assert_eq "a clean verdict carries on to the rest of the handoff" "yes" "$(reached_end "$out")"
-assert_lacks "  ... logging nothing" "warning" "$out"
-assert_lacks "  ... and recording nothing" "handback" "$out"
+assert_contains "  ... logging only the streak bookkeeping event" \
+  "review-gate-checks-read	" "$out"
+assert_lacks "  ... no warning" "warning" "$out"
+assert_lacks "  ... and no handback" "handback" "$out"
 
 echo
 if (( failures )); then

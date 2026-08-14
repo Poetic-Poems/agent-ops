@@ -319,6 +319,18 @@ enabler_assignee="$(cfg '.enabler_assignee')"
 crash_loop_after="$(cfg '.crash_loop_after')"
 [[ "$crash_loop_after" =~ ^[0-9]+$ ]] || crash_loop_after=0
 crash_loop_repo="$(cfg '.crash_loop_repo')"
+# TD-PPagop-26081404: how many consecutive times, on this one node, the
+# required-checks read at the ready-gate (requirement 31c) must come back
+# `unknown` before its per-item node-level `warning` is replaced by one
+# louder escalation event naming the streak — see the ready-gate block below
+# and `review_gate_unknown_streak_verdict` (lib/review-gate.sh). Deliberately
+# not `crash_loop_after`: that threshold governs a different escalation
+# (fleet-wide, issue-filing) with its own semantics, and reusing its config
+# key would let a tuning change for one silently retune the other. A fixed
+# constant rather than its own config key, since the fix this exists for is
+# "notice a repeating pattern sooner", not something an installation needs to
+# tune per repo.
+review_gate_unknown_streak_after=3
 if ! config_enabler_assignee_ok "$enabler_model" "$enabler_assignee"; then
   echo "agent-cycle: enabler_model is set but enabler_assignee is not configured — refusing to run with an unassigned escalation target; set enabler_assignee in config.json or clear enabler_model to disable the Enabler" >&2
   exit 1
@@ -6382,6 +6394,17 @@ if [[ "$rev_status" == "ready" ]]; then
   fi
   gate_word=""; gate_reason=""
   IFS=$'\t' read -r gate_word gate_reason <<<"$gate_result" || true
+  # TD-PPagop-26081404: bookkeeping for `review_gate_unknown_streak_verdict`,
+  # logged unconditionally — regardless of which branch below is taken, or
+  # none of them — so a run of consecutive failures can be told apart from
+  # ordinary noise. `ok` is false only for the specific blocking `unknown`
+  # case just below; a `dirty` verdict (from either check) or the non-blocking
+  # alerts `unknown` both prove the required-checks read itself succeeded, and
+  # reset the streak exactly the way a Co-Ordinator success resets
+  # `crash_loop_verdict` (lib/crash-loop.sh).
+  gate_checks_ok=true
+  [[ "$gate_word" == "unknown" && "$gate_rc" -ne 0 ]] && gate_checks_ok=false
+  log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$gate_checks_ok" '{ok: $ok}')"
   if [[ "$gate_word" == "dirty" ]]; then
     log_reviewer_handback \
       "the Reviewer reported ready, but $impl_pr_url is not safe to hand off: $gate_reason" \
@@ -6396,8 +6419,23 @@ if [[ "$rev_status" == "ready" ]]; then
     # exactly like a genuinely failing one, and its unblock_condition names
     # the node-level cause rather than telling the Enabler to inspect a pull
     # request that may already be fine.
-    log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
-      '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
+    #
+    # TD-PPagop-26081404: `gh` degraded enough to fail this read is rarely
+    # wrong once — a node past a rate limit, or fighting a transient auth
+    # problem, is typically wrong for several consecutive items, and each one
+    # earning its own warning buries the pattern a human would actually act
+    # on. Once this node's own log shows `review_gate_unknown_streak_after`
+    # of these in a row, one louder escalation event replaces the per-item
+    # warning instead of piling another one on top of it.
+    streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
+    if [[ -n "$streak_json" ]]; then
+      log_event "review-gate-checks-degraded" "$streak_json"
+      streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
+      echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
+    else
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
+        '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
+    fi
     log_reviewer_handback \
       "the Reviewer reported ready, but $impl_pr_url's required checks could not be confirmed: $gate_reason" \
       "$impl_pr_url" "Retry once a node can read GitHub's required-checks API for this pull request — nothing found here implicates the pull request itself."

@@ -74,6 +74,13 @@
 # are told apart by `review_gate_verdict`'s own exit status, not by the word
 # alone — see its own header.
 #
+# `review_gate_unknown_streak_verdict` (TD-PPagop-26081404) is the follow-up
+# to the node-level `warning` above: a `gh` degraded enough to fail the
+# required-checks read rarely fails it only once, so it turns a run of
+# consecutive per-node failures into one louder escalation event instead of
+# one warning per item — see its own header for how it reuses
+# `lib/crash-loop.sh`'s shape.
+#
 # Sourced, never executed: no shell options are set here, matching every
 # other lib/*.sh — the caller (agent-cycle.sh runs under `set -euo pipefail`;
 # a test, `set -uo pipefail`) owns those.
@@ -313,4 +320,55 @@ review_gate_verdict() {
 
   printf 'clean'
   return 0
+}
+
+# review_gate_unknown_streak_verdict THRESHOLD NODE < event-stream.jsonl
+# Print one JSON object — {node, gate, count, first_ts, last_ts} — when NODE's
+# most recent run of consecutive `review-gate-checks-read` events with
+# `ok: false` reaches THRESHOLD or more, with no successful read of the same
+# gate by the same node in between; print nothing otherwise. Same
+# THRESHOLD-off-switch convention as `lib/crash-loop.sh`'s
+# `crash_loop_verdict`: 0 (or unset) prints nothing.
+#
+# TD-PPagop-26081404 (a follow-up to TD-PPagop-26081305): agent-cycle.sh's
+# ready-gate block logs its own node-level `warning` every time this node's
+# `gh` fails to read a pull request's required checks — a fact about the node,
+# not the pull request, but a `gh` degraded enough to fail this once rarely
+# fails it only once, so a run of them buried the same N-warnings-not-one-
+# loud-signal problem `lib/crash-loop.sh` already exists to solve for the
+# Co-Ordinator. That existing shape is reused here — the same reduce-over-a-
+# filtered-stream, same-run-resets-on-success structure as
+# `crash_loop_verdict` — rather than reused verbatim: `crash_loop_verdict`
+# counts fleet-wide (one run shared by every node, keyed on matching
+# `detail`), where this node's own degraded `gh` is a per-node fact a peer's
+# success must never reset, so grouping had to move from "the whole stream"
+# to "this node's own slice of it".
+#
+# The caller logs one `review-gate-checks-read` event per ready-gate
+# evaluation regardless of outcome (`{ok: true}` for `clean`/`dirty`/the
+# non-blocking alerts `unknown` — all three prove the required-checks read
+# itself succeeded — `{ok: false}` only for the blocking `unknown`), so this
+# reader never has to infer a reset from the *absence* of a failure the way it
+# would if only failures were logged.
+review_gate_unknown_streak_verdict() {
+  local threshold="${1:-0}" node="${2:-}"
+  if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )) || [[ -z "$node" ]]; then
+    return 0
+  fi
+  jq -c -R -s --argjson threshold "$threshold" --arg node "$node" '
+    [ splits("\n") | select(length > 0) | (fromjson? // empty) ]
+    | map(select(.event == "review-gate-checks-read" and (.node // "") == $node))
+    | reduce .[] as $e (
+        {count: 0, first_ts: null, last_ts: null};
+        if ($e.ok // false) then
+          {count: 0, first_ts: null, last_ts: null}
+        elif .count > 0 then
+          {count: (.count + 1), first_ts: .first_ts, last_ts: ($e.ts // .last_ts)}
+        else
+          {count: 1, first_ts: ($e.ts // null), last_ts: ($e.ts // null)}
+        end
+      )
+    | select(.count >= $threshold)
+    | {node: $node, gate: "required-checks"} + .
+  ' 2>/dev/null || true
 }
