@@ -5376,7 +5376,7 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # own source (issue #284's decision 2), never register-hygiene's: a violation
 # here means finished work is invisible to the human whose merge everything
 # waits on, ranked immediately after `merge-conflicts` (config.schema.json),
-# the same "finishing beats starting" class as the three sources around it —
+# the same "finishing beats starting" class as the four sources around it —
 # register-hygiene's cosmetic-repair, last-place rationale does not describe
 # it. Assigned, not appended: unlike `register_hygiene` above (which two
 # passes can each contribute to — the plain gather and the void
@@ -5445,19 +5445,22 @@ fi
 #     register ids, alongside the one 34i already makes for that repo's
 #     blocked ones — the recorded subtraction above is what keeps that
 #     residue, and so this read, bounded;
-#   - liveness, for the four shapes the cycle already gathers as structured
-#     data each cycle (TD-PPagop-26081303): a `dependabot-alert-<n>`/
+#   - liveness, for the five shapes the cycle already gathers as structured
+#     data each cycle (TD-PPagop-26081303, extended by TD-PPagop-26081409):
+#     a `dependabot-alert-<n>`/
 #     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, either
 #     merge-conflicts shape (`pr-<n>-conflict-<head-sha>`, which requirement
 #     34k deliberately excludes from its own close, and
 #     `pr-<n>-superseded-<head-sha>`, which it closes — same gather, so the
-#     same test decides both), or a `failed-run-<…>` is
+#     same test decides both), a `pr-<n>-dequeued-<head-sha>` (requirement 3z,
+#     excluded from 34k's close for the same reason as the conflict shape), or
+#     a `failed-run-<…>` is
 #     actioned once its id is absent from this cycle's own gather for that
 #     source, and that gather succeeded (`void_liveness_actioned`,
 #     lib/void-liveness.sh) — read off the same tee files the repo loop
-#     already wrote for the first three, and one further
+#     already wrote for the first four, and one further
 #     `gather_workflow_basenames` call per repo with still-unretired
-#     `failed-run-` void ids for the fourth; and
+#     `failed-run-` void ids for the fifth; and
 #   - a merged pull request, for a project-review ref, or a checked task-list
 #     box, for an implementation-plan task id — the same on-demand readers
 #     34i already calls for the blocked set (`gather_review_status`,
@@ -5940,7 +5943,7 @@ if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, dequeued pull request, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
@@ -6477,7 +6480,7 @@ fi
 preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
   "$source_states_json" "$preflight_register_json")"
 # The ancestry check is the one live `gh` call in this section (lib/preflight.sh's
-# header explains why it is gated to the three sources whose branch predates the
+# header explains why it is gated to the four sources whose branch predates the
 # claim), so it only runs when the cheaper, pure checks above found nothing.
 if [[ -z "$preflight_reason" ]] && preflight_existing_branch_source "$selected_source"; then
   preflight_reason="$(preflight_branch_merged_reason "$selected_repo" "$selected_default_branch" "$selected_branch")"

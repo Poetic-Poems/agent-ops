@@ -192,6 +192,16 @@ out="$(run "$c" '[{"item":"pr-264-conflict-abc123def456","detail":"the conflict 
 assert_eq "a conflict-shaped void is never actioned here" "" "$out"
 assert_eq "and gh is never even called for it" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
 
+# --- Case 4b-ii: a dequeued void likewise names a pull request and is left alone --
+# `pr-<n>-dequeued-<head-sha>` (requirement 3z, TD-PPagop-26081409) makes the same
+# shape of claim `-conflict-` does — the *dequeue* is gone, not the pull request,
+# which stays live and ready, waiting on the human's own re-queue — so it carries
+# the identical exclusion.
+c="$tmp_dir/case4b2"; mkdir -p "$c"
+out="$(run "$c" '[{"item":"pr-266-dequeued-abc123def456","detail":"the merge-group failure was fixed","stage":"coordinator"}]')"
+assert_eq "a dequeued-shaped void is never actioned here" "" "$out"
+assert_eq "and gh is never even called for it either" "" "$(cat "$c/calls.log" 2>/dev/null || true)"
+
 # --- Case 4c: a Dependabot supersession void closes through the ordinary branch ---
 # A superseded Dependabot bump mints the distinct `pr-<n>-superseded-…` shape
 # (scripts/gather-merge-conflicts.sh, TD-PPagop-26081304) — its claim is that the

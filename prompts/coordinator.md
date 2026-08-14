@@ -426,7 +426,7 @@ source priority, with no edit to this file:
   proceed. See "Merge conflicts" below.
 - **dequeued** — pull requests this system raised that GitHub's merge queue
   removed over a merge-group checks failure without merging, handed to you
-  **pre-fetched** in each repo's `dequeued` array. Fourth, alongside
+  **pre-fetched** in each repo's `dequeued` array. Fifth, immediately after
   merge-conflicts and for the identical reason: a diagnose-and-fix on a PR a
   human is waiting to land beats starting anything new, and until the
   merge-group failure is fixed it cannot be re-queued. See "Dequeued pull
@@ -893,7 +893,7 @@ read to find out.
   register-only editing by construction the way a `register-hygiene` repair
   is, so do not default it to trivial without checking what the fix actually
   touches.
-- **No `branch`**, as for register-hygiene and every source but the three
+- **No `branch`**, as for register-hygiene and every source but the four
   finishing ones: the Script derives and creates the claim branch (`td/<id>`)
   itself.
 

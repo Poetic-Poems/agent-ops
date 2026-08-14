@@ -2388,7 +2388,7 @@ runs unattended.
    **`void` is removed from `coordinator_input` entirely.** Every band the
    Script pre-fetches whole is now void-filtered before the Co-Ordinator ever
    runs, so a raw list for it to apply that same judgement to by eye no
-   longer has a use the eight pre-fetched bands need — and the three sources
+   longer has a use the nine pre-fetched bands need — and the three sources
    the Co-Ordinator still derives itself (`project-review`, `failed-runs`,
    `implementation-plan`) carry no array in `coordinator_input` for the Script
    to check a list against in the first place (requirement 3y's arrays for two
@@ -4543,7 +4543,8 @@ runs unattended.
     PR-derived sources do have one, but they do not need this rule, because
     their refs are scoped to the round or the head SHA that produced them
     (`pr-<n>-review-<review-id>`, `pr-<n>-conflict-<head-sha>`,
-    `pr-<n>-superseded-<head-sha>`, `pr-<n>-abandoned-<head-sha>` —
+    `pr-<n>-superseded-<head-sha>`, `pr-<n>-dequeued-<head-sha>`,
+    `pr-<n>-abandoned-<head-sha>` —
     requirement 20): a human reviewing again,
     or a commit landing on the branch, mints a fresh item id that no block
     covers, so evidence arriving there is never held behind a stale marker.
@@ -5640,9 +5641,10 @@ runs unattended.
       a URL citation is unaffected, since it carries its own `owner/repo`
       regardless of whether the entry names one. One item shape is decided by
       its id, rather than by the free-text body/branch test: a finishing-source
-      item **is** a pull request — requirements 3e, 3g and 23 mint its id as
+      item **is** a pull request — requirements 3e, 3g, 3z and 23 mint its id as
       `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
-      `pr-<n>-conflict-<head-sha>` or `pr-<n>-superseded-<head-sha>` — so a
+      `pr-<n>-conflict-<head-sha>`, `pr-<n>-superseded-<head-sha>` or
+      `pr-<n>-dequeued-<head-sha>` — so a
       citation of pull request `<n>`
       names item `pr-<n>-…`'s own pull request by the id's own construction,
       and the id, not the citation text, decides which live check applies to
@@ -5690,6 +5692,18 @@ runs unattended.
         is accepted — the same asymmetry the gatherer chose in the other
         direction, admitting a candidate on `CONFLICTING` and never on the
         transient `UNKNOWN`.
+      - `pr-<n>-dequeued-…` — a corroborated void of this shape closes
+        **nothing** either (34k excludes it too, TD-PPagop-26081409), for the
+        same reason as `-conflict-`: the void says the *dequeue* resolved, not
+        the pull request. The test again mirrors the one that minted the item
+        (requirement 3z, `gather-dequeued.sh`): the void is refused only while
+        the pull request's *current* head still matches the head SHA the item's
+        own id embeds — read out of the id, never trusted from the entry's own
+        `evidence` — **and** `merge_queue_probe`, re-read live, still reports it
+        not re-queued. A head that has moved (a fix landed, whichever cycle's)
+        or a probe that cannot answer both read as resolved, the same
+        ambiguous-accepts asymmetry the `-conflict-` shape's `null` mergeable
+        gets.
       - `pr-<n>-superseded-…` — a corroborated void of this shape *does* close
         pull request `<n>` (34k's ordinary act-on-void path, once the id shape
         distinguishes it from `-conflict-`, TD-PPagop-26081304). The
@@ -6191,7 +6205,8 @@ runs unattended.
     - **a pull request** (`pr-<n>-abandoned-…`, `-review-…`, `-superseded-…`)
       — closed the same way, iff still open.
 
-    **The `-conflict-` shape alone is excluded from the pull-request case
+    **The `-conflict-` and `-dequeued-` shapes are excluded from the
+    pull-request case
     above.** `pr-<n>-conflict-<head-sha>` names the pull request only to say
     the *conflict* on it resolved — the void is about the conflict, not about
     the pull request, which stays a live, ready PR of ours the moment the
@@ -6201,11 +6216,15 @@ runs unattended.
     #273, carrying a human `CHANGES_REQUESTED` review round — was closed
     unmerged when the unrelated item `pr-264-conflict-…` was voided after its
     conflict resolved, and both the PR and the review round were lost
-    (TD-PPagop-26080901). So a void of this shape closes nothing: it is left
+    (TD-PPagop-26080901). `pr-<n>-dequeued-<head-sha>` (requirement 3z) makes
+    the identical shape of claim about a dequeue rather than a conflict — the
+    pull request stays live and ready, waiting on the human's own re-queue —
+    so it is excluded on the same reasoning (TD-PPagop-26081409). So a void of
+    either shape closes nothing: it is left
     exactly like a void shape that names no GitHub object at all, below. The
     exclusion is decided before the per-call action cap, exactly as the
-    `stage` gate below is: this shape is never actionable on any cycle, so it
-    must neither consume one of the three slots nor be counted in the
+    `stage` gate below is: these shapes are never actionable on any cycle, so
+    they must neither consume one of the three slots nor be counted in the
     overflow the cap reports — a deferred count naming work nothing will ever
     do would have the Script log that warning every cycle in perpetuity,
     since a shape this never closes never earns the `void-object-closed`
@@ -6364,8 +6383,9 @@ runs unattended.
     `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
     `identical` or `behind` means every commit on the branch is already an
     ancestor of `default_branch`, so the draft's work landed some other way
-    while it sat. Run only for `review-feedback`, `merge-conflicts` and
-    `abandoned-drafts` — the three sources whose branch and pull request
+    while it sat. Run only for `review-feedback`, `merge-conflicts`,
+    `dequeued` and
+    `abandoned-drafts` — the four sources whose branch and pull request
     predate the claim (`lib/preflight.sh`'s
     `preflight_existing_branch_source`) — and never for an ordinary
     `issues`/`tech-debt` claim, whose branch the Script has just created at
@@ -6441,33 +6461,37 @@ runs unattended.
         register ids (a `TD<date><nn>`/`TD-<scope>-<date><nn>` shape) by a
         further `scripts/gather-register-status.sh` call per repo, alongside
         the one requirement 34i already makes for that repo's blocked ones;
-      - **liveness**, for the four shapes the cycle already gathers as
-        structured data each cycle (TD-PPagop-26081303): a
+      - **liveness**, for the five shapes the cycle already gathers as
+        structured data each cycle (TD-PPagop-26081303, extended by
+        TD-PPagop-26081409): a
         `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
         `register-hygiene-<hash>`, either merge-conflicts shape
         (`pr-<n>-conflict-<head-sha>`, which 34k deliberately excludes from its
         own close, and `pr-<n>-superseded-<head-sha>`, which it closes — both
         come from the same gather, so the same absent-from-it test decides
         both, redundantly for the second, which also earns a
-        `void-object-closed` once that close lands), or a
+        `void-object-closed` once that close lands), a
+        `pr-<n>-dequeued-<head-sha>` (requirement 3z, excluded from 34k's own
+        close for the same reason the conflict shape is), or a
         `failed-run-<…>` is actioned once its id is (a) absent from this
         cycle's own gather for its source, decided only when that source's
         gather succeeded this cycle, and (b) nothing else — liveness is not
         itself the age test, which the second half of this rule still
-        applies uniformly. Age-only retirement for these four shapes was
+        applies uniformly. Age-only retirement for these five shapes was
         considered and rejected: a void whose id is *still being gathered* —
         a still-open alert, a register-hygiene finding the register still
-        has, a workflow still failing, a PR still conflicted — is doing live
+        has, a workflow still failing, a PR still conflicted or dequeued — is doing live
         suppression work every cycle, and retiring it on age alone would
         re-expose the item to be rediscovered void all over again, the exact
         rediscovery churn requirement 34k exists to stop. "This cycle's own
-        gather" is, for the first three, the same array the Co-Ordinator's
+        gather" is, for the first four, the same array the Co-Ordinator's
         runtime input already carries for that repo — read from the tee
         files `gather_findings`/`gather_register_hygiene`/
-        `gather_merge_conflicts` already write during the repo walk, before
+        `gather_merge_conflicts`/`gather_dequeued` already write during the
+        repo walk, before
         claim exclusion narrows them (a claimed alert is still an open one),
         so this costs no further `gh` call; "that source's gather succeeded"
-        is a `.ok` marker each of those three functions writes *only*
+        is a `.ok` marker each of those four functions writes *only*
         alongside its tee file — never on its own, since a marker with no
         array beside it reads downstream as "gathered, found nothing", the
         one sentence it exists to stop the cycle saying — and only when that
@@ -6837,11 +6861,13 @@ runs unattended.
     voided three minutes later, after the PR's head had already moved twice.)
 
     Before `enabler_allowed` is set, every eligible entry whose `item` matches
-    `pr-<n>-conflict-<sha>`, `pr-<n>-superseded-<sha>` or
+    `pr-<n>-conflict-<sha>`, `pr-<n>-superseded-<sha>`,
+    `pr-<n>-dequeued-<sha>` or
     `pr-<n>-abandoned-<sha>` is tested against this
-    cycle's own freshly gathered `merge_conflicts`/`abandoned_drafts` arrays
-    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirement
-    3g): if that exact ref is not among them — the head moved again, or the PR
+    cycle's own freshly gathered
+    `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays
+    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirements
+    3g, 3z): if that exact ref is not among them — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
     (`enabler-stale-refs-skipped`, an object payload `{skipped: [{repo,
     item}…]}` — log_event's envelope merge can only add objects, and the
@@ -6851,7 +6877,9 @@ runs unattended.
     (requirement 3g) is scoped to the same head SHA and comes from the same
     gather, and a supersession void requirement 34d refuses is recorded
     blocked under it (requirement 32a) exactly as a refused conflict void is
-    under `-conflict-`. No other blocked item kind
+    under `-conflict-`. `pr-<n>-dequeued-<sha>` (requirement 3z) is tested for
+    the identical reason — same head-SHA scoping, and its own gather is the
+    live set that decides it. No other blocked item kind
     is touched: a tech-debt id, an issue number, or a review-feedback round has
     no such re-detectable "current" state to compare against, and none of their
     refs match the pattern. A jq failure leaves the eligible set unfiltered — this
@@ -8193,8 +8221,8 @@ What exists, and the requirements each part answers to:
    that can become false again. `preflight_branch_merged_reason`
    is the other done-signal, kept separate because it is impure (one live
    `gh api compare` call against the target repository) and `preflight_existing_branch_source`
-   is the gate that scopes it to the three sources whose branch predates the
-   claim (review-feedback, merge-conflicts, abandoned-drafts) — see
+   is the gate that scopes it to the four sources whose branch predates the
+   claim (review-feedback, merge-conflicts, dequeued, abandoned-drafts) — see
    requirement 34m for why an ordinary claim's freshly created branch cannot
    use this check. `preflight_done_reason` and `preflight_open_pr_reason` are
    pure — they read nothing themselves — sourced after `lib/work-gone.sh`,
@@ -8674,10 +8702,11 @@ What exists, and the requirements each part answers to:
     open object with a comment carrying the void's `detail`/`evidence`,
     printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
     `"already"` — `deferred`, `warning`) for the Script to log as
-    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` shape alone is
-    excluded from the pull-request case — it names a live PR the void says
+    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` and
+    `pr-<n>-dequeued-<head-sha>` shapes are
+    excluded from the pull-request case — each names a live PR the void says
     nothing about closing — and left untouched exactly like any other id
-    shape; its sibling `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304)
+    shape; their sibling `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304)
     carries no such exclusion and closes through the ordinary `pr-<n>-…`
     branch. When the pull request being closed carries the human-applied
     `obsolete` label — re-checked live off the same fetch that reads its
@@ -9887,8 +9916,9 @@ pull request, run the ones the change touches and any it could regress.
    entry's own `repo` is resolved against the URL's own `owner/repo`, not the
    entry's, so a PR number that would match in the wrong repository is not
    corroboration. Assert the finishing sources are not caught by it: an item
-   `pr-<n>-abandoned-…`, `pr-<n>-review-…`, `pr-<n>-conflict-…` or
-   `pr-<n>-superseded-…` citing pull request `<n>` in the entry's own repo is
+   `pr-<n>-abandoned-…`, `pr-<n>-review-…`, `pr-<n>-conflict-…`,
+   `pr-<n>-superseded-…` or `pr-<n>-dequeued-…`
+   citing pull request `<n>` in the entry's own repo is
    corroborated by fetching that PR's own live state, while the same item
    citing a *different* pull request is still refused by the ordinary
    body/branch test. Assert every live state `void_finishing_pr_reason`
@@ -9910,7 +9940,16 @@ pull request, run the ones the change touches and any it could regress.
    definitively conflicting), `false` refused naming the conflict rather than
    the diff — including when `user.login` is `dependabot[bot]`, which buys
    this shape nothing since TD-PPagop-26081304 moved that excuse to
-   `-superseded-`. For `-superseded-` (requirement 3s, TD-PPagop-26081304), an
+   `-superseded-`. For `-dequeued-` (requirement 3z, TD-PPagop-26081409),
+   which 34k likewise closes nothing for, assert the two-part live re-check
+   and both of its ambiguous-accepts directions: an open PR still at the head
+   SHA the item's own id embeds whose `merge_queue_probe` still reports
+   `queued: false` is refused naming the dequeue rather than the diff; the
+   same PR corroborates once the probe reports it re-queued, once its current
+   head has moved past the SHA the id names (asserted without the probe
+   answering at all, so the head check alone decides it), and when the probe
+   cannot answer — the same asymmetry `-conflict-`'s `null` mergeable gets.
+   For `-superseded-` (requirement 3s, TD-PPagop-26081304), an
    open PR is corroborated only when **both**, re-derived live, hold: assert
    all four combinations — `user.login` is `dependabot[bot]` and
    `dependabot_newer_open_pr` (re-run against a stubbed currently-open
@@ -10175,7 +10214,9 @@ pull request, run the ones the change touches and any it could regress.
    which names a pull request but is not about closing it (TD-PPagop-26080901)
    — is left entirely alone too, with no API call made, exactly like the
    register id, and is excluded before the action cap, so it neither spends a
-   slot nor appears in the deferred count; its sibling shape
+   slot nor appears in the deferred count; a `pr-<n>-dequeued-<head-sha>` void
+   (requirement 3z, TD-PPagop-26081409) is left alone on the same terms, with
+   no `gh` call made, so assert that shape too; their sibling shape
    `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304) carries no such
    exclusion and closes through the ordinary pull-request branch, so assert
    it *does* make the `gh` call and is reported `closed`; a void carrying no
