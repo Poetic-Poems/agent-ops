@@ -942,6 +942,47 @@ exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
     <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
 
+# Issue #248 acceptance 4 (TD-PPagop-26081405): log one `first-seen` per item
+# the very first time any node's gather ever reports it, so a later report can
+# subtract it from the `selection` that eventually claims it. Called on each
+# pre-fetched source's RAW candidate array — ahead of exclude_claimed_items and
+# the blocked/void pass further down — so an item claimed, blocked or voided
+# the same cycle it first appears still gets one (acceptance 3): those
+# exclusions only ever narrow what the Co-Ordinator is shown, never what this
+# fleet has seen.
+#
+# $first_seen_known_json (seeded from first_seen_known_items over the union
+# log, lib/cycle-state.sh) is the running "already logged" set, updated here so
+# a later source's own candidates this same cycle see this call's new items
+# too — a `register-hygiene` id first-seen alongside a `tech-debt` one in the
+# same cycle must not both fire twice. Like every aggregate requirement 4g
+# names, it can grow with the fleet's whole history, so it travels to jq on
+# stdin, never as an --argjson; on malformed input it is left exactly as it
+# was, which only ever costs a retry next cycle, never a lost or duplicated
+# event. $first_seen_bootstrap is one small flag, decided once at the top of
+# the cycle, and cheap enough to pass with --argjson like any config-sized
+# value.
+emit_first_seen() {  # <repo> <source> <candidates-json>
+  local repo="$1" source="$2" candidates="$3" docs result new_refs ref
+  docs="$(printf '%s\n' "$first_seen_known_json" "$candidates")"
+  result="$(jq -nc --arg r "$repo" '
+    input as $known | input as $cands
+    | ($known | map(select(.repo == $r)) | map(.item)) as $seen
+    | ([$cands[].ref // empty | select(. != "")] | unique
+       | map(select(. as $ref | ($seen | index($ref)) == null))) as $new
+    | {new: $new, known: ($known + ($new | map({repo: $r, item: .})))}
+  ' <<<"$docs" 2>/dev/null || echo '{"new":[],"known":null}')"
+  new_refs="$(jq -c '.new' <<<"$result" 2>/dev/null || echo '[]')"
+  if jq -e '.known != null' <<<"$result" >/dev/null 2>&1; then
+    first_seen_known_json="$(jq -c '.known' <<<"$result")"
+  fi
+  while IFS= read -r ref; do
+    [[ -n "$ref" ]] || continue
+    log_event "first-seen" "$(jq -nc --arg r "$repo" --arg i "$ref" --arg s "$source" --argjson b "$first_seen_bootstrap" \
+      '{repo: $r, item: $i, source: $s, basis: "poll", bootstrap: $b}')"
+  done < <(jq -r '.[]' <<<"$new_refs" 2>/dev/null || true)
+}
+
 # Requirement 3t/issue #310: drop any candidate whose `ref` is recorded
 # blocked or void for THIS_REPO in the fleet's shared log — the same
 # deterministic-code-not-model-judgement decision exclude_claimed_items above
@@ -4481,6 +4522,16 @@ source_states_json="[]"
 unvoid_requests_json="[]"
 hand_flagged_refinements_json="[]"
 claimed_json="[]"
+# Issue #248 acceptance 4 (TD-PPagop-26081405): the fleet's already-logged
+# `first-seen` set, read once off the union log snapshotted at 1a1 above —
+# every emit_first_seen call below both consults and grows this — and
+# whether THIS node's own log had no `first-seen` in it at all when the
+# cycle began. Decided once, here, before this cycle writes its own first
+# one: an event written mid-cycle must not flip a later call in the same
+# cycle from bootstrap to not, which is what checking $log_file fresh at
+# each call site would do.
+first_seen_known_json="$(first_seen_known_items "$union_log")"
+first_seen_bootstrap="$(jq -c '(length == 0)' <<<"$(first_seen_known_items "$log_file")")"
 repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
@@ -4529,37 +4580,55 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # time, once they do.
   #
   # Pre-fetch security/code-quality findings only when this repo lists either
-  # source, so a repo that opts out of them costs no gh calls.
+  # source, so a repo that opts out of them costs no gh calls. first-seen is
+  # emitted on the raw array, split by each finding's own `.source`, before
+  # exclusion — findings is the one pre-fetch that mixes two first-seen
+  # sources in one gather call.
   findings="[]"
   if jq -e 'any(.[]; . == "security" or . == "code-quality")' <<<"$sources" >/dev/null 2>&1; then
-    findings="$(exclude_claimed_items "$(gather_findings "$slug")" "$claimed_item_refs_json")"
+    findings_raw="$(gather_findings "$slug")"
+    emit_first_seen "$slug" security "$(jq -c '[.[] | select(.source == "security")]' <<<"$findings_raw")"
+    emit_first_seen "$slug" code-quality "$(jq -c '[.[] | select(.source == "code-quality")]' <<<"$findings_raw")"
+    findings="$(exclude_claimed_items "$findings_raw" "$claimed_item_refs_json")"
   fi
   review_feedback="[]"
   if jq -e 'any(.[]; . == "review-feedback")' <<<"$sources" >/dev/null 2>&1; then
-    review_feedback="$(exclude_claimed_items "$(exclude_claimed_prs "$(gather_review_feedback "$slug")" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+    review_feedback_raw="$(gather_review_feedback "$slug")"
+    emit_first_seen "$slug" review-feedback "$review_feedback_raw"
+    review_feedback="$(exclude_claimed_items "$(exclude_claimed_prs "$review_feedback_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
   abandoned_drafts="[]"
   if jq -e 'any(.[]; . == "abandoned-drafts")' <<<"$sources" >/dev/null 2>&1; then
-    abandoned_drafts="$(exclude_claimed_items "$(exclude_claimed_prs "$(gather_abandoned_drafts "$slug")" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+    abandoned_drafts_raw="$(gather_abandoned_drafts "$slug")"
+    emit_first_seen "$slug" abandoned-drafts "$abandoned_drafts_raw"
+    abandoned_drafts="$(exclude_claimed_items "$(exclude_claimed_prs "$abandoned_drafts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
   merge_conflicts="[]"
   if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
-    merge_conflicts="$(exclude_claimed_items "$(exclude_claimed_prs "$(gather_merge_conflicts "$slug")" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+    merge_conflicts_raw="$(gather_merge_conflicts "$slug")"
+    emit_first_seen "$slug" merge-conflicts "$merge_conflicts_raw"
+    merge_conflicts="$(exclude_claimed_items "$(exclude_claimed_prs "$merge_conflicts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
   register_hygiene="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
-    register_hygiene="$(exclude_claimed_items "$(gather_register_hygiene "$slug" "$default_branch" prefetch)" "$claimed_item_refs_json")"
+    register_hygiene_raw="$(gather_register_hygiene "$slug" "$default_branch" prefetch)"
+    emit_first_seen "$slug" register-hygiene "$register_hygiene_raw"
+    register_hygiene="$(exclude_claimed_items "$register_hygiene_raw" "$claimed_item_refs_json")"
   fi
   # The issues source is one source at four ranks (`issues:urgent` …
   # `issues:low`, requirement 15e), so any band in `sources` warrants the one
   # fetch — the band is per issue, not per fetch.
   issues="[]"
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
-    issues="$(exclude_claimed_items "$(gather_issues "$slug")" "$claimed_item_refs_json")"
+    issues_raw="$(gather_issues "$slug")"
+    emit_first_seen "$slug" issues "$issues_raw"
+    issues="$(exclude_claimed_items "$issues_raw" "$claimed_item_refs_json")"
   fi
   tech_debt="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
-    tech_debt="$(exclude_claimed_items "$(gather_tech_debt "$slug" "$default_branch")" "$claimed_item_refs_json")"
+    tech_debt_raw="$(gather_tech_debt "$slug" "$default_branch")"
+    emit_first_seen "$slug" tech-debt "$tech_debt_raw"
+    tech_debt="$(exclude_claimed_items "$tech_debt_raw" "$claimed_item_refs_json")"
   fi
   # The implementation-plan source's path is per-repo config, never a path
   # fixed in the prompt (issue #77): echo it into the runtime-input entry only

@@ -286,6 +286,33 @@ void_retired_items() {
   printf '%s' "$out"
 }
 
+# first_seen_known_items [LOG_FILE]
+# Print, as a JSON array of {repo, item}, every item a `first-seen` event has
+# ever been logged for (requirement 33, TD-PPagop-26081405, issue #248
+# acceptance 4). Reads LOG_FILE, or stdin if it is omitted or "-".
+#
+# `first-seen` is a fact, not a state like `item-void`/`unvoided`: once an
+# item has been logged, it stays logged, so the existence of any occurrence —
+# from this node or a peer's — is enough to answer "has the fleet already
+# seen this item", the once-ever guarantee `emit_first_seen` (agent-cycle.sh)
+# reads this back to keep. No _latest_unresolved pairing, no clearing event.
+first_seen_known_items() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "first-seen"
+                   and (.repo // "") != "" and (.item // "") != "")
+      | {repo, item} ] | unique'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # subtract_retired_voids VOID_JSON RETIRED_JSON
 # Print VOID_JSON (the shape `void_items` returns) with every entry whose
 # {repo, item} pair a RETIRED_JSON record (`void_retired_items`) covers

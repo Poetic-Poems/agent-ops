@@ -1124,9 +1124,11 @@ void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
 # `review_gate_unknown_streak_verdict` to read — with nothing to show an
 # operator, so a run of them would displace rows that have something to say.
 # The escalation it feeds, `review-gate-checks-degraded`, is operator-facing
-# and stays.
+# and stays. `first-seen` (requirement 33, TD-PPagop-26081405) gets the same
+# treatment for the same reason: one per item a gather first reports, read
+# only by scripts/pickup-metrics.sh, with nothing an operator can act on.
 log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL" '
-  map(select(.event != "review-gate-checks-read"))
+  map(select(.event != "review-gate-checks-read" and .event != "first-seen"))
   | sort_by(.ts) | reverse | .[0:$n]' 2>/dev/null)"
 [[ -z "$log_tail_json" ]] && log_tail_json='[]'
 

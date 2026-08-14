@@ -94,6 +94,17 @@ assert_eq "after ratio" "1" "$(jq -r '.after.ratio' <<<"$out")"
 assert_eq "window starts at the earliest ts" "2026-01-01T00:00:01Z" "$(jq -r '.window.from' <<<"$out")"
 assert_eq "window ends at the latest ts" "2026-01-01T00:00:07Z" "$(jq -r '.window.to' <<<"$out")"
 assert_eq "since is null when not given" "null" "$(jq -r '.since' <<<"$out")"
+assert_eq "cadence_bound_minutes echoes this repository's own config" \
+  "$(jq -r '.schedule.cycle_interval_minutes' "$SCRIPT_DIR/config.json")" \
+  "$(jq -r '.cadence_bound_minutes' <<<"$out")"
+assert_eq "no first-seen anywhere in this fixture: every selection is selection_only" \
+  "5" "$(jq -r '.coverage.selection_only' <<<"$out")"
+assert_eq "…and nothing is paired or first-seen-only" \
+  "0 0" "$(jq -r '[.coverage.paired, .coverage.first_seen_only] | join(" ")' <<<"$out")"
+assert_eq "…so pickup_latency has nothing to measure" \
+  "0" "$(jq -r '.pickup_latency.fleet.count' <<<"$out")"
+assert_eq "…and its median is null, not a divide-by-zero guess" \
+  "null" "$(jq -r '.pickup_latency.fleet.median_seconds' <<<"$out")"
 
 # --- --since narrows counts and the window, but a node's first `chained`
 #     event still resolves era correctly even when --since excludes the
@@ -115,6 +126,102 @@ assert_eq "an empty log exits 0" "0" "$?"
 assert_eq "an empty log reports zero before-selections" "0" "$(jq -r '.before.selections' <<<"$out_empty")"
 assert_eq "an empty log reports a null before-ratio (no division by zero)" "null" "$(jq -r '.before.ratio' <<<"$out_empty")"
 assert_eq "an empty log reports a null window" "null" "$(jq -r '.window.from' <<<"$out_empty")"
+
+# --- Acceptance 4: pickup latency — a paired item, a bootstrap-excluded
+#     paired item, and both unpaired classes (TD-PPagop-26081405) -----------
+lat_state="$tmp_dir/lat-state"
+lat_peers="$tmp_dir/lat-peers"
+mkdir -p "$lat_state" "$lat_peers/node-b3"
+
+# node-a: item A paired (600s), item B paired but bootstrap-excluded (1200s),
+# item C first-seen with no selection yet, item D selected with no
+# first-seen at all (predates this instrumentation).
+cat > "$lat_state/log.jsonl" <<'EOF'
+{"ts":"2026-02-01T00:00:00Z","node":"node-a","event":"first-seen","repo":"r","item":"A","source":"tech-debt","basis":"poll","bootstrap":false}
+{"ts":"2026-02-01T00:10:00Z","node":"node-a","event":"selection","repo":"r","item":"A","source":"tech-debt"}
+{"ts":"2026-02-01T00:00:00Z","node":"node-a","event":"first-seen","repo":"r","item":"B","source":"issues","basis":"poll","bootstrap":true}
+{"ts":"2026-02-01T00:20:00Z","node":"node-a","event":"selection","repo":"r","item":"B","source":"issues"}
+{"ts":"2026-02-01T00:00:00Z","node":"node-a","event":"first-seen","repo":"r","item":"C","source":"issues","basis":"poll","bootstrap":false}
+{"ts":"2026-02-01T00:05:00Z","node":"node-a","event":"selection","repo":"r","item":"D","source":"tech-debt"}
+EOF
+
+# node-b3: item E, first-seen by node-a but claimed by node-b3 — the by_node
+# split is keyed on the claiming node, not the observing one.
+cat > "$lat_peers/node-b3/log.jsonl" <<'EOF'
+{"ts":"2026-02-01T00:00:30Z","node":"node-b3","event":"selection","repo":"r","item":"E","source":"tech-debt"}
+EOF
+cat >> "$lat_state/log.jsonl" <<'EOF'
+{"ts":"2026-02-01T00:00:00Z","node":"node-a","event":"first-seen","repo":"r","item":"E","source":"tech-debt","basis":"poll","bootstrap":false}
+EOF
+
+out_lat="$("$PICKUP" --state-dir "$lat_state" --peers-dir "$lat_peers")"
+assert_eq "acceptance 4: paired count is 2 (A, E — B is bootstrap-excluded)" \
+  "2" "$(jq -r '.pickup_latency.fleet.count' <<<"$out_lat")"
+assert_eq "acceptance 4: bootstrap_excluded_count is 1 (B)" \
+  "1" "$(jq -r '.pickup_latency.bootstrap_excluded_count' <<<"$out_lat")"
+assert_eq "acceptance 4: fleet median is the median of 600s (A) and 30s (E)" \
+  "315" "$(jq -r '.pickup_latency.fleet.median_seconds' <<<"$out_lat")"
+assert_eq "acceptance 4: node-a's own median is A's 600s" \
+  "600" "$(jq -r '.pickup_latency.by_node["node-a"].median_seconds' <<<"$out_lat")"
+assert_eq "acceptance 4: node-b3's own median is E's 30s, keyed on the claiming node" \
+  "30" "$(jq -r '.pickup_latency.by_node["node-b3"].median_seconds' <<<"$out_lat")"
+assert_eq "coverage: paired is 3 (A, B, E)" "3" "$(jq -r '.coverage.paired' <<<"$out_lat")"
+assert_eq "coverage: first_seen_only is 1 (C, never claimed)" \
+  "1" "$(jq -r '.coverage.first_seen_only' <<<"$out_lat")"
+assert_eq "coverage: selection_only is 1 (D, no first-seen at all)" \
+  "1" "$(jq -r '.coverage.selection_only' <<<"$out_lat")"
+
+# --- Acceptance 4: first-wins — two nodes race to log the same item's
+#     first-seen; the earliest ts wins, and the item is attributed to
+#     whichever node's selection actually claimed it -----------------------
+race_state="$tmp_dir/race-state"
+race_peers="$tmp_dir/race-peers"
+mkdir -p "$race_state" "$race_peers/node-b4"
+
+# node-a "sees" item X ten seconds after node-b4 did; node-b4 is also the one
+# that wins the claim. The measured latency must use node-b4's earlier ts.
+cat > "$race_state/log.jsonl" <<'EOF'
+{"ts":"2026-03-01T00:00:10Z","node":"node-a","event":"first-seen","repo":"r","item":"X","source":"tech-debt","basis":"poll","bootstrap":false}
+EOF
+cat > "$race_peers/node-b4/log.jsonl" <<'EOF'
+{"ts":"2026-03-01T00:00:03Z","node":"node-b4","event":"first-seen","repo":"r","item":"X","source":"tech-debt","basis":"poll","bootstrap":false}
+{"ts":"2026-03-01T00:00:50Z","node":"node-b4","event":"selection","repo":"r","item":"X","source":"tech-debt"}
+EOF
+
+out_race="$("$PICKUP" --state-dir "$race_state" --peers-dir "$race_peers")"
+assert_eq "first-wins: latency uses the earlier (node-b4's) first-seen, 47s not 40s" \
+  "47" "$(jq -r '.pickup_latency.fleet.median_seconds' <<<"$out_race")"
+assert_eq "first-wins: attributed to the claiming node only" \
+  '["node-b4"]' "$(jq -c '.pickup_latency.by_node | keys' <<<"$out_race")"
+
+# --- Legacy-shaped `selection` events must not abort the whole report --------
+# log.jsonl is never rotated (scripts/rotate-logs.sh keeps it whole on
+# purpose), so the live fleet log still holds `selection` events from before
+# scripts/gather-issues.sh minted its `ref` as `(.number | tostring)`: they
+# carry a *numeric* `item`, and some carry no `node` at all. Both are jq type
+# errors in the pairing — `"repo" + "|" + 45`, and a null object key in the
+# by_node grouping — and either aborts the entire report, not just the one
+# line, leaving the script printing nothing at all. Verified against the real
+# fleet log at review time, where seven such events existed.
+legacy_state="$tmp_dir/legacy-state"
+mkdir -p "$legacy_state"
+cat > "$legacy_state/log.jsonl" <<'EOF'
+{"ts":"2026-04-01T00:00:00Z","node":"node-a","event":"first-seen","repo":"r","item":"45","source":"issues","basis":"poll","bootstrap":false}
+{"ts":"2026-04-01T00:02:00Z","event":"selection","repo":"r","item":45,"source":"issues"}
+{"ts":"2026-04-01T00:03:00Z","node":"node-a","event":"selection","repo":"r","item":"K","source":"issues"}
+EOF
+
+out_legacy="$("$PICKUP" --state-dir "$legacy_state" --peers-dir "$tmp_dir/no-such-peers")"
+assert_eq "a numeric-item selection still yields valid JSON, not an aborted report" \
+  "0" "$(jq -e . >/dev/null 2>&1 <<<"$out_legacy"; echo $?)"
+assert_eq "…and keys onto the string-item first-seen for the same issue" \
+  "120" "$(jq -r '.pickup_latency.fleet.median_seconds' <<<"$out_legacy")"
+assert_eq "…counted fleet-wide even though it names no claiming node" \
+  "1" "$(jq -r '.pickup_latency.fleet.count' <<<"$out_legacy")"
+assert_eq "…with by_node left empty rather than keyed on null" \
+  '{}' "$(jq -c '.pickup_latency.by_node' <<<"$out_legacy")"
+assert_eq "…and the node-less selection still counts as paired coverage" \
+  "1 1" "$(jq -r '[.coverage.paired, .coverage.selection_only] | join(" ")' <<<"$out_legacy")"
 
 printf '\n'
 if (( failures > 0 )); then

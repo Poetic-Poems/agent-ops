@@ -510,7 +510,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                        //   evaluation with nothing an operator
                                        //   can act on, which would otherwise
                                        //   displace rows that have something
-                                       //   to say
+                                       //   to say — and minus first-seen for
+                                       //   the same reason (spec 33), one per
+                                       //   item a gather first reports, read
+                                       //   only by scripts/pickup-metrics.sh
   cron_tail: [ "line", … ] }
 ```
 

@@ -312,10 +312,13 @@ assert_eq "while both hand-appended events stay in the log tail" "2" \
 # to read — so the Publisher keeps it out of the log tail rather than letting
 # a degraded run displace rows that have something to say. The escalation it
 # feeds, `review-gate-checks-degraded`, is exactly what the tail is for and
-# stays.
+# stays. `first-seen` (requirement 33, TD-PPagop-26081405) gets the same
+# treatment: one per item a gather first reports, read only by
+# scripts/pickup-metrics.sh.
 {
   printf '{"ts":"2026-07-26T08:20:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"review-gate-checks-read","ok":false}\n' "$today_day"
   printf '{"ts":"2026-07-26T08:21:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"review-gate-checks-degraded","gate":"required-checks","count":3,"first_ts":"2026-07-26T06:20:00Z","last_ts":"2026-07-26T08:20:00Z"}\n' "$today_day"
+  printf '{"ts":"2026-07-26T08:22:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"first-seen","repo":"o/r","item":"1","source":"tech-debt","basis":"poll","bootstrap":false}\n' "$today_day"
 } >> "$c/.local/state/poetic-agents/log.jsonl"
 run_publish "$c" NODE_NAME=nodeC-self
 cdata="$(data_of "$c")"
@@ -323,6 +326,8 @@ assert_eq "the review-gate bookkeeping event is kept out of the log tail" "0" \
   "$(jq '[.log_tail[] | select(.event == "review-gate-checks-read")] | length' <<<"$cdata")"
 assert_eq "while the escalation it feeds stays in it" "1" \
   "$(jq '[.log_tail[] | select(.event == "review-gate-checks-degraded")] | length' <<<"$cdata")"
+assert_eq "first-seen is kept out of the log tail too" "0" \
+  "$(jq '[.log_tail[] | select(.event == "first-seen")] | length' <<<"$cdata")"
 
 # --- No-op ticks are counted, not listed (issue #271) -----------------------------
 # Under the */15 cadence most firings are the stand-down short-circuit
