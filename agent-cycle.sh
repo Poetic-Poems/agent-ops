@@ -4923,12 +4923,12 @@ while IFS=$'\t' read -r _ slug default_branch; do
     implementation_plan_path="$(jq -r --arg s "$slug" \
       '.[] | select(.slug == $s) | .implementation_plan_path // ""' <<<"$repos_json")"
   fi
-  # findings/review_feedback/abandoned_drafts/merge_conflicts/register_hygiene/
-  # issues/tech_debt are the pre-fetched bands themselves — issue threads
-  # (requirement 3d/#118) and the open tech-debt register (requirement
-  # 3t/#310) included — each unbounded past this call and each tens of
-  # kilobytes alone; $sources is this repo's configured source list, bounded
-  # by config, and stays in argv (requirement 4g). The seven bands arrive on
+  # findings/review_feedback/abandoned_drafts/merge_conflicts/dequeued/
+  # register_hygiene/issues/tech_debt are the pre-fetched bands themselves —
+  # issue threads (requirement 3d/#118) and the open tech-debt register
+  # (requirement 3t/#310) included — each unbounded past this call and each
+  # tens of kilobytes alone; $sources is this repo's configured source list,
+  # bounded by config, and stays in argv (requirement 4g). The eight bands arrive on
   # stdin, one document per line, bound positionally with `input as $name` in
   # the order printed (TD-PPagop-26081406) — never in argv, where past
   # MAX_ARG_STRLEN this build would silently drop the repo's whole entry.
@@ -5926,14 +5926,16 @@ refiner_allowed=1
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
 # purpose is to throttle new work and stop the human gate silting up — and the
-# three *finishing* sources do neither: `review-feedback` answers a review the
+# four *finishing* sources do neither: `review-feedback` answers a review the
 # human has already written, `merge-conflicts` rebases a ready PR the human is
-# waiting to merge, and `abandoned-drafts` carries a stalled draft this system
-# started to completion. All are the activity that *un*-silts the gate — indeed
-# an abandoned draft is itself occupying one of the very back-pressure slots the
-# cap is counting, and a conflicted PR is one the human cannot merge to free a
-# slot until it is rebased. So when back-pressure trips we do not stand down if
-# any has work waiting; we restrict every repo's source list to those three.
+# waiting to merge, `dequeued` fixes the merge-group checks failure that got a
+# ready PR of ours removed from the human's own queue, and `abandoned-drafts`
+# carries a stalled draft this system started to completion. All are the
+# activity that *un*-silts the gate — indeed an abandoned draft is itself
+# occupying one of the very back-pressure slots the cap is counting, and a
+# conflicted or dequeued PR is one the human cannot merge to free a slot until
+# it is fixed. So when back-pressure trips we do not stand down if
+# any has work waiting; we restrict every repo's source list to those four.
 #
 # No new prompt machinery is needed for that, and deliberately so: the
 # Co-Ordinator is already told the runtime input's `sources` are authoritative

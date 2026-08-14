@@ -1106,16 +1106,18 @@ runs unattended.
       recoverable next cycle and opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
-   (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
-   `review_feedback`, `merge_conflicts` or `abandoned_drafts` candidate exists, do
+   (requirements 3c, 3g, 3z and 3e). If back-pressure has tripped *and* any
+   `review_feedback`, `merge_conflicts`, `dequeued` or `abandoned_drafts`
+   candidate exists, do
    not stand down: restrict every repo's `sources` to
-   `["review-feedback", "merge-conflicts", "abandoned-drafts"]` and continue. Only
+   `["review-feedback", "merge-conflicts", "dequeued", "abandoned-drafts"]` and
+   continue. Only
    stand down when the count is over and nothing is waiting to be finished. All
-   three are *finishing* sources — they complete an already-open PR rather than
-   opening a new one — and two are doubly apt here, because they already hold
+   four are *finishing* sources — they complete an already-open PR rather than
+   opening a new one — and three are doubly apt here, because they already hold
    back-pressure slots the cap counts: an abandoned draft occupies a slot nothing
-   will clear until the draft is finished, and a conflicted PR occupies one the
-   human cannot merge to free until it is rebased.
+   will clear until the draft is finished, and a conflicted or dequeued PR
+   occupies one the human cannot merge to free until it is fixed.
 
    Without this the pipeline deadlocks exactly when it is most stuck.
    `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
@@ -3852,8 +3854,8 @@ runs unattended.
       already narrowed by back-pressure (2.2a) if it was tripped — is
       non-empty. This counts enabled source *categories*, not items, and is
       near-unconditional in practice: back-pressure narrows `.sources` to
-      the three finish-work sources rather than to empty, so a repo
-      configuring any of `review-feedback`/`merge-conflicts`/
+      the four finish-work sources rather than to empty, so a repo
+      configuring any of `review-feedback`/`merge-conflicts`/`dequeued`/
       `abandoned-drafts` keeps the count non-zero however back-pressured the
       fleet is. It is not a prediction that work remains — the chained
       cycle's own Co-Ordinator and gather decide that, and at full price,
@@ -4088,12 +4090,12 @@ runs unattended.
       found the recorded blocker still holds — or recorded as void (an
       `item-void` event not followed by `unvoided`), which has no re-check to
       preserve for any source. For `findings`, `review_feedback`,
-      `abandoned_drafts`, `merge_conflicts`, `register_hygiene`,
+      `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`,
       `human_visibility` and
       `tech_debt`, both halves are already applied deterministically by the
       Script (requirement 3u) before the runtime input is assembled — there
       is nothing left here for the Co-Ordinator to check for any of those
-      seven sources. `issues` gets the same treatment for its void half and for a
+      eight sources. `issues` gets the same treatment for its void half and for a
       *stale* blocked entry; only a blocked issue carrying evidence fresh
       enough to warrant requirement 18a's live re-check ever reaches the
       Co-Ordinator;
@@ -8257,7 +8259,7 @@ What exists, and the requirements each part answers to:
    `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
    wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
    `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
-   callers — the back-pressure gate, the three PR-listing gatherers, and the
+   callers — the back-pressure gate, the four PR-listing gatherers, and the
    void guard's supersession corroboration (requirement 3s) — must agree on
    what a truncated page is even though they treat one differently. Sourced by
    both cycle scripts, `lib/claim.sh`, `lib/void-guard.sh` and every
@@ -9703,10 +9705,11 @@ pull request, run the ones the change touches and any it could regress.
    once went `blocked` will swallow the human's next attempt to unstick it.
 6d. **Back-pressure cannot deadlock the pipeline (requirement 2.2a).** Set
    `max_open_agent_prs` to 0 with a *finishing* candidate present — a
-   review-feedback round, a merge-conflicted PR *or* an abandoned draft: the cycle
+   review-feedback round, a merge-conflicted PR, a dequeued PR *or* an abandoned
+   draft: the cycle
    must **not** stand down, and must reach the Co-Ordinator with every repo's
    `sources` narrowed to
-   `["review-feedback", "merge-conflicts", "abandoned-drafts"]`. With none present
+   `["review-feedback", "merge-conflicts", "dequeued", "abandoned-drafts"]`. With none present
    it must stand down as before. This is the check that a system whose PRs have all
    been sent back for changes — or all stalled as abandoned drafts or wedged on
    conflicts, the very slots the cap is counting — can still dig itself out;
@@ -10362,8 +10365,9 @@ pull request, run the ones the change touches and any it could regress.
    retires, once its source stops yielding it (requirement 34n's liveness
    rule, TD-PPagop-26081303).** `test/cycle-state.test.sh`'s
    `void_liveness_actioned` section passes, against `lib/void-liveness.sh`:
-   for each of the four structured-gather shapes (an alert ref, a
-   register-hygiene ref, a `failed-run-` ref, a merge-conflict ref), an id
+   for each of the five structured-gather shapes (an alert ref, a
+   register-hygiene ref, a `failed-run-` ref, a merge-conflict ref, a
+   `pr-<n>-dequeued-<head-sha>` ref), an id
    still present in GATHER_JSON's `ids` for its repo+shape is never actioned,
    however old; an id absent from a `{ok: true}` gather is actioned, tagged
    `liveness-<shape>`; an id absent from a `{ok: false}` gather, or from a
@@ -10394,7 +10398,7 @@ pull request, run the ones the change touches and any it could regress.
    `source-dropped` verdict can be read; an entry whose shape names a
    source the repo still lists is never actioned; an entry whose shape names
    a source the repo no longer lists is actioned as `source-dropped`, tested
-   for each of the seven mapped shapes; the alert shape stays live while
+   for each of the eight mapped shapes; the alert shape stays live while
    *either* `security` or `code-quality` remains, and retires only when both
    are gone; a bare issue number and a `pr-<n>-stale` in a *configured* repo
    are never actioned however few sources remain; a repo-less void is
@@ -11076,7 +11080,7 @@ requirements above, which state only what is.
   (requirement 3b), the same fix abandoned-drafts needs for its clock-based
   candidacy.
 - **A merge-queue dequeue over a merge-group checks failure is itself a work
-  source (TD-PPagop-26081409, issue #374).** requirement 38f made the pipeline
+  source (TD-PPagop-26081409, issue #374).** Requirement 38f made the pipeline
   merge-queue aware and told a human whenever GitHub dequeues a pull request of
   ours without merging — but a checks-failure dequeue is not merely something
   to tell a human about, it is a real defect in the pull request: its own head
@@ -11416,9 +11420,10 @@ requirements above, which state only what is.
   accepted** (requirement 39, issue #248; surfaced in the review of #268).
   The "sources remain" half of the chain gate counts enabled source
   *categories*, not items, and back-pressure (2.2a) narrows a repo's
-  `.sources` to the three finish-work sources rather than to empty — so for
-  any fleet whose repos configure `review-feedback`, `merge-conflicts` or
-  `abandoned-drafts` the count is never zero and `max_chained_cycles` is the
+  `.sources` to the four finish-work sources rather than to empty — so for
+  any fleet whose repos configure `review-feedback`, `merge-conflicts`,
+  `dequeued` or `abandoned-drafts` the count is never zero and
+  `max_chained_cycles` is the
   only gate that ever fires. Nor can a chained cycle short-circuit on the
   no-op fingerprint (3b): the productive cycle's own PR changed the inputs
   the fingerprint hashes. The behaviour is therefore "after a productive

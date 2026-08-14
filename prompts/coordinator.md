@@ -207,7 +207,7 @@ heading, the Script gives you one JSON object:
   yourself (`project-review`, `failed-runs`, `implementation-plan`), which have
   no pre-fetched array for the Script to filter.
 - There is no `void` list in your input, and there never will be one for the
-  seven bands above: a void item is excluded from every one of them before you
+  nine bands above: a void item is excluded from every one of them before you
   ever see it, the same deterministic pass that excludes a blocked one. You
   cannot re-check a void, so there is nothing lost by not seeing the ones
   already known — see "Void items" below for what, if anything, is left for

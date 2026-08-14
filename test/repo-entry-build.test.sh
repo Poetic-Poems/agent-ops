@@ -3,17 +3,17 @@
 # test/repo-entry-build.test.sh — regression test for agent-cycle.sh's
 # per-repo entry build (requirement 4g, TD-PPagop-26081406): the inline block
 # in the main gather loop that assembles one repo's whole
-# findings/review_feedback/abandoned_drafts/merge_conflicts/register_hygiene/
-# issues/tech_debt bands, plus its slug/default_branch/sources/
+# findings/review_feedback/abandoned_drafts/merge_conflicts/dequeued/
+# register_hygiene/issues/tech_debt bands, plus its slug/default_branch/sources/
 # implementation_plan_path, into the single `entry` object folded into
 # `ordered_repos_json` — the Co-Ordinator's whole per-repo runtime input.
 #
-# Each of the seven bands is unbounded past this call — issue threads
+# Each of the eight bands is unbounded past this call — issue threads
 # (requirement 3d/#118) and the open tech-debt register (requirement 3t/#310)
-# included — and used to ride into jq as seven separate --argjson flags. Past
+# included — and used to ride into jq as eight separate --argjson flags. Past
 # MAX_ARG_STRLEN (131072 bytes) the build died at execve, silently dropping
 # the repo's whole entry from the Co-Ordinator's input for the cycle.
-# Requirement 4g moves all seven onto stdin, one document per line, bound
+# Requirement 4g moves all eight onto stdin, one document per line, bound
 # positionally with `input as $name` in the order printed — `$sources` alone
 # stays in argv, bounded by configuration.
 #
