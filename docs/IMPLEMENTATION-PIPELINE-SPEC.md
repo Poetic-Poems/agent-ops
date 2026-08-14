@@ -4069,6 +4069,12 @@ runs unattended.
       that runs next still writes to it, so it is held until this cycle's own
       end — the Reviewer's terminal handoff (`pr-ready`), a reviewer handback,
       a stage failure, or a signal — whichever this cycle actually reaches.
+      An ending none of those handlers see — an unhandled `errexit` abort
+      after `pr-raised` — is caught by the EXIT trap's backstop: `cleanup`
+      releases the PR-keyed claim as its first act, idempotent (a handled
+      ending has already cleared the key, and then it does nothing) and
+      time-bounded like the signal handler's release, so no exit path leaves
+      `pr-<n>` standing for the gc alone to retire.
       Dropping it at `pr-raised` reopened the exact race issue #238 closed: a
       Reviewer stage still pushing to a PR forty-three minutes after its
       cycle's own PR-keyed claim was released, while a peer claimed and
@@ -9060,9 +9066,12 @@ pull request, run the ones the change touches and any it could regress.
    `have-pr-pending` drops the item-keyed registry entry and leaves the
    `pr-<n>` one standing; a peer's own claim on that same `pr-<n>` loses
    (rc 3) for as long as it stands, and wins only once `release_pr_claim`
-   has run; `release_pr_claim` is idempotent; and `have-pr`/`no-pr` still
+   has run; `release_pr_claim` is idempotent; `have-pr`/`no-pr` still
    drop both entries together in the one call, the ordinary end-of-cycle
-   shape. `test/claim.test.sh` covers the back-pressure half: `count`
+   shape; and an unhandled `errexit` abort after `pr-raised` — the one
+   ending no handler reaches — still releases the `pr-<n>` entry through
+   the EXIT trap's backstop, proven by running the real `cleanup` under
+   `set -e`. `test/claim.test.sh` covers the back-pressure half: `count`
    counts the item-keyed entry a cycle just won and does not count a
    `pr-<n>` entry surviving on its own.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the

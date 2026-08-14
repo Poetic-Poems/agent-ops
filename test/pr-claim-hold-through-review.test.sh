@@ -206,6 +206,67 @@ assert_eq "…after which a peer's claim on the same PR wins" "0" "$rc"
 release_directly "pr-353"
 release_directly "pr-353-review-777"
 
+# --- The one ending no handler reaches: an unhandled errexit abort after -------
+# --- pr-raised. cleanup (the EXIT trap) is the backstop — the real cleanup -----
+# --- runs here, under set -e in a subshell, with its cycle-record side ---------
+# --- effects (Enabler, Refiner, events, state-sync, dashboard) stubbed and -----
+# --- the real lib/ symlinked in, so release_pr_claim still drives the real -----
+# --- lib/claim.sh against the same contended create-only store. ----------------
+cleanup_src="$(extract_function cleanup)"
+if [[ "$cleanup_src" != *"cleanup()"* ]]; then
+  printf 'FAIL - could not extract cleanup from agent-cycle.sh (renamed or moved?)\n'
+  failures=$(( failures + 1 ))
+else
+  seed_claim poetic-2 "pr-353" "pr-353-review-501" review-feedback 353
+
+  stub_root="$tmp_dir/script-root"
+  mkdir -p "$stub_root/scripts"
+  # lib/, and the config claim.sh resolves against its own root — without
+  # config.json, state_repo reads empty and every release is a vacuous no-op,
+  # which would pass the wrong way. state-sync.sh alone is stubbed out.
+  ln -s "$SCRIPT_DIR/lib" "$stub_root/lib"
+  ln -s "$SCRIPT_DIR/config.json" "$stub_root/config.json"
+  ln -s "$SCRIPT_DIR/config.schema.json" "$stub_root/config.schema.json"
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$stub_root/scripts/state-sync.sh"
+  chmod +x "$stub_root/scripts/state-sync.sh"
+
+  rc=0
+  (
+    set -e
+    # The post-pr-raised state: release_claim have-pr-pending has run, so the
+    # item-keyed claim is gone and only the PR-keyed one is still held. All
+    # variables below are consumed by the eval'd cleanup/release_pr_claim,
+    # invisible to shellcheck.
+    # shellcheck disable=SC2034
+    SCRIPT_DIR="$stub_root"
+    # shellcheck disable=SC2034
+    claim_active=0
+    # shellcheck disable=SC2034
+    claim_pr_key="pr-353"
+    # shellcheck disable=SC2034
+    clone_dir=""
+    # shellcheck disable=SC2034
+    lock_acquired=0
+    # shellcheck disable=SC2034
+    chain_eligible=0
+    # Called only from the eval'd cleanup, which shellcheck cannot see into,
+    # so each stub reads as unreachable to it.
+    # shellcheck disable=SC2317
+    maybe_run_enabler() { :; }
+    # shellcheck disable=SC2317
+    maybe_run_refiner() { :; }
+    # shellcheck disable=SC2317
+    log_event() { :; }
+    eval "$cleanup_src"
+    trap cleanup EXIT
+    false  # the unhandled abort: errexit ends the cycle between statements
+  ) || rc=$?
+
+  assert_eq "an unhandled errexit abort still exits non-zero through cleanup" "1" "$rc"
+  assert_eq "…and cleanup's backstop releases the PR-keyed registry entry (issue #360)" "0" \
+    "$(test -f "$reg_dir/Poetic-Poems__poetic/pr-353.json" && echo 1 || echo 0)"
+fi
+
 # --- A path with no PR at all ("have-pr"/"no-pr") still drops both together ----
 # --- in the same call — the ordinary end-of-cycle shape, unchanged by #360. ----
 seed_claim poetic-3 "pr-500-review-1" "pr-500-review-1" review-feedback 500

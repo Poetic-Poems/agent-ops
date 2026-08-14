@@ -757,11 +757,12 @@ claim_key=""
 claim_pr_key=""
 
 # Zero means unbounded (GNU timeout treats a duration of 0 as "no timeout"),
-# which is every ordinary release. The signal handler (requirement 9c) sets a
-# small bound instead: it runs on borrowed time — a lock takeover KILLs what
-# has not exited within its grace — and a release the network stalls must not
-# cost the exit record. A claim the release never reached is retired by the
-# gc within `claim_ttl_hours` anyway.
+# which is every ordinary release. The signal handler (requirement 9c) and
+# cleanup's backstop release set a small bound instead: the handler runs on
+# borrowed time — a lock takeover KILLs what has not exited within its grace —
+# and the EXIT trap carries the cycle's record, so in both a release the
+# network stalls must not cost the exit record. A claim the release never
+# reached is retired by the gc within `claim_ttl_hours` anyway.
 claim_release_timeout=0
 
 # release_claim have-pr|no-pr|have-pr-pending
@@ -800,6 +801,10 @@ release_claim() {  # release_claim have-pr|no-pr|have-pr-pending
 # Independent of claim_active by design (see above): a caller that already
 # released the item-keyed claim via "have-pr-pending" has claim_active=0 by
 # the time this runs, and must not skip the PR-keyed release on that account.
+# `cleanup` (the EXIT trap) calls it too, as the backstop for the one ending
+# no handler reaches — an unhandled errexit abort after `pr-raised` — which
+# is why the empty-key guard below must stay the first line: on every handled
+# path the trap's call finds claim_pr_key already cleared and does nothing.
 release_pr_claim() {
   [[ -n "$claim_pr_key" ]] || return 0
   timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_pr_key" \
@@ -2904,6 +2909,20 @@ cleanup() {
   # A signal landing mid-cleanup must not re-enter the handler over a cycle
   # that is already writing its record (requirement 9c).
   trap '' TERM INT HUP
+  # The PR-keyed claim's backstop (issue #360). Every handled ending has
+  # already released it by the time this trap runs — the terminal handoff, a
+  # handback, a stage failure, a signal — and then this is a no-op on an
+  # empty claim_pr_key. What it catches is the one ending no handler sees:
+  # an unhandled errexit abort between `pr-raised` and the Reviewer's
+  # terminal path, which would otherwise strand `claims/<repo>/pr-<n>.json`
+  # until the gc's `claim_ttl_hours` — hours in which the PR this cycle
+  # abandoned mid-Reviewer, the very PR that just lost its Reviewer and most
+  # needs picking up, is invisible to every peer's finishing sources.
+  # Time-bounded like the signal handler's release and for the same reason:
+  # this trap carries `cycle-end`, the lock release and the clone deletion,
+  # and a release the network stalls must not cost the record.
+  claim_release_timeout=8
+  release_pr_claim
   if [[ -n "$clone_dir" && -d "$clone_dir" ]]; then
     rm -rf "$clone_dir"
   fi
