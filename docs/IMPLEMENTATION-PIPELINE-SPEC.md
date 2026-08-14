@@ -7106,11 +7106,17 @@ runs unattended.
       `CheckRun`, which every target repository carries on every pull
       request, is accepted alongside `SUCCESS`/`NEUTRAL`), and has been since
       before `human_nudge_idle_hours` ago, posts one nudge comment naming
-      `enabler_assignee` — unless one is already there, which a
-      `<!-- agent-ops:human-nudge -->` marker comment makes idempotent rather
-      than merely time-windowed. `human_nudge_idle_hours` of `0` disables the
-      nudge only; the review-request self-heal above (both halves) is
-      unconditional.
+      `enabler_assignee` — unless one is already there, which a comment
+      carrying both the exact `<!-- agent-ops:human-nudge -->` marker and
+      `lib/pipeline-marker.sh`'s own `PIPELINE_COMMENT_MARKER_PREFIX` stamp
+      makes idempotent rather than merely time-windowed. Neither condition
+      alone is a safe test: a comment merely discussing the mechanism (a
+      Reviewer summarising a change to this sweep, say) can quote the literal
+      marker string without being the nudge itself, and the marker prefix
+      alone is stamped on every pipeline comment, nudge or not — so a
+      conversation comment can never disable a future nudge (agent-ops#390).
+      `human_nudge_idle_hours` of `0` disables the nudge only; the
+      review-request self-heal above (both halves) is unconditional.
 
     This *is* the periodic, deterministic audit of requirement 38's own
     guarantee, made self-healing rather than merely reported: a violation this

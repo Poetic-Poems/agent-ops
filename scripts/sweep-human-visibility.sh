@@ -374,7 +374,20 @@ $mq_marker"
          and ($c | all(.conclusion == "SUCCESS" or .conclusion == "NEUTRAL"
                        or .conclusion == "SKIPPED" or .state == "SUCCESS"))' \
     <<<"$pr_json" >/dev/null 2>&1 || continue
-  jq -e '(.comments // []) | any((.body // "") | test("agent-ops:human-nudge"))' \
+  # An unanchored substring test here would fire on any comment merely
+  # *discussing* the marker — a Reviewer summarising a change to this very
+  # file would quote the gate and thereby disable the nudge on that pull
+  # request for its whole life (agent-ops#390). Requiring the exact
+  # HTML-comment form rules out prose that only mentions the bare token, but
+  # not a fenced code block quoting the literal string; requiring
+  # `PIPELINE_COMMENT_MARKER_PREFIX` on the *same* comment additionally rules
+  # out a human (or a non-pipeline write) reproducing that string verbatim.
+  # Neither condition alone is enough — the prefix is stamped on every
+  # pipeline comment, including an ordinary Reviewer summary — so both must
+  # hold on the one comment that is the real nudge.
+  jq -e --arg mark "$PIPELINE_COMMENT_MARKER_PREFIX" \
+    '(.comments // []) | any(((.body // "") | contains("<!-- agent-ops:human-nudge -->"))
+                              and ((.body // "") | contains($mark)))' \
     <<<"$pr_json" >/dev/null 2>&1 && continue
 
   approved_at="$(jq -r '[(.reviews // [])[] | select(.state == "APPROVED") | .submittedAt] | max // empty' \
