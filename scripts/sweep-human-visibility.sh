@@ -95,7 +95,13 @@
 # Output: one JSON object per action on stdout —
 #   {"action":"human-review-requested","pr_url":…,"reviewers":[…]}
 #   {"action":"nudged","pr_url":…,"reviewer":…}
+#   {"action":"dequeue-notice","pr_url":…,"reviewer":…}
 #   {"action":"warning","pr_url":…,"detail":…}
+# `nudged` and `dequeue-notice` are deliberately distinct actions — see
+# requirement 38e and lib/human-visibility-hygiene.sh's header for why a
+# posted dequeue notice must not read back as clearing an unrelated,
+# still-outstanding review-request or nudge warning for the same pull
+# request (agent-ops#393).
 # The caller logs them; this script logs nothing itself. Exit 0 unless the
 # arguments are unusable.
 #
@@ -304,7 +310,7 @@ This pull request was removed from the merge queue at ${mq_dequeued_at}${mq_reas
 $(pipeline_comment_marker "$cycle_id" script)
 $mq_marker"
       if "$GH" pr comment "$pr_url" --body "$mq_body" >/dev/null 2>&1; then
-        jq -nc --arg u "$pr_url" --arg a "$assignee" '{action: "nudged", pr_url: $u, reviewer: $a}'
+        jq -nc --arg u "$pr_url" --arg a "$assignee" '{action: "dequeue-notice", pr_url: $u, reviewer: $a}'
       else
         warn "$pr_url" "could not post the merge-queue-dequeued notice"
       fi
