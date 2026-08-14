@@ -411,6 +411,49 @@ STUB
   rm -rf "$malformed_tmp"
 fi
 
+# --- A pull-request body past MAX_ARG_STRLEN does not kill the candidate fold
+# (requirement 4g, TD-PPagop-26081401) ---
+#
+# emit()'s per-candidate append used to deliver $cand to jq as `--argjson c`,
+# an argv entry capped at 131072 bytes. Nothing bounds a PR body, so a
+# CONFLICTING PR with an oversized body used to die the whole gather under
+# `set -e` at `execve`, losing this repo's entire merge_conflicts band. The
+# fix moves the append to stdin, which has no such cap: this PR proves a
+# 150000-byte body candidate still comes out the other end.
+big_tmp="$(mktemp -d)"
+
+cat > "$big_tmp/gh" <<'STUB'
+#!/usr/bin/env bash
+d="$(dirname "$0")"
+if [[ "$1 $2" == "pr list" ]]; then
+  for a in "$@"; do
+    if [[ "$a" == "--label" ]]; then cat "$d/ours.json"; exit 0; fi
+    if [[ "$a" == "--author" ]]; then printf '[]\n'; exit 0; fi
+  done
+fi
+exit 1
+STUB
+chmod +x "$big_tmp/gh"
+
+printf 'x%.0s' $(seq 1 150000) > "$big_tmp/body.txt"
+jq -nc --rawfile body "$big_tmp/body.txt" '[{
+  "number": 210, "title": "fix: something", "headRefName": "agent/big-body",
+  "baseRefName": "main", "headRefOid": "0123456789abcdef0123456789abcdef01234567",
+  "isDraft": false, "mergeable": "CONFLICTING", "updatedAt": "2026-08-14T00:00:00Z",
+  "url": "https://github.com/o/r/pull/210", "body": $body
+}]' > "$big_tmp/ours.json"
+
+out="$(MERGE_CONFLICTS_GH="$big_tmp/gh" "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh" o/r autonomous-agent agent/ 2>/dev/null)"
+exit_status=$?
+assert_eq "an oversized PR body (150000 bytes, past MAX_ARG_STRLEN) does not abort the gather" \
+  "0" "$exit_status"
+assert_eq "  ... the oversized candidate is still folded into the output" \
+  "1" "$(jq 'length' <<<"$out" 2>/dev/null || echo 0)"
+assert_eq "  ... carrying its full, untruncated body" \
+  "150000" "$(jq -r '.[0].body | length' <<<"$out" 2>/dev/null || echo 0)"
+
+rm -rf "$big_tmp"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

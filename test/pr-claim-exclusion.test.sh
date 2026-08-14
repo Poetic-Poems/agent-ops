@@ -256,6 +256,49 @@ assert_eq "the oversized claimed-item fixture really is past MAX_ARG_STRLEN" "1"
 assert_eq "a claimed-item array past the argv cap still drops both claimed refs" "2" \
   "$(jq 'length' <<<"$(exclude_claimed_items "$item_candidates" "$big_claimed_items")")"
 
+# --- The per-repo claims fold itself (requirement 4g, TD-PPagop-26081401) ------
+# `claimed_json` is one of the five aggregates requirement 4g names as growing
+# with the fleet's own history: the per-repo gather loop folds each repo's
+# `gather_claimed` output into it once per repo, every cycle, forever. Lifted
+# verbatim (inline loop body, not a function — same extraction shape
+# test/finish-then-continue.test.sh already uses for the stand-down block),
+# and eval'd with a `claimed_json` already past MAX_ARG_STRLEN to prove the
+# fold survives an accumulator this large without dropping the new repo's
+# claims or the ones already folded in.
+extract_claims_fold() {
+  awk '
+    /^  claimed_fold_docs="\$\(printf/ { on = 1 }
+    on                                 { print }
+    on && /<<<"\$claimed_fold_docs"\)"$/ { exit }
+  ' "$SCRIPT_DIR/agent-cycle.sh"
+}
+claims_fold_block="$(extract_claims_fold)"
+if [[ "$claims_fold_block" != *"claimed_fold_docs"* ]]; then
+  echo "FAIL - could not extract the claims fold from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+
+run_claims_fold() {  # <claimed_json> <slug> <repo_claimed_json>
+  (
+    # slug and repo_claimed_json are consumed only by the eval'd
+    # claims_fold_block, invisible to shellcheck.
+    # shellcheck disable=SC2034
+    claimed_json="$1" slug="$2" repo_claimed_json="$3"
+    eval "$claims_fold_block"
+    printf '%s' "$claimed_json"
+  )
+}
+
+big_claimed_json="$(jq -nc '[range(6000) | {repo: "o/other", item: ("fill-" + (. | tostring)), pr_number: (1000 + .)}]')"
+assert_eq "the oversized claimed_json fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_claimed_json" | wc -c) > 131072 ))"
+new_repo_claims='[{"item": "247", "pr_number": 305}]'
+folded="$(run_claims_fold "$big_claimed_json" "o/r" "$new_repo_claims")"
+assert_eq "the fold past the argv cap still carries every already-accumulated claim" \
+  "6001" "$(jq 'length' <<<"$folded")"
+assert_eq "  ... plus the new repo's own claim, tagged with its repo" \
+  "1" "$(jq '[.[] | select(.repo == "o/r" and .item == "247" and .pr_number == 305)] | length' <<<"$folded")"
+
 # --- candidate_preclaimed: the claim loop's own pre-claim check (17a) -----------
 claims_fixture='[
   {"repo": "o/r", "item": "247", "age_hours": 2},

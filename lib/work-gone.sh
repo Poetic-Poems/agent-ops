@@ -170,15 +170,16 @@ work_gone_clearances() {
   # document per line, never in argv (requirement 4g): both grow with the
   # fleet's history, and past MAX_ARG_STRLEN an `--argjson` delivery makes
   # this call fail into its `2>/dev/null || true` — blocks silently stop
-  # clearing.
-  docs="$blocked"$'\n'"$states"
+  # clearing. The three status maps (TD-PPagop-26081401) join them on the
+  # same stream: each grows with its own blocked class rather than with
+  # configuration, so none of the three belongs in argv either, even though
+  # each is individually the smallest thing on TD-PPagop-26081401's list.
+  docs="$(printf '%s\n' "$blocked" "$states" "$register" "$review" "$plan")"
   # shellcheck disable=SC2016  # every $ below is jq's.
   out="$(jq -nc \
-    --argjson register "$register" \
-    --argjson review "$review" --argjson plan "$plan" \
     --arg issue_re "$WORK_GONE_ISSUE_RE" --arg pr_re "$WORK_GONE_PR_RE" \
     --arg review_re "$WORK_GONE_REVIEW_RE" --arg plan_re "$WORK_GONE_PLAN_RE" '
-    input as $blocked | input as $states |
+    input as $blocked | input as $states | input as $register | input as $review | input as $plan |
     def digest($slug): [ $states[] | select((.slug // "") == $slug and .ok == true) ] | first;
     [ $blocked[]
       | . as $b

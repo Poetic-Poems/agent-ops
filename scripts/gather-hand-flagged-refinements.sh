@@ -113,7 +113,14 @@ while IFS= read -r hit; do
     --arg at "$at" --arg by "$by" \
     '{repo: $repo, number: $hit.number, url: $hit.url, label: $label,
       state: $hit.state, labelled_at: $at, by: $by}')"
-  out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")"
+  # $out and $entry both arrive on stdin, one document per line, bound
+  # positionally with `input as $name` in the order printed (requirement
+  # 4g) — never in argv, the same conversion scripts/gather-tech-debt.sh
+  # already carries (TD-PPagop-26081301) for the identically-shaped
+  # per-item append: $out grows with every hand-flagged issue this repo has
+  # ever carried the label on, unbounded by anything in this script.
+  out="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$out"$'\n'"$entry" \
+    2>/dev/null || printf '%s' "$out")"
 done < <(jq -c '.[]' <<<"$hits" 2>/dev/null || true)
 
 jq -c 'sort_by(.number)' <<<"$out"

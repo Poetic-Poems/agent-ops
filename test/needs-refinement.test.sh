@@ -711,6 +711,40 @@ assert_eq "a blocked extract past the argv cap still clears the hand-flagged blo
   '[{"repo":"o/r","item":"52"}]' \
   "$(refinement_hand_flag_cleared '[]' "$big_hand_flagged_blocked")"
 
+# --- scripts/gather-hand-flagged-refinements.sh's own accumulator fold (TD-PPagop-26081401) --
+# $out grows with every hand-flagged issue a repo has ever carried the label
+# on — unbounded by anything in this script, the same "merely growing"
+# shape scripts/gather-tech-debt.sh's per-item append had before
+# TD-PPagop-26081301 converted it. Lifted verbatim (inline loop body, not a
+# function — same extraction shape test/finish-then-continue.test.sh already
+# uses), and eval'd with an $out already past MAX_ARG_STRLEN to prove the
+# fold survives an accumulator this large.
+extract_hand_flag_fold() {
+  awk '
+    /^  out="\$\(jq -nc .input as \$arr/ { on = 1 }
+    on                                    { print }
+    on && /^    2>\/dev\/null \|\| printf .%s. "\$out"\)"$/ { exit }
+  ' "$SCRIPT_DIR/scripts/gather-hand-flagged-refinements.sh"
+}
+hand_flag_fold_block="$(extract_hand_flag_fold)"
+if [[ "$hand_flag_fold_block" != *"input as \$arr"* ]]; then
+  echo "FAIL - could not extract the hand-flag fold from gather-hand-flagged-refinements.sh — has it moved?" >&2
+  exit 1
+fi
+run_hand_flag_fold() {  # <out-json> <entry-json>
+  ( out="$1" entry="$2"; eval "$hand_flag_fold_block"; printf '%s' "$out" )
+}
+big_hand_flag_out="$(jq -nc '[range(3000) | {repo: "o/r", number: ., url: ("https://x/" + (. | tostring)),
+  label: "needs-refinement", state: "open", labelled_at: "2026-08-01T00:00:00Z", by: "warwick"}]')"
+assert_eq "the oversized hand-flag accumulator fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_hand_flag_out" | wc -c) > 131072 ))"
+new_hand_flag_entry='{"repo":"o/r","number":9999,"url":"https://x/9999","label":"needs-refinement","state":"open","labelled_at":"2026-08-14T00:00:00Z","by":"warwick"}'
+folded_hand_flags="$(run_hand_flag_fold "$big_hand_flag_out" "$new_hand_flag_entry")"
+assert_eq "the fold past the argv cap still carries every already-accumulated entry" \
+  "3001" "$(jq 'length' <<<"$folded_hand_flags")"
+assert_eq "  ... plus the new entry" "1" \
+  "$(jq '[.[] | select(.number == 9999)] | length' <<<"$folded_hand_flags")"
+
 # --- Robustness at the call sites -------------------------------------------------
 # agent-cycle.sh calls all of this from a cycle running under `set -euo pipefail`,
 # and the verdict half of it from inside the exit trap, where an unguarded

@@ -157,6 +157,37 @@ assert_eq "a blocked extract past the argv cap still clears the closed issue's b
 assert_eq "  ... and the padding, whose repo no digest covers, clears nothing" "1" \
   "$(work_gone_clearances "$big_blocked" "$states" | jq 'length')"
 
+# The three status maps (TD-PPagop-26081401): each grows with its own blocked
+# class rather than with configuration, so each gets the same treatment —
+# past MAX_ARG_STRLEN, a real repo's entry must still resolve, buried among
+# padding for repos no block ever names.
+big_register="$(jq -nc --arg r "o/a" \
+  '([range(4500) | {key: ("o/filler" + (. | tostring)), value: {("TD-fill-" + (. | tostring)): "open"}}] | from_entries)
+   + {($r): {"TD26072401": "resolved"}}')"
+assert_eq "the oversized register fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_register" | wc -c) > 131072 ))"
+assert_eq "a register map past the argv cap still clears the resolved item's block" \
+  "the tech-debt register records it resolved" \
+  "$(reason_of "$(work_gone_clearances "$(blocked_of TD26072401)" "$states" "$big_register")")"
+
+big_review="$(jq -nc --arg r "o/a" \
+  '([range(4500) | {key: ("o/filler" + (. | tostring)), value: {("review-fill-" + (. | tostring)): "open"}}] | from_entries)
+   + {($r): {"review-2026-07-11-R-02": "merged"}}')"
+assert_eq "the oversized review fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_review" | wc -c) > 131072 ))"
+assert_eq "a review map past the argv cap still clears the merged recommendation's block" \
+  "a merged pull request references review-2026-07-11-R-02" \
+  "$(reason_of "$(work_gone_clearances "$(blocked_of review-2026-07-11-R-02)" "$states" '{}' "$big_review")")"
+
+big_plan="$(jq -nc --arg r "o/a" \
+  '([range(4500) | {key: ("o/filler" + (. | tostring)), value: {("W10-fill-" + (. | tostring)): "open"}}] | from_entries)
+   + {($r): {"W10-breach-handling": "done"}}')"
+assert_eq "the oversized plan fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_plan" | wc -c) > 131072 ))"
+assert_eq "a plan map past the argv cap still clears the checked task's block" \
+  "the implementation plan marks W10-breach-handling done" \
+  "$(reason_of "$(work_gone_clearances "$(blocked_of W10-breach-handling)" "$states" '{}' '{}' "$big_plan")")"
+
 # The classes deliberately left to the Enabler: a security finding, a
 # code-quality finding, a register-hygiene item. A finding is the one that must
 # never be inferred from absence — gather-findings.sh degrades to [] on an API

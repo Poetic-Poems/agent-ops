@@ -262,7 +262,7 @@ bot_conflicts="$(jq -c '[.[] | select(.isDraft | not) | select(.mergeable == "CO
 out='[]'
 
 emit() {  # <pr-json> <bot: true|false>
-  local pr="$1" bot="$2" number head_sha item cand
+  local pr="$1" bot="$2" number head_sha item cand docs
   local rebase_requested="false" superseded_by="" superseded_evidence=""
   number="$(jq -r '.number' <<<"$pr")"
   head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
@@ -295,8 +295,16 @@ emit() {  # <pr-json> <bot: true|false>
   local ref_kind="conflict"
   [[ -n "$superseded_by" ]] && ref_kind="superseded"
 
+  # requirement 4g: $pr carries a whole pull-request body (TD-PPagop-26081401),
+  # unbounded by anything in this system, so it travels to jq on stdin — a
+  # here-string, not a pipe, for requirement 4c's reason: under pipefail a
+  # producer's SIGPIPE must not become this call's status — rather than as
+  # the --argjson it used to be. Only the values requirement 4g leaves as
+  # configuration-bounded (the minted ref, the extracted item, a head sha,
+  # two booleans, the supersession strings) still travel as --arg/--argjson.
+  # Fails open: a candidate this build cannot parse is skipped rather than
+  # aborting the whole gather.
   cand="$(jq -nc \
-    --argjson pr "$pr" \
     --arg ref "pr-${number}-${ref_kind}-${head_sha:0:12}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
@@ -304,7 +312,7 @@ emit() {  # <pr-json> <bot: true|false>
     --argjson rebase_requested "$rebase_requested" \
     --arg superseded_by "$superseded_by" \
     --arg superseded_evidence "$superseded_evidence" \
-    '{source: "merge-conflicts",
+    'input as $pr | {source: "merge-conflicts",
       ref: $ref,
       number: $pr.number,
       pr_number: $pr.number,
@@ -322,8 +330,18 @@ emit() {  # <pr-json> <bot: true|false>
            rebase_requested: $rebase_requested,
            superseded_by: (if $superseded_by == "" then null else ($superseded_by | tonumber) end),
            superseded_evidence: (if $superseded_evidence == "" then null else $superseded_evidence end)
-         } else {} end)')"
-  out="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$out")"
+         } else {} end)' <<<"$pr" 2>/dev/null)" || return 0
+
+  # The per-candidate array append: $out itself was already delivered on
+  # stdin (it grows with every candidate this run has emitted so far), but
+  # the new $cand rode in as a second --argjson — also past MAX_ARG_STRLEN
+  # once its body is large enough. Both now arrive as one stdin document,
+  # bound positionally, on the same fail-open terms as the build above.
+  docs="$(printf '%s\n' "$out" "$cand")"
+  out="$(jq -nc '
+    input as $out | input as $c
+    | $out + [$c]
+  ' <<<"$docs" 2>/dev/null || printf '%s' "$out")"
 }
 
 while IFS= read -r pr; do
