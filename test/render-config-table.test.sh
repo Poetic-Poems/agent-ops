@@ -230,14 +230,24 @@ JSON
 #     table region is paired with a notes region, each preceded by an ATX
 #     heading so its level can be derived; the review notes region sits under
 #     a level-6 heading on purpose, to prove the "clamped at 6" rule (a naive
-#     `+1` would try for a nonexistent level 7). ---
+#     `+1` would try for a nonexistent level 7).
+#
+#     The two specs' start markers, and README's "main" pair, carry trailing
+#     contract prose after `id=<id>` (#356) — the same annotation
+#     CLAUDE.md's "Generated regions" note and the real repository's own
+#     markers carry — so every existing assertion against those regions
+#     doubles as coverage that the script matches an annotated marker by
+#     prefix rather than exact-line equality. README's "review" pair is left
+#     in the older, plain (unannotated) form on purpose, to prove that form
+#     is still accepted too — both must work, since a marker predating this
+#     change must not suddenly stop matching. ---
 write_fixture_readme() {
   cat > "$tmp/README.md" <<'MD'
 # Fixture
 
 Sentinel before.
 
-<!-- config-table:start id=main -->
+<!-- config-table:start id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Default | Notes |
 |---|---|---|
 | `alpha` | `"stale"` | stale notes |
@@ -246,7 +256,7 @@ Sentinel before.
 
 ## Extended notes heading (main)
 
-<!-- config-table:notes id=main -->
+<!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 <!-- config-table:notes-end -->
 
 Sentinel between.
@@ -269,12 +279,12 @@ write_fixture_impl_spec() {
   cat > "$tmp/docs/IMPLEMENTATION-PIPELINE-SPEC.md" <<'MD'
 # Fixture spec
 
-<!-- config-table:start id=main -->
+<!-- config-table:start id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
 <!-- config-table:end -->
 
-<!-- config-table:notes id=main -->
+<!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 <!-- config-table:notes-end -->
 MD
 }
@@ -283,12 +293,12 @@ write_fixture_review_spec() {
   cat > "$tmp/docs/REVIEW-PIPELINE-SPEC.md" <<'MD'
 # Fixture review spec
 
-<!-- config-table:start id=review -->
+<!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
 <!-- config-table:end -->
 
-<!-- config-table:notes id=review -->
+<!-- config-table:notes id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 <!-- config-table:notes-end -->
 MD
 }
@@ -317,7 +327,19 @@ run_script >/dev/null
 rewrite_rc=$?
 assert_eq "rewriting in place exits 0" "0" "$rewrite_rc"
 
-main_region="$(awk '/<!-- config-table:start id=main -->/{f=1;next} /<!-- config-table:end -->/{f=0} f' "$tmp/README.md")"
+# --- A start marker's trailing contract prose (#356) is matched by prefix,
+#     not exact-line equality, and survives a rewrite untouched — proven
+#     here for both an annotated marker (README's "main" pair) and the
+#     older, plain form (README's "review" pair), so neither regresses ---
+# shellcheck disable=SC2016
+main_start_line="$(grep -m1 '^<!-- config-table:start id=main' "$tmp/README.md")"
+assert_contains "the annotated main start marker's trailing prose survives a rewrite" "$main_start_line" "GENERATED from config.schema.json by scripts/render-config-table.sh"
+main_notes_start_line="$(grep -m1 '^<!-- config-table:notes id=main' "$tmp/README.md")"
+assert_contains "the annotated main notes-start marker's trailing prose survives a rewrite" "$main_notes_start_line" "GENERATED from config.schema.json by scripts/render-config-table.sh"
+review_start_line="$(grep -m1 '^<!-- config-table:start id=review' "$tmp/README.md")"
+assert_eq "the plain (unannotated) review start marker is unchanged by a rewrite" "<!-- config-table:start id=review -->" "$review_start_line"
+
+main_region="$(awk '/<!-- config-table:start id=main/{f=1;next} /<!-- config-table:end -->/{f=0} f' "$tmp/README.md")"
 
 # --- A key present in the schema and absent from the region is added ---
 # shellcheck disable=SC2016
@@ -415,7 +437,7 @@ assert_contains "text after the review region survives" "$readme_content" "Senti
 # boundary and deferred to the matching Extended notes region.
 # ============================================================================
 
-main_notes_region="$(awk '/<!-- config-table:notes id=main -->/{f=1;next} /<!-- config-table:notes-end -->/{f=0} f' "$tmp/README.md")"
+main_notes_region="$(awk '/<!-- config-table:notes id=main/{f=1;next} /<!-- config-table:notes-end -->/{f=0} f' "$tmp/README.md")"
 review_notes_region="$(awk '/<!-- config-table:notes id=review -->/{f=1;next} /<!-- config-table:notes-end -->/{f=0} f' "$tmp/README.md")"
 
 # --- A plain over-long note (mu) is truncated with a continuation link, and
@@ -639,7 +661,7 @@ mv "$tmp/README.md.bak" "$tmp/README.md"
 #     region, rather than silently skipping the region ---
 cp "$tmp/README.md" "$tmp/README.md.bak"
 # shellcheck disable=SC2016
-grep -v '^<!-- config-table:notes id=main -->$' "$tmp/README.md" > "$tmp/README.nomarker" && mv "$tmp/README.nomarker" "$tmp/README.md"
+grep -v '^<!-- config-table:notes id=main' "$tmp/README.md" > "$tmp/README.nomarker" && mv "$tmp/README.nomarker" "$tmp/README.md"
 missing_marker_out="$(run_script --check 2>&1)"
 missing_marker_rc=$?
 if (( missing_marker_rc != 0 )); then

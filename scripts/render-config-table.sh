@@ -77,6 +77,18 @@
 # refuse a region whose first two lines are not a header row and a
 # `|---|---|---|` delimiter row.
 #
+# Both `config-table:start` and `config-table:notes` markers may carry
+# trailing prose after the `id=<id>` token and before the closing `-->` —
+# the contract that tells an editor who lands on the row directly, without
+# having read CLAUDE.md first, that it is generated and where to edit
+# instead (#356). Matching a start marker is therefore a prefix match — the
+# literal `config-table:start id=<id>` (or `config-table:notes id=<id>`)
+# followed by either end-of-line or a space and arbitrary text ending in
+# `-->` — never exact-line equality, so any wording after the id is
+# accepted and reproduced untouched (the line is `print`ed as found, not
+# regenerated). The end markers (`config-table:end`, `config-table:notes-
+# end`) carry no id and no per-region prose, so they stay matched exactly.
+#
 # A Notes cell longer than 500 characters (`NOTES_CAP` in the jq program
 # below) is capped: the cell carries a truncated prefix — at most 480
 # characters, tokenised into Markdown atoms (a code span, a link, an
@@ -300,9 +312,14 @@ render_region_json() {
   jq -c --arg region "$region" --arg audience "$audience" --argjson level "$level" "$jq_program" "$schema_file"
 }
 
-start_marker() { printf '<!-- config-table:start id=%s -->' "$1"; }
+# Regexes, not literal strings: a start marker may carry trailing contract
+# prose after its id (see the header comment above), so matching it is a
+# prefix match — the id followed by end-of-line or a space and text ending
+# in `-->` — rather than exact-line equality. The end markers carry no id
+# and are never annotated, so they stay plain literal strings.
+start_marker_regex() { printf '^<!-- config-table:start id=%s($| .*-->$)' "$1"; }
 end_marker() { printf '<!-- config-table:end -->'; }
-notes_start_marker() { printf '<!-- config-table:notes id=%s -->' "$1"; }
+notes_start_marker_regex() { printf '^<!-- config-table:notes id=%s($| .*-->$)' "$1"; }
 notes_end_marker() { printf '<!-- config-table:notes-end -->'; }
 
 # Prints the region's generated body rows — the lines strictly between the
@@ -311,8 +328,8 @@ notes_end_marker() { printf '<!-- config-table:notes-end -->'; }
 # return) if either marker is missing.
 extract_body() {
   local file="$1" id="$2"
-  awk -v start="$(start_marker "$id")" -v end="$(end_marker)" '
-    $0 == start { found=1; n=0; next }
+  awk -v start="$(start_marker_regex "$id")" -v end="$(end_marker)" '
+    $0 ~ start { found=1; n=0; next }
     found && $0 == end { printed=1; exit }
     found {
       n++
@@ -332,8 +349,8 @@ extract_body() {
 # so assert it.
 header_delimiter_ok() {
   local file="$1" id="$2"
-  awk -v start="$(start_marker "$id")" '
-    $0 == start { found=1; n=0; next }
+  awk -v start="$(start_marker_regex "$id")" '
+    $0 ~ start { found=1; n=0; next }
     found {
       n++
       if (n == 1) { header_ok = ($0 ~ /\|/) }
@@ -351,8 +368,8 @@ replace_body() {
   local file="$1" id="$2" content_file="$3"
   local tmp
   tmp="$(mktemp "${file}.XXXXXX")"
-  awk -v start="$(start_marker "$id")" -v end="$(end_marker)" -v contentfile="$content_file" '
-    $0 == start { print; inregion=1; n=0; next }
+  awk -v start="$(start_marker_regex "$id")" -v end="$(end_marker)" -v contentfile="$content_file" '
+    $0 ~ start { print; inregion=1; n=0; next }
     inregion && $0 == end {
       while ((getline line < contentfile) > 0) print line
       close(contentfile)
@@ -376,8 +393,8 @@ replace_body() {
 # header/delimiter to skip: the whole region is generated.
 extract_notes_body() {
   local file="$1" id="$2"
-  awk -v start="$(notes_start_marker "$id")" -v end="$(notes_end_marker)" '
-    $0 == start { found=1; next }
+  awk -v start="$(notes_start_marker_regex "$id")" -v end="$(notes_end_marker)" '
+    $0 ~ start { found=1; next }
     found && $0 == end { printed=1; exit }
     found { print }
     END { exit(printed ? 0 : 1) }
@@ -390,9 +407,9 @@ extract_notes_body() {
 # precedes it.
 notes_heading_level() {
   local file="$1" id="$2"
-  awk -v start="$(notes_start_marker "$id")" '
+  awk -v start="$(notes_start_marker_regex "$id")" '
     match($0, /^#+ /) { level = RLENGTH - 1; have_level = 1 }
-    $0 == start {
+    $0 ~ start {
       if (have_level) { print (level + 1 > 6 ? 6 : level + 1); found = 1 }
       exit
     }
@@ -407,8 +424,8 @@ replace_notes_body() {
   local file="$1" id="$2" content_file="$3"
   local tmp
   tmp="$(mktemp "${file}.XXXXXX")"
-  awk -v start="$(notes_start_marker "$id")" -v end="$(notes_end_marker)" -v contentfile="$content_file" '
-    $0 == start { print; inregion=1; next }
+  awk -v start="$(notes_start_marker_regex "$id")" -v end="$(notes_end_marker)" -v contentfile="$content_file" '
+    $0 ~ start { print; inregion=1; next }
     inregion && $0 == end {
       while ((getline line < contentfile) > 0) print line
       close(contentfile)

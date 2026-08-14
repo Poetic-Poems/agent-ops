@@ -282,7 +282,7 @@ container](#making-a-change-when-every-instance-is-a-container).
 
 Keys:
 
-<!-- config-table:start id=main -->
+<!-- config-table:start id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Default | Notes |
 |---|---|---|
 | `repos` | see `config.json` | Array of `{"slug": "...", "sources": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`). `security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is...[continued below](#extended-notes-repos) |
@@ -366,7 +366,7 @@ not passed to the `claude` CLI. No existing config needs to change.
 
 The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
 
-<!-- config-table:notes id=main -->
+<!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 
 ### Extended notes: `repos`
 
@@ -1358,7 +1358,7 @@ time (never committed to the repo under review).
 
 ### Configuration (`review` block in `config.json`)
 
-<!-- config-table:start id=review -->
+<!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Default | Notes |
 |---|---|---|
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Repositories to review. A plain list of slugs. |
@@ -1372,7 +1372,7 @@ time (never committed to the repo under review).
 | `review.not_before` | *(unset)* | Optional. Hold **all** reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. |
 <!-- config-table:end -->
 
-<!-- config-table:notes id=review -->
+<!-- config-table:notes id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 <!-- config-table:notes-end -->
 
 ### Install
