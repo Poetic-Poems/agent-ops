@@ -640,9 +640,9 @@ is a container: Docker and the `.env` above are the whole of it.
 
 4. **Labels: nothing to do.** The pipeline creates the labels it uses — the PR
    label, the Enabler's escalation label, `needs-refinement`, `unvoided`, the
-   `complexity:*` grades, and `blocked` — in each repository the first time it
-   works it, and puts back any you later delete. It only ever *creates*: a
-   label you have recoloured or re-described keeps your version.
+   `complexity:*` grades, `blocked`, and `obsolete` — in each repository the
+   first time it works it, and puts back any you later delete. It only ever
+   *creates*: a label you have recoloured or re-described keeps your version.
 
    All the token needs is permission to create them. If one is still missing
    after a cycle has run against that repository, that permission is what to
@@ -1064,6 +1064,34 @@ instead and it becomes indistinguishable from a run: the Recent cycles table
 grows a row for a cycle that never started, wearing whatever badge an empty
 event stream earns. `manual` keeps the record in the log tail, where it
 belongs, and out of the cycle list.
+
+### Closing an obsolete draft pull request
+
+A draft pull request the pipeline itself raised — an abandoned draft, or one
+still carrying your own unactioned review feedback — can simply stop being
+wanted. If it still changes files against its base, the pipeline cannot close
+it on its own: `void_finishing_pr_reason` (`lib/void-guard.sh`) only accepts an
+open pull request as void when its diff against the base is empty, because
+"this draft is no longer wanted" is a judgement no API call can corroborate,
+and closing a live branch on an unexamined one has destroyed real work before.
+So an open, still-diff-carrying draft is escalated to you instead of closed.
+
+To tell the pipeline it really is unwanted, **label the pull request
+`obsolete`**, in that item's repo:
+
+```bash
+gh pr edit 205 -R Poetic-Poems/poetic --add-label obsolete
+```
+
+The pipeline creates the label in each target repo it works, so there is
+nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet.
+The next time the pipeline records this item as void — typically the Enabler,
+re-examining the escalation this draft raised — the label corroborates the
+void despite the diff, and the pull request is closed with a comment naming
+the label as why. **Only you can do this: no stage in the pipeline ever
+applies this label itself**, exactly like `unvoided` above — a stage that
+could apply it would be corroborating its own judgement, which is what the
+guard exists to stop.
 
 ### Blocked items and the Enabler
 
