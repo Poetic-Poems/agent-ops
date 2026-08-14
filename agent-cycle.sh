@@ -6397,13 +6397,18 @@ if [[ "$rev_status" == "ready" ]]; then
   # TD-PPagop-26081404: bookkeeping for `review_gate_unknown_streak_verdict`,
   # logged unconditionally — regardless of which branch below is taken, or
   # none of them — so a run of consecutive failures can be told apart from
-  # ordinary noise. `ok` is false only for the specific blocking `unknown`
-  # case just below; a `dirty` verdict (from either check) or the non-blocking
-  # alerts `unknown` both prove the required-checks read itself succeeded, and
-  # reset the streak exactly the way a Co-Ordinator success resets
+  # ordinary noise. Exit status 2 is `review_gate_verdict`'s
+  # required-checks-read-failed signal, deliberately read instead of the
+  # word: a genuinely dirty alert outranks an unreadable check list for the
+  # word and the handback below, so the word alone would record `{ok: true}`
+  # for an evaluation whose required-checks read failed outright — falsely
+  # resetting the very streak this event exists to count. Anything but exit 2
+  # — `clean`, a `dirty` earned with the check list read, the non-blocking
+  # alerts `unknown` — proves the required-checks read itself succeeded, and
+  # resets the streak exactly the way a Co-Ordinator success resets
   # `crash_loop_verdict` (lib/crash-loop.sh).
   gate_checks_ok=true
-  [[ "$gate_word" == "unknown" && "$gate_rc" -ne 0 ]] && gate_checks_ok=false
+  [[ "$gate_rc" -eq 2 ]] && gate_checks_ok=false
   log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$gate_checks_ok" '{ok: $ok}')"
   if [[ "$gate_word" == "dirty" ]]; then
     log_reviewer_handback \
@@ -6426,15 +6431,21 @@ if [[ "$rev_status" == "ready" ]]; then
     # earning its own warning buries the pattern a human would actually act
     # on. Once this node's own log shows `review_gate_unknown_streak_after`
     # of these in a row, one louder escalation event replaces the per-item
-    # warning instead of piling another one on top of it.
+    # warning instead of piling another one on top of it — once per streak,
+    # not once per item past the threshold: `review_gate_degraded_since` is
+    # the same already-escalated dedup `crash_loop_escalated_since` gives
+    # requirement 2.7's crash loop, keyed on the run's own `first_ts`, so an
+    # already-escalated run logs nothing further here (the bookkeeping event
+    # above still records the failure, and the handback below still refuses
+    # the handoff) until a successful read starts a new streak.
     streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
-    if [[ -n "$streak_json" ]]; then
+    if [[ -z "$streak_json" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
+        '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
+    elif ! review_gate_degraded_since "$(jq -r '.first_ts // ""' <<<"$streak_json")" "$node_name" < "$log_file"; then
       log_event "review-gate-checks-degraded" "$streak_json"
       streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
       echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
-    else
-      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
-        '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
     fi
     log_reviewer_handback \
       "the Reviewer reported ready, but $impl_pr_url's required checks could not be confirmed: $gate_reason" \

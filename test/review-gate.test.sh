@@ -337,7 +337,7 @@ set_base_alerts ''
 out="$(review_gate_verdict "$URL" "main")"; rc=$?
 assert_eq "an unreadable required-check list is unknown overall" "unknown" "${out%%$'\t'*}"
 assert_contains "  ... naming the required checks it could not read" "required checks" "$out"
-assert_eq "  ... but exits 1, refusing the handoff unlike an alerts-caused unknown" "1" "$rc"
+assert_eq "  ... but exits 2, refusing the handoff unlike an alerts-caused unknown" "2" "$rc"
 
 # ... and the pull request that reports no required checks at all, which
 # reaches this file in the same shape, must still come out `dirty` overall:
@@ -353,14 +353,20 @@ assert_eq "  ... and exits 1" "1" "$rc"
 
 # A genuinely dirty alert must still win over an unreadable required-check
 # list: the pull request has a real, nameable problem, and that must not be
-# hidden behind a milder-sounding node-level `unknown`.
+# hidden behind a milder-sounding node-level `unknown`. But the word winning
+# must not bury the failed read: exit 2 is `review_gate_verdict`'s
+# required-checks-read-failed signal regardless of the word
+# (TD-PPagop-26081404) — read the word alone here and the caller's streak
+# bookkeeping would record a successful read for an evaluation whose
+# required-checks read failed outright, resetting the very streak the
+# escalation exists to count.
 set_required 'ERROR'
 set_pr_alerts "$(printf '42\tcritical')"
 set_base_alerts ''
 out="$(review_gate_verdict "$URL" "main")"; rc=$?
 assert_eq "a real dirty alert still wins over an unreadable required-check list" "dirty" "${out%%$'\t'*}"
 assert_contains "  ... naming the alert" "#42 (critical)" "$out"
-assert_eq "  ... and exits 1" "1" "$rc"
+assert_eq "  ... but exits 2, still carrying the failed required-checks read" "2" "$rc"
 
 set_required '[{"name":"CI","bucket":"pass"}]'
 set_pr_alerts ''
@@ -446,6 +452,31 @@ assert_eq "no node given prints nothing" "" \
   "$(review_gate_unknown_streak_verdict 3 "" <<<"$three_unknown")"
 assert_eq "an empty stream yields nothing" "" \
   "$(review_gate_unknown_streak_verdict 1 n1 <<<"")"
+
+# --- review_gate_degraded_since -------------------------------------------
+# The once-per-streak dedup: a run that has had its one loud
+# `review-gate-checks-degraded` event must not fire another for every item it
+# goes on to degrade through, and a new run — its own `first_ts` — must
+# escalate afresh. Same question `crash_loop_escalated_since`
+# (lib/crash-loop.sh, its own test) answers for the crash loop, but matched
+# exactly on the run's `first_ts` carried in the event rather than on
+# detail-at-or-after.
+
+already_escalated="$(jq -nc '
+  {ts: "2026-08-14T10:30:00Z", node: "n1",
+   event: "review-gate-checks-degraded", gate: "required-checks",
+   count: 3, first_ts: "2026-08-14T10:00:00Z",
+   last_ts: "2026-08-14T10:30:00Z"}')"
+review_gate_degraded_since 2026-08-14T10:00:00Z n1 <<<"$already_escalated"
+assert_eq "the run's own escalation is found by its first_ts" "0" "$?"
+review_gate_degraded_since 2026-08-14T11:00:00Z n1 <<<"$already_escalated"
+assert_eq "a new run's first_ts matches no old event — it escalates afresh" "1" "$?"
+review_gate_degraded_since 2026-08-14T10:00:00Z n2 <<<"$already_escalated"
+assert_eq "another node's escalation never suppresses this node's own" "1" "$?"
+review_gate_degraded_since "" n1 <<<"$already_escalated"
+assert_eq "an empty first_ts answers not-escalated, never a silent match-all" "1" "$?"
+review_gate_degraded_since 2026-08-14T10:00:00Z n1 <<<""
+assert_eq "an empty stream has escalated nothing" "1" "$?"
 
 echo
 if (( failures == 0 )); then

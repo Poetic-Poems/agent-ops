@@ -79,7 +79,9 @@
 # required-checks read rarely fails it only once, so it turns a run of
 # consecutive per-node failures into one louder escalation event instead of
 # one warning per item — see its own header for how it reuses
-# `lib/crash-loop.sh`'s shape.
+# `lib/crash-loop.sh`'s shape. `review_gate_degraded_since` is its dedup
+# companion, answering "has this run already had its one loud event?" the
+# way `crash_loop_escalated_since` does for requirement 2.7's crash loop.
 #
 # Sourced, never executed: no shell options are set here, matching every
 # other lib/*.sh — the caller (agent-cycle.sh runs under `set -euo pipefail`;
@@ -278,15 +280,24 @@ review_gate_security_alerts() {
 # a genuinely dirty verdict into anything softer.
 #
 # The two ways to reach `unknown` are not the same thing, and a caller must
-# not treat them alike: exit 1 means the required-check list itself could not
+# not treat them alike: exit 2 means the required-check list itself could not
 # be read, so this still refuses the handoff exactly like `dirty` (an unread
 # check list is never certified "nothing wrong" — see lib/review-gate.sh's
 # header and TD-PPagop-26081305); exit 0 means only the security-alert (or,
 # at the caller, closing-keyword) read failed, which does not itself block —
-# the handoff proceeds and the caller is expected to log a warning instead. A
-# caller that discards this exit status with `|| true` the way it safely can
-# for a `dirty`/`clean` verdict will silently let an unreadable required-check
-# list through; capture it.
+# the handoff proceeds and the caller is expected to log a warning instead.
+#
+# Exit 2 carries that fact even when the printed word is `dirty`: a real
+# alert still outranks an unreadable required-check list for the word and the
+# reason (the pull request has a nameable problem, and a milder node-level
+# `unknown` must not hide it), but the word alone would then falsely certify
+# the required-checks read as having succeeded — exactly the false reset
+# `review_gate_unknown_streak_verdict`'s streak cannot afford
+# (TD-PPagop-26081404) — so the read's own health travels in the exit status
+# independently of which sub-check won the word: 0 or 1, the required-check
+# list was read; 2, it was not. A caller that discards this exit status with
+# `|| true` the way it safely can for a `dirty`/`clean` verdict will silently
+# let an unreadable required-check list through; capture it.
 review_gate_verdict() {
   local url="${1:-}" default_branch="${2:-main}"
   local checks_word checks_reason alerts_word alerts_reason combined
@@ -302,6 +313,12 @@ review_gate_verdict() {
   IFS=$'\t' read -r alerts_word alerts_reason <<<"$combined"
   if [[ "$alerts_word" == "dirty" ]]; then
     printf 'dirty\t%s' "$alerts_reason"
+    # The alert wins the word, but an unreadable required-check list must
+    # still reach the caller — in the exit status, the only channel left
+    # once the word is spoken for (see header).
+    if [[ "$checks_word" == "unknown" ]]; then
+      return 2
+    fi
     return 1
   fi
 
@@ -310,7 +327,7 @@ review_gate_verdict() {
   # caller needs in hand to log the right warning and unblock_condition.
   if [[ "$checks_word" == "unknown" ]]; then
     printf 'unknown\t%s' "$checks_reason"
-    return 1
+    return 2
   fi
 
   if [[ "$alerts_word" == "unknown" ]]; then
@@ -345,11 +362,12 @@ review_gate_verdict() {
 # to "this node's own slice of it".
 #
 # The caller logs one `review-gate-checks-read` event per ready-gate
-# evaluation regardless of outcome (`{ok: true}` for `clean`/`dirty`/the
-# non-blocking alerts `unknown` — all three prove the required-checks read
-# itself succeeded — `{ok: false}` only for the blocking `unknown`), so this
-# reader never has to infer a reset from the *absence* of a failure the way it
-# would if only failures were logged.
+# evaluation regardless of outcome — `{ok: false}` exactly when
+# `review_gate_verdict` exited 2, its required-checks-read-failed signal,
+# which unlike the printed word survives a `dirty` alerts verdict outranking
+# the unreadable check list (see `review_gate_verdict`'s header); `{ok:
+# true}` otherwise — so this reader never has to infer a reset from the
+# *absence* of a failure the way it would if only failures were logged.
 review_gate_unknown_streak_verdict() {
   local threshold="${1:-0}" node="${2:-}"
   if ! [[ "$threshold" =~ ^[0-9]+$ ]] || (( threshold < 1 )) || [[ -z "$node" ]]; then
@@ -371,4 +389,34 @@ review_gate_unknown_streak_verdict() {
     | select(.count >= $threshold)
     | {node: $node, gate: "required-checks"} + .
   ' 2>/dev/null || true
+}
+
+# review_gate_degraded_since FIRST_TS NODE < event-stream.jsonl
+# Exit 0 when NODE's own `review-gate-checks-degraded` event for the run
+# that began at FIRST_TS already exists — the current streak has had its one
+# loud event, and another item degrading in the same run must not re-fire it
+# — and 1 otherwise. The crash-loop analogue (`crash_loop_escalated_since`,
+# lib/crash-loop.sh) has to key on "same detail at or after the run's first
+# failure" because its escalated event carries no better identity for the
+# run; this one's escalation event *is* the verdict object, `first_ts`
+# included, so the run is matched exactly: a new streak — after any
+# successful read — escalates afresh because its own `first_ts` matches no
+# event already logged, while the current one, however many more items it
+# degrades through, escalates once. An empty FIRST_TS answers "not
+# escalated": it can only mean the verdict's own events carried no
+# timestamps, and the right failure mode for an alarm is a spurious repeat a
+# human sees, never a silent swallow.
+review_gate_degraded_since() {
+  local first_ts="${1:-}" node="${2:-}" hits
+  if [[ -z "$first_ts" || -z "$node" ]]; then
+    return 1
+  fi
+  hits="$(jq -r -R -s --arg ts "$first_ts" --arg node "$node" '
+    [ splits("\n") | select(length > 0) | (fromjson? // empty)
+      | select(.event == "review-gate-checks-degraded"
+               and (.node // "") == $node
+               and (.first_ts // "") == $ts) ]
+    | length
+  ' 2>/dev/null || echo 0)"
+  [[ "$hits" =~ ^[0-9]+$ ]] && (( hits > 0 ))
 }
