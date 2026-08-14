@@ -565,9 +565,11 @@ takeover" above.)*
 6. **Verify the PR itself**, against GitHub's view, not your local guess:
    `gh pr view --json mergeable,mergeStateStatus`. If it's not mergeable —
    most likely `default_branch` moved since you branched — rebase (or
-   merge, matching the repo's convention) and re-verify. Leave the PR as a
-   **draft** either way; flipping it to ready is the Reviewer's job, not
-   yours.
+   merge, matching the repo's convention) and re-verify; a rebase needs
+   `git push --force-with-lease`, never a bare `--force`, same as every other
+   force-push this system makes to a branch it does not exclusively hold.
+   Leave the PR as a **draft** either way; flipping it to ready is the
+   Reviewer's job, not yours.
 
    *For `review-feedback`:* still rebase if `default_branch` has moved, but
    expect `mergeable` to remain false and `mergeStateStatus` to be `BLOCKED`
