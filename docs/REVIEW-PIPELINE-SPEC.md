@@ -593,7 +593,11 @@ R14. **Prove it is landable.** Run the repo's own checks (as its `CLAUDE.md`
    and workflow files define — for a docs-only change this is chiefly the
    whitespace/format gates and commit-format) and fix anything they surface.
    Verify the PR via `gh pr view --json mergeable,mergeStateStatus` against
-   GitHub's own view, and resolve any conflict with the current default branch.
+   GitHub's own view, and resolve any conflict with the current default branch
+   — a rebase republished only with `git push --force-with-lease`, the sole
+   force-push permitted on the review branch, so a peer's unseen push to the
+   lock ref is refused rather than silently overwritten (the same rule the
+   implementation pipeline's prompts follow, issue #360).
 
 R15. **Final message.** End with a single JSON object as the entire final
    message: `{"status": "complete", "pr_url": …, "branch": …, "repo": …, "notes": …}`
