@@ -71,9 +71,16 @@ repos='[
    ],
    "tech_debt": [
      {"source": "tech-debt", "ref": "TD-PPagop-1", "title": "opted in"}
+   ],
+   "project_review": [
+     {"source": "project-review", "ref": "review-2026-08-10-R-01", "title": "opted in"}
+   ],
+   "implementation_plan": [
+     {"source": "implementation-plan", "ref": "W10-breach-handling", "title": "opted in"}
    ]}
 ]'
-policy='{"issues": "preferred", "register-hygiene": "required", "tech-debt": "required"}'
+policy='{"issues": "preferred", "register-hygiene": "required", "tech-debt": "required",
+         "project-review": "required", "implementation-plan": "required"}'
 refinements='{"o/r": {"6": {"ts": "2026-08-01T00:00:00Z", "comment_url": "https://x/6"}}}'
 blocked='[{"repo": "o/r", "item": "7"}]'
 void='[{"repo": "o/r", "item": "8"}]'
@@ -97,7 +104,11 @@ assert_eq "a register-hygiene item, opted into required, is a candidate" "yes" \
   "$(jq -r 'any(.[]; .source == "register-hygiene") | if . then "yes" else "no" end' <<<"$candidates")"
 assert_eq "a tech-debt item, opted into required, is a candidate" "yes" \
   "$(jq -r 'any(.[]; .source == "tech-debt") | if . then "yes" else "no" end' <<<"$candidates")"
-assert_eq "exactly three candidates survive" "3" "$(jq 'length' <<<"$candidates")"
+assert_eq "a project-review item, opted into required, is a candidate" "yes" \
+  "$(jq -r 'any(.[]; .source == "project-review") | if . then "yes" else "no" end' <<<"$candidates")"
+assert_eq "an implementation-plan item, opted into required, is a candidate" "yes" \
+  "$(jq -r 'any(.[]; .source == "implementation-plan") | if . then "yes" else "no" end' <<<"$candidates")"
+assert_eq "exactly five candidates survive" "5" "$(jq 'length' <<<"$candidates")"
 assert_eq "the candidate carries the gatherer's own entry verbatim" "unrefined issue" \
   "$(jq -r '.[] | select(.item == "5") | .entry.title' <<<"$candidates")"
 
@@ -106,11 +117,14 @@ assert_eq "an empty repos array yields no candidates" "[]" \
 assert_eq "unreadable inputs yield an empty array rather than failing" "[]" \
   "$(refiner_candidate_items 'garbage' 'garbage' 'garbage' 'garbage' 'garbage' 'garbage')"
 
-# project-review and implementation-plan are never reachable here, whatever
-# their policy says — the Script does not pre-fetch either as an array.
+# project-review and implementation-plan are only reachable when the
+# Refiner-only repos array agent-cycle.sh builds actually carries them — a
+# repo with neither array present (the ordinary shape of the Co-Ordinator's
+# own `ordered_repos_json`) still finds nothing to gather, whatever the
+# policy says.
 repos_with_pr='[{"slug": "o/r", "issues": []}]'
 policy_pr='{"project-review": "required", "implementation-plan": "required"}'
-assert_eq "a project-review/implementation-plan policy finds nothing to gather — there is no array for either" "[]" \
+assert_eq "a project-review/implementation-plan policy finds nothing without the arrays present" "[]" \
   "$(refiner_candidate_items "$repos_with_pr" "$policy_pr" '{}' '[]' '[]' '[]')"
 
 # --- refiner_engagement_set ---------------------------------------------------
