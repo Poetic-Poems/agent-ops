@@ -47,6 +47,7 @@
                 "issues:urgent",
                 "review-feedback",
                 "merge-conflicts",
+                "dequeued",
                 "human-visibility",
                 "abandoned-drafts",
                 "failed-runs",
@@ -123,15 +124,16 @@
       },
       "x-docs": {
         "readme": [
-          "Array of `{\"slug\": \"...\", \"sources\": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`).",
+          "Array of `{\"slug\": \"...\", \"sources\": [...]}`. `sources` is that repo's work sources in priority order (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `dequeued`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`).",
           {
             "list": [
               "`security` (open Dependabot + security code-scanning alerts) is always first, and any security-related item is prioritised ahead of all non-security work.",
               "`issues:urgent` comes second and likewise outranks the repo walk, because an issue you have marked `Urgent` is the strongest thing you can say short of a security alert.",
               "`review-feedback` (agent PRs where you asked for changes we haven't answered yet) comes third and also outranks the repo walk \u2014 finishing beats starting, and a stuck PR otherwise occupies a back-pressure slot forever.",
               "`merge-conflicts` (agent PRs otherwise ready for review or merge but conflicting with their base) comes fourth for the same reason \u2014 a rebase-and-resolve unblocks a PR you are waiting to land, and nothing else on it can proceed until it merges cleanly.",
-              "`human-visibility` (an agent PR the sweep could not confirm a human was actually asked to review, or nudge, after `human_nudge_idle_hours` idle) comes fifth, ranked with the sources around it rather than beside `register-hygiene`: finished work invisible to the human whose merge everything waits on is the same \"finishing beats starting\" gap, not a cosmetic repair.",
-              "`abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes sixth for the same reason \u2014 finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.",
+              "`dequeued` (agent PRs GitHub's merge queue removed over a merge-group checks failure without merging) comes fifth, alongside `merge-conflicts`: a real defect in the pull request itself, of the same \"finishing beats starting\" kind, just surfaced by the queue's speculative merge rather than by git.",
+              "`human-visibility` (an agent PR the sweep could not confirm a human was actually asked to review, or nudge, after `human_nudge_idle_hours` idle) comes sixth, ranked with the sources around it rather than beside `register-hygiene`: finished work invisible to the human whose merge everything waits on is the same \"finishing beats starting\" gap, not a cosmetic repair.",
+              "`abandoned-drafts` (draft PRs this system raised and then left untouched past `abandoned_draft_after_hours`) comes seventh for the same reason \u2014 finishing a stalled draft of ours turns a slot silted with a dead draft into a PR you can merge.",
               "`project-review` (the latest weekly review's recommendations that aren't already tech-debt or issues) sits just above `issues:low` and `code-quality` (non-security code-scanning findings).",
               "`register-hygiene` (the repo's tech-debt register failing its own consistency check \u2014 an item file whose frontmatter disagrees with its filename, its declared scope, or itself) is last, because a deterministic cosmetic repair must never outrank real work, and each repo's `tech-debt-register` CI check keeps its volume near zero anyway."
             ]
@@ -150,7 +152,7 @@
           "Each of them is set by editing `config.json`, like every other key here — see [Configuration](#configuration) for how that edit reaches a fleet already running."
         ],
         "spec": [
-          "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
+          "Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `dequeued`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.",
           "The `issues:<band>` tokens are the one source that appears more than once \u2014 the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.",
           "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
@@ -423,7 +425,7 @@
       }
     },
     "refinement_policy": {
-      "description": "Per-source policy for whether an item must be marked `refined` (or carry a spec the Refiner wrote) before the Co-Ordinator may select it: `required` — never select an unrefined item from this source; `preferred` — rank a refined item ahead of an otherwise-equal unrefined one, but the Co-Ordinator may still select an unrefined item on its own judgement; `exempt` — the source already carries its own specification (a merge conflict, a review comment, a security finding) and the dimension does not apply. A source absent from this object is `exempt`. The Refiner's own candidate gathering reaches every source the Script pre-fetches as structured data for the Co-Ordinator — `issues`, `security`, `code-quality`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`, `register-hygiene`, `tech-debt` — plus `project-review` and `implementation-plan`, read only into a Refiner-only copy of the repos array and only where that repo's `sources` lists the source and this policy for it is not itself `exempt`.",
+      "description": "Per-source policy for whether an item must be marked `refined` (or carry a spec the Refiner wrote) before the Co-Ordinator may select it: `required` — never select an unrefined item from this source; `preferred` — rank a refined item ahead of an otherwise-equal unrefined one, but the Co-Ordinator may still select an unrefined item on its own judgement; `exempt` — the source already carries its own specification (a merge conflict, a review comment, a security finding) and the dimension does not apply. A source absent from this object is `exempt`. The Refiner's own candidate gathering reaches every source the Script pre-fetches as structured data for the Co-Ordinator — `issues`, `security`, `code-quality`, `review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`, `register-hygiene`, `tech-debt` — plus `project-review` and `implementation-plan`, read only into a Refiner-only copy of the repos array and only where that repo's `sources` lists the source and this policy for it is not itself `exempt`.",
       "type": "object",
       "additionalProperties": false,
       "default": {
@@ -433,6 +435,7 @@
         "security": { "$ref": "#/$defs/refinementPolicyValue" },
         "review-feedback": { "$ref": "#/$defs/refinementPolicyValue" },
         "merge-conflicts": { "$ref": "#/$defs/refinementPolicyValue" },
+        "dequeued": { "$ref": "#/$defs/refinementPolicyValue" },
         "abandoned-drafts": { "$ref": "#/$defs/refinementPolicyValue" },
         "failed-runs": { "$ref": "#/$defs/refinementPolicyValue" },
         "tech-debt": { "$ref": "#/$defs/refinementPolicyValue" },
@@ -443,8 +446,8 @@
         "register-hygiene": { "$ref": "#/$defs/refinementPolicyValue" }
       },
       "x-docs": {
-        "readme": "Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `register-hygiene`, `tech-debt`, `project-review` and `implementation-plan` — reaches an engagement; the latter two are read only for a repo whose `sources` lists them and whose policy for them is not itself `exempt`.",
-        "spec": "Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only."
+        "readme": "Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`, `project-review` and `implementation-plan` — reaches an engagement; the latter two are read only for a repo whose `sources` lists them and whose policy for them is not itself `exempt`.",
+        "spec": "Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only."
       }
     },
     "unvoid_label": {
