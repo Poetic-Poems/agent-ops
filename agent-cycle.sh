@@ -3352,12 +3352,14 @@ $(jq . <<<"$input")
                 # Requirement 38, same as the Reviewer's own handoff site
                 # above — this path exists precisely so the two cannot drift.
                 e_human_reviewer_state=""
+                e_human_reviewer_who=""
                 if [[ "$e_rereview_state" == "none" && -n "$enabler_assignee" ]]; then
-                  e_human_reviewer_state="$(ensure_human_reviewer "$e_pr_url" "$enabler_assignee")" || true
+                  e_human_reviewer_result="$(ensure_human_reviewer "$e_pr_url" "$enabler_assignee")" || true
+                  IFS=$'\t' read -r e_human_reviewer_state e_human_reviewer_who <<<"$e_human_reviewer_result" || true
                   if [[ "$e_human_reviewer_state" == "failed" ]]; then
-                    log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" \
-                      --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from $enabler_assignee — it will not appear in their review queue" \
-                      '{detail: $d, pr_url: $u, reviewers: [$a]}')"
+                    log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg a "$enabler_assignee" --arg w "$e_human_reviewer_who" \
+                      --arg d "enabler completed the handoff on $e_pr_url, but review could not be requested from ${e_human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
+                      '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
                   fi
                 fi
 
@@ -3367,7 +3369,7 @@ $(jq . <<<"$input")
                   '{pr_url: $u, handoff: "enabler", state: $h}
                    + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
                    + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
-                   + (if $hr == "" or ($hr | startswith("skip")) then {}
+                   + (if $hr == "" or $hr == "skip" then {}
                       else {human_review_requested: $hr, human_reviewer: $ha} end)')"
                 ;;
               *)
@@ -6355,12 +6357,14 @@ if [[ "$rev_status" == "ready" ]]; then
   # `confirm_review_requested` did, targeted at `enabler_assignee` instead of
   # a blocking reviewer set.
   human_reviewer_state=""
+  human_reviewer_who=""
   if [[ "$rereview_state" == "none" && -n "$enabler_assignee" ]]; then
-    human_reviewer_state="$(ensure_human_reviewer "$impl_pr_url" "$enabler_assignee")" || true
+    human_reviewer_result="$(ensure_human_reviewer "$impl_pr_url" "$enabler_assignee")" || true
+    IFS=$'\t' read -r human_reviewer_state human_reviewer_who <<<"$human_reviewer_result" || true
     if [[ "$human_reviewer_state" == "failed" ]]; then
-      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" \
-        --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from $enabler_assignee — it will not appear in their review queue" \
-        '{detail: $d, pr_url: $u, reviewers: [$a]}')"
+      log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg a "$enabler_assignee" --arg w "$human_reviewer_who" \
+        --arg d "$impl_pr_url is ready with nothing blocking it, but review could not be requested from ${human_reviewer_who:-$enabler_assignee} — it will not appear in their review queue" \
+        '{detail: $d, pr_url: $u} + (if $w == "" then {reviewers: [$a]} else {reviewers: ($w | split(","))} end)')"
     fi
   fi
 
@@ -6370,7 +6374,7 @@ if [[ "$rev_status" == "ready" ]]; then
     '{pr_url: $u, handoff: $h}
      + (if $rr == "" or $rr == "none" then {} else {review_requested: $rr} end)
      + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
-     + (if $hr == "" or ($hr | startswith("skip")) then {}
+     + (if $hr == "" or $hr == "skip" then {}
         else {human_review_requested: $hr, human_reviewer: $ha} end)')"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
