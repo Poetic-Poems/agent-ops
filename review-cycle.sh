@@ -89,7 +89,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run) DRY_RUN=1; shift ;;
     --once) ONCE=1; shift ;;
     --repo) REPO_FILTER="${2:-}"; shift 2 ;;
-    --disable|--enable|--status|--for|--until)
+    --disable|--enable|--status|--for|--until|--this-node)
       # One switch, one place to set it. Duplicating the management commands
       # here would mean two ways to write the same file and two implementations
       # to keep honest; this pipeline only *honours* the switch.
