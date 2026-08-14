@@ -1455,16 +1455,17 @@ candidate_preclaimed() {  # <repo> <item> <claims-at-gather-json> -> 0 iff alrea
 
 # Requirement 17a/issue #238: which PR a finishing-source candidate targets, for
 # the PR-keyed claim below to key on. The candidate's own `pr_number` when it
-# carries a usable one — prompts/coordinator.md requires it on all three
+# carries a usable one — prompts/coordinator.md requires it on all four
 # finishing sources' work orders — and otherwise the number the *item ref*
-# itself embeds, because all three gather scripts mint their refs with it in
+# itself embeds, because all four gather scripts mint their refs with it in
 # them by construction (`pr-<n>-review-<id>`, `pr-<n>-conflict-<sha>`,
-# `pr-<n>-abandoned-<sha>`; requirements 3c, 3e, 3g). The fallback is the whole
-# point: this claim is the hard gate that excludes a peer fleet-wide, and a gate
-# that engages only when the model remembered to copy a field is not one — a
-# single omitted `pr_number` would silently reopen the three-nodes-on-PR-#205
-# failure this exists to close. Empty only when neither source yields a number,
-# which for these three sources cannot happen without a malformed ref.
+# `pr-<n>-dequeued-<sha>`, `pr-<n>-abandoned-<sha>`; requirements 3c, 3e, 3z,
+# 3g). The fallback is the whole point: this claim is the hard gate that
+# excludes a peer fleet-wide, and a gate that engages only when the model
+# remembered to copy a field is not one — a single omitted `pr_number` would
+# silently reopen the three-nodes-on-PR-#205 failure this exists to close.
+# Empty only when neither source yields a number, which for these four
+# sources cannot happen without a malformed ref.
 pr_number_for_candidate() {  # <candidate-json> <item-ref>
   local n
   n="$(jq -r '.pr_number // empty' <<<"$1" 2>/dev/null || true)"
