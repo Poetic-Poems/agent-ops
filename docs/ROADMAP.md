@@ -17,7 +17,9 @@ The Autonomous Implementation Pipeline becomes **Pullwright**
 ([github.com/Pullwright](https://github.com/Pullwright)) — a monetised
 product that any software team can point at their repositories: an
 unattended fleet that selects, implements, and reviews pending work and
-raises mergeable pull requests, with a human merge as the only gate.
+raises mergeable pull requests, with a human merge as the default gate —
+and, where an installation deliberately opts in, a trust ladder that
+retires even that (D18).
 Poetic-Poems stops being the pipeline's home and becomes its first
 customer.
 
@@ -45,7 +47,8 @@ says why.
 | D14 | Efficiency | **Per-container efficiency is an explicit product goal from the start.** Decided August 2026. Every container is held to budgets for CPU load, memory footprint, disk usage, and bandwidth, alongside — never at the expense of — quality and speed of delivery. Where these pull against each other, the trade-off is a calculated decision recorded in the change that makes it, never an accident discovered on a bill. Kubernetes requests and limits (Phase 2) become one enforcement mechanism, but the budgets exist whatever the control plane. |
 | D15 | Tech-debt management | **The tech-debt management framework is part of the offering.** Decided August 2026. The per-item register proven across the Poetic repositories — append-only item files, scope-coded ID grammar, `td/<id>` claim locking, allocation/lookup/validation tooling, CI enforcement, drift-synced copies in consumer repositories — ships with the suite, on the same compounding logic as D7: the register is already one of the sources the pipeline works down. Canonical tooling today lives in `Poetic-Poems/poetic`; productisation moves it into the product repository. |
 | D16 | Infrastructure as code | **The configuration of the pipeline and of the orchestration layer / control plane is infrastructure-as-code.** Decided August 2026. Everything that configures an installation — `config.json`, compose files and Kubernetes manifests, schedules, secrets wiring, per-node deployment shape — is declared in version-controlled code and reaches a running installation only by applying a versioned change, never by hand-editing a live node. Today compose- and env-level fixes are walked out to each node by hand, and the drift detection of #131 exists to catch exactly the divergence that this rule makes structurally impossible. Phase 2's deployment-as-artefact and Kubernetes items are the first enforcement, and the control-plane skeleton (D6) grows up under the same rule. |
-| D17 | Merge queues | **Supported and recommended where available; never required.** Decided August 2026. A GitHub merge queue serialises landings and tests every candidate merged with the latest `main`, retiring the behind-but-green rework class that strict up-to-date rules otherwise create — Poetic-Poems adopts queues on its own repositories (tracked by #377). The product cannot mandate them: GitHub offers merge queues only on organisation-owned repositories — public on any plan, private only on Enterprise Cloud — and never on personal accounts, where D3's solo developers live. The pipeline therefore stays fully functional without a queue and becomes queue-aware where one exists: landings are asynchronous, a pull request can be `queued` or silently dequeued, and a push to a queued branch evicts it. The human merge gate is unchanged — under a queue the human act is enqueueing ("Merge when ready"), and the product never enqueues a pull request, exactly as it never merges one. |
+| D17 | Merge queues | **Supported and recommended where available; never required.** Decided August 2026. A GitHub merge queue serialises landings and tests every candidate merged with the latest `main`, retiring the behind-but-green rework class that strict up-to-date rules otherwise create — Poetic-Poems adopts queues on its own repositories (tracked by #377). The product cannot mandate them: GitHub offers merge queues only on organisation-owned repositories — public on any plan, private only on Enterprise Cloud — and never on personal accounts, where D3's solo developers live. The pipeline therefore stays fully functional without a queue and becomes queue-aware where one exists: landings are asynchronous, a pull request can be `queued` or silently dequeued, and a push to a queued branch evicts it. Under a queue the merge act is enqueueing ("Merge when ready"). Below `agent-merges-routine` on D18's ladder that act is the human's, and the product never enqueues a pull request, exactly as it never merges one; at or above it, enqueueing is the Script's landing step, performed only after every D18 gate has passed. |
+| D18 | Merge autonomy | **An opt-in trust ladder; the default is the human gate.** Decided August 2026 (investigation: `docs/reviews/2026-08-14-autonomy-investigation.md`; rollout umbrella #402). `merge_autonomy` — `human` → `agent-approves` → `agent-merges-routine` → `agent-merges-all` — sets, per installation and per repository, who approves and who lands a pull request. At every level above `human`, approval and landing are acts of the Script under a non-author forge identity (a GitHub App, "Pullwright Approver"), performed only after every deterministic gate and an independent Approver verdict pass; no model ever holds approve or merge rights, and a human `CHANGES_REQUESTED` blocks landing at every level. Where a merge queue exists, landing is enqueueing (amending D17); otherwise it is GitHub auto-merge. Landings are capped by `merge_budget_per_day`, which replaces the human merge rate as the spend governor. The product default is `human`, unchanged from today — nothing a customer has not opted into ever lands a pull request. Poetic-Poems, customer zero, climbs the whole ladder. |
 
 ## End state
 
@@ -307,8 +310,24 @@ same way.
       product repository that needs the gate puts the organisation on a
       per-seat plan, which is precisely the plan on which machine accounts
       stop being free and Apps stay free. Evaluate under both organisation
-      shapes and state which one the recommendation assumes.
-      *[interactive]*
+      shapes and state which one the recommendation assumes. D18 adds a
+      second criterion that rate-limit arithmetic cannot settle: any
+      `merge_autonomy` level above `human` needs a non-author identity able
+      to hold review and merge rights — GitHub refuses self-approval, and
+      the pipeline authors as its owner. The Approver half is therefore
+      decided ahead of the arithmetic here: one GitHub App per installation
+      ("Pullwright Approver", `docs/reviews/2026-08-14-autonomy-investigation.md`
+      §5.3). This item still owns the authoring identity and rate-limit
+      capacity. *[interactive]*
+- [ ] Climb the D18 merge-autonomy ladder on the Poetic fleet to
+      `agent-merges-all`: Stage 0 evidence baseline and kill switch, Stage 1
+      agent approval under the Approver App (human still merges), Stage 2
+      autonomous landing for the routine tier on agent-ops, Stage 3
+      fleet-wide, Stage 4 protected paths behind critical-tier review and a
+      cool-off. Each promotion is a one-line IaC config PR the owner merges;
+      exit criteria, prerequisites, and the work-item breakdown are in
+      umbrella #402 and the investigation report. *[fleet]* with owner-only
+      acts flagged (App creation, ruleset changes, stage promotions).
 - [ ] Event-driven dispatch: GitHub webhooks, or a lightweight poller on the
       state repo, wake an idle node when a source-relevant event lands,
       instead of leaving it to wait for the next cron firing. Staged behind
@@ -429,7 +448,7 @@ Parked deliberately, each with a decide-by gate:
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
 | State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale or measured resource cost (D14) demands |
-| Forge API identity — the owner's PAT, machine accounts, one GitHub App on the organisation, or one App per node | Phase 2, before secrets-based provisioning fixes the credential shape; priced for a Pullwright organisation whose repositories may be private |
+| Forge API identity — the owner's PAT, machine accounts, one GitHub App on the organisation, or one App per node | Phase 2, before secrets-based provisioning fixes the credential shape; priced for a Pullwright organisation whose repositories may be private. The Approver role is already decided — one GitHub App per installation (D18); this question still owns the authoring identity and capacity arithmetic |
 | Multi-forge support (GitLab, Bitbucket, Gitea) | Revisit on design-partner demand, Phase 3 |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
 
@@ -452,7 +471,9 @@ Parked deliberately, each with a decide-by gate:
   provider; the product's value is the orchestration, which is
   model-agnostic by design (D12). Non-Claude providers arrive behind the
   substrate abstraction, not by rewriting the engine per provider.
-- The human merge remains the only gate: the product never auto-merges,
-  whatever the customer's configuration. Where a repository uses a merge
-  queue, the human act is enqueueing — "Merge when ready" — and the
-  product never enqueues (D17).
+- The human merge is the default gate, and remains the only gate in every
+  installation that has not deliberately configured otherwise: below
+  `agent-merges-routine` on D18's ladder the product never auto-merges and
+  never enqueues (D17). At or above that level, landing is a Script act
+  behind D18's gates — and a human `CHANGES_REQUESTED` still blocks it at
+  every level. The veto outlives the gate.
