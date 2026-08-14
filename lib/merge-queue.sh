@@ -84,3 +84,26 @@ merge_queue_probe() {
   jq -e '.queued | type == "boolean"' <<<"$out" >/dev/null 2>&1 || return 1
   printf '%s' "$out"
 }
+
+# merge_queue_dequeue_actionable REASON
+# True (exit 0) if a removal carrying `dequeue_reason` REASON is one the
+# pipeline should surface to a human — a merge-group checks failure, or any
+# other automatic cause — false only for "manual", GitHub's own value for a
+# removal the maintainer performed themselves, via the API or the merge
+# queue's own UI (agent-ops#394, tech-debt/TD-PPagop-26081409.md). Verified
+# live (2026-08-14, `gh api graphql` against public repositories with an
+# active merge queue): "manual" for a human-removed entry
+# (renovatebot/renovate#45218), alongside "failed_checks"
+# (renovatebot/renovate#45223) and "merge_conflict" (PyO3/pyo3#6276) for the
+# automatic causes this stays actionable for — GitHub
+# documents no enum for the field (it is a plain `String`), so an empty or
+# otherwise unrecognised REASON is also treated as actionable: withholding
+# the one notice a human gets for a defect they did not cause is the worse
+# mistake, the mirror image of `merge_queue_probe`'s own "unknown means
+# possibly queued" rule. Shared so `scripts/sweep-human-visibility.sh`'s own
+# notice, the deferred `dequeued` Co-Ordinator source
+# (tech-debt/TD-PPagop-26081409.md) and the dashboard's dequeue surface
+# (agent-ops#375) read off the same decision.
+merge_queue_dequeue_actionable() {
+  [[ "${1:-}" != "manual" ]]
+}

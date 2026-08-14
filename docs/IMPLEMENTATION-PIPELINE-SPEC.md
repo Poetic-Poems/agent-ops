@@ -623,6 +623,7 @@ and the schema must carry every one of them.
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
+| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -7312,14 +7313,29 @@ runs unattended.
       directly rather than tracking state across cycles itself. The gate is
       `mq_queued == "false" && dequeued_at` is set: deliberately excluding
       both an unreadable probe and a pull request re-queued since at the
-      same head, either of which has nothing fresh to say. The notice is
-      idempotent per removal event — `<!-- agent-ops:merge-queue-dequeued:
-      <dequeued_at> -->` — rather than per pull request, so a second
-      dequeue after an earlier one was already acknowledged gets its own
-      notice rather than being silently suppressed by the first. It does not
-      wait on `human_nudge_idle_hours`: this is new information a human has
-      not seen, not the "forgot to click merge" case that threshold exists
-      for. A failed POST is a `warning`, exactly as the ordinary idle nudge's
+      same head, either of which has nothing fresh to say. Two further gates
+      (agent-ops#394, tech-debt/TD-PPagop-26081409.md):
+      `merge_queue_dequeue_actionable` (`lib/merge-queue.sh`) excludes a
+      `"manual"` `dequeue_reason` — GitHub's own value for a removal the
+      maintainer performed themselves, via the API or the merge queue's own
+      UI, verified live against public repositories with an active queue —
+      since telling the maintainer their own removal "needs a fresh look"
+      is noise addressed to the person who caused it; every other reason,
+      including one this never learned to recognise, stays actionable, the
+      same "unknown must not suppress" direction `merge_queue_probe`'s own
+      contract takes. And the event's own age is bounded by
+      `merge_queue_dequeue_notice_max_age_hours` (default 24 h): a removal
+      older than that gets no notice even the first time a sweep reads it,
+      so a repository's queue adoption (or this requirement's own rollout)
+      does not retroactively read every already-old removal on every open,
+      labelled pull request as fresh news. The notice is idempotent per
+      removal event — `<!-- agent-ops:merge-queue-dequeued: <dequeued_at>
+      -->` — rather than per pull request, so a second dequeue after an
+      earlier one was already acknowledged gets its own notice rather than
+      being silently suppressed by the first. It does not wait on
+      `human_nudge_idle_hours`: this is new information a human has not
+      seen, not the "forgot to click merge" case that threshold exists for.
+      A failed POST is a `warning`, exactly as the ordinary idle nudge's
       is, and is logged and cleared under its own action (`dequeue-notice`)
       and event (`human-dequeue-notice`) — never the idle nudge's `nudged`/
       `human-nudged` — precisely so that a later successful idle nudge cannot
@@ -7339,7 +7355,8 @@ runs unattended.
       a dequeued pull request becomes no source's candidate, so the
       Co-Ordinator has no work to select from it —
       `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
-      for it would have to decide.
+      for it would have to decide, sharing `merge_queue_dequeue_actionable`'s
+      classification once it does.
 
     Every other reader of PR merge state in this repository is already safe
     against a queued pull request, by construction of its own candidate
@@ -10562,7 +10579,10 @@ pull request, run the ones the change touches and any it could regress.
     slug, an empty or non-numeric number, a slug with no `/` or with more
     than one) are rejected before ever calling `gh`, while a slug whose
     repository is named the same as its owner is probed like any other.
-    `test/sweep-human-visibility.test.sh` passes
+    `test/merge-queue.test.sh` also passes `merge_queue_dequeue_actionable`
+    against every reason value verified live (`"manual"` false; `""`,
+    `"failed_checks"`, `"merge_conflict"` and an unrecognised value all
+    true) (agent-ops#394). `test/sweep-human-visibility.test.sh` passes
     the merge-queue cases alongside its existing ones: a currently-queued
     pull request is never idle-nudged; a checks-failure dequeue produces its
     own `dequeue-notice` action (never `nudged`) even with
@@ -10572,8 +10592,13 @@ pull request, run the ones the change touches and any it could regress.
     dequeue still gets its own `dequeue-notice`; a pull request re-queued
     since a recorded dequeue event gets neither a notice nor a nudge; an
     unreadable merge-queue probe leaves the ordinary idle nudge (still
-    `nudged`) behaving exactly as it did before this requirement existed; and
-    a failed dequeue-notice POST is a `warning`, never silence.
+    `nudged`) behaving exactly as it did before this requirement existed; a
+    failed dequeue-notice POST is a `warning`, never silence; a `"manual"`
+    dequeue gets no notice even though it is otherwise fresh and
+    unacknowledged (agent-ops#394); and a dequeue older than
+    `merge_queue_dequeue_notice_max_age_hours` gets no notice even though it
+    carries an actionable reason and no marker is on the pull request yet
+    (agent-ops#394).
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed

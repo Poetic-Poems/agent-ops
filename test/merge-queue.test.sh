@@ -150,6 +150,25 @@ out="$(probe acme/acme 12)"; rc=$?
 assert_eq "a repo named the same as its owner is a valid slug" "0" "$rc"
 assert_eq "  ... and is probed like any other" "false" "$(jq -r '.queued' <<<"$out")"
 
+# --- merge_queue_dequeue_actionable (agent-ops#394, TD-PPagop-26081409) -----
+# Values verified live against GitHub (see lib/merge-queue.sh's own comment):
+# "manual" is the one reason a human caused themselves and should not be
+# notified about; every other reason this recognises — and any it does not —
+# stays actionable, since withholding the notice is the worse mistake for an
+# unrecognised reason.
+if merge_queue_dequeue_actionable manual; then
+  assert_eq "a manual dequeue is not actionable" "not-actionable" "actionable"
+else
+  assert_eq "a manual dequeue is not actionable" "not-actionable" "not-actionable"
+fi
+for reason in failed_checks merge_conflict "" some-future-reason-not-yet-seen; do
+  if merge_queue_dequeue_actionable "$reason"; then
+    assert_eq "reason '$reason' is actionable" "actionable" "actionable"
+  else
+    assert_eq "reason '$reason' is actionable" "actionable" "not-actionable"
+  fi
+done
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'
