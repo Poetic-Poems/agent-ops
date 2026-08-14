@@ -4352,9 +4352,14 @@ while IFS= read -r slug; do
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
 # Live claims count toward the cap too: a claim is work in flight that has
-# not yet surfaced as a PR (its registry entry is dropped the moment the PR
-# exists), and N nodes counting only PRs would collectively overshoot by the
-# work each other had claimed but not yet raised. Still approximate — two
+# not yet surfaced as a PR (its item-keyed registry entry is dropped the
+# moment the PR exists), and N nodes counting only PRs would collectively
+# overshoot by the work each other had claimed but not yet raised. `claim.sh
+# count` reports only the item-keyed entries for that reason: the PR-keyed
+# `pr-<n>` exclusion entry alongside them is held past its PR's own raising
+# (issue #360), and the PR it names is already in the `gh pr list` counts
+# above, so counting it here would double-count that PR for as long as the
+# claiming cycle's Reviewer stage runs. Still approximate — two
 # nodes can pass this check simultaneously — with a stated bound of
 # max_open_agent_prs + (nodes - 1), transient.
 claim_count=0

@@ -8957,6 +8957,18 @@ pull request, run the ones the change touches and any it could regress.
    absent key, so a claim ageing back out of the array changes it too — the
    same silent-stall shape `abandoned_drafts` and `merge_conflicts` close for
    their own transitions.
+7d. **The PR-keyed claim outlives the PR's own raising (requirement 17a,
+   issue #360).** `test/pr-claim-hold-through-review.test.sh` passes: with
+   `release_claim` and `release_pr_claim` lifted from `agent-cycle.sh` and
+   the real `lib/claim.sh` running against a create-only `gh` stub,
+   `have-pr-pending` drops the item-keyed registry entry and leaves the
+   `pr-<n>` one standing; a peer's own claim on that same `pr-<n>` loses
+   (rc 3) for as long as it stands, and wins only once `release_pr_claim`
+   has run; `release_pr_claim` is idempotent; and `have-pr`/`no-pr` still
+   drop both entries together in the one call, the ordinary end-of-cycle
+   shape. `test/claim.test.sh` covers the back-pressure half: `count`
+   counts the item-keyed entry a cycle just won and does not count a
+   `pr-<n>` entry surviving on its own.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
