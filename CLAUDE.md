@@ -33,6 +33,24 @@ fix whichever is wrong rather than working around the mismatch.
 The specs outrank the operating prompts: `prompts/*.md` implement the specs'
 requirements, so bring the spec in line first, then the affected prompt(s).
 
+## Generated regions
+
+`README.md`'s two configuration tables and each as-built spec's own
+(`docs/IMPLEMENTATION-PIPELINE-SPEC.md`'s, `docs/REVIEW-PIPELINE-SPEC.md`'s)
+are rendered from `config.schema.json` by `scripts/render-config-table.sh` —
+four `<!-- config-table:start id=... -->` … `<!-- config-table:end -->`
+regions in total, each paired with a `<!-- config-table:notes id=... -->` …
+`<!-- config-table:notes-end -->` region below the table for notes too long
+to fit a cell. Never hand-edit a row inside either region: edit the owning
+key's `description`, `x-docs.readme`/`x-docs.spec` or `x-docs.value` in the
+schema instead, then run `scripts/render-config-table.sh` (no arguments) to
+regenerate every region and `scripts/render-config-table.sh --check` before
+you push — `.github/workflows/config-table.yml` runs the same check on every
+pull request, and a hand-edit fails it even when the wording was right,
+because only the schema copy survives a regeneration. Each region's start
+marker carries this same contract inline, so it reads even to someone who
+reaches the row directly and never opened this file.
+
 ## Branch workflow
 
 Every change goes through a pull request; the repo owner reviews and
