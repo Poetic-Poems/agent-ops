@@ -7064,7 +7064,11 @@ runs unattended.
       the same as any warning shape the three classes do not recognise —
       correct by construction, since a later successful post flips the log's
       latest event for that pull request to `human-nudged` before the
-      live-recheck ever runs.
+      live-recheck ever runs. The notice addresses a human and nothing else:
+      a dequeued pull request becomes no source's candidate, so the
+      Co-Ordinator has no work to select from it —
+      `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
+      for it would have to decide.
 
     Every other reader of PR merge state in this repository is already safe
     against a queued pull request, by construction of its own candidate
