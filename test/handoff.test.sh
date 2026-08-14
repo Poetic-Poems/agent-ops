@@ -489,9 +489,22 @@ elif [[ "$*" == *"user.login"* ]]; then
 else
   # Builds the raw `requested_reviewers`/`requested_teams` shape a real PR
   # object carries and runs the production `--jq` filter over it for real —
-  # the way the `/reviews` branch above already does for its own mapping —
   # rather than passing `$d/pending` through untouched, which would let a
   # bot-filtering regression there go unnoticed (tech-debt/TD-PPagop-26081403.md).
+  #
+  # The filter is the one `ensure_human_reviewer` actually handed this call,
+  # read back out of its own argv, never a copy of it written here: a copy
+  # asserts only that the copy filters, and would keep passing with the
+  # production `--jq` reverted to an unfiltered `[.requested_reviewers[]?
+  # .login]` — which is precisely the regression the previous paragraph
+  # claims to catch.
+  jq_filter=""
+  prev=""
+  for a in "$@"; do
+    if [[ "$prev" == "--jq" ]]; then jq_filter="$a"; break; fi
+    prev="$a"
+  done
+  [[ -n "$jq_filter" ]] || { echo "stub: no --jq in: $*" >&2; exit 1; }
   {
     printf '{"requested_reviewers":['
     first=true
@@ -510,9 +523,7 @@ else
       printf '{"slug":"%s"}' "$slug"
     done <"$d/pending-teams"
     printf ']}'
-  } | jq -r '[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
-                or (.login | endswith("[bot]")) | not) | .login),
-              (.requested_teams[]? | .slug)] | .[]'
+  } | jq -r "$jq_filter"
 fi
 STUB
 chmod +x "$tmp_dir/gh"
