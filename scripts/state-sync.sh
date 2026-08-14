@@ -324,12 +324,15 @@ do_push() {
   # never pay for the same registry query twice inside its TTL.
   #
   # And the node-scoped switch (lib/toggle.sh's `toggle_switch_summary`,
-  # issue #379): a peer's own `state_dir/disabled.json` is as unreadable to
-  # every other node as its compose.yaml, so whether this node stands down on
-  # its own account is knowable to the fleet dashboard only if it says so
-  # itself here. The fleet-wide switch already travels as its own flag
-  # (`fleet/disabled.json`); this is the other one, the one no flag file
-  # carries.
+  # issue #379). Unlike compose.yaml, `disabled.json` itself does replicate
+  # in the push below — but a record is not a verdict: whether it is still in
+  # force is decided against a clock, and a reader working that out from the
+  # replicated file would be a second implementation of the switch, free to
+  # disagree with what this node's own `--status` says (requirement 34a). So
+  # what travels is the verdict this node reached, through the same call the
+  # dashboard's page-top banner reads. The fleet-wide switch needs none of
+  # this: it is a flag every node fetches for itself
+  # (`fleet/disabled.json`).
   local last_cycle version_json
   last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
     | sort -r | head -n 1)"

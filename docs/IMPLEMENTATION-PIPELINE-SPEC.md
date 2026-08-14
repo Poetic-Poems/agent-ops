@@ -1329,7 +1329,7 @@ runs unattended.
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image}`)
+   image, switch}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -1351,6 +1351,16 @@ runs unattended.
    holds the last answer for `IMAGE_DRIFT_TTL` seconds (240 by default) so
    whichever of the two next crosses that age pays the one query and the
    other reads its answer off disk.
+   `switch` is `toggle_switch_summary`'s (`lib/toggle.sh`): this node's own
+   node-scoped disable (requirement 2.3, `--this-node`), flattened to the
+   shape the dashboard's badge renders from. The raw `disabled.json` does
+   replicate (above), but a record is not a verdict — whether it is still in
+   force is decided against a clock, and a reader deriving that for itself
+   would be a second implementation of requirement 2.3's evaluation, free to
+   disagree with what the node's own `--status` says. So the node publishes
+   the verdict it reached, not just the file it reached it from. The
+   fleet-wide switch needs no such carriage: it is a flag file every node
+   already fetches for itself (requirement 2.3a).
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)

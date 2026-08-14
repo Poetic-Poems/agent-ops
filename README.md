@@ -920,7 +920,7 @@ memory, and every node follows everyone else's.
 
 | Mode | When | What |
 |---|---|---|
-| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version}`) |
+| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version, compose, image, switch}`) |
 | `fetch` | every seven minutes | materialises every peer's branch under the peers directory, whole, and prunes a peer whose branch is gone |
 
 What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,

@@ -4,9 +4,10 @@
 # the fleet flags that lift it and the usage-limit stand-down to every node
 # at once (requirements 2.3a and 2.1 — see the fleet section below).
 #
-# Sourced by agent-cycle.sh, review-cycle.sh and scripts/publish-dashboard.sh,
-# so what stops a cycle, what `--status` prints, and what the dashboard shows
-# are one definition rather than three that agree until they don't
+# Sourced by agent-cycle.sh, review-cycle.sh, scripts/publish-dashboard.sh and
+# scripts/state-sync.sh, so what stops a cycle, what `--status` prints, what
+# the dashboard shows and what a node publishes about itself to the fleet are
+# one definition rather than four that agree until they don't
 # (requirement 34a).
 #
 # Why this exists: both cron pipelines *execute code out of the agent-ops

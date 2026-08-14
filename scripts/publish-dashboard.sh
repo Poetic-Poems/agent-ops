@@ -1271,10 +1271,12 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # field (a peer on an image built before this check existed) yields
        # null rather than this node answering in its place.
        image: ($h.image // null),
-       # And for the node-scoped switch (issue #379): only the peer itself
-       # can read its own state_dir, so an absent field (a peer on a
+       # And for the node-scoped switch (issue #379): the peer does
+       # replicate its own `disabled.json`, but only the peer evaluated it —
+       # against its own clock, through the one implementation `--status`
+       # also reads (requirement 34a). So an absent field (a peer on a
        # heartbeat built before this check existed) yields null rather than
-       # this node answering — silently — in its place.
+       # this node re-deriving a verdict — silently — in its place.
        switch: ($h.switch // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
