@@ -305,10 +305,10 @@ Keys:
 | `refined_label` | `refined` | Label put on an **issue** once the Refiner has written it a specification — see [Refined items and the Refiner](#refined-items-and-the-refiner). Purely informational: nothing reads it back, so removing it by hand does nothing. The pipeline creates it in each target repo it works, so there is nothing to set up. Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record. Do not set it to `blocked`, which is a...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement will write specifications for. Items over the cap simply wait for a later engagement. `0` switches proactive refinement off. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Only the sources the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `register-hygiene` and `tech-debt` —...[continued below](#extended-notes-refinement_policy) |
-| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked`. |
+| `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked` or `obsolete`. |
 | `void_retire_after_days` | `30` days | Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement. |
 | `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
-| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
+| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list, so a lost race costs the next-best item rather than the cycle. |
@@ -416,7 +416,7 @@ The pipeline creates it in each target repo it works, so there is nothing to set
 
 Leave it empty to switch the labelling off in both directions.
 
-Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source.
+Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source, nor to `obsolete`, which is reserved for a human to mark one of the pipeline's own draft pull requests as unwanted.
 
 ### Extended notes: `refined_label`
 
@@ -426,7 +426,7 @@ The pipeline creates it in each target repo it works, so there is nothing to set
 
 Leave it empty to switch the labelling off; the item is still recorded as refined and the Co-Ordinator still reads that record.
 
-Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source.
+Do not set it to `blocked`, which is a label that excludes an issue from the pipeline's work source, nor to `obsolete`, which is reserved for a human to mark one of the pipeline's own draft pull requests as unwanted.
 
 ### Extended notes: `refinement_policy`
 
@@ -1357,7 +1357,7 @@ time (never committed to the repo under review).
 |---|---|---|
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Repositories to review. A plain list of slugs. |
 | `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
-| `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. |
+| `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`. |
 | `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
 | `review.timeout_review` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself. |
 | `review.inactivity_review` | *(unset)* | Minutes of total silence before the review stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |

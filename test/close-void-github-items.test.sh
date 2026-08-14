@@ -125,7 +125,7 @@ assert_eq "the pull request is closed" \
 assert_contains "the comment does not mention the obsolete label — this PR does not carry it" \
   "pr close 205" "$(cat "$c/calls.log" 2>/dev/null || true)"
 assert_eq "  ... confirmed: no mention of the label at all" "0" \
-  "$(grep -c 'obsolete.*corroboration' "$c/calls.log" 2>/dev/null || true)"
+  "$(grep -c 'also carries the human-applied' "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 3a: a pull request carrying the human-applied `obsolete` label names it in
 # the close comment, so the close is auditable from the comment alone
@@ -137,8 +137,8 @@ out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"the author says it
 assert_eq "the pull request is closed" \
   '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
   "$(jq -c . <<<"$out")"
-assert_contains "the close comment names the obsolete label as corroboration" \
-  "obsolete\` label, which is the corroboration" \
+assert_contains "the close comment names the obsolete label" \
+  "obsolete\` label — the mark that lets the pipeline close" \
   "$(cat "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 3b: every corroborated writer's void is actioned -------------------------

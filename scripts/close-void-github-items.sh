@@ -124,7 +124,7 @@ close_comment() {  # close_comment REASON EVIDENCE OBSOLETE_LABELLED
   fi
   if [[ "$obsolete_labelled" == "true" ]]; then
     # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
-    printf '\nThis pull request also carries the human-applied `obsolete` label, which is the corroboration for closing it despite its diff (TD-PPagop-26081308).\n'
+    printf '\nThis pull request also carries the human-applied `obsolete` label — the mark that lets the pipeline close a draft even while it still changes files (TD-PPagop-26081308).\n'
   fi
   printf '\nClosing it so it stops being re-derived void by every cycle that reaches it.\n\n'
   printf '%s' "$(pipeline_comment_marker "$cycle_id" script)"
@@ -204,9 +204,9 @@ while IFS=$'\t' read -r item detail evidence stage; do
       continue
     fi
     # One fetch answers both `state` and whether the pull request already
-    # carries the human-applied `obsolete` label — the corroboration named in
-    # the close comment below, so it must be read live rather than trusted
-    # from the void's own `evidence` text.
+    # carries the human-applied `obsolete` label — named in the close comment
+    # below when present, so it must be read live rather than trusted from
+    # the void's own `evidence` text.
     pr_json="$("$GH" api "repos/$slug/pulls/$n" 2>/dev/null)" || pr_json=""
     if [[ -z "$pr_json" ]]; then
       warn "$item" "could not read pull request #$n — leaving it alone"
