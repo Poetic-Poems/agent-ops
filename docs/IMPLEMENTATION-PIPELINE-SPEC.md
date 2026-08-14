@@ -3103,7 +3103,22 @@ runs unattended.
    `test/needs-refinement.test.sh`, `test/label-marker.test.sh`,
    `test/pr-claim-exclusion.test.sh` and `test/enabler-eligibility.test.sh`
    for the blocked extract, the own-actions map, the claims arrays and the
-   open-issues map.
+   open-issues map. TD-PPagop-26081401 completed the sweep over the sites
+   TD-PPagop-26081301 did not enumerate — the merge-conflicts candidate fold
+   (`test/merge-conflicts.test.sh`), the per-repo claims fold
+   (`test/pr-claim-exclusion.test.sh`), the verdict-contradiction warning and
+   corroboration events and the `unaccounted_items` eligible-set read feeding
+   them (`test/coordinator-retry-fallback.test.sh`,
+   `test/verdict-corroboration.test.sh`), the hand-flagged-refinement
+   accumulator (`test/needs-refinement.test.sh`), `work_gone_clearances`'s
+   register/review/plan status maps (`test/work-gone.test.sh`), the Enabler
+   and Refiner claim accumulators, and their own unparseable-verdict warnings
+   (`test/enabler-verdicts.test.sh`, `test/refiner-verdicts.test.sh`). The
+   sites neither item enumerated — the review-feedback, abandoned-drafts and
+   issues gatherers' own candidate builds and folds, the per-repo entry build
+   that feeds the Co-Ordinator's input, `refiner_candidate_items`, and the
+   Co-Ordinator's recorded-refinement and voided accumulators — are the
+   residue TD-PPagop-26081406 records.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is

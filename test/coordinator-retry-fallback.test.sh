@@ -612,6 +612,49 @@ assert_eq "…so no retry is bought" "1" "$(grep -cE '^run_claude_stage call=' <
 assert_eq "…and the none-selected carries the fingerprint" "fp-abc123" \
   "$(events_named "$calls" none-selected | head -n1 | jq -r '.fingerprint')"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081401) ----------------------
+# $unaccounted_json/$unaccounted_retry_json used to ride into jq as a second
+# --argjson at all four warning/corroboration call sites inside
+# coordinator_corroborate_retry_or_fallback — an argv entry capped at
+# MAX_ARG_STRLEN (131072 bytes). This is the very event the crash-loop ladder
+# and the dashboard read (requirement 4g's own incident), so losing it here
+# is as loud as losing the void extract was. 3000 unclaimed tech-debt items,
+# none of them reported back, produces an unaccounted array past the cap on
+# both the first attempt and the retry; both must still log in full.
+big_n=3000
+big_eligible="$(jq -nc --argjson n "$big_n" \
+  '[range(1; $n + 1) | {repo: "acme/widgets", item: ("TD" + (. | tostring)), source: "tech-debt"}]')"
+big_tech_debt="$(jq -nc --argjson n "$big_n" \
+  '[range(1; $n + 1) | {source: "tech-debt", ref: ("TD" + (. | tostring)), id: ("TD" + (. | tostring)),
+    title: "fix", filed: "2026-08-01", url: "https://x/TD.md", body: "body"}]')"
+big_repos="$(jq -nc 'input as $td | [{"slug":"acme/widgets","default_branch":"main",
+  "sources":["security","issues:urgent","review-feedback","merge-conflicts","human-visibility","abandoned-drafts","issues:high","tech-debt","issues:medium","issues:low","code-quality","register-hygiene"],
+  "findings":[],"review_feedback":[],"merge_conflicts":[],"abandoned_drafts":[],"human_visibility":[],"issues":[],
+  "tech_debt":$td,"register_hygiene":[]}]' <<<"$big_tech_debt")"
+assert_eq "the oversized eligible fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_eligible" | wc -c) > 131072 ))"
+
+eligible="$big_eligible"
+big_attempt1='{"selected":false,"reason":"nothing here"}'
+big_attempt2='{"selected":false,"reason":"still nothing"}'
+run_full_scenario "oversized unaccounted set" "$big_attempt1" 0 "$big_attempt2" "$big_repos" > "$tmp_dir/scenario.out"
+calls="$(cat "$tmp_dir/scenario.out")"
+
+w1="$(events_named "$calls" warning | sed -n '1p')"
+assert_eq "attempt 1's warning still carries every one of the 3000 unaccounted items" \
+  "$big_n" "$(jq '.unaccounted | length' <<<"$w1")"
+c1="$(events_named "$calls" corroboration | sed -n '1p')"
+assert_eq "attempt 1's corroboration event agrees" "$big_n" "$(jq '.unaccounted | length' <<<"$c1")"
+assert_eq "  ... and is rejected, not silently swallowed" "rejected" "$(jq -r '.verdict' <<<"$c1")"
+
+w2="$(events_named "$calls" warning | sed -n '2p')"
+assert_eq "the retry's warning also carries every one of the 3000 unaccounted items" \
+  "$big_n" "$(jq '.unaccounted | length' <<<"$w2")"
+c2="$(events_named "$calls" corroboration | sed -n '2p')"
+assert_eq "the retry's corroboration event agrees, and fallback still fires (fn_rc 0)" \
+  "$big_n" "$(jq '.unaccounted | length' <<<"$c2")"
+assert_eq "  ... function returns 0 (ready for the mechanical fallback)" "0" "$fn_rc"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

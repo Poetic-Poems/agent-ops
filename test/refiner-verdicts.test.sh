@@ -547,6 +547,54 @@ assert_eq "failed stage: even a parseable verdict from it records nothing" "0" \
 assert_contains "failed stage: the claim is expired here too" \
   "claimlog expire refiner $key55" "$calls"
 
+# ============================================================================
+# The argv cap (requirement 4g, TD-PPagop-26081401): the claim accumulator
+# ============================================================================
+# The claim loop's own `claimed_json="$(jq -c --argjson e "$entry" ...)"`
+# used to deliver each claimed candidate — body included — as a second
+# --argjson, an argv entry capped at MAX_ARG_STRLEN. A 150000-byte candidate
+# body (padding past what this pipeline ever produces on its own, but
+# nothing here bounds one) proves the fold now survives it — not a crash,
+# not a silently dropped claim.
+printf 'x%.0s' $(seq 1 150000) > "$tmp_dir/big_body.txt"
+td_candidates_big="$(jq -nc --rawfile b "$tmp_dir/big_body.txt" \
+  '[{"repo":"o/r","source":"tech-debt","item":"TDBIG","body":$b}]')"
+assert_eq "the oversized candidate fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$td_candidates_big" | wc -c) > 131072 ))"
+verdicts_big='[{"repo":"o/r","item":"TDBIG","verdict":"refined","reason":"specified in place",
+                "refined_spec":"## Refined\nScope: only the parser."}]'
+calls="$(run_case "argv cap: oversized candidate body" "$td_candidates_big" "$verdicts_big")"
+assert_eq "the oversized claim still reaches the claim fold: exactly one item-refined event" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+ir_evt="$(events_named "$calls" item-refined | head -n1)"
+assert_eq "  ... naming the oversized item, not dropped or corrupted" "TDBIG" "$(jq -r '.item' <<<"$ir_evt")"
+
+# ============================================================================
+# The argv cap (requirement 4g, TD-PPagop-26081401): the unparseable-verdict warning
+# ============================================================================
+# `items_named_json` — every claimed item trimmed to {repo, item} — used to
+# ride into the "no verdicts recorded" warning as a second --argjson. Each
+# entry is small, but the array still grows with the number of items this
+# engagement claimed, so 50 claimed items with a heavily padded item ref
+# prove the warning still carries every one of them, past the cap, on an
+# unparseable stage result.
+pad_ref="$(printf 'x%.0s' $(seq 1 2700))"
+td_candidates_many="$(jq -nc --arg p "$pad_ref" \
+  '[range(1; 51) | {repo: "o/r", source: "tech-debt", item: ("TD-" + $p + "-" + (. | tostring))}]')"
+STUB_RESULT_RAW="I examined the items but wrote prose instead of the object."
+saved_refiner_max_per_engagement="$refiner_max_per_engagement"
+refiner_max_per_engagement=50
+calls="$(run_case "unparseable final message, oversized claim set" "$td_candidates_many" '[]')"
+refiner_max_per_engagement="$saved_refiner_max_per_engagement"
+STUB_RESULT_RAW=""
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_eq "the oversized items_named_json fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(jq -c '.items' <<<"$warn_evt" | wc -c) > 131072 ))"
+assert_eq "the warning still carries every one of the 50 claimed items" \
+  "50" "$(jq '.items | length' <<<"$warn_evt")"
+assert_eq "  ... and no refiner-examined/item-refined/attempt-failed at all" "0" \
+  "$(grep -cE '^event (refiner-examined|item-refined|attempt-failed) ' <<<"$calls")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
