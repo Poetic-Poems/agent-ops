@@ -121,8 +121,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 usage() {
   cat <<'EOF'
 usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
-       agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>]
-       agent-cycle.sh --enable
+       agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]
+       agent-cycle.sh --enable [--this-node]
        agent-cycle.sh --clear-limit [<reason>]
        agent-cycle.sh --status
 
@@ -142,13 +142,23 @@ stops cycles from starting (shared with review-cycle.sh).
                      12:00'), an alternative to --for. With both given, the
                      later of the two deadlines wins and a warning is issued.
   --enable           Clear the switch and let cycles run again.
+  --this-node        Modifies --disable or --enable to act on this node alone,
+                     never on the fleet switch: `--disable --this-node` writes
+                     only this node's own record, and `--enable --this-node`
+                     clears only that record, leaving `fleet/disabled.json`
+                     untouched either way. Stands this one node down without a
+                     container recreate — the rest of the fleet keeps working.
+                     Combining it with anything but --disable or --enable is
+                     an error.
   --clear-limit      Lift a usage-limit stand-down across the fleet (2.1). Use
                      it once the limit is actually gone — you raised the cap,
                      or the plan rolled over. Unlike --enable this touches no
                      switch: it clears fleet/limit.json and logs a
                      `limit-cleared` event that supersedes the cooldown.
-  --status           Report the switch, any usage-limit stand-down, and whether
-                     either pipeline is running.
+  --status           Report the switch — distinguishing a node-scoped disable,
+                     a fleet disable, or both, and what clearing each leaves —
+                     any usage-limit stand-down, and whether either pipeline
+                     is running.
   --help             Display this help and exit.
 
 --dry-run and --once bypass the no-op short-circuit (requirement 3b): a human
@@ -178,6 +188,7 @@ DISABLE_REASON=""
 DISABLE_FOR=""
 DISABLE_UNTIL=""
 CLEAR_LIMIT_REASON=""
+THIS_NODE=0
 set_manage_action() {
   if [[ -n "$MANAGE_ACTION" ]]; then
     echo "agent-cycle: --disable, --enable, --clear-limit and --status are mutually exclusive" >&2
@@ -206,6 +217,7 @@ while [[ $# -gt 0 ]]; do
     --status) set_manage_action status; shift ;;
     --for) DISABLE_FOR="${2:-}"; shift 2 ;;
     --until) DISABLE_UNTIL="${2:-}"; shift 2 ;;
+    --this-node) THIS_NODE=1; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "agent-cycle: unknown argument: $1" >&2; usage >&2; exit 64 ;;
   esac
@@ -224,6 +236,10 @@ if [[ -n "$MANAGE_ACTION" ]]; then
     echo "agent-cycle: --disable needs a reason, e.g. --disable 'editing lib/cycle-state.sh'" >&2
     exit 64
   fi
+fi
+if (( THIS_NODE )) && [[ "$MANAGE_ACTION" != "disable" && "$MANAGE_ACTION" != "enable" ]]; then
+  echo "agent-cycle: --this-node only modifies --disable or --enable" >&2
+  exit 64
 fi
 
 # --- Role guard (requirement 2.4) ---
@@ -689,10 +705,34 @@ limit_status_report() {
   return 0
 }
 
+# The fleet line of `--status` (issue #379): `toggle_status_report` above
+# already covers the node-scoped switch (`switch:`/`record:`), so this adds
+# only the fleet one and, where both are in play, says plainly what each of
+# --enable and --enable --this-node would leave — the question an operator
+# who finds a node down for more than one reason actually has.
+fleet_status_report() {
+  local local_disabled=0 fleet_state
+  [[ "$(jq -r '.state' <<<"$(toggle_state "$state_dir")")" == "disabled" ]] && local_disabled=1
+  fleet_state="$(fleet_disabled_state "$state_repo" "$state_dir")"
+  if [[ "$(jq -r '.state' <<<"$fleet_state")" == "disabled" ]]; then
+    printf 'fleet:    DISABLED — %s\n' "$(toggle_describe "$(jq -c '.record' <<<"$fleet_state")")"
+    if (( local_disabled )); then
+      printf '          this node also carries its own node-scoped disable (above) — --enable clears both; --enable --this-node clears only the local record, leaving the fleet switch (and this node) still down\n'
+    else
+      printf '          this node has no node-scoped disable of its own — --enable clears the fleet switch and every node resumes\n'
+    fi
+  elif (( local_disabled )); then
+    printf 'fleet:    not set — this node stands down on its own node-scoped disable above; --enable --this-node clears it\n'
+  else
+    printf 'fleet:    not set\n'
+  fi
+}
+
 if [[ -n "$MANAGE_ACTION" ]]; then
   case "$MANAGE_ACTION" in
     status)
       toggle_status_report "$state_dir" "cycle=$lock_file" "review=$review_lock_file"
+      fleet_status_report
       limit_status_report
       exit 0
       ;;
@@ -725,7 +765,12 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # several nodes active, "stop the pipelines" has to mean all of them.
       # Best-effort — the local switch above already holds this node either
       # way, and the operator is told which of the two situations they are in.
-      if [[ -n "$state_repo" ]]; then
+      # --this-node opts out of that: the whole point of the flag is a
+      # graceful, single-node stand-down that never reaches the fleet flag,
+      # so the rest of the fleet is left running rather than warned about.
+      if (( THIS_NODE )); then
+        printf 'agent-cycle: node-scoped disable — only %s stands down; the rest of the fleet keeps running\n' "$actor"
+      elif [[ -n "$state_repo" ]]; then
         if fleet_flag_write "$state_repo" disabled "$record" \
              "fleet: disabled by $by — $DISABLE_REASON"; then
           printf 'agent-cycle: fleet switch set — every node will stand down\n'
@@ -756,7 +801,12 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # Clear the fleet switch too — and complain loudly if that fails,
       # because a fleet flag left set keeps every node down after the
       # operator believes they have re-enabled the operation.
-      if [[ -n "$state_repo" ]]; then
+      # --this-node opts out: it undoes only this node's own --disable
+      # --this-node, and must never clear a fleet switch (or another node's
+      # own node-scoped one) it did not set.
+      if (( THIS_NODE )); then
+        printf 'agent-cycle: node-scoped enable — the fleet switch, if any, is untouched\n'
+      elif [[ -n "$state_repo" ]]; then
         if fleet_flag_delete "$state_repo" "$state_dir" disabled; then
           printf 'agent-cycle: fleet switch clear\n'
         else

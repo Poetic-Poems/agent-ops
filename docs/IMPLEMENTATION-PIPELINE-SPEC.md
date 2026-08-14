@@ -1148,11 +1148,28 @@ runs unattended.
    `review-cycle.sh` (`docs/REVIEW-PIPELINE-SPEC.md`, R2a) through one shared
    implementation (requirement 34a), with `agent-cycle.sh` the only writer.
    Managed by three flags that manage the switch and run no cycle:
-   `--disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>]`,
-   `--enable`, `--status`. `--until` takes a GNU `date`-compatible absolute
-   timestamp, an alternative to `--for`'s relative duration; with both given,
-   the later of the two deadlines wins and a warning names which. Transitions
-   are logged (`disabled`, `enabled`).
+   `--disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]`,
+   `--enable [--this-node]`, `--status`. `--until` takes a GNU `date`-compatible
+   absolute timestamp, an alternative to `--for`'s relative duration; with both
+   given, the later of the two deadlines wins and a warning names which.
+   Transitions are logged (`disabled`, `enabled`).
+
+   **`--this-node` (issue #379)** modifies `--disable` or `--enable` to act on
+   this node alone, never on the fleet switch of requirement 2.3a: `--disable
+   "<reason>" --this-node` writes `state_dir/disabled.json` exactly as an
+   unmodified `--disable` does — same record shape, same `actor`/`kind`, same
+   `--for`/`--until`/`disable_default_ttl` handling, same mandatory reason,
+   same `extends` behaviour — and skips the fleet publish, printing plainly
+   that only this node stands down. `--enable --this-node` clears only that
+   local record and never touches `fleet/disabled.json`, so a fleet-wide
+   disable (or a peer's own node-scoped one) is left exactly as it was.
+   Unmodified `--disable`/`--enable` are unchanged: they still write and clear
+   both levels. This is the graceful way to stand one node down for
+   maintenance — no container recreate, no role flip — without pulling the
+   rest of the fleet down with it. `--this-node` given with anything but
+   `--disable` or `--enable` is a usage error (exit 64); the role guard's
+   bypass list (requirement 2.4) is unchanged, since a switch command must
+   stay usable on every node regardless of `--this-node`.
 
    The record carries `actor` and `kind` alongside `by` and `reason` (#244).
    `actor` is `toggle_actor` (`lib/toggle.sh`): `NODE_NAME` when set, else
@@ -1196,6 +1213,16 @@ runs unattended.
      when it is set while a lock is held, in `--status` and in `--disable`'s own
      output. An agent that disables the pipeline, assumes the coast is clear and
      starts editing has gained nothing and doesn't know it.
+   - **`--status` distinguishes a node-scoped disable from a fleet-wide one, and
+     says what clearing each leaves.** With neither set it reports the switch
+     enabled; with only the fleet flag set it names that record and says a plain
+     `--enable` clears it fleet-wide; with only the local record set (a
+     `--this-node` disable) it says `--enable --this-node` clears it; with both
+     set it reports both records and spells out the asymmetry — `--enable`
+     clears both, `--enable --this-node` clears only the local record and
+     leaves the node down under the still-set fleet switch. An operator who
+     finds a node down for more than one reason is entitled to know which
+     command undoes which.
 
    Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
    being edited, do not run them" is no less true when a human runs them.
@@ -1210,6 +1237,17 @@ runs unattended.
    still stands down is the worst lie this switch can tell). Both pipelines
    check it at cycle start, after the local switch and still before the
    lock; it costs one contents-API read.
+
+   **`--this-node` (requirement 2.3) opts a single node out of this level
+   entirely.** `--disable --this-node` writes only the local record and skips
+   the fleet publish outright — not a degraded fallback of the unmodified
+   path, but the deliberate point of the flag: the rest of the fleet must keep
+   running. `--enable --this-node` clears only the local record and never
+   calls the fleet delete, so a fleet-wide disable (or a peer's own
+   node-scoped one) survives it untouched. Every other property of this
+   requirement — record shape, failure directions, expiry — is unchanged;
+   `--this-node` decides only which levels a write reaches, never how a
+   record already written is read or evaluated.
 
    Failure directions, deliberately: a 404 is *clear*, definitively; an
    unreachable state repo falls back to the copy cached at the last
@@ -1292,7 +1330,7 @@ runs unattended.
    crontab and again from the cleanup that ends a cycle. No two nodes share
    a branch, so pushes cannot contend and nothing arbitrates them. Each push
    stamps `heartbeat.json` (`{node, role, ts, last_cycle, version, compose,
-   image}`)
+   image, switch}`)
    into the branch root — on a standby, which has no cycles to publish, the
    heartbeat is the entire point, and it is what lets the fleet dashboard
    tell a quiet node from a dead one. `version` is `lib/version.sh`'s answer
@@ -1314,6 +1352,16 @@ runs unattended.
    holds the last answer for `IMAGE_DRIFT_TTL` seconds (240 by default) so
    whichever of the two next crosses that age pays the one query and the
    other reads its answer off disk.
+   `switch` is `toggle_switch_summary`'s (`lib/toggle.sh`): this node's own
+   node-scoped disable (requirement 2.3, `--this-node`), flattened to the
+   shape the dashboard's badge renders from. The raw `disabled.json` does
+   replicate (above), but a record is not a verdict — whether it is still in
+   force is decided against a clock, and a reader deriving that for itself
+   would be a second implementation of requirement 2.3's evaluation, free to
+   disagree with what the node's own `--status` says. So the node publishes
+   the verdict it reached, not just the file it reached it from. The
+   fleet-wide switch needs no such carriage: it is a flag file every node
+   already fetches for itself (requirement 2.3a).
    Each branch is a single rolling commit — `commit
    --amend` plus a force-push — because the state files carry their own
    history (`log.jsonl` is append-only, every cycle keeps its own directory)
@@ -8830,10 +8878,12 @@ pull request, run the ones the change touches and any it could regress.
    locks or the dashboard, onto the node's own `nodes/<NODE_NAME>` branch
    with a heartbeat naming the node, its role, its newest cycle, its version,
    its compose-drift verdict (asserted end to end: a node whose fixture
-   copies differ publishes `drifted` with the differing-line count) and an
+   copies differ publishes `drifted` with the differing-line count), an
    image-drift slot (what the verdict itself says is 1c-iv's own coverage;
    this asserts only that state-sync.sh asks for one, and that its cache file
-   does not replicate); a second
+   does not replicate), and its own node-scoped switch (issue #379,
+   `toggle_switch_summary` — a node whose `disabled.json` is set publishes
+   `switch.disabled: true` with the record's reason); a second
    push amends rather than accumulating history; a standby pushes its own
    branch and never a peer's; the branch keeps
    `cycles_retained` cycles while the node's own `cycles/` and `reviews/` are
@@ -8864,7 +8914,23 @@ pull request, run the ones the change touches and any it could regress.
    probed (no probe note in the reason) and is not cleared; and an
    automatic freeze older than `limit_escalate_after_hours` attempts the
    1c escalation (offline, where `gh` fails fast, the attempt is the logged
-   `warning` naming the freeze's start).
+   `warning` naming the freeze's start). The same file covers `--this-node`
+   (requirement 2.3, #379): `--disable --this-node` reports plainly that only
+   this node stands down, writes the local record and publishes no fleet
+   flag, and a peer's own cycle is unaffected; `--enable --this-node` leaves
+   a fleet flag another node set untouched while clearing only the local
+   record; a node carrying both a node-scoped disable and a fleet disable
+   stands down for the local one first and, once that alone is cleared, for
+   the fleet one next; a node-scoped disable clears itself and logs `disable
+   expired` on the same TTL terms as the fleet switch; and `--this-node`
+   given with a command other than `--disable`/`--enable` (`--status` here)
+   exits 64 naming the two it modifies. It covers `--status`'s own
+   distinction in all three combinations: with only the local record set it
+   reports no fleet switch and names `--enable --this-node` as what clears
+   it; with only the fleet flag set it reports that record, its reason, and
+   that this node adds no node-scoped disable of its own; with both set it
+   reports both and spells out that `--enable` clears both while `--enable
+   --this-node` leaves the node down under the fleet switch.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the

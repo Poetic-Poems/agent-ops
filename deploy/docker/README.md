@@ -150,7 +150,9 @@ docker compose exec scheduler ls /home/agent/.local/state/poetic-agents/cycles |
 | Follow the pipelines | `docker compose logs -f scheduler` |
 | Is anything running? | `docker compose exec scheduler /app/agent-cycle.sh --status` |
 | Stop cycles fleet-wide | `docker compose exec scheduler /app/agent-cycle.sh --disable 'reason'` |
+| Stop cycles on this node alone | `docker compose exec scheduler /app/agent-cycle.sh --disable 'reason' --this-node` |
 | Resume | `docker compose exec scheduler /app/agent-cycle.sh --enable` |
+| Resume this node alone | `docker compose exec scheduler /app/agent-cycle.sh --enable --this-node` |
 | A supervised cycle | `docker compose exec scheduler /app/agent-cycle.sh --once` |
 | A shell on the node | `docker compose exec scheduler bash` |
 | Cycle events (starts, selections, PRs, stand-downs) | `./watch-node.sh events -f` |
@@ -184,6 +186,13 @@ standing down at that point. The role decides whether *this* node spends;
 the switch decides whether *any* node does. A usage-limit hit travels the
 same way (`fleet/limit.json`), so the first node to hit the shared Claude
 limit stands the whole fleet down within a cycle tick.
+
+Add `--this-node` to either command to keep the effect local: `--disable
+'reason' --this-node` writes only this node's own record and never touches
+`fleet/disabled.json`, so the rest of the fleet keeps working; `--enable
+--this-node` clears only that local record and leaves a fleet-wide disable
+(or a peer's own node-scoped one) untouched. It is the graceful way to stand
+one node down for maintenance — no container recreate, no role flip.
 
 ### Updating
 

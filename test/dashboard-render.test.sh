@@ -173,6 +173,18 @@ assert_contains "poetic-3 is named on the strip" \
 assert_contains "poetic-4 is named on the strip" \
   "poetic-4" "$out"
 
+# --- The node-scoped switch badge on the fleet strip (issue #379) -----------
+# poetic-1 (self) carries an enabled switch and gets no badge; poetic-2
+# carries a node-scoped disable and gets one, beside its role badge, naming
+# the reason and the expiry; poetic-3/poetic-4 predate the field (absent, like
+# an old version/compose/image verdict) and get none either.
+assert_contains "a node-scoped disable is badged on its card" \
+  "disabled" "$out"
+assert_contains "naming the reason" \
+  "editing lib/toggle.sh" "$out"
+assert_contains "and the expiry" \
+  "2030-01-01T00:00:00Z" "$out"
+
 # --- finished.json: ended cycles (ready, failed) + one cycle a fleet-less --------
 # data.js (no `fleet` key at all) would have carried before the strip existed.
 out="$(render finished.json)" || { printf 'FAIL - finished.json did not render:\n%s\n' "$out"; exit 1; }
@@ -563,6 +575,28 @@ assert_not_contains "an explicit 0 renders no badge, and no repo's absence rende
   "nice" "$out"
 assert_contains "while the work-source panel it sits in renders as it always did" \
   "Poetic-Poems/agent-ops" "$out"
+
+# --- merge-queue.json: queued badge, dequeued warning (agent-ops#375, D17) --------
+# The Publisher's own `queued`/`dequeued` fields (test/publish-dashboard.test.sh
+# covers how it derives them) driving the open-PR table's badges: #500 is
+# currently queued, #501 fell out of the queue without merging, #502 has never
+# been near the queue and must render exactly as it did before this feature
+# existed.
+out="$(render merge-queue.json)" || { printf 'FAIL - merge-queue.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "a currently-queued pull request carries the queued badge, distinct from ready" \
+  'class="badge b-purple" title="in GitHub' "$out"
+assert_contains "a dequeued-unmerged pull request carries a warning badge beside its ready badge" \
+  'class="badge b-amber" style="margin-left:6px" title="removed from the merge queue' \
+  "$out"
+assert_contains "the dequeued warning names the state a human must act on" \
+  "dequeued" "$out"
+assert_contains "the same pull request keeps its ordinary ready badge underneath the warning" \
+  'class="badge b-blue"' "$out"
+assert_contains "a pull request never near the queue renders exactly as before this feature" \
+  "never been near the queue" "$out"
+assert_contains "an enqueued-then-dequeued pull request belongs in the attention banners too" \
+  "removed from the merge queue without merging" "$out"
 
 printf '\n'
 if (( failures > 0 )); then

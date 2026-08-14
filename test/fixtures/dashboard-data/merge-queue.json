@@ -1,0 +1,51 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m",
+    "prs": [
+      {"repo": "Poetic-Poems/agent-ops", "number": 500, "url": "https://github.com/Poetic-Poems/agent-ops/pull/500",
+        "title": "landing hands-off", "isDraft": false, "review_decision": "APPROVED",
+        "checks": {"total": 3, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:30m",
+        "queued": true, "dequeued": false},
+      {"repo": "Poetic-Poems/agent-ops", "number": 501, "url": "https://github.com/Poetic-Poems/agent-ops/pull/501",
+        "title": "fell out of the queue", "isDraft": false, "review_decision": "APPROVED",
+        "checks": {"total": 2, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:60m",
+        "queued": false, "dequeued": true},
+      {"repo": "Poetic-Poems/agent-ops", "number": 502, "url": "https://github.com/Poetic-Poems/agent-ops/pull/502",
+        "title": "never been near the queue", "isDraft": false, "review_decision": "",
+        "checks": {"total": 1, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:5m",
+        "queued": false, "dequeued": false}
+    ],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 5
+}

@@ -791,11 +791,13 @@ docker compose exec scheduler /app/agent-cycle.sh --enable   # resume
 The switch is one file (`$state_dir/disabled.json`) shared by **both**
 `agent-cycle.sh` and `review-cycle.sh` — they run out of the same tree, so
 stopping one and not the other stops nothing much. `agent-cycle.sh` is the only
-way to set it; `review-cycle.sh` only obeys it. And it reaches the whole
-fleet: `--disable` also publishes `fleet/disabled.json` to the state
+way to set it; `review-cycle.sh` only obeys it. And, by default, it reaches
+the whole fleet: `--disable` also publishes `fleet/disabled.json` to the state
 repository (warning loudly if it cannot), every node checks that flag at
 cycle start, and `--enable` clears both levels — so one command from any
-node stands the entire operation down, or up.
+node stands the entire operation down, or up. Add `--this-node` to either to
+keep the effect on the node you typed it on — see [Taking one node out while
+the rest keep working](#taking-one-node-out-while-the-rest-keep-working).
 
 Three things worth knowing:
 
@@ -919,7 +921,7 @@ memory, and every node follows everyone else's.
 
 | Mode | When | What |
 |---|---|---|
-| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version}`) |
+| `push` | every five minutes, and at the end of every cycle | publishes `state_dir` as this node's own `nodes/<NODE_NAME>` branch, stamped with a heartbeat (`{node, role, ts, last_cycle, version, compose, image, switch}`) |
 | `fetch` | every seven minutes | materialises every peer's branch under the peers directory, whole, and prunes a peer whose branch is gone |
 
 What travels is the memory: `log.jsonl`, `review-log.jsonl`, `cycles/`,
@@ -1720,16 +1722,24 @@ sweeping stale claims as well as stops working.
 running. Stopping or recreating a container kills a running cycle's whole
 process group, which leaves an orphaned clone under `workspace_root`, a lock
 to be taken over as stale, and a claim that stands until the GC sweeps it
-(`claim_ttl_hours`, 6 h). So wait — or stand the fleet down and wait:
+(`claim_ttl_hours`, 6 h). So wait — or stop this node alone from starting
+another one while you do:
 
 ```bash
-docker compose exec scheduler /app/agent-cycle.sh --disable 'decommissioning <node>' --for 2h
+docker compose exec scheduler /app/agent-cycle.sh --disable 'decommissioning' --this-node --for 2h
 docker compose exec scheduler /app/agent-cycle.sh --status   # until both read idle
 ```
 
-Remember the switch is fleet-wide: `--enable` from a *surviving* node once
-this one is gone, or every other node stays down until the disable expires. On
-a standby node the disable is unnecessary — a standby starts no cycles.
+`--this-node` is the node-scoped form (see [Taking one node out while the
+rest keep working](#taking-one-node-out-while-the-rest-keep-working)): it
+never touches the fleet-wide switch, so the rest of the fleet keeps working
+while this one drains, and there is nothing to remember to `--enable` from a
+surviving node once this one is gone — the record is destroyed along with the
+node. Reach for plain `--disable` (no `--this-node`) instead only if you
+actually want the whole fleet paused for the duration; that one *is*
+fleet-wide, so `--enable` from a *surviving* node once this one is gone, or
+every other node stays down until the disable expires. On a standby node
+either disable is unnecessary — a standby starts no cycles.
 
 ### 3. Take off it anything you want to keep
 
@@ -2022,23 +2032,47 @@ jq -n '{ts: now | todate, cycle: "manual", event: "limit-hit", resume_at: (now +
 
 ### Taking one node out while the rest keep working
 
-Yes — role and lifecycle are per-node; only the switch is not. `--disable`
-stops the *fleet* (it publishes `fleet/disabled.json`, which every node
-obeys), so it is the wrong tool for taking a single node aside. Per node:
+Yes — role and lifecycle are per-node, and so is `--disable --this-node`, the
+graceful way to stand one node down: no container recreate, no role flip, the
+rest of the fleet keeps working throughout.
 
-- **Stop it spending**: set `ROLE=standby` in its `.env`, then
-  `docker compose up -d`. It keeps its heartbeat and keeps following the
-  fleet's memory, so promoting it back is the same one variable.
+```bash
+docker compose exec scheduler /app/agent-cycle.sh --disable "editing lib/" --this-node --for 2h
+# ... work on that node ...
+docker compose exec scheduler /app/agent-cycle.sh --enable --this-node
+```
+
+`--this-node` writes only that node's own `$state_dir/disabled.json` and
+never touches `fleet/disabled.json` — plain `--disable` (no `--this-node`)
+is the one that stops the *fleet*, publishing the flag every node obeys, and
+is the wrong tool for taking a single node aside. `--enable --this-node`
+clears only the local record and leaves a fleet-wide disable, or a peer's own
+`--this-node` one, untouched. It expires on the same terms as the fleet
+switch (`disable_default_ttl` unless `--for`/`--until` says otherwise), so a
+forgotten `--enable --this-node` costs a few lost cycles on that node, not a
+silent permanent stand-down. `--status` on the node reports it, and its
+dashboard card carries the same badge a fleet disable shows, beside its role
+badge — so the stand-down is visible without a shell on the box.
+
+That covers most "I need this one node to stop for a while" cases. For
+anything it doesn't:
+
+- **Stop it spending indefinitely, with no switch and no expiry**: set
+  `ROLE=standby` in its `.env`, then `docker compose up -d`. It keeps its
+  heartbeat and keeps following the fleet's memory, so promoting it back is
+  the same one variable.
 - **Stop it entirely**: `docker compose stop scheduler`, or
   `docker compose down` (which keeps the volumes). The rest of the fleet
   carries on; per-item claims mean no other node was depending on this one.
 - **Hold it on a known image** while the rest follow `latest`: pin
   `AGENT_OPS_IMAGE=ghcr.io/poetic-poems/agent-ops:<sha>` in its `.env`.
 
-All three leave the node able to come back, which is what makes them the wrong
-answer when the machine is going away or its disk is wanted: see [Removing a
-node for good](#removing-a-node-for-good) for the departure that also releases
-the volumes, the state branch, and the credentials.
+All three, and a `--this-node` disable once its expiry passes or
+`--enable --this-node` runs, leave the node able to come back, which is what
+makes them the wrong answer when the machine is going away or its disk is
+wanted: see [Removing a node for good](#removing-a-node-for-good) for the
+departure that also releases the volumes, the state branch, and the
+credentials.
 
 One caution before any *manual* `docker compose up -d` on a live node: after
 a watchtower roll, compose's recorded config-hash no longer matches, so

@@ -94,9 +94,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   distinction.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
-  entry ({node, role, heartbeat, last cycle, version, compose, image}; older than 30
-  minutes → `stale: true` — three missed pushes, not clock jitter); its
-  `cycles/<id>/`
+  entry ({node, role, heartbeat, last cycle, version, compose, image, switch};
+  older than 30 minutes → `stale: true` — three missed pushes, not clock
+  jitter); its `cycles/<id>/`
   and `reviews/<id>/` transcripts
   render peer cycles with exactly the fidelity of local ones, and its `.out`
   envelopes join the fleet-wide cost roll-ups (every node spends one Claude
@@ -184,6 +184,16 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   who set it (`actor`, falling back to `by`), its kind, and its expiry (or that
   it has none and needs `--enable`), since those are precisely the questions an
   operator has next.
+
+  The same read (`toggle_switch_summary`, `lib/toggle.sh`) also feeds the
+  node card's own **disabled** badge (implementation spec 2.3, `--this-node`
+  — the graceful, single-node form): a node stood down that way sets no flag
+  file anything else on this page reads, so without a badge on its own card it
+  looks exactly like an idle one. This node's copy is read live, the same as
+  its role and lock; a peer's arrives in its heartbeat as `switch`, on the
+  same absent-means-unknown rule every other peer-only field on the card
+  follows — a peer whose heartbeat predates the field, like one whose image
+  or compose verdict does, renders no badge rather than a false "enabled".
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what
@@ -279,7 +289,8 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
 - **GitHub, via `gh`** (best-effort; the machine is authenticated and the
   repos are public): open PRs carrying `pr_label` with `statusCheckRollup`,
   `mergeable`, `mergeStateStatus`, `reviewDecision`, author, labels,
-  draft/ready; most-recent-per-workflow
+  draft/ready, and merge-queue state (`queued`/`dequeued`, D17 — see the
+  Publisher below); most-recent-per-workflow
   failing runs on the default branch; open issues, each with the `Priority`
   band the Co-Ordinator ranks it by (read from the REST issues listing's
   `issue_field_values`, since `gh issue list --json` cannot see issue fields,
@@ -468,7 +479,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                escalation_issue, escalation_url,        // an open ask of the human
                enabler_outcome, enabler_ts } ],         //   … or the last verdict
   void:    [ { repo, item, ts, detail, stage, evidence } ],
-  github:  { ok, error, fetched_at, stale, prs[], claims[],
+  github:  { ok, error, fetched_at, stale,
+             prs: [ { …, queued, dequeued } ],  // merge-queue state (D17); see
+                                                 //   "Merge-queue awareness" below
+             claims[],
              inputs:{<slug>:{issues, failed_runs, findings,
                              tech_debt:[{id,title,status,url}],  // unresolved
                                        //   items only; title/status empty
@@ -496,6 +510,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                   registry_created_at },     //   commit against
                                             //   the registry's newest
                                             //   published one (#155); null if
+                                            //   unreported
+                         switch: { disabled, reason, by,    // the node's OWN
+                                    actor, kind, since,      //   node-scoped
+                                    expires_at },            //   disable (#379,
+                                            //   `--disable --this-node`),
+                                            //   never the fleet one; null if
                                             //   unreported
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
@@ -529,6 +549,45 @@ still open are refreshed, and only hourly. A cold index is filled at most eight
 references per tick: forty `gh pr view` calls at up to `GH_TIMEOUT` each would
 not fit in the heartbeat's window, and nothing waits on it — an unindexed
 number renders as the plain link it has always been.
+
+**Merge-queue awareness** (D17, agent-ops#374/#375): each open pull request in
+`github.prs[]` carries `queued` (`true`/`false`/`null` — `null` only when the
+probe below has never once answered for it) and `dequeued` (`true` while it is
+a state a human should look at). `queued` is `lib/merge-queue.sh`'s
+`merge_queue_probe` read directly — the same probe
+`scripts/sweep-human-visibility.sh` (requirement 38f) already uses, shared
+rather than reimplemented — for every open, **non-draft** pull request the
+label query returns; GitHub will not enqueue a draft, so one is never worth
+the call, and this needs no miss budget of its own the way `pr_index` and the
+tech-debt roster do, because the set probed is exactly this tick's open agent
+pull requests, already bounded by `max_open_agent_prs`. `dequeued` is *not*
+the probe's own `dequeued_at`/`dequeue_reason` (the last removal event on the
+pull request's timeline, regardless of age or of a later re-queue —
+agent-ops#394's still-open finding against that reading): it is a small state
+machine the Publisher keeps itself, `{queued, warn}` per pull request in
+`<state_dir>/.dashboard-queue.json`, rewritten wholesale each GitHub tick from
+that tick's own open pull requests (so a merged or closed one simply has no
+entry next tick, rather than being pruned by rule). `warn` sets the tick
+`queued` is observed to flip from `true` to `false`, stays set on every later
+tick that still reads not-queued — a maintainer glancing at the page between
+heartbeats must still see it — and clears the moment either `queued` reads
+`true` again or the pull request drops out of the open list. A probe that
+cannot answer (`merge_queue_probe` failing, same as any other best-effort
+GitHub read) carries the last known answer forward unchanged, both the badge
+shown this tick and what is written back to the cache, rather than ever
+guessing `false` — the one direction that could silently clear a live warning
+or falsely raise one — and does not itself trip `github.ok`, the same
+treatment `sweep-human-visibility.sh` gives the identical probe. A repository
+with no merge queue enabled needs no detection of its own: `isInMergeQueue` is
+always `false` and no `RemovedFromMergeQueueEvent` ever fires there, so
+`queued`/`dequeued` are always `false` and the open-PR table renders exactly
+as it did before this feature existed. The open-PR table (below) shows
+`queued` as a **queued** badge distinct from ready/draft/conflicting — "landing
+hands-off" — and `dequeued` as an amber warning badge beside the pull
+request's ordinary state badge; the same `dequeued` also raises a page-wide
+amber banner (`⚠ N open agent PR(s) removed from the merge queue without
+merging.`) beside the failing-checks one, so it is visible without opening the
+table.
 
 `github.inputs[<slug>].tech_debt` is that repo's register as work: one row per
 **unresolved** item, carrying the item's own `title` and `status` and a link to
@@ -600,12 +659,14 @@ followed by six links — README, the three pipeline specs, the metering
 schema, the roadmap — each opening the file at `blob/main/<path>` on GitHub
 in a new tab; no data behind it, so it renders identically on every load) +
 disabled / fleet-switch / usage-limit
-/ fleet-limit / failing-checks / gh-down / stale-peer banners (the switch
-first: when it is set, every other quiet signal on the page
+/ fleet-limit / failing-checks / dequeued-pr / gh-down / stale-peer banners
+(the switch first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
 **the fleet strip** — one card per node carrying that node's own live state
-(name, role, running/idle, the stage, repo, work source and item in flight and
+(name, role — with a **disabled** badge beside it when that node carries its
+own node-scoped disable (#379), naming the reason and expiry — running/idle,
+the stage, repo, work source and item in flight and
 since when — or, when idle, when its last cycle ended and how it went — the
 **version it is running** as `image #<pr> <short-sha> · built <age>` with the
 pull request carrying its record card, a grey `behind` marker when the fleet
@@ -640,7 +701,10 @@ choice is written to `localStorage` (`dashboard.spendMode`) as it is made and
 read back on every load, so it survives a real reload and not just the
 in-place refresh the rest of this section describes — the first state on this
 page to do so — and an unset or unrecognised stored value reads as the GMT
-default rather than an error; open PRs; recent cycles (outcome and work source at
+default rather than an error; open PRs (a **queued** badge in place of ready for
+one currently in a merge queue, and an amber **dequeued** badge beside a pull
+request's state badge for one a queue removed without merging — see
+"Merge-queue awareness" above); recent cycles (outcome and work source at
 a glance — a cycle that has not logged `cycle-end` shows the state it is in
 rather than an outcome it has not reached: **in progress** while a node claims
 it as its live cycle (greyed when that node's own report has gone stale,
@@ -1113,7 +1177,10 @@ number's twins elsewhere on the page.
   keyless renders no badge and no note anywhere on the page. A node behind an
   image published longer ago than `image_behind_grace_hours` carries an
   **image behind** badge naming the registry commit, while one whose registry
-  check failed carries **image unverified** instead (#155). A cycle whose
+  check failed carries **image unverified** instead (#155). A node carrying a
+  node-scoped disable (`switch.disabled`) shows a **disabled** badge beside
+  its role badge, naming the reason and the expiry, while its own enabled
+  self carries no such badge (#379). A cycle whose
   `selection` carried `race_losses` (implementation spec 17d, #248) shows a
   blue **recovered race ×N** badge beside its title in the cycle history —
   informational, not a warning, since losing a claim race and then winning a
@@ -1633,6 +1700,22 @@ number's twins elsewhere on the page.
   replication, like the other local caches) holds the last answer, and
   `scripts/state-sync.sh`'s own heartbeat push shares the same file, so
   whichever of the two next crosses `IMAGE_DRIFT_TTL` pays the one query.
+- **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
+  issue #379) gets its own badge beside the role badge**, not just the
+  page-top switch banner. The banner (above) is keyed to *this* node's own
+  switch, so it already covers a node-scoped disable on the node whose page
+  you are reading — but the fleet strip shows every node, and a peer's own
+  node-scoped disable sets no fleet flag and appears in no banner at all.
+  Without a per-card badge, a peer stood down that way is indistinguishable
+  from an idle one, on the same page that goes to some trouble to say so for
+  a fleet-wide disable. Amber, **disabled**, titled with the reason, who set
+  it and its expiry — the same three facts the switch banner leads with, read
+  through the same `toggle_switch_summary` (`lib/toggle.sh`) so the two
+  cannot disagree (requirement 34a). Renders nothing when the node is
+  enabled, and nothing when the field is absent (a peer's heartbeat from
+  before this check existed) — the same absent-means-unknown rule the
+  compose and image badges already follow, never a false "enabled" for a
+  peer this node cannot actually answer for.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing
@@ -1775,3 +1858,20 @@ number's twins elsewhere on the page.
   consequence of only-on-change: the relative "3m ago" cells stop advancing
   while the pipeline is idle and catch up the moment new data lands — the
   header's own staleness clock keeps ticking, so freshness is never in doubt.
+- **The dequeued warning is the Publisher's own memory, not GitHub's timeline**
+  (agent-ops#375, D17). The obvious first design reads `merge_queue_probe`'s
+  `dequeued_at`/`dequeue_reason` straight through — the same fields
+  `scripts/sweep-human-visibility.sh` already posts a notice from — but that
+  field answers "when did this pull request last leave the queue", not "does
+  it need a human's attention right now", and the two come apart exactly the
+  way agent-ops#394 found against the sweep's own use of it: the timeline
+  read fires on a removal from arbitrarily long ago, even after a later
+  re-queue, because nothing in it says "and nothing has changed since". A
+  dashboard badge that could relight itself off ancient history is worse than
+  none, so instead the Publisher keeps its own `{queued, warn}` per pull
+  request across ticks (`<state_dir>/.dashboard-queue.json`) and derives
+  `dequeued` from the transition it itself observes — `warn` sets the tick
+  `queued` flips `true` → `false`, holds while it keeps reading `false`, and
+  clears the moment `queued` reads `true` again. That is strictly a
+  comparison this Publisher can make about *this* pull request's *current*
+  state, never a re-reading of a GitHub event that predates the question.
