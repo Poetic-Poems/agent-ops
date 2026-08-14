@@ -25,7 +25,7 @@ that engagement. You are never launched a third time for the same cycle
 regardless of what that second verdict says.
 
 This check covers **every** band handed to you pre-fetched — `findings`
-(both kinds), `issues`, `review_feedback`, `merge_conflicts`,
+(both kinds), `issues`, `review_feedback`, `merge_conflicts`, `dequeued`,
 `abandoned_drafts`, `human_visibility`, `register_hygiene` and `tech_debt` —
 not one of them. The Script has already applied every exclusion it can decide
 without judgement (see "Exclude any item that is" below), so a non-empty array
@@ -115,6 +115,14 @@ heading, the Script gives you one JSON object:
   already cross-referenced against `claimed`, `blocked` and `void` the same way
   (see "Merge conflicts" below). An empty array means nothing of ours is
   conflicted — do not go looking.
+- Each entry's `dequeued` is the repo's own PRs that GitHub's merge queue
+  removed over a merge-group checks failure without merging — open, non-draft,
+  ours by label on a branch we own, `mergeable` exactly `MERGEABLE` (never
+  overlapping `merge_conflicts`), and whose `dequeue_reason` reads
+  `failed_checks` — **already fetched and filtered for you** by the Script,
+  and already cross-referenced against `claimed`, `blocked` and `void` the
+  same way (see "Dequeued pull requests" below). An empty array means nothing
+  of ours is dequeued and actionable — do not go looking.
 - Each entry's `abandoned_drafts` is the repo's own draft PRs that a previous
   cycle raised and then abandoned — open, still draft, carrying our label on a
   branch we own, and untouched for at least the staleness threshold — **already
@@ -224,20 +232,20 @@ heading, the Script gives you one JSON object:
 - `claimed` is the fleet's active claims, gathered fresh by the Script
   immediately before this cycle: registry entries younger than
   `claim_ttl_hours` (covering both the branch claims ordinary items use and
-  the file claims `review-feedback`, `merge-conflicts` and `abandoned-drafts`
-  use) unioned with every live `td/*`/`agent/*` claim branch on each target
+  the file claims `review-feedback`, `merge-conflicts`, `dequeued` and
+  `abandoned-drafts` use) unioned with every live `td/*`/`agent/*` claim branch on each target
   repository — whichever peer node holds an item, however it holds it. Each
   entry is `{"repo": "…", "item": "…", "age_hours": N}`, plus `pr_number` when
   the claim is known to target one (`age_hours` is `null` when only a live
   branch, not a registry entry, is behind it — a branch carries no PR number
   either). You should not need to read `pr_number` yourself: it is what the
-  Script used to pre-filter `review_feedback`, `merge_conflicts` and
-  `abandoned_drafts` below (see "Review feedback" etc.) before you ever saw
+  Script used to pre-filter `review_feedback`, `merge_conflicts`, `dequeued`
+  and `abandoned_drafts` below (see "Review feedback" etc.) before you ever saw
   them, so a candidate whose PR a peer already claimed under a different round
   or head is simply absent from those arrays, not something you compare
   against `claimed` by hand. The same is true of every pre-fetched array's
   item refs: the Script drops any `issues`, `findings`, `tech_debt`,
-  `register_hygiene`, `review_feedback`, `merge_conflicts` or
+  `register_hygiene`, `review_feedback`, `merge_conflicts`, `dequeued` or
   `abandoned_drafts` entry whose `ref` appears in `claimed` before you see it,
   so `claimed` is yours to apply only to the sources you derive yourself (see
   exclusion 3 below).
@@ -337,8 +345,10 @@ selectable item:
   queue where one is enabled (D17): you never read live GitHub yourself, so
   this reaches you only through the pre-fetched candidate arrays above. A
   queued pull request is always mergeable (never `merge-conflicts`'
-  `CONFLICTING`) and always open and non-draft (never `abandoned-drafts`'),
-  so those two candidate rules can never select one. Whether it can also
+  `CONFLICTING`), always open and non-draft (never `abandoned-drafts`'),
+  and — by construction, since it is queued right now — never carries a
+  `queued: false` merge-queue probe result (never `dequeued`'s), so those
+  three candidate rules can never select one. Whether it can also
   carry a blocking `CHANGES_REQUESTED` — and so reach you as
   `review-feedback`'s candidate — depends on a setting this file never sees:
   where the repo's branch protection requires an approving review before
@@ -414,20 +424,28 @@ source priority, with no edit to this file:
   and review-feedback: a rebase-and-resolve on a PR a human is waiting to land beats
   starting anything new, and until it merges cleanly nothing else on the PR can
   proceed. See "Merge conflicts" below.
+- **dequeued** — pull requests this system raised that GitHub's merge queue
+  removed over a merge-group checks failure without merging, handed to you
+  **pre-fetched** in each repo's `dequeued` array. Fourth, alongside
+  merge-conflicts and for the identical reason: a diagnose-and-fix on a PR a
+  human is waiting to land beats starting anything new, and until the
+  merge-group failure is fixed it cannot be re-queued. See "Dequeued pull
+  requests" below.
 - **human-visibility** — a violation the periodic sweep
   (`scripts/sweep-human-visibility.sh`) found but could not itself heal — a
   `gh` read, the review-request POST, or the nudge-comment POST itself
   failing — still true once re-verified live, handed to you **pre-fetched**
-  in each repo's `human_visibility` array. Fifth, after security,
-  review-feedback and merge-conflicts, and before abandoned-drafts: finished
+  in each repo's `human_visibility` array. Sixth, after security,
+  review-feedback, merge-conflicts and dequeued, and before abandoned-drafts:
+  finished
   work invisible to the human whose merge everything waits on is the same
-  "finishing beats starting" class as the three sources around it, not a
+  "finishing beats starting" class as the four sources around it, not a
   cosmetic repair. See "Human visibility" below.
 - **abandoned-drafts** — draft pull requests this system raised and then
   abandoned: open, still draft, ours by label, on a branch we own, and untouched
   past the staleness threshold, handed to you **pre-fetched** in each repo's
-  `abandoned_drafts` array. Sixth, after security, review-feedback,
-  merge-conflicts and human-visibility: finishing a stalled draft of ours beats
+  `abandoned_drafts` array. Seventh, after security, review-feedback,
+  merge-conflicts, dequeued and human-visibility: finishing a stalled draft of ours beats
   starting anything new, and it turns the back-pressure slot the draft is
   silting into a PR a human can merge. See "Abandoned drafts" below.
 
@@ -480,15 +498,15 @@ Among security candidates, take the most severe first
 already sorted this way), and use repo order (given) to break ties. Only once
 no selectable security candidate remains do you fall back to the ordinary
 repo-then-source walk for the rest (urgent issues → review-feedback →
-merge-conflicts → human-visibility → abandoned-drafts → failed-runs → high
-issues → tech-debt → medium issues → implementation-plan → project-review →
-low issues → code-quality → register-hygiene).
+merge-conflicts → dequeued → human-visibility → abandoned-drafts → failed-runs
+→ high issues → tech-debt → medium issues → implementation-plan →
+project-review → low issues → code-quality → register-hygiene).
 
 **Urgent issues come second, across all repos.** An open issue whose `Priority`
 is `Urgent` outranks the plain repo-then-source walk exactly as security does:
 if any selectable urgent issue exists in *any* repo, take it before any
-non-security item anywhere — ahead of review feedback, merge conflicts and
-abandoned drafts too. A human set that field deliberately, and it is the
+non-security item anywhere — ahead of review feedback, merge conflicts,
+dequeued pull requests and abandoned drafts too. A human set that field deliberately, and it is the
 strongest thing they can say short of a security alert. Take the oldest first,
 and use repo order to break ties.
 
@@ -507,15 +525,27 @@ to land it — and until the conflict is resolved nothing else on it (a re-revie
 merge) can proceed. A rebase-and-resolve is finishing, not starting, so it beats
 fresh work here too.
 
-**Abandoned drafts come fifth, across all repos.** After security, urgent issues,
-review-feedback, and merge-conflicts, and likewise ahead of the plain
-repo-then-source walk: if any selectable `abandoned_drafts` candidate exists in
-*any* repo, take it before any fresh work in a more-overdue repo. A previous cycle
-already implemented most of the work behind that draft, so finishing beats
-starting here too — and every hour it sits stalled it occupies a back-pressure
-slot that throttles new work fleet-wide. Only once no security, urgent-issue,
-review-feedback, merge-conflict, or abandoned-draft candidate remains do you fall
-to the ordinary repo-then-source walk.
+**Dequeued pull requests come fifth, across all repos.** After security, urgent
+issues, review-feedback, and merge-conflicts, and likewise ahead of the plain
+repo-then-source walk: if any selectable `dequeued` candidate exists in *any*
+repo, take it before any fresh work in a more-overdue repo. That PR was
+otherwise ready — a human clicked "Merge when ready" — and until the
+merge-group's own checks failure is fixed, it cannot be re-queued. A
+diagnose-and-fix is finishing, not starting, so it beats fresh work here too,
+for the identical reason merge-conflicts does.
+
+**Abandoned drafts come seventh, across all repos.** After security, urgent
+issues, review-feedback, merge-conflicts and dequeued, and likewise ahead of
+the plain repo-then-source walk: if any selectable `abandoned_drafts`
+candidate exists in *any* repo, take it before any fresh work in a
+more-overdue repo. A previous cycle already implemented most of the work
+behind that draft, so finishing beats starting here too — and every hour it
+sits stalled it occupies a back-pressure slot that throttles new work
+fleet-wide. Only once no security, urgent-issue, review-feedback,
+merge-conflict, dequeued, or abandoned-draft candidate remains do you fall to
+the ordinary repo-then-source walk — which is where human-visibility, ranked
+alongside merge-conflicts and abandoned-drafts rather than beside
+register-hygiene, is evaluated (see "Human visibility" below).
 
 **Security & code-quality findings.** Their candidates are the pre-fetched
 `findings` entries (you do not query the alert APIs yourself). Each already
@@ -553,9 +583,9 @@ already in that order — the human has been waiting longest on it), and:
   Implementor disagrees on the merits, answered in a reply on the PR), CI is
   green, and the PR is left ready for the human to re-review.
 - `model` is always `models.default`: answering a review changes code.
-- `branch` is the entry's existing `branch` — **not** a new one. This is the
-  one source where the branch and the PR already exist; the Implementor pushes
-  to them rather than creating anything. As with merge-conflicts and
+- `branch` is the entry's existing `branch` — **not** a new one. This is one of
+  the sources where the branch and the PR already exist; the Implementor pushes
+  to them rather than creating anything. As with merge-conflicts, dequeued and
   abandoned-drafts, carry the entry's `pr_url` and `pr_number` into the work
   order too.
 
@@ -677,6 +707,51 @@ permanently unselectable while reading as correct behaviour, and quietly mean no
 conflicted PR is ever unblocked. A `bot: true` entry was never excludable on this
 ground in the first place — it carries neither our label nor our branch prefix.
 
+**Dequeued pull requests.** The candidates are the pre-fetched `dequeued`
+entries, one per PR of ours that GitHub's merge queue removed over a
+merge-group checks failure without merging. Do not go looking for these
+yourself: the Script has already applied the rule — open, non-draft, carrying
+our label on a branch we own, `mergeable` exactly `MERGEABLE` (this is what
+keeps this source from ever overlapping `merge_conflicts`: a PR that is both
+dequeued and conflicting belongs to that source instead, and its own rule
+already excludes anything not `CONFLICTING`), and the pull request's most
+recent merge-queue removal reads `dequeue_reason: "failed_checks"` — the one
+reason this system can act on; a human manually removing their own queue
+entry mints a different reason and is never offered here. **An entry's
+presence in this array is the candidate test.** If the array is empty, this
+source has no candidates.
+
+Take the **oldest `updated_at` first** (the array is already in that order —
+that PR has been waiting longest), and:
+
+- `item` is the entry's `ref` (e.g. `pr-57-dequeued-1a2b3c4d5e6f`). Use it
+  exactly; it is scoped to this PR's current head on purpose, so a later push
+  becomes a fresh item that no old block covers.
+- `context` must carry the entry's `body` (the PR's own description) verbatim,
+  plus its `url`, `number`, `branch`, `base`, `head_sha`, `dequeued_at`,
+  `dequeue_reason`, and — where the entry names an `item` — that originating
+  reference too. State plainly that the branch and PR **already exist**, and
+  that the Implementor's job is to find what actually failed in the
+  merge-group's own checks run (not the PR's own, ordinary checks, which may
+  already be green) and fix that — never to re-do or extend the work, and
+  never to attempt re-queueing it, which only a human can do.
+- `acceptance` is: the merge-group failure is diagnosed and fixed, pushed to
+  the existing branch, the repo's own checks are green, and the PR is left in
+  the same ready state it was in with a comment naming what was found — for a
+  human to give it a fresh "Merge when ready". This source does **not**
+  complete the underlying item (its ledger/issue stays as it was, and the PR
+  is not merged); it only removes the specific defect that got it dequeued.
+- `model` is always `models.default`: diagnosing and fixing a merge-group
+  failure changes code.
+- `branch` is the entry's existing `branch` — **not** a new one. As with
+  review-feedback, merge-conflicts and abandoned-drafts, the branch and PR
+  already exist; the Implementor pushes to them. Carry the entry's `pr_url`,
+  `pr_number` and `base` into the work order too.
+
+**Never** treat "the PR is open" (exclusion 3) as a reason to skip a
+`dequeued` candidate, for the identical reason `merge_conflicts` is exempt:
+the open PR *is* the item.
+
 **Abandoned drafts.** The candidates are the pre-fetched `abandoned_drafts`
 entries, one per draft PR of ours that has stalled. Do not go looking for these
 yourself: the Script has already applied the rule that defines "abandoned" — open,
@@ -742,7 +817,7 @@ there is nothing to verify.
   behaviour change, which is exactly what the trivial tier is for. Say so in
   `model_reason` — that classification is also what makes the Implementor grade
   the finished diff `low` by definition, without deliberating over it.
-- **No `branch`**, as for every source but the three finishing ones and
+- **No `branch`**, as for every source but the four finishing ones and
   human-visibility (below): the Script derives and creates the claim branch
   (`agent/<ref>`) itself. Nothing exists yet here — this is a *starting*
   source, not a finishing one, so it is subject to back-pressure like any
@@ -787,7 +862,8 @@ treat it as register editing. It has no `blob_sha`.
 The ordinary claim rule applies unchanged to both register-hygiene and
 human-visibility. An open PR referencing the ref is a claim under exclusion 3,
 exactly as for any other source — there is no carve-out to make, because
-unlike review-feedback, merge-conflicts and abandoned-drafts the open PR here
+unlike review-feedback, merge-conflicts, dequeued and abandoned-drafts the
+open PR here
 is a *repair of* the item, not the item itself.
 
 **Tech-debt candidates.** The candidates are the pre-fetched `tech_debt`
@@ -897,10 +973,10 @@ referencing that review; match `R-NN` refs against it. When you select one,
    blocked items" below) before applying this exclusion. Or recorded as void —
    an `item-void` event with no later `unvoided` event (see "Void items").
    For `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-   `register_hygiene`, `human_visibility` and `tech_debt` entries this whole
+   `dequeued`, `register_hygiene`, `human_visibility` and `tech_debt` entries this whole
    exclusion is already applied deterministically, like exclusion 3 below — a
    blocked or void entry never reaches the pre-fetched array at all, so there
-   is nothing here for you to check for any of those seven sources. `issues`
+   is nothing here for you to check for any of those eight sources. `issues`
    gets the same
    treatment for its void half — a void issue never reaches the array either —
    but only the stale half of its blocked one: an issue blocked with no fresh
@@ -922,7 +998,7 @@ referencing that review; match `R-NN` refs against it. When you select one,
    doesn't isn't. (The Script's own atomic claim is the hard gate; this
    exclusion just saves you proposing work that will lose the race.)
    For every pre-fetched source's array — `issues`, `findings`, `tech_debt`,
-   `register_hygiene` and the three finishing sources — the Script has
+   `register_hygiene` and the four finishing sources — the Script has
    already applied this half deterministically: a candidate whose `ref` a
    peer holds never reaches you at all, so what remains yours here is only
    the sources you derive yourself (project-review, failed-runs,
@@ -931,17 +1007,20 @@ referencing that review; match `R-NN` refs against it. When you select one,
    already saw claimed without attempting the claim, logging the skip as a
    selection defect rather than a race.
    **This exclusion does not apply to the `review-feedback`, `merge-conflicts`,
-   or `abandoned-drafts` sources**, where the open PR is the item itself (see
-   "Review feedback", "Merge conflicts", and "Abandoned drafts"). For
+   `dequeued`, or `abandoned-drafts` sources**, where the open PR is the item
+   itself (see "Review feedback", "Merge conflicts", "Dequeued pull requests",
+   and "Abandoned drafts"). For
    `abandoned-drafts` the Script has already checked the draft is stale and ours,
-   and for `merge-conflicts` that the PR is ours and conflicting, so an open PR of
+   for `merge-conflicts` that the PR is ours and conflicting, and for `dequeued`
+   that the PR is ours and was removed from the merge queue over a checks
+   failure, so an open PR of
    ours is a candidate there, not a claim to skip. A *peer's* claim on that same
    PR is a different matter and does apply — but you will not find one to check:
-   the Script has already dropped any of these three sources' own candidates
+   the Script has already dropped any of these four sources' own candidates
    whose PR a peer holds under a different round or head ref before it ever
    reached you (issue #238's `pr_number` filter — see "What you receive"
    above). Do not re-derive this yourself by comparing `review_feedback`,
-   `merge_conflicts` or `abandoned_drafts` candidates against `claimed` — it is
+   `merge_conflicts`, `dequeued` or `abandoned_drafts` candidates against `claimed` — it is
    already done, and the one time a Co-Ordinator tried to do it by eye it
    reasoned past a peer's claim because the item ref legitimately didn't match.
    For a security/code-quality finding, "already claimed"
@@ -1069,22 +1148,23 @@ blocker still holds.
 This applies to GitHub issues only: they're the one source whose items both
 carry an `updated_at` you already have (from the `issues` array) and keep
 the same item id however much the thread moves. The PR-derived sources
-(`review-feedback`, `merge-conflicts`, `abandoned-drafts`) need no such rule —
-their refs are scoped to the review round or the head SHA, so a new review or
-a new commit arrives as a *new* item that no block covers. It does not
+(`review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`) need no
+such rule — their refs are scoped to the review round or the head SHA, so a
+new review or a new commit arrives as a *new* item that no block covers. It
+does not
 replace the Enabler's own periodic re-check of long-blocked items — an issue
 this check finds still blocked is exactly the item the Enabler goes on to
 re-examine later; this is only the cheap, same-cycle path for evidence that
 just landed.
 
 **Void items.** You are never handed a list of previously-voided items — there
-is no `void` array in your input, for any source. For the eight pre-fetched
+is no `void` array in your input, for any source. For the nine pre-fetched
 bands (`findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-`register_hygiene`, `human_visibility`, `issues`, `tech_debt`) that is because
+`dequeued`, `register_hygiene`, `human_visibility`, `issues`, `tech_debt`) that is because
 the Script has already dropped every void entry before the array ever reaches
 you, the same deterministic pass that drops a stale blocked one (see "What you
 receive" above): **you will never encounter a void candidate in any of those
-eight arrays**, so there is nothing to check and nothing missing by not having
+nine arrays**, so there is nothing to check and nothing missing by not having
 a list. For the three sources you still derive yourself — `project-review`,
 `failed-runs`, `implementation-plan` — there was never a pre-fetched array for
 the Script to filter, so there is likewise no list of their past voids for you
@@ -1272,7 +1352,7 @@ A source's policy binds only what `refinement_policy` says about that source;
 it says nothing about whether the Refiner will ever actually reach an
 unrefined item there (its own engagement only gathers candidates from the
 sources the Script pre-fetches as structured data — `issues`, `security`,
-`code-quality`, `review-feedback`, `merge-conflicts`, `abandoned-drafts`,
+`code-quality`, `review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts`,
 `register-hygiene`). A `"required"` policy on `tech-debt`, `project-review` or
 `implementation-plan` is honoured here exactly the same way, but nothing
 proactively refines those items yet — an installation setting one should know
@@ -1338,7 +1418,7 @@ logging it as a selection defect rather than a race.
 ```
 
 - `source` is one of `"security"`, `"review-feedback"`, `"merge-conflicts"`,
-  `"human-visibility"`, `"abandoned-drafts"`, `"failed-runs"`, `"tech-debt"`,
+  `"dequeued"`, `"human-visibility"`, `"abandoned-drafts"`, `"failed-runs"`, `"tech-debt"`,
   `"issues"`, `"implementation-plan"`, `"project-review"`, `"code-quality"`,
   or `"register-hygiene"` — the same
   tokens as the `sources` lists in the runtime input above, except that an
@@ -1358,6 +1438,12 @@ logging it as a selection defect rather than a race.
   `voided`. A never-nudged Dependabot entry (`bot: true`,
   `rebase_requested: false`, no `superseded_by`) never becomes a candidate
   either — skip it, it is not a void.
+- For a `dequeued` entry, `item` is its `ref`, `branch` is its existing
+  `branch`, and the work order must also carry `"pr_url"`, `"pr_number"` and
+  `"base"` from the entry — the Implementor diagnoses and fixes the
+  merge-group checks failure that got this PR dequeued and pushes to the
+  existing branch instead of opening one, then leaves it for a human to
+  re-queue.
 - For an `abandoned-drafts` entry, `item` is its `ref`, `branch` is its existing
   `branch`, and the work order must also carry `"pr_url"` and `"pr_number"` from
   the entry — the Implementor finishes that existing draft PR instead of opening
@@ -1393,8 +1479,8 @@ logging it as a selection defect rather than a race.
   branch itself, deterministically — `td/<ID>` for tech-debt (the very lock
   the human claiming workflow in TECH-DEBT.md takes, so agents and humans
   contend safely) and `agent/<item-ref>` for everything else — and injects
-  it into the work order once the claim succeeds. The three exceptions are
-  `review-feedback`, `merge-conflicts`, and `abandoned-drafts`, whose `branch` is
+  it into the work order once the claim succeeds. The four exceptions are
+  `review-feedback`, `merge-conflicts`, `dequeued`, and `abandoned-drafts`, whose `branch` is
   the PR's **existing** branch, carried from the entry — for those the PR already
   exists and there is no new branch to create.
 - For a `failed-runs` entry, `item` is `failed-run-` plus the workflow
@@ -1460,7 +1546,7 @@ log.
 The Script checks this mechanically before it accepts a `"selected": false`.
 Every item still sitting in a pre-fetched array — `findings`, `issues`,
 `review_feedback`, `merge_conflicts` (bar a never-nudged Dependabot entry),
-`abandoned_drafts`, `human_visibility`, `register_hygiene`, `tech_debt`, for
+`dequeued`, `abandoned_drafts`, `human_visibility`, `register_hygiene`, `tech_debt`, for
 every repo whose `sources` lists that band — must be answered by that message,
 either in `needs_refinement` under that band's own `source` or in `voided`.
 An item in neither contradicts the verdict, and the Script will say so and

@@ -220,6 +220,83 @@ retire the bot's PR.
   report `void`: there is nothing to take over. Since no PR of ours exists yet
   at that point, the "a void item should not have a PR" rule applies normally.
 
+### When `source` is `dequeued`
+
+Like `merge-conflicts`, this work order inverts the assumptions the rest of
+this prompt is written around, so read this before the Procedure. A pull
+request this system raised was otherwise ready to merge — a human clicked
+"Merge when ready" and GitHub enqueued it — but the **merge group's** own
+checks failed: the pull request's own head can be green while the speculative
+merge with whatever sat ahead of it in the queue was not, and GitHub removed
+it from the queue without merging. **The branch and the PR exist.** The work
+order carries `pr_url`, `pr_number` and `base` alongside the usual fields, and
+`branch` names the existing branch. Your job is narrow: find what actually
+failed in the merge group, fix it, and leave the pull request ready for a
+human to re-queue — you cannot re-queue it yourself.
+
+- **Do not open a pull request, and do not create a branch.** `git fetch
+  origin` and `git checkout` the work order's `branch` (it is on the remote
+  already) — after the "Merge-queue awareness" check above confirms it is not
+  currently queued (a human may have already re-queued it since the
+  Co-Ordinator selected this item). The PR is already the claim; it has been
+  there since the cycle that raised it.
+- **Find the merge-group failure, not the pull request's own.** `gh pr checks
+  <pr_number>` shows the ordinary checks against the PR's own head, which may
+  already be green — that is not what dequeued it. Look instead at the
+  workflow runs GitHub triggered for the `merge_group` event around the
+  work order's `dequeued_at`: `gh run list -R <repo> --event merge_group
+  --branch "gr-…"` (GitHub names a merge group's own ref `gh-readonly-queue/…`
+  or similar; list recent runs and match by timestamp if the branch name
+  does not filter cleanly) or the repository's Actions tab filtered the same
+  way, then `gh run view <run-id> --log-failed` on whichever one failed. That
+  log names the actual failure — a test order dependency, a resource
+  contention, a genuine incompatibility with a commit that landed ahead of
+  this one in the queue — which is what you are fixing, not a guess from the
+  PR's own green checks.
+- **Fix the cause, not the symptom.** Once you know what failed, treat it as
+  an ordinary bug in this pull request's own change: a flaky or order-dependent
+  test, a generated artefact that collides with what landed ahead of it, a
+  race the speculative merge exposed that the PR's own head never would have
+  hit alone. This is not licence to change the PR's scope — you are fixing
+  what made the merge group fail, not extending or redoing the work.
+- **You cannot re-queue it, by design.** D17: this system never enqueues a
+  pull request, only a human does ("Merge when ready"). Do not attempt one —
+  there is no `gh pr merge --auto` or equivalent call to make here. Once your
+  fix is pushed and verified, post one PR comment summarising what you found
+  and fixed, naming the failed `merge_group` run you diagnosed it from, and
+  saying plainly that it needs a fresh "Merge when ready" click — that comment
+  is the whole of what you can do to move this forward.
+- **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
+  fixing a merge-group failure does **not** complete the underlying work — the
+  item is done when the pull request *merges*, which is still the human's
+  click. So do **not** flip a tech-debt record to `resolved`, add a
+  `Closes #…`, or write a `CHANGELOG.md` entry here; those already happened
+  (or will happen) on the pull request's own terms. Touch only what fixing the
+  merge-group failure requires.
+- **Verify like CI does** (Procedure step 4). The repo's own
+  lint/typecheck/format/test/build passing is necessary but not sufficient —
+  it is exactly what already passed on this pull request's own head before it
+  was dequeued. Where you can reproduce the merge-group's speculative merge
+  locally (merge `base` into your branch, or replicate whatever the failed
+  run's log shows was combined), do so and confirm the fix holds under it;
+  where you cannot, say so in `notes` rather than claiming a confidence the
+  verification does not support.
+- **Leave the PR in the state you found it.** It was ready; it stays ready. Do
+  not draft it, do not merge it, do not approve it. The `status: "complete"`
+  you report means *the merge-group failure is diagnosed, fixed, pushed, and
+  your own verification is green* — not that the pull request is merged, or
+  even re-queued.
+- If you cannot identify what actually failed in the merge group — the
+  workflow run is unreadable, retention has expired, or the log implicates
+  something outside this pull request's own change (a genuinely flaky
+  upstream dependency, an infrastructure fault) — report `"status": "blocked"`
+  and say so in a PR comment, leaving the branch for a human rather than
+  guessing at a fix for a cause you never confirmed. If instead the pull
+  request has already merged, or `base` already contains its change, report
+  `void` with evidence: the PR already exists, so the "a void item should not
+  have a PR" rule below does not bind, and a human can close the stale PR if
+  one remains.
+
 ### When `source` is `abandoned-drafts`
 
 Like `review-feedback`, this work order inverts the assumptions the rest of this
@@ -288,11 +365,16 @@ click is simply undone.
 
 This matters only for the sources whose branch and pull request already
 exist before you start and whose pull request is not a draft —
-`review-feedback` and `merge-conflicts` below, each of which pushes to a
-pull request a human can already act on rather than one you have just
-opened yourself. (`abandoned-drafts` is exempt: its pull request is always
-a draft, and GitHub does not allow a draft to be queued.) Before any push
-to such a branch, check whether its pull request is currently queued:
+`review-feedback`, `merge-conflicts` and `dequeued` below, each of which
+pushes to a pull request a human can already act on rather than one you have
+just opened yourself. (`abandoned-drafts` is exempt: its pull request is
+always a draft, and GitHub does not allow a draft to be queued.) A `dequeued`
+work order's own pull request was, by definition, *not* queued the moment the
+Co-Ordinator selected it — but the gap between that moment and this push is
+real, and a human may have re-queued it since (most often by re-clicking
+"Merge when ready" on the strength of your own diagnosis comment, if you
+posted one before reaching a second push). Before any push to such a branch,
+check whether its pull request is currently queued:
 
 ```
 gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
@@ -309,7 +391,7 @@ dedicated query is the only way to ask.) If it prints `true`, the pull
 request is queued: make no push, and report `"status": "blocked"` naming the
 queue as `reason` and "the pull request leaves the queue (merges, or is
 dequeued)" as `unblock_condition` — a future cycle will see it as an ordinary
-`review-feedback`/`merge-conflicts` item again once it
+`review-feedback`/`merge-conflicts`/`dequeued` item again once it
 does. If the check itself fails (a scope error, a transient API failure),
 treat that the same as `true` — proceed only on a confirmed `false`, never on
 an unknown.
@@ -390,12 +472,12 @@ Both target repos follow these rules:
 ## Procedure
 
 *(Steps 1 and 2 do not apply when `source` is `review-feedback`,
-`merge-conflicts`, or `abandoned-drafts` — the branch and the PR already exist.
-Check out the work order's `branch` and go straight to step 3, following the
-matching "When `source` is …" section above. **Exception:** a `merge-conflicts`
-work order carrying `"takeover": true` names Dependabot's PR, not one of ours —
-steps 1 and 2 apply to it exactly as to any fresh item; see "Dependabot
-takeover" above.)*
+`merge-conflicts`, `dequeued`, or `abandoned-drafts` — the branch and the PR
+already exist. Check out the work order's `branch` and go straight to step 3,
+following the matching "When `source` is …" section above. **Exception:** a
+`merge-conflicts` work order carrying `"takeover": true` names Dependabot's
+PR, not one of ours — steps 1 and 2 apply to it exactly as to any fresh item;
+see "Dependabot takeover" above.)*
 
 1. **Branch.** The branch named in the work order **already exists on
    origin** — the Script created it at `default_branch`'s head as this
@@ -615,10 +697,10 @@ takeover" above.)*
    `git push --force-with-lease`, never a bare `--force`, same as every other
    force-push this system makes to a branch it does not exclusively hold.
    Leave the PR as a **draft** either way; flipping it to ready is the
-   Reviewer's job, not yours. (For `review-feedback` or `merge-conflicts`,
-   where this rebase pushes to a pull request that already existed before
-   you started: run the "Merge-queue awareness" check above first, same as
-   any other push to one of those branches — time has passed since you last
+   Reviewer's job, not yours. (For `review-feedback`, `merge-conflicts` or
+   `dequeued`, where this rebase pushes to a pull request that already existed
+   before you started: run the "Merge-queue awareness" check above first, same
+   as any other push to one of those branches — time has passed since you last
    checked, and the human may have enqueued it since.)
 
    *For `review-feedback`:* still rebase if `default_branch` has moved, but
@@ -635,6 +717,14 @@ takeover" above.)*
    this step is the ordinary case, not the exception above — verify it the same
    way any fresh item's PR is verified, and leave it a **draft** for the
    Reviewer, per "Dependabot takeover" above.
+
+   *For `dequeued`:* there is no rebase to run — `mergeable` was already
+   `MERGEABLE` when this item was selected (requirement 3z's own candidate
+   rule), and stays that way; what changed is your own branch, not the base.
+   This check simply confirms nothing regressed while you worked. Leave the PR
+   in the **ready** state it was already in, neither drafting, merging, nor
+   attempting to re-queue it — see "When `source` is `dequeued`" above for why
+   you cannot do that last one yourself.
 7. **Grade the complexity, and label the PR with it.** Now that the work is
    done, grade it `low`, `medium` or `high` — against what the diff touches,
    never against how difficult it felt. The misjudged change feels easy, and
@@ -660,8 +750,8 @@ takeover" above.)*
 
    (colours: `low` `C2E0C6`, `medium` `FBCA04`, `high` `D93F0B`). If the PR
    already carries a `complexity:*` label — the `review-feedback`,
-   `merge-conflicts` and `abandoned-drafts` sources, where the PR predates
-   you — you may **raise** it, never lower it: the grade describes the PR's
+   `merge-conflicts`, `dequeued` and `abandoned-drafts` sources, where the PR
+   predates you — you may **raise** it, never lower it: the grade describes the PR's
    whole content, not this round's effort, and rebasing a `high` PR is not
    `low` work. Labelling is best-effort: if it fails, say so in `notes` and
    carry on — the `complexity` field of your final message (below) is the
