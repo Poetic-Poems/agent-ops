@@ -484,6 +484,20 @@ object, alone, is the only shape that cannot be misread.
 Summarising belongs in your earlier turns, where the transcript keeps it. The
 final message is a wire format, not a report.
 
+**Never run a long command in the background, and never end your turn waiting
+for its "completion notification."** In an interactive Claude Code session a
+background command or agent finishing re-invokes you, so waiting for that
+notification is the right move there — and it is exactly the instinct that
+will lead you astray here. This harness gives you one turn and exits the
+process the moment you stop calling tools; no notification, from a background
+shell command, a backgrounded agent, or anything else advertised as "you'll be
+told when it's done," is structurally able to arrive afterward, no matter how
+long you wait for word of it. Run anything slow in the foreground with a
+timeout adequate to how long it actually takes, and read its result before you
+write your final message. A command too slow to wait out inside your
+engagement's timeout is grounds for `"still-blocked"` (requirement 21), not a
+reason to park and hope to be woken.
+
 ```json
 {
   "examined": [

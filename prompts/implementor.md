@@ -645,6 +645,20 @@ report it, name the pending check in `reason` and what would settle it in
 `unblock_condition`. Either of those is a real verdict the pipeline can act on.
 Prose is not.
 
+**Never run a long command in the background, and never end your turn waiting
+for its "completion notification."** In an interactive Claude Code session a
+background command or agent finishing re-invokes you, so waiting for that
+notification is the right move there — and it is exactly the instinct that
+will lead you astray here. This harness gives you one turn and exits the
+process the moment you stop calling tools; no notification, from a background
+shell command, a backgrounded agent, or anything else advertised as "you'll be
+told when it's done," is structurally able to arrive afterward, no matter how
+long you wait for word of it. Run the command in the foreground with a timeout
+adequate to how long it actually takes, and read its result before you write
+your final message. A command too slow to wait out inside your stage timeout
+is grounds for `"status": "blocked"` (requirement 21), not a reason to park
+and hope to be woken.
+
 On success:
 
 ```json
