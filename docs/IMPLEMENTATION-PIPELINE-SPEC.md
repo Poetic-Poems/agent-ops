@@ -4876,18 +4876,33 @@ runs unattended.
     log to `lib/review-gate.sh`'s `review_gate_unknown_streak_verdict`, which
     reuses `lib/crash-loop.sh`'s consecutive-run-resets-on-success shape
     (requirement 2.7) scoped to one node rather than the whole fleet — a peer's
-    successful read must never reset this node's own streak, and a
-    successful read of its own (a `dirty` verdict from either check, or the
-    non-blocking alerts `unknown`, all three prove the required-checks read
-    itself succeeded) does. Once this node's own run of consecutive
+    successful read must never reset this node's own streak, and a successful
+    read of its own does. Success here is `review_gate_verdict` exiting
+    anything but 2, its required-checks-read-failed signal (component 20),
+    never the printed word: a genuinely dirty alert outranks an unreadable
+    required-check list for the word and the handback, and reading the word
+    would let exactly that combination — the degraded-`gh` runs this streak
+    exists to catch are when the sub-checks disagree — falsely reset the
+    count. Once this node's own run of consecutive
     required-checks-unreadable events reaches three, the per-item `warning`
     above is replaced by one `review-gate-checks-degraded` event naming the
-    node, the gate and the streak's count — not filed as an issue, unlike
-    requirement 2.7's crash loop, since this is a pattern worth a human's
-    attention in the log, not (yet) worth paging one over — and echoed to
-    stderr so it is visible in `cron.log` as well as the union log. The
-    handback itself is unchanged either way: an unread required-check list
-    still refuses the handoff exactly like a genuinely failing one. A code-
+    node, the gate and the streak's count — one event per streak, not one
+    per item past the threshold: `review_gate_degraded_since` keys on the
+    run's own `first_ts` exactly as `crash_loop_escalated_since` dedups
+    requirement 2.7's issue, so further items degrading in an
+    already-escalated run log neither the warning nor a repeat (their
+    bookkeeping event and unchanged handback are their whole record), and a
+    new streak, after any successful read, escalates afresh. The streak is
+    read from this node's own cumulative log, so it spans cycles — this path
+    ends its cycle after the one item, so consecutive items are necessarily
+    consecutive cycles — and the escalation lands inline at the evaluation
+    that crosses the threshold, not at cycle end. It is not filed as an
+    issue, unlike requirement 2.7's crash loop, since this is a pattern
+    worth a human's attention in the log, not (yet) worth paging one over —
+    but it is echoed to stderr so it is visible in `cron.log` as well as the
+    union log. The handback itself is unchanged either way: an unread
+    required-check list still refuses the handoff exactly like a genuinely
+    failing one. A code-
     scanning read that could not be asked at all
     (no `security_events` permission on this token, code scanning not
     enabled, an unreachable API) is the *other* `unknown`, unrelated to the
@@ -4986,9 +5001,14 @@ runs unattended.
     `review-gate-checks-read`, `review-gate-checks-degraded`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
-    `ok: true|false`; `review-gate-checks-degraded` is the escalation
-    `review_gate_unknown_streak_verdict` triggers, carrying the verdict's own
-    `node`, `gate`, `count`, `first_ts` and `last_ts`. A `dependabot-rebase-requested` (requirement 3s)
+    `ok: true|false` — machine-read by the streak verdict, and kept out of
+    the dashboard's log tail (`scripts/publish-dashboard.sh`,
+    docs/DASHBOARD-SPEC.md) so a row with nothing to tell an
+    operator does not displace one that has; `review-gate-checks-degraded`
+    is the escalation `review_gate_unknown_streak_verdict` triggers, logged
+    once per streak, carrying the verdict's own
+    `node`, `gate`, `count`, `first_ts` and `last_ts` — `first_ts` doubling
+    as the dedup key `review_gate_degraded_since` matches the run by. A `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
     `warning` whose `detail` names the same repo and number instead, since
@@ -8109,10 +8129,16 @@ What exists, and the requirements each part answers to:
     diagnosis `gh` writes to stderr — which the call therefore captures rather
     than discards — and an unrecognised diagnosis is `unknown`, the
     conservative word, since both refuse the handoff. `review_gate_verdict`
-    propagates that distinction through its own exit status: 1 when the
-    verdict is `dirty`, or `unknown` because required checks could not be
-    read; 0 when the verdict is `clean`, or `unknown` only because the
-    security-alert read failed. A caller must inspect this exit status rather
+    propagates that distinction through its own exit status: 0 when the
+    verdict is `clean`, or `unknown` only because the security-alert read
+    failed; 1 when the verdict is `dirty` with the required-check list read;
+    2 whenever that list could not be read — whether the printed word is the
+    blocking `unknown`, or a `dirty` the alerts check won over it
+    (TD-PPagop-26081404): a real alert outranks an unreadable check list for
+    the word and the reason, but the word alone would then falsely certify
+    the required-checks read as having succeeded, so the read's own health
+    travels in the exit status independently of which sub-check won. A
+    caller must inspect this exit status rather
     than discard it, or it will silently let an unreadable required-check
     list through the same way it safely can for the alerts-only `unknown`.
     Keying on another tool's wording is a dependency, and `gh` is installed
@@ -8154,6 +8180,16 @@ What exists, and the requirements each part answers to:
     calling into it, because `crash_loop_verdict` counts fleet-wide — one run
     shared by every node — where a `gh` degraded on one node is a per-node
     fact a peer's success must never reset.
+
+    `review_gate_degraded_since FIRST_TS NODE`, its dedup companion, exits 0
+    when NODE's own `review-gate-checks-degraded` event for the run that
+    began at FIRST_TS is already in the stream — the same already-escalated
+    question `crash_loop_escalated_since` answers for requirement 2.7's
+    crash loop, but matched exactly on the run's own `first_ts` (the
+    escalation event is the verdict object itself) rather than on
+    detail-at-or-after, so the current streak escalates once however many
+    items it degrades through, while a new streak — its `first_ts` matching
+    no logged event — escalates afresh.
 
     Unit-tested (`test/review-gate.test.sh`); must pass `shellcheck`.
 21. `scripts/pickup-metrics.sh` — a read-only operator report, like
@@ -9267,19 +9303,32 @@ pull request, run the ones the change touches and any it could regress.
    second node's, and the second node's own count is its own, not the
    interleaved total; and a successful read (`{ok: true}`) resets a node's
    streak, seeding the next run at one rather than continuing the old one.
+   For `review_gate_degraded_since`, the run's own escalation is found by its
+   `first_ts`; a new run's `first_ts` matches nothing and escalates afresh;
+   another node's escalation never suppresses this node's own; and an empty
+   `first_ts` or stream answers not-escalated — a spurious repeat is the
+   right failure mode for an alarm, a silent swallow is not.
 
    What `agent-cycle.sh` then *does* with each verdict is asserted separately,
    by `test/review-gate-wiring.test.sh`, against the ready-gate block lifted
    verbatim from the script — every one of the four verdicts leaves the same
    word on stdout as at least one other, so the consequence is where they are
    actually distinguishable: `dirty` records the handback naming the fault and
-   ends the cycle; the blocking `unknown` ends it too but logs the node-level
+   ends the cycle, its bookkeeping event following `review_gate_verdict`'s
+   exit status rather than the word (`{ok: false}` on exit 2, the alerts
+   check outranking an unreadable required-check list, so that combination
+   cannot falsely reset the streak); the blocking `unknown` ends it too but
+   logs the node-level
    `warning` first and hands back the retry `unblock_condition` rather than
    the required-checks one — unless `review_gate_unknown_streak_verdict`
    (stubbed here, covered by its own test above) reports this node's streak
    has crossed the threshold, in which case the block logs one
    `review-gate-checks-degraded` event naming the count instead of the
-   per-item `warning`, while the handback is unchanged; the non-blocking
+   per-item `warning`, and only for a streak not already escalated
+   (`review_gate_degraded_since`, stubbed likewise): an already-escalated
+   run logs neither the repeat nor the warning, keeping the escalation one
+   event per streak, while the handback is unchanged throughout; the
+   non-blocking
    `unknown` and `clean` both carry on into the rest of the handoff, recording
    only the `review-gate-checks-read` bookkeeping event the streak verdict
    needs against the item. The last of those is what pins the exit status as
