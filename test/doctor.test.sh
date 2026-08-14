@@ -287,6 +287,51 @@ else
   assert_eq "and a fully-enforced ruleset does not fail doctor.sh" "0" "$rc"
 fi
 
+# --- Requirement 38's ruleset dependency (agent-ops#391) --------------------
+# `reviewDecision` never becomes `APPROVED` on a repository whose branch
+# ruleset requires zero approving reviews, however many humans approve — the
+# gap that cost agent-ops#391 a cross-repo investigation to find. The nudge
+# itself no longer depends on the field (`_handoff_pr_approved`, lib/
+# handoff.sh), but doctor.sh still reports each target repository's own
+# `required_approving_review_count` so the quirk is visible up front instead
+# of rediscovered. Runs over `base_config`'s own `$slug`, unlike the
+# closing-keyword block above, which resolves `self_repo` regardless of
+# config.
+noise_ruleset_38='{"id":1,"target":"tag","enforcement":"active"},{"id":2,"target":"branch","enforcement":"disabled"}'
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'
+assert_contains "a ruleset requiring 1 approving review reports it, ok" \
+  "[ ok ] $slug's default-branch ruleset requires 1 approving review(s) — reviewDecision reaches APPROVED normally" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}'
+assert_contains "a ruleset requiring 0 approving reviews is a warn naming agent-ops#391" \
+  "[warn] $slug's default-branch ruleset requires 0 approving reviews — reviewDecision never becomes APPROVED here" "$out"
+assert_contains "  ... explicitly not treated as a requirement 38 fault" \
+  "so this is informational, not a requirement 38 fault" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"closing-keyword"}]}}]}'
+assert_contains "an active default-branch ruleset with no pull_request rule is a skip" \
+  "[skip] $slug's default branch has no active ruleset requiring approving reviews" "$out"
+
+run_doctor STUB_RULESETS_JSON="[$noise_ruleset_38]"
+assert_contains "no active ruleset targets the default branch at all is the same skip" \
+  "[skip] $slug's default branch has no active ruleset requiring approving reviews" "$out"
+
+run_doctor STUB_RULESETS_FAIL=1
+assert_contains "the rulesets endpoint being unreachable is its own skip" \
+  "[skip] $slug's default-branch ruleset — repos/$slug/rulesets is not reachable with this token" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}'
+assert_eq "and requiring 0 approving reviews is a warn, not a failure" "0" "$rc"
+
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'

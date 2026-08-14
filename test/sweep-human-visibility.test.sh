@@ -685,12 +685,19 @@ assert_eq "idle_hours 0 disables the nudge only" "human-review-requested" \
 write_config warwickallen 24
 
 # --- Failures are warnings, never a silent "nothing to do" ----------------------
+# An unreadable `/reviews` breaks two independent reads on the same pull
+# request — `ensure_human_reviewer`'s candidate check (lib/handoff.sh) and
+# the idle nudge's own approval check (`_handoff_pr_approved`, derived from
+# the same endpoint rather than `reviewDecision`, agent-ops#391) — so both
+# warn, rather than one masking the other.
 reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf '/reviews' > "$tmp_dir/api-fail"
 out="$(run_sweep)"
-assert_eq "an unreadable reviews list is a warning" "warning" "$(jq -r '.action' <<<"$out")"
-assert_contains "  ... naming the pull request" "$URL" "$(jq -r '.pr_url' <<<"$out")"
+assert_eq "an unreadable reviews list warns on every check that reads it" \
+  "$(printf 'warning\nwarning')" "$(jq -r '.action' <<<"$out" | sort)"
+assert_eq "  ... both naming the pull request" "$(printf '%s\n%s' "$URL" "$URL")" \
+  "$(jq -r '.pr_url' <<<"$out" | sort)"
 
 reset_stub
 printf x > "$tmp_dir/list-fail"

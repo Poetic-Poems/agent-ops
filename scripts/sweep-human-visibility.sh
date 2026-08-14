@@ -376,13 +376,24 @@ $mq_marker"
     esac
   fi
 
-  # The idle nudge stands on its own facts, read below: `reviewDecision ==
-  # APPROVED` is what keeps it off a CHANGES_REQUESTED pull request — that
-  # state has its own actor (the Implementor, answering the review) and its
-  # own clock, not this one's.
+  # The idle nudge stands on its own facts, read below: being approved — not
+  # `CHANGES_REQUESTED` — is what keeps it off a pull request whose round the
+  # Implementor still has to answer; that state has its own actor and its
+  # own clock, not this one's. Approval is derived from the reviews list
+  # itself (`_handoff_pr_approved`, lib/handoff.sh) rather than read off
+  # `reviewDecision`: that field never becomes `APPROVED` on a repository
+  # whose branch ruleset requires zero approving reviews — this one's own —
+  # however many humans approve (agent-ops#391), so a gate on the field
+  # directly could never fire here.
   awk -v h="$idle_hours" 'BEGIN{exit !(h>0)}' || continue
 
-  [[ "$review_decision" == "APPROVED" ]] || continue
+  if [[ -z "$mq_number" ]]; then
+    warn "$pr_url" "could not parse the pull request's owner/repo/number from its URL — skipping the idle-nudge check"
+    continue
+  fi
+  approved="$(_handoff_pr_approved "$mq_owner/$mq_repo" "$mq_number")" \
+    || { warn "$pr_url" "could not read the pull request's reviews — skipping the idle-nudge check"; continue; }
+  [[ "$approved" == "true" ]] || continue
   [[ "$(jq -r '.mergeable // ""' <<<"$pr_json")" == "MERGEABLE" ]] || continue
   # Currently queued: the human has already clicked merge, and a queued pull
   # request reads APPROVED/MERGEABLE/green exactly like one nobody has acted
