@@ -7395,9 +7395,10 @@ runs unattended.
       `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
       for it would have to decide.
 
-    Every other reader of PR merge state in this repository is already safe
-    against a queued pull request, by construction of its own candidate
-    rule, and needs no code change:
+    Every other reader of PR merge state in this repository is safe against a
+    queued pull request without further code change — most by construction
+    of its own candidate rule, one only because of a GitHub platform
+    guarantee that holds conditionally rather than always:
 
     - `scripts/gather-merge-conflicts.sh` (requirements 3g, 3s) selects only
       `mergeable == "CONFLICTING"`; a queued pull request is mergeable by
@@ -7420,10 +7421,29 @@ runs unattended.
     - `lib/handoff.sh` (requirements 31, 31a, 31b, 32, 32a, 38a) reads only
       `isDraft` and `reviewDecision`, never a merge-state field, and pushes
       nothing itself.
+    - `scripts/gather-review-feedback.sh` (requirement 3c) is the one
+      exception, and it is conditional, not built-in: its candidate rule
+      reads `reviewDecision == CHANGES_REQUESTED` directly, with no
+      merge-state field in the query at all, so nothing in the script itself
+      excludes a queued pull request. Whether GitHub can even let one reach
+      the queue depends on a per-repo branch-protection setting outside this
+      script's control: where the repo requires an approving review before
+      merge, GitHub refuses to queue a pull request a human has left
+      `CHANGES_REQUESTED` on, so this gatherer is safe there for the same
+      platform reason as `gather-merge-conflicts.sh` above, just not written
+      into its own query; where the repo does not require one,
+      `CHANGES_REQUESTED` never blocked enqueueing, and this gatherer lists
+      a queued, still-`CHANGES_REQUESTED` pull request as an ordinary
+      `review-feedback` candidate.
     - `prompts/coordinator.md` never reads GitHub live; every field above
-      reaches it only through the pre-fetched candidate arrays, none of
-      whose rules can select a queued pull request, for the reasons already
-      given for each one's own gatherer.
+      reaches it only through the pre-fetched candidate arrays. Every
+      candidate rule but `review-feedback`'s excludes a queued pull request
+      outright; `review-feedback`'s excludes one only where the repo
+      requires an approving review before merge, and otherwise depends
+      entirely on the push-time probe below rather than on anything the
+      Co-Ordinator itself can see — which is why that probe, not the
+      Co-Ordinator's candidate rules, is the thing this system actually
+      relies on to keep a queued pull request safe.
 
     The Implementor and Reviewer prompts are the two places outside this
     script that push to a pull request's branch, and each checks queue

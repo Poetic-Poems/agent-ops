@@ -98,11 +98,15 @@ gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
 
 If it prints `true`, or the check itself fails, make no push: report
 `"status": "blocked"` naming the queue as `reason` (see "Ending") rather than
-guessing. A queued pull request is the human's, mid-transaction — the same
-`CHANGES_REQUESTED` state that made it reviewable in the first place would
-have to clear first for it to reach the queue at all, so this is a narrow
-race, not the common case, but a push here is exactly the kind of silent,
-unrecoverable action worth one extra read to avoid.
+guessing. A queued pull request is the human's, mid-transaction. Where the
+repo's branch protection requires an approving review before merge, the same
+`CHANGES_REQUESTED` state that made this pull request reviewable would have
+had to clear first for it to reach the queue at all, so finding one still
+queued here is a narrow race. Where the repo does not require one,
+`CHANGES_REQUESTED` never blocked enqueueing, and a queued, still-
+`CHANGES_REQUESTED` pull request is an ordinary case rather than a race.
+Either way, a push here is exactly the kind of silent, unrecoverable action
+this probe exists to catch before it happens.
 
 ## Long-running commands
 

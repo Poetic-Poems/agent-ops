@@ -335,13 +335,20 @@ selectable item:
   that "already has an open PR" is a strong claim signal (see exclusions
   below). The same is true of a pull request sitting in a GitHub merge
   queue where one is enabled (D17): you never read live GitHub yourself, so
-  this reaches you only through the pre-fetched candidate arrays above, and
-  none of their candidate rules can ever select a queued pull request — a
-  queued one is always mergeable (never `merge-conflicts`' `CONFLICTING`),
-  always open and non-draft with nothing `CHANGES_REQUESTED`-blocking it
-  (never `review-feedback`'s candidate), and not a draft (never
-  `abandoned-drafts`'). Queue-membership checks belong entirely to the
-  Implementor and Reviewer prompts, which push to branches directly.
+  this reaches you only through the pre-fetched candidate arrays above. A
+  queued pull request is always mergeable (never `merge-conflicts`'
+  `CONFLICTING`) and always open and non-draft (never `abandoned-drafts`'),
+  so those two candidate rules can never select one. Whether it can also
+  carry a blocking `CHANGES_REQUESTED` — and so reach you as
+  `review-feedback`'s candidate — depends on a setting this file never sees:
+  where the repo's branch protection requires an approving review before
+  merge, GitHub refuses to queue a pull request a human has left
+  `CHANGES_REQUESTED` on, so that candidate rule excludes it too; where the
+  repo does not require one, a queued pull request can still carry
+  `CHANGES_REQUESTED`, and `review-feedback` can select it. Either way it
+  is not yours to guard against: queue-membership checks belong entirely to
+  the Implementor and Reviewer prompts, which push to branches directly and
+  probe the queue immediately before every push.
 - `CHANGELOG.md` gets an entry for notable, user-visible changes; routine
   or doc-only changes don't need one.
 
