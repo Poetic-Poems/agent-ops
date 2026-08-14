@@ -467,14 +467,20 @@ void_finishing_item_shape() {
 #     makes 34k *close pull request `<n>`*, with a comment. That is a
 #     destructive, human-visible act on someone's live branch, and closing one
 #     on an unexamined claim is precisely how pull request #264 and its human
-#     `CHANGES_REQUESTED` round were lost (TD-PPagop-26080901). So only one
-#     open-PR reading is accepted: an **empty diff against its base** —
-#     whatever this item was to finish is already in the base, so closing the
-#     PR discards nothing. An open pull request that still changes files is
-#     refused and escalated, even when the void's claim ("obsolete", "no
-#     longer wanted") may well be true: that claim is a judgement no API call
-#     can corroborate, and a human is the right one to make it
-#     (TD-PPagop-26081308 records what that costs requirement 34k).
+#     `CHANGES_REQUESTED` round were lost (TD-PPagop-26080901). So an open PR
+#     is read two ways, either of which corroborates: an **empty diff against
+#     its base** — whatever this item was to finish is already in the base, so
+#     closing the PR discards nothing — or the pull request already carrying
+#     the human-applied **`obsolete` label**, checked live off the same
+#     fetch that read `state`, before the `/files` call below is ever made
+#     (TD-PPagop-26081308). That label is the deliberate, corroborable "no
+#     longer wanted" signal a diff can never be: no pipeline stage may ever
+#     apply it (lib/labels.sh's catalogue comment, prompts/implementor.md's
+#     prohibition) — a stage that could would be corroborating its own
+#     judgement. An open pull request with neither an empty diff nor the
+#     label is refused and escalated: that claim is a judgement no API call
+#     can corroborate on its own, and a human is the right one to make it,
+#     either by resolving the item honestly or by applying the label.
 #   - `pr-<n>-conflict-…` — a corroborated void of this shape closes *nothing*
 #     (requirement 34k excludes it, TD-PPagop-26080901: the void says the
 #     **conflict** resolved, not the pull request, which stays a live PR of
@@ -568,6 +574,18 @@ void_finishing_pr_reason() {
         "$num" "$slug" "$item"
       return 1
     fi
+    return 0
+  fi
+
+  # The human-applied `obsolete` label corroborates an `-abandoned-`/
+  # `-review-` shape outright — read live off `pr_json`, the fetch already
+  # made above, before the `/files` call below ever runs, so a labelled draft
+  # never pays for a diff nobody needs read. No pipeline stage may ever apply
+  # this label (lib/labels.sh, prompts/implementor.md), so its presence here
+  # is always a human's own judgement, never the guard corroborating itself.
+  if [[ "$shape" == "abandoned" || "$shape" == "review" ]] \
+    && jq -e '[(.labels // [])[].name // "" | ascii_downcase] | index("obsolete") != null' \
+         <<<"$pr_json" >/dev/null 2>&1; then
     return 0
   fi
 

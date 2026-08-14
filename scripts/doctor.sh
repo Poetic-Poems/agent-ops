@@ -170,11 +170,24 @@ else
 fi
 
 # `blocked` excludes an issue from the issues source, so projecting it onto an
-# item would leave that item permanently unselectable — the one value these
-# label keys must never take.
-for key in enabler_escalation_label needs_refinement_label unvoid_label; do
+# item would leave that item permanently unselectable — a value no issue-side
+# label key may take.
+for key in enabler_escalation_label needs_refinement_label refined_label unvoid_label; do
   if [[ "$(cfg ".$key")" == "blocked" ]]; then
     fail "$key is \"blocked\", which excludes an issue from the issues source — an item carrying it could never be selected again"
+  fi
+done
+
+# `obsolete` is the other reserved name: lib/void-guard.sh reads it as a
+# human's own corroboration for closing a still-open, still-diff-carrying
+# draft pull request (requirement 34k), so a configured label carrying that
+# name would have a pipeline stage apply the corroboration itself — pr_label
+# alone is projected onto every draft the Implementor raises. Case-insensitive,
+# as the guard reads labels.
+for key in pr_label review.pr_label enabler_escalation_label needs_refinement_label refined_label unvoid_label; do
+  label_name="$(cfg ".$key // \"\"")"
+  if [[ "${label_name,,}" == "obsolete" ]]; then
+    fail "$key is \"$label_name\" — the obsolete label is a human's own corroboration for closing a draft pull request (requirement 34k), and a stage projecting it as a configured label would corroborate the pipeline's own voids"
   fi
 done
 

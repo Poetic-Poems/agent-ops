@@ -15,7 +15,13 @@
 # (`void-object-closed`, logged by the caller from this script's output, is
 # how a later cycle knows not to re-check an item this already settled, even
 # if a human reopens the object directly rather than through the
-# `unvoid_label` this pipeline actually watches).
+# `unvoid_label` this pipeline actually watches). When a pull request being
+# closed this way already carries the human-applied `obsolete` label — the
+# corroboration lib/void-guard.sh's `void_finishing_pr_reason` accepts in
+# place of an empty diff for the `-abandoned-`/`-review-` shapes
+# (TD-PPagop-26081308) — the close comment names it, re-checked live here
+# rather than trusted from the void's own claim, so the close is auditable
+# from the comment alone.
 #
 # Only the two id shapes that name a GitHub object at all (`lib/work-gone.sh`'s
 # own definitions, reused rather than re-derived — requirement 34a):
@@ -108,13 +114,17 @@ deferred=0
 
 warn() { jq -nc --arg i "$1" --arg d "$2" '{action: "warning", item: $i, detail: $d}'; }
 
-close_comment() {  # close_comment REASON EVIDENCE
-  local reason="$1" evidence="$2"
+close_comment() {  # close_comment REASON EVIDENCE OBSOLETE_LABELLED
+  local reason="$1" evidence="$2" obsolete_labelled="${3:-false}"
   printf '%s\n\n' "$(pipeline_comment_header script "$node_name")"
   printf 'This pipeline recorded this as void — there is no work here, because:\n\n'
   printf '%s\n' "$reason"
   if [[ -n "$evidence" && "$evidence" != "$reason" ]]; then
     printf '\n%s\n' "$evidence"
+  fi
+  if [[ "$obsolete_labelled" == "true" ]]; then
+    # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+    printf '\nThis pull request also carries the human-applied `obsolete` label — the mark that lets the pipeline close a draft even while it still changes files (TD-PPagop-26081308).\n'
   fi
   printf '\nClosing it so it stops being re-derived void by every cycle that reaches it.\n\n'
   printf '%s' "$(pipeline_comment_marker "$cycle_id" script)"
@@ -193,11 +203,19 @@ while IFS=$'\t' read -r item detail evidence stage; do
       warn "$item" "could not extract a pull request number from this item id"
       continue
     fi
-    state="$("$GH" api "repos/$slug/pulls/$n" --jq '.state' 2>/dev/null)" || state=""
-    if [[ -z "$state" ]]; then
+    # One fetch answers both `state` and whether the pull request already
+    # carries the human-applied `obsolete` label — named in the close comment
+    # below when present, so it must be read live rather than trusted from
+    # the void's own `evidence` text.
+    pr_json="$("$GH" api "repos/$slug/pulls/$n" 2>/dev/null)" || pr_json=""
+    if [[ -z "$pr_json" ]]; then
       warn "$item" "could not read pull request #$n — leaving it alone"
       continue
     fi
+    state="$(jq -r '.state // ""' <<<"$pr_json" 2>/dev/null || true)"
+    obsolete_labelled="$(jq -r \
+      '[(.labels // [])[].name // "" | ascii_downcase] | index("obsolete") != null' \
+      <<<"$pr_json" 2>/dev/null || echo false)"
     if [[ "$state" != "open" ]]; then
       jq -nc --arg i "$item" --argjson n "$n" \
         '{action: "closed", item: $i, kind: "pull-request", number: $n, closed_by: "already"}'
@@ -205,7 +223,7 @@ while IFS=$'\t' read -r item detail evidence stage; do
       continue
     fi
     if "$GH" pr close "$n" -R "$slug" \
-        --comment "$(close_comment "$detail" "$evidence")" >/dev/null 2>&1; then
+        --comment "$(close_comment "$detail" "$evidence" "$obsolete_labelled")" >/dev/null 2>&1; then
       jq -nc --arg i "$item" --argjson n "$n" \
         '{action: "closed", item: $i, kind: "pull-request", number: $n, closed_by: "sweep"}'
       actions=$(( actions + 1 ))

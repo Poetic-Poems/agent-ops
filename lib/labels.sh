@@ -42,6 +42,12 @@
 # is applied only by a human, and is read by scripts/gather-issues.sh as an
 # exclusion. Creating it is how an installation gets the control at all — a
 # repository without the label offers the human no way to say "not this one".
+# `obsolete` is the same kind of exception, for the same reason: it is not
+# configurable, and no pipeline stage may ever apply it — lib/void-guard.sh's
+# `void_finishing_pr_reason` reads it as a human's own corroboration that a
+# still-open, still-diff-carrying `pr-<n>-abandoned-…`/`pr-<n>-review-…` draft
+# is genuinely unwanted, and a stage that could apply the label itself could
+# corroborate its own judgement with it (TD-PPagop-26081308).
 
 # labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE
 # Print the labels a repository in ROLE needs, one per line, as
@@ -75,6 +81,8 @@ labels_catalogue() {
                "Apply to ask the pipeline to reconsider an item it voided"),
          entry("blocked"; "d93f0b";
                "Apply to keep the pipeline from selecting this issue"),
+         entry("obsolete"; "cfd3d7";
+               "Apply to a still-open, still-diff-carrying draft pull request the pipeline raised to say it is no longer wanted; no pipeline stage ever applies this"),
          entry("complexity:low"; "c2e0c6";
                "Graded by the Implementor; picks the Reviewer tier"),
          entry("complexity:medium"; "fef2c0";

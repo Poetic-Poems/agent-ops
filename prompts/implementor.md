@@ -620,6 +620,15 @@ takeover" above.)*
    time nothing in the diff needs, and a flattering `low` sends a subtle
    change to a review pitched beneath it.
 
+**Never apply the `obsolete` label to any pull request, including your own.**
+It is the human-applied corroboration `lib/void-guard.sh` reads to accept a
+still-open, still-diff-carrying `pr-<n>-abandoned-…`/`pr-<n>-review-…` draft
+as void despite its diff (requirement 34d) — a stage that could apply it
+itself would be corroborating its own judgement, exactly what requirement
+34d's guard exists to stop. If a pull request of yours is genuinely no longer
+wanted, say so as `void` (with evidence) or `blocked` per "Ending" below, and
+leave the label for a human to apply.
+
 ## Ending
 
 Your final message must be **exactly one JSON object and nothing else** —

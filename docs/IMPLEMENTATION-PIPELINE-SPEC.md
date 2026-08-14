@@ -605,17 +605,17 @@ and the schema must carry every one of them.
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
 | `refinement_after_coordinator_cycles` | *(`enabler_after_coordinator_cycles`)* | The same threshold, applied instead of `enabler_after_coordinator_cycles` when the block's `kind` is `needs-refinement` (requirement 35a). Unset, it inherits `enabler_after_coordinator_cycles`'s value, which is what keeps the two classes aging identically until fleet behaviour justifies pulling them apart. |
 | `enabler_recheck_hours` | `72` | How long after an examination the Enabler may examine the same item again (requirement 35a). Requirement 18a catches most of the failure mode `TECH-DEBT.md` TD26072101 recorded — a GitHub issue gaining evidence after it was blocked — same-cycle, off the issue's own `updated_at`; this bound is the lever for everything that leaves no such signal: every non-issue blocked source, and a blocker that clears without a comment landing on the issue. `0` disables re-examination. |
-| `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. |
+| `enabler_escalation_label` | `enabler-escalation` | Applied to every issue the Enabler raises, for the human's filter and for the duplicate guard of requirement 36a. It must not be `blocked`: that label is an exclusion criterion for the `issues` source (requirement 16.4) and would double-count with the assignment. Nor `obsolete`: that name is the human-only corroboration requirement 34k closes a draft pull request on, and no configured label may carry it — `scripts/doctor.sh` fails a config that does. |
 | `needs_refinement_label` | `needs-refinement` | The label the Script projects onto an issue-type item while its refinement block is open (requirement 34e), and removes when the block clears. Also the label a human applies by hand to flag an item themselves, which the Script scans every repo's issues for and records as the same kind of block (requirement 34g) — removing it while that block is open clears it the same way. Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still...[continued below](#extended-notes-needs_refinement_label) |
 | `refinement_max_per_engagement` | `3` | How many refinement-class items one Enabler engagement takes on (requirement 35d); ordinary blocked items are uncapped and are never displaced by them. The cap exists because the backlog of items silently skipped before requirement 16a existed is unbounded, and an engagement spent entirely on old vagueness would delay the pull request nobody can see. `0` removes the class from engagements entirely — blocks are still recorded, and the items wait. |
 | `refiner_model` | `claude-haiku-4-5-20251001` | The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage. |
 | `refined_label` | `refined` | The label the Script projects onto an issue-type item once the Refiner records it `refined` (requirement 39c). One-way and never read back — unlike `needs_refinement_label`'s hand-flag path, there is no hand-applied form of this label: the shared log is the sole record of whether an item is refined, exactly as requirement 34e already establishes for the negative marker. Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays — so a policy set for `project-review`...[continued below](#extended-notes-refinement_policy) |
-| `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. |
+| `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
-| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. |
+| `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
 | `candidates_max` | `3` | How many ranked candidates the Co-Ordinator returns; the Script claims down the list (requirement 17a), so alternates turn a lost race into the next-best item instead of a wasted cycle. |
@@ -708,7 +708,7 @@ Also the label a human applies by hand to flag an item themselves, which the Scr
 
 Empty disables both directions: the log is the record, so the mechanism is unaffected and the item still reaches the Enabler, but there is nothing to scan for and a human's label does nothing.
 
-It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`.
+It must not be `blocked` — that label is an exclusion criterion for the `issues` source (requirement 16.4), so projecting it would make the item unselectable even after the refinement landed, the same trap noted against `enabler_escalation_label`. Nor `obsolete`, for the reason given there too.
 
 ### Extended notes: `refined_label`
 
@@ -716,7 +716,7 @@ The label the Script projects onto an issue-type item once the Refiner records i
 
 Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still reads it (requirement 3h).
 
-It must not be `blocked`, for the reason given against `enabler_escalation_label`.
+It must not be `blocked` nor `obsolete`, for the reasons given against `enabler_escalation_label`.
 
 ### Extended notes: `refinement_policy`
 
@@ -3176,13 +3176,22 @@ runs unattended.
    the Script ensures every label this system applies exists in the selected
    repository, creating only those that are absent: `pr_label`,
    `enabler_escalation_label`, `needs_refinement_label`, `unvoid_label`,
-   `complexity:low|medium|high`, and `blocked` — the last being the human's own
-   exclusion control (requirement 16.4), which a repository without the label
-   does not offer them at all. `review-cycle.sh` does the same for
+   `complexity:low|medium|high`, `blocked` and `obsolete` — the last two being
+   human-only controls no pipeline stage ever applies itself: `blocked`
+   excludes an issue from selection (requirement 16.4), and `obsolete`
+   corroborates closing a still-open, still-diff-carrying `pr-<n>-abandoned-…`/
+   `pr-<n>-review-…` draft (requirements 34d, 34k; TD-PPagop-26081308) — a
+   repository without either label does not offer the human either control at
+   all. `review-cycle.sh` does the same for
    `review.pr_label` in each repository it is about to review, and
    `create_escalation_issue` for `enabler_escalation_label` in the repository
    an escalation is filed in, which is often one no cycle otherwise touches.
    A label whose configured name is empty is switched off and is not created.
+   And no configurable label may carry a reserved *name*: `scripts/doctor.sh`
+   fails a config that sets any label key to `obsolete`, or an issue-side key
+   to `blocked`, because a stage projecting a configured label under a
+   reserved name would apply the human-only control itself — requirement 34k's
+   corroboration, in `pr_label`'s case, onto every draft the pipeline raises.
 
    Three properties are load-bearing. It **only ever creates**: an existing
    label keeps whatever colour and description it has, because operators
@@ -5201,16 +5210,26 @@ runs unattended.
       requirement 34k then does with the void**:
 
       - `pr-<n>-abandoned-…` and `pr-<n>-review-…` — a corroborated void of
-        these makes 34k *close pull request `<n>`*, with a comment. So the
-        only `open` reading accepted is an **empty diff against its base**:
-        whatever the item was to finish is already on the base, and closing
-        the PR discards nothing. An open pull request that still changes
-        files is refused, naming the file count still outstanding — even
-        when the void's claim ("obsolete", "no longer wanted") may well be
-        true, because that claim is a judgement no API call can corroborate
-        and closing a live branch on an unexamined one is exactly how pull
-        request #264 was lost (TD-PPagop-26080901). Such a void is escalated
-        instead of recorded; TD-PPagop-26081308 records what that costs 34k.
+        these makes 34k *close pull request `<n>`*, with a comment. So an
+        `open` reading is accepted in either of two cases: an **empty diff
+        against its base** — whatever the item was to finish is already on
+        the base, and closing the PR discards nothing — or the pull request
+        already carrying the human-applied **`obsolete` label**, checked live
+        off the same fetch that read `state`, before the `/files` diff count
+        is ever read (TD-PPagop-26081308). That label is the deliberate,
+        corroborable "no longer wanted" signal a diff can never be — restoring
+        the capability an empty-diff-only reading could not reach, a draft
+        that still changes files but is simply unwanted — and no pipeline
+        stage may ever apply it itself (`lib/labels.sh`'s catalogue comment,
+        `prompts/implementor.md`'s explicit prohibition): a stage that could
+        would be corroborating its own judgement, exactly what this
+        requirement exists to stop. An open pull request with neither an
+        empty diff nor the label is refused, naming the file count still
+        outstanding — that claim is a judgement no API call can corroborate on
+        its own say-so, and closing a live branch on an unexamined one is
+        exactly how pull request #264 was lost (TD-PPagop-26080901). Such a
+        void is escalated instead of recorded, to a human who can either
+        resolve the item honestly or apply the label.
       - `pr-<n>-conflict-…` — a corroborated void of this shape closes
         **nothing** (34k excludes it, for the same #264 reason: the void says
         the *conflict* resolved, not the pull request, which stays a live PR
@@ -5761,18 +5780,32 @@ runs unattended.
     **Which obsolete pull requests this can actually reach.** The close above
     fires on a *corroborated* void, and requirement 34d corroborates the two
     closing shapes strictly for this reason: a `pr-<n>-abandoned-…` or
-    `pr-<n>-review-…` void whose pull request is still open and still changes
-    files against its base is refused, so an open draft that is obsolete
-    rather than already-landed never reaches this close at all. It is
-    escalated to a human instead — the Enabler adjudicates through the same
-    guard, refuses it for the same reason, and raises the issue. That is the
-    deliberate trade #264 bought: "this draft is no longer wanted" is a
-    judgement no API call corroborates, and a pipeline that closes live
-    branches on an uncorroborated judgement destroys work. It does narrow the
-    leading example above — the obsolete draft that stayed open — to the
-    cases the API can confirm: the pull request already closed, or its diff
-    already empty against the base. TD-PPagop-26081308 records the gap and
-    what closing it would take.
+    `pr-<n>-review-…` void whose pull request is still open, still changes
+    files against its base, and does not carry the human-applied `obsolete`
+    label is refused, so an open draft that is obsolete rather than
+    already-landed reaches this close only once a human has said so. Absent
+    the label, it is escalated to a human instead — the Enabler adjudicates
+    through the same guard, refuses it for the same reason, and raises the
+    issue. That is the deliberate trade #264 bought: "this draft is no longer
+    wanted" is a judgement no API call corroborates on its own, and a
+    pipeline that closes live branches on an uncorroborated judgement
+    destroys work. The `obsolete` label (TD-PPagop-26081308) is the
+    corroborable form of that judgement — applied only by a human, never by a
+    pipeline stage — so the leading example above, the obsolete draft that
+    stayed open, is reachable by this close once the human who knows it is
+    unwanted says so on the pull request itself, alongside the cases the API
+    can confirm outright: the pull request already closed, or its diff
+    already empty against the base. The close comment names the label whenever
+    the closed pull request carries it (`scripts/close-void-github-items.sh`)
+    — its presence re-checked live, presence being all the sweep can know —
+    so the action stays auditable from the comment alone. And because the
+    prohibition on a stage applying the label is only as strong as the names
+    the config may take, `scripts/doctor.sh` fails a config that gives any
+    configurable label key the name `obsolete`, case-insensitively as the
+    guard reads it: `pr_label` alone is projected onto every draft the
+    Implementor raises, so one configured name would hand this close every
+    live draft at once — the same key-level guard the issue-side label keys
+    already carry against `blocked`.
 
     Every other void shape — a tech-debt register id, a project-review ref,
     an implementation-plan task id — names something that is not a GitHub
@@ -7710,7 +7743,10 @@ What exists, and the requirements each part answers to:
     itself cannot state — each holds *between* two keys — shared the same
     way, so `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can
     never drift on either. `doctor.sh` is the operator's command: it runs the
-    schema check, then those two cross-key rules, then the combinations that
+    schema check, then those two cross-key rules, then the reserved label
+    names — `blocked` on an issue-side label key, `obsolete` on any label key
+    at all, each a `fail` for the reasons requirements 16.4 and 34k give
+    those names — then the combinations that
     work but would silently surprise an operator later (a `warn`, not a
     `fail`: the stage timeouts outrunning `lock_stale_after`, `review.pr_label`
     colliding with `pr_label`, and the rest), then the model ids through
@@ -7919,9 +7955,14 @@ What exists, and the requirements each part answers to:
     nothing about closing — and left untouched exactly like any other id
     shape; its sibling `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304)
     carries no such exclusion and closes through the ordinary `pr-<n>-…`
-    branch. Capped at three actions per call, the overflow reported rather
-    than silent. `SWEEP_GH` stubs `gh` for tests. Unit-tested
-    (`test/close-void-github-items.test.sh`); must pass `shellcheck`.
+    branch. When the pull request being closed carries the human-applied
+    `obsolete` label — re-checked live off the same fetch that reads its
+    `state`, never trusted from the void's own claim — the close comment
+    names it (TD-PPagop-26081308), so the close is auditable from the
+    comment alone. Capped at three actions per call, the
+    overflow reported rather than silent. `SWEEP_GH` stubs `gh` for tests.
+    Unit-tested (`test/close-void-github-items.test.sh`); must pass
+    `shellcheck`.
 20. `lib/review-gate.sh` implementing requirement 31c: given a pull request
     URL and the repository's default branch, `review_gate_verdict` prints
     `clean`, `dirty<TAB>reason` or `unknown<TAB>reason` — every required
@@ -8963,7 +9004,13 @@ pull request, run the ones the change touches and any it could regress.
    unreadable. For the two closing shapes (`-abandoned-`, `-review-`, and any
    id of no recognised shape), an open PR with an empty diff against its base
    is allowed and one with a non-empty diff is refused, naming the file count
-   still outstanding. For `-conflict-`, an open PR is allowed whatever its
+   still outstanding — *unless* the PR carries the human-applied `obsolete`
+   label, which allows it outright, with the file count never even fetched;
+   assert this for both `-abandoned-` and `-review-`, that an id of no
+   recognised shape gets no such reading (the strict diff test only), and that
+   a labelled `-conflict-`/`-superseded-` PR is unaffected — the label
+   corroborates only the two shapes 34k closes on the diff claim. For
+   `-conflict-`, an open PR is allowed whatever its
    diff unless `mergeable` is `false`, so assert all three readings of that
    field: `true` allowed, `null` allowed (not yet computed is not
    definitively conflicting), `false` refused naming the conflict rather than
@@ -9210,8 +9257,13 @@ pull request, run the ones the change touches and any it could regress.
    `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304) carries no such
    exclusion and closes through the ordinary pull-request branch, so assert
    it *does* make the `gh` call and is reported `closed`; a void carrying no
-   reason still reaches the comment with its evidence intact; and the
-   per-call action cap defers rather than floods.
+   reason still reaches the comment with its evidence intact; a pull request
+   carrying the human-applied `obsolete` label is closed with a comment that
+   names the label (TD-PPagop-26081308), its presence re-checked live
+   off the same fetch that reads its `state` rather than trusted from the
+   void's own claim, while one without the label gets the ordinary comment
+   with no such mention; and the per-call action cap defers rather than
+   floods.
    `test/cycle-state.test.sh`'s `void_object_closed_items` section passes:
    once a `void-object-closed` event exists for an item, it is excluded from
    every later pass — asserted by driving the same item through the extract
@@ -9648,7 +9700,9 @@ pull request, run the ones the change touches and any it could regress.
     (requirement 6a).** `test/labels.test.sh` passes against a stubbed `gh`
     that records every invocation and refuses a duplicate the way GitHub
     does: an empty repository receives every label of its role and each is
-    reported created; a second pass over the same repository reports nothing;
+    reported created, `obsolete` included alongside `blocked` as one of the
+    two non-configurable, human-only labels the target role always carries;
+    a second pass over the same repository reports nothing;
     a partly-labelled one receives only what it lacks; a name differing only
     in case counts as present, since GitHub's uniqueness is case-insensitive;
     a label switched off by an empty configured name is not created; a
@@ -10059,12 +10113,15 @@ requirements above, which state only what is.
   free-text match but no longer takes the citation on faith.
   What that fetch demands is deliberately not uniform: it is calibrated to what
   requirement 34k does with the void it corroborates. The two shapes whose void
-  *closes* the pull request (`-abandoned-`, `-review-`) must show an empty diff
-  or a closed PR, because closing a live branch on an uncorroborated "no longer
-  wanted" is what cost pull request #264; the shape whose void closes nothing
-  (`-conflict-`) is read against mergeability instead, because for it an empty
-  diff is not the claim being made and demanding one would refuse every honest
-  void the merge-conflicts source can write. Refusing is still the guard's
+  *closes* the pull request (`-abandoned-`, `-review-`) must show a closed PR,
+  an empty diff, or the human-applied `obsolete` label (TD-PPagop-26081308) —
+  the corroboration a human can give that a still-diff-carrying draft is
+  unwanted, which no API call can — because closing a live branch on an
+  uncorroborated "no longer wanted" is what cost pull request #264; the shape
+  whose void closes nothing (`-conflict-`) is read against mergeability
+  instead, because for it an empty diff is not the claim being made and
+  demanding one would refuse every honest void the merge-conflicts source can
+  write. Refusing is still the guard's
   preferred direction of failure — but only where a wrong acceptance is
   destructive, which is exactly where the strict reading now sits.
 - **A register that lies about itself is repaired by the pipeline, and prevented
