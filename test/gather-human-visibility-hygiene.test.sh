@@ -357,11 +357,12 @@ if [[ "$problems_block" != *'source: "human-visibility"'* ]]; then
   printf 'FAIL - could not extract the final problems build from scripts/gather-human-visibility-hygiene.sh (moved or reworded?)\n'
   failures=$(( failures + 1 ))
 fi
-run_problems_block() {  # run_problems_block <problems-json>
-  # ref/url/body are consumed only by the eval'd problems_block, unseen by
-  # static analysis.
+run_problems_block() {  # run_problems_block <problems-json> [body-json]
+  # ref/url/body_json are consumed only by the eval'd problems_block, unseen
+  # by static analysis.
   # shellcheck disable=SC2034
-  ( problems="$1" ref="human-visibility-abc123" url="https://github.com/o/a/pulls" body="the digest"
+  ( problems="$1" ref="human-visibility-abc123" url="https://github.com/o/a/pulls"
+    body_json="${2-\"the digest\"}"
     eval "$problems_block" )
 }
 big_problems="$(jq -nc '[range(1300) | ("HUMAN VISIBILITY  o/a: pad " + ("x" * 100))]')"
@@ -374,6 +375,20 @@ assert_eq "  ... carrying every one of the 1300 problem lines" \
   "1300" "$(jq '.[0].problems | length' <<<"$built_candidate")"
 assert_eq "  ... with the source and ref intact" "human-visibility human-visibility-abc123" \
   "$(jq -r '.[0] | "\(.source) \(.ref)"' <<<"$built_candidate")"
+
+# $body is rendered from the same $survivors set as $problems and is the
+# larger of the two, so it has to travel on stdin as well: an `--arg body`
+# here would have left the cap exactly where it was, one flag over.
+oversized_hv_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized hygiene-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_hv_body} > 131072 ))"
+built_candidate="$(run_problems_block '[]' "$(printf '"%s"' "$oversized_hv_body")")"
+assert_eq "a rendered body past the argv cap still produces the candidate" "1" \
+  "$(jq 'length' <<<"$built_candidate")"
+# Compared in bash, not with `jq --arg`: an --arg carrying the oversized
+# string would hit the very cap this section exists to prove is gone.
+assert_eq "  ... carrying the whole oversized body, not a truncation" "1" \
+  "$([[ "$(jq -r '.[0].body' <<<"$built_candidate")" == "$oversized_hv_body" ]] && echo 1 || echo 0)"
 
 echo
 if (( failures == 0 )); then

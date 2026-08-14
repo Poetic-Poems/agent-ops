@@ -3199,16 +3199,31 @@ runs unattended.
    `test/issues-prefetch.test.sh`, `test/gather-human-visibility-hygiene.test.sh`,
    `test/gather-unvoid-requests.test.sh`), `refiner_candidate_items`
    (`test/refiner-eligibility.test.sh`), and the Dependabot-conflict nudge's
-   own accumulator (`test/nudge-dependabot-rebase.test.sh`). No fleet-state
-   aggregate anywhere in this pipeline still reaches `jq` in argv — except two
-   sites outside either item's enumeration, both filed rather than fixed here:
-   `lib/handoff.sh`'s `handoff_answer_events`, which still takes a repo's
-   whole reviews/comments arrays as `--argjson` (TD-PPagop-26081501), and
-   `agent-cycle.sh`'s own invocation of
+   own accumulator (`test/nudge-dependabot-rebase.test.sh`).
+
+   **The cap is per argv element, not per flag.** `--arg` is bound by
+   `MAX_ARG_STRLEN` exactly as `--argjson` is, so a rendered string counts
+   against this requirement wherever it grows with fleet state. Two sites
+   carry one: `scripts/gather-review-feedback.sh` assembles every fresh review
+   and inline comment into one body, and
+   `scripts/gather-human-visibility-hygiene.sh` renders its survivor set into
+   a digest. Both keep that value JSON-encoded and hand it to their candidate
+   build on stdin beside the arrays it came from — an `--arg` there would put
+   the same bytes back into a single argv element and leave the threshold
+   where it was. Their tests drive each build with a body past the cap.
+
+   Three sites outside either item's enumeration still deliver a fleet-state
+   aggregate in argv, and are filed rather than fixed: `lib/handoff.sh`'s
+   `handoff_answer_events`, which takes a repo's whole reviews/comments arrays
+   as `--argjson` (TD-PPagop-26081501); `agent-cycle.sh`'s own invocation of
    `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
    whole `$violations` argument as a single argv element to the script's own
-   `execve`, a cap this requirement's `jq`-specific framing had not
-   considered until TD-PPagop-26081406 found it (TD-PPagop-26081502).
+   `execve`, a cap this requirement's `jq`-specific framing had not considered
+   until TD-PPagop-26081406 found it (TD-PPagop-26081502); and the gatherers
+   and Publisher builds TD-PPagop-26081503 enumerates — `gather-findings.sh`,
+   `gather-source-state.sh`, `gather-register-hygiene.sh` and
+   `publish-dashboard.sh`. Those three items are the outstanding residue; this
+   requirement claims no more than the sites named above.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is

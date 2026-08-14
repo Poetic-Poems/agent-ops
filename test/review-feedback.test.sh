@@ -498,7 +498,7 @@ extract_block() {  # extract_block <start-literal> <end-literal>
 }
 
 # shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
-body_block="$(extract_block '  body="$(jq -rn' '"$fresh_comments")"')"
+body_block="$(extract_block '  body_json="$(jq -cn' 'body_json='"'"'""'"'"'')"
 # shellcheck disable=SC2016  # literal source text, not meant to expand
 if [[ "$body_block" != *'input as $fr | input as $fc'* ]]; then
   printf 'FAIL - could not extract the review-body assembly from scripts/gather-review-feedback.sh (moved or reworded?)\n'
@@ -513,7 +513,9 @@ run_body_block() {  # run_body_block <fresh-json> <fresh_comments-json>
   # fresh and fresh_comments are consumed only by the eval'd body_block,
   # invisible to shellcheck.
   # shellcheck disable=SC2034
-  ( fresh="$1" fresh_comments="$2"; eval "$body_block"; printf '%s' "$body" )
+  # stderr silenced: the assembly is deliberately loud on unparseable input,
+  # which is the direction we want in production and noise in a test.
+  ( fresh="$1" fresh_comments="$2"; eval "$body_block" 2>/dev/null; printf '%s' "$body_json" )
 }
 # Bash-side JSON assembly, not jq --arg: an --arg carrying the oversized
 # string would hit the very argv cap this section exists to prove the real
@@ -522,6 +524,50 @@ fresh_oversized="$(printf '[{"state": "CHANGES_REQUESTED", "who": "Warwick-Allen
 built_body="$(run_body_block "$fresh_oversized" '[]')"
 assert_eq "a fresh-reviews array past the argv cap still assembles the body" "1" \
   "$([[ "$built_body" == *"$oversized_review_body"* ]] && echo 1 || echo 0)"
+# The assembly stays JSON-encoded rather than raw, because its only consumer
+# is the candidate build and it has to reach it on stdin: this string is the
+# concatenation of the two arrays just taken out of argv, so handing it on as
+# an `--arg body` would put every one of those bytes back into a single argv
+# element and leave the cap exactly where it was.
+assert_eq "  ... and hands it on JSON-encoded, ready for stdin" "1" \
+  "$(jq -e 'type == "string"' <<<"$built_body" >/dev/null 2>&1 && echo 1 || echo 0)"
+# A failed assembly still yields a document the candidate build can bind, so
+# a PR whose review text cannot be rendered keeps its candidate with an empty
+# body rather than being dropped from the band.
+assert_eq "an unparseable reviews array still yields a bindable empty body" '""' \
+  "$(run_body_block 'not json' '[]')"
+
+# The candidate build: $pr and the assembled body both arrive on stdin now.
+# Driven with a body past the cap, which as an `--arg body` died at execve and
+# took the candidate with it.
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+cand_block="$(extract_block '  cand="$(jq -nc' '"$body_json")" || {')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$cand_block" != *'input as $pr | input as $body'* ]]; then
+  printf 'FAIL - could not extract the candidate build from scripts/gather-review-feedback.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_cand_block() {  # run_cand_block <pr-json> <body-json>
+  # every one of these is consumed only by the eval'd cand_block, invisible
+  # to shellcheck.
+  # shellcheck disable=SC2034
+  ( pr="$1" body_json="$2" number="400" review_id="7" item="" head_sha="abc123"
+    reviewed_at="2026-08-01T00:05:00Z" slug="o/r"
+    eval "${cand_block%|| \{}"; printf '%s' "$cand" )
+}
+oversized_body_json="$(printf '"%s"' "$oversized_review_body")"
+assert_eq "the oversized assembled-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_body_json} > 131072 ))"
+built_cand="$(run_cand_block \
+  '{"number":400,"url":"https://github.com/o/r/pull/400","title":"t","headRefName":"agent/x"}' \
+  "$oversized_body_json")"
+assert_eq "an assembled review body past the argv cap still produces the candidate" \
+  "pr-400-review-7" "$(jq -r '.ref' <<<"$built_cand")"
+# Compared in bash, not with `jq --arg b`: an --arg carrying the oversized
+# string would hit the very cap this section exists to prove the real code no
+# longer does — the same trap the body assembly above sidesteps.
+assert_eq "  ... carrying the whole oversized body, not a truncation" "1" \
+  "$([[ "$(jq -r '.body' <<<"$built_cand")" == "$oversized_review_body" ]] && echo 1 || echo 0)"
 
 # The per-candidate array append: $out (the whole review_feedback band
 # collected so far) and $cand both arrive on stdin now, not argv — pinned

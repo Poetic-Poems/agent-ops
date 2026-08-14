@@ -357,20 +357,32 @@ while IFS= read -r pr; do
   # PR, verbatim — genuinely unbounded, not merely growing (requirement 4g,
   # TD-PPagop-26081406). Delivered on stdin, bound positionally with `input
   # as $name` in the order printed.
-  body="$(jq -rn 'input as $fr | input as $fc |
+  #
+  # The result stays JSON-encoded (no `-r`) rather than becoming a raw string,
+  # because the only consumer is the candidate build below and it must receive
+  # it on stdin too: this assembly is the concatenation of the very arrays
+  # just taken out of argv, so an `--arg body` there would put every one of
+  # those bytes straight back into a single argv element and leave the
+  # MAX_ARG_STRLEN threshold exactly where it was. An empty result — the
+  # assembly itself having failed — becomes the empty JSON string, so a
+  # candidate with no readable review text is still emitted, as it was before
+  # requirement 4g reached this site, rather than being dropped.
+  body_json="$(jq -cn 'input as $fr | input as $fc |
     ([$fr[] | "── review (\(.state)) by \(.who) at \(.at)\n\(.body)"] +
      [$fc[] | "── inline comment by \(.who) on \(.path):\(.line // "?") at \(.at)\n\(.body)"])
     | join("\n\n")' <<<"$fresh"$'\n'"$fresh_comments")"
+  [[ -n "$body_json" ]] || body_json='""'
 
-  # $pr is the whole pull-request object, including its body — unbounded past
-  # this call (requirement 4g, TD-PPagop-26081406). Delivered on stdin.
+  # $pr is the whole pull-request object, including its body, and $body_json
+  # the assembled review text — both unbounded past this call (requirement 4g,
+  # TD-PPagop-26081406). Delivered on stdin, bound positionally with `input as
+  # $name` in the order printed.
   cand="$(jq -nc \
     --arg ref "pr-${number}-review-${review_id}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
     --arg reviewed_at "$reviewed_at" \
-    --arg body "$body" \
-    'input as $pr | {source: "review-feedback",
+    'input as $pr | input as $body | {source: "review-feedback",
       ref: $ref,
       number: $pr.number,
       pr_number: $pr.number,
@@ -381,7 +393,7 @@ while IFS= read -r pr; do
       item: (if $item == "" then null else $item end),
       head_sha: $head_sha,
       reviewed_at: $reviewed_at,
-      body: $body}' <<<"$pr")" || {
+      body: $body}' <<<"$pr"$'\n'"$body_json")" || {
     echo "gather-review-feedback: $slug pr-${number}-review-${review_id}: candidate assembly failed; skipped" >&2
     continue
   }
