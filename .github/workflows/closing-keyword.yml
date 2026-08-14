@@ -23,6 +23,7 @@ name: Closing keyword check
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
 
 permissions:
   contents: read
@@ -31,6 +32,12 @@ jobs:
   closing-keyword:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    # A merge-group candidate carries no pull request body to check, and
+    # nothing here changes between the pull_request run that already
+    # validated it and the queue picking it up, so this reports skipped
+    # rather than re-running with nothing to check — a skipped conclusion
+    # still satisfies a required status check.
+    if: github.event_name == 'pull_request'
     steps:
       - uses: actions/checkout@v7
       - name: Check closing keyword

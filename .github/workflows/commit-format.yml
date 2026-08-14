@@ -22,6 +22,7 @@ name: Commit message format
 on:
   pull_request:
     types: [opened, edited, reopened, synchronize]
+  merge_group:
 
 permissions:
   contents: read
@@ -29,6 +30,12 @@ permissions:
 jobs:
   commit-format:
     runs-on: ubuntu-latest
+    # A merge-group candidate carries no pull request event data to check
+    # (title, individual commits) and nothing here changes between the
+    # pull_request run that already validated it and the queue picking it
+    # up, so this reports skipped rather than re-running with nothing to
+    # check — a skipped conclusion still satisfies a required status check.
+    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v7
