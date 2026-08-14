@@ -720,7 +720,7 @@ It must not be `blocked` nor `obsolete`, for the reasons given against `enabler_
 
 ### Extended notes: `refinement_policy`
 
-Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`) and only for a repo whose `sources` lists the source and whose policy for it is not itself `exempt`.
+Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only for a repo whose `sources` lists the source and whose policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -2259,8 +2259,9 @@ runs unattended.
    runs, so a raw list for it to apply that same judgement to by eye no
    longer has a use the eight pre-fetched bands need — and the three sources
    the Co-Ordinator still derives itself (`project-review`, `failed-runs`,
-   `implementation-plan`) never had a pre-fetched array for the Script to
-   check a list against in the first place, so withholding the list changes
+   `implementation-plan`) carry no array in `coordinator_input` for the Script
+   to check a list against in the first place (requirement 3y's arrays for two
+   of them reach the Refiner only), so withholding the list changes
    nothing structural for them either: the Co-Ordinator's own live evidence,
    read while evaluating each candidate ("Voiding an item yourself"), was
    always how those three get voided, list or no list. The Co-Ordinator may
@@ -2338,11 +2339,13 @@ runs unattended.
      overrides (security, urgent issues, review-feedback, merge-conflicts,
      abandoned-drafts) ahead of the residual bands (human-visibility, high
      issues, tech-debt, medium issues, low issues, code-quality,
-     register-hygiene) — restricted to the bands the
-     Script has a pre-fetched array for; `failed-runs`, `implementation-plan`
-     and `project-review` have none and are skipped rather than approximated
-     (each would need a live `gh` read or a tree fetch the Co-Ordinator
-     performs for itself, which this mechanical path does not). It is an
+     register-hygiene) — restricted to the bands `ordered_repos_json` itself
+     carries an array for; `failed-runs`, `implementation-plan` and
+     `project-review` have none there and are skipped rather than
+     approximated (each would need a live `gh` read or a tree fetch the
+     Co-Ordinator performs for itself, which this mechanical path does not —
+     and requirement 3y's arrays for the latter two are the Refiner's alone,
+     deliberately not a selection input). It is an
      approximation in one further respect, which costs at most a
      less-preferred pick on a path that exists to pick *something*: the walk
      is band-major across the whole fleet rather than the Co-Ordinator's
@@ -2593,6 +2596,47 @@ runs unattended.
    `needs-refinement` label and one Enabler engagement per discussion issue,
    once (requirement 34e refuses a re-report of an already-blocked item); the
    alternative was a band nobody could check.
+
+3y. **Refiner-only pre-fetch: `project-review` and `implementation-plan`.**
+   These two sources have no array in `ordered_repos_json` and gain none: the
+   Co-Ordinator reads the latest `reviews/project-review-YYYY-MM-DD/` folder
+   and the repo's plan document live while it evaluates each candidate
+   (requirement 15, `prompts/coordinator.md`), and that live read is the
+   authority for selection. What requirement 39a's candidate set needs is a
+   *different* thing — a structured array it can name an item out of — so the
+   Script builds one for the Refiner alone: `refiner_repos_json`, a copy of
+   `ordered_repos_json` in which a repo entry may additionally carry
+   `project_review` and `implementation_plan`. Nothing else reads that copy,
+   and `ordered_repos_json` itself is passed on untouched, so the Co-Ordinator
+   cannot be handed a stale array in place of its own live read.
+
+   Each array is filled by its own gatherer — `scripts/gather-project-review.sh`
+   and `scripts/gather-implementation-plan.sh` (Components) — called for a repo
+   only where the read can be acted on: the repo's own `sources` lists that
+   source **and** its `refinement_policy` (requirement 39a) is not `exempt`,
+   since an exempt source's candidates would be discarded unread; and for
+   `implementation-plan`, only where `implementation_plan_path` is configured
+   (requirement 3k), the same value the startup guard already requires. A repo
+   meeting neither condition costs no API call, the rule requirement 3t's own
+   pre-fetch follows for its `sources` gate.
+
+   Both gatherers are deliberately **narrower** than requirement 3t's: they
+   deduplicate against nothing, check for no existing pull request, and apply
+   none of requirement 15's exclusions, because none of that is theirs to
+   decide — the Co-Ordinator's live read still makes every selection judgement,
+   and requirement 39a's own clauses 2–4 (policy, already-refined, blocked/
+   void/claimed) reduce the candidate set. What they must carry is what the
+   Refiner cannot write a specification without: a recommendation's own detail
+   section and its ready-to-run improvement prompt, a plan task's whole
+   task-list line.
+
+   Each item's `ref` is the one the rest of the pipeline already knows it by,
+   so a block filed against a refined item resolves through the readers that
+   already exist: `review-YYYY-MM-DD-R-NN` for a recommendation
+   (`WORK_GONE_REVIEW_RE`, requirement 34i's `scripts/gather-review-status.sh`)
+   and the plan task's own id for a task (`WORK_GONE_PLAN_RE`,
+   `scripts/gather-plan-status.sh`). Minting a ref of any other shape would
+   produce items nothing downstream could ever clear.
 
 3b. **No-op short-circuit (cost control).** The Co-Ordinator costs the same to
    say "nothing to do" as it does to select work. On a quiet week that is 24
@@ -6949,12 +6993,16 @@ runs unattended.
     1. it appears in this cycle's pre-fetched source arrays — `findings`
        (`security`/`code-quality`), `review_feedback`, `abandoned_drafts`,
        `merge_conflicts`, `register_hygiene`, `issues`, `tech_debt`
-       (requirement 3) — the same arrays the Co-Ordinator reads, keyed the
-       same way (`source`, `ref`). `project-review` and `implementation-plan`
-       items are never candidates, whatever their policy says: this clause's
-       list is the whole of what `refiner_candidate_items` reads, and neither
-       is in it — the Script pre-fetches neither as structured data, so there
-       is nothing to offer the Refiner either way;
+       (requirement 3), the same arrays the Co-Ordinator reads, keyed the
+       same way (`source`, `ref`), plus `project_review` and
+       `implementation_plan`, keyed the same way again but carried only by
+       the **Refiner-only** copy of the repos array `agent-cycle.sh` builds
+       for this call (`refiner_repos_json`, requirement 3y). Those last two
+       are never folded into `ordered_repos_json`: the Co-Ordinator goes on
+       reading `reviews/…` and the plan document live, so the Script has one
+       reader for them and the model has another, and neither constrains the
+       other. `failed-runs` is the one source with no array at all and so the
+       one source no policy can make a candidate of;
     2. its source's `refinement_policy` (config) is not `"exempt"` — the
        default for a source the object does not name, and the correct default
        for a source whose items already carry their own specification (a
@@ -6980,11 +7028,10 @@ runs unattended.
     refined item ahead of an equivalent unrefined one without excluding
     either; `"exempt"` leaves selection unaffected. The Refiner's own
     candidate gathering above is what actually produces a `refined` item for
-    a `"required"` or `"preferred"` source to benefit from — setting either
-    policy on a source this paragraph's clause 1 excludes shapes the
-    Co-Ordinator's ranking but starves it of anything to rank favourably,
-    which is exactly what `tech-debt/TD-PPagop-26081307.md` records as
-    follow-up work.
+    a `"required"` or `"preferred"` source to benefit from — so setting
+    either policy on `failed-runs`, the one source clause 1 excludes, shapes
+    the Co-Ordinator's ranking but starves it of anything to rank
+    favourably.
 
 39b. **Claims and the engagement cap.** Before claiming, the candidate set is
     reduced to at most `refiner_max_per_engagement` items, sorted by
@@ -7144,9 +7191,10 @@ What exists, and the requirements each part answers to:
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
    pre-fetch, requirement 3a; the switches, requirements 2.3 and 2.3a; the
-   role guard, requirement 2.4; the no-op short-circuit, requirement 3b; and
-   the implementation-plan path passthrough and its startup validation,
-   requirement 3k) and the Enabler's engagement, requirements 35–37:
+   role guard, requirement 2.4; the no-op short-circuit, requirement 3b; the
+   implementation-plan path passthrough and its startup validation,
+   requirement 3k; and the Refiner-only pre-fetch and its `refiner_repos_json`
+   copy, requirement 3y) and the Enabler's engagement, requirements 35–37:
    `maybe_run_enabler` (the single call site in the cleanup, every guard, and
    the per-verdict actions), `enabler_claim_key` and `create_escalation_issue`.
 3. `scripts/gather-findings.sh` implementing requirement 3a: given a repo
@@ -7315,6 +7363,34 @@ What exists, and the requirements each part answers to:
    repo's claim/blocked/void state is in hand, so there is one definition of
    each exclusion rather than one per gatherer. Its shape is
    regression-tested in `test/gather-tech-debt.test.sh`; must pass
+   `shellcheck`.
+3y. `scripts/gather-project-review.sh` implementing requirement 3y's
+   project-review half: given a repo slug and default branch, reads the
+   latest `reviews/project-review-YYYY-MM-DD/` folder — the only one ever
+   live — and prints the JSON array of that review's recommendations, one per
+   `## R-NN` section of `03-recommendations.md`, each carrying
+   `review-<date>-R-NN` as `ref`, its `id`, `review_date`, `title`, `url`,
+   the section verbatim as `body`, and the fenced prompt body for the same id
+   from `04-improvement-prompts.md` as `improvement_prompt`; sorted by
+   recommendation number ascending, the review's own priority order. A repo
+   with no `reviews/` tree, no dated folder in it, or no `03-recommendations.md`
+   prints `[]` silently; an API failure prints `[]` with `gh`'s diagnosis on
+   stderr. Fails safe to `[]` (exit 0). Its shape is regression-tested in
+   `test/gather-project-review.test.sh`; must pass `shellcheck`.
+3y. `scripts/gather-implementation-plan.sh` implementing requirement 3y's
+   implementation-plan half: given a repo slug, default branch and
+   `implementation_plan_path`, prints the JSON array of the document's open
+   tasks — every task-list line whose checkbox is empty (`- [ ]`, `* [ ]`,
+   `1. [ ]`) and whose leading `id:` token matches `WORK_GONE_PLAN_RE`
+   (`lib/work-gone.sh`, sourced rather than restated so an id this mints is
+   always one `scripts/gather-plan-status.sh` can later resolve a block
+   against) — each carrying that id as `ref`/`id`, the text after the colon as
+   `title`, `url`, and the whole line verbatim as `body`; in document order,
+   the plan's own sequence. A done task needs no forward specification and is
+   skipped, as is a line whose leading token is not that shape. A missing or
+   unreadable document prints `[]` silently; an API failure prints `[]` with
+   `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Its shape is
+   regression-tested in `test/gather-implementation-plan.test.sh`; must pass
    `shellcheck`.
 3q. `lib/dependency-gate.sh` implementing requirement 34j: `dependency_refs`,
    which parses every `Blocked-by:` reference out of a body of text into a
@@ -9519,9 +9595,23 @@ pull request, run the ones the change touches and any it could regress.
     absent from `refinement_policy` is treated as exempt; a `tech_debt` entry
     is a candidate under the same rule as every other pre-fetched source, so a
     `refinement_policy["tech-debt"]` of `"required"` or `"preferred"` reaches
-    an engagement rather than shaping only the Co-Ordinator's ranking;
+    an engagement rather than shaping only the Co-Ordinator's ranking; a
+    `project_review` and an `implementation_plan` entry each do the same under
+    that same rule, and a policy set for either finds nothing to gather when
+    the repos array does not carry the array (the ordinary shape of
+    `ordered_repos_json`, which never gains one — requirement 3y);
     `refiner_engagement_set` caps the result deterministically by
     `(repo, source, item)` and treats an unreadable `MAX` as `0`.
+3y. **The two Refiner-only gatherers read what requirement 3y says
+    (requirement 3y).** `test/gather-project-review.test.sh` and
+    `test/gather-implementation-plan.test.sh` pass, each driving its script
+    against a stubbed `gh`: the review gatherer reads only the latest dated
+    folder, mints `review-<date>-R-NN` refs, carries each recommendation's own
+    section and its matching improvement prompt, and prints `[]` for a repo
+    with no `reviews/` tree; the plan gatherer returns open tasks in document
+    order, skips checked ones and lines whose leading token is not a
+    `WORK_GONE_PLAN_RE` id, and prints `[]` for a missing document. Neither
+    ever exits non-zero.
 39c. **The Refiner's verdicts are recorded as stated, driving the real switch
     (requirements 39c, 39d, 39e).** `test/refiner-verdicts.test.sh` passes:
     driving `maybe_run_refiner` itself — lifted verbatim from `agent-cycle.sh`,

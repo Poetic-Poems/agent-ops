@@ -2,7 +2,7 @@
 #
 # gather-implementation-plan.sh — deterministically pre-fetch the open
 # (unchecked) tasks in a repo's implementation-plan document, for the
-# Refiner (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 39a;
+# Refiner (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 3y;
 # TD-PPagop-26081307).
 #
 # Usage: gather-implementation-plan.sh <owner/repo> <default-branch> <path>

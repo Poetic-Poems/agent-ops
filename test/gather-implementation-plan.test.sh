@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test/gather-implementation-plan.test.sh — regression test for
-# scripts/gather-implementation-plan.sh (requirement 39a; TD-PPagop-26081307):
+# scripts/gather-implementation-plan.sh (requirement 3y; TD-PPagop-26081307):
 # the source that hands the Refiner every open task in a repo's
 # implementation-plan document pre-fetched.
 #

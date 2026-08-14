@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # test/gather-project-review.test.sh — regression test for
-# scripts/gather-project-review.sh (requirement 39a; TD-PPagop-26081307): the
+# scripts/gather-project-review.sh (requirement 3y; TD-PPagop-26081307): the
 # source that hands the Refiner the most recent weekly project review's
 # recommendations pre-fetched.
 #

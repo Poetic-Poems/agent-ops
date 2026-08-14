@@ -1865,7 +1865,7 @@ gather_tech_debt() {
 }
 
 # Pre-fetch the most recent weekly review's recommendations, for the Refiner
-# only (requirement 39a; TD-PPagop-26081307) — never folded into
+# only (requirement 3y; TD-PPagop-26081307) — never folded into
 # `ordered_repos_json`, the Co-Ordinator's own input, which still reads
 # `reviews/…` live (prompts/coordinator.md's "Project-review
 # recommendations"). Called only for a repo whose `refinement_policy` for
@@ -1885,7 +1885,7 @@ gather_project_review_candidates() {
 }
 
 # Pre-fetch the open tasks in a repo's implementation-plan document, for the
-# Refiner only (requirement 39a; TD-PPagop-26081307) — same "Refiner-only,
+# Refiner only (requirement 3y; TD-PPagop-26081307) — same "Refiner-only,
 # never folded into ordered_repos_json" reasoning as
 # gather_project_review_candidates above. Called only for a repo whose
 # `refinement_policy` for `implementation-plan` is not exempt and that
@@ -5387,7 +5387,7 @@ fi
 enabler_allowed=1
 
 # --- Refiner-only pre-fetch: project-review and implementation-plan
-# (requirement 39a; TD-PPagop-26081307) ---
+# (requirement 3y; TD-PPagop-26081307) ---
 # `ordered_repos_json` — the Co-Ordinator's own input — never gains these two
 # arrays: the Co-Ordinator keeps reading `reviews/…` and the plan document
 # live (prompts/coordinator.md's "Project-review recommendations" and

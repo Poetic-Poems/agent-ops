@@ -2,7 +2,7 @@
 #
 # gather-project-review.sh — deterministically pre-fetch the most recent
 # weekly project review's recommendations, for the Refiner
-# (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 39a; TD-PPagop-26081307).
+# (docs/IMPLEMENTATION-PIPELINE-SPEC.md, requirement 3y; TD-PPagop-26081307).
 #
 # Usage: gather-project-review.sh <owner/repo> [default-branch]
 #
