@@ -711,6 +711,69 @@ assert_eq "a blocked extract past the argv cap still clears the hand-flagged blo
   '[{"repo":"o/r","item":"52"}]' \
   "$(refinement_hand_flag_cleared '[]' "$big_hand_flagged_blocked")"
 
+# --- scripts/gather-hand-flagged-refinements.sh's own accumulator fold (TD-PPagop-26081401) --
+# $out grows with every hand-flagged issue a repo has ever carried the label
+# on — unbounded by anything in this script, the same "merely growing"
+# shape scripts/gather-tech-debt.sh's per-item append had before
+# TD-PPagop-26081301 converted it. Lifted verbatim (inline loop body, not a
+# function — same extraction shape test/finish-then-continue.test.sh already
+# uses), and eval'd with an $out already past MAX_ARG_STRLEN to prove the
+# fold survives an accumulator this large.
+extract_hand_flag_fold() {
+  awk '
+    /^  out="\$\(jq -nc .input as \$arr/ { on = 1 }
+    on                                    { print }
+    on && /^    \|\| \{ warn .*; \}\)"$/  { exit }
+  ' "$SCRIPT_DIR/scripts/gather-hand-flagged-refinements.sh"
+}
+hand_flag_fold_block="$(extract_hand_flag_fold)"
+if [[ "$hand_flag_fold_block" != *"input as \$arr"* ]]; then
+  echo "FAIL - could not extract the hand-flag fold from gather-hand-flagged-refinements.sh — has it moved?" >&2
+  exit 1
+fi
+# An awk that never meets its terminator runs to end of file and hands the
+# eval below the rest of the script, which can still pass every assertion
+# under it — the quiet way this pin would stop pinning anything.
+assert_eq "the extracted block is the fold alone, not the rest of the file" "1" \
+  "$(( $(printf '%s\n' "$hand_flag_fold_block" | wc -l) <= 4 ))"
+# `warn` and `number` are the script's, stubbed here because the block is
+# lifted out of its loop: `warn` so the failure path can be observed at all,
+# `number` because the message names the issue that dropped out.
+run_hand_flag_fold() {  # <out-json> <entry-json>
+  (
+    # shellcheck disable=SC2317  # reached only from the eval'd block below.
+    warn() { echo "gather-hand-flagged-refinements: o/r: $*" >&2; }
+    number=4242 out="$1" entry="$2"
+    eval "$hand_flag_fold_block"
+    printf '%s' "$out"
+  )
+}
+big_hand_flag_out="$(jq -nc '[range(3000) | {repo: "o/r", number: ., url: ("https://x/" + (. | tostring)),
+  label: "needs-refinement", state: "open", labelled_at: "2026-08-01T00:00:00Z", by: "warwick"}]')"
+assert_eq "the oversized hand-flag accumulator fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_hand_flag_out" | wc -c) > 131072 ))"
+new_hand_flag_entry='{"repo":"o/r","number":9999,"url":"https://x/9999","label":"needs-refinement","state":"open","labelled_at":"2026-08-14T00:00:00Z","by":"warwick"}'
+folded_hand_flags="$(run_hand_flag_fold "$big_hand_flag_out" "$new_hand_flag_entry")"
+assert_eq "the fold past the argv cap still carries every already-accumulated entry" \
+  "3001" "$(jq 'length' <<<"$folded_hand_flags")"
+assert_eq "  ... plus the new entry" "1" \
+  "$(jq '[.[] | select(.number == 9999)] | length' <<<"$folded_hand_flags")"
+
+# The fold fails open per issue, which is right — losing every other
+# hand-flagged issue to report one would be worse. What it must not do is fail
+# open *silently*: a human's own label is a request made by hand (requirement
+# 34g), and the reference conversion this one follows,
+# scripts/gather-tech-debt.sh's `|| degrade "array assembly failed at …"`,
+# is loud for that reason. An unparseable entry is the reachable way to make
+# this jq fail on demand; the argv cap it replaced is the one that mattered.
+hand_flag_fold_err="$(run_hand_flag_fold '[]' 'not json' 2>&1 >/dev/null)"
+assert_contains "a fold that fails says which issue dropped out, on stderr" \
+  "array assembly failed at issue #4242" "$hand_flag_fold_err"
+assert_eq "and does not swallow jq's own reason for failing" "0" \
+  "$(grep -c '2>/dev/null' <<<"$hand_flag_fold_block")"
+assert_eq "  ... while still returning the accumulator it already had" "[]" \
+  "$(run_hand_flag_fold '[]' 'not json' 2>/dev/null)"
+
 # --- Robustness at the call sites -------------------------------------------------
 # agent-cycle.sh calls all of this from a cycle running under `set -euo pipefail`,
 # and the verdict half of it from inside the exit trap, where an unguarded
