@@ -7301,7 +7301,8 @@ runs unattended.
       for the idle nudge's own marker, not yet done for this one — so it
       falls into that script's own fail-safe default: kept selectable for as
       long as the pull request stays open and not a draft, the same as any
-      warning shape its three classes do not recognise. The notice addresses a human and nothing else:
+      warning shape its three classes do not recognise. The notice addresses
+      a human and nothing else:
       a dequeued pull request becomes no source's candidate, so the
       Co-Ordinator has no work to select from it —
       `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
@@ -10468,7 +10469,8 @@ pull request, run the ones the change touches and any it could regress.
     unrecognised warning shape is cleared by any of the three success events,
     the fail-safe default for a warning with no family of its own; a repeated
     identity keeps only its latest detail regardless of family; and a torn
-    log line is skipped, not fatal. `test/gather-human-visibility-hygiene.test.sh` passes against a
+    log line is skipped, not fatal.
+    `test/gather-human-visibility-hygiene.test.sh` passes against a
     stubbed `gh`: violations naming a different repo are ignored; a
     repo-level violation survives only while its listing still fails live and
     is dropped the moment a fresh listing succeeds; a pull-request violation
