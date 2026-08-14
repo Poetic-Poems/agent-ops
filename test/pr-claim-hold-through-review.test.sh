@@ -151,7 +151,11 @@ release_directly() {  # release_directly <key>
 cycle_dir="$tmp_dir/cycle"
 mkdir -p "$cycle_dir"
 export CLAIM_GH="$stub_bin/gh"
+# claim_release_timeout and selected_repo are consumed only by the eval'd
+# release_claim/release_pr_claim, invisible to shellcheck.
+# shellcheck disable=SC2034
 claim_release_timeout=0
+# shellcheck disable=SC2034
 selected_repo="Poetic-Poems/poetic"
 
 # poetic-2's own cycle wins the review-feedback item on PR #353, and — per the
@@ -207,7 +211,9 @@ release_directly "pr-353-review-777"
 seed_claim poetic-3 "pr-500-review-1" "pr-500-review-1" review-feedback 500
 seed_claim poetic-3 "pr-500" "pr-500-review-1" review-feedback 500
 claim_active=1
+# shellcheck disable=SC2034
 claim_kind="file"
+# shellcheck disable=SC2034
 claim_key="pr-500-review-1"
 claim_pr_key="pr-500"
 
