@@ -8957,6 +8957,13 @@ pull request, run the ones the change touches and any it could regress.
    the precedence: the plain `timeout_<actor>` / `inactivity_<actor>` keys
    including the Refiner's, and a repository's own `stage_timeouts` /
    `stage_inactivity` entry, naming that repository in the warning.
+   `test/publish-dashboard.test.sh` passes: the dashboard publisher — the
+   fourth caller of `stage_budget_lock_seconds`, alongside both cycle scripts
+   and `scripts/doctor.sh` — derives `config.lock_stale_after` from
+   `stage_budget_all_overrides` too, so a plain `timeout_<actor>` key and a
+   wider per-repository `stage_timeouts` entry both reach it exactly as they
+   reach `agent-cycle.sh`'s lock and `scripts/doctor.sh`'s report, rather than
+   the dashboard silently deriving from an empty overrides map of its own.
 1l. **Repos are walked most-overdue-first by nice-weighted effective age,
    and it never starves a repo (requirement 3).** `test/repo-order.test.sh`
    passes: `repo_order_by_effective_age` returns an order byte-identical to

@@ -1741,7 +1741,8 @@ stage_budget_json="$(stage_budget_table \
   "$(stage_budget_settings "$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')")" 2>/dev/null \
   || printf '{"cells":{},"actors":{}}')"
 lock_stale_derived_hours="$(jq -nr --argjson sec \
-  "$(stage_budget_lock_seconds "$stage_budget_json" '{}' 30 \
+  "$(stage_budget_lock_seconds "$stage_budget_json" \
+     "$(stage_budget_all_overrides "$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')")" 30 \
      "$(jq -r '.lock_stale_after // 0' "$CONFIG_FILE" 2>/dev/null || printf 0)")" \
   '(($sec / 3600) * 100 | round) / 100' 2>/dev/null || printf 4)"
 config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stale_derived_hours" \

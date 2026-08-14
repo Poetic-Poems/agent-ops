@@ -1551,6 +1551,40 @@ assert_eq "and leaves the last good data.js untouched" "$g_good" "$(cat "$g_data
 assert_lacks "so no page is ever served an empty assignment" \
   "window.DASHBOARD_DATA = ;" "$(cat "$g_data_js")"
 
+# --- lock_stale_after agrees with the lock a running cycle actually holds (#357) -
+# scripts/publish-dashboard.sh derives config.lock_stale_after by calling
+# stage_budget_lock_seconds itself — the same function agent-cycle.sh calls to
+# size the cycle lock and scripts/doctor.sh calls to report it — but it once
+# passed a literal '{}' for OVERRIDES_JSON instead of stage_budget_all_overrides,
+# so it silently ignored every timeout_<actor> / stage_timeouts config override
+# the other two callers honour (the drift #326 / #348 already fixed for
+# doctor.sh). CONFIG_FILE resolves relative to publish-dashboard.sh's own
+# location with no override flag, so this exercises the override path by
+# running a full copy of the checkout against a config.json this test controls,
+# rather than hand-listing the libs the script sources (which would silently
+# stop covering a real dependency the moment the script gained one).
+h_app="$tmp_dir/overrides-app"
+mkdir -p "$h_app"
+tar -C "$SCRIPT_DIR" --exclude=.git -cf - . | tar -C "$h_app" -xf -
+jq '.timeout_implementor = 500
+    | .repos[0].stage_timeouts = ((.repos[0].stage_timeouts // {}) + {reviewer: 710})' \
+  "$SCRIPT_DIR/config.json" > "$h_app/config.json"
+
+h="$(new_home nodeH)"
+env HOME="$h" "$h_app/scripts/publish-dashboard.sh" --no-github >/dev/null 2>&1
+assert_eq "a publish against a config with overrides still exits 0" "0" "$?"
+hdata="$(data_of "$h")"
+# coordinator 20 + implementor 500 (plain timeout_ override, wider than its
+# 150 min prior) + reviewer 710 (per-repo stage_timeouts override, wider than
+# its 90 min prior) + enabler 30 + refiner 30 + 30 min slack = 1320 min, an
+# exact number of hours so the assertion needs no float rounding — the same
+# sum scripts/doctor.sh reports and agent-cycle.sh actually locks for, given
+# the same overrides (test/stage-budget.test.sh's 9a covers the shared
+# derivation itself; this covers that the dashboard script actually calls it).
+assert_eq "the dashboard's derived lock threshold honours a plain timeout_<actor> override and a wider per-repo one" \
+  "$(( (20 + 500 + 710 + 30 + 30 + 30) / 60 ))" \
+  "$(jq -r '.config.lock_stale_after' <<<"$hdata")"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"
