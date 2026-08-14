@@ -1221,9 +1221,17 @@ number's twins elsewhere on the page.
   and no contradiction block at all, while a `data.js` from before the
   aggregate existed says so outright rather than rendering that same clean
   zero for data it does not have.
+  The cost section's four blocks (issue #330) render inside one `.costgrid`
+  container in reading order — by-day, by-model, by-actor, then the cost note
+  at the same depth as the three charts rather than as a paragraph beside the
+  section. Document order is what is asserted because it is what the layout
+  rests on: a multi-column flow fills each column top-to-bottom in document
+  order, so the order of the appends *is* the order a reader sees, whichever
+  column each block lands in.
   Out of scope by the same tree-building limit:
-  the pull-request hover card's pointer/focus behaviour, covered only by the
-  manual and headless checks below.
+  the pull-request hover card's pointer/focus behaviour, and which column the
+  browser balances each cost block into — that is layout, and layout is what
+  this stub does not do; it is covered by the manual check below.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -1241,6 +1249,13 @@ number's twins elsewhere on the page.
   Failures, and its transcript + stderr open inline. On a fleet, each node's
   card names what that node is doing and the header counts how many are working;
   on a single node the header carries the detail itself and there is no strip.
+- On that same page, the cost section reads down the left column and on down
+  the right, with no column running conspicuously past the other and the cost
+  note last (issue #330). This one is checked by eye in a browser, in both
+  colour schemes and on either side of the 760px breakpoint, because the split
+  is decided by the browser from the rendered heights: nothing that runs
+  without layout can see it, and the DOM-stub harness above deliberately
+  asserts only the document order the split is taken over.
 - With a `blocked` row whose `kind` is `needs-refinement` in `data.js`, the
   Blocked items table shows a **refinement** badge next to that row's item id,
   the heading names how many refinement blocks there are, and its "hide N
@@ -1557,14 +1572,23 @@ number's twins elsewhere on the page.
 - **The cost charts balance into columns instead of a fixed grid (issue
   #330).** A `.two`/`.stack` split — by-day alone on the left, by-model and
   by-actor stacked on the right — left a gap under the right column on any
-  day by-day's sixty rows ran noticeably longer than the other two combined,
-  because the split was pinned at build time to a guess about relative
-  height rather than measured against it. `column-count: 2` with
+  day that by-day's sixty rows ran noticeably longer than the other two
+  combined, because the split was pinned at build time to a guess about
+  relative height rather than measured against it. `column-count: 2` with
   `break-inside: avoid` on each block instead lets the browser's own balance
   algorithm decide the split from the rendered heights on every load: the
   four blocks — day, model, actor, then the cost note — stay in that reading
   order and simply land wherever the shorter side is, no JS layout code and
   no new data needed.
+
+  What this buys is a split that is right for the data in front of it rather
+  than for the data the layout was written against, plus the note's own
+  height reclaimed from a gap it used to sit below. It does not flatten the
+  section: while by-day holds sixty rows and the other two hold five each, no
+  arrangement of four whole blocks fills a column that one of them sets the
+  height of, so the right column still ends well short of the left. Closing
+  that would mean letting by-day itself break across both columns, which buys
+  the space at the price of a chart whose heading stands over half of it.
 - **"Today" defaulted to GMT with no way to say so, until #186.** The card's
   figure was always `spend_today_usd`, computed against `date -u`, and nothing
   on the page told a reader in another zone that "today" wasn't theirs. Fixing
