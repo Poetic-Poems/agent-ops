@@ -305,6 +305,25 @@ assert_eq "and the phantom takes none of the MAX_CYCLES budget" "1" \
 assert_eq "while both hand-appended events stay in the log tail" "2" \
   "$(jq '[.log_tail[] | select(.cycle == "manual")] | length' <<<"$cdata")"
 
+# --- Machine bookkeeping stays out of the log tail --------------------------------
+# `review-gate-checks-read` (implementation spec requirement 31c,
+# TD-PPagop-26081404) fires once per ready-gate evaluation and carries nothing
+# an operator can act on — it exists for `review_gate_unknown_streak_verdict`
+# to read — so the Publisher keeps it out of the log tail rather than letting
+# a degraded run displace rows that have something to say. The escalation it
+# feeds, `review-gate-checks-degraded`, is exactly what the tail is for and
+# stays.
+{
+  printf '{"ts":"2026-07-26T08:20:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"review-gate-checks-read","ok":false}\n' "$today_day"
+  printf '{"ts":"2026-07-26T08:21:00Z","cycle":"%sT080000Z-31","node":"nodeC-self","event":"review-gate-checks-degraded","gate":"required-checks","count":3,"first_ts":"2026-07-26T06:20:00Z","last_ts":"2026-07-26T08:20:00Z"}\n' "$today_day"
+} >> "$c/.local/state/poetic-agents/log.jsonl"
+run_publish "$c" NODE_NAME=nodeC-self
+cdata="$(data_of "$c")"
+assert_eq "the review-gate bookkeeping event is kept out of the log tail" "0" \
+  "$(jq '[.log_tail[] | select(.event == "review-gate-checks-read")] | length' <<<"$cdata")"
+assert_eq "while the escalation it feeds stays in it" "1" \
+  "$(jq '[.log_tail[] | select(.event == "review-gate-checks-degraded")] | length' <<<"$cdata")"
+
 # --- No-op ticks are counted, not listed (issue #271) -----------------------------
 # Under the */15 cadence most firings are the stand-down short-circuit
 # (`cycle-start` → `stand-down` → `cycle-end`) or the lock-held skip

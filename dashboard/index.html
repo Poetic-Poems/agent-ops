@@ -1919,6 +1919,11 @@
   //   events and not in general.
   // - the Enabler's own three events, and the Refiner's `refiner-examined`,
   //   predate all of the above and carry none of them.
+  // - `review-gate-*` events (implementation spec requirement 31c,
+  //   TD-PPagop-26081404) are the implementation pipeline Script's own,
+  //   despite wearing the review pipeline's `review-` prefix — they must
+  //   fall through to the generic reads below, never be attributed to the
+  //   Project Reviewer.
   //
   // Failing open like sourceTag() and the by-actor chart: a token this page
   // has never heard of renders as itself rather than as a dash, so an actor
@@ -1930,7 +1935,7 @@
   function eventActor(e) {
     var ev = e.event || "";
     if (e.stage === "workspace") return null;
-    if (ev.slice(0, 7) === "review-") {
+    if (ev.slice(0, 7) === "review-" && ev.slice(0, 12) !== "review-gate-") {
       return (e.stage || ev === "review-stage-start" || ev === "review-stage-end")
         ? "project-reviewer" : null;
     }
