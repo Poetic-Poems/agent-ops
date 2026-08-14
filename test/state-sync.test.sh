@@ -172,6 +172,7 @@ printf 'services:\n  scheduler:\n    image: ghcr.io/example/agent-ops:latest\n' 
 printf 'services:\n  scheduler:\n    image: ghcr.io/example/agent-ops:pinned\n' > "$drift_host"
 sync_as "$active_home" active push \
   COMPOSE_DRIFT_HOST="$drift_host" COMPOSE_DRIFT_IMAGE="$drift_image" >/dev/null
+assert_eq "the drift-carrying push exits 0" "0" "$?"
 drift_pushed="$tmp_dir/pushed-drift"
 git clone --quiet --branch nodes/active-node "$remote" "$drift_pushed"
 assert_eq "a drifted compose.yaml is published in the heartbeat" "drifted" \
@@ -182,6 +183,7 @@ assert_eq "with the count of differing lines" "2" \
 # --- A second push amends rather than accumulating history ---
 printf '{"ts":"2026-07-20T01:00:00Z","event":"cycle-end"}\n' >> "$state/log.jsonl"
 sync_as "$active_home" active push >/dev/null
+assert_eq "the amending push exits 0" "0" "$?"
 assert_eq "history stays a single rolling commit" "1" \
   "$(git -C "$remote" rev-list --count nodes/active-node)"
 
@@ -207,6 +209,7 @@ while (( i < cycles_retained + 1 )); do
   i=$(( i + 1 ))
 done
 sync_as "$active_home" active push >/dev/null
+assert_eq "the retention push exits 0" "0" "$?"
 rm -rf "$pushed"; git clone --quiet --branch nodes/active-node "$remote" "$pushed"
 assert_eq "the mirror keeps cycles_retained cycles" "$cycles_retained" \
   "$(find "$pushed/cycles" -mindepth 1 -maxdepth 1 -type d | wc -l)"
@@ -233,6 +236,7 @@ while (( i < 5 )); do
   i=$(( i + 1 ))
 done
 out="$(sync_as "$lr_home" active push STATE_SYNC_LOCAL_RETAINED=3)"
+assert_eq "the local-retention push exits 0" "0" "$?"
 assert_contains "a push reports the local prune" "pruned 2 cycles record(s)" "$out"
 assert_eq "local cycles are pruned to the cap" "3" \
   "$(find "$lr_state/cycles" -mindepth 1 -maxdepth 1 -type d | wc -l)"
@@ -248,6 +252,7 @@ assert_eq "local reviews are pruned to the cap" "3" \
 mkdir -p "$lr_state/cycles/20250101T000000Z-9"
 printf 'stale\n' > "$lr_state/cycles/20250101T000000Z-9/coordinator.out"
 out="$(sync_as "$lr_home" active push STATE_SYNC_LOCAL_RETAINED=3)"
+assert_eq "the reappearing-stale-dir push exits 0" "0" "$?"
 assert_contains "a later push prunes a reappearing stale dir" "pruned 1 cycles record(s)" "$out"
 assert_eq "the stale directory is gone" "0" \
   "$(test -e "$lr_state/cycles/20250101T000000Z-9" && echo 1 || echo 0)"
@@ -275,6 +280,7 @@ while (( i < 4 )); do
   i=$(( i + 1 ))
 done
 out="$(sync_as "$sr_home" active push STATE_SYNC_LOCAL_RETAINED=10 STATE_SYNC_STREAMS_RETAINED=2)"
+assert_eq "the stream-retention push exits 0" "0" "$?"
 assert_contains "a push reports the stream prune" "pruned 2 stage stream(s) from cycles" "$out"
 assert_eq "the oldest cycle's stream is deleted" "0" \
   "$(test -e "$sr_state/cycles/20260301T000000Z-0/coordinator.stream.jsonl" && echo 1 || echo 0)"
@@ -300,6 +306,7 @@ git -C "$tmp_dir/legacy" add -A >/dev/null 2>&1
 git -C "$tmp_dir/legacy" commit --quiet -m "state: a stream published before the exclusion" >/dev/null 2>&1
 git -C "$tmp_dir/legacy" push --quiet origin HEAD:nodes/active-node >/dev/null 2>&1
 sync_as "$active_home" active push >/dev/null
+assert_eq "the legacy-stream push exits 0" "0" "$?"
 rm -rf "$tmp_dir/pushed-again"
 git clone --quiet --branch nodes/active-node "$remote" "$tmp_dir/pushed-again"
 assert_eq "a stream already in the mirror is deleted from it" "0" \
@@ -324,6 +331,7 @@ assert_eq "peers do not carry locks" "0" \
 
 # The other direction: the active node holds the standby.
 sync_as "$active_home" active fetch >/dev/null
+assert_eq "the active node's fetch exits 0" "0" "$?"
 a_peers="$(fleet_peers_dir "$active_home/.cache/poetic-agents/workspaces")"
 assert_eq "the active node holds its peers too" "1" \
   "$(test -f "$a_peers/standby-node/log.jsonl" && echo 1 || echo 0)"
@@ -332,6 +340,7 @@ assert_eq "the active node holds its peers too" "1" \
 # fetch.
 git -C "$remote" update-ref -d refs/heads/nodes/local-retention-node
 sync_as "$standby_home" standby fetch >/dev/null
+assert_eq "the branch-pruning fetch exits 0" "0" "$?"
 assert_eq "a vanished branch prunes its peer copy" "0" \
   "$(test -e "$sb_peers/local-retention-node" && echo 1 || echo 0)"
 
