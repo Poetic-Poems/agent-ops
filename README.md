@@ -1070,11 +1070,13 @@ belongs, and out of the cycle list.
 A draft pull request the pipeline itself raised — an abandoned draft, or one
 still carrying your own unactioned review feedback — can simply stop being
 wanted. If it still changes files against its base, the pipeline cannot close
-it on its own: `void_finishing_pr_reason` (`lib/void-guard.sh`) only accepts an
-open pull request as void when its diff against the base is empty, because
-"this draft is no longer wanted" is a judgement no API call can corroborate,
-and closing a live branch on an unexamined one has destroyed real work before.
-So an open, still-diff-carrying draft is escalated to you instead of closed.
+it on its own say-so: `void_finishing_pr_reason` (`lib/void-guard.sh`) accepts
+an open pull request as void only when its diff against the base is empty, or
+when you have said the draft is unwanted yourself (below), because "this
+draft is no longer wanted" is a judgement no API call can corroborate on its
+own, and closing a live branch on an unexamined one has destroyed real work
+before. Absent either signal, an open, still-diff-carrying draft is escalated
+to you instead of closed.
 
 To tell the pipeline it really is unwanted, **label the pull request
 `obsolete`**, in that item's repo:
