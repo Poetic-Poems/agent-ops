@@ -3212,6 +3212,50 @@ runs unattended.
    that failed leaves the previous `data.js` in place and exits non-zero: a
    page that ages visibly against its own `generated_at` reports the outage,
    where an unparseable one only hides it.
+
+4h. **A guard that answers with a literal says on the union log that it
+   did.** Requirement 4g changed how the fleet-state aggregates are
+   *delivered*; it did not change what a read that fails anyway still
+   answers. Ninety-one call sites in this Script carry the shape `cmd …
+   2>/dev/null || <literal>`, and at sixty-seven of them the literal is an
+   answer indistinguishable from a real one — an empty array, a zero, an
+   empty object — over an input that can genuinely fail at run time: a
+   config, lock or log file read off disk, a `gh api` or `lib/claim.sh`
+   subprocess, a `date` parse of fleet state, a stage-output JSON file under
+   `cycle_dir`. Nothing downstream can tell "no items" from "I could not
+   compute the items", and on 2026-08-14 nothing did: `unaccounted_items`'
+   own guard turned an `execve` failure into *zero unaccounted items*, and
+   requirement 3v's corroboration accepted the Co-Ordinator's
+   `none-selected` verdict on that evidence, in the cycle with the most
+   recorded refinement to account for. So each of those sixty-seven captures
+   its command's own stdout **and stderr** where it used to discard the
+   latter, and on failure writes a `guard-degraded` event — `{site, detail}`,
+   the site's own label and the captured text — through `guard_warn` before
+   falling back. **The fallback value itself is unchanged at every one of
+   them**: this removes the silence, never the tolerance, so a cycle degrades
+   exactly as far as it degraded before and no guard can turn a bad read into
+   a dead cycle. The other twenty-four sites are deliberately unconverted,
+   each carrying a one-line comment naming which of the two triage tests it
+   passes — the input cannot fail at run time, or the fallback is a
+   pass-through of a value the caller already accepted, which is
+   distinguishable from a computed answer by construction — so that the next
+   reader does not re-triage what has already been triaged.
+
+   **The three names in a guard are one name.** The shape names its variable
+   three times over — the assignment's target, the value reported as
+   `detail`, and the variable the fallback is assigned to — and across
+   sixty-seven near-identical one-liners that is precisely the shape a
+   copy-paste slip hides in, invisible to a test suite in which the guarded
+   command succeeds. The void closed-merge site shipped in this requirement's
+   own first pass reporting and restoring `void_json` where it assigns
+   `void_actioned_json`, which on any failure of that call would have left
+   the captured error text standing where an `--argjson` reads it moments
+   later *and* emptied the void extract for the cycle — every voided item
+   selectable again — reintroducing at the guard the exact fault the guard
+   exists to report. So the agreement of the three names is asserted
+   structurally over every site at once (acceptance check 1m), not one case
+   at a time.
+
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
@@ -8778,6 +8822,30 @@ pull request, run the ones the change touches and any it could regress.
    anywhere), so it must drop the key rather than emit `{}`. Separately: a
    `nice` outside `-19`..`19`, or non-integer, makes `agent-cycle.sh` refuse
    to start, naming every offending repo's slug.
+1m. **A guard reports its degradation and still answers exactly what it
+   always did (requirement 4h).** `test/guard-degradation.test.sh` passes.
+   `guard_warn`, `stage_budget_overrides`, `gather_claimed`,
+   `unaccounted_items` and `coordinator_eligible_items` are lifted whole out
+   of `agent-cycle.sh`, and the fleet stand-down date parse by its own
+   start/end markers, the way `test/verdict-corroboration.test.sh` and
+   `test/pr-claim-exclusion.test.sh` already lift theirs — so the file cannot
+   pass against a paraphrase. Every case asserts **both** halves: that one
+   `guard-degraded` event was written, naming that site and carrying the
+   failed command's own output as `detail`, and that the caller-visible value
+   is the same literal it was before requirement 4h. The failures are induced
+   the way each site can really fail — an unparseable `CONFIG_FILE`, a
+   `gather_claimed` claims array genuinely padded past `MAX_ARG_STRLEN`
+   (131072 bytes, proven past the cap by the assertion beside it, the same
+   mechanism the 2026-08-14 incident hit), malformed JSON reaching
+   `unaccounted_items` and `coordinator_eligible_items`, an unparseable
+   `resume_at` — and each pairs with a healthy-input case asserting the log
+   stays *silent*, so a guard that fires unconditionally fails too. Separately
+   and structurally, over the whole of `agent-cycle.sh`: every one of the
+   sixty-seven guard sites reports and restores the variable its own
+   assignment targets, and the sweep counts the sites it found and fails if
+   that count collapses, so a parser that silently matched nothing cannot pass
+   the check vacuously. Reintroducing requirement 4h's own
+   `void_actioned_json`/`void_json` mismatch at any site must fail this file.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
