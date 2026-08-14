@@ -1647,8 +1647,13 @@ log_needs_refinement_items() {
   coord_recorded_refinement_json="[]"
   while IFS= read -r entry; do
     if record_needs_refinement_block "$entry" "coordinator"; then
-      coord_recorded_refinement_json="$(jq -c --argjson e "$entry" '. + [$e]' \
-        <<<"$coord_recorded_refinement_json")"
+      # $entry and the accumulator both arrive on stdin, one document per
+      # line, bound positionally with `input as $name` in the order printed
+      # (requirement 4g) — never in argv: this accumulator grows with the
+      # cycle's whole needs_refinement band, and its builder failing silently
+      # fail-opens unaccounted_items to [] (TD-PPagop-26081406).
+      coord_recorded_refinement_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+        <<<"$coord_recorded_refinement_json"$'\n'"$entry")"
     fi
   done < <(jq -c '.needs_refinement[]? // empty' <<<"$wo" 2>/dev/null || true)
 }
@@ -1687,8 +1692,13 @@ log_voided_items() {
     [[ -n "$item" ]] || continue
     repo="$(jq -r '.repo // ""' <<<"$entry")"
     reason="$(jq -r '.reason // "no reason given"' <<<"$entry")"
-    coord_recorded_voided_json="$(jq -c --argjson e "$entry" '. + [$e]' \
-      <<<"$coord_recorded_voided_json")"
+    # $entry and the accumulator both arrive on stdin, one document per
+    # line, bound positionally with `input as $name` in the order printed
+    # (requirement 4g) — never in argv: see log_needs_refinement_items above
+    # for why this accumulator's builder failing silently matters
+    # (TD-PPagop-26081406).
+    coord_recorded_voided_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
+      <<<"$coord_recorded_voided_json"$'\n'"$entry")"
 
     if refusal="$(void_guard_reason "$entry" "$repos")"; then
       log_event "item-void" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
@@ -2702,10 +2712,13 @@ coordinator_corroborate_retry_or_fallback() {
   # put on the record, not what the message claimed to.
   unaccounted_json="[]"
   if (( eligible_items_total > 0 )); then
+    # $nr/$v are the recording loops' own collections and grow with the
+    # cycle's whole needs_refinement/voided bands — unbounded past this call,
+    # never argv (requirement 4g, TD-PPagop-26081406): both arrive on stdin,
+    # bound positionally with `input as $name` in the order printed.
     unaccounted_json="$(unaccounted_items \
-      "$(jq -nc --argjson nr "${coord_recorded_refinement_json:-[]}" \
-                --argjson v "${coord_recorded_voided_json:-[]}" \
-                '{needs_refinement: $nr, voided: $v}')" \
+      "$(jq -nc 'input as $nr | input as $v | {needs_refinement: $nr, voided: $v}' \
+          <<<"${coord_recorded_refinement_json:-[]}"$'\n'"${coord_recorded_voided_json:-[]}")" \
       "$eligible_items_json" "$refinement_policy_json")"
   fi
   unaccounted_n="$(jq 'length' <<<"$unaccounted_json" 2>&1)" \
@@ -2903,10 +2916,14 @@ object, nothing else.
 
   retry_selected="$(jq -r '.selected' <<<"$retry_work_order_json")"
   retry_reason="$(jq -r '.reason // "no reason given"' <<<"$retry_work_order_json")"
-  recorded_refinement_all_json="$(jq -c -n --argjson a "$coord_recorded_refinement_json_1" \
-    --argjson b "${coord_recorded_refinement_json:-[]}" '$a + $b')"
-  recorded_voided_all_json="$(jq -c -n --argjson a "$coord_recorded_voided_json_1" \
-    --argjson b "${coord_recorded_voided_json:-[]}" '$a + $b')"
+  # Both grow with the cycle's whole recorded band across both attempts —
+  # unbounded past this call, never argv (requirement 4g, TD-PPagop-26081406):
+  # each pair arrives on stdin, bound positionally with `input as $name` in
+  # the order printed.
+  recorded_refinement_all_json="$(jq -nc 'input as $a | input as $b | $a + $b' \
+    <<<"$coord_recorded_refinement_json_1"$'\n'"${coord_recorded_refinement_json:-[]}")"
+  recorded_voided_all_json="$(jq -nc 'input as $a | input as $b | $a + $b' \
+    <<<"$coord_recorded_voided_json_1"$'\n'"${coord_recorded_voided_json:-[]}")"
 
   if [[ "$retry_selected" == "true" ]]; then
     # `eligible_total` here too (requirement 3w): this verdict is one the
@@ -2924,9 +2941,12 @@ object, nothing else.
     return 0
   fi
 
+  # $nr/$v are the same unbounded recorded-band aggregates as the first
+  # attempt's build above — stdin, never argv (requirement 4g,
+  # TD-PPagop-26081406).
   unaccounted_retry_json="$(unaccounted_items \
-    "$(jq -nc --argjson nr "$recorded_refinement_all_json" --argjson v "$recorded_voided_all_json" \
-              '{needs_refinement: $nr, voided: $v}')" \
+    "$(jq -nc 'input as $nr | input as $v | {needs_refinement: $nr, voided: $v}' \
+        <<<"$recorded_refinement_all_json"$'\n'"$recorded_voided_all_json")" \
     "$eligible_items_json" "$refinement_policy_json")"
   unaccounted_retry_n="$(jq 'length' <<<"$unaccounted_retry_json" 2>&1)" \
     || { guard_warn "unaccounted_retry_n" "$unaccounted_retry_n"; unaccounted_retry_n=0; }
@@ -4809,13 +4829,23 @@ while IFS=$'\t' read -r _ slug default_branch; do
     implementation_plan_path="$(jq -r --arg s "$slug" \
       '.[] | select(.slug == $s) | .implementation_plan_path // ""' <<<"$repos_json")"
   fi
+  # findings/review_feedback/abandoned_drafts/merge_conflicts/register_hygiene/
+  # issues/tech_debt are the pre-fetched bands themselves — issue threads
+  # (requirement 3d/#118) and the open tech-debt register (requirement
+  # 3t/#310) included — each unbounded past this call and each tens of
+  # kilobytes alone; $sources is this repo's configured source list, bounded
+  # by config, and stays in argv (requirement 4g). The seven bands arrive on
+  # stdin, one document per line, bound positionally with `input as $name` in
+  # the order printed (TD-PPagop-26081406) — never in argv, where past
+  # MAX_ARG_STRLEN this build would silently drop the repo's whole entry.
+  entry_docs="$(printf '%s\n' "$findings" "$review_feedback" "$abandoned_drafts" \
+    "$merge_conflicts" "$register_hygiene" "$issues" "$tech_debt")"
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
-    --argjson findings "$findings" --argjson rf "$review_feedback" --argjson ad "$abandoned_drafts" \
-    --argjson mc "$merge_conflicts" --argjson rh "$register_hygiene" --argjson issues "$issues" \
-    --argjson td "$tech_debt" \
     --arg ipp "$implementation_plan_path" \
-    '{slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
-     + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)')"
+    'input as $findings | input as $rf | input as $ad | input as $mc | input as $rh
+     | input as $issues | input as $td
+     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
+     + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)' <<<"$entry_docs")"
   # $entry — one repo's whole pre-fetched sources, including issue threads
   # (requirement 3d/#118) and its open tech-debt register (requirement
   # 3t/#310) — is the least bounded value in this loop, and the accumulator it

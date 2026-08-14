@@ -307,13 +307,16 @@ survivors='[]'
 while IFS= read -r v; do
   [[ -n "$v" ]] || continue
   pr_url="$(jq -r '.pr_url // ""' <<<"$v")"
+  # $v and the accumulator both arrive on stdin, one document per line, bound
+  # positionally with `input as $name` in the order printed (requirement 4g,
+  # TD-PPagop-26081406) — never in argv.
   if [[ -z "$pr_url" ]]; then
-    survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
+    survivors="$(jq -nc 'input as $arr | input as $v | $arr + [$v]' <<<"$survivors"$'\n'"$v")"
     continue
   fi
   detail="$(jq -r '.detail // ""' <<<"$v")"
   if [[ "$(_pr_violation_survives "$pr_url" "$detail")" == "keep" ]]; then
-    survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
+    survivors="$(jq -nc 'input as $arr | input as $v | $arr + [$v]' <<<"$survivors"$'\n'"$v")"
   fi
 done < <(jq -c '.[]' <<<"$mine" 2>/dev/null || true)
 
@@ -337,13 +340,15 @@ body="$(jq -r '
          + " (last logged " + (.ts // "unknown") + "): " + (.detail // "")) | join("\n"))
 ' --arg r "$slug" <<<"$survivors")"
 
+# $problems grows with the survivor set — unbounded past this call
+# (requirement 4g, TD-PPagop-26081406). Delivered on stdin, not argv.
 jq -nc \
   --arg ref "$ref" \
   --arg url "$url" \
-  --argjson problems "$problems" \
   --arg body "$body" \
-  '[{source: "human-visibility",
+  'input as $problems |
+   [{source: "human-visibility",
      ref: $ref,
      url: $url,
      problems: $problems,
-     body: $body}]'
+     body: $body}]' <<<"$problems"
