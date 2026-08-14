@@ -185,10 +185,17 @@ $(jq -r '[.[].body] | join("\n")' <<<"$comments")"
     fi
   fi
 
-  entry="$(jq -c --argjson comments "$comments" \
-    '{source: "issues", ref: (.number | tostring)} + . + {comments: $comments}' \
-    <<<"$candidate")" || degrade "entry assembly failed for issue #$n"
-  out="$(jq -c --argjson e "$entry" '. + [$e]' <<<"$out")" \
+  # $comments is a whole issue thread — requirement 3d/#118 pre-fetches every
+  # comment — unbounded past this call (requirement 4g, TD-PPagop-26081406).
+  # $candidate and $comments arrive on stdin, bound positionally with `input
+  # as $name` in the order printed, never in argv.
+  entry="$(jq -nc 'input as $candidate | input as $comments |
+    {source: "issues", ref: ($candidate.number | tostring)} + $candidate + {comments: $comments}' \
+    <<<"$candidate"$'\n'"$comments")" || degrade "entry assembly failed for issue #$n"
+  # $entry and the accumulator both arrive on stdin the same way — never in
+  # argv, where a single issue thread past MAX_ARG_STRLEN would abort this
+  # append.
+  out="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$out"$'\n'"$entry")" \
     || degrade "array assembly failed at issue #$n"
 done < <(jq -c '.[]' <<<"$candidates")
 

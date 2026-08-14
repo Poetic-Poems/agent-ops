@@ -353,19 +353,36 @@ while IFS= read -r pr; do
           | grep -oiE '\b(TD[0-9]{8}|dependabot-alert-[0-9]+|code-scanning-alert-[0-9]+|review-[0-9]{4}-[0-9]{2}-[0-9]{2}-R-?[0-9]+)\b' \
           | head -n1 || true)"
 
-  body="$(jq -r --argjson fr "$fresh" --argjson fc "$fresh_comments" -n '
+  # $fresh/$fresh_comments are every fresh review and inline comment on the
+  # PR, verbatim — genuinely unbounded, not merely growing (requirement 4g,
+  # TD-PPagop-26081406). Delivered on stdin, bound positionally with `input
+  # as $name` in the order printed.
+  #
+  # The result stays JSON-encoded (no `-r`) rather than becoming a raw string,
+  # because the only consumer is the candidate build below and it must receive
+  # it on stdin too: this assembly is the concatenation of the very arrays
+  # just taken out of argv, so an `--arg body` there would put every one of
+  # those bytes straight back into a single argv element and leave the
+  # MAX_ARG_STRLEN threshold exactly where it was. An empty result — the
+  # assembly itself having failed — becomes the empty JSON string, so a
+  # candidate with no readable review text is still emitted, as it was before
+  # requirement 4g reached this site, rather than being dropped.
+  body_json="$(jq -cn 'input as $fr | input as $fc |
     ([$fr[] | "── review (\(.state)) by \(.who) at \(.at)\n\(.body)"] +
      [$fc[] | "── inline comment by \(.who) on \(.path):\(.line // "?") at \(.at)\n\(.body)"])
-    | join("\n\n")')"
+    | join("\n\n")' <<<"$fresh"$'\n'"$fresh_comments")"
+  [[ -n "$body_json" ]] || body_json='""'
 
+  # $pr is the whole pull-request object, including its body, and $body_json
+  # the assembled review text — both unbounded past this call (requirement 4g,
+  # TD-PPagop-26081406). Delivered on stdin, bound positionally with `input as
+  # $name` in the order printed.
   cand="$(jq -nc \
-    --argjson pr "$pr" \
     --arg ref "pr-${number}-review-${review_id}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
     --arg reviewed_at "$reviewed_at" \
-    --arg body "$body" \
-    '{source: "review-feedback",
+    'input as $pr | input as $body | {source: "review-feedback",
       ref: $ref,
       number: $pr.number,
       pr_number: $pr.number,
@@ -376,8 +393,21 @@ while IFS= read -r pr; do
       item: (if $item == "" then null else $item end),
       head_sha: $head_sha,
       reviewed_at: $reviewed_at,
-      body: $body}')"
-  out="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$out")"
+      body: $body}' <<<"$pr"$'\n'"$body_json")" || {
+    echo "gather-review-feedback: $slug pr-${number}-review-${review_id}: candidate assembly failed; skipped" >&2
+    continue
+  }
+  # $cand and the accumulator both arrive on stdin, one document per line,
+  # bound positionally with `input as $name` in the order printed
+  # (requirement 4g, TD-PPagop-26081406) — never in argv: a single candidate
+  # past MAX_ARG_STRLEN must not degrade this repo's whole review_feedback
+  # array to `[]`. Fails open, and loudly: `$out` inside the substitution is
+  # still the pre-assignment value, so a failed append keeps every candidate
+  # already collected and only drops this one.
+  out="$(jq -nc 'input as $arr | input as $c | $arr + [$c]' <<<"$out"$'\n'"$cand" || {
+    echo "gather-review-feedback: $slug pr-${number}-review-${review_id}: array assembly failed; candidate dropped" >&2
+    printf '%s' "$out"
+  })"
 done < <(jq -c '.[]' <<<"$prs" 2>/dev/null || true)
 
 # Oldest review first: the PR that has been waiting on us longest goes first.
