@@ -7499,8 +7499,8 @@ runs unattended.
     rather than merely tidy, since "the human clicked merge" (enqueued) no
     longer implies "merged" the moment a click happens.
 
-38g. **The ruleset setting requirement 38c's own approval derivation exists
-    because of is reported, not silent (agent-ops#391).** GitHub computes
+38g. **The ruleset setting behind requirement 38c's own approval derivation
+    is reported, not silent (agent-ops#391).** GitHub computes
     `reviewDecision` against the base branch's *required* approving review
     count; where a target repository's ruleset sets that to `0`, the field
     never becomes `APPROVED` however many humans approve — a fact
@@ -10567,7 +10567,8 @@ pull request, run the ones the change touches and any it could regress.
     approver, one blocker); a later review supersedes an earlier one from the
     same reviewer regardless of which state it moves to or from; a bot's
     `APPROVED` review is never counted (agent-ops#391); and an unreadable
-    reviews list is a failure, never a guessed `false`. `ensure_human_reviewer` re-requests review from whoever has ever reviewed
+    reviews list is a failure, never a guessed `false`.
+    `ensure_human_reviewer` re-requests review from whoever has ever reviewed
     the pull request (any state) in preference to `assignee`; falls back to
     `assignee` only when nobody ever has; strikes the pull request's own author
     off both lists before asking, so an author's `COMMENT` review on their own
