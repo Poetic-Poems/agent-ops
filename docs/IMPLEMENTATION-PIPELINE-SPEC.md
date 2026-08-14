@@ -6737,10 +6737,18 @@ runs unattended.
     filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
     them — under the account that raised the pull request. The pending list
     needs no author filter: GitHub never lets a review request name the pull
-    request's own author to begin with. It carries no *bot* filter either,
-    unlike the reviews list, and reads only `requested_reviewers` (users),
-    never `requested_teams` — tech-debt/TD-PPagop-26081403.md records both,
-    and what requirement 38e's own read of the same rule does differently.
+    request's own author to begin with. It does carry the same *bot* filter
+    the reviews list applies: a bot-type account or a `[bot]`-suffixed login
+    sitting in `requested_reviewers` is never read as proof a human was asked
+    — this org runs Copilot code review, and a repository ruleset can
+    auto-request it into this exact list, which would otherwise answer the
+    requirement without ever asking a human (tech-debt/TD-PPagop-26081403.md).
+    It also reads `requested_teams`, not only `requested_reviewers`: a
+    requested team is extended the same review-request mechanism CODEOWNERS
+    gives a named human, and a team can never itself be a bot, so this
+    function and requirement 38e's own read of the same rule
+    (`scripts/gather-human-visibility-hygiene.sh`'s `no_candidate` re-check)
+    count a pending request the same way.
 
     The no-candidate `skip` carries its own detail, `skip\tno-candidate`,
     distinguishable from the other two `skip` reasons — a draft, or something
@@ -6930,24 +6938,33 @@ runs unattended.
       draft, then survives its own warning class's own live check: a
       `could not request review from …` warning survives only while no human
       review is currently requested or already given (`gh pr view --json
-      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, or a
-      `reviewDecision` of `APPROVED` or `CHANGES_REQUESTED`, is the request
-      having worked after all); a `could not post the idle nudge comment`
-      warning survives only while the `<!-- agent-ops:human-nudge -->` marker
-      comment `scripts/sweep-human-visibility.sh` itself checks for is still
-      absent; a `no legal review-request candidate` warning (requirement 38a's
+      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, once
+      filtered of a Bot-typed or `[bot]`-suffixed one the same way
+      `ensure_human_reviewer`'s own pending read is (requirement 38a,
+      tech-debt/TD-PPagop-26081403.md; here the filter is defensive, keyed
+      on `__typename` first — `gh pr view`'s exporter emits only
+      `__typename`-keyed `User`/`Team` entries and drops Bot reviewers from
+      the array entirely, so a Copilot-only request already arrives as `[]`;
+      see Gotchas) — a requested team counts, neither
+      reader's filter can ever drop one — or a `reviewDecision` of `APPROVED`
+      or `CHANGES_REQUESTED`, is the request having worked after all); a
+      `could not post the idle nudge comment` warning survives only while the
+      `<!-- agent-ops:human-nudge -->` marker comment
+      `scripts/sweep-human-visibility.sh` itself checks for is still absent;
+      a `no legal review-request candidate` warning (requirement 38a's
       `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
       while `gh pr view --json author,reviews,reviewRequests` still shows no
       non-author, non-bot, submitted review, no review request already
-      pending (most often CODEOWNERS' own auto-request, live before anyone
-      has reviewed — agent-ops #350, #353, #355 were each already
-      live-requested this way), and `enabler_assignee` — carried in the
-      warning's own detail text, at the value it held when the sweep warned —
-      still names the pull request's own author: any of the three is
-      `ensure_human_reviewer`'s own candidate rule, generalised read-only,
-      resolving itself, since the sweep's own next pass would report
-      `already` or `requested` for that candidate, never `no-candidate`
-      again, before this gatherer runs again. The three classes are told apart deliberately:
+      pending under that same bot filter (most often CODEOWNERS' own
+      auto-request, live before anyone has reviewed — agent-ops #350, #353,
+      #355 were each already live-requested this way), and `enabler_assignee`
+      — carried in the warning's own detail text, at the value it held when
+      the sweep warned — still names the pull request's own author: any of
+      the three is `ensure_human_reviewer`'s own candidate rule, generalised
+      read-only, resolving itself, since the sweep's own next pass would
+      report `already` or `requested` for that candidate, never
+      `no-candidate` again, before this gatherer runs again. The three
+      classes are told apart deliberately:
       every pull request a nudge warning is logged against is already
       `APPROVED` (the nudge's own gate), so the request-class check alone
       would read every nudge-class warning as resolved the moment it was
@@ -7351,16 +7368,18 @@ What exists, and the requirements each part answers to:
    only if it is still open and not a draft, and its own warning class's own
    live signal still holds: a `could not request review from …` warning only
    while `gh pr view --json reviewDecision,reviewRequests` shows no live
-   request and no review yet given; a `could not post the idle nudge comment`
-   warning only while the `agent-ops:human-nudge` marker comment is still
-   absent; a `no legal review-request candidate` warning
-   (tech-debt/TD-PPagop-26081001.md) only while `gh pr view --json
-   author,reviews,reviewRequests` still shows no non-author, non-bot,
-   submitted review, no review request already pending, and
-   `enabler_assignee` — read back out of the warning's own detail text —
-   still names the pull request's own author; any other warning shape for as
-   long as the pull request stays open and not a draft; an unreadable
-   re-check is kept, not dropped) — carrying a
+   request (Bot-typed — `__typename`-keyed on this reader — and
+   `[bot]`-suffixed entries excluded, a requested team
+   counted — tech-debt/TD-PPagop-26081403.md) and no review yet given; a
+   `could not post the idle nudge comment` warning only while the
+   `agent-ops:human-nudge` marker comment is still absent; a `no legal
+   review-request candidate` warning (tech-debt/TD-PPagop-26081001.md) only
+   while `gh pr view --json author,reviews,reviewRequests` still shows no
+   non-author, non-bot, submitted review, no review request already pending
+   under that same filter, and `enabler_assignee` — read back out of the
+   warning's own detail text — still names the pull request's own author;
+   any other warning shape for as long as the pull request stays open and
+   not a draft; an unreadable re-check is kept, not dropped) — carrying a
    ref scoped to the surviving violations' own identities and details
    (`human-visibility-<hash>`, disjoint from `register-hygiene-<hash>`), a
    `problems` line per violation and a body naming each one and the timestamp
@@ -9878,8 +9897,12 @@ pull request, run the ones the change touches and any it could regress.
     the author with nobody else known, is the distinguishable
     `skip\tno-candidate` (tech-debt/TD-PPagop-26081001.md), never a bare
     `skip`; `skip`s (bare) while something is genuinely
-    `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; and
-    an unreadable reviews list or pending list is `failed`, never an assumed
+    `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; the
+    pending list excludes a bot-type or `[bot]`-suffixed entry the same way
+    the reviews list does, and counts a requested team — agreeing with
+    requirement 38e's own read of the same rule
+    (tech-debt/TD-PPagop-26081403.md); and an unreadable reviews list or
+    pending list is `failed`, never an assumed
     `skip`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
     `actor=implementor` reply after the blocking review is `answered`, the
@@ -9944,6 +9967,13 @@ pull request, run the ones the change touches and any it could regress.
     `could not request review from …` violation is dropped once
     `reviewRequests` is non-empty, and separately once `reviewDecision` reads
     `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
+    `reviewRequests` entry typed `Bot` (keyed `__typename`, the
+    discriminator `gh pr view`'s exporter actually emits) or naming a
+    `[bot]`-suffixed login alone does not drop it, while a
+    requested-team-only entry does (tech-debt/TD-PPagop-26081403.md) — the
+    bot half is defensive: today's exporter drops Bot reviewers from the
+    array entirely, so in production a Copilot-only request arrives as `[]`
+    and is the "otherwise survives" case (see Gotchas); a
     `could not post the idle nudge comment` violation on an `APPROVED` pull
     request survives while the `agent-ops:human-nudge` marker comment is
     absent — confirming the classes are told apart, not read off the same
@@ -9953,9 +9983,12 @@ pull request, run the ones the change touches and any it could regress.
     (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
     show no non-author, non-bot, submitted review and no pending (unsubmitted)
     review counts either, is dropped the moment such a reviewer appears, is
-    dropped separately once `reviewRequests` is non-empty (a candidate a
-    CODEOWNERS auto-request already named, before anyone has reviewed —
-    agent-ops #350, #353, #355), and is dropped separately once the assignee
+    dropped separately once `reviewRequests` is non-empty under that same
+    bot filter (a candidate a CODEOWNERS auto-request already named, before
+    anyone has reviewed — agent-ops #350, #353, #355), survives a
+    Bot-typed/`[bot]`-suffixed-only `reviewRequests` entry (defensive, as
+    above) and is dropped by a
+    requested-team-only one, and is dropped separately once the assignee
     named in its own detail text no longer names the pull request's author;
     an unrecognised warning shape
     survives for as long as its pull request
@@ -10612,6 +10645,7 @@ confident, recurring no-op.
 | An operating-system limit the input grows into, one edit at a time | The assembled prompt went to the stage as `claude -p "$prompt"`. Linux caps one argv entry at 131072 bytes; `prompts/coordinator.md` grew from 37850 bytes to 62603 over seven days of ordinary requirement work, and on 2026-08-01 the assembled Co-Ordinator prompt reached 131441 — 369 bytes over. `execve` failed, the stage exited 126 with `Argument list too long`, the cycle logged `attempt-failed` and then `cycle-end exit_code 0`. Every node in the fleet went quiet within the hour and the dashboard showed four healthy idle nodes; the prompt ships in the image, so one roll broke all of them at once, and the node that had not rolled for four days broke the moment its operator ran `docker compose up -d`. | Never put unbounded content in argv. Prompts, diffs, issue bodies, JSON briefs — all of it goes on stdin, where no such cap exists. The general rule: when an input grows monotonically with the product's own development, find the ceiling *before* shipping it, because the failure lands not on the commit that caused it but on whichever later one crosses the line — and here that is a documentation-shaped commit, reviewed by people thinking about wording. Ask of any limit you are within: what consumes the remaining margin, and who would notice it being consumed? |
 | A query whose wrong answer is the same shape as a clean result | The gate added for requirement 31c asked the code-scanning API for the pull request's alerts on `refs/pull/<n>/head`. GitHub files a pull request's analysis under `refs/pull/<n>/merge`; the head ref has no analysis at all, so the API answered `[]` with a 200 — not an error, not an empty-because-broken sample, just "no alerts", which is exactly what a clean pull request returns. The security half of the gate was therefore inert from the moment it shipped, and its unit tests all passed, because the stub was written to serve the same ref the code asked for. Checked against the case the gate was built for, poetic-fiddle #216's high-severity alert is listed on `refs/pull/216/merge` and absent from `refs/pull/216/head` in every state — so the gate would have waved through the one pull request it existed to stop. | When a check's failure mode is an empty result, the empty result must be *distinguishable* from a legitimate pass before it is trusted: assert the query's **parameters**, not only what the code does with the answer. A stub written from the implementation confirms the code agrees with itself, which is not the property under test — pin the ref, the endpoint, the SHA against the real platform once, and keep that as the assertion. Same family as "a cost-control feature that makes cost the *only* thing it protects" above: any mechanism whose broken state looks like its healthy state needs a positive signal that it actually ran. |
 | Two different faults that reach the caller in the same shape | TD-PPagop-26081305 split `review_gate_required_checks` in two so a node that cannot read GitHub would stop being recorded as N broken pull requests — `dirty` for a pull request with no required checks (poetic-fiddle #190's conflicting-PR-runs-no-CI trap), `unknown` for a `gh` that could not answer. It split them on the shape of `gh`'s stdout: `[]` against nothing at all. But `gh pr checks --required` reports an empty required-check list as an *error* — `no required checks reported on the '<branch>' branch`, returned before the `--json` payload is ever written — so #190 arrives with empty stdout and a non-zero exit, byte-for-byte what a 502 looks like, and the `[]` branch is unreachable in production. Shipped, it would have filed every conflicting pull request as a degraded node, under an `unblock_condition` saying nothing found implicates the pull request: the same misattribution the item was written to remove, pointed the other way. The tests passed because the stub, written before the split, had always modelled #190 as its `ERROR` case. | Before splitting one verdict into two, establish what the tool *actually emits* for each case — read its source, or run it against a real instance of each — rather than what its `--json` contract suggests it emits. A CLI's error path is not covered by its output schema, and “no results” is the case most likely to be reported as a failure rather than as an empty one. Where two cases share a shape, the discriminator has to come from the channel that differs (here, stderr), and the stub has to carry the tool's own wording verbatim for both — otherwise the test asserts a shape nothing produces. |
+| One platform fact, two readers, two shapes | The bot filter tech-debt/TD-PPagop-26081403.md added to both readers of "is a human review pending" was written once, in REST's vocabulary — `"type": "Bot"`, `[bot]`-suffixed logins, both real in `requested_reviewers[]` — and applied verbatim to the other reader, `gh pr view --json reviewRequests`, which is GraphQL-backed: `gh`'s exporter (cli/cli `api/export_pr.go`) keys each entry on `__typename`, never `type`, and its `User`/`Team` switch has no default case, so a Bot requested reviewer — Copilot code review, the item's motivating case — is dropped from the array before any filter runs. The gatherer's half of the filter was a silent no-op, and its fixtures, written from the filter rather than from `gh`'s real output, passed for the wrong reason. Harmless here only because the dropped entry leaves `[]`, which reads as "nobody asked" — the answer the item wanted anyway. | The same platform fact read through two channels arrives in two shapes, so a predicate ported between readers must be re-derived per channel, not copied. Capture what each channel actually emits (run the real tool against a live case, or read its exporter's source) before writing either the filter or its fixtures, and fixture the stub from that captured output, never from the predicate under test — a stub written from the implementation proves the code agrees with itself, which is not the property under test. Where the shape makes a branch unreachable today, keep it only as labelled defence and assert the reachable path (here: emptiness) too. Same family as the row above, met from the opposite side: there two cases shared one shape; here one case wears two. |
 | A health check that only compares peers, never ground truth | Diagnosing the outage above meant reaching into a container's stderr, because the dashboard's only "is this node current" signal (`version`, the node's own build) compared nodes against *each other*. All four nodes had adopted the same broken image, so all four agreed, and agreement rendered as four healthy green cards — the same shape a genuinely healthy, fully-rolled fleet produces. The comparison could not distinguish "up to date" from "uniformly broken" because both are "everyone agrees." | Peer agreement proves consistency, not correctness — it cannot catch the whole group being wrong the same way at once. Compare against a reference outside the set being checked (the registry's own published commit, not another node's opinion of it — `lib/image-drift.sh`, #155), the same reasoning `origin/main` serves for `compose.yaml` drift (#131). Ask of any "do these agree" check: what happens when every one of them is wrong in the same way? |
 | A terminal state with a clearing event, but no retirement path for the ordinary case | Requirement 34c gives void exactly one exit — a human's hand-appended `unvoided` — because nothing else may reason its way out of a terminal state. That is correct for a *wrong* void; it says nothing about a *right* one, which is the overwhelming majority, and a right void never earns its one exit. The set grew by one entry for every item ever voided, forever, and on 2026-08-12 it reached 122 entries and 133,615 bytes — past `MAX_ARG_STRLEN` — taking the fleet down the same way the row above already had (issue #309). The fix for *that* row (requirement 4g's stdin delivery) raised the ceiling; it did not stop the set from still climbing toward whatever ceiling came next. | An append-only set bounded only by its one human-authorised exit is bounded in theory and unbounded in practice, because the exit is for the exceptional case, not the ordinary one. Ask, of any state whose *correctness* is what keeps it around: once this verdict has been acted on and nothing more will ever change about it, does anything let it go? If the only answer is "a human clears the wrong ones", that is a correctness escape hatch wearing a retention policy's job — build the second one (requirement 34n) separately, gated on the fact already being acted on rather than on a verdict having been reached. |
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |

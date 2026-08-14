@@ -70,11 +70,14 @@ assert_eq() {
 # (nonzero) or now succeeds (0, the default). `$STUB_PR_STATE`/`$STUB_PR_DRAFT`
 # steer a named pull request's live open/draft state; `$STUB_REVIEW_DECISION`
 # and `$STUB_REVIEW_REQUESTS` (nonzero means a pending request exists) steer
-# the request-class check; `$STUB_NUDGE_MARKER` (`yes`/`no`) steers whether
-# the nudge marker comment is present; `$STUB_AUTHOR` (default `author`) and
-# `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`, default `[]`)
-# steer the no-candidate-class check; `$STUB_VIEW_RC` set nonzero makes the
-# re-check itself unreadable, the fail-safe case.
+# the request-class check; `$STUB_REVIEW_REQUESTS_JSON`, when set, overrides
+# `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests` array, for fixturing
+# a Bot-typed/`[bot]`-suffixed or team-shaped entry
+# (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_MARKER` (`yes`/`no`) steers
+# whether the nudge marker comment is present; `$STUB_AUTHOR` (default
+# `author`) and `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`,
+# default `[]`) steer the no-candidate-class check; `$STUB_VIEW_RC` set
+# nonzero makes the re-check itself unreadable, the fail-safe case.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -87,6 +90,7 @@ case "${1:-} ${2:-}" in
     (( "${STUB_VIEW_RC:-0}" == 0 )) || exit "$STUB_VIEW_RC"
     reqs="[]"
     [[ "${STUB_REVIEW_REQUESTS:-0}" == "0" ]] || reqs='[{"login":"reviewer"}]'
+    [[ -z "${STUB_REVIEW_REQUESTS_JSON:-}" ]] || reqs="$STUB_REVIEW_REQUESTS_JSON"
     comments="[]"
     [[ "${STUB_NUDGE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:human-nudge -->"}]'
     printf '{"state":"%s","isDraft":%s,"reviewDecision":"%s","reviewRequests":%s,"comments":%s,"author":{"login":"%s"},"reviews":%s}\n' \
@@ -152,6 +156,40 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUE
         "$GATHER" "o/a" "$request_level")"
 assert_eq "a request-class violation on a changes-requested pull request is dropped" "[]" "$out"
 
+# --- could_not_request: a Bot-typed-only reviewRequests entry does not clear
+# it (tech-debt/TD-PPagop-26081403.md). Defensive: today's `gh pr view` never
+# delivers this shape — its exporter (cli/cli `api/export_pr.go`) drops Bot
+# reviewers from `reviewRequests` entirely, so a Copilot-only request arrives
+# as `[]` and is the "no live request survives" case above. This fixtures the
+# `__typename`-keyed entry the exporter *would* emit if it ever stopped
+# dropping them, so the filter keeps the two readers agreed even then.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Bot","login":"copilot-pull-request-reviewer"}]' \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a Bot-typed-only pending request does not clear a request-class violation" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_request: a [bot]-suffixed-only reviewRequests entry survives -
+# Defensive for the same reason: a `[bot]`-suffixed login is REST's rendering
+# of a Bot account, which this reader's GraphQL-backed exporter types as
+# `Bot` and drops — a `User`-typed `[bot]` login cannot occur today. The
+# `type` fallback retained in the filter covers a REST-shaped payload too.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"User","login":"some-app[bot]"}]' \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a [bot]-suffixed-only pending request does not clear a request-class violation" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_request: a requested-team-only reviewRequests entry clears it,
+# the same as a pending user request — a team can never itself be a bot, and
+# it is extended the same review-request mechanism CODEOWNERS gives a named
+# human (agreeing with `ensure_human_reviewer`'s own pending read,
+# requirement 38a).
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Team","name":"Reviewers","slug":"reviewers-team"}]' \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a requested-team-only pending request clears a request-class violation" "[]" "$out"
+
 # --- no_candidate: still nobody to ask — survives ---------------------------
 # The fixture's own detail names `enabler_assignee=author`, and the stub's
 # default author is also `author` with no reviews at all: exactly the state
@@ -194,6 +232,26 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[
         STUB_REVIEW_REQUESTS=1 "$GATHER" "o/a" "$no_candidate_level")"
 assert_eq "a no-candidate violation is dropped once a review request is already pending" \
   "[]" "$out"
+
+# --- no_candidate: a Bot-typed-only pending request does not clear it ------
+# (tech-debt/TD-PPagop-26081403.md), the same filter `ensure_human_reviewer`'s
+# own pending read applies. Defensive, `__typename`-keyed, for the same
+# reason as the request-class twin above: today's `gh` drops this entry
+# before it ever reaches the filter.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Bot","login":"copilot-pull-request-reviewer"}]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a Bot-typed-only pending request does not clear a no-candidate violation" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- no_candidate: a requested-team-only pending request clears it ---------
+# — a team can never itself be a bot, and it is extended the same
+# review-request mechanism CODEOWNERS gives a named human, agreeing with
+# `ensure_human_reviewer`'s own pending read (requirement 38a).
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Team","name":"Reviewers","slug":"reviewers-team"}]' \
+        "$GATHER" "o/a" "$no_candidate_level")"
+assert_eq "a requested-team-only pending request clears a no-candidate violation" "[]" "$out"
 
 # --- no_candidate: enabler_assignee no longer names the author — dropped ---
 no_candidate_reassigned='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=someone-else","ts":"2026-08-08T02:00:00Z"}]'

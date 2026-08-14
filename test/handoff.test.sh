@@ -447,13 +447,16 @@ assert_eq "confirm_review_requested's call-site shape survives set -e" "0" "$?"
 # function exists to cover.
 #
 # The stub answers everything `ensure_human_reviewer` reads:
-#   $tmp_dir/draft     "true" | "false" | "error" — same as confirm_pr_ready's
-#   $tmp_dir/reviews   the reviews array, verbatim JSON (as above)
-#   $tmp_dir/pending   the requested_reviewers logins, one per line
-#   $tmp_dir/author    the pull request author's login
-#   $tmp_dir/post      "works" | "silent" — whether the POST changes `pending`
-#   $tmp_dir/api-fail  the path fragment whose GET should fail, if any
-#   $tmp_dir/posts     one line per POST, recording its arguments
+#   $tmp_dir/draft         "true" | "false" | "error" — same as confirm_pr_ready's
+#   $tmp_dir/reviews       the reviews array, verbatim JSON (as above)
+#   $tmp_dir/pending       the requested_reviewers entries, one per line —
+#                          `login` alone (type defaults to `User`), or
+#                          `login<TAB>type` to fixture a bot-type account
+#   $tmp_dir/pending-teams the requested_teams slugs, one per line
+#   $tmp_dir/author        the pull request author's login
+#   $tmp_dir/post          "works" | "silent" — whether the POST changes `pending`
+#   $tmp_dir/api-fail      the path fragment whose GET should fail, if any
+#   $tmp_dir/posts         one line per POST, recording its arguments
 cat >"$tmp_dir/gh" <<'STUB'
 #!/usr/bin/env bash
 d="$(dirname "$0")"
@@ -484,7 +487,43 @@ if [[ "$path" == *"/reviews" ]]; then
 elif [[ "$*" == *"user.login"* ]]; then
   cat "$d/author"
 else
-  while IFS= read -r l; do [[ -n "$l" ]] && printf '%s\n' "$l"; done <"$d/pending"
+  # Builds the raw `requested_reviewers`/`requested_teams` shape a real PR
+  # object carries and runs the production `--jq` filter over it for real —
+  # rather than passing `$d/pending` through untouched, which would let a
+  # bot-filtering regression there go unnoticed (tech-debt/TD-PPagop-26081403.md).
+  #
+  # The filter is the one `ensure_human_reviewer` actually handed this call,
+  # read back out of its own argv, never a copy of it written here: a copy
+  # asserts only that the copy filters, and would keep passing with the
+  # production `--jq` reverted to an unfiltered `[.requested_reviewers[]?
+  # .login]` — which is precisely the regression the previous paragraph
+  # claims to catch.
+  jq_filter=""
+  prev=""
+  for a in "$@"; do
+    if [[ "$prev" == "--jq" ]]; then jq_filter="$a"; break; fi
+    prev="$a"
+  done
+  [[ -n "$jq_filter" ]] || { echo "stub: no --jq in: $*" >&2; exit 1; }
+  {
+    printf '{"requested_reviewers":['
+    first=true
+    while IFS=$'\t' read -r login rtype; do
+      [[ -n "$login" ]] || continue
+      $first || printf ','
+      first=false
+      printf '{"login":"%s","type":"%s"}' "$login" "${rtype:-User}"
+    done <"$d/pending"
+    printf '],"requested_teams":['
+    first=true
+    while IFS= read -r slug; do
+      [[ -n "$slug" ]] || continue
+      $first || printf ','
+      first=false
+      printf '{"slug":"%s"}' "$slug"
+    done <"$d/pending-teams"
+    printf ']}'
+  } | jq -r "$jq_filter"
 fi
 STUB
 chmod +x "$tmp_dir/gh"
@@ -492,7 +531,7 @@ chmod +x "$tmp_dir/gh"
 reset_human_stub() {  # <draft-flag> <post-behaviour>
   printf '%s' "$1" >"$tmp_dir/draft"
   printf '%s' "$2" >"$tmp_dir/post"
-  : >"$tmp_dir/pending"; : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
+  : >"$tmp_dir/pending"; : >"$tmp_dir/pending-teams"; : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
   printf 'warwickallen\n' >"$tmp_dir/author"
 }
 
@@ -560,6 +599,46 @@ printf 'Warwick-Allen\n' >"$tmp_dir/pending"
 out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
 assert_eq "a pending request survives even when ASSIGNEE equals the author" \
   "$(printf 'already\tWarwick-Allen')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# A bot-type account sitting in `requested_reviewers` is never read as proof a
+# human was asked — this org runs Copilot code review, and a repository
+# ruleset can auto-request it into this exact list
+# (tech-debt/TD-PPagop-26081403.md). With nobody known and ASSIGNEE equal to
+# the author, a bot-only pending entry must still fall to `no-candidate`,
+# never `already`.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'copilot-pull-request-reviewer\tBot\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a bot-type pending reviewer is not a candidate" \
+  "$(printf 'skip\tno-candidate')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# The other half of the same filter `_handoff_known_reviewers` already
+# applies: a `[bot]`-suffixed login with no explicit `type` field.
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'some-app[bot]\n' >"$tmp_dir/pending"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a [bot]-suffixed pending reviewer is not a candidate" \
+  "$(printf 'skip\tno-candidate')" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+# A requested team is extended the same review-request mechanism CODEOWNERS
+# gives a named human, and a team can never itself be a bot: it answers the
+# requirement on its own, exactly as a pending user login does — agreeing
+# with `scripts/gather-human-visibility-hygiene.sh`'s own read of this rule
+# (requirement 38e, tech-debt/TD-PPagop-26081403.md).
+review_n=0
+reset_human_stub false works
+set_reviews
+printf 'reviewers-team\n' >"$tmp_dir/pending-teams"
+out="$(ensure_human_reviewer "$URL" "warwickallen")"; rc=$?
+assert_eq "a pending team request is reported, not read as no-candidate" \
+  "$(printf 'already\treviewers-team')" "$out"
 assert_eq "  ... and exits 0" "0" "$rc"
 
 # The collision this function exists to avoid a 422 on: nobody has ever

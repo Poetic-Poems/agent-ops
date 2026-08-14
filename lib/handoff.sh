@@ -554,9 +554,20 @@ ensure_human_reviewer() {
   # Read once, ahead of the candidate decision: a pending request already
   # answers requirement 38a on its own, whoever put it there (CODEOWNERS, at
   # PR-open time, most often) — and GitHub never lets it name the author, so
-  # it needs no filtering to be trusted the same way `known` does.
+  # the pending read needs no author filter to be trusted the same way
+  # `known` does. It does carry `known`'s *bot* filter: a bot-type account or
+  # a `[bot]`-suffixed login sitting in `requested_reviewers` is never read as
+  # proof a human was asked (tech-debt/TD-PPagop-26081403.md) — this org runs
+  # Copilot code review, and a repository ruleset can auto-request it into
+  # this exact list. It also reads `requested_teams`: a requested team is
+  # extended the same review-request mechanism CODEOWNERS gives a named
+  # human, and a team can never itself be a bot, so
+  # `scripts/gather-human-visibility-hygiene.sh`'s own read of this rule
+  # (requirement 38e) counts it the same way this one does.
   if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+                    --jq '[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
+                             or (.login | endswith("[bot]")) | not) | .login),
+                           (.requested_teams[]? | .slug)] | .[]' 2>/dev/null)"; then
     printf 'failed'
     return 1
   fi
@@ -591,7 +602,9 @@ ensure_human_reviewer() {
     "${args[@]}" >/dev/null 2>&1 || true
 
   if ! pending="$("$gh_bin" api "repos/$slug/pulls/$number" \
-                    --jq '[.requested_reviewers[]?.login] | .[]' 2>/dev/null)"; then
+                    --jq '[(.requested_reviewers[]? | select(((.type // "User") == "Bot")
+                             or (.login | endswith("[bot]")) | not) | .login),
+                           (.requested_teams[]? | .slug)] | .[]' 2>/dev/null)"; then
     printf 'failed'
     return 1
   fi
