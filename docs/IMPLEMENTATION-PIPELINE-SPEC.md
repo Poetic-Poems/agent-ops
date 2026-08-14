@@ -10061,12 +10061,15 @@ requirements above, which state only what is.
   free-text match but no longer takes the citation on faith.
   What that fetch demands is deliberately not uniform: it is calibrated to what
   requirement 34k does with the void it corroborates. The two shapes whose void
-  *closes* the pull request (`-abandoned-`, `-review-`) must show an empty diff
-  or a closed PR, because closing a live branch on an uncorroborated "no longer
-  wanted" is what cost pull request #264; the shape whose void closes nothing
-  (`-conflict-`) is read against mergeability instead, because for it an empty
-  diff is not the claim being made and demanding one would refuse every honest
-  void the merge-conflicts source can write. Refusing is still the guard's
+  *closes* the pull request (`-abandoned-`, `-review-`) must show a closed PR,
+  an empty diff, or the human-applied `obsolete` label (TD-PPagop-26081308) —
+  the corroboration a human can give that a still-diff-carrying draft is
+  unwanted, which no API call can — because closing a live branch on an
+  uncorroborated "no longer wanted" is what cost pull request #264; the shape
+  whose void closes nothing (`-conflict-`) is read against mergeability
+  instead, because for it an empty diff is not the claim being made and
+  demanding one would refuse every honest void the merge-conflicts source can
+  write. Refusing is still the guard's
   preferred direction of failure — but only where a wrong acceptance is
   destructive, which is exactly where the strict reading now sits.
 - **A register that lies about itself is repaired by the pipeline, and prevented
