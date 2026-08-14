@@ -683,17 +683,7 @@ fi
 # no errors. That is how a switch someone set on Tuesday goes unnoticed until
 # Friday — and the whole reason acceptance check 8b insists an operator can
 # tell "waiting on something" from "there is nothing to do here" at a glance.
-switch_state="$(toggle_state "$state_dir")"
-switch_disabled=false
-[[ "$(jq -r '.state' <<<"$switch_state")" == "disabled" ]] && switch_disabled=true
-switch_json="$(jq -nc --argjson d "$switch_disabled" --argjson s "$switch_state" \
-  '{disabled: $d,
-    reason: ($s.record.reason // ""),
-    by: ($s.record.by // ""),
-    actor: ($s.record.actor // ""),
-    kind: ($s.record.kind // "manual"),
-    since: ($s.record.disabled_at // ""),
-    expires_at: ($s.record.expires_at // null)}')"
+switch_json="$(toggle_switch_summary "$state_dir")"
 
 status_json="$(jq -n \
   --argjson alive "$lock_alive" \
@@ -1270,9 +1260,10 @@ jq -nc --arg n "$self_node" --arg r "$(role_current)" --arg ts "$now_iso" --arg 
   --argjson version "$self_version_json" \
   --argjson compose "$(compose_drift_status)" \
   --argjson image "$(image_drift_status "$self_version_json" "$image_cache")" \
+  --argjson switch "$switch_json" \
   '{node: $n, role: $r, heartbeat_ts: $ts, heartbeat_age_s: 0,
     last_cycle: (if $lc == "" then null else $lc end), self: true, stale: false,
-    live: $live, version: $version, compose: $compose, image: $image}' > "$nodes_rows"
+    live: $live, version: $version, compose: $compose, image: $image, switch: $switch}' > "$nodes_rows"
 for hb in "$peers_dir"/*/heartbeat.json; do
   [[ -f "$hb" ]] || continue
   jq -c --argjson now "$now_epoch" --argjson live "$node_live_json" '
@@ -1296,7 +1287,14 @@ for hb in "$peers_dir"/*/heartbeat.json; do
        # peer itself can query the registry on its own behalf, so an absent
        # field (a peer on an image built before this check existed) yields
        # null rather than this node answering in its place.
-       image: ($h.image // null)}' \
+       image: ($h.image // null),
+       # And for the node-scoped switch (issue #379): the peer does
+       # replicate its own `disabled.json`, but only the peer evaluated it —
+       # against its own clock, through the one implementation `--status`
+       # also reads (requirement 34a). So an absent field (a peer on a
+       # heartbeat built before this check existed) yields null rather than
+       # this node re-deriving a verdict — silently — in its place.
+       switch: ($h.switch // null)}' \
     "$hb" 2>/dev/null >> "$nodes_rows" || true
 done
 fleet_nodes_json="$(jq -sc 'sort_by([(.self | not), .node])' "$nodes_rows" 2>/dev/null)"

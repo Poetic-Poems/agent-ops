@@ -173,6 +173,18 @@ assert_contains "poetic-3 is named on the strip" \
 assert_contains "poetic-4 is named on the strip" \
   "poetic-4" "$out"
 
+# --- The node-scoped switch badge on the fleet strip (issue #379) -----------
+# poetic-1 (self) carries an enabled switch and gets no badge; poetic-2
+# carries a node-scoped disable and gets one, beside its role badge, naming
+# the reason and the expiry; poetic-3/poetic-4 predate the field (absent, like
+# an old version/compose/image verdict) and get none either.
+assert_contains "a node-scoped disable is badged on its card" \
+  "disabled" "$out"
+assert_contains "naming the reason" \
+  "editing lib/toggle.sh" "$out"
+assert_contains "and the expiry" \
+  "2030-01-01T00:00:00Z" "$out"
+
 # --- finished.json: ended cycles (ready, failed) + one cycle a fleet-less --------
 # data.js (no `fleet` key at all) would have carried before the strip existed.
 out="$(render finished.json)" || { printf 'FAIL - finished.json did not render:\n%s\n' "$out"; exit 1; }

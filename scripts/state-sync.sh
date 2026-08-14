@@ -38,6 +38,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/compose-drift.sh"
 # shellcheck source=lib/image-drift.sh
 . "$SCRIPT_DIR/lib/image-drift.sh"
+# shellcheck source=lib/toggle.sh
+. "$SCRIPT_DIR/lib/toggle.sh"
 
 usage() {
   cat <<'EOF'
@@ -320,6 +322,17 @@ do_push() {
   # push already reads and is excluded above like the other local caches;
   # sharing it with scripts/publish-dashboard.sh's own reads means the two
   # never pay for the same registry query twice inside its TTL.
+  #
+  # And the node-scoped switch (lib/toggle.sh's `toggle_switch_summary`,
+  # issue #379). Unlike compose.yaml, `disabled.json` itself does replicate
+  # in the push below — but a record is not a verdict: whether it is still in
+  # force is decided against a clock, and a reader working that out from the
+  # replicated file would be a second implementation of the switch, free to
+  # disagree with what this node's own `--status` says (requirement 34a). So
+  # what travels is the verdict this node reached, through the same call the
+  # dashboard's page-top banner reads. The fleet-wide switch needs none of
+  # this: it is a flag every node fetches for itself
+  # (`fleet/disabled.json`).
   local last_cycle version_json
   last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
     | sort -r | head -n 1)"
@@ -332,8 +345,9 @@ do_push() {
     --argjson version "$version_json" \
     --argjson compose "$(compose_drift_status)" \
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
+    --argjson switch "$(toggle_switch_summary "$state_dir")" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose, image: $image}' > "$mirror/heartbeat.json"
+      compose: $compose, image: $image, switch: $switch}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

@@ -4,9 +4,10 @@
 # the fleet flags that lift it and the usage-limit stand-down to every node
 # at once (requirements 2.3a and 2.1 — see the fleet section below).
 #
-# Sourced by agent-cycle.sh, review-cycle.sh and scripts/publish-dashboard.sh,
-# so what stops a cycle, what `--status` prints, and what the dashboard shows
-# are one definition rather than three that agree until they don't
+# Sourced by agent-cycle.sh, review-cycle.sh, scripts/publish-dashboard.sh and
+# scripts/state-sync.sh, so what stops a cycle, what `--status` prints, what
+# the dashboard shows and what a node publishes about itself to the fleet are
+# one definition rather than four that agree until they don't
 # (requirement 34a).
 #
 # Why this exists: both cron pipelines *execute code out of the agent-ops
@@ -312,6 +313,25 @@ toggle_describe() {
   jq -r '"\(.reason // "no reason given") (set \(.disabled_at // "?") by \(.by // "?"); "
          + (if .expires_at == null or .expires_at == "" then "no expiry — needs --enable" else "expires \(.expires_at)" end)
          + ")"' <<<"$1" 2>/dev/null || printf 'disabled'
+}
+
+# toggle_switch_summary STATE_DIR
+# The node-scoped switch, flattened to the compact shape both
+# scripts/publish-dashboard.sh (`status.switch`) and scripts/state-sync.sh's
+# heartbeat (`switch`, issue #379) render from — one definition so a peer's
+# card and this node's own banner cannot disagree about what the switch says
+# (requirement 34a).
+toggle_switch_summary() {
+  local s
+  s="$(toggle_state "$1")"
+  jq -nc --argjson s "$s" \
+    '{disabled: ($s.state == "disabled"),
+      reason: ($s.record.reason // ""),
+      by: ($s.record.by // ""),
+      actor: ($s.record.actor // ""),
+      kind: ($s.record.kind // "manual"),
+      since: ($s.record.disabled_at // ""),
+      expires_at: ($s.record.expires_at // null)}'
 }
 
 # toggle_lock_held LOCK_FILE
