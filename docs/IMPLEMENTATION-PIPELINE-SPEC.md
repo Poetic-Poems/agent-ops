@@ -6710,10 +6710,18 @@ runs unattended.
     filed that way — `prompts/reviewer.md` offers `gh pr review --comment` for
     them — under the account that raised the pull request. The pending list
     needs no author filter: GitHub never lets a review request name the pull
-    request's own author to begin with. It carries no *bot* filter either,
-    unlike the reviews list, and reads only `requested_reviewers` (users),
-    never `requested_teams` — tech-debt/TD-PPagop-26081403.md records both,
-    and what requirement 38e's own read of the same rule does differently.
+    request's own author to begin with. It does carry the same *bot* filter
+    the reviews list applies: a bot-type account or a `[bot]`-suffixed login
+    sitting in `requested_reviewers` is never read as proof a human was asked
+    — this org runs Copilot code review, and a repository ruleset can
+    auto-request it into this exact list, which would otherwise answer the
+    requirement without ever asking a human (tech-debt/TD-PPagop-26081403.md).
+    It also reads `requested_teams`, not only `requested_reviewers`: a
+    requested team is extended the same review-request mechanism CODEOWNERS
+    gives a named human, and a team can never itself be a bot, so this
+    function and requirement 38e's own read of the same rule
+    (`scripts/gather-human-visibility-hygiene.sh`'s `no_candidate` re-check)
+    count a pending request the same way.
 
     The no-candidate `skip` carries its own detail, `skip\tno-candidate`,
     distinguishable from the other two `skip` reasons — a draft, or something
@@ -6903,24 +6911,29 @@ runs unattended.
       draft, then survives its own warning class's own live check: a
       `could not request review from …` warning survives only while no human
       review is currently requested or already given (`gh pr view --json
-      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, or a
-      `reviewDecision` of `APPROVED` or `CHANGES_REQUESTED`, is the request
-      having worked after all); a `could not post the idle nudge comment`
-      warning survives only while the `<!-- agent-ops:human-nudge -->` marker
-      comment `scripts/sweep-human-visibility.sh` itself checks for is still
-      absent; a `no legal review-request candidate` warning (requirement 38a's
+      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, once
+      filtered of a bot-type or `[bot]`-suffixed one the same way
+      `ensure_human_reviewer`'s own pending read is (requirement 38a,
+      tech-debt/TD-PPagop-26081403.md) — a requested team counts, neither
+      reader's filter can ever drop one — or a `reviewDecision` of `APPROVED`
+      or `CHANGES_REQUESTED`, is the request having worked after all); a
+      `could not post the idle nudge comment` warning survives only while the
+      `<!-- agent-ops:human-nudge -->` marker comment
+      `scripts/sweep-human-visibility.sh` itself checks for is still absent;
+      a `no legal review-request candidate` warning (requirement 38a's
       `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
       while `gh pr view --json author,reviews,reviewRequests` still shows no
       non-author, non-bot, submitted review, no review request already
-      pending (most often CODEOWNERS' own auto-request, live before anyone
-      has reviewed — agent-ops #350, #353, #355 were each already
-      live-requested this way), and `enabler_assignee` — carried in the
-      warning's own detail text, at the value it held when the sweep warned —
-      still names the pull request's own author: any of the three is
-      `ensure_human_reviewer`'s own candidate rule, generalised read-only,
-      resolving itself, since the sweep's own next pass would report
-      `already` or `requested` for that candidate, never `no-candidate`
-      again, before this gatherer runs again. The three classes are told apart deliberately:
+      pending under that same bot filter (most often CODEOWNERS' own
+      auto-request, live before anyone has reviewed — agent-ops #350, #353,
+      #355 were each already live-requested this way), and `enabler_assignee`
+      — carried in the warning's own detail text, at the value it held when
+      the sweep warned — still names the pull request's own author: any of
+      the three is `ensure_human_reviewer`'s own candidate rule, generalised
+      read-only, resolving itself, since the sweep's own next pass would
+      report `already` or `requested` for that candidate, never
+      `no-candidate` again, before this gatherer runs again. The three
+      classes are told apart deliberately:
       every pull request a nudge warning is logged against is already
       `APPROVED` (the nudge's own gate), so the request-class check alone
       would read every nudge-class warning as resolved the moment it was
@@ -7324,16 +7337,17 @@ What exists, and the requirements each part answers to:
    only if it is still open and not a draft, and its own warning class's own
    live signal still holds: a `could not request review from …` warning only
    while `gh pr view --json reviewDecision,reviewRequests` shows no live
-   request and no review yet given; a `could not post the idle nudge comment`
-   warning only while the `agent-ops:human-nudge` marker comment is still
-   absent; a `no legal review-request candidate` warning
-   (tech-debt/TD-PPagop-26081001.md) only while `gh pr view --json
-   author,reviews,reviewRequests` still shows no non-author, non-bot,
-   submitted review, no review request already pending, and
-   `enabler_assignee` — read back out of the warning's own detail text —
-   still names the pull request's own author; any other warning shape for as
-   long as the pull request stays open and not a draft; an unreadable
-   re-check is kept, not dropped) — carrying a
+   request (bot-type and `[bot]`-suffixed entries excluded, a requested team
+   counted — tech-debt/TD-PPagop-26081403.md) and no review yet given; a
+   `could not post the idle nudge comment` warning only while the
+   `agent-ops:human-nudge` marker comment is still absent; a `no legal
+   review-request candidate` warning (tech-debt/TD-PPagop-26081001.md) only
+   while `gh pr view --json author,reviews,reviewRequests` still shows no
+   non-author, non-bot, submitted review, no review request already pending
+   under that same filter, and `enabler_assignee` — read back out of the
+   warning's own detail text — still names the pull request's own author;
+   any other warning shape for as long as the pull request stays open and
+   not a draft; an unreadable re-check is kept, not dropped) — carrying a
    ref scoped to the surviving violations' own identities and details
    (`human-visibility-<hash>`, disjoint from `register-hygiene-<hash>`), a
    `problems` line per violation and a body naming each one and the timestamp
@@ -9836,8 +9850,12 @@ pull request, run the ones the change touches and any it could regress.
     the author with nobody else known, is the distinguishable
     `skip\tno-candidate` (tech-debt/TD-PPagop-26081001.md), never a bare
     `skip`; `skip`s (bare) while something is genuinely
-    `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; and
-    an unreadable reviews list or pending list is `failed`, never an assumed
+    `CHANGES_REQUESTED`-blocking, and while the pull request is a draft; the
+    pending list excludes a bot-type or `[bot]`-suffixed entry the same way
+    the reviews list does, and counts a requested team — agreeing with
+    requirement 38e's own read of the same rule
+    (tech-debt/TD-PPagop-26081403.md); and an unreadable reviews list or
+    pending list is `failed`, never an assumed
     `skip`. `handoff_round_answered` is asserted
     directly there too, both callers' halves at once: a marked
     `actor=implementor` reply after the blocking review is `answered`, the
@@ -9902,6 +9920,9 @@ pull request, run the ones the change touches and any it could regress.
     `could not request review from …` violation is dropped once
     `reviewRequests` is non-empty, and separately once `reviewDecision` reads
     `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
+    `reviewRequests` entry naming a bot-type or `[bot]`-suffixed login alone
+    does not drop it, while a requested-team-only entry does
+    (tech-debt/TD-PPagop-26081403.md); a
     `could not post the idle nudge comment` violation on an `APPROVED` pull
     request survives while the `agent-ops:human-nudge` marker comment is
     absent — confirming the classes are told apart, not read off the same
@@ -9911,9 +9932,11 @@ pull request, run the ones the change touches and any it could regress.
     (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
     show no non-author, non-bot, submitted review and no pending (unsubmitted)
     review counts either, is dropped the moment such a reviewer appears, is
-    dropped separately once `reviewRequests` is non-empty (a candidate a
-    CODEOWNERS auto-request already named, before anyone has reviewed —
-    agent-ops #350, #353, #355), and is dropped separately once the assignee
+    dropped separately once `reviewRequests` is non-empty under that same
+    bot filter (a candidate a CODEOWNERS auto-request already named, before
+    anyone has reviewed — agent-ops #350, #353, #355), survives a
+    bot-type/`[bot]`-suffixed-only `reviewRequests` entry and is dropped by a
+    requested-team-only one, and is dropped separately once the assignee
     named in its own detail text no longer names the pull request's author;
     an unrecognised warning shape
     survives for as long as its pull request

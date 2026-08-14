@@ -74,9 +74,17 @@
 #   could_not_request      — a read-only "is a human review currently
 #                             requested (or already given)" check: `gh pr
 #                             view --json reviewDecision,reviewRequests`.
-#                             `reviewRequests` non-empty means a request is
-#                             live right now; `reviewDecision` of `APPROVED`
-#                             or `CHANGES_REQUESTED` means a review already
+#                             A `reviewRequests` entry counts only once it
+#                             clears the same *bot* filter `ensure_human_
+#                             reviewer`'s own pending read applies — a
+#                             bot-type account or a `[bot]`-suffixed login is
+#                             never proof a human was asked
+#                             (tech-debt/TD-PPagop-26081403.md) — and a
+#                             requested team counts, the same as it does
+#                             there; a filtered-nonempty `reviewRequests`
+#                             means a request is live right now.
+#                             `reviewDecision` of `APPROVED` or
+#                             `CHANGES_REQUESTED` means a review already
 #                             happened, which only a request already granted
 #                             could have produced — either is the violation
 #                             resolving itself, the same two facts
@@ -95,7 +103,9 @@
 #                             review request already pending (most often
 #                             CODEOWNERS' own auto-request, live before
 #                             anyone has reviewed — the `known`-reviewer
-#                             check alone cannot see it), or `enabler_assignee`
+#                             check alone cannot see it; the same bot filter
+#                             and team-counting as `could_not_request` above
+#                             applies here too), or `enabler_assignee`
 #                             (carried in the warning's own detail text, at
 #                             the value it held when the sweep warned) no
 #                             longer naming the author, is the violation
@@ -191,7 +201,15 @@ _pr_violation_survives() {
   case "$class" in
     could_not_request)
       decision="$(jq -r '.reviewDecision // ""' <<<"$json" 2>/dev/null || true)"
-      requests="$(jq -r '(.reviewRequests // []) | length' <<<"$json" 2>/dev/null || echo 0)"
+      # A bot-type or `[bot]`-suffixed entry is dropped before counting, the
+      # same filter `ensure_human_reviewer`'s own pending read applies
+      # (tech-debt/TD-PPagop-26081403.md); a team entry (no `login`, so the
+      # `[bot]`-suffix test never matches it) is kept and counts.
+      requests="$(jq -r '[(.reviewRequests // [])[]
+                           | select(((.type // "User") == "Bot")
+                                    or ((.login // "") | endswith("[bot]"))
+                                    | not)]
+                          | length' <<<"$json" 2>/dev/null || echo 0)"
       if [[ "$decision" == "APPROVED" || "$decision" == "CHANGES_REQUESTED" || "$requests" != "0" ]]; then
         printf 'drop'
       else
@@ -221,7 +239,11 @@ _pr_violation_survives() {
       # — is not (or is no longer) the pull request's own author. Any of the
       # three is the violation resolving itself: the sweep's own next pass
       # would report `already` or `requested` for this pull request, never
-      # `no-candidate` again, before this gatherer ever ran again.
+      # `no-candidate` again, before this gatherer ever ran again. The
+      # pending-request check applies the same bot filter and team-counting
+      # as `could_not_request` above, so this reader and `ensure_human_
+      # reviewer`'s own pending read (tech-debt/TD-PPagop-26081403.md) agree
+      # on what counts as a live request.
       assignee="$(sed -n 's/.*enabler_assignee=//p' <<<"$detail")"
       author_login="$(jq -r '.author.login // ""' <<<"$json" 2>/dev/null || true)"
       known_other="$(jq -r --arg a "$author_login" '
@@ -229,7 +251,11 @@ _pr_violation_survives() {
              | (.author.login // "")
              | select(. != "" and . != $a and (endswith("[bot]") | not))]
           | unique | length' <<<"$json" 2>/dev/null || echo 0)"
-      requests="$(jq -r '(.reviewRequests // []) | length' <<<"$json" 2>/dev/null || echo 0)"
+      requests="$(jq -r '[(.reviewRequests // [])[]
+                           | select(((.type // "User") == "Bot")
+                                    or ((.login // "") | endswith("[bot]"))
+                                    | not)]
+                          | length' <<<"$json" 2>/dev/null || echo 0)"
       if [[ "$known_other" != "0" ]] || [[ "$requests" != "0" ]] \
           || { [[ -n "$assignee" ]] && [[ "$assignee" != "$author_login" ]]; }; then
         printf 'drop'
