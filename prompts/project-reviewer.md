@@ -159,8 +159,11 @@ Both target repos follow these rules:
      `default_branch`: the orchestrator created it when it claimed this
      review, and the ref is the fleet's lock on today's review of this
      repository. Check it out (`git checkout <branch>` — git will track the
-     remote branch). Never create a different branch, never rename this one,
-     and never force-push it.
+     remote branch). Never create a different branch and never rename this
+     one. Never force-push it either, with one exception: publishing the
+     rebase step 5 may require, and then only ever as
+     `git push --force-with-lease`, which refuses rather than silently
+     overwrites a push you have not seen.
    - Stage **only** the review outputs by explicit path — the new
      `reviews/project-review-<review_date>/` folder and the `TECH-DEBT.md`
      change — and commit them. Never `git add -A` (it would sweep in the
@@ -185,7 +188,9 @@ Both target repos follow these rules:
    should pass trivially. Then verify the PR against GitHub's own view, not your
    local guess: `gh pr view --json mergeable,mergeStateStatus`. If it is not
    mergeable — most likely `default_branch` moved since you branched — rebase
-   onto the current `default_branch` and re-verify. Leave the PR **ready**.
+   onto the current `default_branch`, publish the rebase with
+   `git push --force-with-lease` (the one force-push step 4 allows), and
+   re-verify. Leave the PR **ready**.
 
 ## Ending
 
