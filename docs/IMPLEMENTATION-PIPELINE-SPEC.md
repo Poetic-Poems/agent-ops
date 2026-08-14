@@ -7315,12 +7315,16 @@ runs unattended.
       both an unreadable probe and a pull request re-queued since at the
       same head, either of which has nothing fresh to say. Two further gates
       (agent-ops#394, tech-debt/TD-PPagop-26081409.md):
-      `merge_queue_dequeue_actionable` (`lib/merge-queue.sh`) excludes a
-      `"manual"` `dequeue_reason` — GitHub's own value for a removal the
-      maintainer performed themselves, via the API or the merge queue's own
-      UI, verified live against public repositories with an active queue —
-      since telling the maintainer their own removal "needs a fresh look"
-      is noise addressed to the person who caused it; every other reason,
+      `merge_queue_dequeue_actionable` (`lib/merge-queue.sh`) excludes the
+      two `dequeue_reason` values that are nobody's defect, both verified
+      live against public repositories with an active queue: `"manual"`,
+      GitHub's own value for a removal the maintainer performed themselves
+      via the API or the merge queue's own UI — telling them their own
+      removal "needs a fresh look" is noise addressed to the person who
+      caused it — and `"merged"`, the removal that *is* the pull request
+      landing, which this script never encounters (it reads open pull
+      requests only) but which a shared classification must not call
+      actionable for the two sites below. Every other reason,
       including one this never learned to recognise, stays actionable, the
       same "unknown must not suppress" direction `merge_queue_probe`'s own
       contract takes. And the event's own age is bounded by
@@ -10580,9 +10584,10 @@ pull request, run the ones the change touches and any it could regress.
     than one) are rejected before ever calling `gh`, while a slug whose
     repository is named the same as its owner is probed like any other.
     `test/merge-queue.test.sh` also passes `merge_queue_dequeue_actionable`
-    against every reason value verified live (`"manual"` false; `""`,
-    `"failed_checks"`, `"merge_conflict"` and an unrecognised value all
-    true) (agent-ops#394). `test/sweep-human-visibility.test.sh` passes
+    against every reason value verified live (`"manual"` and `"merged"`
+    false; `""`, `"failed_checks"`, `"merge_conflict"` and an unrecognised
+    value all true) (agent-ops#394).
+    `test/sweep-human-visibility.test.sh` passes
     the merge-queue cases alongside its existing ones: a currently-queued
     pull request is never idle-nudged; a checks-failure dequeue produces its
     own `dequeue-notice` action (never `nudged`) even with
