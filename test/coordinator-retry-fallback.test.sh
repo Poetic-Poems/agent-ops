@@ -655,6 +655,109 @@ assert_eq "the retry's corroboration event agrees, and fallback still fires (fn_
   "$big_n" "$(jq '.unaccounted | length' <<<"$c2")"
 assert_eq "  ... function returns 0 (ready for the mechanical fallback)" "0" "$fn_rc"
 
+# --- The argv cap, the other half (requirement 4g, TD-PPagop-26081406) ------
+# The section above proved $eligible surviving the cap (TD-PPagop-26081401).
+# This one proves the *recorded* side does: the `{needs_refinement: $nr,
+# voided: $v}` build inside coordinator_corroborate_retry_or_fallback that
+# feeds unaccounted_items reads $coord_recorded_refinement_json/
+# $coord_recorded_voided_json back — past MAX_ARG_STRLEN, that build died at
+# execve and unaccounted_items was handed "", which fail-opens to `[]` and
+# reports zero unaccounted items exactly when there is the most recorded
+# refinement to account for (the record's own worked incident).
+#
+# $coord_recorded_refinement_json is set directly, as one already-large
+# array, rather than by driving log_needs_refinement_items' own per-entry
+# fold thousands of times: that fold (a single jq append line, identical in
+# shape to the pattern already pinned past the cap in
+# test/review-feedback.test.sh and elsewhere) is not this section's subject —
+# it is the *consumer* downstream, inside coordinator_corroborate_retry_or_-
+# fallback, that TD-PPagop-26081406 converted and this section exists to
+# pin. Nor is it driven through run_full_scenario: that harness's own
+# `run_claude_stage` stub hands the attempt's whole message to jq via `--arg`
+# (line ~153 above, simulating the CLI's own JSON envelope) — a harness-only
+# argv site, unrelated to this item's production sites, that a message this
+# size would trip on its own regardless. Calling
+# coordinator_corroborate_retry_or_fallback directly, the way
+# test/verdict-corroboration.test.sh already calls its sibling functions,
+# reaches the real build under test without either confound.
+big_recorded_refinement="$(jq -c '[.[] | {repo, item, source,
+  reason: "r", missing: "m", evidence: "e"}]' <<<"$big_eligible")"
+assert_eq "the recorded-refinement fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_recorded_refinement" | wc -c) > 131072 ))"
+
+calls_log="$tmp_dir/calls-direct.log"
+: > "$calls_log"
+# Read only by the eval'd coordinator_corroborate_retry_or_fallback,
+# invisible to shellcheck.
+# shellcheck disable=SC2034
+eligible_items_json="$big_eligible"
+# shellcheck disable=SC2034
+eligible_items_total="$(jq 'length' <<<"$big_eligible")"
+# shellcheck disable=SC2034
+ordered_repos_json="$big_repos"
+work_order_json='{"selected":false,"reason":"reported every item"}'
+# shellcheck disable=SC2034
+coord_recorded_refinement_json="$big_recorded_refinement"
+# shellcheck disable=SC2034
+coord_recorded_voided_json='[]'
+
+coordinator_corroborate_retry_or_fallback
+direct_fn_rc=$?
+calls="$(cat "$calls_log")"
+c1="$(events_named "$calls" corroboration | sed -n '1p')"
+assert_eq "every one of the 3000 recorded reports is read back, past the argv cap, and accounted for" \
+  "0" "$(jq '.unaccounted_total' <<<"$c1")"
+assert_eq "  ... so the verdict is accepted on the first attempt" "accepted" "$(jq -r '.verdict' <<<"$c1")"
+assert_eq "  ... and no retry is bought (an accepted verdict needs no fallback)" "1" "$direct_fn_rc"
+
+# --- The retry merge itself, the other build the same bullet names ---------
+# recorded_refinement_all_json/recorded_voided_all_json — the retry's own
+# attempt-1-plus-attempt-2 merge, feeding the second unaccounted_items call —
+# used to ride into jq as two --argjson each, the same shape as the
+# first-attempt build above. Forced here by an eligible set attempt 1's
+# (pre-seeded, oversized) recorded band does not cover at all, so the
+# function actually reaches the retry path and the merge runs for real.
+big_unrelated_refinement="$(jq -nc '[range(1900) | {repo: "org/other", item: ("fill-" + (. | tostring)),
+  source: "tech-debt", reason: "r", missing: "m", evidence: "e"}]')"
+assert_eq "the oversized pre-retry recorded fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_unrelated_refinement" | wc -c) > 131072 ))"
+
+calls_log="$tmp_dir/calls-retry-direct.log"
+: > "$calls_log"
+STUB_CALL_N=0
+# shellcheck disable=SC2034  # read only by the stubbed run_claude_stage, by name
+STUB_QUEUE_RC_1=0
+# shellcheck disable=SC2034
+STUB_QUEUE_JSON_1='{"selected":false,"reason":"still nothing on retry"}'
+# Read only by the eval'd coordinator_corroborate_retry_or_fallback,
+# invisible to shellcheck.
+# shellcheck disable=SC2034
+eligible_items_json='[{"repo":"org/a","item":"TD-a","source":"tech-debt"},{"repo":"org/a","item":"TD-b","source":"tech-debt"}]'
+# shellcheck disable=SC2034
+eligible_items_total=2
+# shellcheck disable=SC2034
+ordered_repos_json="$repos_tech_debt_only"
+work_order_json='{"selected":false,"reason":"nothing here"}'
+# shellcheck disable=SC2034
+coord_recorded_refinement_json="$big_unrelated_refinement"
+# shellcheck disable=SC2034
+coord_recorded_voided_json='[]'
+
+coordinator_corroborate_retry_or_fallback
+retry_direct_fn_rc=$?
+# recorded_refinement_all_json is assigned only inside the eval'd function,
+# invisible to shellcheck.
+# shellcheck disable=SC2154
+assert_eq "the retry merge kept every one of the 1900 attempt-1 entries" \
+  "1900" "$(jq 'length' <<<"$recorded_refinement_all_json")"
+retry_calls="$(cat "$calls_log")"
+retry_c2="$(events_named "$retry_calls" corroboration | sed -n '2p')"
+assert_eq "the retry's own corroboration still counts both eligible items unaccounted" \
+  "2" "$(jq '.unaccounted_total' <<<"$retry_c2")"
+assert_eq "  ... rejected a second time, so the mechanical fallback fires" "rejected" \
+  "$(jq -r '.verdict' <<<"$retry_c2")"
+assert_eq "  ... function returns 0 (ready for the mechanical fallback)" "0" "$retry_direct_fn_rc"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

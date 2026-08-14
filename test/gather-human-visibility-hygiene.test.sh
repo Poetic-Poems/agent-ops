@@ -305,6 +305,76 @@ assert_eq "a repo-level and a pull-request violation combine into one candidate"
   "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... with two problem lines" "2" "$(jq -r '.[0].problems | length' <<<"$out")"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# The two survivor-accumulator appends and the final `problems` build all
+# used to ride into jq as --argjson: $problems alone grows with the survivor
+# set, unbounded past this call. Past MAX_ARG_STRLEN (131072 bytes) the build
+# died at execve and this repo's whole human-visibility candidate was lost.
+# Requirement 4g moves all three onto stdin.
+#
+# Not reached by driving the real script over its own CLI argument: the
+# script's own second positional argument (agent-cycle.sh's `$violations`) is
+# itself a single argv element subject to the identical MAX_ARG_STRLEN cap,
+# unconverted and unenumerated by TD-PPagop-26081406 — filed separately
+# rather than fixed as scope creep in this PR. So the append and the
+# `problems` build are each lifted by their own literal lines instead, the
+# same technique test/pr-claim-exclusion.test.sh's `extract_claims_fold`
+# uses, and driven directly with an oversized accumulator.
+extract_block() {  # extract_block <start-literal> <end-literal>
+  awk -v s="$1" -v e="$2" \
+    'index($0, s) == 1 { on = 1 } on { print } on && index($0, e) > 0 { exit }' \
+    "$SCRIPT_DIR/scripts/gather-human-visibility-hygiene.sh"
+}
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+append_line="$(extract_block '    survivors="$(jq -nc '"'"'input as $arr | input as $v' '    continue')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$append_line" != *'$arr + [$v]'* ]]; then
+  printf 'FAIL - could not extract the survivors-append from scripts/gather-human-visibility-hygiene.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+append_stmt="$(head -n1 <<<"$append_line")"
+run_append() {  # run_append <survivors-json> <v-json>
+  # v is consumed only by the eval'd append_stmt, invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( survivors="$1" v="$2"; eval "$append_stmt"; printf '%s' "$survivors" )
+}
+big_survivors="$(jq -nc '[range(1300) | {repo: "o/a", pr_url: "", detail: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized survivors-accumulator fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_survivors" | wc -c) > 131072 ))"
+new_v='{"repo":"o/a","pr_url":"","detail":"the newest one"}'
+appended="$(run_append "$big_survivors" "$new_v")"
+assert_eq "an append onto an oversized survivors accumulator keeps every prior entry" \
+  "1301" "$(jq 'length' <<<"$appended")"
+assert_eq "  ... plus the new one just appended" "1" \
+  "$(jq '[.[] | select(.detail == "the newest one")] | length' <<<"$appended")"
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+problems_block="$(extract_block 'jq -nc' '"$problems"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$problems_block" != *'source: "human-visibility"'* ]]; then
+  printf 'FAIL - could not extract the final problems build from scripts/gather-human-visibility-hygiene.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_problems_block() {  # run_problems_block <problems-json>
+  # ref/url/body are consumed only by the eval'd problems_block, unseen by
+  # static analysis.
+  # shellcheck disable=SC2034
+  ( problems="$1" ref="human-visibility-abc123" url="https://github.com/o/a/pulls" body="the digest"
+    eval "$problems_block" )
+}
+big_problems="$(jq -nc '[range(1300) | ("HUMAN VISIBILITY  o/a: pad " + ("x" * 100))]')"
+assert_eq "the oversized problems fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_problems" | wc -c) > 131072 ))"
+built_candidate="$(run_problems_block "$big_problems")"
+assert_eq "a problems array past the argv cap still produces the candidate" "1" \
+  "$(jq 'length' <<<"$built_candidate")"
+assert_eq "  ... carrying every one of the 1300 problem lines" \
+  "1300" "$(jq '.[0].problems | length' <<<"$built_candidate")"
+assert_eq "  ... with the source and ref intact" "human-visibility human-visibility-abc123" \
+  "$(jq -r '.[0] | "\(.source) \(.ref)"' <<<"$built_candidate")"
+
 echo
 if (( failures == 0 )); then
   echo "all assertions passed"

@@ -439,6 +439,119 @@ out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedb
 assert_eq "a marked reply isolated alone on page two of the comments read answers the round" \
   "0" "$(jq 'length' <<<"$out")"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# The assembled review body ($fresh/$fresh_comments), the candidate build
+# ($pr, a whole pull-request object including its body) and the per-candidate
+# append ($cand) all used to ride into jq as --argjson: genuinely unbounded,
+# not merely growing — the same shape and the same reasoning that put
+# gather-merge-conflicts.sh first on TD-PPagop-26081401's list. Past
+# MAX_ARG_STRLEN (131072 bytes) the build died at execve; this repo's whole
+# review_feedback band came out empty. Requirement 4g moves all three onto
+# stdin.
+#
+# The candidate build ($pr) is pinned by driving the real script, via the
+# same stub gh as the pagination section above, with a PR object whose body
+# alone is past the cap — genuinely unbounded even though the candidate's own
+# `body` field is assembled from the reviews, not from $pr.body, because the
+# whole $pr object rides together regardless of which fields the jq program
+# reads. (The reviews/comments arrays cannot be grown the same way here:
+# lib/handoff.sh's own `handoff_answer_events` reads the same $reviews array
+# first, unconverted — TD-PPagop-26081406 did not enumerate it, so it is
+# left alone and filed separately rather than fixed as scope creep in this
+# PR.)
+oversized_pr_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized PR-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_pr_body} > 131072 ))"
+
+cat > "$tmp_dir/prs.json" <<JSON
+[
+  {"number": 300, "title": "fix(oversized): pad the PR body past the argv cap",
+   "headRefName": "agent/td-oversized-fix", "headRefOid": "0ff512edb0dy",
+   "isDraft": false, "reviewDecision": "CHANGES_REQUESTED",
+   "url": "https://github.com/o/r/pull/300", "body": "$oversized_pr_body"}
+]
+JSON
+cat > "$tmp_dir/reviews.json" <<'JSON'
+[{"id": 1, "state": "CHANGES_REQUESTED", "submitted_at": "2026-08-01T00:05:00Z",
+  "user": {"login": "Warwick-Allen"}, "body": "please fix"}]
+JSON
+printf '[]' > "$tmp_dir/issue-comments.json"
+printf '[]' > "$tmp_dir/timeline.json"
+printf '[]' > "$tmp_dir/pr-comments.json"
+
+out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
+assert_eq "a PR object past the argv cap still produces the candidate" "1" \
+  "$(jq 'length' <<<"$out")"
+assert_eq "  ... and the ref still pins to the blocking review" \
+  "pr-300-review-1" "$(jq -r '.[0].ref' <<<"$out")"
+
+# The review-body assembly and the per-candidate array append are inline, not
+# functions, so each is lifted by its own literal start/end lines — the same
+# technique test/pr-claim-exclusion.test.sh's `extract_claims_fold` uses —
+# and run with the real script's own $fresh/$fresh_comments and $out/$cand
+# too large to have survived as a second --argjson.
+extract_block() {  # extract_block <start-literal> <end-literal>
+  awk -v s="$1" -v e="$2" \
+    'index($0, s) == 1 { on = 1 } on { print } on && index($0, e) > 0 { exit }' \
+    "$SCRIPT_DIR/scripts/gather-review-feedback.sh"
+}
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+body_block="$(extract_block '  body="$(jq -rn' '"$fresh_comments")"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$body_block" != *'input as $fr | input as $fc'* ]]; then
+  printf 'FAIL - could not extract the review-body assembly from scripts/gather-review-feedback.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+
+oversized_review_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized review-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_review_body} > 131072 ))"
+
+run_body_block() {  # run_body_block <fresh-json> <fresh_comments-json>
+  # fresh and fresh_comments are consumed only by the eval'd body_block,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( fresh="$1" fresh_comments="$2"; eval "$body_block"; printf '%s' "$body" )
+}
+# Bash-side JSON assembly, not jq --arg: an --arg carrying the oversized
+# string would hit the very argv cap this section exists to prove the real
+# code no longer does.
+fresh_oversized="$(printf '[{"state": "CHANGES_REQUESTED", "who": "Warwick-Allen", "at": "2026-08-01T00:05:00Z", "body": "%s"}]' "$oversized_review_body")"
+built_body="$(run_body_block "$fresh_oversized" '[]')"
+assert_eq "a fresh-reviews array past the argv cap still assembles the body" "1" \
+  "$([[ "$built_body" == *"$oversized_review_body"* ]] && echo 1 || echo 0)"
+
+# The per-candidate array append: $out (the whole review_feedback band
+# collected so far) and $cand both arrive on stdin now, not argv — pinned
+# with an accumulator already past the cap from prior candidates, proving a
+# late append does not drop what came before it.
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+append_block="$(extract_block '  out="$(jq -nc '"'"'input as $arr | input as $c' '  })"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$append_block" != *'candidate dropped'* ]]; then
+  printf 'FAIL - could not extract the array-assembly append from scripts/gather-review-feedback.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_append_block() {  # run_append_block <out-json> <cand-json>
+  # cand/slug/number/review_id are consumed only by the eval'd append_block,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( out="$1" cand="$2" slug="o/r" number="301" review_id="2"
+    eval "$append_block"; printf '%s' "$out" )
+}
+big_out="$(jq -nc '[range(1300) | {source: "review-feedback", ref: ("pr-" + (. | tostring) + "-review-1"),
+  body: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized accumulator fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_out" | wc -c) > 131072 ))"
+new_cand='{"source":"review-feedback","ref":"pr-301-review-2","body":"the newest one"}'
+appended="$(run_append_block "$big_out" "$new_cand")"
+assert_eq "an append onto an oversized accumulator keeps every prior candidate" \
+  "1301" "$(jq 'length' <<<"$appended")"
+assert_eq "  ... plus the new one just appended" "1" \
+  "$(jq '[.[] | select(.ref == "pr-301-review-2")] | length' <<<"$appended")"
+
 rm -rf "$tmp_dir"
 trap - EXIT
 

@@ -402,6 +402,70 @@ recorded="$(jq -nc --argjson v "$coord_recorded_voided_json" \
 assert_eq "a refused void still accounts for its item (the block de-eligibles it)" "0" \
   "$(jq 'length' <<<"$(unaccounted_items "$recorded" "$eligible_voids" '{}')")"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# coord_recorded_refinement_json/coord_recorded_voided_json grow by one
+# accepted entry per call and are what log_needs_refinement_items/
+# log_voided_items fold the newest entry into — both used to ride into jq as
+# a second --argjson alongside the growing accumulator itself (delivered on
+# stdin already). Past MAX_ARG_STRLEN (131072 bytes) that fold died at
+# execve, silently losing every report/void recorded so far — the accumulator
+# reset to whatever the last successful append produced, not what the cycle
+# actually recorded. Requirement 4g moves the new entry onto stdin too.
+#
+# Both functions reset their accumulator to `[]` at the top of every call
+# (proved above: "no reports collects an empty array, not a stale one"), so
+# an oversized accumulator can only be reached within a *single* call's own
+# needs_refinement/voided array — not by seeding the variable and calling
+# again. Driving that many real entries through the whole recording loop
+# (event logging, the requirement 34d bar, the fold) is what made an earlier
+# attempt at this section, in test/coordinator-retry-fallback.test.sh, run
+# for minutes: each fold re-serialises the whole accumulator, so the total
+# cost is quadratic in entry count. That file's own section pins the
+# downstream build cheaply, by assigning the accumulator directly rather
+# than re-deriving it; this one instead lifts the fold line itself — the
+# same one-line pattern this file already runs for real above, now isolated
+# — and proves it survives an already-oversized accumulator in one call, the
+# same technique test/pr-claim-exclusion.test.sh's `extract_claims_fold` uses
+# for the identical shape.
+extract_fold_line() {  # extract_fold_line <accumulator-var-name>
+  awk -v v="$1" 'index($0, v "=\"$(jq -nc") > 0 { print; getline; print; exit }' \
+    "$SCRIPT_DIR/agent-cycle.sh"
+}
+refinement_fold_line="$(extract_fold_line coord_recorded_refinement_json)"
+voided_fold_line="$(extract_fold_line coord_recorded_voided_json)"
+if [[ "$refinement_fold_line" != *'coord_recorded_refinement_json'* ]]; then
+  printf 'FAIL - could not extract the recorded-refinement fold from agent-cycle.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+if [[ "$voided_fold_line" != *'coord_recorded_voided_json'* ]]; then
+  printf 'FAIL - could not extract the recorded-voided fold from agent-cycle.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+
+big_seed="$(jq -nc '[range(1900) | {repo: "org/a", item: ("TD-fill-" + (. | tostring)),
+  reason: "r", missing: "m", evidence: "e"}]')"
+assert_eq "the oversized seed fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_seed" | wc -c) > 131072 ))"
+entry='{"repo":"org/a","item":"TD1","source":"tech-debt","reason":"r","missing":"m","evidence":"e"}'
+
+run_fold() {  # run_fold <fold-line> <var-name> <seed-json>
+  # entry is consumed only by the eval'd fold line, invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( declare "$2=$3"; eval "$1"; printf '%s' "${!2}" )
+}
+folded_refinement="$(run_fold "$refinement_fold_line" coord_recorded_refinement_json "$big_seed")"
+assert_eq "a fold onto an oversized recorded-refinement accumulator keeps every prior entry" \
+  "1901" "$(jq 'length' <<<"$folded_refinement" 2>/dev/null || echo 0)"
+assert_eq "  ... plus the newly-folded one" "1" \
+  "$(jq '[.[] | select(.item == "TD1")] | length' <<<"$folded_refinement" 2>/dev/null || echo 0)"
+
+folded_voided="$(run_fold "$voided_fold_line" coord_recorded_voided_json "$big_seed")"
+assert_eq "a fold onto an oversized recorded-voided accumulator keeps every prior entry" \
+  "1901" "$(jq 'length' <<<"$folded_voided" 2>/dev/null || echo 0)"
+assert_eq "  ... plus the newly-folded one" "1" \
+  "$(jq '[.[] | select(.item == "TD1")] | length' <<<"$folded_voided" 2>/dev/null || echo 0)"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

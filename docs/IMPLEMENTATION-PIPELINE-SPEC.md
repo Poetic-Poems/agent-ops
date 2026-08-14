@@ -3185,12 +3185,30 @@ runs unattended.
    accumulator (`test/needs-refinement.test.sh`), `work_gone_clearances`'s
    register/review/plan status maps (`test/work-gone.test.sh`), the Enabler
    and Refiner claim accumulators, and their own unparseable-verdict warnings
-   (`test/enabler-verdicts.test.sh`, `test/refiner-verdicts.test.sh`). The
-   sites neither item enumerated — the review-feedback, abandoned-drafts and
-   issues gatherers' own candidate builds and folds, the per-repo entry build
-   that feeds the Co-Ordinator's input, `refiner_candidate_items`, and the
-   Co-Ordinator's recorded-refinement and voided accumulators — are the
-   residue TD-PPagop-26081406 records.
+   (`test/enabler-verdicts.test.sh`, `test/refiner-verdicts.test.sh`).
+   TD-PPagop-26081406 completed the sweep over the sites neither prior item
+   enumerated: the Co-Ordinator's recorded-refinement and voided
+   accumulators, both `{needs_refinement, voided}` builds feeding
+   `unaccounted_items` and the retry's own merge of both attempts'
+   accumulators (`test/verdict-corroboration.test.sh`,
+   `test/coordinator-retry-fallback.test.sh`), the per-repo entry build that
+   feeds the Co-Ordinator's whole input (`test/repo-entry-build.test.sh`),
+   the review-feedback, abandoned-drafts, issues, human-visibility-hygiene
+   and unvoid-request gatherers' own candidate builds and folds
+   (`test/review-feedback.test.sh`, `test/abandoned-drafts.test.sh`,
+   `test/issues-prefetch.test.sh`, `test/gather-human-visibility-hygiene.test.sh`,
+   `test/gather-unvoid-requests.test.sh`), `refiner_candidate_items`
+   (`test/refiner-eligibility.test.sh`), and the Dependabot-conflict nudge's
+   own accumulator (`test/nudge-dependabot-rebase.test.sh`). No fleet-state
+   aggregate anywhere in this pipeline still reaches `jq` in argv — except two
+   sites outside either item's enumeration, both filed rather than fixed here:
+   `lib/handoff.sh`'s `handoff_answer_events`, which still takes a repo's
+   whole reviews/comments arrays as `--argjson` (TD-PPagop-26081501), and
+   `agent-cycle.sh`'s own invocation of
+   `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
+   whole `$violations` argument as a single argv element to the script's own
+   `execve`, a cap this requirement's `jq`-specific framing had not
+   considered until TD-PPagop-26081406 found it (TD-PPagop-26081502).
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is
