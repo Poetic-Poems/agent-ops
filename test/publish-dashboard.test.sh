@@ -1585,6 +1585,159 @@ assert_eq "the dashboard's derived lock threshold honours a plain timeout_<actor
   "$(( (20 + 500 + 710 + 30 + 30 + 30) / 60 ))" \
   "$(jq -r '.config.lock_stale_after' <<<"$hdata")"
 
+# --- Merge-queue awareness: queued badge, sticky dequeued warning (agent-ops#375) -
+# lib/merge-queue.sh's own probe is unit-tested elsewhere (test/merge-queue.test.sh);
+# this is the Publisher's integration of it — the queued/dequeued fields
+# `.github.prs[]` carries, and that the dequeued warning persists across ticks
+# until the pull request is queued again or merges/closes, not just the one tick
+# it started on. Driven through DASHBOARD_GH_CMD like the GitHub-tick suite
+# above, with a stub that answers `gh api graphql` (merge_queue_probe's own
+# call) as well as the ordinary `pr list`/`issue list`/`run list`/`api` shapes.
+q="$(new_home nodeQ)"
+q_calls="$tmp_dir/gh-calls-q"
+q_stub="$tmp_dir/stub-gh-queue.sh"
+cat > "$q_stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "$1 $2" in
+  "pr list")
+    case "$4" in
+      "Poetic-Poems/agent-ops")
+        printf '[{"number":300,"title":"land it via the queue","url":"https://github.com/Poetic-Poems/agent-ops/pull/300","state":"OPEN","isDraft":false,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"APPROVED","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"agent/300","statusCheckRollup":[]},{"number":301,"title":"still a draft","url":"https://github.com/Poetic-Poems/agent-ops/pull/301","state":"OPEN","isDraft":true,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"","baseRefName":"main","mergeable":"","mergeStateStatus":"","headRefName":"agent/301","statusCheckRollup":[]}]'
+        ;;
+      *) printf '[]' ;;
+    esac ;;
+  "issue list") printf '[]' ;;
+  "run list")  printf '[]' ;;
+  "api graphql")
+    case "$*" in
+      *"number=300"*)
+        case "${QMQ_STATE:-queued}" in
+          queued)   printf '{"queued":true,"dequeued_at":null,"dequeue_reason":null}' ;;
+          unqueued) printf '{"queued":false,"dequeued_at":"2026-08-14T01:00:00Z","dequeue_reason":"checks failed"}' ;;
+          fail)     echo "gh: something went wrong" >&2; exit 1 ;;
+        esac ;;
+      *) echo "unexpected merge-queue probe: $*" >&2; exit 1 ;;
+    esac ;;
+  "api --paginate")
+    case "$3" in
+      "repos/"*"/dependabot/alerts"*)     printf '[]' ;;
+      "repos/"*"/code-scanning/alerts"*)  printf '[]' ;;
+      *) exit 1 ;;
+    esac ;;
+  "api "*)
+    case "$2" in
+      "repos/"*"/issues?"*) printf '[]' ;;
+      "repos/"*"/contents/tech-debt")
+        printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1 ;;
+      *) exit 1 ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$q_stub"
+
+run_q_publish() {  # run_q_publish <QMQ_STATE>
+  : > "$q_calls"
+  env HOME="$q" NODE_NAME=nodeQ-self GH_CALL_LOG="$q_calls" QMQ_STATE="$1" \
+      DASHBOARD_GH_CMD="$q_stub" "$PUBLISH" >/dev/null 2>&1
+}
+
+run_q_publish queued
+assert_eq "a GitHub publish exits 0 against the queue stub" "0" "$?"
+qdata="$(data_of "$q")"
+assert_eq "a currently-queued pull request is badged queued" "true" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .queued' <<<"$qdata")"
+assert_eq "and carries no dequeued warning" "false" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .dequeued' <<<"$qdata")"
+assert_eq "a draft pull request is never probed for queue state" "0" \
+  "$(grep -c 'number=301' "$q_calls")"
+assert_eq "and reads not-queued by construction — a draft can never be enqueued" "false" \
+  "$(jq -r '.github.prs[] | select(.number==301) | .queued' <<<"$qdata")"
+
+run_q_publish unqueued
+qdata="$(data_of "$q")"
+assert_eq "removed from the queue without merging reads not-queued" "false" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .queued' <<<"$qdata")"
+assert_eq "and raises the dequeued warning the tick it happens" "true" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .dequeued' <<<"$qdata")"
+
+run_q_publish unqueued
+qdata="$(data_of "$q")"
+assert_eq "the warning is sticky: still unqueued a tick later still warns" "true" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .dequeued' <<<"$qdata")"
+
+run_q_publish queued
+qdata="$(data_of "$q")"
+assert_eq "queued again clears the warning" "false" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .dequeued' <<<"$qdata")"
+assert_eq "and the state badge reads queued once more" "true" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .queued' <<<"$qdata")"
+
+# A probe that cannot answer must never be read as "definitely not queued" —
+# the one direction that could wrongly clear or wrongly raise the warning — so
+# it carries the prior tick's answer forward, badge and cache alike, and it
+# never trips the page-wide "GitHub unavailable" alarm on its own: this one
+# probe is best-effort, the same treatment sweep-human-visibility.sh gives it.
+run_q_publish fail
+qdata="$(data_of "$q")"
+assert_eq "an unreadable probe carries the prior queued answer forward" "true" \
+  "$(jq -r '.github.prs[] | select(.number==300) | .queued' <<<"$qdata")"
+assert_eq "and never sets gh_ok false purely for a merge-queue read failing" "true" \
+  "$(jq -r '.github.ok' <<<"$qdata")"
+
+# --- Repositories without a merge queue render exactly as before -----------------
+# isInMergeQueue is always false and no RemovedFromMergeQueueEvent ever fires for
+# a repository with no queue, so the probe alone is enough: no repo-level
+# detection is needed, and an ordinary open pull request never carries a queued
+# or dequeued badge.
+r="$(new_home nodeR)"
+r_calls="$tmp_dir/gh-calls-r"
+r_stub="$tmp_dir/stub-gh-noqueue.sh"
+cat > "$r_stub" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$GH_CALL_LOG"
+case "$1 $2" in
+  "pr list")
+    case "$4" in
+      "Poetic-Poems/agent-ops")
+        printf '[{"number":400,"title":"an ordinary open pull request","url":"https://github.com/Poetic-Poems/agent-ops/pull/400","state":"OPEN","isDraft":false,"createdAt":"2026-08-14T00:00:00Z","mergedAt":null,"closedAt":null,"mergeCommit":null,"author":{"login":"agent-ops-bot"},"labels":[{"name":"autonomous-agent"}],"reviewDecision":"","baseRefName":"main","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"agent/400","statusCheckRollup":[]}]'
+        ;;
+      *) printf '[]' ;;
+    esac ;;
+  "issue list") printf '[]' ;;
+  "run list")  printf '[]' ;;
+  "api graphql") printf '{"queued":false,"dequeued_at":null,"dequeue_reason":null}' ;;
+  "api --paginate")
+    case "$3" in
+      "repos/"*"/dependabot/alerts"*)     printf '[]' ;;
+      "repos/"*"/code-scanning/alerts"*)  printf '[]' ;;
+      *) exit 1 ;;
+    esac ;;
+  "api "*)
+    case "$2" in
+      "repos/"*"/issues?"*) printf '[]' ;;
+      "repos/"*"/contents/tech-debt")
+        printf '{"message":"Not Found","documentation_url":"https://docs.github.com/rest","status":"404"}'
+        echo "gh: Not Found (HTTP 404)" >&2
+        exit 1 ;;
+      *) exit 1 ;;
+    esac ;;
+  *) exit 1 ;;
+esac
+STUB
+chmod +x "$r_stub"
+: > "$r_calls"
+env HOME="$r" NODE_NAME=nodeR-self GH_CALL_LOG="$r_calls" DASHBOARD_GH_CMD="$r_stub" "$PUBLISH" >/dev/null 2>&1
+assert_eq "a publish against a repo with no merge queue exits 0" "0" "$?"
+rdata="$(data_of "$r")"
+assert_eq "its open pull request reads not-queued" "false" \
+  "$(jq -r '.github.prs[] | select(.number==400) | .queued' <<<"$rdata")"
+assert_eq "and never dequeued" "false" \
+  "$(jq -r '.github.prs[] | select(.number==400) | .dequeued' <<<"$rdata")"
+
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
   printf '\n%d assertion(s) failed\n' "$failures"

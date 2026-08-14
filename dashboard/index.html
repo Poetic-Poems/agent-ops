@@ -1056,6 +1056,26 @@
   }
 
   // ---------- PRs panel ----------
+  // State-cell badges (agent-ops#375, D17): `queued`/`dequeued` ride in on
+  // each pull request alongside `isDraft` — the Publisher's own answer, not
+  // derived here, since only it can tell "queued last tick, not now" apart
+  // from "never queued at all" (see publish-dashboard.sh's merge-queue
+  // block). A queued pull request is landing hands-off, so it gets its own
+  // badge rather than reading as an ordinary "ready" one a human still needs
+  // to act on; `dequeued` — GitHub reverted it to an ordinary open pull
+  // request without merging — gets a warning badge beside it, since that is
+  // exactly the state a maintainer's already-clicked "Merge when ready" can
+  // silently fall out of.
+  function prStateBadges(p) {
+    var badges = [];
+    if (p.isDraft) badges.push(el("span",{class:"badge b-grey",text:"draft"}));
+    else if (p.queued) badges.push(el("span",{class:"badge b-purple",text:"queued",
+      title:"in GitHub's merge queue — landing automatically once its merge-group checks pass; never pushed to while it is"}));
+    else badges.push(el("span",{class:"badge b-blue",text:"ready"}));
+    if (p.dequeued) badges.push(el("span",{class:"badge b-amber", style:"margin-left:6px", text:"dequeued",
+      title:"removed from the merge queue since it was last observed queued, without merging — the maintainer's “Merge when ready” click needs a fresh look"}));
+    return badges;
+  }
   function prsPanel(prs) {
     if (!prs.length) return el("div", {class:"panel"}, el("div", {class:"empty", text: (D.github && D.github.ok===false) ? "GitHub unreachable." : "No open agent PRs."}));
     var rows = prs.map(function (p) {
@@ -1071,7 +1091,7 @@
       return el("tr", {}, [
         el("td", {}, prRef(p.repo, p.number, p.url, "openprs")),
         el("td", {class:"wrap"}, [ el("span",{class:"mono muted", text: p.repo.split("/")[1] + " "}), esc(p.title) ]),
-        el("td", {}, p.isDraft ? el("span",{class:"badge b-grey",text:"draft"}) : el("span",{class:"badge b-blue",text:"ready"})),
+        el("td", {}, prStateBadges(p)),
         el("td", {}, ckBadge),
         el("td", {}, mergeBadge),
         el("td", {class:"muted", text: fmtAgo(p.createdAt)})
@@ -2127,6 +2147,17 @@
     if (failedChecks.length) {
       banners.appendChild(el("div", {class:"banner red"}, [
         el("span", {text: "✗ " + failedChecks.length + " open agent PR(s) with failing checks."}),
+        el("span", {class:"sub", text: "See Open pull requests below."})
+      ]));
+    }
+    // A pull request GitHub removed from its merge queue without merging
+    // (agent-ops#375, D17) — the maintainer's own "Merge when ready" click
+    // has evaporated and nothing else on the page says so, so this belongs
+    // beside the failing-checks banner rather than only in the table below.
+    var dequeuedPrs = openPrs.filter(function (p){ return p.dequeued; });
+    if (dequeuedPrs.length) {
+      banners.appendChild(el("div", {class:"banner amber"}, [
+        el("span", {text: "⚠ " + dequeuedPrs.length + " open agent PR(s) removed from the merge queue without merging."}),
         el("span", {class:"sub", text: "See Open pull requests below."})
       ]));
     }
