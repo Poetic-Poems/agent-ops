@@ -238,6 +238,23 @@ assert_eq "release keeps an untouched branch that an open PR uses" "1" \
 count="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 2>/dev/null)"
 assert_eq "count reports the live registry entries" "1" "$count"
 
+# --- count excludes a surviving pr-<n> exclusion claim (issue #360) -----------------
+# Unlike an item-keyed entry, the PR-keyed one now outlives its own PR's raising —
+# held until the claiming cycle ends (agent-cycle.sh's release_claim/release_pr_claim
+# split), not dropped the moment the PR exists — so counting it here too would
+# double-count a PR `gh pr list` already counts, for as long as that cycle's Reviewer
+# stage runs. count must therefore never count a `pr-<n>.json` entry.
+CLAIM_ITEM_OVERRIDE="pr-90-review-1" CLAIM_SOURCE_OVERRIDE="review-feedback" \
+  CLAIM_PR_NUMBER_OVERRIDE="90" run_claim node-a claim file Poetic-Poems/poetic pr-90-review-1
+CLAIM_ITEM_OVERRIDE="pr-90-review-1" CLAIM_SOURCE_OVERRIDE="review-feedback" \
+  CLAIM_PR_NUMBER_OVERRIDE="90" run_claim node-a claim file Poetic-Poems/poetic pr-90
+count_with_pr_key="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "count still counts the item-keyed entry it just won" "2" "$count_with_pr_key"
+run_claim node-a release file Poetic-Poems/poetic pr-90-review-1
+count_pr_key_only="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "…but not a pr-<n> entry surviving on its own" "1" "$count_pr_key_only"
+run_claim node-a release file Poetic-Poems/poetic pr-90
+
 # --- gc sweeps only what is old, and never pushed work ------------------------------
 old_ts="$(date -u -d '48 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
 # An aged file claim: gc must remove it.

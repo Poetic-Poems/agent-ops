@@ -739,9 +739,14 @@ PR this system raises.
 
 Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
-or force-push such a branch as it judges best. Agents must not rewrite
-branches outside `branch_prefix` — those belong to humans, and the target
-repos' own rule (force-pushing requires explicit instruction) applies.
+or force-push such a branch as it judges best — always with
+`git push --force-with-lease`, never a bare `--force`, so a peer's own push to
+the same branch (a still-running Implementor, a concurrent finishing-source
+cycle on the same PR — requirement 17a's PR-keyed claim narrows but does not
+eliminate the window, issue #360) is refused rather than silently overwritten.
+Agents must not rewrite branches outside `branch_prefix` — those belong to
+humans, and the target repos' own rule (force-pushing requires explicit
+instruction) applies.
 
 The Reviewer's purpose is to spend cheap model time so that the Human
 Reviewer's time is spent on work that is already close to mergeable. The
@@ -1046,9 +1051,15 @@ runs unattended.
       the ready PRs labelled `pr_label` whose `reviewDecision` is
       `CHANGES_REQUESTED`, across all configured repos, **plus the live
       claim-registry entries for those repos** (requirement 17a — work a
-      node has claimed but not yet surfaced as a PR; each entry is dropped
-      the moment its PR exists), is ≥ `max_open_agent_prs`, stand down. This
-      is the primary throttle on both spend and on the human gate silting
+      node has claimed but not yet surfaced as a PR; an item-keyed entry is
+      dropped the moment its PR exists), is ≥ `max_open_agent_prs`, stand
+      down. `lib/claim.sh count` excludes the PR-keyed `pr-<n>` exclusion
+      entries (requirement 17a, issue #238) from this figure: unlike an
+      item-keyed entry, a PR-keyed one is held past its PR's own raising —
+      until the claiming cycle ends (issue #360) — and the PR it targets is
+      already counted above through `gh pr list`, so counting the claim too
+      would double-count it for as long as that cycle's Reviewer stage runs.
+      This is the primary throttle on both spend and on the human gate silting
       up. The count is approximate by design: N nodes can pass it
       simultaneously, so the stated bound is `max_open_agent_prs +
       (nodes − 1)`, transient.
@@ -3974,34 +3985,43 @@ runs unattended.
       is taken. Losing it means a peer already holds this PR — under whatever
       ref won there — so the item claim just won is released (nothing was
       pushed under it) and selection falls through to the next candidate
-      exactly as a lost item claim would. Winning
-      it holds both claims until the cycle ends; release drops both. This is
-      what makes the exclusion real fleet-wide and race-safe — requirement 3p's
-      candidate filter is a cost-saving visibility layer over the same fact, not
-      a substitute for it, since a peer's claim taken after 3p's filter ran is
-      still possible and only this second create-only write actually arbitrates
-      it.
+      exactly as a lost item claim would. Winning it holds both claims — but,
+      unlike the item-keyed one, the PR-keyed claim is held until *this
+      cycle's own end*, not until `pr-raised`: see *Release* below (issue
+      #360).  This is what makes the exclusion real fleet-wide and race-safe
+      — requirement 3p's candidate filter is a cost-saving visibility layer
+      over the same fact, not a substitute for it, since a peer's claim taken
+      after 3p's filter ran is still possible and only this second
+      create-only write actually arbitrates it.
     - Every won claim also writes a best-effort **registry entry** at
       `claims/<repo>/<key>.json` in the state repository — the lock is the
-      ref or file above; the registry is what back-pressure counts (2.2)
-      and what gc sweeps — recording the base SHA, node, cycle, item, source,
-      timestamp and, for a finishing-source claim (either the item-keyed or the
-      PR-keyed one), the `pr_number` it targets (requirement 3o).
-    - *Release*: an open PR supersedes the claim — the registry entry is
-      dropped the moment `pr-raised` is logged, and the branch lives on as
-      the PR's head. Every path that ends the cycle without a PR (a void
-      verdict, a blocked verdict with no PR, a failed workspace clone, a
-      stage failure or timeout)
-      releases fully; a claim branch is deleted **only** when it still
-      points at the SHA the claim recorded and no open PR uses it — pushed
-      work is never deleted. The PR-keyed claim above is always a registry-only
-      file claim (there is no ref for it to keep or delete), so it releases the
-      same way on every path — alongside the item-keyed claim, never on its own.
-      Entries older than `claim_ttl_hours` are swept
-      by `lib/claim.sh gc` under the same only-if-untouched rule (a node
-      that died mid-cycle must not hold its item forever); every cycle runs
-      the sweep at start (2.1a), so a dead node's claims outlive it by at
-      most the TTL plus one cycle interval.
+      ref or file above; the registry (minus the PR-keyed exclusion entries
+      *Release* below explains) is what back-pressure counts (2.2), and the
+      whole registry, PR-keyed entries included, is what gc sweeps —
+      recording the base SHA, node, cycle, item, source, timestamp and, for a
+      finishing-source claim (either the item-keyed or the PR-keyed one), the
+      `pr_number` it targets (requirement 3o).
+    - *Release*: an open PR supersedes the *item-keyed* claim — that registry
+      entry is dropped the moment `pr-raised` is logged, and the branch lives
+      on as the PR's head. The PR-keyed claim is not dropped at the same
+      moment: it exists to keep a peer off this PR, and the Reviewer stage
+      that runs next still writes to it, so it is held until this cycle's own
+      end — the Reviewer's terminal handoff (`pr-ready`), a reviewer handback,
+      a stage failure, or a signal — whichever this cycle actually reaches.
+      Dropping it at `pr-raised` reopened the exact race issue #238 closed: a
+      Reviewer stage still pushing to a PR forty-three minutes after its
+      cycle's own PR-keyed claim was released, while a peer claimed and
+      force-pushed a rebase of the same PR under a fresh ref (agent-ops#360).
+      Every path that ends the cycle without a PR at all (a void verdict, a
+      blocked verdict with no PR, a failed workspace clone, a stage failure or
+      timeout before any PR exists) releases both claims together, in the
+      same call — a claim branch is deleted **only** when it still points at
+      the SHA the claim recorded and no open PR uses it, so pushed work is
+      never deleted. Entries older than `claim_ttl_hours` are swept by
+      `lib/claim.sh gc` under the same only-if-untouched rule (a node that
+      died mid-cycle must not hold its item forever); every cycle runs the
+      sweep at start (2.1a), so a dead node's claims — item-keyed or
+      PR-keyed — outlive it by at most the TTL plus one cycle interval.
     - A candidate this cycle's own gather already saw claimed is **skipped
       without an attempt**: the Script checks each candidate's repo+item
       (raw, and in its branch-sanitised form) against the claims gathered
@@ -4617,8 +4637,9 @@ runs unattended.
     fix this stage pushes mints a new one.
 30. Where it finds a problem it can fix with confidence, it fixes it
     directly on the branch — committing, rebasing onto the current default
-    branch, or force-pushing as it judges best (permitted only on
-    `branch_prefix` branches, per "The Human Gate"). Where it cannot fix
+    branch, or force-pushing as it judges best, always with
+    `--force-with-lease` (permitted only on `branch_prefix` branches, per
+    "The Human Gate"). Where it cannot fix
     with confidence, it leaves a PR review comment describing the problem
     for the Human Reviewer. A `complexity:*` label (requirement 26a) plainly
     wrong for the diff counts as such a problem: having just read the whole
