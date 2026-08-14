@@ -583,7 +583,7 @@ is why `scripts/doctor.sh` reads the schema rather than either table. The
 values below are the confirmed defaults; the README must document each key,
 and the schema must carry every one of them.
 
-<!-- config-table:start id=main -->
+<!-- config-table:start id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
 | `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues`...[continued below](#extended-notes-repos) |
@@ -667,7 +667,7 @@ accepts a bare id (`claude-sonnet-5`) or a provider-qualified one
 only executable provider (D12, `docs/ROADMAP.md`), so the two forms are the
 same value; no other qualifier is accepted.
 
-<!-- config-table:notes id=main -->
+<!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 
 ### Extended notes: `repos`
 
@@ -8148,7 +8148,16 @@ What exists, and the requirements each part answers to:
     join a plain array of paragraph strings always got, and what a single
     string (a one-block array) already renders as unchanged.
     Rewrites four marked regions (`<!-- config-table:start id=main -->` /
-    `id=review` … `<!-- config-table:end -->`) in place with no arguments.
+    `id=review` … `<!-- config-table:end -->`) in place with no arguments. A
+    start marker's `id=<id>` token may be followed by further prose before
+    the closing `-->` — CLAUDE.md's "Generated regions" note and the
+    markers themselves carry the same generated-from-schema contract inline
+    (#356), so an editor who reaches a row directly, without having read
+    CLAUDE.md first, still sees it — and matching it is therefore a prefix
+    match on `id=<id>`, not exact-line equality: any such trailing prose is
+    accepted and reproduced untouched rather than regenerated. The end
+    markers (`config-table:end`, `config-table:notes-end`) carry no id and
+    no prose, and stay matched exactly.
     Each region's first two lines, immediately after the start marker, are a
     header row and a `|---|---|---|` delimiter row, carried verbatim rather
     than generated — passed through untouched on every rewrite, which is
@@ -10060,6 +10069,12 @@ pull request, run the ones the change touches and any it could regress.
     real fenced code block, each still blank-line-separated from its
     neighbours; a `list`-only or `code`-only note under the cap degrades the
     same way in its cell with no Extended notes subsection generated at all.
+    A start marker carrying trailing prose after its `id=<id>` token (#356)
+    is matched and rewritten the same as one without: the fixture's markers
+    carry it and every render/`--check` assertion above still passes against
+    them, and the plain, unannotated form is separately exercised too (the
+    orphan-marker fixture used for the no-heading-above-it case), proving
+    both forms are accepted rather than only the newly-annotated one.
     `.github/workflows/config-table.yml`
     runs `--check` on every pull request, so a schema edit landing without a
     matching doc regeneration (or the reverse) fails CI rather than drifting

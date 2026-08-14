@@ -165,7 +165,7 @@ document's `config-table:notes id=review` region below the table; no
 }
 ```
 
-<!-- config-table:start id=review -->
+<!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
 | `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | The repositories to review. A plain list of slugs — a review has no per-repo work-source structure. Adding a repo is a config-only change. |
@@ -190,7 +190,7 @@ executable provider (D12, `docs/ROADMAP.md`); a qualifier naming any other
 provider is a fail-fast config error at cycle start, not a value passed to
 `claude --model`.
 
-<!-- config-table:notes id=review -->
+<!-- config-table:notes id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 <!-- config-table:notes-end -->
 
 ## The Human Gate and the loop it closes
