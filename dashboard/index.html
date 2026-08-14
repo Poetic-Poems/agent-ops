@@ -166,15 +166,18 @@
   .gauge { height: 10px; border-radius: 5px; background: var(--grey-bg); overflow: hidden; margin-top: 6px; }
   .gauge > span { display: block; height: 100%; }
   .empty { padding: 18px; color: var(--muted); font-style: italic; }
-  /* The bottom margin is not decoration: this paragraph sits between two
-     sections and would otherwise butt straight into the next one's heading. */
-  p.costnote { margin: 10px 0 26px; font-size: 12px; color: var(--muted); max-width: 78ch; }
-  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-  @media (max-width: 760px) { .two { grid-template-columns: 1fr; } }
-  /* Two short charts sharing a column beside one tall one: by-day runs to
-     sixty rows and needs the width for its bars, while by-model and by-actor
-     are five rows each and would each waste half a page on their own row. */
-  .stack { display: flex; flex-direction: column; gap: 20px; align-content: start; }
+  p.costnote { font-size: 12px; color: var(--muted); max-width: 78ch; }
+  /* By-day runs to sixty rows and by-model/by-actor to five each, so a fixed
+     two-column split under- or over-fills a side depending on the day. A
+     multi-column flow instead lets the browser balance the four blocks —
+     day, model, actor, note, in that reading order — by height on its own:
+     each block stays whole (break-inside: avoid) and column-fill's default
+     "balance" walks them into the shorter side, so the split adapts every
+     render instead of being pinned to today's row counts (issue #330). */
+  .costgrid { column-count: 2; column-gap: 20px; }
+  @media (max-width: 760px) { .costgrid { column-count: 1; } }
+  .costgrid > * { break-inside: avoid; margin: 0 0 20px; }
+  .costgrid > *:last-child { margin-bottom: 0; }
   code.inline { font-family: var(--mono); background: var(--grey-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
   /* ---------- pull-request references ---------- */
@@ -2273,17 +2276,14 @@
     app.appendChild(sectionOf("Co-Ordinator verdict quality", verdictQualityPanel()));
 
     // ---------- cost & cadence + log ----------
-    // By day on the left, and the two short cuts stacked on the right: the
-    // day chart runs to sixty rows and wants the width for its bars, while
-    // by-model and by-actor are a handful of rows each.
-    var two = el("div", {class:"two"});
-    two.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
-    two.appendChild(el("div", {class:"stack"}, [
-      el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]),
-      el("div", {}, [ el("h2", {text:"Est. token cost by actor"}), el("div", {class:"panel", style:"padding:14px"}, spendByActor()) ])
-    ]));
-    app.appendChild(el("section", {}, two));
-    app.appendChild(el("p", {class:"costnote", text:
+    // A multi-column flow rather than a fixed grid: day, model, actor, then
+    // the note, in that order, letting the browser balance the split by
+    // height (see .costgrid) instead of pinning day to a column of its own.
+    var costgrid = el("div", {class:"costgrid"});
+    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
+    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by model"}), el("div", {class:"panel", style:"padding:14px"}, spendByModel()) ]));
+    costgrid.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by actor"}), el("div", {class:"panel", style:"padding:14px"}, spendByActor()) ]));
+    costgrid.appendChild(el("p", {class:"costnote", text:
       "Cost figures are Claude Code's own local estimate, priced as if these tokens " +
       "had been billed per-token through the API. On a Claude subscription they are " +
       "not money charged and not a draw against the session or weekly limit — read " +
@@ -2291,6 +2291,7 @@
       "limits are not readable from here; check /usage in an interactive session. " +
       "All three charts cover the same transcripts — every actor of both pipelines, " +
       "across every node, since one Claude account pays for the fleet."}));
+    app.appendChild(el("section", {}, costgrid));
 
     app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
       logPanel()));

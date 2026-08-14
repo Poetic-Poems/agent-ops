@@ -598,6 +598,39 @@ assert_contains "a pull request never near the queue renders exactly as before t
 assert_contains "an enqueued-then-dequeued pull request belongs in the attention banners too" \
   "removed from the merge queue without merging" "$out"
 
+# --- the cost section's column flow and its reading order (issue #330) -----------
+# The four cost blocks share one multi-column container, so the *split* between
+# columns is the browser's to choose by height and is not assertable here — no
+# layout, by design. What is assertable is the thing that choice rests on: a
+# multi-column flow fills each column top-to-bottom in document order, so
+# document order is the visual order, and the four blocks appended out of turn
+# would reorder the page silently while every existing assertion still passed.
+# The note's depth is checked with them because it is the block that moved: it
+# used to be a paragraph appended after the section, and only counts as the
+# last block of the flow if it is inside the container.
+out="$(render finished.json)" || { printf 'FAIL - finished.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "the cost blocks share one multi-column container" \
+  '<div class="costgrid">' "$out"
+assert_not_contains "and not the fixed two-column grid it replaced" \
+  '<div class="two">' "$out"
+
+# Each of the four markers occurs once in the page, so their order in the dump
+# is their order in the flow.
+cost_order="$(printf '%s\n' "$out" \
+  | sed -n '/<div class="costgrid">/,/<p class="costnote">/p' \
+  | grep -oE 'Est\. token cost by (day|model|actor)|class="costnote"' \
+  | tr '\n' ' ')"
+assert_eq "the cost blocks flow in reading order — day, model, actor, then the note" \
+  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" ' \
+  "$cost_order"
+
+# The serialiser indents two spaces per level, so six spaces is a child of the
+# container (four) inside the section (two) — the depth the three chart blocks
+# sit at, and no longer that of a paragraph appended beside the section.
+assert_contains "the note is a block of that container, not a paragraph after the section" \
+  '      <p class="costnote">' "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
