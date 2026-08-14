@@ -3229,8 +3229,9 @@ runs unattended.
    `none-selected` verdict on that evidence, in the cycle with the most
    recorded refinement to account for. So each of those sixty-seven captures
    its command's own stdout **and stderr** where it used to discard the
-   latter, and on failure writes a `guard-degraded` event — `{site, detail}`,
-   the site's own label and the captured text — through `guard_warn` before
+   latter, and on failure writes a `guard-degraded` event — `{site, detail,
+   n}`, the site's own label, the captured text, and which occurrence of that
+   label this is — through `guard_warn` before
    falling back. **The fallback value itself is unchanged at every one of
    them**: this removes the silence, never the tolerance, so a cycle degrades
    exactly as far as it degraded before and no guard can turn a bad read into
@@ -3255,6 +3256,46 @@ runs unattended.
    exists to report. So the agreement of the three names is asserted
    structurally over every site at once (acceptance check 1m), not one case
    at a time.
+
+   **The report is bounded, and stays off the query path.** `guard-degraded`
+   lands on the fleet-replicated union log — the unbounded input requirements
+   4c and 4g exist because of — so the report carries the limits its
+   destination requires rather than trusting every call site to fail rarely.
+   A guard that fails *persistently* (a `date` parse of a field that
+   is simply always absent; a `gh` outage across the whole repo loop) would
+   otherwise write one event per occurrence per cycle per node: only the
+   first `GUARD_WARN_SITE_MAX` (default 3) occurrences of any one site label
+   are reported, each numbered `n`, the last of them marked `final` so the
+   silence that follows is legible rather than mistaken for recovery. The cap
+   is on repeats of one label, not on distinct sites: a label carrying a loop
+   variable (`claim-count:<slug>`) still reports per slug, because those are
+   different facts. `detail` is capped to its leading 500 bytes for the same
+   reason — it is a failed command's own output, which for a `gh api` body
+   has no bound of its own, and the cause is at the front of it.
+
+   A management command (`--status`, `--disable`, `--enable`) reports to
+   stderr instead of the log. Those run before the lock and deliberately
+   create no cycle directory, so that a read-only query leaves nothing
+   behind; their `cycle_id` names a cycle that never ran, and an event
+   stamped with it would record a failed read during somebody's query as
+   though it were pipeline state. Nothing is lost — every fleet-state read a
+   management command guards is read again by real cycles, which report it
+   under a cycle id that resolves — and stderr is where the human who typed
+   the command is already looking.
+
+   **What `2>&1` costs at the two sites where the value is used raw.**
+   Capturing stderr is what makes `detail` useful, but it also merges a
+   *successful* command's stderr into the captured value. At every converted
+   site but two, the value is handed to `jq`, `date` or `wc`, or shape-checked
+   before use, and so cannot carry an advisory line into a decision. The
+   repo-ordering pair is the exception: `default_branch`
+   is interpolated straight into the next API path and `commit_ts` into the
+   staleness sort, both previously unchecked, so a future `gh` release that
+   began writing an advisory line on a successful `api --jq` would corrupt
+   both silently. Each therefore carries a shape check after its capture —
+   the sibling of the `claim.sh count` site's own `=~ ^[0-9]+$` — reporting
+   through `guard_warn` and falling back to the same literal, so a malformed
+   success is treated exactly like a failure rather than trusted.
 
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
@@ -8841,11 +8882,17 @@ pull request, run the ones the change touches and any it could regress.
    `resume_at` — and each pairs with a healthy-input case asserting the log
    stays *silent*, so a guard that fires unconditionally fails too. Separately
    and structurally, over the whole of `agent-cycle.sh`: every one of the
-   sixty-seven guard sites reports and restores the variable its own
-   assignment targets, and the sweep counts the sites it found and fails if
-   that count collapses, so a parser that silently matched nothing cannot pass
-   the check vacuously. Reintroducing requirement 4h's own
-   `void_actioned_json`/`void_json` mismatch at any site must fail this file.
+   guard sites reports and restores the variable its own assignment targets,
+   and the sweep counts the sites it found and fails if that count collapses,
+   so a parser that silently matched nothing cannot pass the check vacuously.
+   Reintroducing requirement 4h's own `void_actioned_json`/`void_json`
+   mismatch at any site must fail this file. The report's own bounds are
+   asserted too: a site repeated seven times yields exactly
+   `GUARD_WARN_SITE_MAX` events, numbered, with only the last marked `final`;
+   three distinct labels interleaved all report, so the cap is per label and
+   not per cycle; a 4000-byte `detail` is stored at 500; and a guard raised
+   under `MANAGE_ACTION` writes nothing to the log and names its site on
+   stderr, while the same site under a real cycle still logs.
 2. `--dry-run` completes against the real repos: stand-down checks pass,
    ordering is computed, the findings pre-fetch runs, the Co-Ordinator selects
    an item or declines with a reason, the work order is printed, nothing
