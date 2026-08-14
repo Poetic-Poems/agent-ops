@@ -327,6 +327,79 @@ assert_eq "a garbage staleness threshold yields [] rather than every draft" "[]"
   "$("$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh" "Poetic-Poems/poetic" autonomous-agent 'agent/' "not-a-number" 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# $pr (the candidate build — a whole pull-request object including its body)
+# and $cand (the per-candidate append) both used to ride into jq as
+# --argjson: unbounded past this call, identical in shape to
+# gather-review-feedback.sh's own two sites. Past MAX_ARG_STRLEN (131072
+# bytes) the build died at execve; this repo's whole abandoned_drafts band
+# came out empty. Requirement 4g moves both onto stdin. Each is inline, not a
+# function, so each is lifted by its own literal start/end lines — the same
+# technique test/pr-claim-exclusion.test.sh's `extract_claims_fold` uses.
+extract_block() {  # extract_block <start-literal> <end-literal>
+  awk -v s="$1" -v e="$2" \
+    'index($0, s) == 1 { on = 1 } on { print } on && index($0, e) > 0 { exit }' \
+    "$SCRIPT_DIR/scripts/gather-abandoned-drafts.sh"
+}
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+cand_block="$(extract_block '  cand="$(jq -nc' '  }')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$cand_block" != *'input as $pr | {source: "abandoned-drafts"'* ]]; then
+  printf 'FAIL - could not extract the candidate build from scripts/gather-abandoned-drafts.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+
+oversized_pr_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized PR-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_pr_body} > 131072 ))"
+
+run_cand_block() {  # run_cand_block <pr-json>
+  # number/head_sha/item/slug are consumed only by the eval'd cand_block,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( pr="$1" number="300" head_sha="deadbeefcafe00112233" item="" slug="o/r"
+    eval "$cand_block"; printf '%s' "$cand" )
+}
+pr_oversized="$(printf '{"number": 300, "url": "https://github.com/o/r/pull/300", "title": "t", "headRefName": "agent/td-oversized-fix", "body": "%s"}' "$oversized_pr_body")"
+built_cand="$(run_cand_block "$pr_oversized")"
+assert_eq "a PR object past the argv cap still produces the candidate" "1" \
+  "$(jq -e 'type == "object"' <<<"$built_cand" >/dev/null 2>&1 && echo 1 || echo 0)"
+# Bash string matching, not grep -F with the oversized string as an argument:
+# that would hit the very argv cap this section exists to prove the real code
+# no longer does.
+built_cand_body="$(jq -r '.body // ""' <<<"$built_cand")"
+assert_eq "  ... carrying the full oversized body, not truncated or dropped" \
+  "1" "$([[ "$built_cand_body" == *"$oversized_pr_body"* ]] && echo 1 || echo 0)"
+assert_eq "  ... and the ref pins to the PR number and head SHA" \
+  "pr-300-abandoned-deadbeefcafe" "$(jq -r '.ref' <<<"$built_cand")"
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+append_block="$(extract_block '  out="$(jq -nc '"'"'input as $arr | input as $c' '  })"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$append_block" != *'candidate dropped'* ]]; then
+  printf 'FAIL - could not extract the array-assembly append from scripts/gather-abandoned-drafts.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_append_block() {  # run_append_block <out-json> <cand-json>
+  # cand/slug/number/head_sha are consumed only by the eval'd append_block,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( out="$1" cand="$2" slug="o/r" number="301" head_sha="cafebabecafe00998877"
+    eval "$append_block"; printf '%s' "$out" )
+}
+big_out="$(jq -nc '[range(1300) | {source: "abandoned-drafts", ref: ("pr-" + (. | tostring) + "-abandoned-fill"),
+  body: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized accumulator fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_out" | wc -c) > 131072 ))"
+new_cand='{"source":"abandoned-drafts","ref":"pr-301-abandoned-cafebabecafe","body":"the newest one"}'
+appended="$(run_append_block "$big_out" "$new_cand")"
+assert_eq "an append onto an oversized accumulator keeps every prior candidate" \
+  "1301" "$(jq 'length' <<<"$appended")"
+assert_eq "  ... plus the new one just appended" "1" \
+  "$(jq '[.[] | select(.ref == "pr-301-abandoned-cafebabecafe")] | length' <<<"$appended")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

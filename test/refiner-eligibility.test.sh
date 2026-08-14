@@ -117,6 +117,31 @@ assert_eq "an empty repos array yields no candidates" "[]" \
 assert_eq "unreadable inputs yield an empty array rather than failing" "[]" \
   "$(refiner_candidate_items 'garbage' 'garbage' 'garbage' 'garbage' 'garbage' 'garbage')"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# $refinements, $blocked, $void and $claimed are four of the five aggregates
+# requirement 4g names by name as growing with the fleet's whole history;
+# $repos already arrived on stdin (TD-PPagop-26081301). Delivered via
+# --argjson, any one of them past MAX_ARG_STRLEN (131072 bytes) made this
+# call fail into its own `|| printf '[]'`, and the Refiner silently found no
+# candidates at all — the whole point of the function defeated exactly when
+# the fleet's history is largest. Requirement 4g moves all five onto stdin
+# together; this pins it with a $void extract past the cap, the same
+# aggregate that actually crossed it on 2026-08-12
+# (test/verdict-corroboration.test.sh's own BIG_VOID).
+big_void="$(jq -nc --argjson keep "$void" \
+  '[range(1300) | {repo: "o/r", item: ("TD-fill-" + (. | tostring)),
+                   ts: "2026-07-01T00:00:00Z", detail: ("pad " + ("x" * 100)),
+                   event: "item-void"}] + $keep')"
+assert_eq "the oversized void fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_void" | wc -c) > 131072 ))"
+
+candidates_big_void="$(refiner_candidate_items "$repos" "$policy" "$refinements" "$blocked" "$big_void" "$claimed")"
+assert_eq "a void extract past the argv cap still excludes the voided item" "no" \
+  "$(jq -r 'any(.[]; .item == "8") | if . then "yes" else "no" end' <<<"$candidates_big_void")"
+assert_eq "  ... while every other candidate still comes through unaffected" "5" \
+  "$(jq 'length' <<<"$candidates_big_void")"
+
 # project-review and implementation-plan are only reachable when the
 # Refiner-only repos array agent-cycle.sh builds actually carries them — a
 # repo with neither array present (the ordinary shape of the Co-Ordinator's

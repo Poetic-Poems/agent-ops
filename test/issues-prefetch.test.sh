@@ -218,6 +218,77 @@ else
   failures=$(( failures + 1 ))
 fi
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# $comments (a whole issue thread — requirement 3d/#118 pre-fetches every
+# comment) and the array-assembly append both used to ride into jq as
+# --argjson: unbounded past this call, the same reasoning
+# TD-PPagop-26081401 already applied elsewhere. Past MAX_ARG_STRLEN (131072
+# bytes) the entry build died at execve and, guarded by `degrade`, this
+# repo's whole issues band came out `[]` — loud on stderr, not silent.
+# Requirement 4g moves both onto stdin; this drives the real script, via the
+# same stub gh as above, over a single issue whose comment thread alone is
+# past the cap.
+cat >"$tmp_dir/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -uo pipefail
+[[ "${1:-}" == "api" ]] || { echo "stub gh: unexpected command: $*" >&2; exit 1; }
+path="$2"; shift 2
+filter='.'
+while [[ $# -gt 0 ]]; do
+  case "$1" in --jq) filter="$2"; shift 2;; *) shift;; esac
+done
+case "$path" in
+  */issues/*/comments*)
+    n="${path##*/issues/}"; n="${n%%/*}"
+    if [[ -f "$STUB_COMMENTS_DIR/$n.json" ]]; then
+      body="$(cat "$STUB_COMMENTS_DIR/$n.json")"
+    else
+      body='[]'
+    fi
+    ;;
+  */issues\?*) body="$(cat "$STUB_ISSUES")";;
+  *) echo "stub gh: unexpected path: $path" >&2; exit 1;;
+esac
+jq -rc "$filter" <<<"$body"
+STUB
+chmod +x "$tmp_dir/bin/gh"
+
+oversized_comment_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized comment-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_comment_body} > 131072 ))"
+
+cat >"$STUB_ISSUES" <<EOF
+[
+  {"number": 10, "html_url": "https://github.com/o/r/issues/10", "title": "A thread past the argv cap",
+   "user": {"login": "warwick"}, "labels": [], "assignees": [],
+   "created_at": "2026-07-19T08:00:00Z", "updated_at": "2026-07-20T09:00:00Z",
+   "body": "The oversized thread lives in the comments, not here.",
+   "issue_field_values": [{"issue_field_name": "Priority", "single_select_option": {"name": "High"}}]}
+]
+EOF
+printf '[{"user": {"login": "warwick"}, "created_at": "2026-07-19T10:00:00Z", "body": "%s"}]' \
+  "$oversized_comment_body" > "$STUB_COMMENTS_DIR/10.json"
+
+oversized_out="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r 2>"$tmp_dir/oversized.err")"
+oversized_rc=$?
+assert_eq "an issue whose thread is past the argv cap still exits 0" "0" "$oversized_rc"
+assert_eq "  ... and still produces the entry" "1" "$(jq 'length' <<<"$oversized_out")"
+entry10_body="$(jq -r '.[0].comments[0].body // ""' <<<"$oversized_out")"
+# Bash string matching, not jq --arg with the oversized string: that would
+# hit the very argv cap this section exists to prove the real code no longer
+# does.
+assert_eq "  ... carrying the full oversized comment, not truncated or dropped" \
+  "1" "$([[ "$entry10_body" == *"$oversized_comment_body"* ]] && echo 1 || echo 0)"
+assert_eq "  ... and the ref is still the bare issue number" \
+  "10" "$(jq -r '.[0].ref' <<<"$oversized_out")"
+if [[ ! -s "$tmp_dir/oversized.err" ]]; then
+  printf 'ok   - %s\n' "no stderr at all on the success path"
+else
+  printf 'FAIL - %s\n     stderr: %s\n' "no stderr at all on the success path" "$(cat "$tmp_dir/oversized.err")"
+  failures=$(( failures + 1 ))
+fi
+
 echo
 if (( failures == 0 )); then
   echo "All issues-prefetch assertions passed."

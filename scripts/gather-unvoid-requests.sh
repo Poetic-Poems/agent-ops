@@ -151,11 +151,15 @@ while IFS= read -r hit; do
   fi
   [[ "$(jq 'length' <<<"$items" 2>/dev/null || echo 0)" != "0" ]] || continue
 
-  req="$(jq -nc --argjson hit "$hit" --arg repo "$slug" --arg at "$labelled_at" \
-    --argjson items "$items" \
-    '{repo: $repo, number: $hit.number, url: $hit.url, kind: $hit.kind,
-      labelled_at: $at, items: $items}')"
-  out="$(jq -c --argjson r "$req" '. + [$r]' <<<"$out")"
+  # $hit (the whole issue/PR listing hit) and $items (its matched item refs)
+  # arrive on stdin, bound positionally with `input as $name` in the order
+  # printed (requirement 4g, TD-PPagop-26081406) — never in argv.
+  req="$(jq -nc --arg repo "$slug" --arg at "$labelled_at" \
+    'input as $hit | input as $items |
+     {repo: $repo, number: $hit.number, url: $hit.url, kind: $hit.kind,
+      labelled_at: $at, items: $items}' <<<"$hit"$'\n'"$items")"
+  # $req and the accumulator both arrive on stdin the same way.
+  out="$(jq -nc 'input as $arr | input as $r | $arr + [$r]' <<<"$out"$'\n'"$req")"
 done < <(jq -c '.[]' <<<"$hits" 2>/dev/null || true)
 
 jq -c 'sort_by(.labelled_at)' <<<"$out"

@@ -590,10 +590,20 @@ refiner_policy_value() {
 # (TD-PPagop-26081307).
 refiner_candidate_items() {
   local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
-        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}"
-  jq -c --argjson policy "$policy" --argjson refinements "$refinements" \
-        --argjson blocked "$blocked" --argjson void "$void" --argjson claimed "$claimed" '
-    def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
+        blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}" docs
+  # $refinements, $blocked, $void and $claimed are four of the five
+  # aggregates requirement 4g names by name as growing with the fleet's
+  # history (TD-PPagop-26081406); $repos already arrived on stdin. All five
+  # travel there together now, one document per line, bound positionally
+  # with `input as $name` in the order printed — never in argv, where past
+  # MAX_ARG_STRLEN this call fails into its own `|| printf '[]'` and the
+  # Refiner silently finds no candidates at all. $policy stays in argv: it is
+  # the installation's own configuration, bounded by requirement 4g.
+  docs="$(printf '%s\n' "$repos" "$refinements" "$blocked" "$void" "$claimed")"
+  jq -nc --argjson policy "$policy" '
+    input as $repos | input as $refinements | input as $blocked
+    | input as $void | input as $claimed
+    | def exempt($s): (($policy // {})[$s] // "exempt") == "exempt";
     def is_refined($repo; $item):
       (($refinements // {})[$repo][($item | tostring)] // null) != null;
     def is_blocked($repo; $item):
@@ -605,7 +615,7 @@ refiner_candidate_items() {
     def is_claimed($repo; $item):
       $claimed | any((.repo // "") == $repo
                      and ((.item // "") | tostring) == ($item | tostring));
-    [ .[] as $r
+    [ $repos[] as $r
       | ($r.slug // "") as $repo
       | ( ($r.findings // [])[]?, ($r.review_feedback // [])[]?,
           ($r.abandoned_drafts // [])[]?, ($r.merge_conflicts // [])[]?,
@@ -622,7 +632,7 @@ refiner_candidate_items() {
       | select(is_void($repo; $item) | not)
       | select(is_claimed($repo; $item) | not)
       | {repo: $repo, source: $source, item: $item, entry: $e} ]
-  ' <<<"$repos" 2>/dev/null || printf '[]'
+  ' <<<"$docs" 2>/dev/null || printf '[]'
 }
 
 # refiner_engagement_set CANDIDATES_JSON MAX

@@ -85,7 +85,12 @@ while IFS= read -r cand; do
   superseded_by="$(jq -r '.superseded_by // empty' <<<"$cand")"
 
   if [[ "$bot" != "true" || "$rebase_requested" == "true" || -n "$superseded_by" ]]; then
-    conflicts="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$conflicts")"
+    # $cand and the accumulator both arrive on stdin, one document per line,
+    # bound positionally with `input as $name` in the order printed
+    # (requirement 4g, TD-PPagop-26081406) — never in argv: $cand carries the
+    # same whole pull-request body gather-merge-conflicts.sh's own candidate
+    # build does.
+    conflicts="$(jq -nc 'input as $arr | input as $c | $arr + [$c]' <<<"$conflicts"$'\n'"$cand")"
     continue
   fi
 
@@ -104,5 +109,9 @@ while IFS= read -r cand; do
   fi
 done < <(jq -c '.[]' <<<"$candidates_json" 2>/dev/null || true)
 
-jq -nc --argjson conflicts "$conflicts" --argjson actions "$actions" \
-  '{conflicts: $conflicts, actions: $actions}'
+# $conflicts carries every skipped candidate's whole pull-request body —
+# unbounded past this call (requirement 4g, TD-PPagop-26081406) — delivered
+# on stdin; $actions is this cycle's own bounded number/outcome list and
+# stays in argv.
+jq -nc --argjson actions "$actions" \
+  'input as $conflicts | {conflicts: $conflicts, actions: $actions}' <<<"$conflicts"

@@ -169,6 +169,32 @@ assert_eq "unreadable stdin yields empty conflicts and actions" \
 out="$(NUDGE_GH="$tmp_dir/gh" bash "$NUDGE" 2>&1)"; rc=$?
 assert_eq "missing arguments is a usage error" "64" "$rc"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+#
+# The `conflicts` accumulator — every skipped candidate's whole pull-request
+# body, the same shape gather-merge-conflicts.sh's own candidate build
+# carries — used to ride into jq as --argjson, both at the per-candidate fold
+# and the final `{conflicts, actions}` build. Past MAX_ARG_STRLEN (131072
+# bytes) the build died at execve and this repo's whole merge_conflicts band
+# was lost. Requirement 4g moves it onto stdin; this drives the real script
+# (stdin already, so no CLI-argv confound) over enough already-nudged
+# candidates, each padded with a large body, to push the accumulator past
+# the cap well before the last one.
+reset_stub
+big_cands="$(jq -nc \
+  '[range(20) | {number: (200 + .), url: ("https://github.com/o/r/pull/" + ((200 + .) | tostring)),
+                 head_sha: "bbbbbbbbbbbbbbbbbbbb", bot: true, rebase_requested: true,
+                 superseded_by: null, body: ("pad " + ("x" * 8000))}]')"
+assert_eq "the oversized candidates fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_cands" | wc -c) > 131072 ))"
+out="$(run_nudge "$big_cands")"
+assert_eq "an accumulator of already-nudged candidates past the argv cap still passes every one through" \
+  "20" "$(jq '.conflicts | length' <<<"$out")"
+assert_eq "  ... none nudged again" "[]" "$(jq -c '.actions' <<<"$out")"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
+assert_eq "  ... and the first candidate's own padded body survives intact" \
+  "1" "$(jq '[.conflicts[] | select(.number == 200)] | length' <<<"$out")"
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'

@@ -307,13 +307,16 @@ survivors='[]'
 while IFS= read -r v; do
   [[ -n "$v" ]] || continue
   pr_url="$(jq -r '.pr_url // ""' <<<"$v")"
+  # $v and the accumulator both arrive on stdin, one document per line, bound
+  # positionally with `input as $name` in the order printed (requirement 4g,
+  # TD-PPagop-26081406) — never in argv.
   if [[ -z "$pr_url" ]]; then
-    survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
+    survivors="$(jq -nc 'input as $arr | input as $v | $arr + [$v]' <<<"$survivors"$'\n'"$v")"
     continue
   fi
   detail="$(jq -r '.detail // ""' <<<"$v")"
   if [[ "$(_pr_violation_survives "$pr_url" "$detail")" == "keep" ]]; then
-    survivors="$(jq -c --argjson v "$v" '. + [$v]' <<<"$survivors")"
+    survivors="$(jq -nc 'input as $arr | input as $v | $arr + [$v]' <<<"$survivors"$'\n'"$v")"
   fi
 done < <(jq -c '.[]' <<<"$mine" 2>/dev/null || true)
 
@@ -329,21 +332,30 @@ url="https://github.com/$slug/pulls"
 problems="$(jq -c '[.[] | "HUMAN VISIBILITY  " + (if (.pr_url // "") == "" then $r else .pr_url end) + ": " + (.detail // "")]' \
       --arg r "$slug" <<<"$survivors" 2>/dev/null || echo '[]')"
 
-body="$(jq -r '
+# Left JSON-encoded (no `-r`) so it can travel on stdin with $problems below:
+# both are rendered from the same $survivors set and grow with it, so an
+# `--arg body` would put the larger of the two back into a single argv element
+# and leave the MAX_ARG_STRLEN threshold where it was (requirement 4g,
+# TD-PPagop-26081406).
+body_json="$(jq -c '
   "The following human-visibility violation(s) (requirement 38c) could not be "
   + "self-healed by scripts/sweep-human-visibility.sh and have not cleared on "
   + "their own (requirement 38e):\n\n"
   + (map("- " + (if (.pr_url // "") == "" then $r else .pr_url end)
          + " (last logged " + (.ts // "unknown") + "): " + (.detail // "")) | join("\n"))
-' --arg r "$slug" <<<"$survivors")"
+' --arg r "$slug" <<<"$survivors" 2>/dev/null || printf '""')"
+[[ -n "$body_json" ]] || body_json='""'
 
+# $problems and $body_json both grow with the survivor set — unbounded past
+# this call (requirement 4g, TD-PPagop-26081406). Both arrive on stdin, one
+# document per line, bound positionally with `input as $name` in the order
+# printed — never in argv.
 jq -nc \
   --arg ref "$ref" \
   --arg url "$url" \
-  --argjson problems "$problems" \
-  --arg body "$body" \
-  '[{source: "human-visibility",
+  'input as $problems | input as $body |
+   [{source: "human-visibility",
      ref: $ref,
      url: $url,
      problems: $problems,
-     body: $body}]'
+     body: $body}]' <<<"$problems"$'\n'"$body_json"

@@ -337,12 +337,16 @@ while IFS= read -r pr; do
           | grep -oiE '\b(TD[0-9]{8}|dependabot-alert-[0-9]+|code-scanning-alert-[0-9]+|review-[0-9]{4}-[0-9]{2}-[0-9]{2}-R-?[0-9]+)\b' \
           | head -n1 || true)"
 
+  # $pr is the whole pull-request object, including its body — unbounded past
+  # this call (requirement 4g, TD-PPagop-26081406). Delivered on stdin, not
+  # argv. Fails open, and loudly: a candidate this build cannot parse is
+  # skipped rather than aborting the whole gather, and says which one on
+  # stderr.
   cand="$(jq -nc \
-    --argjson pr "$pr" \
     --arg ref "pr-${number}-abandoned-${head_sha:0:12}" \
     --arg item "$item" \
     --arg head_sha "$head_sha" \
-    '{source: "abandoned-drafts",
+    'input as $pr | {source: "abandoned-drafts",
       ref: $ref,
       number: $pr.number,
       pr_number: $pr.number,
@@ -353,8 +357,21 @@ while IFS= read -r pr; do
       item: (if $item == "" then null else $item end),
       head_sha: $head_sha,
       updated_at: $pr.real_activity,
-      body: ($pr.body // "")}')"
-  out="$(jq -c --argjson c "$cand" '. + [$c]' <<<"$out")"
+      body: ($pr.body // "")}' <<<"$pr")" || {
+    echo "gather-abandoned-drafts: $slug pr-${number}-abandoned-${head_sha:0:12}: candidate assembly failed; skipped" >&2
+    continue
+  }
+  # $cand and the accumulator both arrive on stdin, one document per line,
+  # bound positionally with `input as $name` in the order printed
+  # (requirement 4g, TD-PPagop-26081406) — never in argv: a single candidate
+  # past MAX_ARG_STRLEN must not degrade this repo's whole abandoned_drafts
+  # array to `[]`. `$out` inside the substitution is still the
+  # pre-assignment value, so a failed append keeps every candidate already
+  # collected and only drops this one.
+  out="$(jq -nc 'input as $arr | input as $c | $arr + [$c]' <<<"$out"$'\n'"$cand" || {
+    echo "gather-abandoned-drafts: $slug pr-${number}-abandoned-${head_sha:0:12}: array assembly failed; candidate dropped" >&2
+    printf '%s' "$out"
+  })"
 done < <(jq -c '.[]' <<<"$prs" 2>/dev/null || true)
 
 # Longest-abandoned first: the draft that has been untouched longest goes first,
