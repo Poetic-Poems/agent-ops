@@ -73,9 +73,10 @@ exist.** The work order carries `pr_url` and `pr_number` alongside the usual
 fields, and `branch` names the existing branch.
 
 - **Do not open a pull request, and do not create a branch.** `git checkout`
-  the work order's `branch` (it is on the remote already) and push to it. There
-  is no draft-PR claim to make: the PR *is* the claim, and it has been there
-  since the original cycle.
+  the work order's `branch` (it is on the remote already) and push to it —
+  after the "Merge-queue awareness" check above confirms it is not currently
+  queued. There is no draft-PR claim to make: the PR *is* the claim, and it
+  has been there since the original cycle.
 - **Do not re-do the original item.** The branch already contains the work; you
   are amending it in response to the review. Read the diff first
   (`gh pr diff <pr_number>`) so you are changing what is there rather than
@@ -150,6 +151,10 @@ of the "branch and PR already exist" instructions below apply to it.
   branch this system owns (the label and `branch_prefix`/`td/` check guaranteed
   that before you were handed the item), so a lease-guarded force-push is safe —
   and `--force-with-lease` still refuses if a peer moved the branch under you.
+  A conflicted pull request cannot itself be queued, but the gap between the
+  Co-Ordinator selecting this item and you reaching this step is real: run the
+  "Merge-queue awareness" check above before this push too, in case the
+  conflict resolved and the pull request was queued in the meantime.
 - **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
   resolving a conflict does **not** complete the underlying work — the item is
   done when the PR *merges*, which is still the human's or Reviewer's call. So do
@@ -227,7 +232,9 @@ usual fields, and `branch` names the existing branch. Your job is to *finish* it
 - **Do not open a pull request, and do not create a branch.** `git fetch origin`
   and `git checkout` the work order's `branch` (it is on the remote already), and
   push to it. The draft PR is already the claim; it has been there since the cycle
-  that abandoned it.
+  that abandoned it. (No merge-queue check is needed before this push: GitHub
+  does not allow enqueueing a draft pull request, so this one cannot be
+  queued.)
 - **Read what is already there before you add to it.** A previous cycle
   implemented some of this — `gh pr diff <pr_number>`, and the PR body (the
   original plan, pasted into the work order's `context`), tell you how far it got.
@@ -267,6 +274,43 @@ order — `td/<ID>` for tech-debt, `agent/<item-ref>` otherwise — which is
 entirely yours to shape: commit as many times as you like, amend, rebase on
 top of `default_branch` if it moves under you. Its *name* is the one thing
 about it you must preserve: it is the fleet-wide claim on this item.
+
+## Merge-queue awareness (D17)
+
+Where this repository has a GitHub merge queue enabled, enqueueing is the
+human's merge click ("Merge when ready") — the product never enqueues a pull
+request, exactly as it never merges one — and the actual merge lands minutes
+later, asynchronously, once the merge group's own checks pass. A currently
+queued pull request is **the human's, mid-transaction: never push to it.** A
+push evicts it from the queue with no further signal that this happened — the
+pull request silently reverts to an ordinary open one, and the human's merge
+click is simply undone.
+
+This matters only for the sources whose branch and pull request already
+exist before you start — `review-feedback`, `merge-conflicts` and
+`abandoned-drafts` below, each of which pushes to a human-visible pull
+request rather than one you have just opened yourself. Before any push to
+such a branch, check whether its pull request is currently queued:
+
+```
+gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){ isInMergeQueue }
+  }
+}' -f owner=<owner> -f repo=<repo> -F number=<pr_number> \
+  --jq '.data.repository.pullRequest.isInMergeQueue'
+```
+
+(`gh pr view --json mergeable,mergeStateStatus` — used elsewhere in this
+prompt to check plain mergeability — does not expose queue membership; this
+dedicated query is the only way to ask.) If it prints `true`, the pull
+request is queued: make no push, and report `"status": "blocked"` naming the
+queue as `reason` and "the pull request leaves the queue (merges, or is
+dequeued)" as `unblock_condition` — a future cycle will see it as an ordinary
+`review-feedback`/`merge-conflicts`/`abandoned-drafts` item again once it
+does. If the check itself fails (a scope error, a transient API failure),
+treat that the same as `true` — proceed only on a confirmed `false`, never on
+an unknown.
 
 ## Long-running commands
 
@@ -569,7 +613,11 @@ takeover" above.)*
    `git push --force-with-lease`, never a bare `--force`, same as every other
    force-push this system makes to a branch it does not exclusively hold.
    Leave the PR as a **draft** either way; flipping it to ready is the
-   Reviewer's job, not yours.
+   Reviewer's job, not yours. (For `review-feedback` or `merge-conflicts`,
+   where this rebase pushes to a pull request that already existed before
+   you started: run the "Merge-queue awareness" check above first, same as
+   any other push to one of those branches — time has passed since you last
+   checked, and the human may have enqueued it since.)
 
    *For `review-feedback`:* still rebase if `default_branch` has moved, but
    expect `mergeable` to remain false and `mergeStateStatus` to be `BLOCKED`

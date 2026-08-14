@@ -141,6 +141,17 @@ if [[ "$1 $2" == "api -X" ]]; then
   exit 0
 fi
 
+if [[ "$1 $2" == "api graphql" ]]; then
+  [[ -f "$d/mq-fail" ]] && exit 1
+  jqfilter="" prev=""
+  for a in "$@"; do
+    [[ "$prev" == "--jq" ]] && jqfilter="$a"
+    prev="$a"
+  done
+  jq -c "$jqfilter" "$d/mq-response.json" 2>/dev/null
+  exit 0
+fi
+
 path="$2"
 fail="$(cat "$d/api-fail" 2>/dev/null || true)"
 [[ -n "$fail" && "$path" == *"$fail" ]] && exit 1
@@ -198,18 +209,38 @@ comment_count() {
 }
 
 # idle_view REVIEW_DECISION MERGEABLE CI_GREEN APPROVED_AT ALREADY_NUDGED
+#   [ALREADY_DEQUEUE_NOTIFIED_AT]
 idle_view() {
-  local decision="$1" mergeable="$2" green="$3" at="$4" nudged="$5"
+  local decision="$1" mergeable="$2" green="$3" at="$4" nudged="$5" dq_at="${6:-}"
   local rollup='[]'
   [[ "$green" == "yes" ]] && rollup='[{"conclusion":"SUCCESS"}]'
   [[ "$green" == "mixed" ]] && rollup='[{"conclusion":"SUCCESS"},{"conclusion":"FAILURE"}]'
-  local comments='[]'
-  [[ "$nudged" == "yes" ]] && comments='[{"body":"reminder\n\n<!-- agent-ops:human-nudge -->"}]'
+  local extra=() comments='[]'
+  [[ "$nudged" == "yes" ]] && extra+=('{"body":"reminder\n\n<!-- agent-ops:human-nudge -->"}')
+  if [[ -n "$dq_at" ]]; then
+    extra+=("$(jq -cn --arg at "$dq_at" \
+      '{body: ("already notified\n\n<!-- agent-ops:merge-queue-dequeued:" + $at + " -->")}')")
+  fi
+  (( ${#extra[@]} )) && comments="$(printf '%s\n' "${extra[@]}" | jq -s -c '.')"
   jq -n --arg d "$decision" --arg m "$mergeable" --argjson rollup "$rollup" \
     --arg at "$at" --argjson comments "$comments" \
     '{reviewDecision: $d, mergeable: $m, statusCheckRollup: $rollup,
       reviews: (if $at == "" then [] else [{state: "APPROVED", submittedAt: $at}] end),
       comments: $comments}' > "$tmp_dir/idle-view.json"
+}
+
+# set_merge_queue QUEUED [DEQUEUED_AT] [REASON]
+# The raw GraphQL-shaped fixture `merge_queue_probe`'s own `--jq` filter
+# reads — the stub applies the caller's real filter, the same technique
+# `/reviews` and `/issues/…/comments` above use.
+set_merge_queue() {
+  local queued="$1" at="${2:-}" reason="${3:-}" nodes='[]'
+  if [[ -n "$at" ]]; then
+    nodes="$(jq -cn --arg at "$at" --arg r "$reason" '[{createdAt: $at, reason: $r}]')"
+  fi
+  jq -n --argjson q "$queued" --argjson nodes "$nodes" \
+    '{data: {repository: {pullRequest: {isInMergeQueue: $q, timelineItems: {nodes: $nodes}}}}}' \
+    > "$tmp_dir/mq-response.json"
 }
 
 reset_stub() {
@@ -219,7 +250,8 @@ reset_stub() {
   printf '[]' > "$tmp_dir/issue-comments.json"
   : > "$tmp_dir/pending"; : > "$tmp_dir/posts"; : > "$tmp_dir/comments.log"
   rm -f "$tmp_dir/api-fail" "$tmp_dir/post-fail" "$tmp_dir/list-fail" \
-        "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages"
+        "$tmp_dir/view-fail" "$tmp_dir/comment-fail" "$tmp_dir/pages" "$tmp_dir/mq-fail"
+  set_merge_queue false
   idle_view "" "" "" "" no
 }
 
@@ -411,6 +443,97 @@ printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE "" "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an empty rollup (no checks run yet) is never nudged" "" "$out"
+
+# --- Merge-queue awareness (requirement 38f, agent-ops#374) ---------------------
+
+# A currently-queued pull request reads APPROVED/MERGEABLE/green exactly like
+# one nobody has acted on yet — the human has already clicked merge, so the
+# idle nudge must not fire and tell them otherwise.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" no
+set_merge_queue true
+out="$(run_sweep)"
+assert_eq "a currently-queued PR is never nudged" "" "$out"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
+
+# A dequeue notice fires immediately — unconditional on idle_hours — because
+# it is new information, not the "forgot to click merge" case that threshold
+# exists for.
+write_config warwickallen 0
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no
+set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+out="$(run_sweep)"
+assert_eq "a checks-failure dequeue is nudged even with idle_hours 0" "nudged" \
+  "$(jq -r '.action' <<<"$out")"
+assert_contains "  ... the notice names the removal time" "2026-08-14T10:00:00Z" "$(comments)"
+assert_contains "  ... and the reason" "CI_FAILURE" "$(comments)"
+assert_contains "  ... marked idempotent per removal event" \
+  "<!-- agent-ops:merge-queue-dequeued:2026-08-14T10:00:00Z -->" "$(comments)"
+write_config warwickallen 24
+
+# Idempotent: a dequeue already notified (the marker for this exact
+# timestamp already on the pull request) is not notified again.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no "2026-08-14T10:00:00Z"
+set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+out="$(run_sweep)"
+assert_eq "an already-notified dequeue is not notified again" "" "$out"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
+
+# A second, later dequeue (a fresh timestamp) gets its own notice even though
+# an earlier one was already acknowledged.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no "2026-08-14T09:00:00Z"
+set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+out="$(run_sweep)"
+assert_eq "a fresh dequeue after an already-notified one still nudges" "nudged" \
+  "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
+assert_contains "  ... naming the new removal time" "2026-08-14T10:00:00Z" "$(comments)"
+
+# Re-queued at the same head since the recorded dequeue: nothing fresh to
+# say, so no notice — the probe's `queued: true` wins over the stale event.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" no
+set_merge_queue true "2026-08-14T09:00:00Z" "CI_FAILURE"
+out="$(run_sweep)"
+assert_eq "a re-queued PR with a stale dequeue event gets no notice, nor a nudge" \
+  "" "$out"
+
+# An unreadable merge-queue probe must never be read as "definitely not
+# queued" — but it also must not break the pre-existing idle-nudge path,
+# which behaves exactly as it did before this feature existed.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" no
+: > "$tmp_dir/mq-fail"
+out="$(run_sweep)"
+assert_eq "an unreadable merge-queue probe still allows the ordinary idle nudge" \
+  "nudged" "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
+
+# The dequeue-notice POST itself failing is a warning, not silence.
+write_config warwickallen 0
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no
+set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+printf x > "$tmp_dir/comment-fail"
+out="$(run_sweep)"
+assert_eq "a failed dequeue-notice POST is a warning" "warning" \
+  "$(jq -r --arg u "$URL" 'select(.pr_url == $u) | .action' <<<"$out" | tail -n1)"
+write_config warwickallen 24
 
 # --- human_nudge_idle_hours 0 disables the nudge, not the review request --------
 write_config warwickallen 0
