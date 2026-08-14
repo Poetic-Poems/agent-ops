@@ -287,10 +287,12 @@ pull request silently reverts to an ordinary open one, and the human's merge
 click is simply undone.
 
 This matters only for the sources whose branch and pull request already
-exist before you start — `review-feedback`, `merge-conflicts` and
-`abandoned-drafts` below, each of which pushes to a human-visible pull
-request rather than one you have just opened yourself. Before any push to
-such a branch, check whether its pull request is currently queued:
+exist before you start and whose pull request is not a draft —
+`review-feedback` and `merge-conflicts` below, each of which pushes to a
+pull request a human can already act on rather than one you have just
+opened yourself. (`abandoned-drafts` is exempt: its pull request is always
+a draft, and GitHub does not allow a draft to be queued.) Before any push
+to such a branch, check whether its pull request is currently queued:
 
 ```
 gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
@@ -307,7 +309,7 @@ dedicated query is the only way to ask.) If it prints `true`, the pull
 request is queued: make no push, and report `"status": "blocked"` naming the
 queue as `reason` and "the pull request leaves the queue (merges, or is
 dequeued)" as `unblock_condition` — a future cycle will see it as an ordinary
-`review-feedback`/`merge-conflicts`/`abandoned-drafts` item again once it
+`review-feedback`/`merge-conflicts` item again once it
 does. If the check itself fails (a scope error, a transient API failure),
 treat that the same as `true` — proceed only on a confirmed `false`, never on
 an unknown.

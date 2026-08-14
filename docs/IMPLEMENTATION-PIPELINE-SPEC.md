@@ -10097,8 +10097,10 @@ pull request, run the ones the change touches and any it could regress.
     this function's); a `gh` failure and a malformed response (a `queued`
     key present but not a boolean) both return non-zero with no output a
     caller could mistake for a real answer; and bad arguments (an empty
-    slug, an empty or non-numeric number, a slug with no `/`) are rejected
-    before ever calling `gh`. `test/sweep-human-visibility.test.sh` passes
+    slug, an empty or non-numeric number, a slug with no `/` or with more
+    than one) are rejected before ever calling `gh`, while a slug whose
+    repository is named the same as its owner is probed like any other.
+    `test/sweep-human-visibility.test.sh` passes
     the merge-queue cases alongside its existing ones: a currently-queued
     pull request is never idle-nudged; a checks-failure dequeue is nudged
     even with `human_nudge_idle_hours: 0`, naming the removal time and

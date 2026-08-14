@@ -140,6 +140,16 @@ assert_eq "a non-numeric number is rejected before calling gh" "1" "$rc"
 out="$(probe justowner 12)"; rc=$?
 assert_eq "a slug with no '/' is rejected before calling gh" "1" "$rc"
 
+out="$(probe o/r/extra 12)"; rc=$?
+assert_eq "a slug with more than one '/' is rejected before calling gh" "1" "$rc"
+
+# ... but a repository named the same as its owner (GitHub's own profile-repo
+# convention) is an ordinary slug, not a malformed one: the shape is what is
+# checked, never owner-versus-repo equality.
+out="$(probe acme/acme 12)"; rc=$?
+assert_eq "a repo named the same as its owner is a valid slug" "0" "$rc"
+assert_eq "  ... and is probed like any other" "false" "$(jq -r '.queued' <<<"$out")"
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'

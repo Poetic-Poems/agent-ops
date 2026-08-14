@@ -46,9 +46,13 @@
 # to catch.
 merge_queue_probe() {
   local slug="$1" number="${2:-}" gh_bin="${MERGE_QUEUE_GH:-gh}"
-  local owner="${slug%%/*}" repo="${slug#*/}"
   local out
-  [[ -n "$owner" && -n "$repo" && "$owner" != "$repo" ]] || return 1
+  # Exactly one `/`, with something either side — "owner/repo" and nothing
+  # else. Tested rather than inferred from the split below: `${slug%%/*}` and
+  # `${slug#*/}` both return the whole string when there is no `/` at all, so
+  # a bare "owner" would otherwise reach `gh` as owner=owner, repo=owner.
+  [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || return 1
+  local owner="${slug%%/*}" repo="${slug#*/}"
   [[ "$number" =~ ^[0-9]+$ ]] || return 1
 
   # shellcheck disable=SC2016  # GraphQL's own $owner/$repo/$number variables, not the shell's.
