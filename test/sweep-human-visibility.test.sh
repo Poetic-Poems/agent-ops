@@ -210,6 +210,22 @@ comment_count() {
 
 # idle_view REVIEW_DECISION MERGEABLE CI_GREEN APPROVED_AT ALREADY_NUDGED
 #   [ALREADY_DEQUEUE_NOTIFIED_AT]
+#
+# ALREADY_NUDGED accepts:
+#   yes             a genuine, pipeline-authored nudge comment (actor=script,
+#                   the real shape scripts/sweep-human-visibility.sh posts)
+#   reviewer-actor  the same genuine shape, but authored under a different
+#                   pipeline actor — agent-ops#390 acceptance 3: recognition
+#                   must not be hardcoded to actor=script
+#   quoted-no-stamp the exact `<!-- agent-ops:human-nudge -->` string, quoted
+#                   by a write that carries no pipeline marker at all — must
+#                   never suppress a nudge (agent-ops#390 fault #1)
+#   mentioned       a pipeline-authored comment (carries the marker prefix)
+#                   that only discusses the mechanism in prose, without the
+#                   exact HTML-comment form — the poetic-fiddle-style false
+#                   positive agent-ops#390 fault #1 describes; must never
+#                   suppress a nudge
+#   no              no nudge-related comment at all
 idle_view() {
   local decision="$1" mergeable="$2" green="$3" at="$4" nudged="$5" dq_at="${6:-}"
   local rollup='[]'
@@ -225,7 +241,23 @@ idle_view() {
   # leaves `conclusion` null until the run completes.
   [[ "$green" == "in_progress" ]] && rollup='[{"conclusion":"SUCCESS"},{"status":"IN_PROGRESS","conclusion":null}]'
   local extra=() comments='[]'
-  [[ "$nudged" == "yes" ]] && extra+=('{"body":"reminder\n\n<!-- agent-ops:human-nudge -->"}')
+  case "$nudged" in
+    yes)
+      extra+=("$(jq -cn --arg m "$(pipeline_comment_marker c1 script)" \
+        '{body: ("reminder\n\n" + $m + "\n<!-- agent-ops:human-nudge -->")}')")
+      ;;
+    reviewer-actor)
+      extra+=("$(jq -cn --arg m "$(pipeline_comment_marker c1 reviewer)" \
+        '{body: ("reminder\n\n" + $m + "\n<!-- agent-ops:human-nudge -->")}')")
+      ;;
+    quoted-no-stamp)
+      extra+=('{"body":"a bystander quoting the marker\n\n<!-- agent-ops:human-nudge -->"}')
+      ;;
+    mentioned)
+      extra+=("$(jq -cn --arg m "$(pipeline_comment_marker c1 reviewer)" \
+        '{body: ("Reviewed. This touches the agent-ops:human-nudge gate in sweep-human-visibility.sh.\n\n" + $m)}')")
+      ;;
+  esac
   if [[ -n "$dq_at" ]]; then
     extra+=("$(jq -cn --arg at "$dq_at" \
       '{body: ("already notified\n\n<!-- agent-ops:merge-queue-dequeued:" + $at + " -->")}')")
@@ -420,6 +452,40 @@ idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" yes
 out="$(run_sweep)"
 assert_eq "a PR nudged once already is not nudged again" "" "$out"
 assert_eq "  ... and posts no comment" "0" "$(comment_count)"
+
+# A genuine nudge-shaped comment authored under a different pipeline actor
+# (e.g. the Reviewer, not the Script) still counts — recognition keys off
+# `PIPELINE_COMMENT_MARKER_PREFIX` alone, never a specific actor= value
+# (agent-ops#390 acceptance 3).
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" reviewer-actor
+out="$(run_sweep)"
+assert_eq "a nudge-shaped comment authored by another pipeline actor still counts" \
+  "" "$out"
+assert_eq "  ... and posts no comment" "0" "$(comment_count)"
+
+# --- A non-pipeline write reproducing the literal marker never disables the -----
+# --- nudge: pipeline authorship is required, not just the exact string ---------
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" quoted-no-stamp
+out="$(run_sweep)"
+assert_eq "a bystander quoting the exact marker is still nudged" \
+  "nudged" "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
+
+# --- A pipeline-authored comment merely discussing the nudge mechanism never ----
+# --- disables it either: the exact HTML-comment form is required too -----------
+# --- (agent-ops#390 fault #1 — the Reviewer summarising this very fix) ---------
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" mentioned
+out="$(run_sweep)"
+assert_eq "a pipeline comment merely mentioning the marker is still nudged" \
+  "nudged" "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
 
 # --- Not idle long enough yet: no nudge, review request still self-heals --------
 reset_stub
