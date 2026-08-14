@@ -8439,12 +8439,25 @@ What exists, and the requirements each part answers to:
     above, since a poll-based `first-seen` is only as fresh as the gather
     that logged it.
 
+    The pairing tolerates every `selection` shape the log has ever held,
+    because `log.jsonl` is never rotated (requirement 2.6, component 3i) and
+    so still carries events from before `scripts/gather-issues.sh` minted its
+    `ref` as `(.number | tostring)`: an `item` is stringified before it is
+    keyed, which both avoids a jq type error on a numeric one and unifies
+    issue `45` with issue `"45"` onto the single key they deserve, and a
+    paired `selection` carrying no `node` at all counts fleet-wide but is
+    left out of `by_node` rather than keyed under a null. Neither shape may
+    abort the report: a single unreadable event costs its own line, never the
+    whole run, the same defensive posture the line-at-a-time parse above
+    takes.
+
     Both acceptances share the report's `since` and `window` (the timestamps
     covered), as JSON on stdout. Regression-tested against a fixture log
     covering a malformed trailing line, a causeless `claim-lost`, a
-    `pr-held` one, a bootstrapped `first-seen`, both unpaired classes, and a
-    first-seen race between two nodes (`test/pickup-metrics.test.sh`); must
-    pass `shellcheck`.
+    `pr-held` one, a bootstrapped `first-seen`, both unpaired classes, a
+    first-seen race between two nodes, and a legacy numeric-`item`,
+    node-less `selection` (`test/pickup-metrics.test.sh`); must pass
+    `shellcheck`.
 
 ## Acceptance checks
 

@@ -194,6 +194,35 @@ assert_eq "first-wins: latency uses the earlier (node-b4's) first-seen, 47s not 
 assert_eq "first-wins: attributed to the claiming node only" \
   '["node-b4"]' "$(jq -c '.pickup_latency.by_node | keys' <<<"$out_race")"
 
+# --- Legacy-shaped `selection` events must not abort the whole report --------
+# log.jsonl is never rotated (scripts/rotate-logs.sh keeps it whole on
+# purpose), so the live fleet log still holds `selection` events from before
+# scripts/gather-issues.sh minted its `ref` as `(.number | tostring)`: they
+# carry a *numeric* `item`, and some carry no `node` at all. Both are jq type
+# errors in the pairing — `"repo" + "|" + 45`, and a null object key in the
+# by_node grouping — and either aborts the entire report, not just the one
+# line, leaving the script printing nothing at all. Verified against the real
+# fleet log at review time, where seven such events existed.
+legacy_state="$tmp_dir/legacy-state"
+mkdir -p "$legacy_state"
+cat > "$legacy_state/log.jsonl" <<'EOF'
+{"ts":"2026-04-01T00:00:00Z","node":"node-a","event":"first-seen","repo":"r","item":"45","source":"issues","basis":"poll","bootstrap":false}
+{"ts":"2026-04-01T00:02:00Z","event":"selection","repo":"r","item":45,"source":"issues"}
+{"ts":"2026-04-01T00:03:00Z","node":"node-a","event":"selection","repo":"r","item":"K","source":"issues"}
+EOF
+
+out_legacy="$("$PICKUP" --state-dir "$legacy_state" --peers-dir "$tmp_dir/no-such-peers")"
+assert_eq "a numeric-item selection still yields valid JSON, not an aborted report" \
+  "0" "$(jq -e . >/dev/null 2>&1 <<<"$out_legacy"; echo $?)"
+assert_eq "…and keys onto the string-item first-seen for the same issue" \
+  "120" "$(jq -r '.pickup_latency.fleet.median_seconds' <<<"$out_legacy")"
+assert_eq "…counted fleet-wide even though it names no claiming node" \
+  "1" "$(jq -r '.pickup_latency.fleet.count' <<<"$out_legacy")"
+assert_eq "…with by_node left empty rather than keyed on null" \
+  '{}' "$(jq -c '.pickup_latency.by_node' <<<"$out_legacy")"
+assert_eq "…and the node-less selection still counts as paired coverage" \
+  "1 1" "$(jq -r '[.coverage.paired, .coverage.selection_only] | join(" ")' <<<"$out_legacy")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

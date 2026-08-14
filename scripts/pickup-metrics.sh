@@ -175,10 +175,26 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl \
           end;
       def latency_stats($arr):
         {count: ($arr | length), median_seconds: percentile(0.5; $arr), p90_seconds: percentile(0.9; $arr)};
-      # first-wins: the earliest-ts record for each {repo, item} pair — the
-      # same "|"-joined grouping key the extracts in lib/cycle-state.sh use.
+      # The {repo, item} pair as one "|"-joined key, the same shape the
+      # extracts in lib/cycle-state.sh group on. `item` is coerced with
+      # `tostring` rather than concatenated raw because the fleet log is
+      # never rotated (scripts/rotate-logs.sh keeps log.jsonl whole
+      # deliberately), so it still holds `selection` events from before
+      # scripts/gather-issues.sh minted its `ref` as `(.number | tostring)` —
+      # those carry a *numeric* `item`, and `"repo" + "|" + 45` is a jq type
+      # error that would abort the whole report rather than skip one line.
+      # Coercing also unifies the two shapes onto one key, which is what we
+      # want: issue 45 and issue "45" are the same item.
+      def item_key: ((.repo // "") | tostring) + "|" + ((.item // "") | tostring);
+      # A record this report can key on at all: both halves present and
+      # non-empty once stringified.
+      def keyed($e):
+        select(.event == $e
+               and (((.repo // "") | tostring) != "")
+               and (((.item // "") | tostring) != ""));
+      # first-wins: the earliest-ts record for each {repo, item} pair.
       def first_per_key:
-        group_by(.repo + "|" + .item) | map(sort_by(.ts) | first);
+        group_by(item_key) | map(sort_by(.ts) | first);
 
       map(select(type == "object")) as $all
       | ($all
@@ -202,14 +218,12 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl \
       | (reduce $sel_eras[]  as $e ({before: 0, after: 0}; .[$e] += 1)) as $sel
       | (reduce $cont_eras[] as $e ({before: 0, after: 0}; .[$e] += 1)) as $cont
 
-      | ($ev | map(select(.event == "first-seen" and (.repo // "") != "" and (.item // "") != ""))
-           | first_per_key) as $fs_list
-      | ($ev | map(select(.event == "selection" and (.repo // "") != "" and (.item // "") != ""))
-           | first_per_key) as $sel_list
-      | ($fs_list  | map({key: (.repo + "|" + .item), value: .}) | from_entries) as $fs_by_key
-      | ($sel_list | map({key: (.repo + "|" + .item), value: .}) | from_entries) as $sel_by_key
-      | ($fs_list  | map(.repo + "|" + .item)) as $fs_keys
-      | ($sel_list | map(.repo + "|" + .item)) as $sel_keys
+      | ($ev | map(keyed("first-seen")) | first_per_key) as $fs_list
+      | ($ev | map(keyed("selection"))  | first_per_key) as $sel_list
+      | ($fs_list  | map({key: item_key, value: .}) | from_entries) as $fs_by_key
+      | ($sel_list | map({key: item_key, value: .}) | from_entries) as $sel_by_key
+      | ($fs_list  | map(item_key)) as $fs_keys
+      | ($sel_list | map(item_key)) as $sel_keys
       | ([$fs_keys[]  | select(. as $k | $sel_by_key | has($k))])         as $paired_keys
       | ([$fs_keys[]  | select(. as $k | ($sel_by_key | has($k)) | not)]) as $fs_only_keys
       | ([$sel_keys[] | select(. as $k | ($fs_by_key  | has($k)) | not)]) as $sel_only_keys
@@ -220,7 +234,14 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl \
          )) as $paired
       | ($paired | map(select(.bootstrap | not))) as $measured
       | ($paired | map(select(.bootstrap)) | length) as $bootstrap_excluded_count
-      | ($measured | group_by(.node)
+      # `by_node` is keyed on the claiming node, so a paired item whose
+      # `selection` carries no `node` — the same never-rotated legacy events
+      # `item_key` accommodates above — has no bucket to go in, and a null
+      # object key is another whole-report jq error. Such a pair still counts
+      # fleet-wide, where its latency is just as valid; only the attribution
+      # is missing, and `.fleet.count` minus the summed `.by_node` counts is
+      # how many.
+      | ($measured | map(select(((.node // "") | tostring) != "")) | group_by(.node)
            | map({key: .[0].node, value: (map(.latency_seconds) | latency_stats(.))})
            | from_entries) as $by_node
 
