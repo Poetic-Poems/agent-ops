@@ -72,7 +72,7 @@ assert_eq() {
 # and `$STUB_REVIEW_REQUESTS` (nonzero means a pending request exists) steer
 # the request-class check; `$STUB_REVIEW_REQUESTS_JSON`, when set, overrides
 # `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests` array, for fixturing
-# a bot-type/`[bot]`-suffixed or team-shaped entry
+# a Bot-typed/`[bot]`-suffixed or team-shaped entry
 # (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_MARKER` (`yes`/`no`) steers
 # whether the nudge marker comment is present; `$STUB_AUTHOR` (default
 # `author`) and `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`,
@@ -156,18 +156,26 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUE
         "$GATHER" "o/a" "$request_level")"
 assert_eq "a request-class violation on a changes-requested pull request is dropped" "[]" "$out"
 
-# --- could_not_request: a bot-type-only reviewRequests entry does not clear it
-# (tech-debt/TD-PPagop-26081403.md) — this org runs Copilot code review, and
-# a repository ruleset can auto-request it into this exact list.
+# --- could_not_request: a Bot-typed-only reviewRequests entry does not clear
+# it (tech-debt/TD-PPagop-26081403.md). Defensive: today's `gh pr view` never
+# delivers this shape — its exporter (cli/cli `api/export_pr.go`) drops Bot
+# reviewers from `reviewRequests` entirely, so a Copilot-only request arrives
+# as `[]` and is the "no live request survives" case above. This fixtures the
+# `__typename`-keyed entry the exporter *would* emit if it ever stopped
+# dropping them, so the filter keeps the two readers agreed even then.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
-        STUB_REVIEW_REQUESTS_JSON='[{"login":"copilot-pull-request-reviewer","type":"Bot"}]' \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Bot","login":"copilot-pull-request-reviewer"}]' \
         "$GATHER" "o/a" "$request_level")"
-assert_eq "a bot-type-only pending request does not clear a request-class violation" \
+assert_eq "a Bot-typed-only pending request does not clear a request-class violation" \
   "1" "$(jq 'length' <<<"$out")"
 
 # --- could_not_request: a [bot]-suffixed-only reviewRequests entry survives -
+# Defensive for the same reason: a `[bot]`-suffixed login is REST's rendering
+# of a Bot account, which this reader's GraphQL-backed exporter types as
+# `Bot` and drops — a `User`-typed `[bot]` login cannot occur today. The
+# `type` fallback retained in the filter covers a REST-shaped payload too.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
-        STUB_REVIEW_REQUESTS_JSON='[{"login":"some-app[bot]"}]' \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"User","login":"some-app[bot]"}]' \
         "$GATHER" "o/a" "$request_level")"
 assert_eq "a [bot]-suffixed-only pending request does not clear a request-class violation" \
   "1" "$(jq 'length' <<<"$out")"
@@ -225,13 +233,15 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[
 assert_eq "a no-candidate violation is dropped once a review request is already pending" \
   "[]" "$out"
 
-# --- no_candidate: a bot-type-only pending request does not clear it -------
+# --- no_candidate: a Bot-typed-only pending request does not clear it ------
 # (tech-debt/TD-PPagop-26081403.md), the same filter `ensure_human_reviewer`'s
-# own pending read applies.
+# own pending read applies. Defensive, `__typename`-keyed, for the same
+# reason as the request-class twin above: today's `gh` drops this entry
+# before it ever reaches the filter.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
-        STUB_REVIEW_REQUESTS_JSON='[{"login":"copilot-pull-request-reviewer","type":"Bot"}]' \
+        STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Bot","login":"copilot-pull-request-reviewer"}]' \
         "$GATHER" "o/a" "$no_candidate_level")"
-assert_eq "a bot-type-only pending request does not clear a no-candidate violation" \
+assert_eq "a Bot-typed-only pending request does not clear a no-candidate violation" \
   "1" "$(jq 'length' <<<"$out")"
 
 # --- no_candidate: a requested-team-only pending request clears it ---------

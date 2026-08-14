@@ -77,12 +77,25 @@
 #                             A `reviewRequests` entry counts only once it
 #                             clears the same *bot* filter `ensure_human_
 #                             reviewer`'s own pending read applies — a
-#                             bot-type account or a `[bot]`-suffixed login is
+#                             bot-typed account or a `[bot]`-suffixed login is
 #                             never proof a human was asked
 #                             (tech-debt/TD-PPagop-26081403.md) — and a
 #                             requested team counts, the same as it does
 #                             there; a filtered-nonempty `reviewRequests`
-#                             means a request is live right now.
+#                             means a request is live right now. Unlike
+#                             `ensure_human_reviewer`'s REST read, whose
+#                             `requested_reviewers[]` genuinely carries
+#                             `"type": "Bot"` and `[bot]`-suffixed logins,
+#                             `gh pr view`'s GraphQL-backed exporter
+#                             (cli/cli `api/export_pr.go`) emits only
+#                             `__typename`-keyed `User`/`Team` entries and
+#                             *drops* Bot reviewers from the array entirely
+#                             — so a Copilot-only request already arrives
+#                             here as `[]` and survives on emptiness alone.
+#                             The filter is belt-and-braces for the day that
+#                             exporter changes, keyed on `__typename` (what
+#                             this reader would actually see) with `type`
+#                             retained against a REST-shaped payload.
 #                             `reviewDecision` of `APPROVED` or
 #                             `CHANGES_REQUESTED` means a review already
 #                             happened, which only a request already granted
@@ -201,12 +214,16 @@ _pr_violation_survives() {
   case "$class" in
     could_not_request)
       decision="$(jq -r '.reviewDecision // ""' <<<"$json" 2>/dev/null || true)"
-      # A bot-type or `[bot]`-suffixed entry is dropped before counting, the
+      # A bot-typed or `[bot]`-suffixed entry is dropped before counting, the
       # same filter `ensure_human_reviewer`'s own pending read applies
       # (tech-debt/TD-PPagop-26081403.md); a team entry (no `login`, so the
-      # `[bot]`-suffix test never matches it) is kept and counts.
+      # `[bot]`-suffix test never matches it) is kept and counts. Defensive:
+      # `gh`'s exporter already drops Bot reviewers from `reviewRequests`
+      # and keys the survivors on `__typename`, never `type` (see the header
+      # comment), so against today's `gh` this select keeps everything and
+      # the count is doing the work.
       requests="$(jq -r '[(.reviewRequests // [])[]
-                           | select(((.type // "User") == "Bot")
+                           | select(((.__typename // .type // "User") == "Bot")
                                     or ((.login // "") | endswith("[bot]"))
                                     | not)]
                           | length' <<<"$json" 2>/dev/null || echo 0)"
@@ -241,7 +258,8 @@ _pr_violation_survives() {
       # would report `already` or `requested` for this pull request, never
       # `no-candidate` again, before this gatherer ever ran again. The
       # pending-request check applies the same bot filter and team-counting
-      # as `could_not_request` above, so this reader and `ensure_human_
+      # as `could_not_request` above — defensive against today's `gh` for
+      # the same reason given there — so this reader and `ensure_human_
       # reviewer`'s own pending read (tech-debt/TD-PPagop-26081403.md) agree
       # on what counts as a live request.
       assignee="$(sed -n 's/.*enabler_assignee=//p' <<<"$detail")"
@@ -252,7 +270,7 @@ _pr_violation_survives() {
              | select(. != "" and . != $a and (endswith("[bot]") | not))]
           | unique | length' <<<"$json" 2>/dev/null || echo 0)"
       requests="$(jq -r '[(.reviewRequests // [])[]
-                           | select(((.type // "User") == "Bot")
+                           | select(((.__typename // .type // "User") == "Bot")
                                     or ((.login // "") | endswith("[bot]"))
                                     | not)]
                           | length' <<<"$json" 2>/dev/null || echo 0)"
