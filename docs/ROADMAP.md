@@ -194,7 +194,9 @@ demonstrated (no idle compute cost between ticks); per-container CPU,
 memory, disk, and bandwidth budgets are stated and the metrics export
 reports actuals against them; a node whose derived local state has been
 corrupted returns to publishing without intervention, demonstrated by
-injecting the fault rather than by waiting for it.
+injecting the fault rather than by waiting for it; and a node that fails to
+converge on a rollout says so without anyone going to look, demonstrated the
+same way.
 
 - [ ] Graceful drain: a shutting-down node finishes or hands off its
       in-flight cycle before exiting. The auto-update case is already
@@ -212,7 +214,27 @@ injecting the fault rather than by waiting for it.
       renders it green. The incident below is what fixes the definition —
       both laptop nodes reported themselves fresh for four days while
       publishing nothing, because every signal either of them emitted was
-      one it also consumed. *[fleet]*
+      one it also consumed.
+      Health also has to mean *converged*: whether the node runs the version
+      the installation intends, and whether whatever is meant to get it there
+      is succeeding. On 2026-08-14 watchtower on poetic-vm-1 tried to create
+      two replacement containers it had never stopped, hit a name collision,
+      and logged `Session done Failed=2` on every poll thereafter while the
+      node stayed on the previous image — through a fleet roll carrying the
+      fix for an outage the other three nodes had already taken. It was
+      cleared by recycling the node by hand, and would not have cleared
+      otherwise: the retry repeats the operation that collides. Nothing
+      raised it while it lasted. The node was healthy by every
+      definition it had (cycles idle, locks clean, heartbeat current, its own
+      dashboard rendering), and it surfaced only because a human ran
+      `check-nodes.sh` and read the image line: `lib/image-drift.sh`
+      deliberately tolerates `image_behind_grace_hours` of lag, since a roll
+      waiting on a cycle in flight is normal and not an alarm. So the
+      updater's verdict has to leave the updater. An update mechanism failing
+      repeatedly is a reportable fact in its own right, ahead of and
+      independent of the drift it eventually causes — the drift check is a
+      backstop against the *symptom*, and it was never meant to be the only
+      thing watching. *[fleet]*
 - [ ] Self-healing derived state: every local store that is a cache of
       something else — the state-sync mirror first among them, and the
       workspace clones — is integrity-checked before use and rebuilt from
@@ -297,7 +319,18 @@ injecting the fault rather than by waiting for it.
       *[fleet]*
 - [ ] Kubernetes deployment: manifests or a Helm chart, with the scheduler
       as a CronJob so scale-to-zero falls out naturally; Compose remains a
-      supported option. *[interactive]*
+      supported option. This retires one whole class of update failure by
+      construction rather than by fixing it: watchtower updates imperatively
+      — stop *this* named container, create its replacement under the same
+      name — so a step that half-completes leaves a collision it then repeats
+      forever, which is what wedged poetic-vm-1 on 2026-08-14. A rollout
+      reconciles toward a declared state under generated names, so there is
+      no name to collide and no single failed step to repeat. What it does
+      *not* retire is the reporting gap recorded against the health item
+      above: `ImagePullBackOff`, a rollout past its `progressDeadlineSeconds`
+      and a CronJob that has stopped scheduling are all conditions Kubernetes
+      exposes and none that anything here reads yet. Surfaced in an API is
+      not the same as reported to an operator. *[interactive]*
 - [ ] Make the deployment an artefact: a node's compose (or manifest) comes
       from a pinned, versioned release rather than a hand-fetched file, so
       configuration drift becomes a version comparison the heartbeat already
