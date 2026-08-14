@@ -149,15 +149,35 @@ if [[ -n "$prompts_md" ]]; then
   ' <<<"$prompts_md"
 fi
 
-# fence_body FILE — the text between the first pair of ``` fence lines in
-# FILE (the prompt's own fenced ```text block), regardless of the fence's
-# language tag. Prints nothing if FILE does not exist or has no closed fence.
+# fence_body FILE — the text between the *first* and the *last* ``` fence line
+# in FILE (the prompt's own fenced ```text block), regardless of the fence's
+# language tag. Prints nothing if FILE does not exist or holds fewer than two
+# fence lines.
+#
+# First-to-last rather than first-pair, because an improvement prompt may
+# legitimately contain a fenced block of its own — the project-review skill's
+# own prompt-writing guidance presents its mandatory cost-policy block as a
+# ```text fence, so a prompt that quotes a patch, a command transcript or that
+# block has four fence lines in its section, not two. Closing at the first
+# fence after the opening one would silently truncate such a prompt at its
+# nested block, and the Refiner would write a specification from the half it
+# was left with, with nothing to signal the loss. Treating the interior fence
+# lines as content instead keeps the prompt whole and preserves the fences the
+# author wrote; for the two-fence section the template produces, the two rules
+# are identical, and for any section whose fences balance this one strictly
+# adds. A section with an odd fence count is malformed either way — it renders
+# wrongly on GitHub too — and this rule answers it by keeping the prompt's own
+# opening and dropping whatever trails the last fence.
 fence_body() {
   local f="$1"
   [[ -f "$f" ]] || return 0
   awk '
-    /^```/ { if (infence) { infence = 0; next } else { infence = 1; next } }
-    infence { print }
+    /^```/ { if (!first) first = NR; last = NR }
+    { line[NR] = $0 }
+    END {
+      if (!first || last <= first) exit 0
+      for (i = first + 1; i < last; i++) print line[i]
+    }
   ' "$f"
 }
 

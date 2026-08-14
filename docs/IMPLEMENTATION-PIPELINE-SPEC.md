@@ -720,7 +720,7 @@ It must not be `blocked` nor `obsolete`, for the reasons given against `enabler_
 
 ### Extended notes: `refinement_policy`
 
-Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only for a repo whose `sources` lists the source and whose policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
+Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -2612,9 +2612,12 @@ runs unattended.
 
    Each array is filled by its own gatherer — `scripts/gather-project-review.sh`
    and `scripts/gather-implementation-plan.sh` (Components) — called for a repo
-   only where the read can be acted on: the repo's own `sources` lists that
-   source **and** its `refinement_policy` (requirement 39a) is not `exempt`,
-   since an exempt source's candidates would be discarded unread; and for
+   only where the read can be acted on: `refiner_model` is set, since
+   requirement 39's own first guard returns without launching anything when it
+   is not, and every read paid for under an empty one buys an array no
+   engagement can ever spend; the repo's own `sources` lists that source
+   **and** its `refinement_policy` (requirement 39a) is not `exempt`, since an
+   exempt source's candidates would be discarded unread; and for
    `implementation-plan`, only where `implementation_plan_path` is configured
    (requirement 3k), the same value the startup guard already requires. A repo
    meeting neither condition costs no API call, the rule requirement 3t's own
@@ -2629,6 +2632,20 @@ runs unattended.
    Refiner cannot write a specification without: a recommendation's own detail
    section and its ready-to-run improvement prompt, a plan task's whole
    task-list line.
+
+   **A prompt is carried whole or not at all.** An improvement prompt lives in
+   a fenced block, and may legitimately contain a fenced block of its own — the
+   cost-policy block the project-review skill requires in every prompt is
+   itself presented as one, and a prompt that quotes a patch or a command
+   transcript is the same shape. The review gatherer therefore takes everything
+   between the **first** and the **last** fence line of a prompt's section,
+   treating any fence line between them as content; it never stops at the first
+   closing fence, which would hand the Refiner a prompt silently truncated at
+   its nested block and no way to know a specification was written from half of
+   one. For the two-fence section the skill's own template produces the two
+   rules are identical, and for any section whose fences balance this one
+   strictly adds; a section with an odd fence count is malformed under either
+   reading, and this one answers it by keeping the prompt's own opening.
 
    Each item's `ref` is the one the rest of the pipeline already knows it by,
    so a block filed against a refined item resolves through the readers that
@@ -7371,11 +7388,14 @@ What exists, and the requirements each part answers to:
    `## R-NN` section of `03-recommendations.md`, each carrying
    `review-<date>-R-NN` as `ref`, its `id`, `review_date`, `title`, `url`,
    the section verbatim as `body`, and the fenced prompt body for the same id
-   from `04-improvement-prompts.md` as `improvement_prompt`; sorted by
-   recommendation number ascending, the review's own priority order. A repo
-   with no `reviews/` tree, no dated folder in it, or no `03-recommendations.md`
-   prints `[]` silently; an API failure prints `[]` with `gh`'s diagnosis on
-   stderr. Fails safe to `[]` (exit 0). Its shape is regression-tested in
+   from `04-improvement-prompts.md` as `improvement_prompt` — everything
+   between the first and the last fence line of that prompt's section, so a
+   prompt with a nested code block of its own arrives whole rather than
+   truncated at it; sorted by recommendation number ascending, the review's
+   own priority order. A repo with no `reviews/` tree, no dated folder in it,
+   or no `03-recommendations.md` prints `[]` silently; an API failure prints
+   `[]` with `gh`'s diagnosis on stderr. Fails safe to `[]` (exit 0). Its
+   shape is regression-tested in
    `test/gather-project-review.test.sh`; must pass `shellcheck`.
 3y. `scripts/gather-implementation-plan.sh` implementing requirement 3y's
    implementation-plan half: given a repo slug, default branch and
@@ -9607,11 +9627,12 @@ pull request, run the ones the change touches and any it could regress.
     `test/gather-implementation-plan.test.sh` pass, each driving its script
     against a stubbed `gh`: the review gatherer reads only the latest dated
     folder, mints `review-<date>-R-NN` refs, carries each recommendation's own
-    section and its matching improvement prompt, and prints `[]` for a repo
-    with no `reviews/` tree; the plan gatherer returns open tasks in document
-    order, skips checked ones and lines whose leading token is not a
-    `WORK_GONE_PLAN_RE` id, and prints `[]` for a missing document. Neither
-    ever exits non-zero.
+    section and its matching improvement prompt — whole, including a nested
+    code block of the prompt's own and the fence lines around it — and prints
+    `[]` for a repo with no `reviews/` tree; the plan gatherer returns open
+    tasks in document order, skips checked ones and lines whose leading token
+    is not a `WORK_GONE_PLAN_RE` id, and prints `[]` for a missing document.
+    Neither ever exits non-zero.
 39c. **The Refiner's verdicts are recorded as stated, driving the real switch
     (requirements 39c, 39d, 39e).** `test/refiner-verdicts.test.sh` passes:
     driving `maybe_run_refiner` itself — lifted verbatim from `agent-cycle.sh`,

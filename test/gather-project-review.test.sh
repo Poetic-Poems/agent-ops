@@ -13,6 +13,13 @@
 #     `R-NN`, `title` is read from the section heading, `body` is the whole
 #     `## R-NN — …` section verbatim, and `improvement_prompt` is the fenced
 #     prompt body from `04-improvement-prompts.md`.
+#   - **A prompt containing a fenced block of its own arrives whole** — the
+#     body runs from the section's first fence line to its last, so the nested
+#     block and the fences around it are content, not delimiters. Closing at
+#     the first fence after the opening one would truncate such a prompt with
+#     nothing to signal the loss, and the Refiner would write a specification
+#     from the half it was left. This is the shape the project-review skill's
+#     own mandatory cost-policy block produces.
 #   - **Sorted by recommendation number ascending.**
 #   - **A repository with no `reviews/` folder, or an unreadable one,
 #     contributes `[]`**, silently for the former and loudly (stderr) for the
@@ -62,6 +69,7 @@ Ordering note: severity first, quick wins before long campaigns.
 |---|---|---|---|---|
 | R-01 | Fix thing | High | Small | F-SEC-01 |
 | R-02 | Fix other thing | Medium | Medium | F-DOC-03 |
+| R-03 | Fix third thing | Low | Small | F-TST-02 |
 
 ## R-01 — Fix thing
 
@@ -82,6 +90,16 @@ Ordering note: severity first, quick wins before long campaigns.
 **Intended end state:** better.
 
 **Approach:** do that too.
+
+## R-03 — Fix third thing
+
+**Severity:** Low · **Effort:** Small · **Addresses:** F-TST-02
+
+**Current state:** unpatched.
+
+**Intended end state:** patched.
+
+**Approach:** apply the patch the prompt carries.
 EOF
 
 cat >"$tmp_dir/04-improvement-prompts.md" <<'EOF'
@@ -104,6 +122,21 @@ Do it well.
 
 ```text
 Fix the other thing.
+```
+
+## Prompt for R-03 — Fix third thing
+
+**Bundles:** R-03 only · **Run after:** no prerequisites
+
+```text
+Apply this patch:
+
+```diff
+-old
++new
+```
+
+Then run the tests, and work cost-consciously.
 ```
 EOF
 
@@ -165,7 +198,7 @@ export STUB_LISTING=two
 export STUB_PROMPTS=hit
 out="$(run)"; rc=$?
 assert_eq "exits 0" "0" "$rc"
-assert_eq "both recommendations are candidates" "2" "$(jq 'length' <<<"$out")"
+assert_eq "every recommendation is a candidate" "3" "$(jq 'length' <<<"$out")"
 assert_eq "source is project-review" "project-review" "$(jq -r '.[0].source' <<<"$out")"
 assert_eq "ref is review-<date>-R-NN" "review-2026-08-10-R-01" "$(jq -r '.[0].ref' <<<"$out")"
 assert_eq "id is the bare R-NN" "R-01" "$(jq -r '.[0].id' <<<"$out")"
@@ -188,8 +221,21 @@ assert_eq "body is the whole R-01 section verbatim" \
 assert_eq "improvement_prompt is the fenced prompt body, verbatim" \
   "$(printf 'Fix the thing described in R-01.\nDo it well.')" \
   "$(jq -r '.[0].improvement_prompt' <<<"$out")"
-assert_eq "sorted by recommendation number ascending" "R-01 R-02" \
+assert_eq "sorted by recommendation number ascending" "R-01 R-02 R-03" \
   "$(jq -r '[.[].id] | join(" ")' <<<"$out")"
+# A prompt with a fenced block of its own: the nested block and its fences are
+# content. Stopping at the first closing fence would silently truncate this to
+# "Apply this patch:" — a prompt whose whole instruction is the patch it lost.
+assert_eq "a prompt with a nested code block arrives whole, fences and all" \
+  "$(printf '%s' 'Apply this patch:
+
+```diff
+-old
++new
+```
+
+Then run the tests, and work cost-consciously.')" \
+  "$(jq -r '.[] | select(.id == "R-03") | .improvement_prompt' <<<"$out")"
 assert_eq "the earlier review folder's recommendations never appear" "0" \
   "$(jq '[.[] | select(.review_date == "2026-07-01")] | length' <<<"$out")"
 
@@ -220,7 +266,7 @@ export STUB_LISTING=two
 export STUB_PROMPTS=404
 out="$(run)"; rc=$?
 assert_eq "exits 0 even without an improvement-prompts file" "0" "$rc"
-assert_eq "recommendations are still emitted" "2" "$(jq 'length' <<<"$out")"
+assert_eq "recommendations are still emitted" "3" "$(jq 'length' <<<"$out")"
 assert_eq "improvement_prompt is empty rather than the array being dropped" "" \
   "$(jq -r '.[0].improvement_prompt' <<<"$out")"
 export STUB_PROMPTS=hit

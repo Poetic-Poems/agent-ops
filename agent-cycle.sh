@@ -5392,35 +5392,39 @@ enabler_allowed=1
 # arrays: the Co-Ordinator keeps reading `reviews/…` and the plan document
 # live (prompts/coordinator.md's "Project-review recommendations" and
 # "implementation-plan" bullets). `refiner_repos_json` is a separate copy,
-# augmented per repo only where the read is worth paying for: the repo's own
-# `sources` lists the source *and* `refinement_policy` for it is not exempt
-# (nothing would ever read an exempt source's candidates), and for
+# augmented per repo only where the read is worth paying for: this installation
+# has a Refiner at all (`refiner_model` — `maybe_run_refiner`'s own first guard,
+# so with it empty every read here buys an array no engagement can ever spend),
+# the repo's own `sources` lists the source *and* `refinement_policy` for it is
+# not exempt (nothing would ever read an exempt source's candidates), and for
 # `implementation-plan`, only where `implementation_plan_path` is configured
 # (the same startup guard that requires it already refused to run otherwise).
 refiner_repos_json="$ordered_repos_json"
-while IFS=$'\t' read -r rp_slug rp_branch; do
-  [[ -n "$rp_slug" ]] || continue
-  rp_entry="$(jq -c --arg s "$rp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
-    <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
-  rp_sources="$(jq -c '.sources // []' <<<"$rp_entry" 2>/dev/null || echo '[]')"
-  rp_pr='[]'
-  if jq -e 'any(.[]; . == "project-review")' <<<"$rp_sources" >/dev/null 2>&1 \
-     && [[ "$(refiner_policy_value "project-review" "$refinement_policy_json")" != "exempt" ]]; then
-    rp_pr="$(gather_project_review_candidates "$rp_slug" "$rp_branch")"
-  fi
-  rp_ip='[]'
-  rp_path="$(jq -r '.implementation_plan_path // ""' <<<"$rp_entry" 2>/dev/null || true)"
-  if jq -e 'any(.[]; . == "implementation-plan")' <<<"$rp_sources" >/dev/null 2>&1 \
-     && [[ -n "$rp_path" ]] \
-     && [[ "$(refiner_policy_value "implementation-plan" "$refinement_policy_json")" != "exempt" ]]; then
-    rp_ip="$(gather_implementation_plan_candidates "$rp_slug" "$rp_branch" "$rp_path")"
-  fi
-  if [[ "$rp_pr" != "[]" || "$rp_ip" != "[]" ]]; then
-    refiner_repos_json="$(jq -c --arg s "$rp_slug" --argjson pr "$rp_pr" --argjson ip "$rp_ip" \
-      'map(if .slug == $s then . + {project_review: $pr, implementation_plan: $ip} else . end)' \
-      <<<"$refiner_repos_json" 2>/dev/null || printf '%s' "$refiner_repos_json")"
-  fi
-done < <(jq -r '.[] | .slug + "\t" + .default_branch' <<<"$ordered_repos_json" 2>/dev/null || true)
+if [[ -n "$refiner_model" ]]; then
+  while IFS=$'\t' read -r rp_slug rp_branch; do
+    [[ -n "$rp_slug" ]] || continue
+    rp_entry="$(jq -c --arg s "$rp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
+      <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
+    rp_sources="$(jq -c '.sources // []' <<<"$rp_entry" 2>/dev/null || echo '[]')"
+    rp_pr='[]'
+    if jq -e 'any(.[]; . == "project-review")' <<<"$rp_sources" >/dev/null 2>&1 \
+       && [[ "$(refiner_policy_value "project-review" "$refinement_policy_json")" != "exempt" ]]; then
+      rp_pr="$(gather_project_review_candidates "$rp_slug" "$rp_branch")"
+    fi
+    rp_ip='[]'
+    rp_path="$(jq -r '.implementation_plan_path // ""' <<<"$rp_entry" 2>/dev/null || true)"
+    if jq -e 'any(.[]; . == "implementation-plan")' <<<"$rp_sources" >/dev/null 2>&1 \
+       && [[ -n "$rp_path" ]] \
+       && [[ "$(refiner_policy_value "implementation-plan" "$refinement_policy_json")" != "exempt" ]]; then
+      rp_ip="$(gather_implementation_plan_candidates "$rp_slug" "$rp_branch" "$rp_path")"
+    fi
+    if [[ "$rp_pr" != "[]" || "$rp_ip" != "[]" ]]; then
+      refiner_repos_json="$(jq -c --arg s "$rp_slug" --argjson pr "$rp_pr" --argjson ip "$rp_ip" \
+        'map(if .slug == $s then . + {project_review: $pr, implementation_plan: $ip} else . end)' \
+        <<<"$refiner_repos_json" 2>/dev/null || printf '%s' "$refiner_repos_json")"
+    fi
+  done < <(jq -r '.[] | .slug + "\t" + .default_branch' <<<"$ordered_repos_json" 2>/dev/null || true)
+fi
 
 # --- The Refiner's candidate set (requirement 39a) ---
 # Every pre-fetched item this cycle's `refiner_repos_json` carries whose source
