@@ -44,13 +44,19 @@
 #      `MERGEABLE`/green exactly like one nobody has acted on yet, and the
 #      human has already clicked merge.
 #   4. Where the pull request was recently removed from the merge queue
-#      without merging (a checks-failure dequeue, requirement 38f) — a state
-#      GitHub marks nowhere but the timeline, since a dequeued pull request
-#      otherwise looks like an ordinary open one — posts one notice comment
-#      naming `enabler_assignee`, unconditional on `human_nudge_idle_hours`
-#      (this is new information, not the "forgot to click merge" case that
-#      threshold exists for), idempotent per removal event rather than
-#      per pull request, so a second dequeue gets its own notice.
+#      without merging, for a reason the pipeline should surface to a human
+#      (a checks-failure dequeue, requirement 38f; gated on
+#      `merge_queue_dequeue_actionable`, agent-ops#394 — a "manual" removal,
+#      the maintainer taking their own entry back, gets no notice, since they
+#      already know) — a state GitHub marks nowhere but the timeline, since a
+#      dequeued pull request otherwise looks like an ordinary open one —
+#      posts one notice comment naming `enabler_assignee`, unconditional on
+#      `human_nudge_idle_hours` (this is new information, not the "forgot to
+#      click merge" case that threshold exists for), idempotent per removal
+#      event rather than per pull request, so a second dequeue gets its own
+#      notice. Also bounded by `merge_queue_dequeue_notice_max_age_hours`, so
+#      a removal event that predates this feature is not read as new
+#      information merely because this is the first sweep to see it.
 #
 # ## Why the sweep may call `confirm_review_requested`, and only narrowly
 #
@@ -154,6 +160,8 @@ pr_label="$(cfg '.pr_label')"
 assignee="$(cfg '.enabler_assignee')"
 idle_hours="$(cfg '.human_nudge_idle_hours')"
 [[ "$idle_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]] || idle_hours=24
+dequeue_max_age_hours="$(cfg '.merge_queue_dequeue_notice_max_age_hours')"
+[[ "$dequeue_max_age_hours" =~ ^[0-9]+(\.[0-9]+)?$ ]] || dequeue_max_age_hours=24
 
 warn() { jq -nc --arg u "$1" --arg d "$2" '{action: "warning", pr_url: $u, detail: $d}'; }
 
@@ -297,7 +305,28 @@ while IFS= read -r pr_url; do
   # either way there is nothing fresh to say. Idempotent per removal event
   # (the marker is scoped to `dequeued_at`), so a second dequeue after a
   # re-queue gets its own notice rather than being suppressed by the first.
-  if [[ "$mq_queued" == "false" && -n "$mq_dequeued_at" ]]; then
+  #
+  # Two further gates (agent-ops#394, tech-debt/TD-PPagop-26081409.md):
+  # `merge_queue_dequeue_actionable` (lib/merge-queue.sh) excludes a "manual"
+  # removal — the maintainer taking their own entry back is not a defect the
+  # notice should tell them "needs a fresh look" for, and they were the one
+  # who caused it, so they already know — while any other reason, including
+  # one this never learned to recognise, stays actionable: withholding the
+  # one notice a human gets for a defect they did not cause is the worse
+  # mistake. And `mq_recent` bounds the event to
+  # `merge_queue_dequeue_notice_max_age_hours`: without it, the very first
+  # sweep run after this feature (or this gate) lands would read every
+  # already-old removal event on every open, labelled pull request as fresh
+  # news.
+  mq_recent=0
+  mq_dequeued_epoch="$(date -d "$mq_dequeued_at" +%s 2>/dev/null || echo 0)"
+  if (( mq_dequeued_epoch > 0 )); then
+    mq_age_threshold_seconds="$(awk -v h="$dequeue_max_age_hours" 'BEGIN{printf "%d", h*3600}')"
+    (( $(date +%s) - mq_dequeued_epoch <= mq_age_threshold_seconds )) && mq_recent=1
+  fi
+  if [[ "$mq_queued" == "false" && -n "$mq_dequeued_at" ]] \
+      && merge_queue_dequeue_actionable "$mq_dequeue_reason" \
+      && (( mq_recent )); then
     mq_marker="<!-- agent-ops:merge-queue-dequeued:${mq_dequeued_at} -->"
     if ! jq -e --arg m "$mq_marker" '(.comments // []) | any((.body // "") | contains($m))' \
         <<<"$pr_json" >/dev/null 2>&1; then

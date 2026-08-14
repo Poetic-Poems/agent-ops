@@ -588,6 +588,20 @@
         }
       }
     },
+    "merge_queue_dequeue_notice_max_age_hours": {
+      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time.",
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "default": 24,
+      "x-docs": {
+        "readme": "Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time.",
+        "spec": "Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md.",
+        "value": {
+          "readme": "`24`",
+          "spec": "24 h"
+        }
+      }
+    },
     "crash_loop_after": {
       "description": "Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue \u2014 either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. 0 disables both checks.",
       "type": "integer",

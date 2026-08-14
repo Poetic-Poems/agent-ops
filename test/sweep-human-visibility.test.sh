@@ -545,6 +545,16 @@ out="$(run_sweep)"
 assert_eq "an IN_PROGRESS entry is never nudged" "" "$out"
 
 # --- Merge-queue awareness (requirement 38f, agent-ops#374) ---------------------
+#
+# `dequeued_at` fixtures below are computed relative to "now" (never a
+# hardcoded literal): scripts/sweep-human-visibility.sh reads the real wall
+# clock (`date +%s`), and agent-ops#394 added an age gate
+# (`merge_queue_dequeue_notice_max_age_hours`, default 24 h) that a fixed
+# past literal would eventually age out of, breaking this suite on a later
+# day for a reason that has nothing to do with a real regression.
+recent_dequeue_at() {  # <hours ago>
+  date -u -d "-$1 hours" +%Y-%m-%dT%H:%M:%SZ
+}
 
 # A currently-queued pull request reads APPROVED/MERGEABLE/green exactly like
 # one nobody has acted on yet — the human has already clicked merge, so the
@@ -566,14 +576,15 @@ reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE yes "" no
-set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+dq_at="$(recent_dequeue_at 1)"
+set_merge_queue false "$dq_at" "failed_checks"
 out="$(run_sweep)"
 assert_eq "a checks-failure dequeue posts its own dequeue-notice action even with idle_hours 0" \
   "dequeue-notice" "$(jq -r '.action' <<<"$out")"
-assert_contains "  ... the notice names the removal time" "2026-08-14T10:00:00Z" "$(comments)"
-assert_contains "  ... and the reason" "CI_FAILURE" "$(comments)"
+assert_contains "  ... the notice names the removal time" "$dq_at" "$(comments)"
+assert_contains "  ... and the reason" "failed_checks" "$(comments)"
 assert_contains "  ... marked idempotent per removal event" \
-  "<!-- agent-ops:merge-queue-dequeued:2026-08-14T10:00:00Z -->" "$(comments)"
+  "<!-- agent-ops:merge-queue-dequeued:${dq_at} -->" "$(comments)"
 write_config warwickallen 24
 
 # Idempotent: a dequeue already notified (the marker for this exact
@@ -581,8 +592,9 @@ write_config warwickallen 24
 reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf 'Warwick-Allen\n' > "$tmp_dir/pending"
-idle_view APPROVED MERGEABLE yes "" no "2026-08-14T10:00:00Z"
-set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+dq_at="$(recent_dequeue_at 1)"
+idle_view APPROVED MERGEABLE yes "" no "$dq_at"
+set_merge_queue false "$dq_at" "failed_checks"
 out="$(run_sweep)"
 assert_eq "an already-notified dequeue is not notified again" "" "$out"
 assert_eq "  ... no comment posted" "0" "$(comment_count)"
@@ -592,12 +604,14 @@ assert_eq "  ... no comment posted" "0" "$(comment_count)"
 reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf 'Warwick-Allen\n' > "$tmp_dir/pending"
-idle_view APPROVED MERGEABLE yes "" no "2026-08-14T09:00:00Z"
-set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+older_dq_at="$(recent_dequeue_at 2)"
+newer_dq_at="$(recent_dequeue_at 1)"
+idle_view APPROVED MERGEABLE yes "" no "$older_dq_at"
+set_merge_queue false "$newer_dq_at" "failed_checks"
 out="$(run_sweep)"
 assert_eq "a fresh dequeue after an already-notified one still posts its own dequeue-notice" \
   "dequeue-notice" "$(jq -r 'select(.action == "dequeue-notice") | .action' <<<"$out")"
-assert_contains "  ... naming the new removal time" "2026-08-14T10:00:00Z" "$(comments)"
+assert_contains "  ... naming the new removal time" "$newer_dq_at" "$(comments)"
 
 # Re-queued at the same head since the recorded dequeue: nothing fresh to
 # say, so no notice — the probe's `queued: true` wins over the stale event.
@@ -605,10 +619,35 @@ reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" no
-set_merge_queue true "2026-08-14T09:00:00Z" "CI_FAILURE"
+set_merge_queue true "$(recent_dequeue_at 1)" "failed_checks"
 out="$(run_sweep)"
 assert_eq "a re-queued PR with a stale dequeue event gets no notice, nor a nudge" \
   "" "$out"
+
+# A "manual" dequeue — the maintainer removing their own queue entry — is
+# not this notice's business: it addresses a human about a defect they did
+# not cause, and here they caused it themselves (agent-ops#394).
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no
+set_merge_queue false "$(recent_dequeue_at 1)" "manual"
+out="$(run_sweep)"
+assert_eq "a manual dequeue gets no notice, nor a nudge" "" "$out"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
+
+# A dequeue older than merge_queue_dequeue_notice_max_age_hours gets no
+# notice even on the very first sweep to see it — the rollout case
+# agent-ops#394 closes, so a repository's queue adoption does not
+# retroactively read every already-old removal as fresh news.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no
+set_merge_queue false "$(recent_dequeue_at 48)" "failed_checks"
+out="$(run_sweep)"
+assert_eq "a dequeue past the default max age gets no notice, nor a nudge" "" "$out"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
 
 # An unreadable merge-queue probe must never be read as "definitely not
 # queued" — but it also must not break the pre-existing idle-nudge path,
@@ -628,7 +667,7 @@ reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE yes "" no
-set_merge_queue false "2026-08-14T10:00:00Z" "CI_FAILURE"
+set_merge_queue false "$(recent_dequeue_at 1)" "failed_checks"
 printf x > "$tmp_dir/comment-fail"
 out="$(run_sweep)"
 assert_eq "a failed dequeue-notice POST is a warning" "warning" \
