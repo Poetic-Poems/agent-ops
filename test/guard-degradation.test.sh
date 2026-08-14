@@ -269,6 +269,70 @@ out="$(run_resume_block '2026-08-14T00:00:00Z')"
 assert_eq "a well-formed resume_at is parsed normally" "1786665600" "$out"
 assert_eq "…and nothing is reported on the happy path" "0" "$(last_guard_events | jq -s 'length')"
 
+# =================================================================================
+# Every guard site, structurally — the sweep the representative tests above
+# cannot be: 67 near-identical one-liners are exactly the shape a copy-paste
+# slip hides in, and the slip is invisible to the suite because the guarded
+# command succeeds in every test that does not force it to fail. The form is
+#
+#   <var>="$(cmd … 2>&1)" || { guard_warn "<site>" "$<var>"; <var>=<fallback>; }
+#
+# and all three names must be the one variable the assignment targets: report
+# some *other* variable's contents and the event names the wrong value; assign
+# the fallback to some *other* variable and the guard both leaves the captured
+# error text standing where a value belongs and clobbers a bystander. That
+# second half is not hypothetical — the void closed-merge site shipped in this
+# item's first pass writing `void_json='[]'` where it meant
+# `void_actioned_json='[]'`, which would have emptied the whole void extract
+# for the cycle (making every voided item selectable again) on any failure of
+# a jq call nothing else re-checks.
+# =================================================================================
+
+guard_site_report="$(perl -0777 -ne '
+  my @lines = split /\n/, $_;
+  my $sites = 0;
+  for my $i (0 .. $#lines) {
+    my $t = $lines[$i];
+    next unless $t =~ /guard_warn\s+"/;      # skips the definition and the prose
+    $sites++;
+    my ($detail) = $t =~ /guard_warn\s+"[^"]*"\s+"\$\{?([A-Za-z_][A-Za-z0-9_]*)\}?"/;
+    my ($fb)     = $t =~ /guard_warn\s+"[^"]*"\s+"[^"]*";\s*([A-Za-z_][A-Za-z0-9_]*)=/;
+    # The assignment this guard belongs to opens the statement, which the jq
+    # program between them can carry a long way up the file — so walk back to
+    # the nearest `<var>="$(`, rather than trying to rejoin a statement whose
+    # continuations are raw newlines inside a single-quoted jq script.
+    my $target;
+    for (my $j = $i; $j >= 0 && $j > $i - 80; $j--) {
+      if ($lines[$j] =~ /([A-Za-z_][A-Za-z0-9_]*)="\$\(/) { $target = $1; last }
+    }
+    for my $pair ([ "detail", $detail ], [ "fallback", $fb ]) {
+      my ($what, $got) = @$pair;
+      next if defined $target && defined $got && $target eq $got;
+      printf "%s: %s names %s, assignment targets %s\n",
+        $i + 1, $what, (defined $got ? $got : "(unparsed)"),
+        (defined $target ? $target : "(unparsed)");
+    }
+  }
+  print "sites=$sites\n";
+' "$SCRIPT_DIR/agent-cycle.sh")"
+
+guard_site_count="$(sed -n 's/^sites=//p' <<<"$guard_site_report")"
+guard_site_mismatches="$(grep -v '^sites=' <<<"$guard_site_report" || true)"
+
+# A parser that matched nothing would pass the assertion below vacuously; the
+# floor is deliberately well under the count this item converted, so ordinary
+# additions and removals do not need to touch it, but a silent parse failure
+# still fails here.
+if (( guard_site_count < 50 )); then
+  printf 'FAIL - found only %s guard_warn call sites in agent-cycle.sh (parser broken?)\n' \
+    "$guard_site_count"
+  failures=$(( failures + 1 ))
+else
+  printf 'ok   - swept %s guard_warn call sites\n' "$guard_site_count"
+fi
+assert_eq "every guard site reports and falls back on its own assignment target" \
+  "" "$guard_site_mismatches"
+
 echo "----------------------------------------"
 if (( failures == 0 )); then
   echo "All assertions passed."

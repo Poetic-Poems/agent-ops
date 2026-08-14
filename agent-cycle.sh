@@ -5399,7 +5399,7 @@ if (( void_retire_after_days > 0 )); then
        | {repo: $repo, item: .key, by: "register-resolved"})) as $reg_done
     | $closed_here + $reg_done + $liveness + $revplan + $config' \
     <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>&1)" \
-    || { guard_warn "void_json:closed-merge" "$void_json"; void_json='[]'; }
+    || { guard_warn "void_actioned_json:closed-merge" "$void_actioned_json"; void_actioned_json='[]'; }
 
   void_json_before_retire="$void_json"
   void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
