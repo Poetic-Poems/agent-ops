@@ -5036,7 +5036,7 @@ runs unattended.
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
     `disabled`, `enabled`, `salvage`, `chained`,
-    `review-gate-checks-read`, `review-gate-checks-degraded`,
+    `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
     `ok: true|false` — machine-read by the streak verdict, and kept out of
@@ -5046,7 +5046,46 @@ runs unattended.
     is the escalation `review_gate_unknown_streak_verdict` triggers, logged
     once per streak, carrying the verdict's own
     `node`, `gate`, `count`, `first_ts` and `last_ts` — `first_ts` doubling
-    as the dedup key `review_gate_degraded_since` matches the run by. A `dependabot-rebase-requested` (requirement 3s)
+    as the dedup key `review_gate_degraded_since` matches the run by. A
+    `first-seen` (TD-PPagop-26081405, issue #248 acceptance 4) is written by
+    `emit_first_seen` (agent-cycle.sh) the first time any node's gather ever
+    reports a given `{repo, item}` pair, for each of the seven pre-fetched
+    arrays requirement 3q names (`issues`, `findings` — split into its own
+    `security`/`code-quality` `source`, since one gather call answers for
+    both — `tech_debt`, `register_hygiene`, `review_feedback`,
+    `merge_conflicts`, `abandoned_drafts`), carrying `repo`, `item`, `source`
+    (the same label the eventual `selection` for that item carries),
+    `basis: "poll"` (every current source re-reads its target every cycle; a
+    future event-native source, stage 3 of issue #248 recorded in
+    `docs/ROADMAP.md`, would carry a different basis), and `bootstrap` —
+    `true` when the writing node's own log held no earlier `first-seen` at
+    all when the cycle began, `false` otherwise. It is a fact, not a state —
+    logged once per item, ever, with no clearing event — and
+    `emit_first_seen` keeps that guarantee itself: it reads
+    `lib/cycle-state.sh`'s `first_seen_known_items` off the union log once
+    per cycle and skips any candidate already present, so a later cycle —
+    this node's own or a peer's — that gathers the same item appends
+    nothing. Because two nodes can race to be first past that check before
+    either write is visible to the other, the guarantee is once-per-cycle-
+    per-node rather than fleet-atomic, exactly like every other log write
+    this system makes outside the branch claim itself; a reader reduces
+    same-item duplicates by keeping the earliest `ts` (`scripts/pickup-
+    metrics.sh`'s `first_per_key`), the same first-wins convention
+    `first_seen_known_items` itself applies. Emission runs on each source's
+    raw gathered array, ahead of requirement 3q's own claimed-item exclusion
+    and the blocked/void pass further down (3u), so an item claimed, blocked
+    or voided the same cycle it first appears still gets one — those
+    exclusions only ever narrow what the Co-Ordinator is shown, never what
+    this fleet has seen. `bootstrap` exists because a node's first cycle
+    emitting `first-seen` at all — freshly onboarded, or the cycle this
+    feature first deployed to it — reports nearly everything its gather sees
+    as "new", when most of it has in truth existed for a while;
+    `scripts/pickup-metrics.sh` (component 21) excludes those items from its
+    median/p90 while still counting them, so the exclusion is visible rather
+    than a silent drop. Kept out of the dashboard's log tail for the same
+    reason `review-gate-checks-read` is: machine bookkeeping with nothing an
+    operator can act on, read only by `scripts/pickup-metrics.sh`. A
+    `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
     `warning` whose `detail` names the same repo and number instead, since
@@ -8361,28 +8400,51 @@ What exists, and the requirements each part answers to:
     Unit-tested (`test/review-gate.test.sh`); must pass `shellcheck`.
 21. `scripts/pickup-metrics.sh` — a read-only operator report, like
     `scripts/watch-node.sh` (component 11) and `scripts/check-node-compose.sh`
-    (component 12): answers issue #248's acceptance 5 (no increase in
-    duplicate-work incidents) from the union event log, without adding a new
-    event or touching pipeline behaviour. Reads `lib/fleet.sh`'s `fleet_logs`
+    (component 12): answers issue #248's acceptances 4 and 5 from the union
+    event log and this repository's own `config.json`, itself adding no event
+    and touching no pipeline behaviour. Reads `lib/fleet.sh`'s `fleet_logs`
     over `state_dir`/`fleet_peers_dir workspace_root` (or `--state-dir`/
     `--peers-dir` overrides), parsing defensively one line at a time
     (`jq -c -R 'fromjson? // empty'`, as `scripts/publish-dashboard.sh` does,
     since the log is appended to while it reads) and bounded by an optional
-    `--since <iso8601>`. Splits every `selection` and contended `claim-lost`
-    event (`cause` of `held` or `pr-held` — WI-2 renames a PR-keyed `held` loss
-    to `pr-held`, so counting only `held` would silently undercount after
-    #238; a `claim-lost` with no `cause` at all, from before requirement 17a
-    carried one, counts toward neither) into a "before"/"after" era **per
-    node, at that node's own first `chained` event** (component-21's reason
-    for reading it rather than #268's merge timestamp: an auto-updated fleet
-    picks up a change at different real times per node, so only a node's own
-    evidence that it exercised finish-then-continue marks its own adoption; a
-    node with no `chained` event in the window is entirely "before"). Prints
-    both eras' `selection` and contended-`claim-lost` counts, each ratio, and
-    the window covered, as JSON on stdout. Regression-tested against a
-    fixture log covering a malformed trailing line, a causeless `claim-lost`
-    and a `pr-held` one (`test/pickup-metrics.test.sh`); must pass
-    `shellcheck`.
+    `--since <iso8601>`.
+
+    Acceptance 5 (no increase in duplicate-work incidents): splits every
+    `selection` and contended `claim-lost` event (`cause` of `held` or
+    `pr-held` — WI-2 renames a PR-keyed `held` loss to `pr-held`, so counting
+    only `held` would silently undercount after #238; a `claim-lost` with no
+    `cause` at all, from before requirement 17a carried one, counts toward
+    neither) into a "before"/"after" era **per node, at that node's own first
+    `chained` event** (component-21's reason for reading it rather than
+    #268's merge timestamp: an auto-updated fleet picks up a change at
+    different real times per node, so only a node's own evidence that it
+    exercised finish-then-continue marks its own adoption; a node with no
+    `chained` event in the window is entirely "before"). Prints both eras'
+    `selection` and contended-`claim-lost` counts and each ratio.
+
+    Acceptance 4 (median pickup latency, TD-PPagop-26081405): pairs each
+    `first-seen` (requirement 33) with the `selection` that later claims the
+    same `{repo, item}` — both reduced first-wins-by-`ts` on the rare
+    duplicate a race between two nodes' gathers can produce — and reports the
+    gap in seconds as `pickup_latency`: `count`/`median_seconds`/
+    `p90_seconds` fleet-wide (`.fleet`) and per claiming node (`.by_node`),
+    plus `bootstrap_excluded_count` — paired items left out of both figures
+    because their `first-seen` carried `bootstrap: true`, still counted so
+    the exclusion is visible rather than a silent drop. An item with only one
+    half of the pair is reported instead under `coverage`: `paired`,
+    `first_seen_only` (seen, not yet claimed) and `selection_only` (claimed,
+    but never `first-seen` — most often an item that predates this
+    instrumentation). `cadence_bound_minutes` echoes `config.json`'s
+    `schedule.cycle_interval_minutes` — the floor under every latency figure
+    above, since a poll-based `first-seen` is only as fresh as the gather
+    that logged it.
+
+    Both acceptances share the report's `since` and `window` (the timestamps
+    covered), as JSON on stdout. Regression-tested against a fixture log
+    covering a malformed trailing line, a causeless `claim-lost`, a
+    `pr-held` one, a bootstrapped `first-seen`, both unpaired classes, and a
+    first-seen race between two nodes (`test/pickup-metrics.test.sh`); must
+    pass `shellcheck`.
 
 ## Acceptance checks
 
