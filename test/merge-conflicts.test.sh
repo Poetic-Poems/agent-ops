@@ -454,6 +454,37 @@ assert_eq "  ... carrying its full, untruncated body" \
 
 rm -rf "$big_tmp"
 
+# --- Neither converted site drops a candidate silently --------------------------
+# Both sites fail open per candidate, which is right: this gather losing one
+# conflicted pull request beats it losing every other one alongside. Failing
+# open *silently* is not — this is the band whose whole job is visibility, and
+# a candidate that leaves it with no stderr, no event and nothing in the output
+# cannot be told from a candidate that was never there. The reference
+# conversion named in TD-PPagop-26081401's own record,
+# scripts/gather-tech-debt.sh's `|| degrade "array assembly failed at …"`,
+# keeps its converted append loud for exactly that reason.
+#
+# A source-level pin because emit()'s two jq calls have no reachable failure
+# left to provoke from outside: what they read is jq's own output either way,
+# so the argv cap this item removed was how they failed. Read the function
+# rather than the behaviour — a reintroduced `2>/dev/null` fails here.
+emit_body="$(awk '/^emit\(\) \{/ { on = 1 } on { print } on && /^\}$/ { exit }' \
+  "$SCRIPT_DIR/scripts/gather-merge-conflicts.sh")"
+# shellcheck disable=SC2016  # source text to search for, not an expansion.
+{
+  emit_probe='input as $pr'
+  emit_warn_build='warn "candidate assembly failed for pr #$number"'
+  emit_warn_fold='warn "array assembly failed at pr #$number"'
+}
+assert_eq "emit() was found in the source" "1" \
+  "$(( $(grep -cF "$emit_probe" <<<"$emit_body") > 0 ))"
+assert_eq "emit() suppresses no jq stderr" "0" \
+  "$(grep -cF '2>/dev/null' <<<"$emit_body")"
+assert_eq "the candidate build names the pull request it could not assemble" "1" \
+  "$(grep -cF "$emit_warn_build" <<<"$emit_body")"
+assert_eq "and so does the fold" "1" \
+  "$(grep -cF "$emit_warn_fold" <<<"$emit_body")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
