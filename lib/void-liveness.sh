@@ -9,7 +9,8 @@
 # already act on. Every other shape a cycle can void —
 # `dependabot-alert-<n>`/`code-scanning-alert-<n>`, `register-hygiene-<hash>`,
 # `failed-run-<workflow>`, and `pr-<n>-conflict-<head-sha>` (later joined by
-# its sibling shape `pr-<n>-superseded-<head-sha>`, TD-PPagop-26081304) — had
+# its sibling shape `pr-<n>-superseded-<head-sha>`, TD-PPagop-26081304, and by
+# `pr-<n>-dequeued-<head-sha>`, TD-PPagop-26081409) — had
 # no actioned signal at all, so a void of one of those shapes never retired and
 # the extract kept the same unbounded growth curve requirement 34n exists to
 # stop, underneath the part it does bound.
@@ -17,10 +18,11 @@
 # The decided direction (TD-PPagop-26081303, filed against PR #311's review):
 # age-only retirement is rejected, because a void whose id is *still being
 # gathered* — a still-open alert, a register-hygiene finding the register
-# still has, a workflow still failing, a PR still conflicted — is doing live
-# suppression work every cycle, and retiring it on age alone re-exposes the
-# item to be rediscovered void all over again (the exact churn requirement 34k
-# exists to stop). The actioned analogue these four shapes have is liveness:
+# still has, a workflow still failing, a PR still conflicted or dequeued — is
+# doing live suppression work every cycle, and retiring it on age alone
+# re-exposes the item to be rediscovered void all over again (the exact churn
+# requirement 34k exists to stop). The actioned analogue these five shapes
+# have is liveness:
 # the source that mints the id no longer yields it, this cycle, and the
 # source's own gather succeeded — "unknown is not gone" (requirement 34i)
 # applies here exactly as it does to the blocked set.
@@ -86,20 +88,29 @@ VOID_LIVENESS_FAILED_RUN_RE='^failed-run-.+$'
 # sharing one regex here is redundant-but-safe rather than a competing rule.
 VOID_LIVENESS_MERGE_CONFLICT_RE='^pr-[0-9]+-(conflict|superseded)-[0-9a-f]{6,40}$'
 
+# scripts/gather-dequeued.sh's own ref shape (TD-PPagop-26081409), scoped to
+# a head SHA the same way: `pr-<n>-dequeued-<head-sha>`. A fresh push (a fix,
+# whether this system's own or anyone else's) or a re-queue retires it the
+# same absent-from-this-cycle's-gather way the merge-conflict shapes do —
+# gather-dequeued.sh simply stops yielding it, since its candidate rule reads
+# `merge_queue_probe` live each cycle.
+VOID_LIVENESS_DEQUEUED_RE='^pr-[0-9]+-dequeued-[0-9a-f]{6,40}$'
+
 # void_liveness_actioned VOID_JSON GATHER_JSON
 # Print, as a JSON array of `{repo, item, by}`, the pairs from VOID_JSON that
 # requirement 34n's liveness rule counts as actioned: an entry whose item
-# matches one of the four shapes above, whose repo carries a GATHER_JSON entry
+# matches one of the five shapes above, whose repo carries a GATHER_JSON entry
 # for that shape with `ok: true`, and whose item is absent from that shape's
 # `ids`.
 #
 # GATHER_JSON is keyed repo -> shape -> `{ok, ids}`, shape one of "alert",
-# "register-hygiene", "failed-run", "merge-conflict":
+# "register-hygiene", "failed-run", "merge-conflict", "dequeued":
 #
 #   {"owner/repo": {"alert": {"ok": true, "ids": ["dependabot-alert-3"]},
 #                    "register-hygiene": {"ok": true, "ids": []},
 #                    "failed-run": {"ok": false, "ids": []},
-#                    "merge-conflict": {"ok": true, "ids": ["pr-9-conflict-1a2b3c4d5e6f"]}}}
+#                    "merge-conflict": {"ok": true, "ids": ["pr-9-conflict-1a2b3c4d5e6f"]},
+#                    "dequeued": {"ok": true, "ids": []}}}
 #
 # `ids` is this cycle's own gather for that repo+shape — the same array (or
 # the same source) the Co-Ordinator itself was handed, before any claim
@@ -126,13 +137,15 @@ void_liveness_actioned() {
     --arg alert_re "$VOID_LIVENESS_ALERT_RE" \
     --arg rh_re "$VOID_LIVENESS_REGISTER_HYGIENE_RE" \
     --arg fr_re "$VOID_LIVENESS_FAILED_RUN_RE" \
-    --arg mc_re "$VOID_LIVENESS_MERGE_CONFLICT_RE" '
+    --arg mc_re "$VOID_LIVENESS_MERGE_CONFLICT_RE" \
+    --arg dq_re "$VOID_LIVENESS_DEQUEUED_RE" '
     input as $void | input as $gather
     | def shape_of($item):
         if ($item | test($alert_re)) then "alert"
         elif ($item | test($rh_re)) then "register-hygiene"
         elif ($item | test($fr_re)) then "failed-run"
         elif ($item | test($mc_re)) then "merge-conflict"
+        elif ($item | test($dq_re)) then "dequeued"
         else null end;
     [ $void[]
       | . as $e
@@ -206,7 +219,7 @@ void_review_plan_actioned() {
 # `cfg_json '.repos'`). Two things narrow that array later in a cycle and
 # neither means what this rule reads it as: `--repo`'s own filter, which
 # would make every other repo read as dropped, and back-pressure, which
-# rewrites `sources` down to the three finishing sources for a repo with work
+# rewrites `sources` down to the four finishing sources for a repo with work
 # waiting and would mint a spurious `source-dropped` for `security` and
 # `register-hygiene` on every back-pressured cycle.
 #
@@ -242,6 +255,7 @@ void_config_actioned() {
     --arg rh_re "$VOID_LIVENESS_REGISTER_HYGIENE_RE" \
     --arg fr_re "$VOID_LIVENESS_FAILED_RUN_RE" \
     --arg mc_re "$VOID_LIVENESS_MERGE_CONFLICT_RE" \
+    --arg dq_re "$VOID_LIVENESS_DEQUEUED_RE" \
     --arg review_re "$WORK_GONE_REVIEW_RE" \
     --arg register_re "$WORK_GONE_REGISTER_RE" \
     --arg plan_re "$WORK_GONE_PLAN_RE" '
@@ -251,6 +265,7 @@ void_config_actioned() {
         elif ($item | test($rh_re)) then ["register-hygiene"]
         elif ($item | test($fr_re)) then ["failed-runs"]
         elif ($item | test($mc_re)) then ["merge-conflicts"]
+        elif ($item | test($dq_re)) then ["dequeued"]
         elif ($item | test($review_re)) then ["project-review"]
         elif ($item | test($register_re)) then ["tech-debt"]
         elif ($item | test($plan_re)) then ["implementation-plan"]

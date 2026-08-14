@@ -41,6 +41,7 @@
 #   security, code-quality                               | findings (verbatim)
 #   review-feedback                                      | review_feedback (verbatim)
 #   merge-conflicts                                      | merge_conflicts (verbatim)
+#   dequeued                                             | dequeued (verbatim)
 #   abandoned-drafts                                     | abandoned_drafts (verbatim)
 #   register-hygiene                                     | register_hygiene (verbatim)
 #   human-visibility                                     | human_visibility (verbatim)
@@ -89,6 +90,18 @@
 # cycle the work becomes visible. gather-merge-conflicts.sh samples mergeability
 # and this array carries the result, so the flip to CONFLICTING *adds an entry*
 # and busts the fingerprint. Same failure shape as abandoned-drafts; same fix.
+#
+# `dequeued` (TD-PPagop-26081409) is hashed verbatim for an even sharper version
+# of the same reason. A merge-group checks-failure dequeue moves *nothing* the
+# `open_prs` digest samples — not the head (no commit lands), not `updated_at`
+# (GitHub does not touch it), not even `mergeable`, which is what merge_conflicts
+# above rides on. The only trace is a `RemovedFromMergeQueueEvent` on the pull
+# request's own timeline, read live each cycle by `lib/merge-queue.sh`'s
+# `merge_queue_probe` — a fact that exists nowhere else in this system's state.
+# gather-dequeued.sh samples that probe and this array carries the result, so a
+# fresh dequeue *adds an entry* and busts the fingerprint, and a fix (or a
+# re-queue) that resolves it removes the entry the same way. Same failure shape
+# as merge_conflicts and abandoned_drafts; same fix.
 #
 # `claimed` (requirement 3o) is hashed too, projected to `repo|item` like
 # `blocked`/`void`, for the same class of gap `abandoned_drafts` and
@@ -176,7 +189,7 @@
 # `coordinator_work_sources_table` is hashed verbatim, and it is not the same
 # claim as `repos[].sources` above (issue #78). That array is `ordered_repos_
 # json`'s view, which back-pressure (requirement 2.2a) narrows to just the
-# three finishing sources for a repo with work waiting; the table the
+# four finishing sources for a repo with work waiting; the table the
 # Co-Ordinator actually reads is always rendered from the plain, unrestricted
 # `config.json` (`lib/coordinator-brief.sh`), because the table's own job is
 # to show each repo's full configured priority regardless of this cycle's
@@ -237,6 +250,7 @@ NOOP_CANON_JQ='
         findings: (.findings // []),
         review_feedback: (.review_feedback // []),
         merge_conflicts: (.merge_conflicts // []),
+        dequeued: (.dequeued // []),
         abandoned_drafts: (.abandoned_drafts // []),
         register_hygiene: (.register_hygiene // []),
         human_visibility: (.human_visibility // []),
