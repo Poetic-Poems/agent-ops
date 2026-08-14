@@ -744,8 +744,10 @@ ships wholesale — so this is rendering only: the Publisher is unchanged;
 **Co-Ordinator verdict quality** (immediately below the work sources, and
 deliberately: that panel is what the Co-Ordinator was handed, this one is how
 often its answer about it survived the Script checking that answer);
-the cost charts — by-day on the left, by-model and by-actor stacked beside it,
-since the first runs to sixty rows and the other two to five; recent log;
+the cost charts — by-day, by-model, by-actor and the cost note flowed through
+a CSS multi-column layout in that reading order, letting the browser balance
+the split by height rather than pinning by-day to a column of its own, since
+it runs to sixty rows against five each for the other two; recent log;
 `cron.log` tail.
 
 The **Co-Ordinator verdict quality** panel renders
@@ -1552,6 +1554,17 @@ number's twins elsewhere on the page.
   other two charts, and all of it was already on disk: the actor is the
   transcript's own filename, so this cut needed no new field, no new log event
   and no extra API call.
+- **The cost charts balance into columns instead of a fixed grid (issue
+  #330).** A `.two`/`.stack` split — by-day alone on the left, by-model and
+  by-actor stacked on the right — left a gap under the right column on any
+  day by-day's sixty rows ran noticeably longer than the other two combined,
+  because the split was pinned at build time to a guess about relative
+  height rather than measured against it. `column-count: 2` with
+  `break-inside: avoid` on each block instead lets the browser's own balance
+  algorithm decide the split from the rendered heights on every load: the
+  four blocks — day, model, actor, then the cost note — stay in that reading
+  order and simply land wherever the shorter side is, no JS layout code and
+  no new data needed.
 - **"Today" defaulted to GMT with no way to say so, until #186.** The card's
   figure was always `spend_today_usd`, computed against `date -u`, and nothing
   on the page told a reader in another zone that "today" wasn't theirs. Fixing
