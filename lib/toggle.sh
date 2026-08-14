@@ -314,6 +314,25 @@ toggle_describe() {
          + ")"' <<<"$1" 2>/dev/null || printf 'disabled'
 }
 
+# toggle_switch_summary STATE_DIR
+# The node-scoped switch, flattened to the compact shape both
+# scripts/publish-dashboard.sh (`status.switch`) and scripts/state-sync.sh's
+# heartbeat (`switch`, issue #379) render from — one definition so a peer's
+# card and this node's own banner cannot disagree about what the switch says
+# (requirement 34a).
+toggle_switch_summary() {
+  local s
+  s="$(toggle_state "$1")"
+  jq -nc --argjson s "$s" \
+    '{disabled: ($s.state == "disabled"),
+      reason: ($s.record.reason // ""),
+      by: ($s.record.by // ""),
+      actor: ($s.record.actor // ""),
+      kind: ($s.record.kind // "manual"),
+      since: ($s.record.disabled_at // ""),
+      expires_at: ($s.record.expires_at // null)}'
+}
+
 # toggle_lock_held LOCK_FILE
 # Print a one-line description of the pipeline lock LOCK_FILE if it is held by
 # a live process, or nothing if it is free. Always succeeds.

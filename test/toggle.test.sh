@@ -502,6 +502,81 @@ assert_contains "--enable reports the fleet switch clear" "fleet switch clear" "
 assert_eq "--enable removes fleet/disabled.json" "0" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
 
+# --- --this-node (issue #379): a node-scoped stand-down that never touches
+# the fleet flag -------------------------------------------------------------
+
+a_log="$a_home/.local/state/poetic-agents/log.jsonl"
+
+# `--disable --this-node` writes only the local record and never publishes
+# the fleet flag.
+this_disable_out="$(run_node "$a_home" agent-cycle.sh --disable "editing lib/" --this-node --for 1h 2>&1)"
+assert_contains "--disable --this-node says plainly only this node stands down" \
+  "only" "$this_disable_out"
+assert_not_contains "--disable --this-node never reports the fleet switch set" \
+  "fleet switch set" "$this_disable_out"
+assert_eq "--disable --this-node writes the local record" "1" \
+  "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
+assert_eq "--disable --this-node writes no fleet flag" "0" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+
+# A peer is unaffected: no fleet flag was ever set, so its own cycle runs.
+# (The log is reset first: it still carries the fleet-switch stand-downs the
+# earlier block in this file logged, before that flag was cleared.)
+rm -f "$b_log"
+run_node "$b_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a peer's cycle is unaffected by another node's --this-node disable" "0" "$?"
+assert_not_contains "and does not stand the peer down" \
+  '"event":"stand-down"' "$(cat "$b_log" 2>/dev/null)"
+
+# `--enable --this-node` must leave a fleet flag someone else set alone: the
+# local record is this node's own decision to undo, the fleet flag is not.
+rec_fleet="$(jq -nc '{disabled_at: "2026-07-17T10:00:00Z", expires_at: null, by: "operator@laptop pid 1", reason: "fleet freeze", actor: "operator@laptop", kind: "manual"}')"
+fleet_flag_write "$slug" disabled "$rec_fleet" "fleet freeze for the test"
+enable_this_out="$(run_node "$a_home" agent-cycle.sh --enable --this-node 2>&1)"
+assert_not_contains "--enable --this-node does not claim the fleet switch cleared" \
+  "fleet switch clear" "$enable_this_out"
+assert_eq "--enable --this-node leaves the fleet flag set" "1" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+assert_eq "--enable --this-node clears the local record" "0" \
+  "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
+
+# A node carrying both a node-scoped disable and the (still-set) fleet switch
+# stays down when only the node-scoped one is cleared.
+run_node "$a_home" agent-cycle.sh --disable "editing again" --this-node --for 1h >/dev/null 2>&1
+rm -f "$a_log"
+run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a node under both switches exits cleanly" "0" "$?"
+assert_contains "and stands down for its own node-scoped switch first" \
+  '"reason":"disabled:' "$(cat "$a_log" 2>/dev/null)"
+
+run_node "$a_home" agent-cycle.sh --enable --this-node >/dev/null 2>&1
+rm -f "$a_log"
+run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "clearing only the node-scoped switch still exits cleanly" "0" "$?"
+assert_contains "but the node still stands down, now for the fleet switch" \
+  'fleet switch' "$(cat "$a_log" 2>/dev/null)"
+
+# Clean up the fleet flag this block set, so the baseline the rest of this
+# file assumes ("nothing set" going into the limit tests below) still holds.
+fleet_flag_delete "$slug" "$fs_a" disabled
+
+# A node-scoped disable still expires on its own TTL, exactly like the fleet
+# one — --this-node changes only which levels a write reaches, never how a
+# record already written decides it has lapsed.
+TOGGLE_NOW_EPOCH=1784289600 run_node "$a_home" agent-cycle.sh --disable "editing" --this-node --for 1h >/dev/null 2>&1
+rm -f "$a_log"
+TOGGLE_NOW_EPOCH=$(( 1784289600 + 3900 )) run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a cycle past a node-scoped disable's TTL exits cleanly" "0" "$?"
+assert_contains "and the expired node-scoped disable is cleared and logged" \
+  '"detail":"disable expired"' "$(cat "$a_log" 2>/dev/null)"
+assert_eq "the local record is gone once it has expired" "0" \
+  "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
+
+# --this-node is a modifier on --disable/--enable only.
+this_status_out="$(run_node "$a_home" agent-cycle.sh --status --this-node 2>&1)"
+assert_eq "--this-node with --status is a usage error" "64" "$?"
+assert_contains "and says so" "only modifies --disable or --enable" "$this_status_out"
+
 # A usage limit published by one node stands another node down until resume_at.
 fleet_limit_publish "$slug" "$fs_a" "2030-01-01T00:00:00Z" "monthly-spend" true node-a
 rm -f "$b_log"

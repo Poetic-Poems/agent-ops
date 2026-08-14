@@ -38,6 +38,8 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 . "$SCRIPT_DIR/lib/compose-drift.sh"
 # shellcheck source=lib/image-drift.sh
 . "$SCRIPT_DIR/lib/image-drift.sh"
+# shellcheck source=lib/toggle.sh
+. "$SCRIPT_DIR/lib/toggle.sh"
 
 usage() {
   cat <<'EOF'
@@ -320,6 +322,14 @@ do_push() {
   # push already reads and is excluded above like the other local caches;
   # sharing it with scripts/publish-dashboard.sh's own reads means the two
   # never pay for the same registry query twice inside its TTL.
+  #
+  # And the node-scoped switch (lib/toggle.sh's `toggle_switch_summary`,
+  # issue #379): a peer's own `state_dir/disabled.json` is as unreadable to
+  # every other node as its compose.yaml, so whether this node stands down on
+  # its own account is knowable to the fleet dashboard only if it says so
+  # itself here. The fleet-wide switch already travels as its own flag
+  # (`fleet/disabled.json`); this is the other one, the one no flag file
+  # carries.
   local last_cycle version_json
   last_cycle="$(find "$state_dir/cycles" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null \
     | sort -r | head -n 1)"
@@ -332,8 +342,9 @@ do_push() {
     --argjson version "$version_json" \
     --argjson compose "$(compose_drift_status)" \
     --argjson image "$(image_drift_status "$version_json" "$state_dir/.image-drift-cache.json")" \
+    --argjson switch "$(toggle_switch_summary "$state_dir")" \
     '{node: $node, role: $role, ts: $ts, last_cycle: $lc, version: $version,
-      compose: $compose, image: $image}' > "$mirror/heartbeat.json"
+      compose: $compose, image: $image, switch: $switch}' > "$mirror/heartbeat.json"
 
   # One rolling commit per node, amended and force-pushed. The state files
   # carry their own history — log.jsonl is append-only and every cycle keeps

@@ -94,9 +94,9 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   distinction.
 - **`<workspace_root>/.agent-ops-peers/<node>/`** — each fetched peer's state
   tree (implementation spec 2.5): its `heartbeat.json` becomes a `fleet.nodes[]`
-  entry ({node, role, heartbeat, last cycle, version, compose, image}; older than 30
-  minutes → `stale: true` — three missed pushes, not clock jitter); its
-  `cycles/<id>/`
+  entry ({node, role, heartbeat, last cycle, version, compose, image, switch};
+  older than 30 minutes → `stale: true` — three missed pushes, not clock
+  jitter); its `cycles/<id>/`
   and `reviews/<id>/` transcripts
   render peer cycles with exactly the fidelity of local ones, and its `.out`
   envelopes join the fleet-wide cost roll-ups (every node spends one Claude
@@ -184,6 +184,16 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   who set it (`actor`, falling back to `by`), its kind, and its expiry (or that
   it has none and needs `--enable`), since those are precisely the questions an
   operator has next.
+
+  The same read (`toggle_switch_summary`, `lib/toggle.sh`) also feeds the
+  node card's own **disabled** badge (implementation spec 2.3, `--this-node`
+  — the graceful, single-node form): a node stood down that way sets no flag
+  file anything else on this page reads, so without a badge on its own card it
+  looks exactly like an idle one. This node's copy is read live, the same as
+  its role and lock; a peer's arrives in its heartbeat as `switch`, on the
+  same absent-means-unknown rule every other peer-only field on the card
+  follows — a peer whose heartbeat predates the field, like one whose image
+  or compose verdict does, renders no badge rather than a false "enabled".
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what
@@ -497,6 +507,12 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   the registry's newest
                                             //   published one (#155); null if
                                             //   unreported
+                         switch: { disabled, reason, by,    // the node's OWN
+                                    actor, kind, since,      //   node-scoped
+                                    expires_at },            //   disable (#379,
+                                            //   `--disable --this-node`),
+                                            //   never the fleet one; null if
+                                            //   unreported
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -605,7 +621,9 @@ first: when it is set, every other quiet signal on the page
 is a consequence of it rather than news, and an operator reading them in the
 other order goes looking for a fault that isn't there);
 **the fleet strip** — one card per node carrying that node's own live state
-(name, role, running/idle, the stage, repo, work source and item in flight and
+(name, role — with a **disabled** badge beside it when that node carries its
+own node-scoped disable (#379), naming the reason and expiry — running/idle,
+the stage, repo, work source and item in flight and
 since when — or, when idle, when its last cycle ended and how it went — the
 **version it is running** as `image #<pr> <short-sha> · built <age>` with the
 pull request carrying its record card, a grey `behind` marker when the fleet
@@ -1113,7 +1131,10 @@ number's twins elsewhere on the page.
   keyless renders no badge and no note anywhere on the page. A node behind an
   image published longer ago than `image_behind_grace_hours` carries an
   **image behind** badge naming the registry commit, while one whose registry
-  check failed carries **image unverified** instead (#155). A cycle whose
+  check failed carries **image unverified** instead (#155). A node carrying a
+  node-scoped disable (`switch.disabled`) shows a **disabled** badge beside
+  its role badge, naming the reason and the expiry, while its own enabled
+  self carries no such badge (#379). A cycle whose
   `selection` carried `race_losses` (implementation spec 17d, #248) shows a
   blue **recovered race ×N** badge beside its title in the cycle history —
   informational, not a warning, since losing a claim race and then winning a
@@ -1633,6 +1654,22 @@ number's twins elsewhere on the page.
   replication, like the other local caches) holds the last answer, and
   `scripts/state-sync.sh`'s own heartbeat push shares the same file, so
   whichever of the two next crosses `IMAGE_DRIFT_TTL` pays the one query.
+- **A node-scoped disable (implementation spec 2.3, `--disable --this-node`,
+  issue #379) gets its own badge beside the role badge**, not just the
+  page-top switch banner. The banner (above) is keyed to *this* node's own
+  switch, so it already covers a node-scoped disable on the node whose page
+  you are reading — but the fleet strip shows every node, and a peer's own
+  node-scoped disable sets no fleet flag and appears in no banner at all.
+  Without a per-card badge, a peer stood down that way is indistinguishable
+  from an idle one, on the same page that goes to some trouble to say so for
+  a fleet-wide disable. Amber, **disabled**, titled with the reason, who set
+  it and its expiry — the same three facts the switch banner leads with, read
+  through the same `toggle_switch_summary` (`lib/toggle.sh`) so the two
+  cannot disagree (requirement 34a). Renders nothing when the node is
+  enabled, and nothing when the field is absent (a peer's heartbeat from
+  before this check existed) — the same absent-means-unknown rule the
+  compose and image badges already follow, never a false "enabled" for a
+  peer this node cannot actually answer for.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing

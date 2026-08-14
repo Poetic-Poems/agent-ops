@@ -151,6 +151,18 @@ assert_eq "the heartbeat names the node" "active-node" "$(jq -r '.node' <<<"$hb"
 assert_eq "the heartbeat records the role" "active" "$(jq -r '.role' <<<"$hb")"
 assert_eq "the heartbeat records the newest cycle" "20260720T010000Z-1" "$(jq -r '.last_cycle' <<<"$hb")"
 
+# --- The heartbeat carries the node-scoped switch (issue #379) ---------------
+# The node's own state_dir/disabled.json above ({"reason":"testing"}, no
+# other fields) is exactly the switch this node's cycles gate on, so the same
+# read (lib/toggle.sh's toggle_switch_summary) that feeds `--status` and the
+# dashboard's page-top banner feeds the heartbeat's `switch` field too — one
+# implementation, so a peer's card cannot disagree with what that node itself
+# would report (requirement 34a).
+assert_eq "the heartbeat reports the node's own switch as disabled" "true" \
+  "$(jq -r '.switch.disabled' <<<"$hb")"
+assert_eq "carrying the reason from disabled.json" "testing" \
+  "$(jq -r '.switch.reason' <<<"$hb")"
+
 # --- The heartbeat carries an image-drift verdict slot (#155) -----------------
 # lib/image-drift.sh's own suite (test/image-drift.test.sh) covers what the
 # verdict says; what belongs here is only that state-sync.sh asks for one at

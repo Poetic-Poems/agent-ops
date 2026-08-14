@@ -724,6 +724,24 @@
          : el("span", {class:"badge b-grey", text: role || "standby"});
   }
 
+  // The node-scoped switch (issue #379), beside the role badge: a fleet-wide
+  // disable already gets its own page-top banner (`status.switch` /
+  // `fleet.flags.disabled`), but a --this-node one sets no flag anything else
+  // on the page reads, so without this badge a node stood down that way looks
+  // exactly like an idle one — the same gap the page-top banner exists to
+  // close for the fleet-wide switch, one level down. Absent (a peer whose
+  // heartbeat predates this field, or one this node cannot answer for) and
+  // enabled both render nothing.
+  function switchBadge(sw) {
+    if (!sw || !sw.disabled) return null;
+    var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
+    if (sw.actor || sw.by) detail += " — set by " + (sw.actor || sw.by);
+    detail += sw.expires_at ? ("; expires " + sw.expires_at)
+                            : "; no expiry — needs --enable --this-node";
+    return el("span", {class:"badge b-amber", style:"margin-left:6px", text:"disabled",
+      title: "node-scoped disable: " + detail});
+  }
+
   // What a node is working on, in the order a cycle learns it: the stage first
   // (present as soon as one is live), then the selected work once the
   // Co-Ordinator has chosen. One renderer, used by the per-node fleet cards and
@@ -1109,7 +1127,7 @@
     var doubt = livenessDoubt(n) || nodeStageOverrun(n);
     var card = el("div", {class:"card clickable" + (n.stale ? " nodestale" : "") + (nodeFilter === n.node ? " nodeselected" : ""),
                           title: nodeFilter === n.node ? "click to show every node's cycles and log events" : "click to filter cycles and log events to " + n.node});
-    card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role) ]));
+    card.appendChild(el("div", {class:"k"}, [ nodeTag(n.node), document.createTextNode(" "), roleBadge(n.role), switchBadge(n.switch) ]));
 
     var state = el("div", {class:"state"});
     if (unknown) {
