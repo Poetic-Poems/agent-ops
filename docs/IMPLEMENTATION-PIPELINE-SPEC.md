@@ -3104,6 +3104,27 @@ runs unattended.
    `test/pr-claim-exclusion.test.sh` and `test/enabler-eligibility.test.sh`
    for the blocked extract, the own-actions map, the claims arrays and the
    open-issues map.
+
+   **The rule is the Publisher's too.** It was first written for the Script,
+   because that is where the 2026-08-12 outage happened, and that scoping is
+   what let the same defect survive two doors down: `execve`'s cap is a
+   property of the process, not of the program, and the Publisher reads the
+   very same unbounded extracts from the very same log. On 2026-08-14 the void
+   extract reached 132539 bytes and `publish-dashboard.sh` died at its assemble
+   — every node at once, since the extract is a property of the shared log
+   rather than of a node — in a third way, distinct from both of 4c's: the call
+   is neither guarded nor under `set -e`, so `$data_json` came back empty and
+   the write that followed emitted `window.DASHBOARD_DATA = ;`. That is a
+   JavaScript syntax error, so every dashboard on the fleet went on rendering
+   the payload it had loaded last, for 75 minutes, while every tick logged a
+   successful write of a file it had just corrupted. So the Publisher's void
+   and blocked extracts and its counts roll-up reach `jq` by file or stdin like
+   any other fleet-state aggregate, pinned by `test/publish-dashboard.test.sh`;
+   and, because a cap is only the readiest of the ways that assemble can die,
+   the Publisher **asserts its payload parses before it writes**. An assemble
+   that failed leaves the previous `data.js` in place and exits non-zero: a
+   page that ages visibly against its own `generated_at` reports the outage,
+   where an unparseable one only hides it.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
