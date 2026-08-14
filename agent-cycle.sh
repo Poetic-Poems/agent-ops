@@ -422,14 +422,20 @@ lock_stale_after_sec=14400
 # Read here rather than in lib/stage-budget.sh because the configuration is
 # this script's to know; the library stays a pure function of the log.
 stage_budget_overrides() {
-  local actor="$1" repo="${2:-}"
-  jq -nc --slurpfile c "$CONFIG_FILE" --arg a "$actor" --arg r "$repo" '
+  local actor="$1" repo="${2:-}" out
+  # TD-PPagop-26081407: reads CONFIG_FILE straight off disk (test 1 — a
+  # config a human is mid-edit, or a bad merge, can be unparseable at this
+  # exact moment) and `{}` — "no overrides configured" — is the fallback a
+  # healthy read of an unconfigured file gives too (test 2), so a failure
+  # here is invisible without a report.
+  out="$(jq -nc --slurpfile c "$CONFIG_FILE" --arg a "$actor" --arg r "$repo" '
     ($c[0] // {}) as $cfg
     | (($cfg.repos // []) | map(select(.slug == $r)) | first // {}) as $repo_cfg
     | {
         backstop: (($repo_cfg.stage_timeouts // {})[$a] // $cfg["timeout_" + $a] // null),
         inactivity: (($repo_cfg.stage_inactivity // {})[$a] // $cfg["inactivity_" + $a] // null)
-      }' 2>/dev/null || printf '{}'
+      }' 2>&1)" || { guard_warn "stage_budget_overrides" "$out"; out='{}'; }
+  printf '%s' "$out"
 }
 
 # stage_budget_apply ACTOR REPO MODEL
@@ -446,6 +452,10 @@ stage_budget_apply() {
   local actor="$1" repo="${2:-*}" model="${3:-*}" extra="${4:-{\}}" budget
   budget="$(stage_budget_resolve "$stage_budget_json" "$actor" "$repo" "$model" \
     "$(stage_budget_overrides "$actor" "$repo")")"
+  # TD-PPagop-26081407: passes triage test 2 — a failure here yields empty
+  # string, and the very next block treats anything that is not `^[0-9]+$`
+  # (empty string included) as unresolved and recomputes it from
+  # STAGE_BUDGET_PRIORS, so this fallback can never reach a caller unvetted.
   stage_backstop_min="$(jq -r '.backstop_min' <<<"$budget" 2>/dev/null || printf '')"
   stage_inactivity_min="$(jq -r '.inactivity_min' <<<"$budget" 2>/dev/null || printf '')"
   # A derivation that produced nothing readable must not stop a cycle: fall
@@ -568,6 +578,19 @@ log_event() {
     '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file" || true
 }
 
+# TD-PPagop-26081407: a guarded call site (`cmd 2>&1) || { guard_warn ...;
+# var=fallback; }`) that falls back to a literal on failure without saying so
+# is indistinguishable from a genuinely empty/zero answer downstream — the
+# defect the union log's `guard-degraded` event exists to remove. Every
+# converted site captures the failed command's own stdout+stderr (its `2>&1`
+# replaces the old `2>/dev/null`) and passes it here as `detail`; the fallback
+# itself is never touched, only reported. Kept to one line per call site on
+# purpose — 67 near-identical `jq -nc '{...}'` wrappers would be their own
+# noise.
+guard_warn() {  # guard_warn <site-label> <captured-stdout+stderr>
+  log_event "guard-degraded" "$(jq -nc --arg s "$1" --arg d "$2" '{site: $s, detail: $d}')"
+}
+
 # --- Management commands (--disable / --enable / --status) ---
 # Handled here, before the lock and before any `gh` call: they change no
 # pipeline state that the lock protects, and `--status` must stay usable — and
@@ -598,17 +621,30 @@ current_limit_record() {
 # — and a status that knew only about the switch is what let a stale limit
 # cooldown sit unexplained for a day.
 limit_status_report() {
-  local rec resume_at
+  local rec resume_at resume_epoch rec_class
   rec="$(current_limit_record)"
   resume_at="$(jq -r '.resume_at // empty' <<<"${rec:-{\}}" 2>/dev/null || true)"
-  if [[ -z "$resume_at" ]] || (( $(date -d "$resume_at" +%s 2>/dev/null || echo 0) <= $(date +%s) )); then
+  # TD-PPagop-26081407: `rec` is fleet state read off disk/across nodes by
+  # current_limit_record above (test 1 — a peer's flag file or log line can be
+  # mid-write); epoch 0 reads as "already expired" (test 2 — indistinguishable
+  # from a stand-down that genuinely lapsed), which would silently let the
+  # fleet ignore an active cooldown.
+  if [[ -n "$resume_at" ]]; then
+    resume_epoch="$(date -d "$resume_at" +%s 2>&1)" \
+      || { guard_warn "limit_status_report:resume_epoch" "$resume_epoch"; resume_epoch=0; }
+  else
+    resume_epoch=0
+  fi
+  if [[ -z "$resume_at" ]] || (( resume_epoch <= $(date +%s) )); then
     printf 'limit:    none in force\n'
     return 0
   fi
+  # Same site class as above: `rec` can fail to parse, and "other" is exactly
+  # the class a well-formed-but-unset record also reports (test 2).
+  rec_class="$(jq -r '.class // "other"' <<<"$rec" 2>&1)" \
+    || { guard_warn "limit_status_report:rec_class" "$rec_class"; rec_class=other; }
   printf 'limit:    STANDING DOWN — %s\n' \
-    "$(limit_describe "$resume_at" \
-        "$(jq -r '.class // "other"' <<<"$rec" 2>/dev/null || echo other)" \
-        "$(limit_reset_known "$rec")")"
+    "$(limit_describe "$resume_at" "$rec_class" "$(limit_reset_known "$rec")")"
   return 0
 }
 
@@ -864,13 +900,18 @@ claim_branch_for() {  # <source> <item>
 # targets no PR at all, and the field's *absence* is what the repo-loop's
 # PR-level exclusion (below) and requirement 16's exclusion 3 test for.
 gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours, pr_number?}
-  local slug="$1" safe registry_out branches_out
+  local slug="$1" safe registry_out branches_out out
   safe="${slug//\//_}"
   registry_out="$("$SCRIPT_DIR/lib/claim.sh" claims "$slug" 2>"$cycle_dir/claims-$safe.err" || true)"
   jq -e 'type == "array"' <<<"$registry_out" >/dev/null 2>&1 || registry_out='[]'
   branches_out="$("$SCRIPT_DIR/lib/claim.sh" branches "$slug" 2>"$cycle_dir/claim-branches-$safe.err" || true)"
   jq -e 'type == "array"' <<<"$branches_out" >/dev/null 2>&1 || branches_out='[]'
-  jq -c -n --arg tp 'td/' --arg ap "$branch_prefix" --argjson reg "$registry_out" --argjson br "$branches_out" '
+  # TD-PPagop-26081407: $registry_out/$branches_out still ride in as
+  # --argjson (unconverted by requirement 4g — the fleet's active claims for
+  # one repo, growing with claim volume) and can hit MAX_ARG_STRLEN (test 1);
+  # `[]` here reads exactly like "this repo genuinely has no claims" (test 2),
+  # which the caller uses to decide whether a candidate is already claimed.
+  out="$(jq -c -n --arg tp 'td/' --arg ap "$branch_prefix" --argjson reg "$registry_out" --argjson br "$branches_out" '
     ( [ $reg[] | {item, age_hours, pr_number: (.pr_number // null)} ] ) as $from_registry
     | ( [ $br[]
           | (if startswith($tp) then .[($tp | length):]
@@ -886,7 +927,8 @@ gather_claimed() {  # <target-slug> -> JSON array of {item, age_hours, pr_number
         | (([.[].pr_number | select(. != null)] | first) // null) as $pr
         | {item: $item, age_hours: $age} + (if $pr == null then {} else {pr_number: $pr} end)
       )
-  ' 2>/dev/null || echo '[]'
+  ' 2>&1)" || { guard_warn "gather_claimed:$slug" "$out"; out='[]'; }
+  printf '%s' "$out"
 }
 
 # Requirement 3p/issue #238: drop any of a finishing source's own candidates
@@ -912,6 +954,7 @@ exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
   docs="$(printf '%s\n' "$candidates" "$claimed_prs")"
   jq -nc '
     input as $candidates | input as $claimed
+  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
     | [ $candidates[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
     <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -938,6 +981,7 @@ exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
   docs="$(printf '%s\n' "$candidates" "$claimed_items")"
   jq -nc '
     input as $candidates | input as $claimed
+  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
     | [ $candidates[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
     <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -983,6 +1027,7 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
                        and ($blocked | any(((.item // "") | tostring) == $r
                                            and ((.repo // "") == "" or (.repo // "") == $repo))) == false
                        and ($void | any(((.item // "") | tostring) == $r
+  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
                                         and ((.repo // "") == "" or (.repo // "") == $repo))) == false)) ]
   ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -1007,7 +1052,7 @@ coordinator_blocked_view() {  # <blocked-json>
     '[.[] | {item, ts, detail}
             + (if has("repo") then {repo} else {} end)
             + (if has("recheck_clean_ts") then {recheck_clean_ts} else {} end)]' \
-    <<<"$1" 2>/dev/null || printf '%s' "$1"
+    <<<"$1" 2>/dev/null || printf '%s' "$1" # TD-PPagop-26081407: passes test 2 -- falls back to the unfiltered $1, a value the caller already accepted
 }
 
 # Requirement 3u/issue #320: the same deterministic-code-not-model-judgement
@@ -1063,6 +1108,7 @@ exclude_blocked_or_void_issues() {  # <candidates-json> <repo> <blocked-json> <v
               | (($c.updated_at // "") > $threshold)
             )
           )
+  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
         | $c) ]
   ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -1137,7 +1183,15 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
   # silent-degradation failure mode requirement 4g exists to remove.
   # $recorded travels alongside it on the same stdin document.
   docs="$(printf '%s\n' "$recorded" "$eligible")"
-  jq -nc --argjson policy "$policy" '
+  # TD-PPagop-26081407: this is the guard the 2026-08-14 outage actually went
+  # through -- an execve failure here read as "everything is accounted for"
+  # and the Script corroborated a none-selected verdict silently. requirement
+  # 4g's stdin move above already closed off that specific delivery path
+  # (test 1 mostly does not apply any more), but a caller reading [] still
+  # cannot tell a clean zero from any other jq failure (test 2 always fails),
+  # so this reports regardless of cause.
+  local out
+  out="$(jq -nc --argjson policy "$policy" '
     input as $recorded | input as $eligible
     | def ikey: ((.repo // "") + "\u0000" + ((.item // "") | tostring));
       def skey: (ikey + "\u0000" + (.source // ""));
@@ -1147,7 +1201,8 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
           | select((($policy[(.source // "")] // "exempt") != "required")
                    and (($reported[skey] // false) | not)
                    and (($disposed[ikey] // false) | not)) ]
-    ' <<<"$docs" 2>/dev/null || echo '[]'
+    ' <<<"$docs" 2>&1)" || { guard_warn "unaccounted_items" "$out"; out='[]'; }
+  printf '%s' "$out"
 }
 
 # Requirement 3x (issue #322): the Script's own answer to "what could the
@@ -1191,10 +1246,13 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
 # failure yields `[]` — no corroboration rather than a false one — on the same
 # fail-open terms as every exclusion above.
 coordinator_eligible_items() {  # <ordered-repos-json> <blocked-json>
-  local repos="${1:-[]}" blocked="${2:-[]}"
+  local repos="${1:-[]}" blocked="${2:-[]}" out
   jq -e 'type == "array"' <<<"$repos" >/dev/null 2>&1 || repos='[]'
   jq -e 'type == "array"' <<<"$blocked" >/dev/null 2>&1 || blocked='[]'
-  printf '%s\n%s\n' "$repos" "$blocked" | jq -nc '
+  # TD-PPagop-26081407: like unaccounted_items, this is the Co-Ordinator's own
+  # eligible-set denominator (requirement 3x) -- a jq failure here reading as
+  # `[]` would silently tell the fleet nothing was ever selectable.
+  out="$(printf '%s\n%s\n' "$repos" "$blocked" | jq -nc '
     def listed($srcs; $s): (($srcs // []) | index($s)) != null;
     def band($r; $srcs; $arr; $src):
       if (listed($srcs; $src) | not) then empty
@@ -1230,7 +1288,8 @@ coordinator_eligible_items() {  # <ordered-repos-json> <blocked-json>
               | select(.item != "")
               | select((($blocked_here[(.repo + "\u0000" + .item)] // false) | not)
                        and (($blocked_anywhere[.item] // false) | not)) ) ) ]
-    ' 2>/dev/null || echo '[]'
+    ' 2>&1)" || { guard_warn "coordinator_eligible_items" "$out"; out='[]'; }
+  printf '%s' "$out"
 }
 
 # Whether a candidate the Co-Ordinator returned is one this same cycle's own
@@ -2559,7 +2618,8 @@ coordinator_corroborate_retry_or_fallback() {
                 '{needs_refinement: $nr, voided: $v}')" \
       "$eligible_items_json" "$refinement_policy_json")"
   fi
-  unaccounted_n="$(jq 'length' <<<"$unaccounted_json" 2>/dev/null || echo 0)"
+  unaccounted_n="$(jq 'length' <<<"$unaccounted_json" 2>&1)" \
+    || { guard_warn "unaccounted_n" "$unaccounted_n"; unaccounted_n=0; }
   # Requirement 3x's band tag: the same rejection, split by the band it was
   # rejected over, so a fleet reading requirement 3w's rate can tell "the
   # model keeps confabulating the issues band away" from "it keeps forgetting
@@ -2570,7 +2630,8 @@ coordinator_corroborate_retry_or_fallback() {
   # cycle happened to have work in.
   unaccounted_bands_json="$(jq -c 'group_by(.source)
     | map({key: (.[0].source // ""), value: length}) | from_entries' \
-    <<<"$unaccounted_json" 2>/dev/null || echo '{}')"
+    <<<"$unaccounted_json" 2>&1)" \
+    || { guard_warn "unaccounted_bands_json" "$unaccounted_bands_json"; unaccounted_bands_json='{}'; }
 
   # Requirement 3w (issue #319): what every verdict this cycle records owes
   # the rate. Requirement 3v's `corroboration` events already carry the
@@ -2677,7 +2738,7 @@ coordinator_corroborate_retry_or_fallback() {
   unaccounted_refs="$(jq -r 'group_by(.source)
     | map("- `" + (.[0].source // "") + "`: "
           + ([.[] | ((.repo // "") + " " + (.item // ""))] | join(", ")))
-    | join("\n")' <<<"$unaccounted_json" 2>/dev/null || printf '(unavailable)')"
+    | join("\n")' <<<"$unaccounted_json" 2>/dev/null || printf '(unavailable)')" # TD-PPagop-26081407: passes test 2 -- "(unavailable)" is not English text a real band summary could ever produce, so a reader can never mistake it for content
   coordinator_retry_prompt="$coordinator_prompt
 
 ## Corroboration retry — your previous verdict this cycle was rejected
@@ -2746,7 +2807,7 @@ object, nothing else.
         needs_refinement: (($wo.needs_refinement // []) | map(select((.item | tostring) as $i | $u | index($i) != null))),
         voided: (($wo.voided // []) | map(select((.item | tostring) as $i | $u | index($i) != null)))
       }
-    ' <<<"$retry_filter_docs" 2>/dev/null || printf '%s' "$retry_work_order_json")"
+    ' <<<"$retry_filter_docs" 2>/dev/null || printf '%s' "$retry_work_order_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unfiltered work order, a value the caller already accepted, not a fabricated empty
   log_voided_items "$retry_work_order_filtered_json" "$ordered_repos_json"
   log_needs_refinement_items "$retry_work_order_filtered_json"
 
@@ -2777,10 +2838,12 @@ object, nothing else.
     "$(jq -nc --argjson nr "$recorded_refinement_all_json" --argjson v "$recorded_voided_all_json" \
               '{needs_refinement: $nr, voided: $v}')" \
     "$eligible_items_json" "$refinement_policy_json")"
-  unaccounted_retry_n="$(jq 'length' <<<"$unaccounted_retry_json" 2>/dev/null || echo 0)"
+  unaccounted_retry_n="$(jq 'length' <<<"$unaccounted_retry_json" 2>&1)" \
+    || { guard_warn "unaccounted_retry_n" "$unaccounted_retry_n"; unaccounted_retry_n=0; }
   unaccounted_retry_bands_json="$(jq -c 'group_by(.source)
     | map({key: (.[0].source // ""), value: length}) | from_entries' \
-    <<<"$unaccounted_retry_json" 2>/dev/null || echo '{}')"
+    <<<"$unaccounted_retry_json" 2>&1)" \
+    || { guard_warn "unaccounted_retry_bands_json" "$unaccounted_retry_bands_json"; unaccounted_retry_bands_json='{}'; }
 
   if (( unaccounted_retry_n == 0 )); then
     log_event "corroboration" "$(jq -nc --argjson a 2 --arg v "accepted" --argjson total "$eligible_items_total" \
@@ -3115,7 +3178,7 @@ enabler_claim_key() {
   issue="$(jq -r 'if (.reason // "") == "issue-closed"
                   then ((.escalation.issue_number // "") | tostring) else "" end' \
              <<<"$entry" 2>/dev/null || true)"
-  epoch="$(date -d "$ts" +%s 2>/dev/null || echo 0)"
+  epoch="$(date -d "$ts" +%s 2>&1)" || { guard_warn "blocked-item-epoch" "$epoch"; epoch=0; }
   key="${repo//[^A-Za-z0-9._-]/-}__${item//[^A-Za-z0-9._-]/-}__$epoch"
   [[ -n "$issue" && "$issue" != "null" ]] && key="${key}__verify${issue}"
   printf '%s' "$key"
@@ -3229,7 +3292,7 @@ maybe_run_enabler() {
   local claimed_json='[]' engagement_json='[]' n_eligible=0 n_claimed=0 n_out=0 i j
   local entry repo item key live_resume live_epoch input prompt out rc=0 result parsed detail
   local items_named_json
-  local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra
+  local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra e_evidence_field
   local e_void_entry e_void_refusal
   local e_pr_url e_handoff e_refusal e_refined
   local issue_title issue_body_file created number url missing
@@ -3256,7 +3319,8 @@ maybe_run_enabler() {
   # left unclaimed and waits — a claim taken and not examined would be a
   # tombstone standing for `claim_ttl_hours` over an item nobody looked at.
   engagement_json="$(refinement_engagement_set "$enabler_eligible_json" "$refinement_max_per_engagement")"
-  n_eligible="$(jq 'length' <<<"$engagement_json" 2>/dev/null || echo 0)"
+  n_eligible="$(jq 'length' <<<"$engagement_json" 2>&1)" \
+    || { guard_warn "enabler:n_eligible" "$n_eligible"; n_eligible=0; }
   [[ "$n_eligible" =~ ^[0-9]+$ ]] || n_eligible=0
   (( n_eligible > 0 )) || return 0
 
@@ -3266,7 +3330,8 @@ maybe_run_enabler() {
   # expensive stage in the system from starting.
   live_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir" 2>/dev/null || true)"
   if [[ -n "$live_resume" ]]; then
-    live_epoch="$(date -d "$live_resume" +%s 2>/dev/null || echo 0)"
+    live_epoch="$(date -d "$live_resume" +%s 2>&1)" \
+      || { guard_warn "live_epoch" "$live_epoch"; live_epoch=0; }
     (( live_epoch > $(date +%s) )) && return 0
   fi
 
@@ -3290,11 +3355,15 @@ maybe_run_enabler() {
       # blocked entry, evidence payload included, per Enabler claim this
       # cycle — unbounded past this call, so $entry joins it on stdin
       # rather than riding in as a second --argjson.
+      # TD-PPagop-26081407: passes test 1 -- $claimed_json and $entry are
+      # concatenated in-memory immediately above; the trivial append script
+      # cannot fail independently of the concatenation itself.
       claimed_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
         <<<"$claimed_json"$'\n'"$entry" 2>/dev/null || printf '%s' "$claimed_json")"
     fi
   done
-  n_claimed="$(jq 'length' <<<"$claimed_json" 2>/dev/null || echo 0)"
+  n_claimed="$(jq 'length' <<<"$claimed_json" 2>&1)" \
+    || { guard_warn "n_claimed" "$n_claimed"; n_claimed=0; }
   [[ "$n_claimed" =~ ^[0-9]+$ ]] || n_claimed=0
   # Every eligible item already claimed is the ordinary quiet case — this node
   # examined them last cycle, or a peer is examining them now — and is silent on
@@ -3371,7 +3440,8 @@ $(jq . <<<"$input")
       detail="enabler returned an unparseable final message"
     fi
     detect_and_log_limit_hit "$out" || true
-    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>/dev/null || echo '[]')"
+    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>&1)" \
+      || { guard_warn "items_named_json" "$items_named_json"; items_named_json='[]'; }
     # requirement 4g (TD-PPagop-26081401): trimmed to {repo, item} per entry,
     # the most bounded aggregate on TD-PPagop-26081401's list, but it still
     # grows with the number of items this engagement claimed, so it arrives
@@ -3396,7 +3466,8 @@ $(jq . <<<"$input")
   fi
 
   # --- Verdicts (requirement 36a) ---
-  n_out="$(jq '(.examined // []) | length' <<<"$parsed" 2>/dev/null || echo 0)"
+  n_out="$(jq '(.examined // []) | length' <<<"$parsed" 2>&1)" \
+    || { guard_warn "n_out" "$n_out"; n_out=0; }
   [[ "$n_out" =~ ^[0-9]+$ ]] || n_out=0
   for (( j = 0; j < n_out; j++ )); do
     ex="$(jq -c --argjson j "$j" '(.examined // [])[$j]' <<<"$parsed" 2>/dev/null || true)"
@@ -3533,8 +3604,13 @@ $(jq . <<<"$input")
         e_void_entry="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg reason "$e_reason" \
           --argjson x "$ex" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
         if e_void_refusal="$(void_guard_reason "$e_void_entry" '[]')"; then
+          # TD-PPagop-26081407: $ex is an agent stage's own parsed verdict
+          # (test 1 -- external, can be malformed) and {} reads exactly like
+          # "no evidence given" (test 2).
+          e_evidence_field="$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>&1)" \
+            || { guard_warn "enabler:item-void-evidence" "$e_evidence_field"; e_evidence_field='{}'; }
           log_event "item-void" "$(item_event_fields "enabler" "$e_reason" "$e_repo" "$e_item" \
-            "$(jq -c '{evidence: (.evidence // "")}' <<<"$ex" 2>/dev/null || echo '{}')")"
+            "$e_evidence_field")"
           release_refinement_label "$e_item" "$e_repo"
         else
           log_event "warning" "$(jq -nc \
@@ -3551,7 +3627,11 @@ $(jq . <<<"$input")
         # Nothing extra to record: the block stands, and the refreshed condition
         # travels on the examined event below, which is what a later engagement
         # and the dashboard read.
-        extra="$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$ex" 2>/dev/null || echo '{}')"
+        # TD-PPagop-26081407: same rationale as the item-void evidence field
+        # above -- $ex is agent-produced (test 1) and {} reads as "no
+        # condition given" (test 2).
+        extra="$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$ex" 2>&1)" \
+          || { guard_warn "enabler:still-blocked-extra" "$extra"; extra='{}'; }
         ;;
       escalate)
         issue_title="$(jq -r '.issue.title // ""' <<<"$ex" 2>/dev/null || true)"
@@ -3654,13 +3734,15 @@ maybe_run_refiner() {
   # Requirement 39b: capped and deterministic, same reasoning as requirement
   # 35d's cap on the Enabler's refinement class.
   engagement_json="$(refiner_engagement_set "$refiner_candidates_json" "$refiner_max_per_engagement")"
-  n_eligible="$(jq 'length' <<<"$engagement_json" 2>/dev/null || echo 0)"
+  n_eligible="$(jq 'length' <<<"$engagement_json" 2>&1)" \
+    || { guard_warn "refiner:n_eligible" "$n_eligible"; n_eligible=0; }
   [[ "$n_eligible" =~ ^[0-9]+$ ]] || n_eligible=0
   (( n_eligible > 0 )) || return 0
 
   live_resume="$(fleet_limit_resume_at "$state_repo" "$state_dir" 2>/dev/null || true)"
   if [[ -n "$live_resume" ]]; then
-    live_epoch="$(date -d "$live_resume" +%s 2>/dev/null || echo 0)"
+    live_epoch="$(date -d "$live_resume" +%s 2>&1)" \
+      || { guard_warn "live_epoch" "$live_epoch"; live_epoch=0; }
     (( live_epoch > $(date +%s) )) && return 0
   fi
 
@@ -3680,11 +3762,15 @@ maybe_run_refiner() {
       # requirement 4g (TD-PPagop-26081401): same conversion as the
       # Enabler's own claim accumulator above — $entry joins $claimed_json
       # on stdin rather than riding in as a second --argjson.
+      # TD-PPagop-26081407: passes test 1 -- $claimed_json and $entry are
+      # concatenated in-memory immediately above; the trivial append script
+      # cannot fail independently of the concatenation itself.
       claimed_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
         <<<"$claimed_json"$'\n'"$entry" 2>/dev/null || printf '%s' "$claimed_json")"
     fi
   done
-  n_claimed="$(jq 'length' <<<"$claimed_json" 2>/dev/null || echo 0)"
+  n_claimed="$(jq 'length' <<<"$claimed_json" 2>&1)" \
+    || { guard_warn "n_claimed" "$n_claimed"; n_claimed=0; }
   [[ "$n_claimed" =~ ^[0-9]+$ ]] || n_claimed=0
   (( n_claimed > 0 )) || return 0
 
@@ -3739,7 +3825,8 @@ $(jq . <<<"$input")
       detail="refiner returned an unparseable final message"
     fi
     detect_and_log_limit_hit "$out" || true
-    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>/dev/null || echo '[]')"
+    items_named_json="$(jq -c '[.[] | {repo: (.repo // ""), item: (.item // "")}]' <<<"$claimed_json" 2>&1)" \
+      || { guard_warn "items_named_json" "$items_named_json"; items_named_json='[]'; }
     # requirement 4g (TD-PPagop-26081401): same conversion as the Enabler's
     # own unparseable-verdict warning above — $items_named_json arrives on
     # stdin rather than as a second --argjson.
@@ -3917,7 +4004,8 @@ acquire_lock() {
     host="$(jq -r '.host // empty' "$lock_file" 2>/dev/null || true)"
     if [[ "$pid" =~ ^[0-9]+$ ]]; then
       local started_epoch now_epoch age_sec pgid
-      started_epoch="$(date -d "$started_at" +%s 2>/dev/null || echo 0)"
+      started_epoch="$(date -d "$started_at" +%s 2>&1)" \
+        || { guard_warn "stale-lock:started_epoch" "$started_epoch"; started_epoch=0; }
       now_epoch="$(date +%s)"
       age_sec=$(( now_epoch - started_epoch ))
       if [[ -n "$host" && "$host" != "${HOSTNAME:-}" ]]; then
@@ -3990,7 +4078,8 @@ fleet_logs "$state_dir" "$peers_dir" log.jsonl > "$union_log" || true
 # every node the same two numbers per (actor, repository, model) with nothing
 # to synchronise. See lib/stage-budget.sh for why the watchdog threshold is
 # estimated and the backstop controlled, and why each moves the way it does.
-stage_budget_config="$(cat "$CONFIG_FILE" 2>/dev/null || printf '{}')"
+stage_budget_config="$(cat "$CONFIG_FILE" 2>&1)" \
+  || { guard_warn "stage_budget_config" "$stage_budget_config"; stage_budget_config='{}'; }
 stage_budget_settings_json="$(stage_budget_settings "$stage_budget_config")"
 stage_budget_json="$(stage_budget_table \
   "$(stage_budget_observations < "$union_log")" "$stage_budget_settings_json")"
@@ -4111,17 +4200,23 @@ governing="$(limit_later_record "$union_record" "$(fleet_flag_fetch "$state_repo
 resume_at="$(jq -r '.resume_at // empty' <<<"$governing" 2>/dev/null || true)"
 resume_epoch=0
 if [[ -n "$resume_at" ]]; then
-  resume_epoch="$(date -d "$resume_at" +%s 2>/dev/null || echo 0)"
+  # TD-PPagop-26081407: `governing` is fleet state read across nodes above
+  # (test 1); epoch 0 reads as "already expired" (test 2) -- the gate this
+  # feeds decides whether the whole fleet stands down for an active limit.
+  resume_epoch="$(date -d "$resume_at" +%s 2>&1)" \
+    || { guard_warn "cycle:resume_epoch" "$resume_epoch"; resume_epoch=0; }
 fi
 now_epoch="$(date +%s)"
 if (( resume_epoch > now_epoch )); then
-  governing_class="$(jq -r '.class // "other"' <<<"$governing" 2>/dev/null || echo other)"
+  governing_class="$(jq -r '.class // "other"' <<<"$governing" 2>&1)" \
+    || { guard_warn "cycle:governing_class" "$governing_class"; governing_class=other; }
   governing_known="$(limit_reset_known "$governing")"
   # Absent means auto: every record this system writes is a detector's, and
   # says so; `manual` only ever enters by an operator's hand. The distinction
   # is load-bearing in both directions (requirement 2; #244) — an automatic
   # stand-down may be probed and cleared early, a manual one must never be.
-  governing_kind="$(jq -r '.kind // "auto"' <<<"$governing" 2>/dev/null || echo auto)"
+  governing_kind="$(jq -r '.kind // "auto"' <<<"$governing" 2>&1)" \
+    || { guard_warn "cycle:governing_kind" "$governing_kind"; governing_kind=auto; }
   standing=1
   probe_note=""
   # 2.1b The estimated stand-down probes its own exit. When `reset_known` is
@@ -4186,8 +4281,9 @@ if (( resume_epoch > now_epoch )); then
       # An operator's stand-down explains itself and is honoured as written:
       # no probe ran above, nothing here clears it, and it ends at its own
       # resume_at or when the human runs --clear-limit (#244).
-      standdown_reason="manual stand-down until $resume_at, set by $(jq -r \
-        '.actor // .node // "?"' <<<"$governing" 2>/dev/null || echo '?') — never probed or auto-cleared; 'agent-cycle.sh --clear-limit' lifts it early"
+      governing_actor="$(jq -r '.actor // .node // "?"' <<<"$governing" 2>&1)" \
+        || { guard_warn "cycle:governing_actor" "$governing_actor"; governing_actor='?'; }
+      standdown_reason="manual stand-down until $resume_at, set by $governing_actor — never probed or auto-cleared; 'agent-cycle.sh --clear-limit' lifts it early"
     else
       standdown_reason="usage-limit cooldown $(limit_describe "$resume_at" \
         "$governing_class" "$governing_known")$probe_note"
@@ -4202,7 +4298,8 @@ if (( resume_epoch > now_epoch )); then
       if (( limit_escalate_after_hours > 0 )) && ! (( DRY_RUN )) \
          && [[ -n "$crash_loop_repo" && -n "$enabler_assignee" ]]; then
         freeze_since="$(limit_standdown_since < "$union_log")"
-        freeze_epoch="$(date -d "$freeze_since" +%s 2>/dev/null || echo 0)"
+        freeze_epoch="$(date -d "$freeze_since" +%s 2>&1)" \
+          || { guard_warn "freeze_epoch" "$freeze_epoch"; freeze_epoch=0; }
         freeze_done="$(jq -c --arg s "$freeze_since" \
           'select(.event == "limit-freeze-escalated" and .since == $s)' \
           "$union_log" 2>/dev/null | head -n1 || true)"
@@ -4334,7 +4431,8 @@ fi
 # never catch what its own cycle's sweep just discovered, and the violation
 # would sit one full cycle behind its own detection for no reason.
 if ! (( DRY_RUN )); then
-  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+    || { guard_warn "log_lines_before" "$log_lines_before"; log_lines_before=0; }
   while IFS= read -r sweep_slug; do
     [[ -n "$sweep_slug" ]] || continue
     while IFS= read -r sweep_action; do
@@ -4435,7 +4533,8 @@ done < <(jq -r '.[].slug' <<<"$all_repos_json")
 # max_open_agent_prs + (nodes - 1), transient.
 claim_count=0
 while IFS= read -r slug; do
-  n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" 2>/dev/null || echo 0)"
+  n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" 2>&1)" \
+    || { guard_warn "claim-count:$slug" "$n"; n=0; }
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   claim_count=$(( claim_count + n ))
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
@@ -4483,8 +4582,13 @@ hand_flagged_refinements_json="[]"
 claimed_json="[]"
 repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
-  default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>/dev/null || echo "main")"
-  commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>/dev/null || echo "1970-01-01T00:00:00Z")"
+  # TD-PPagop-26081407: gh api can fail (rate limit, auth, network -- test 1);
+  # "main" is a plausible real default branch and 1970-01-01 sorts this repo
+  # oldest without saying why (test 2 for both).
+  default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>&1)" \
+    || { guard_warn "repo-order:default_branch:$slug" "$default_branch"; default_branch="main"; }
+  commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>&1)" \
+    || { guard_warn "repo-order:commit_ts:$slug" "$commit_ts"; commit_ts="1970-01-01T00:00:00Z"; }
   printf '%s\t%s\t%s\n' "$commit_ts" "$slug" "$default_branch" >> "$cycle_dir/.repo_ts"
 done < <(jq -r '.[].slug' <<<"$repos_json")
 
@@ -4635,8 +4739,11 @@ rm -f "$cycle_dir/.repo_ts"
 # prevent, so the exact lines this cycle just wrote are what gets added and
 # nothing else.
 unvoid_clearances_json="$(unvoid_clearances "$unvoid_requests_json" "$(void_items "$union_log")")"
-if [[ "$(jq 'length' <<<"$unvoid_clearances_json" 2>/dev/null || echo 0)" != "0" ]]; then
-  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+unvoid_clearances_n="$(jq 'length' <<<"$unvoid_clearances_json" 2>&1)" \
+  || { guard_warn "unvoid_clearances_n" "$unvoid_clearances_n"; unvoid_clearances_n=0; }
+if [[ "$unvoid_clearances_n" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+    || { guard_warn "log_lines_before" "$log_lines_before"; log_lines_before=0; }
   while IFS= read -r clearance; do
     [[ -n "$clearance" ]] || continue
     # `by: "label"` distinguishes this from the Enabler's unblocks and from a
@@ -4676,8 +4783,11 @@ if [[ -n "$needs_refinement_label" ]]; then
   hand_flagged_not_ours_json="$(label_filter_own_applications "$hand_flagged_refinements_json" \
     "$refinement_own_actions_json")"
   hand_flag_new_json="$(refinement_hand_flag_new "$hand_flagged_not_ours_json" "$(blocked_items "$union_log")")"
-  if [[ "$(jq 'length' <<<"$hand_flag_new_json" 2>/dev/null || echo 0)" != "0" ]]; then
-    log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  hand_flag_new_n="$(jq 'length' <<<"$hand_flag_new_json" 2>&1)" \
+    || { guard_warn "hand_flag_new_n" "$hand_flag_new_n"; hand_flag_new_n=0; }
+  if [[ "$hand_flag_new_n" != "0" ]]; then
+    log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+    || { guard_warn "log_lines_before" "$log_lines_before"; log_lines_before=0; }
     while IFS= read -r flag; do
       [[ -n "$flag" ]] || continue
       log_event "attempt-failed" "$(item_event_fields "coordinator" \
@@ -4726,8 +4836,11 @@ if [[ -n "$needs_refinement_label" ]]; then
   fi
 
   hand_flag_cleared_json="$(refinement_hand_flag_cleared "$hand_flagged_refinements_json" "$(blocked_items "$union_log")")"
-  if [[ "$(jq 'length' <<<"$hand_flag_cleared_json" 2>/dev/null || echo 0)" != "0" ]]; then
-    log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+  hand_flag_cleared_n="$(jq 'length' <<<"$hand_flag_cleared_json" 2>&1)" \
+    || { guard_warn "hand_flag_cleared_n" "$hand_flag_cleared_n"; hand_flag_cleared_n=0; }
+  if [[ "$hand_flag_cleared_n" != "0" ]]; then
+    log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+    || { guard_warn "log_lines_before" "$log_lines_before"; log_lines_before=0; }
     while IFS= read -r cleared; do
       [[ -n "$cleared" ]] || continue
       # `by: "label-removed"` distinguishes this from the Co-Ordinator's own
@@ -4768,7 +4881,7 @@ while IFS=$'\t' read -r reg_slug reg_ids; do
   # shellcheck disable=SC2086  # $reg_ids is a deliberate word-split id list.
   reg_map="$(gather_register_status "$reg_slug" "$reg_branch" blocked $reg_ids)"
   register_status_json="$(jq -c --arg s "$reg_slug" --argjson m "$reg_map" '. + {($s): $m}' \
-    <<<"$register_status_json" 2>/dev/null || printf '%s' "$register_status_json")"
+    <<<"$register_status_json" 2>/dev/null || printf '%s' "$register_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
          <<<"$(work_gone_register_ids "$open_blocked_now")" 2>/dev/null || true)
 
@@ -4783,7 +4896,7 @@ while IFS=$'\t' read -r rev_slug rev_refs; do
   # shellcheck disable=SC2086  # $rev_refs is a deliberate word-split ref list.
   rev_map="$(gather_review_status "$rev_slug" "$rev_branch" blocked $rev_refs)"
   review_status_json="$(jq -c --arg s "$rev_slug" --argjson m "$rev_map" '. + {($s): $m}' \
-    <<<"$review_status_json" 2>/dev/null || printf '%s' "$review_status_json")"
+    <<<"$review_status_json" 2>/dev/null || printf '%s' "$review_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
          <<<"$(work_gone_review_refs "$open_blocked_now")" 2>/dev/null || true)
 
@@ -4795,21 +4908,24 @@ plan_status_json='{}'
 while IFS=$'\t' read -r plan_slug plan_ids; do
   [[ -n "$plan_slug" && -n "$plan_ids" ]] || continue
   plan_entry="$(jq -c --arg s "$plan_slug" 'map(select(.slug == $s)) | .[0] // {}' \
-    <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
+    <<<"$ordered_repos_json" 2>&1)" || { guard_warn "work-gone:plan_entry" "$plan_entry"; plan_entry='{}'; }
   plan_branch="$(jq -r '.default_branch // ""' <<<"$plan_entry" 2>/dev/null || true)"
   plan_path="$(jq -r '.implementation_plan_path // ""' <<<"$plan_entry" 2>/dev/null || true)"
   [[ -n "$plan_branch" && -n "$plan_path" ]] || continue
   # shellcheck disable=SC2086  # $plan_ids is a deliberate word-split id list.
   plan_map="$(gather_plan_status "$plan_slug" "$plan_branch" "$plan_path" blocked $plan_ids)"
   plan_status_json="$(jq -c --arg s "$plan_slug" --argjson m "$plan_map" '. + {($s): $m}' \
-    <<<"$plan_status_json" 2>/dev/null || printf '%s' "$plan_status_json")"
+    <<<"$plan_status_json" 2>/dev/null || printf '%s' "$plan_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
 done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
          <<<"$(work_gone_plan_ids "$open_blocked_now")" 2>/dev/null || true)
 
 work_gone_json="$(work_gone_clearances "$open_blocked_now" "$source_states_json" "$register_status_json" \
                    "$review_status_json" "$plan_status_json")"
-if [[ "$(jq 'length' <<<"$work_gone_json" 2>/dev/null || echo 0)" != "0" ]]; then
-  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+work_gone_n="$(jq 'length' <<<"$work_gone_json" 2>&1)" \
+  || { guard_warn "work_gone_n" "$work_gone_n"; work_gone_n=0; }
+if [[ "$work_gone_n" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+    || { guard_warn "log_lines_before" "$log_lines_before"; log_lines_before=0; }
   while IFS= read -r clearance; do
     [[ -n "$clearance" ]] || continue
     # `by: "work-gone"` distinguishes this from the Co-Ordinator's own
@@ -4840,8 +4956,11 @@ issues_by_repo_json="$(jq -c '
 [[ -n "$issues_by_repo_json" ]] || issues_by_repo_json='{}'
 
 dependency_json="$(dependency_clearances "$open_blocked_now" "$issues_by_repo_json")"
-if [[ "$(jq 'length' <<<"$dependency_json" 2>/dev/null || echo 0)" != "0" ]]; then
-  log_lines_before="$(wc -l < "$log_file" 2>/dev/null || echo 0)"
+dependency_n="$(jq 'length' <<<"$dependency_json" 2>&1)" \
+  || { guard_warn "dependency_n" "$dependency_n"; dependency_n=0; }
+if [[ "$dependency_n" != "0" ]]; then
+  log_lines_before="$(wc -l < "$log_file" 2>&1)" \
+    || { guard_warn "log_lines_before" "$log_lines_before"; log_lines_before=0; }
   while IFS= read -r clearance; do
     [[ -n "$clearance" ]] || continue
     # `by: "dependency-resolved"` distinguishes this from the Co-Ordinator's
@@ -4921,11 +5040,13 @@ if ! (( DRY_RUN )); then
         | select((.repo // "") != "" and (.item // "") != "")
         | select((.item | test($issue_re)) or (.item | test($pr_re)))
         | select((.repo + " " + .item) as $k | ($done | index($k)) == null) ]
-  ' <<<"$void_close_stdin" 2>/dev/null || echo '[]')"
+  ' <<<"$void_close_stdin" 2>&1)" \
+    || { guard_warn "void_close_candidates_json" "$void_close_candidates_json"; void_close_candidates_json='[]'; }
   while IFS= read -r vslug; do
     [[ -n "$vslug" ]] || continue
     repo_candidates_json="$(jq -c --arg r "$vslug" '[ .[] | select(.repo == $r)
-      | {item, detail, evidence, stage} ]' <<<"$void_close_candidates_json" 2>/dev/null || echo '[]')"
+      | {item, detail, evidence, stage} ]' <<<"$void_close_candidates_json" 2>&1)" \
+      || { guard_warn "void:repo_candidates_json" "$repo_candidates_json"; repo_candidates_json='[]'; }
     while IFS= read -r sweep_action; do
       [[ -n "$sweep_action" ]] || continue
       case "$(jq -r '.action // ""' <<<"$sweep_action" 2>/dev/null || true)" in
@@ -4969,7 +5090,8 @@ while IFS= read -r vr_slug; do
     --argjson ids "$(jq -c --arg s "$vr_slug" '.[$s] // []' <<<"$void_register_ids_json")" \
     -n 'input as $void
         | [ $void[] | select(.repo == $r and (.item as $i | $ids | index($i)) != null)
-            | {item, detail, evidence} ]' <<<"$void_json" 2>/dev/null || echo '[]')"
+            | {item, detail, evidence} ]' <<<"$void_json" 2>&1)" \
+    || { guard_warn "vr_candidates_json" "$vr_candidates_json"; vr_candidates_json='[]'; }
   vr_hygiene_json="$(gather_register_hygiene "$vr_slug" "$vr_branch" void "$vr_candidates_json")"
   # Only ever *adds* to what the first pass found. gather_register_hygiene
   # fails safe to `[]`, and this second read can fail where the first
@@ -4982,10 +5104,12 @@ while IFS= read -r vr_slug; do
   # to one filename until requirement 34n's liveness rule started reading it,
   # at which point this pass's failure became a false retirement of the other
   # pass's still-live findings.
-  [[ "$(jq 'length' <<<"$vr_hygiene_json" 2>/dev/null || echo 0)" != "0" ]] || continue
+  vr_hygiene_n="$(jq 'length' <<<"$vr_hygiene_json" 2>&1)" \
+    || { guard_warn "vr_hygiene_n" "$vr_hygiene_n"; vr_hygiene_n=0; }
+  [[ "$vr_hygiene_n" != "0" ]] || continue
   ordered_repos_json="$(jq -c --arg r "$vr_slug" --argjson rh "$vr_hygiene_json" \
     'map(if .slug == $r then .register_hygiene = $rh else . end)' \
-    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
 done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 
 # Human-visibility hygiene, requirement 38e — the read-back half of
@@ -5008,7 +5132,9 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # reduction over `union_log` below, already read once each for `blocked_json`
 # and `void_json` above.
 human_visibility_json="$(human_visibility_violations "$union_log")"
-if [[ "$(jq 'length' <<<"$human_visibility_json" 2>/dev/null || echo 0)" != "0" ]]; then
+human_visibility_n="$(jq 'length' <<<"$human_visibility_json" 2>&1)" \
+  || { guard_warn "human_visibility_n" "$human_visibility_n"; human_visibility_n=0; }
+if [[ "$human_visibility_n" != "0" ]]; then
   while IFS= read -r hv_slug; do
     [[ -n "$hv_slug" ]] || continue
     jq -e --arg r "$hv_slug" \
@@ -5016,10 +5142,12 @@ if [[ "$(jq 'length' <<<"$human_visibility_json" 2>/dev/null || echo 0)" != "0" 
       <<<"$ordered_repos_json" >/dev/null 2>&1 || continue
     hv_candidates_json="$(jq -c --arg r "$hv_slug" '[.[] | select(.repo == $r)]' <<<"$human_visibility_json")"
     hv_finding_json="$(gather_human_visibility_hygiene "$hv_slug" "$hv_candidates_json")"
-    [[ "$(jq 'length' <<<"$hv_finding_json" 2>/dev/null || echo 0)" != "0" ]] || continue
+    hv_finding_n="$(jq 'length' <<<"$hv_finding_json" 2>&1)" \
+      || { guard_warn "hv_finding_n" "$hv_finding_n"; hv_finding_n=0; }
+    [[ "$hv_finding_n" != "0" ]] || continue
     ordered_repos_json="$(jq -c --arg r "$hv_slug" --argjson hv "$hv_finding_json" \
       'map(if .slug == $r then .human_visibility = $hv else . end)' \
-      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r '[.[].repo] | unique[]' <<<"$human_visibility_json" 2>/dev/null || true)
 fi
 
@@ -5132,7 +5260,7 @@ if (( void_retire_after_days > 0 )); then
     # shellcheck disable=SC2086  # $vrs_ids is a deliberate word-split id list.
     vrs_map="$(gather_register_status "$vrs_slug" "$vrs_branch" void $vrs_ids)"
     void_register_status_json="$(jq -c --arg s "$vrs_slug" --argjson m "$vrs_map" '. + {($s): $m}' \
-      <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")"
+      <<<"$void_register_status_json" 2>/dev/null || printf '%s' "$void_register_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$void_register_ids_json" 2>/dev/null || true)
 
@@ -5150,7 +5278,7 @@ if (( void_retire_after_days > 0 )); then
     # shellcheck disable=SC2086  # $vrv_refs is a deliberate word-split ref list.
     vrv_map="$(gather_review_status "$vrv_slug" "$vrv_branch" void $vrv_refs)"
     void_review_status_json="$(jq -c --arg s "$vrv_slug" --argjson m "$vrv_map" '. + {($s): $m}' \
-      <<<"$void_review_status_json" 2>/dev/null || printf '%s' "$void_review_status_json")"
+      <<<"$void_review_status_json" 2>/dev/null || printf '%s' "$void_review_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$(work_gone_review_refs "$void_json")" 2>/dev/null || true)
 
@@ -5158,14 +5286,14 @@ if (( void_retire_after_days > 0 )); then
   while IFS=$'\t' read -r vrp_slug vrp_ids; do
     [[ -n "$vrp_slug" && -n "$vrp_ids" ]] || continue
     vrp_entry="$(jq -c --arg s "$vrp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
-      <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
+      <<<"$ordered_repos_json" 2>&1)" || { guard_warn "void:vrp_entry" "$vrp_entry"; vrp_entry='{}'; }
     vrp_branch="$(jq -r '.default_branch // ""' <<<"$vrp_entry" 2>/dev/null || true)"
     vrp_path="$(jq -r '.implementation_plan_path // ""' <<<"$vrp_entry" 2>/dev/null || true)"
     [[ -n "$vrp_branch" && -n "$vrp_path" ]] || continue
     # shellcheck disable=SC2086  # $vrp_ids is a deliberate word-split id list.
     vrp_map="$(gather_plan_status "$vrp_slug" "$vrp_branch" "$vrp_path" void $vrp_ids)"
     void_plan_status_json="$(jq -c --arg s "$vrp_slug" --argjson m "$vrp_map" '. + {($s): $m}' \
-      <<<"$void_plan_status_json" 2>/dev/null || printf '%s' "$void_plan_status_json")"
+      <<<"$void_plan_status_json" 2>/dev/null || printf '%s' "$void_plan_status_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$(work_gone_plan_ids "$void_json")" 2>/dev/null || true)
 
@@ -5182,7 +5310,8 @@ if (( void_retire_after_days > 0 )); then
   # none).
   void_failed_run_repos_json="$(jq -r --arg re "$VOID_LIVENESS_FAILED_RUN_RE" '
     [ .[] | select((.repo // "") != "" and ((.item // "") | test($re))) | .repo ] | unique' \
-    <<<"$void_json" 2>/dev/null || echo '[]')"
+    <<<"$void_json" 2>&1)" \
+    || { guard_warn "void_failed_run_repos_json" "$void_failed_run_repos_json"; void_failed_run_repos_json='[]'; }
 
   void_liveness_gather_json='{}'
   while IFS= read -r vl_slug; do
@@ -5192,7 +5321,8 @@ if (( void_retire_after_days > 0 )); then
     vl_alert_ok=false; vl_alert_ids='[]'
     if [[ -f "$cycle_dir/findings-$vl_safe.ok" ]]; then
       vl_alert_ok=true
-      vl_alert_ids="$(jq -c '[.[].ref]' "$cycle_dir/findings-$vl_safe.json" 2>/dev/null || echo '[]')"
+      vl_alert_ids="$(jq -c '[.[].ref]' "$cycle_dir/findings-$vl_safe.json" 2>&1)" \
+        || { guard_warn "void-liveness:vl_alert_ids:$vl_safe" "$vl_alert_ids"; vl_alert_ids='[]'; }
     fi
 
     # The `prefetch` pass's own files, never requirement 34l's `void` pass:
@@ -5202,13 +5332,15 @@ if (( void_retire_after_days > 0 )); then
     vl_rh_ok=false; vl_rh_ids='[]'
     if [[ -f "$cycle_dir/register-hygiene-prefetch-$vl_safe.ok" ]]; then
       vl_rh_ok=true
-      vl_rh_ids="$(jq -c '[.[].ref]' "$cycle_dir/register-hygiene-prefetch-$vl_safe.json" 2>/dev/null || echo '[]')"
+      vl_rh_ids="$(jq -c '[.[].ref]' "$cycle_dir/register-hygiene-prefetch-$vl_safe.json" 2>&1)" \
+        || { guard_warn "void-liveness:vl_rh_ids:$vl_safe" "$vl_rh_ids"; vl_rh_ids='[]'; }
     fi
 
     vl_mc_ok=false; vl_mc_ids='[]'
     if [[ -f "$cycle_dir/merge-conflicts-$vl_safe.ok" ]]; then
       vl_mc_ok=true
-      vl_mc_ids="$(jq -c '[.[].ref]' "$cycle_dir/merge-conflicts-$vl_safe.json" 2>/dev/null || echo '[]')"
+      vl_mc_ids="$(jq -c '[.[].ref]' "$cycle_dir/merge-conflicts-$vl_safe.json" 2>&1)" \
+        || { guard_warn "void-liveness:vl_mc_ids:$vl_safe" "$vl_mc_ids"; vl_mc_ids='[]'; }
     fi
 
     vl_fr_ok=false; vl_fr_ids='[]'
@@ -5217,13 +5349,15 @@ if (( void_retire_after_days > 0 )); then
       if [[ "$(jq -r '.ok // false' <<<"$vl_basenames_json" 2>/dev/null)" == "true" ]]; then
         vl_state_json="$(jq -c --arg s "$vl_slug" \
           '[.[] | select((.slug // "") == $s and .ok == true)] | first // {}' \
-          <<<"$source_states_json" 2>/dev/null || echo '{}')"
+          <<<"$source_states_json" 2>&1)" \
+          || { guard_warn "void-liveness:vl_state_json" "$vl_state_json"; vl_state_json='{}'; }
         if [[ "$(jq -r 'has("slug")' <<<"$vl_state_json" 2>/dev/null)" == "true" ]]; then
           vl_fr_ok=true
           vl_fr_ids="$(jq -c --argjson bn "$vl_basenames_json" '
             [ (.workflows // [])[] | select(.c == "failure") | (.w | tostring) as $id
               | ($bn.basenames[$id] // null) | select(. != null) | ("failed-run-" + .) ]' \
-            <<<"$vl_state_json" 2>/dev/null || echo '[]')"
+            <<<"$vl_state_json" 2>&1)" \
+            || { guard_warn "void-liveness:vl_fr_ids" "$vl_fr_ids"; vl_fr_ids='[]'; }
         fi
       fi
     fi
@@ -5237,7 +5371,7 @@ if (( void_retire_after_days > 0 )); then
                    "register-hygiene": {ok: $rh_ok, ids: $rh_ids},
                    "merge-conflict": {ok: $mc_ok, ids: $mc_ids},
                    "failed-run": {ok: $fr_ok, ids: $fr_ids}}}' \
-      <<<"$void_liveness_gather_json" 2>/dev/null || printf '%s' "$void_liveness_gather_json")"
+      <<<"$void_liveness_gather_json" 2>/dev/null || printf '%s' "$void_liveness_gather_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r '.[].slug' <<<"$ordered_repos_json" 2>/dev/null || true)
 
   # The closed set grows with every void ever actioned, so it arrives on
@@ -5264,7 +5398,8 @@ if (( void_retire_after_days > 0 )); then
        | select((.value | ascii_downcase) == "resolved" or (.value | ascii_downcase) == "not-debt")
        | {repo: $repo, item: .key, by: "register-resolved"})) as $reg_done
     | $closed_here + $reg_done + $liveness + $revplan + $config' \
-    <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>/dev/null || echo '[]')"
+    <<<"$void_json"$'\n'"$(void_object_closed_items "$union_log")" 2>&1)" \
+    || { guard_warn "void_json:closed-merge" "$void_json"; void_json='[]'; }
 
   void_json_before_retire="$void_json"
   void_json="$(retire_void_items "$void_json" "$void_actioned_json" "$void_retire_after_days" "$now_epoch")"
@@ -5282,7 +5417,8 @@ if (( void_retire_after_days > 0 )); then
           | {repo, item, void_ts: .ts,
              by: (($actioned | map(select(((.repo // "") + "|" + (.item // "")) == $k))
                    | first | .by) // "actioned")} ]' \
-      <<<"$void_json_before_retire"$'\n'"$void_json" 2>/dev/null || echo '[]')"
+      <<<"$void_json_before_retire"$'\n'"$void_json" 2>&1)" \
+      || { guard_warn "void_retired_now_json" "$void_retired_now_json"; void_retired_now_json='[]'; }
     while IFS= read -r void_retired_entry; do
       [[ -n "$void_retired_entry" ]] || continue
       log_event "void-retired" "$void_retired_entry"
@@ -5298,7 +5434,7 @@ fi
 void_json_bytes="$(printf '%s' "$void_json" | wc -c)"
 if (( void_json_bytes > 100000 )); then
   log_event "warning" "$(jq -nc \
-    --argjson n "$(jq 'length' <<<"$void_json" 2>/dev/null || echo 0)" --argjson b "$void_json_bytes" \
+    --argjson n "$(v="$(jq 'length' <<<"$void_json" 2>&1)" || { guard_warn "void_json_bytes:n" "$v"; v=0; }; printf '%s' "$v")" --argjson b "$void_json_bytes" \
     '{detail: ("void extract is " + ($b | tostring) + " bytes across " + ($n | tostring)
                + " entries after retirement — approaching the 131072-byte MAX_ARG_STRLEN cap; check void_retire_after_days and whether requirements 34k/34l are actioning items")}')"
 fi
@@ -5341,11 +5477,12 @@ for eligibility_band in findings review_feedback abandoned_drafts merge_conflict
   while IFS= read -r eb_slug; do
     [[ -n "$eb_slug" ]] || continue
     eb_current="$(jq -c --arg s "$eb_slug" --arg f "$eligibility_band" \
-      'map(select(.slug == $s)) | .[0][$f] // []' <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+      'map(select(.slug == $s)) | .[0][$f] // []' <<<"$ordered_repos_json" 2>&1)" \
+      || { guard_warn "eb_current:$eb_slug:$eligibility_band" "$eb_current"; eb_current='[]'; }
     eb_filtered="$(exclude_blocked_or_void_items "$eb_current" "$eb_slug" "$blocked_json" "$void_json")"
     ordered_repos_json="$(jq -c --arg r "$eb_slug" --arg f "$eligibility_band" --argjson v "$eb_filtered" \
       'map(if .slug == $r then .[$f] = $v else . end)' \
-      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+      <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r --arg f "$eligibility_band" \
            '[.[] | select(((.[$f] // []) | length) > 0) | .slug] | unique[]' \
            <<<"$ordered_repos_json" 2>/dev/null || true)
@@ -5354,11 +5491,12 @@ done
 while IFS= read -r iss_slug; do
   [[ -n "$iss_slug" ]] || continue
   iss_current="$(jq -c --arg s "$iss_slug" 'map(select(.slug == $s)) | .[0].issues // []' \
-    <<<"$ordered_repos_json" 2>/dev/null || echo '[]')"
+    <<<"$ordered_repos_json" 2>&1)" \
+    || { guard_warn "iss_current:$iss_slug" "$iss_current"; iss_current='[]'; }
   iss_filtered="$(exclude_blocked_or_void_issues "$iss_current" "$iss_slug" "$blocked_json" "$void_json")"
   ordered_repos_json="$(jq -c --arg r "$iss_slug" --argjson iss "$iss_filtered" \
     'map(if .slug == $r then .issues = $iss else . end)' \
-    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")"
+    <<<"$ordered_repos_json" 2>/dev/null || printf '%s' "$ordered_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
 done < <(jq -r '[.[] | select(((.issues // []) | length) > 0) | .slug] | unique[]' \
          <<<"$ordered_repos_json" 2>/dev/null || true)
 
@@ -5427,12 +5565,15 @@ live_pr_refs_json="$(jq -c \
 # instead of off the eligible entry — jq has no other way to hold onto the
 # outer `.` across a nested pipe.
 stale_enabler_refs_json='[]'
-[[ -z "$live_pr_refs_json" ]] || stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
+[[ -z "$live_pr_refs_json" ]] || { stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
   [ .[] | (.repo // "") as $repo | (.item // "") as $item
         | select(($item | test("^pr-[0-9]+-(conflict|superseded|abandoned)-[0-9a-f]+$"))
                  and (($live | index($repo + "#" + $item)) == null)) ]
-  ' <<<"$enabler_eligible_json" 2>/dev/null || echo '[]')"
-if [[ "$(jq 'length' <<<"$stale_enabler_refs_json" 2>/dev/null || echo 0)" != "0" ]]; then
+  ' <<<"$enabler_eligible_json" 2>&1)" \
+  || { guard_warn "stale_enabler_refs_json" "$stale_enabler_refs_json"; stale_enabler_refs_json='[]'; }; }
+stale_enabler_refs_n="$(jq 'length' <<<"$stale_enabler_refs_json" 2>&1)" \
+  || { guard_warn "stale_enabler_refs_n" "$stale_enabler_refs_n"; stale_enabler_refs_n=0; }
+if [[ "$stale_enabler_refs_n" != "0" ]]; then
   # An *object* payload ({skipped: [...]}), never the bare array: log_event's
   # envelope merge can only add objects, and the bare-array form of this exact
   # line is what crash-looped the fleet on 2026-08-13 (issue #361).
@@ -5441,7 +5582,7 @@ if [[ "$(jq 'length' <<<"$stale_enabler_refs_json" 2>/dev/null || echo 0)" != "0
     ($stale | map((.repo // "") + "#" + (.item // ""))) as $staleset
     | [ .[] | (.repo // "") as $repo | (.item // "") as $item
             | select(($staleset | index($repo + "#" + $item)) == null) ]
-    ' <<<"$enabler_eligible_json" 2>/dev/null || printf '%s' "$enabler_eligible_json")"
+    ' <<<"$enabler_eligible_json" 2>/dev/null || printf '%s' "$enabler_eligible_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
 fi
 
 # Past this line the exit trap may engage the Enabler: every input it needs now
@@ -5467,8 +5608,9 @@ if [[ -n "$refiner_model" ]]; then
   while IFS=$'\t' read -r rp_slug rp_branch; do
     [[ -n "$rp_slug" ]] || continue
     rp_entry="$(jq -c --arg s "$rp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
-      <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
-    rp_sources="$(jq -c '.sources // []' <<<"$rp_entry" 2>/dev/null || echo '[]')"
+      <<<"$ordered_repos_json" 2>&1)" || { guard_warn "refiner:rp_entry" "$rp_entry"; rp_entry='{}'; }
+    rp_sources="$(jq -c '.sources // []' <<<"$rp_entry" 2>&1)" \
+      || { guard_warn "refiner:rp_sources" "$rp_sources"; rp_sources='[]'; }
     rp_pr='[]'
     if jq -e 'any(.[]; . == "project-review")' <<<"$rp_sources" >/dev/null 2>&1 \
        && [[ "$(refiner_policy_value "project-review" "$refinement_policy_json")" != "exempt" ]]; then
@@ -5484,7 +5626,7 @@ if [[ -n "$refiner_model" ]]; then
     if [[ "$rp_pr" != "[]" || "$rp_ip" != "[]" ]]; then
       refiner_repos_json="$(jq -c --arg s "$rp_slug" --argjson pr "$rp_pr" --argjson ip "$rp_ip" \
         'map(if .slug == $s then . + {project_review: $pr, implementation_plan: $ip} else . end)' \
-        <<<"$refiner_repos_json" 2>/dev/null || printf '%s' "$refiner_repos_json")"
+        <<<"$refiner_repos_json" 2>/dev/null || printf '%s' "$refiner_repos_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
     fi
   done < <(jq -r '.[] | .slug + "\t" + .default_branch' <<<"$ordered_repos_json" 2>/dev/null || true)
 fi
@@ -5573,7 +5715,8 @@ fi
 # it to select (see that block's own comment, and
 # `coordinator_eligible_items`').
 eligible_items_json="$(coordinator_eligible_items "$ordered_repos_json" "$blocked_json")"
-eligible_items_total="$(jq 'length' <<<"$eligible_items_json" 2>/dev/null || echo 0)"
+eligible_items_total="$(jq 'length' <<<"$eligible_items_json" 2>&1)" \
+  || { guard_warn "eligible_items_total" "$eligible_items_total"; eligible_items_total=0; }
 
 # --- 3b. No-op short-circuit (requirement 3b) ---
 # The Co-Ordinator costs the same to tell us "nothing to do" as it does to
