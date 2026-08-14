@@ -26,6 +26,11 @@ export PATH
 # this is exactly `gh`. Exported so scripts/gather-findings.sh, the one other
 # GitHub reader a publish invokes, resolves the same way.
 export DASHBOARD_GH_CMD="${DASHBOARD_GH_CMD:-gh}"
+# lib/merge-queue.sh's own seam, pointed at the same stub as everything else
+# this script calls through gh — sweep-human-visibility.sh sets it the same
+# way for the same reason.
+MERGE_QUEUE_GH="$DASHBOARD_GH_CMD"
+export MERGE_QUEUE_GH
 
 for bin in jq "$DASHBOARD_GH_CMD"; do
   command -v "$bin" >/dev/null 2>&1 || { echo "publish-dashboard: missing binary: $bin" >&2; exit 1; }
@@ -56,6 +61,8 @@ TEMPLATE="$SCRIPT_DIR/dashboard/index.html"
 . "$SCRIPT_DIR/lib/image-drift.sh"
 # shellcheck source=lib/stage-budget.sh
 . "$SCRIPT_DIR/lib/stage-budget.sh"
+# shellcheck source=lib/merge-queue.sh
+. "$SCRIPT_DIR/lib/merge-queue.sh"
 
 MAX_CYCLES=40        # recent substantive cycles shown in detail (with
                      # transcripts); no-op ticks aggregate instead (#271)
@@ -118,6 +125,16 @@ pr_cache="$state_dir/.dashboard-prs.json"
 # once and touched again only when its status flips, so a warm register costs
 # no call at all. Kept out of the served dir like the three caches above.
 td_cache="$state_dir/.dashboard-td.json"
+# The merge-queue state machine for every open agent pull request, by
+# "<owner>/<repo>#<number>" — not a TTL cache like the others above, but the
+# Publisher's own memory of `{queued, warn}`, which is what lets a dequeue be
+# detected and held as a transition (this tick's answer versus the last one
+# seen) rather than re-derived from GitHub's own removal-event history
+# (agent-ops#394's open follow-up on that approach). Rewritten wholesale each
+# GitHub tick from that tick's own open pull requests, so it never
+# accumulates entries for a pull request that has merged or closed. Kept out
+# of the served dir like the four caches above.
+queue_cache="$state_dir/.dashboard-queue.json"
 # This node's own image-drift verdict (lib/image-drift.sh), cached because
 # unlike compose_drift_status and agent_ops_version it costs a real network
 # round trip — one this script cannot pay on every 5-second tick. The name is
@@ -1527,6 +1544,105 @@ if (( WITH_GITHUB )); then
                      state: {issues: $s_issues, failed_runs: $s_runs, tech_debt: $s_td, findings: $s_findings}}}' \
       <<<"$inputs_json")"
   done < <(jq -r '.[].slug' <<<"$repos_json")
+
+  # --- Merge-queue awareness (agent-ops#374, #375; D17) ------------------------
+  # lib/merge-queue.sh's merge_queue_probe is the one place that knows how to
+  # ask GitHub whether a pull request is currently queued — shared with
+  # scripts/sweep-human-visibility.sh (requirement 38f) rather than
+  # reimplemented here. Only non-draft pull requests are probed: GitHub will
+  # not enqueue a draft, so one is never worth the call. The set probed is
+  # exactly this tick's open, labelled pull requests — bounded by
+  # `max_open_agent_prs` per repo, so unlike the pull-request index or the
+  # tech-debt register (forty-odd references, budgeted a few a tick) this
+  # never needs a miss budget of its own.
+  #
+  # "Dequeued" is this Publisher's own memory (`queue_cache`) of whether a
+  # pull request has fallen out of the queue since it was last seen queued,
+  # not the probe's own timeline read (`dequeued_at`/`dequeue_reason`): that
+  # field is the *last* removal event regardless of age or of a later
+  # re-queue (agent-ops#394's open follow-up on the same probe), which is the
+  # wrong signal for a badge that must both persist until a human deals with
+  # it and clear the moment the pull request is queued again. So the warning
+  # is a small state machine kept in `queue_cache`, one entry per pull
+  # request, `{queued, warn}`: `warn` is set the tick `queued` is observed to
+  # flip from true to false, stays set on every later tick that still reads
+  # not-queued (a maintainer glancing at the page between heartbeats must
+  # still see it, not just the one tick it started on), and clears the
+  # moment either `queued` reads true again or the pull request merges or
+  # closes — the latter for free, since a pull request no longer `state:
+  # open` no longer appears in `prs_json` at all, so its cache entry is
+  # simply never re-written (the cache is rebuilt wholesale below, not
+  # merged with what came before).
+  queue_cache_json="$work_tmp/queue-cache.json"
+  if [[ -s "$queue_cache" ]] && jq -e 'type == "object"' "$queue_cache" >/dev/null 2>&1; then
+    cp "$queue_cache" "$queue_cache_json"
+  else
+    printf '{}' > "$queue_cache_json"
+  fi
+  # Per pull request: ref, this tick's badge answer (queued, dequeued-warn),
+  # then what to persist to queue_cache for next tick (cache_queued,
+  # cache_warn) — the same pair except on an unreadable probe, where the
+  # cache carries the prior answer forward unchanged rather than guessing.
+  queue_answers="$work_tmp/queue.answers"; : > "$queue_answers"
+  while IFS=$'\t' read -r mq_ref mq_slug mq_number mq_draft; do
+    [[ -n "$mq_ref" ]] || continue
+    mq_prior="$(jq -r --arg r "$mq_ref" '(.[$r] // {}) |
+      [(.queued | if . == null then "unknown" elif . then "true" else "false" end),
+       ((.warn // false) | tostring)] | @tsv' "$queue_cache_json" 2>/dev/null)"
+    IFS=$'\t' read -r mq_prior_queued mq_prior_warn <<<"$mq_prior"
+    mq_prior_queued="${mq_prior_queued:-unknown}"
+    mq_prior_warn="${mq_prior_warn:-false}"
+
+    if [[ "$mq_draft" == "true" ]]; then
+      # Never queueable, so never worth remembering as queued or warned about.
+      printf '%s\tfalse\tfalse\tfalse\tfalse\n' "$mq_ref" >> "$queue_answers"
+      continue
+    fi
+
+    mq_probe="$(merge_queue_probe "$mq_slug" "$mq_number" 2>/dev/null || true)"
+    mq_queued="unknown"
+    if [[ -n "$mq_probe" ]]; then
+      mq_queued="$(jq -r '.queued | if type == "boolean" then (if . then "true" else "false" end) else "unknown" end' \
+        <<<"$mq_probe" 2>/dev/null)"
+      [[ -n "$mq_queued" ]] || mq_queued="unknown"
+    fi
+
+    if [[ "$mq_queued" == "unknown" ]]; then
+      # Never assumed false (lib/merge-queue.sh's own contract): a read that
+      # didn't happen carries the last known answer forward unchanged, badge
+      # and cache alike, rather than guessing or silently clearing a live
+      # warning. This is a best-effort read like every other one in this
+      # loop — it does not set gh_ok false, the same treatment
+      # sweep-human-visibility.sh gives the identical probe.
+      printf '%s\t%s\t%s\t%s\t%s\n' "$mq_ref" "$mq_prior_queued" "$mq_prior_warn" "$mq_prior_queued" "$mq_prior_warn" \
+        >> "$queue_answers"
+    else
+      mq_warn="false"
+      if [[ "$mq_queued" != "true" && ( "$mq_prior_warn" == "true" || "$mq_prior_queued" == "true" ) ]]; then
+        mq_warn="true"
+      fi
+      printf '%s\t%s\t%s\t%s\t%s\n' "$mq_ref" "$mq_queued" "$mq_warn" "$mq_queued" "$mq_warn" \
+        >> "$queue_answers"
+    fi
+  done < <(jq -r '.[] | [(.repo + "#" + (.number|tostring)), .repo, (.number|tostring), (.isDraft|tostring)] | @tsv' \
+    <<<"$prs_json" 2>/dev/null)
+
+  prs_json="$(jq -Rsc --argjson prs "$prs_json" '
+    (split("\n") | map(select(length > 0) | split("\t")) |
+     map({(.[0]): {queued: (if .[1] == "unknown" then null else (.[1] == "true") end),
+                    dequeued: (.[2] == "true")}}) | add // {}) as $q
+    | $prs | map(. + ($q[.repo + "#" + (.number|tostring)] // {queued: null, dequeued: false}))' \
+    "$queue_answers" 2>/dev/null)"
+  [[ -n "$prs_json" ]] || prs_json='[]'
+
+  # Rebuilt wholesale from this tick's own open pull requests (fields 4/5
+  # above) — never merged with what came before, so a pull request that has
+  # merged or closed since the last tick simply has no entry here and drops
+  # out of memory rather than being carried forever.
+  jq -Rsc '
+    split("\n") | map(select(length > 0) | split("\t"))
+    | map({(.[0]): {queued: (.[3] == "true"), warn: (.[4] == "true")}}) | add // {}' \
+    "$queue_answers" > "$queue_cache" 2>/dev/null || true
 
   # Every source that failed this tick, across every repo — not just `pr
   # list`'s — so the "GitHub unavailable" banner names what actually broke.
