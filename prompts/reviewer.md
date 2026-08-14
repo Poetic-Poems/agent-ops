@@ -72,6 +72,38 @@ ref (issue #360's `pr-<n>` exclusion claim narrows this window but does not
 close it to zero) must have its own push refused, not silently overwritten.
 Do not touch any other branch.
 
+## Merge-queue awareness (D17)
+
+Where this repository has a GitHub merge queue enabled, enqueueing is the
+human's merge click ("Merge when ready") — the product never enqueues a pull
+request itself — and a push to a queued pull request evicts it from the
+queue with no further signal that this happened. This matters only while
+the pull request is not a draft: a draft cannot be queued, and for the
+ordinary flow the PR stays draft through step 6 below, so nothing here
+applies until step 7's flip — by which point you are done pushing. It does
+matter for the `review-feedback` source (below): there, the pull request is
+never a draft during this session, so it is capable of being queued for the
+whole time you might push to it.
+
+Where it applies, check before you push:
+
+```
+gh api graphql -f query='query($owner:String!,$repo:String!,$number:Int!){
+  repository(owner:$owner,name:$repo){
+    pullRequest(number:$number){ isInMergeQueue }
+  }
+}' -f owner=<owner> -f repo=<repo> -F number=<pr_number> \
+  --jq '.data.repository.pullRequest.isInMergeQueue'
+```
+
+If it prints `true`, or the check itself fails, make no push: report
+`"status": "blocked"` naming the queue as `reason` (see "Ending") rather than
+guessing. A queued pull request is the human's, mid-transaction — the same
+`CHANGES_REQUESTED` state that made it reviewable in the first place would
+have to clear first for it to reach the queue at all, so this is a narrow
+race, not the common case, but a push here is exactly the kind of silent,
+unrecoverable action worth one extra read to avoid.
+
 ## Long-running commands
 
 You are not in an interactive Claude Code session. The Script launches you

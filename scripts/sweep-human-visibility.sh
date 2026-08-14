@@ -39,6 +39,18 @@
 #      since before `human_nudge_idle_hours` ago, posts one nudge comment
 #      naming `enabler_assignee` — requirement 38c — unless one is there
 #      already (a marker comment makes this idempotent, not time-windowed).
+#      Never fires while the pull request is currently in GitHub's merge
+#      queue (requirement 38f, D17): a queued pull request reads `APPROVED`/
+#      `MERGEABLE`/green exactly like one nobody has acted on yet, and the
+#      human has already clicked merge.
+#   4. Where the pull request was recently removed from the merge queue
+#      without merging (a checks-failure dequeue, requirement 38f) — a state
+#      GitHub marks nowhere but the timeline, since a dequeued pull request
+#      otherwise looks like an ordinary open one — posts one notice comment
+#      naming `enabler_assignee`, unconditional on `human_nudge_idle_hours`
+#      (this is new information, not the "forgot to click merge" case that
+#      threshold exists for), idempotent per removal event rather than
+#      per pull request, so a second dequeue gets its own notice.
 #
 # ## Why the sweep may call `confirm_review_requested`, and only narrowly
 #
@@ -107,9 +119,13 @@ SCHEMA_FILE="$SCRIPT_DIR/config.schema.json"
 GH="${SWEEP_GH:-gh}"
 HANDOFF_GH="$GH"
 export HANDOFF_GH
+MERGE_QUEUE_GH="$GH"
+export MERGE_QUEUE_GH
 
 # shellcheck source=lib/config-schema.sh
 . "$SCRIPT_DIR/lib/config-schema.sh"
+# shellcheck source=lib/merge-queue.sh
+. "$SCRIPT_DIR/lib/merge-queue.sh"
 # shellcheck source=lib/handoff.sh
 . "$SCRIPT_DIR/lib/handoff.sh"
 # shellcheck source=lib/pipeline-marker.sh
@@ -238,6 +254,63 @@ while IFS= read -r pr_url; do
   fi
   review_decision="$(jq -r '.reviewDecision // ""' <<<"$pr_json")"
 
+  # owner/repo/number, parsed once and reused by both the merge-queue probe
+  # below and the self-heal block after it.
+  mq_owner="" mq_repo="" mq_number=""
+  if [[ "$pr_url" =~ ^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
+    mq_owner="${BASH_REMATCH[1]}" mq_repo="${BASH_REMATCH[2]}" mq_number="${BASH_REMATCH[3]}"
+  fi
+
+  # Merge-queue awareness (requirement 38f, D17, agent-ops#374): one
+  # best-effort read, since neither `isInMergeQueue` nor a dequeue event
+  # rides the `pr view` call above (lib/merge-queue.sh — no such `--json`
+  # field exists). A probe that fails leaves both variables empty, and the
+  # two checks below that depend on them then behave exactly as they did
+  # before this feature existed — a currently-queued pull request is not
+  # specially skipped, a dequeue produces no notice this cycle — which is
+  # the safe direction: `mq_queued` must never be trusted as "definitely not
+  # queued" merely because the probe could not answer.
+  mq_queued="" mq_dequeued_at="" mq_dequeue_reason=""
+  if [[ -n "$mq_owner" && -n "$mq_number" ]]; then
+    mq_probe="$(merge_queue_probe "$mq_owner/$mq_repo" "$mq_number" 2>/dev/null || true)"
+    if [[ -n "$mq_probe" ]]; then
+      mq_queued="$(jq -r '.queued' <<<"$mq_probe" 2>/dev/null)"
+      mq_dequeued_at="$(jq -r '.dequeued_at // ""' <<<"$mq_probe" 2>/dev/null)"
+      mq_dequeue_reason="$(jq -r '.dequeue_reason // ""' <<<"$mq_probe" 2>/dev/null)"
+    fi
+  fi
+
+  # A checks-failure dequeue (requirement 38f's other half): GitHub reverts a
+  # dequeued pull request to an ordinary open one with no field saying "this
+  # used to be queued" — only a timeline event — so this is the one signal
+  # there is. Unconditional, like the self-heal below: this is new
+  # information a human has not seen, not the "forgot to click merge" case
+  # `idle_hours` exists for, so it does not wait on that threshold.
+  # `mq_queued == "false"` (not merely "not true") deliberately excludes both
+  # an unreadable probe and a pull request re-queued since at the same head —
+  # either way there is nothing fresh to say. Idempotent per removal event
+  # (the marker is scoped to `dequeued_at`), so a second dequeue after a
+  # re-queue gets its own notice rather than being suppressed by the first.
+  if [[ "$mq_queued" == "false" && -n "$mq_dequeued_at" ]]; then
+    mq_marker="<!-- agent-ops:merge-queue-dequeued:${mq_dequeued_at} -->"
+    if ! jq -e --arg m "$mq_marker" '(.comments // []) | any((.body // "") | contains($m))' \
+        <<<"$pr_json" >/dev/null 2>&1; then
+      mq_reason_clause=""
+      [[ -n "$mq_dequeue_reason" ]] && mq_reason_clause=" (reason: ${mq_dequeue_reason})"
+      mq_body="$(pipeline_comment_header script "$node_name")
+
+This pull request was removed from the merge queue at ${mq_dequeued_at}${mq_reason_clause} without merging — @${assignee}, it needs a fresh look before it can be re-queued.
+
+$(pipeline_comment_marker "$cycle_id" script)
+$mq_marker"
+      if "$GH" pr comment "$pr_url" --body "$mq_body" >/dev/null 2>&1; then
+        jq -nc --arg u "$pr_url" --arg a "$assignee" '{action: "nudged", pr_url: $u, reviewer: $a}'
+      else
+        warn "$pr_url" "could not post the merge-queue-dequeued notice"
+      fi
+    fi
+  fi
+
   # Requirement 38c's self-heal (see the header's design note;
   # tech-debt/TD-PPagop-26080804.md): a pull request still
   # CHANGES_REQUESTED-blocked whose round the Implementor has already
@@ -246,9 +319,8 @@ while IFS= read -r pr_url; do
   # between the Implementor's push and that verdict can lose. Unconditional,
   # like `ensure_human_reviewer` above — not gated on `idle_hours`, which
   # governs the nudge alone.
-  if [[ "$review_decision" == "CHANGES_REQUESTED" ]] \
-      && [[ "$pr_url" =~ ^https?://[^/]+/([^/]+)/([^/]+)/pull/([0-9]+) ]]; then
-    case "$(_sweep_round_answered "${BASH_REMATCH[1]}/${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}")" in
+  if [[ "$review_decision" == "CHANGES_REQUESTED" ]] && [[ -n "$mq_number" ]]; then
+    case "$(_sweep_round_answered "$mq_owner/$mq_repo" "$mq_number")" in
       answered)
         rerequest_state="$(confirm_review_requested "$pr_url")" || true
         rerequest_who=""
@@ -277,6 +349,12 @@ while IFS= read -r pr_url; do
 
   [[ "$review_decision" == "APPROVED" ]] || continue
   [[ "$(jq -r '.mergeable // ""' <<<"$pr_json")" == "MERGEABLE" ]] || continue
+  # Currently queued: the human has already clicked merge, and a queued pull
+  # request reads APPROVED/MERGEABLE/green exactly like one nobody has acted
+  # on yet — see requirement 38f. An unreadable probe (`mq_queued` empty)
+  # falls through here unchanged, the same fail-open default the rest of
+  # this file uses.
+  [[ "$mq_queued" != "true" ]] || continue
   # Vacuously "green" on an empty rollup is exactly the wrong answer — that is
   # CI not having run at all, not CI having passed — so an empty rollup is
   # excluded explicitly rather than trusted through `all`.

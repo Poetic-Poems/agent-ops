@@ -97,6 +97,12 @@ the pipeline knows to answer:
 - **An approved, mergeable, green PR idle for `human_nudge_idle_hours` (default
   24) gets one nudge comment**, `@`-mentioning you, once — not repeated, and not
   instead of the live review request above, which keeps working regardless.
+  Never fires on a PR you've already enqueued in a GitHub merge queue, where one
+  is enabled — that reads the same as one nobody has acted on yet, so this
+  checks for the difference rather than telling you to click a button you
+  already clicked. If the queue itself dequeues a PR after a checks failure —
+  a state GitHub otherwise gives you no way to notice — you get a one-time
+  notice comment instead, immediately, not held for the idle threshold above.
 - **A GitHub issue the pipeline reports as needing your decision is assigned to
   you**, not only labelled — the same pattern that already resolves an Enabler
   escalation in 1–2 hours, extended to the Co-Ordinator's own `needs_refinement`

@@ -4655,7 +4655,14 @@ runs unattended.
 26. Verifies the PR via `gh pr view --json mergeable,mergeStateStatus`
     (against GitHub's view, not inferred locally) and resolves any conflict
     with the current default branch. Leaves the PR as a **draft** — the
-    Reviewer flips it to ready.
+    Reviewer flips it to ready. For the `review-feedback` and
+    `merge-conflicts` sources — the two whose branch and pull request already
+    exist before the Implementor starts — every push to it, including this
+    verification step's own rebase-and-push, is preceded by a merge-queue
+    membership check (requirement 38f); a queued pull request, or a probe
+    that fails, stops the push and reports `blocked` rather than risking a
+    silent eviction. `abandoned-drafts`' push is exempt: its pull request is
+    always a draft, which GitHub does not allow to be queued.
 26a. **Grades the complexity of the work, ex post, and labels the PR with
     it.** After implementing, the Implementor grades the PR `low`, `medium`
     or `high` against a rubric anchored to observable features of the work,
@@ -4712,7 +4719,11 @@ runs unattended.
     wrong for the diff counts as such a problem: having just read the whole
     diff, the Reviewer is better placed than the author, and corrects the
     label in either direction — the label endures for later finishing rounds
-    (requirement 8a) and for the human.
+    (requirement 8a) and for the human. The ordinary pull request stays a
+    draft throughout, which GitHub does not allow to be queued, so no
+    merge-queue check applies to it here; the `review-feedback` source is the
+    one case where it does, since that pull request is never a draft during
+    the Reviewer's session (requirement 38f).
 30a. **Emits as it goes, not only at the end.** Requirement 23a's counterpart
     for the Reviewer, and it binds harder here: an Implementor that is killed
     at least leaves the branch it has been building, whereas a review exists
@@ -7065,6 +7076,114 @@ runs unattended.
     Left deliberately unaddressed, as an adjacent gap rather than this one: an
     issue human-blocked by a classification other than the two requirement
     38b and 36a cover remains requirement 38d's own, deliberate, scope limit.
+
+38f. **Merge-queue awareness (D17).** Where a target repository has a GitHub
+    merge queue enabled, enqueueing is the human's own merge click ("Merge
+    when ready", D17) and the actual merge lands minutes later, asynchronously,
+    once the merge group's own checks pass — or never, if the queue dequeues
+    the pull request. Neither `isInMergeQueue` (is it queued right now) nor a
+    dequeue is exposed by `gh pr list`/`gh pr view --json` (verified against gh
+    2.97.0), so `lib/merge-queue.sh`'s `merge_queue_probe` runs a dedicated
+    GraphQL query instead — verified live against GitHub's own schema, via
+    introspection, that `PullRequest.isInMergeQueue` is a plain non-null
+    boolean and that a `RemovedFromMergeQueueEvent` on the timeline carries
+    `createdAt` and `reason`. A probe that fails is *unknown*, and every caller
+    below treats unknown the same as "possibly queued" — never as "definitely
+    not queued" — since that is the one direction a wrong guess would let a
+    push evict a human's live queue entry with no further signal that it
+    happened.
+
+    `scripts/sweep-human-visibility.sh` (requirement 38c) is the one script
+    that reads GitHub's merge-queue fields directly, and does so twice:
+
+    - **The idle nudge (38c) never fires on a currently-queued pull
+      request.** A queued pull request reads `APPROVED`, `MERGEABLE` and
+      green exactly like one nobody has acted on yet — before this
+      requirement, the nudge told a human "it is waiting on a merge click"
+      after they had already clicked it. `mq_queued == "true"` is now an
+      additional skip alongside `reviewDecision`/`mergeable`/the check
+      rollup; an unreadable probe (`mq_queued` empty) is not this skip and
+      leaves the nudge behaving exactly as it did before this requirement
+      existed.
+    - **A checks-failure dequeue gets its own notice, unconditional on
+      `human_nudge_idle_hours`.** GitHub marks a dequeued pull request
+      nowhere but the timeline — no field distinguishes it from one that was
+      never queued — so this reads `merge_queue_probe`'s `dequeued_at`
+      directly rather than tracking state across cycles itself. The gate is
+      `mq_queued == "false" && dequeued_at` is set: deliberately excluding
+      both an unreadable probe and a pull request re-queued since at the
+      same head, either of which has nothing fresh to say. The notice is
+      idempotent per removal event — `<!-- agent-ops:merge-queue-dequeued:
+      <dequeued_at> -->` — rather than per pull request, so a second
+      dequeue after an earlier one was already acknowledged gets its own
+      notice rather than being silently suppressed by the first. It does not
+      wait on `human_nudge_idle_hours`: this is new information a human has
+      not seen, not the "forgot to click merge" case that threshold exists
+      for. A failed POST is a `warning`, exactly as the ordinary idle nudge's
+      is — and, having no dedicated live-recheck class of its own in
+      requirement 38e's three (`could_not_request`/`could_not_post_nudge`/
+      `no_candidate`), falls into that reduction's fail-safe default: kept
+      selectable for as long as the pull request stays open and not a draft,
+      the same as any warning shape the three classes do not recognise —
+      correct by construction, since a later successful post flips the log's
+      latest event for that pull request to `human-nudged` before the
+      live-recheck ever runs. The notice addresses a human and nothing else:
+      a dequeued pull request becomes no source's candidate, so the
+      Co-Ordinator has no work to select from it —
+      `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
+      for it would have to decide.
+
+    Every other reader of PR merge state in this repository is already safe
+    against a queued pull request, by construction of its own candidate
+    rule, and needs no code change:
+
+    - `scripts/gather-merge-conflicts.sh` (requirements 3g, 3s) selects only
+      `mergeable == "CONFLICTING"`; a queued pull request is mergeable by
+      definition and can never match.
+    - `scripts/gather-review-status.sh` and `lib/void-liveness.sh`
+      (requirement 34i, 34n) key on `merged_at`/`"merged"` alone — an
+      enqueued-but-not-yet-landed pull request is still open, and answers
+      nothing until the queue actually lands the merge, never a guess from
+      `mergeable` or `mergeStateStatus`.
+    - `lib/work-gone.sh` and `scripts/gather-source-state.sh`'s `open_prs`
+      digest key on `state == "open"` alone; a queued pull request is still
+      open until the queue lands or evicts it.
+    - `lib/void-guard.sh` (requirements 34c, 34d, 34k): the `abandoned`/
+      `review` void shapes are corroborated only by a human-applied
+      `obsolete` label or an empty diff, and their candidates
+      (`scripts/gather-abandoned-drafts.sh`) are draft-only — GitHub does
+      not allow enqueueing a draft, so this path cannot misfire on a queued
+      pull request. The `conflict` shape's `mergeable == false` test is
+      unaffected for the same reason as `gather-merge-conflicts.sh` above.
+    - `lib/handoff.sh` (requirements 31, 31a, 31b, 32, 32a, 38a) reads only
+      `isDraft` and `reviewDecision`, never a merge-state field, and pushes
+      nothing itself.
+    - `prompts/coordinator.md` never reads GitHub live; every field above
+      reaches it only through the pre-fetched candidate arrays, none of
+      whose rules can select a queued pull request, for the reasons already
+      given for each one's own gatherer.
+
+    The Implementor and Reviewer prompts are the two places outside this
+    script that push to a pull request's branch, and each checks queue
+    membership immediately before doing so, using the same
+    `merge_queue_probe` query above (`prompts/implementor.md`'s
+    "Merge-queue awareness" section, `prompts/reviewer.md`'s section of the
+    same name): before any push to a `review-feedback`, `merge-conflicts` or
+    `abandoned-drafts` branch (requirement 26, Implementor step 6's
+    mergeable re-check), and before any push in the Reviewer's own steps 4
+    and 6 (requirements 29, 30, 30a) when the pull request being reviewed is
+    not a draft — which is only ever true for the Reviewer's own
+    `review-feedback` handling (requirement 30a), since the ordinary flow's
+    pull request stays draft through the Reviewer's step 6. A probe that
+    prints `true`, or fails, stops the push and reports `"status":
+    "blocked"` rather than guessing — `abandoned-drafts`' push is exempt from
+    the check entirely, since its pull request is always a draft and GitHub
+    cannot queue one.
+
+    Nothing in this pipeline infers "merged" from anything but `merged`/
+    `merged_at` — the queue's asynchronous landing makes this load-bearing
+    rather than merely tidy, since "the human clicked merge" (enqueued) no
+    longer implies "merged" the moment a click happens.
 
 ### The Refiner
 
@@ -10109,6 +10228,29 @@ pull request, run the ones the change touches and any it could regress.
     each repo is handed its own slice of the violations rather than the
     fleet-wide array; and a re-check that drops everything, or a cycle with no
     violations at all, still leaves every entry a valid `[]`.
+38f. **Merge-queue awareness reads the field GitHub actually exposes, and
+    never guesses when it cannot.** `test/merge-queue.test.sh` passes against
+    a stubbed `gh`: `merge_queue_probe` reports `queued: true`/`false`
+    correctly from a fixture GraphQL response; a dequeue event's `createdAt`/
+    `reason` are reported whether or not the pull request is currently
+    queued (re-queued-since is the caller's own `queued == "false"` gate, not
+    this function's); a `gh` failure and a malformed response (a `queued`
+    key present but not a boolean) both return non-zero with no output a
+    caller could mistake for a real answer; and bad arguments (an empty
+    slug, an empty or non-numeric number, a slug with no `/` or with more
+    than one) are rejected before ever calling `gh`, while a slug whose
+    repository is named the same as its owner is probed like any other.
+    `test/sweep-human-visibility.test.sh` passes
+    the merge-queue cases alongside its existing ones: a currently-queued
+    pull request is never idle-nudged; a checks-failure dequeue is nudged
+    even with `human_nudge_idle_hours: 0`, naming the removal time and
+    reason and carrying the `agent-ops:merge-queue-dequeued:<time>` marker;
+    an already-notified dequeue is not notified again, while a later, fresh
+    dequeue still gets its own notice; a pull request re-queued since a
+    recorded dequeue event gets neither a notice nor a nudge; an unreadable
+    merge-queue probe leaves the ordinary idle nudge behaving exactly as it
+    did before this requirement existed; and a failed dequeue-notice POST is
+    a `warning`, never silence.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed
