@@ -31,7 +31,7 @@
 #   claim.sh release  branch <target-slug> <branch>   # ref iff unmoved+PR-less, then registry
 #   claim.sh release  file   <target-slug> <key>      # registry only
 #   claim.sh expire   <target-slug> <key>             # backdate ts; gc retires it next sweep
-#   claim.sh count    <target-slug>                   # live registry entries
+#   claim.sh count    <target-slug>                   # live registry entries, excluding pr-<n> exclusion claims
 #   claim.sh claims   <target-slug>                   # registry entries younger than claim_ttl_hours,
 #                                                      # as {item, kind, age_hours, pr_number?} (both shapes)
 #   claim.sh branches <target-slug>                   # live td/*, <branch_prefix>* branch names
@@ -271,10 +271,17 @@ do_expire() {  # <target-slug> <key>
   return 0
 }
 
-do_count() {  # <target-slug> -> number of live registry entries
+do_count() {  # <target-slug> -> number of live registry entries counted for back-pressure
   [[ -n "$state_repo" ]] || { echo 0; return 0; }
+  # A `pr-<n>.json` entry (issue #238) excludes a peer from the same PR; it is
+  # not "work in flight that has not yet surfaced as a PR" (agent-cycle.sh's
+  # back-pressure comment) — the PR it targets already exists, and is already
+  # counted through `gh pr list`. Since it now outlives the PR being raised,
+  # held until this cycle's own end rather than dropped the moment the PR
+  # exists (issue #360), counting it here too would double-count that PR for
+  # as long as the cycle's Reviewer stage runs.
   "$GH" api "repos/$state_repo/contents/claims/$(san "$1")" \
-    --jq '[.[] | select(.type == "file")] | length' 2>/dev/null || echo 0
+    --jq '[.[] | select(.type == "file") | select(.name | test("^pr-[0-9]+\\.json$") | not)] | length' 2>/dev/null || echo 0
 }
 
 do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours, pr_number?} younger than claim_ttl_hours

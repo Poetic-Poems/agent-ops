@@ -750,34 +750,66 @@ claim_key=""
 # The second, PR-keyed file claim (issue #238) a finishing-source win also
 # holds — empty for every other source, and for a finishing source whose PR
 # number neither its candidate nor its item ref yielded. Always a `file` claim
-# (there is no PR-keyed branch), so its release never touches a ref.
+# (there is no PR-keyed branch), so its release never touches a ref. Tracked
+# independently of claim_active (below): the item-keyed claim and this one are
+# released on different schedules (issue #360), so a flag that zeroed both at
+# once could not represent "item claim gone, PR-keyed claim still held".
 claim_pr_key=""
 
 # Zero means unbounded (GNU timeout treats a duration of 0 as "no timeout"),
-# which is every ordinary release. The signal handler (requirement 9c) sets a
-# small bound instead: it runs on borrowed time — a lock takeover KILLs what
-# has not exited within its grace — and a release the network stalls must not
-# cost the exit record. A claim the release never reached is retired by the
-# gc within `claim_ttl_hours` anyway.
+# which is every ordinary release. The signal handler (requirement 9c) and
+# cleanup's backstop release set a small bound instead: the handler runs on
+# borrowed time — a lock takeover KILLs what has not exited within its grace —
+# and the EXIT trap carries the cycle's record, so in both a release the
+# network stalls must not cost the exit record. A claim the release never
+# reached is retired by the gc within `claim_ttl_hours` anyway.
 claim_release_timeout=0
 
-release_claim() {  # release_claim have-pr|no-pr
-  (( claim_active )) || return 0
-  if [[ "$1" == "have-pr" ]]; then
-    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_key" \
-      >>"$cycle_dir/claim.log" 2>&1 || true
-  else
-    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release "$claim_kind" "$selected_repo" "$claim_key" \
-      >>"$cycle_dir/claim.log" 2>&1 || true
+# release_claim have-pr|no-pr|have-pr-pending
+#
+# Releases the item-keyed claim (branch or file) per the have-pr/no-pr rule
+# above, then — unless told to hold off — releases the PR-keyed claim too.
+# "have-pr-pending" is the one caller (pr-raised, below) that must not: the
+# open PR now stands in for the item-keyed claim, but the PR-keyed exclusion
+# claim (issue #238) exists to keep a *peer* off this same PR, and the
+# Reviewer stage that runs next still writes to it. Dropping the PR-keyed
+# claim here reopened exactly the race issue #238 closed — poetic-2's
+# Reviewer was still pushing to PR #353 forty-three minutes after this call
+# released it, while ockham-2 claimed and force-pushed a rebase of the same
+# PR under a fresh review-feedback ref (issue #360). Every other caller
+# already runs at this cycle's true end (a stage failure, a reviewer
+# handback, a signal, or the terminal "ready"/void/blocked paths below), so
+# it is safe — and necessary — for them to drop both.
+release_claim() {  # release_claim have-pr|no-pr|have-pr-pending
+  if (( claim_active )); then
+    if [[ "$1" == "have-pr" || "$1" == "have-pr-pending" ]]; then
+      timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_key" \
+        >>"$cycle_dir/claim.log" 2>&1 || true
+    else
+      timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release "$claim_kind" "$selected_repo" "$claim_key" \
+        >>"$cycle_dir/claim.log" 2>&1 || true
+    fi
+    claim_active=0
   fi
-  # The PR-keyed claim is always a registry-only file claim, so "have-pr" and
-  # "no-pr" release it identically — the PR that "have-pr" is keeping is the
-  # item-keyed branch/file above, not this bookkeeping entry.
-  if [[ -n "$claim_pr_key" ]]; then
-    timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_pr_key" \
-      >>"$cycle_dir/claim.log" 2>&1 || true
-  fi
-  claim_active=0
+  [[ "$1" == "have-pr-pending" ]] && return 0
+  release_pr_claim
+}
+
+# The PR-keyed claim's own release, split out so it can be deferred past the
+# item-keyed claim's (issue #360) and still be reachable — idempotently, on
+# whichever path this cycle actually ends on — from every one of them.
+# Independent of claim_active by design (see above): a caller that already
+# released the item-keyed claim via "have-pr-pending" has claim_active=0 by
+# the time this runs, and must not skip the PR-keyed release on that account.
+# `cleanup` (the EXIT trap) calls it too, as the backstop for the one ending
+# no handler reaches — an unhandled errexit abort after `pr-raised` — which
+# is why the empty-key guard below must stay the first line: on every handled
+# path the trap's call finds claim_pr_key already cleared and does nothing.
+release_pr_claim() {
+  [[ -n "$claim_pr_key" ]] || return 0
+  timeout "$claim_release_timeout" "$SCRIPT_DIR/lib/claim.sh" release file "$selected_repo" "$claim_pr_key" \
+    >>"$cycle_dir/claim.log" 2>&1 || true
+  claim_pr_key=""
 }
 
 # The claim/working branch is derived here, deterministically, never by the
@@ -2877,6 +2909,20 @@ cleanup() {
   # A signal landing mid-cleanup must not re-enter the handler over a cycle
   # that is already writing its record (requirement 9c).
   trap '' TERM INT HUP
+  # The PR-keyed claim's backstop (issue #360). Every handled ending has
+  # already released it by the time this trap runs — the terminal handoff, a
+  # handback, a stage failure, a signal — and then this is a no-op on an
+  # empty claim_pr_key. What it catches is the one ending no handler sees:
+  # an unhandled errexit abort between `pr-raised` and the Reviewer's
+  # terminal path, which would otherwise strand `claims/<repo>/pr-<n>.json`
+  # until the gc's `claim_ttl_hours` — hours in which the PR this cycle
+  # abandoned mid-Reviewer, the very PR that just lost its Reviewer and most
+  # needs picking up, is invisible to every peer's finishing sources.
+  # Time-bounded like the signal handler's release and for the same reason:
+  # this trap carries `cycle-end`, the lock release and the clone deletion,
+  # and a release the network stalls must not cost the record.
+  claim_release_timeout=8
+  release_pr_claim
   if [[ -n "$clone_dir" && -d "$clone_dir" ]]; then
     rm -rf "$clone_dir"
   fi
@@ -4365,9 +4411,14 @@ while IFS= read -r slug; do
 done < <(jq -r '.[].slug' <<<"$all_repos_json")
 
 # Live claims count toward the cap too: a claim is work in flight that has
-# not yet surfaced as a PR (its registry entry is dropped the moment the PR
-# exists), and N nodes counting only PRs would collectively overshoot by the
-# work each other had claimed but not yet raised. Still approximate — two
+# not yet surfaced as a PR (its item-keyed registry entry is dropped the
+# moment the PR exists), and N nodes counting only PRs would collectively
+# overshoot by the work each other had claimed but not yet raised. `claim.sh
+# count` reports only the item-keyed entries for that reason: the PR-keyed
+# `pr-<n>` exclusion entry alongside them is held past its PR's own raising
+# (issue #360), and the PR it names is already in the `gh pr list` counts
+# above, so counting it here would double-count that PR for as long as the
+# claiming cycle's Reviewer stage runs. Still approximate — two
 # nodes can pass this check simultaneously — with a stated bound of
 # max_open_agent_prs + (nodes - 1), transient.
 claim_count=0
@@ -6235,9 +6286,13 @@ closing_keyword_finding=""
 
 if [[ -n "$impl_pr_url" ]]; then
   log_event "pr-raised" "$(jq -nc --arg u "$impl_pr_url" --arg r "$repo_slug" '{pr_url: $u, repo: $r}')"
-  # The open PR is now the visible claim; the registry entry has done its job
-  # (and back-pressure counts the PR from here on, not the claim).
-  release_claim have-pr
+  # The open PR is now the visible claim for the item-keyed entry; back-pressure
+  # counts the PR from here on, not that entry (lib/claim.sh count excludes the
+  # PR-keyed entry below from its own count for the same reason). The PR-keyed
+  # exclusion claim (issue #238) is deliberately *not* dropped here — the
+  # Reviewer stage below still has to write to this PR, and a peer must stay
+  # excluded from it until this cycle actually ends (issue #360).
+  release_claim have-pr-pending
 
   # Requirement 25a: `.github/workflows/closing-keyword.yml` guards this
   # repository alone — a workflow file protects the repository that ships
@@ -6517,6 +6572,10 @@ if [[ "$rev_status" == "ready" ]]; then
      + (if $w == "" then {} else {reviewers: ($w | split(","))} end)
      + (if $hr == "" or $hr == "skip" then {}
         else {human_review_requested: $hr, human_reviewer: $ha} end)')"
+  # The cycle's last write to this PR (issue #360) — the PR-keyed exclusion
+  # claim pr-raised left standing above is released only now, at the actual
+  # handoff, not back when the item-keyed claim was.
+  release_pr_claim
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —

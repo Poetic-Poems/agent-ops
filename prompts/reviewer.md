@@ -66,7 +66,11 @@ tech-debt, `agent/<item-ref>` otherwise) is entirely at your disposal —
 commit, amend, rebase onto the current `default_branch`, or force-push it
 as you judge best; nothing about its *contents* needs preserving for its
 own sake, but never rename or delete it — its name is the fleet-wide claim
-on this item. Do not touch any other branch.
+on this item. **Any force-push to it must use `git push --force-with-lease`,
+never a bare `--force`** — a peer working the same PR under a different item
+ref (issue #360's `pr-<n>` exclusion claim narrows this window but does not
+close it to zero) must have its own push refused, not silently overwritten.
+Do not touch any other branch.
 
 ## Long-running commands
 
@@ -149,9 +153,9 @@ your review:
    assertions, missed edge cases, lint/format failures, a missing
    `CHANGELOG.md` entry, a non-conforming commit message, an unresolved
    `TECH-DEBT.md` record, a stale reference to the just-moved
-   `default_branch`. Commit (or amend/rebase/force-push) as needed — this
-   branch is yours to shape. Record each fix, briefly, for your final
-   report.
+   `default_branch`. Commit (or amend/rebase/force-push — `--force-with-lease`
+   only, per "Where you're running" above) as needed — this branch is yours
+   to shape. Record each fix, briefly, for your final report.
 
    **Every `## Script findings` entry belongs here**, and some of them are
    not code at all — a missing closing keyword is a pull-request *body* edit
