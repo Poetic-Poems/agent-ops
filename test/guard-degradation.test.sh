@@ -89,8 +89,11 @@ eval "$unaccounted_items_src"
 eval "$coordinator_eligible_items_src"
 
 # log_event's own dependencies, the same fixtures test/verdict-corroboration.
-# test.sh and its siblings use.
+# test.sh and its siblings use — consumed by the eval'd log_event above,
+# which shellcheck cannot see into.
+# shellcheck disable=SC2034
 cycle_id="test-cycle"
+# shellcheck disable=SC2034
 node_name="test-node"
 log_file="$tmp_dir/log.jsonl"
 : > "$log_file"
@@ -156,7 +159,11 @@ cp "$tmp_dir/claim.sh" "$tmp_dir/lib/claim.sh"
 
 real_script_dir="$SCRIPT_DIR"
 SCRIPT_DIR="$tmp_dir"
+# cycle_dir and branch_prefix are consumed by gather_claimed above, out of
+# static-analysis reach.
+# shellcheck disable=SC2034
 cycle_dir="$tmp_dir"
+# shellcheck disable=SC2034
 branch_prefix="agent/"
 
 big_registry="$(jq -nc '[range(1300) | {item: ("TD-fill-" + (. | tostring)),
@@ -242,8 +249,12 @@ if [[ "$resume_block_src" != *"resume_epoch"* ]]; then
 fi
 
 run_resume_block() {  # run_resume_block <resume_at>
+  # resume_at is consumed, and resume_epoch assigned, by the eval'd block
+  # above (another case shellcheck's own reach does not extend into).
+  # shellcheck disable=SC2034
   resume_at="$1"
   eval "$resume_block_src"
+  # shellcheck disable=SC2154
   printf '%s' "$resume_epoch"
 }
 
