@@ -4888,7 +4888,9 @@ while IFS=$'\t' read -r _ slug default_branch; do
   fi
   dequeued="[]"
   if jq -e 'any(.[]; . == "dequeued")' <<<"$sources" >/dev/null 2>&1; then
-    dequeued="$(exclude_claimed_items "$(exclude_claimed_prs "$(gather_dequeued "$slug")" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+    dequeued_raw="$(gather_dequeued "$slug")"
+    emit_first_seen "$slug" dequeued "$dequeued_raw"
+    dequeued="$(exclude_claimed_items "$(exclude_claimed_prs "$dequeued_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
   register_hygiene="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then

@@ -5290,11 +5290,12 @@ runs unattended.
     as the dedup key `review_gate_degraded_since` matches the run by. A
     `first-seen` (TD-PPagop-26081405, issue #248 acceptance 4) is written by
     `emit_first_seen` (agent-cycle.sh) the first time any node's gather ever
-    reports a given `{repo, item}` pair, for each of the seven pre-fetched
+    reports a given `{repo, item}` pair, for each of the eight pre-fetched
     arrays requirement 3q names (`issues`, `findings` — split into its own
     `security`/`code-quality` `source`, since one gather call answers for
     both — `tech_debt`, `register_hygiene`, `review_feedback`,
-    `merge_conflicts`, `abandoned_drafts`), carrying `repo`, `item`, `source`
+    `merge_conflicts`, `dequeued`, `abandoned_drafts`), carrying `repo`,
+    `item`, `source`
     (the same label the eventual `selection` for that item carries),
     `basis: "poll"` (every current source re-reads its target every cycle; a
     future event-native source, stage 3 of issue #248 recorded in
@@ -5317,7 +5318,7 @@ runs unattended.
     and the blocked/void pass further down (3u), so an item claimed, blocked
     or voided the same cycle it first appears still gets one — those
     exclusions only ever narrow what the Co-Ordinator is shown, never what
-    this fleet has seen. Seven sources, not all eleven that produce
+    this fleet has seen. Eight sources, not all twelve that produce
     selections, and by construction rather than by oversight: the event
     exists only where a pre-fetched candidate array does, so the other four
     are outside it and their pickups land permanently in
@@ -8841,10 +8842,10 @@ What exists, and the requirements each part answers to:
     but never `first-seen` — most often an item that predates this
     instrumentation). `selection_only` is also where every pickup from the
     four sources requirement 33 leaves uncovered lands, and lands
-    permanently: `pickup_latency` describes the seven pre-fetched arrays that
+    permanently: `pickup_latency` describes the eight pre-fetched arrays that
     emit `first-seen`, not the fleet's whole intake, so a reader comparing
-    `median_seconds` against issue #248's own target is reading a
-    7-of-11-source figure by construction — `coverage` is what says so, and
+    `median_seconds` against issue #248's own target is reading an
+    8-of-12-source figure by construction — `coverage` is what says so, and
     requirement 33 is where the four are named.
     `cadence_bound_minutes` echoes `config.json`'s
     `schedule.cycle_interval_minutes` — the floor under every latency figure
