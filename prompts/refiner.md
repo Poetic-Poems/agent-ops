@@ -70,9 +70,16 @@ heading, the Script gives you one JSON object:
 ```
 
 - `source` and `item` are exactly what the rest of the pipeline knows this item
-  as — for an issue, the bare issue number; for a finding, review-feedback
-  round, merge-conflict or register-hygiene entry, the gatherer's own `ref`.
-  Use them verbatim in your verdict.
+  as — for an issue, the bare issue number; for **every** other source, that
+  source's gatherer's own `ref`, whatever shape it takes
+  (`dependabot-alert-42`, `pr-57-review-4718691960`,
+  `pr-80-abandoned-1a2b3c4d5e6f`, `pr-57-conflict-1a2b3c4d5e6f`,
+  `register-hygiene-413128de0d60`, `TD-PPagop-26080801`,
+  `review-2026-08-10-R-03`, a plan task's own id — an illustration, not a
+  closed list; new sources arrive here without this prompt changing). Use them
+  verbatim in your verdict: never re-derive, re-shape or prettify an `item`,
+  however unfamiliar its source, because the ref is what the readers that
+  later resolve your block match on.
 - `entry` is the gatherer's own object for this item, **verbatim** — the same
   data a Co-Ordinator would see for it. For an `issues` item that is the whole
   thread: `body` and every comment, oldest first. Read the *whole* thread

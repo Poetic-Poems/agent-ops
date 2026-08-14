@@ -568,11 +568,11 @@ refiner_policy_value() {
 # refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON
 # Print, as a JSON array, every item from this cycle's pre-fetched source
 # arrays — `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-# `register_hygiene`, `issues`, `tech_debt`, the same per-repo arrays
-# requirement 3 assembles for the Co-Ordinator — that the Refiner may spend an
-# engagement on: its source's policy is not `exempt` (requirement 39a), it
-# carries no refinement yet (REFINEMENTS_JSON, requirement 3h), and it is not
-# already blocked, void, or held by an ordinary implementation claim.
+# `register_hygiene`, `issues`, `tech_debt`, `project_review`,
+# `implementation_plan` — that the Refiner may spend an engagement on: its
+# source's policy is not `exempt` (requirement 39a), it carries no refinement
+# yet (REFINEMENTS_JSON, requirement 3h), and it is not already blocked,
+# void, or held by an ordinary implementation claim.
 #
 # Each entry is `{repo, source, item, entry}` — `entry` is the gatherer's own
 # object verbatim (an issue's full thread, a finding's title and severity, a
@@ -580,11 +580,14 @@ refiner_policy_value() {
 # specification without a second fetch, the same reason the Co-Ordinator is
 # handed it pre-fetched rather than told to query it.
 #
-# `project-review` and `implementation-plan` items are never candidates here,
-# whatever their policy says: the Script pre-fetches neither as structured
-# data, so REPOS_JSON has nothing to offer the Refiner for either. Setting a
-# policy for one of those two still shapes the Co-Ordinator's own ranking; it
-# just finds no engagement here to act on it (TD-PPagop-26081307).
+# The first seven arrays are the same per-repo arrays requirement 3 assembles
+# for the Co-Ordinator's own `ordered_repos_json`. `project_review` and
+# `implementation_plan` are not: the Co-Ordinator still reads `reviews/…` and
+# the plan document live (prompts/coordinator.md), so those two arrays exist
+# only in the Refiner-only copy of the repos array `agent-cycle.sh` builds
+# for this call (`refiner_repos_json`), narrower than the tech-debt-style
+# pre-fetch and never folded into the Co-Ordinator's own input
+# (TD-PPagop-26081307).
 refiner_candidate_items() {
   local repos="${1:-[]}" policy="${2:-{\}}" refinements="${3:-{\}}" \
         blocked="${4:-[]}" void="${5:-[]}" claimed="${6:-[]}"
@@ -607,7 +610,8 @@ refiner_candidate_items() {
       | ( ($r.findings // [])[]?, ($r.review_feedback // [])[]?,
           ($r.abandoned_drafts // [])[]?, ($r.merge_conflicts // [])[]?,
           ($r.register_hygiene // [])[]?, ($r.issues // [])[]?,
-          ($r.tech_debt // [])[]? )
+          ($r.tech_debt // [])[]?, ($r.project_review // [])[]?,
+          ($r.implementation_plan // [])[]? )
       | . as $e
       | ($e.source // "") as $source
       | ($e.ref // "" | tostring) as $item

@@ -76,6 +76,7 @@ on:
     branches: [main]
   pull_request:
     branches: [main]
+  merge_group:
   workflow_dispatch:
 
 permissions:
@@ -118,17 +119,21 @@ jobs:
         id: classify
         shell: bash
         env:
-          # A pull request is its base branch against its head; a push to
-          # `main` is what that push added. `workflow_dispatch` has neither,
-          # and falls through to the build below.
-          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
-          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          # A pull request is its base branch against its head; a merge group
+          # is the queued candidate's base and head as the queue computed
+          # them (`github.event.pull_request` has no payload on this event); a
+          # push to `main` is what that push added. `workflow_dispatch` has
+          # none of these, and falls through to the build below.
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event_name == 'merge_group' && github.event.merge_group.base_sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.event_name == 'merge_group' && github.event.merge_group.head_sha || github.sha }}
         run: |
           # Three-dot on both events. On a pull request it asks what the branch
           # did and not what `main` did meanwhile, which is the difference
           # between classifying this change and classifying someone else's. On
-          # a push to `main` — which the ruleset keeps linear — the merge base
-          # is the previous tip, so it degenerates to the plain range.
+          # a merge group it asks the same question of the queued candidate
+          # against the branch it will land on. On a push to `main` — which
+          # the ruleset keeps linear — the merge base is the previous tip, so
+          # it degenerates to the plain range.
           docs_only=false
           if [[ -z "$BASE_SHA" || "$BASE_SHA" =~ ^0+$ ]]; then
             echo "no base commit to compare against — building"

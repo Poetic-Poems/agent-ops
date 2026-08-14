@@ -1891,6 +1891,46 @@ gather_tech_debt() {
   fi
 }
 
+# Pre-fetch the most recent weekly review's recommendations, for the Refiner
+# only (requirement 3y; TD-PPagop-26081307) — never folded into
+# `ordered_repos_json`, the Co-Ordinator's own input, which still reads
+# `reviews/…` live (prompts/coordinator.md's "Project-review
+# recommendations"). Called only for a repo whose `refinement_policy` for
+# `project-review` is not exempt, the same "pay nothing unless it's wanted"
+# rule tech_debt's own pre-fetch already follows for its `sources` gate.
+gather_project_review_candidates() {
+  local slug="$1" branch="$2" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-project-review.sh" "$slug" "$branch" \
+        2>"$cycle_dir/project-review-candidates-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/project-review-candidates-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
+# Pre-fetch the open tasks in a repo's implementation-plan document, for the
+# Refiner only (requirement 3y; TD-PPagop-26081307) — same "Refiner-only,
+# never folded into ordered_repos_json" reasoning as
+# gather_project_review_candidates above. Called only for a repo whose
+# `refinement_policy` for `implementation-plan` is not exempt and that
+# configures an `implementation_plan_path` — a repo with neither pays
+# nothing here.
+gather_implementation_plan_candidates() {
+  local slug="$1" branch="$2" path="$3" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-implementation-plan.sh" "$slug" "$branch" "$path" \
+        2>"$cycle_dir/implementation-plan-candidates-$safe.err" || true)"
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '%s\n' "$out" > "$cycle_dir/implementation-plan-candidates-$safe.json"
+    printf '%s' "$out"
+  else
+    printf '[]'
+  fi
+}
+
 # Pre-fetch the voids a human has asked, on GitHub, to be reopened
 # (requirement 34f). Unlike every other gatherer this is not a work source: it
 # produces no candidates, it edits the skip-list the Co-Ordinator is about to be
@@ -5378,13 +5418,57 @@ fi
 # cycle and an engagement. Before it, an early exit could not have one.
 enabler_allowed=1
 
+# --- Refiner-only pre-fetch: project-review and implementation-plan
+# (requirement 3y; TD-PPagop-26081307) ---
+# `ordered_repos_json` — the Co-Ordinator's own input — never gains these two
+# arrays: the Co-Ordinator keeps reading `reviews/…` and the plan document
+# live (prompts/coordinator.md's "Project-review recommendations" and
+# "implementation-plan" bullets). `refiner_repos_json` is a separate copy,
+# augmented per repo only where the read is worth paying for: this installation
+# has a Refiner at all (`refiner_model` — `maybe_run_refiner`'s own first guard,
+# so with it empty every read here buys an array no engagement can ever spend),
+# the repo's own `sources` lists the source *and* `refinement_policy` for it is
+# not exempt (nothing would ever read an exempt source's candidates), and for
+# `implementation-plan`, only where `implementation_plan_path` is configured
+# (the same startup guard that requires it already refused to run otherwise).
+refiner_repos_json="$ordered_repos_json"
+if [[ -n "$refiner_model" ]]; then
+  while IFS=$'\t' read -r rp_slug rp_branch; do
+    [[ -n "$rp_slug" ]] || continue
+    rp_entry="$(jq -c --arg s "$rp_slug" 'map(select(.slug == $s)) | .[0] // {}' \
+      <<<"$ordered_repos_json" 2>/dev/null || echo '{}')"
+    rp_sources="$(jq -c '.sources // []' <<<"$rp_entry" 2>/dev/null || echo '[]')"
+    rp_pr='[]'
+    if jq -e 'any(.[]; . == "project-review")' <<<"$rp_sources" >/dev/null 2>&1 \
+       && [[ "$(refiner_policy_value "project-review" "$refinement_policy_json")" != "exempt" ]]; then
+      rp_pr="$(gather_project_review_candidates "$rp_slug" "$rp_branch")"
+    fi
+    rp_ip='[]'
+    rp_path="$(jq -r '.implementation_plan_path // ""' <<<"$rp_entry" 2>/dev/null || true)"
+    if jq -e 'any(.[]; . == "implementation-plan")' <<<"$rp_sources" >/dev/null 2>&1 \
+       && [[ -n "$rp_path" ]] \
+       && [[ "$(refiner_policy_value "implementation-plan" "$refinement_policy_json")" != "exempt" ]]; then
+      rp_ip="$(gather_implementation_plan_candidates "$rp_slug" "$rp_branch" "$rp_path")"
+    fi
+    if [[ "$rp_pr" != "[]" || "$rp_ip" != "[]" ]]; then
+      refiner_repos_json="$(jq -c --arg s "$rp_slug" --argjson pr "$rp_pr" --argjson ip "$rp_ip" \
+        'map(if .slug == $s then . + {project_review: $pr, implementation_plan: $ip} else . end)' \
+        <<<"$refiner_repos_json" 2>/dev/null || printf '%s' "$refiner_repos_json")"
+    fi
+  done < <(jq -r '.[] | .slug + "\t" + .default_branch' <<<"$ordered_repos_json" 2>/dev/null || true)
+fi
+
 # --- The Refiner's candidate set (requirement 39a) ---
-# Every pre-fetched item this cycle's `ordered_repos_json` carries whose source
+# Every pre-fetched item this cycle's `refiner_repos_json` carries whose source
 # is not `refinement_policy`-exempt, is not already refined, blocked, void, or
 # claimed. Computed from the same extracts the Enabler's eligible set just
 # used, so a Refiner engagement and an Enabler engagement in the same cycle
-# never disagree about what is already spoken for.
-refiner_candidates_json="$(refiner_candidate_items "$ordered_repos_json" \
+# never disagree about what is already spoken for. `refiner_repos_json`
+# rather than `ordered_repos_json` only because it carries the two arrays
+# above the Co-Ordinator's own input never gains — every other field is the
+# same, so nothing else about the candidate rule below needs to know a
+# separate array exists.
+refiner_candidates_json="$(refiner_candidate_items "$refiner_repos_json" \
   "$refinement_policy_json" "$refinements_json" "$blocked_json" "$void_json" "$claimed_json")"
 # Same reasoning as `enabler_allowed` above, for the same kind of exit-trap
 # engagement.
