@@ -59,13 +59,14 @@ fi
 
 run_entry_build() {  # run_entry_build <slug> <default_branch> <sources-json> <ipp>
   #                     <findings> <review_feedback> <abandoned_drafts>
-  #                     <merge_conflicts> <register_hygiene> <issues> <tech_debt>
+  #                     <merge_conflicts> <dequeued> <register_hygiene> <issues>
+  #                     <tech_debt>
   # Every one of these is consumed only by the eval'd entry_build_block,
   # invisible to shellcheck, including the `entry` it assigns.
   # shellcheck disable=SC2034
   ( slug="$1" default_branch="$2" sources="$3" implementation_plan_path="$4" \
     findings="$5" review_feedback="$6" abandoned_drafts="$7" merge_conflicts="$8" \
-    register_hygiene="$9" issues="${10}" tech_debt="${11}"
+    dequeued="$9" register_hygiene="${10}" issues="${11}" tech_debt="${12}"
     eval "$entry_build_block"
     # shellcheck disable=SC2154
     printf '%s' "$entry" )
@@ -77,6 +78,7 @@ out="$(run_entry_build "o/r" "main" '["tech-debt"]' "" \
   '[{"source":"review-feedback","ref":"pr-1-review-1"}]' \
   '[{"source":"abandoned-drafts","ref":"pr-2-abandoned-aa"}]' \
   '[{"source":"merge-conflicts","ref":"pr-3-conflict-bb"}]' \
+  '[{"source":"dequeued","ref":"pr-4-dequeued-dd"}]' \
   '[{"source":"register-hygiene","ref":"register-hygiene-cc"}]' \
   '[{"source":"issues","ref":"11"}]' \
   '[{"source":"tech-debt","ref":"TD1"}]')"
@@ -88,6 +90,7 @@ assert_eq "findings carries through" "dependabot-alert-1" "$(jq -r '.findings[0]
 assert_eq "review_feedback carries through" "pr-1-review-1" "$(jq -r '.review_feedback[0].ref' <<<"$out")"
 assert_eq "abandoned_drafts carries through" "pr-2-abandoned-aa" "$(jq -r '.abandoned_drafts[0].ref' <<<"$out")"
 assert_eq "merge_conflicts carries through" "pr-3-conflict-bb" "$(jq -r '.merge_conflicts[0].ref' <<<"$out")"
+assert_eq "dequeued carries through" "pr-4-dequeued-dd" "$(jq -r '.dequeued[0].ref' <<<"$out")"
 assert_eq "register_hygiene carries through" "register-hygiene-cc" "$(jq -r '.register_hygiene[0].ref' <<<"$out")"
 assert_eq "issues carries through" "11" "$(jq -r '.issues[0].ref' <<<"$out")"
 assert_eq "tech_debt carries through" "TD1" "$(jq -r '.tech_debt[0].ref' <<<"$out")"
@@ -96,13 +99,13 @@ assert_eq "no implementation_plan_path key when the source isn't configured" "fa
   "$(jq 'has("implementation_plan_path")' <<<"$out")"
 
 out_ipp="$(run_entry_build "o/r" "main" '["implementation-plan"]' "W10-breach-handling" \
-  '[]' '[]' '[]' '[]' '[]' '[]' '[]')"
+  '[]' '[]' '[]' '[]' '[]' '[]' '[]' '[]')"
 assert_eq "implementation_plan_path is added when the source is configured" "W10-breach-handling" \
   "$(jq -r '.implementation_plan_path' <<<"$out_ipp")"
 
 # --- The argv cap (requirement 4g, TD-PPagop-26081406) ---------------------
 # One band alone (issues, carrying a whole pre-fetched thread) pushed past
-# the cap; the other six stay small, proving the stdin delivery survives
+# the cap; the other seven stay small, proving the stdin delivery survives
 # regardless of which band is the oversized one.
 oversized_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
 big_issues="$(printf '[{"source": "issues", "ref": "99", "body": "%s"}]' "$oversized_body")"
@@ -110,7 +113,7 @@ assert_eq "the oversized issues-band fixture really is past MAX_ARG_STRLEN" "1" 
   "$(( ${#big_issues} > 131072 ))"
 
 out_big="$(run_entry_build "o/r" "main" '["issues"]' "" \
-  '[]' '[]' '[]' '[]' '[]' "$big_issues" '[]')"
+  '[]' '[]' '[]' '[]' '[]' '[]' "$big_issues" '[]')"
 assert_eq "an oversized issues band still produces the entry" "o/r" "$(jq -r '.slug' <<<"$out_big")"
 # Bash string matching, not grep -F with the oversized string as an
 # argument: that would hit the very argv cap this section exists to prove
