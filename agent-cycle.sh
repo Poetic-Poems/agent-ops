@@ -587,8 +587,49 @@ log_event() {
 # itself is never touched, only reported. Kept to one line per call site on
 # purpose — 67 near-identical `jq -nc '{...}'` wrappers would be their own
 # noise.
+#
+# The report is bounded on both axes, because its destination is the
+# fleet-replicated union log — the unbounded input requirements 4c and 4g
+# exist because of. A guard that fails *persistently* (a `date` parse of a
+# field that is simply always absent, a `gh` outage across the repo loop)
+# would otherwise write one event per occurrence per cycle per node: the
+# first GUARD_WARN_SITE_MAX occurrences of each site label are reported, the
+# last of them marked `final` so a reader knows the site may have kept
+# failing unreported, and `detail` — a failed command's own output, which for
+# a `gh api` body has no bound at all — is capped to its leading 500 bytes,
+# where the cause is. A site label carrying a loop variable
+# (`claim-count:<slug>`) still reports per slug; the cap is on repeats of one
+# label, not on distinct sites. The tally is a shell variable, so a guard
+# raised inside a command substitution counts only within it — those sites
+# report unbounded within one cycle as before, which is the conservative
+# direction to fail in for a cap whose only job is to stop noise.
+#
+# On a management command the report goes to stderr instead. --status runs
+# before the lock and deliberately creates no cycle directory (see the
+# comment above `mkdir -p "$cycle_dir"`) so that a read-only query leaves
+# nothing behind; its `cycle_id` names a cycle that never ran, and stamping
+# the fleet's shared log with one would be a record of a failed read during
+# somebody's query, not of pipeline state. --disable/--enable do write to the
+# log from this path, but they record a state change a human asked for.
+# Nothing is lost: every fleet-state read a management command guards is read
+# again by real cycles, which report it under a cycle id that resolves — and
+# stderr is where the human who typed the command is already looking.
 guard_warn() {  # guard_warn <site-label> <captured-stdout+stderr>
-  log_event "guard-degraded" "$(jq -nc --arg s "$1" --arg d "$2" '{site: $s, detail: $d}')"
+  local max="${GUARD_WARN_SITE_MAX:-3}" n detail="${2:0:500}"
+  # `declare -p`, not `${guard_warn_counts+x}`: the latter tests element 0, so
+  # an associative array that exists but is still empty reads as unset and the
+  # tally would reset on every call.
+  declare -p guard_warn_counts >/dev/null 2>&1 || declare -gA guard_warn_counts=()
+  n=$(( ${guard_warn_counts["$1"]:-0} + 1 ))
+  guard_warn_counts["$1"]=$n
+  (( n <= max )) || return 0
+  if [[ -n "${MANAGE_ACTION:-}" ]]; then
+    printf 'agent-cycle: guard-degraded: %s: %s\n' "$1" "$detail" >&2
+    return 0
+  fi
+  log_event "guard-degraded" "$(jq -nc --arg s "$1" --arg d "$detail" \
+    --argjson n "$n" --argjson m "$max" \
+    '{site: $s, detail: $d, n: $n} + (if $n >= $m then {final: true} else {} end)')"
 }
 
 # --- Management commands (--disable / --enable / --status) ---
@@ -952,9 +993,11 @@ exclude_claimed_prs() {  # <candidates-json> <claimed-pr-numbers-json>
   local candidates="$1" claimed_prs="${2:-[]}" docs
   jq -e 'type == "array"' <<<"$claimed_prs" >/dev/null 2>&1 || claimed_prs='[]'
   docs="$(printf '%s\n' "$candidates" "$claimed_prs")"
+  # TD-PPagop-26081407: the `|| printf` below passes test 2 — it falls back to
+  # the pre-filter $candidates, a value the caller already accepted, not a
+  # fabricated empty.
   jq -nc '
     input as $candidates | input as $claimed
-  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
     | [ $candidates[] | select(((.pr_number // null) as $p | $p == null or ($claimed | index($p)) == null))]' \
     <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -979,9 +1022,11 @@ exclude_claimed_items() {  # <candidates-json> <claimed-item-refs-json>
   local candidates="$1" claimed_items="${2:-[]}" docs
   jq -e 'type == "array"' <<<"$claimed_items" >/dev/null 2>&1 || claimed_items='[]'
   docs="$(printf '%s\n' "$candidates" "$claimed_items")"
+  # TD-PPagop-26081407: the `|| printf` below passes test 2 — it falls back to
+  # the pre-filter $candidates, a value the caller already accepted, not a
+  # fabricated empty.
   jq -nc '
     input as $candidates | input as $claimed
-  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
     | [ $candidates[] | select(((.ref // null) as $r | $r == null or ($claimed | index($r)) == null))]' \
     <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -1020,6 +1065,9 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
   jq -e 'type == "array"' <<<"$blocked" >/dev/null 2>&1 || blocked='[]'
   jq -e 'type == "array"' <<<"$void" >/dev/null 2>&1 || void='[]'
   docs="$(printf '%s\n' "$candidates" "$blocked" "$void")"
+  # TD-PPagop-26081407: the `|| printf` below passes test 2 — it falls back to
+  # the pre-filter $candidates, a value the caller already accepted, not a
+  # fabricated empty.
   jq -nc --arg repo "$repo" '
     input as $candidates | input as $blocked | input as $void
     | [ $candidates[] | select(((.ref // null) as $r
@@ -1027,7 +1075,6 @@ exclude_blocked_or_void_items() {  # <candidates-json> <repo> <blocked-json> <vo
                        and ($blocked | any(((.item // "") | tostring) == $r
                                            and ((.repo // "") == "" or (.repo // "") == $repo))) == false
                        and ($void | any(((.item // "") | tostring) == $r
-  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
                                         and ((.repo // "") == "" or (.repo // "") == $repo))) == false)) ]
   ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -1093,6 +1140,9 @@ exclude_blocked_or_void_issues() {  # <candidates-json> <repo> <blocked-json> <v
   jq -e 'type == "array"' <<<"$blocked" >/dev/null 2>&1 || blocked='[]'
   jq -e 'type == "array"' <<<"$void" >/dev/null 2>&1 || void='[]'
   docs="$(printf '%s\n' "$candidates" "$blocked" "$void")"
+  # TD-PPagop-26081407: the `|| printf` below passes test 2 — it falls back to
+  # the pre-filter $candidates, a value the caller already accepted, not a
+  # fabricated empty.
   jq -nc --arg repo "$repo" '
     def in_repo($e): ($e.repo // "") == "" or ($e.repo // "") == $repo;
     input as $candidates | input as $blocked | input as $void
@@ -1108,7 +1158,6 @@ exclude_blocked_or_void_issues() {  # <candidates-json> <repo> <blocked-json> <v
               | (($c.updated_at // "") > $threshold)
             )
           )
-  # TD-PPagop-26081407: passes test 2 -- falls back to the pre-filter $candidates, a value the caller already accepted, not a fabricated empty
         | $c) ]
   ' <<<"$docs" 2>/dev/null || printf '%s' "$candidates"
 }
@@ -4585,10 +4634,26 @@ while IFS= read -r slug; do
   # TD-PPagop-26081407: gh api can fail (rate limit, auth, network -- test 1);
   # "main" is a plausible real default branch and 1970-01-01 sorts this repo
   # oldest without saying why (test 2 for both).
+  #
+  # The shape check after each capture is the sibling of the `claim.sh count`
+  # site's `=~ ^[0-9]+$` above, and it closes what `2>&1` opens: swapping
+  # `2>/dev/null` for `2>&1` is what makes `detail` useful on failure, but it
+  # also merges a *successful* command's stderr into the value. These two are
+  # the only converted sites where that matters — every other one feeds jq,
+  # date or wc, while `$default_branch` is interpolated straight into the next
+  # API path and `$commit_ts` into `.repo_ts`'s ordering sort, both
+  # unvalidated. gh 2.97.0 writes nothing to stderr on a successful `api
+  # --jq`, so this is a future-proofing check, not a live defect; it reports
+  # like any other guard rather than silently substituting, which is the whole
+  # point of this item.
   default_branch="$(gh api "repos/$slug" --jq '.default_branch' 2>&1)" \
     || { guard_warn "repo-order:default_branch:$slug" "$default_branch"; default_branch="main"; }
+  [[ "$default_branch" =~ ^[A-Za-z0-9._/-]+$ ]] \
+    || { guard_warn "repo-order:default_branch-malformed:$slug" "$default_branch"; default_branch="main"; }
   commit_ts="$(gh api "repos/$slug/commits/$default_branch" --jq '.commit.committer.date' 2>&1)" \
     || { guard_warn "repo-order:commit_ts:$slug" "$commit_ts"; commit_ts="1970-01-01T00:00:00Z"; }
+  [[ "$commit_ts" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]] \
+    || { guard_warn "repo-order:commit_ts-malformed:$slug" "$commit_ts"; commit_ts="1970-01-01T00:00:00Z"; }
   printf '%s\t%s\t%s\n' "$commit_ts" "$slug" "$default_branch" >> "$cycle_dir/.repo_ts"
 done < <(jq -r '.[].slug' <<<"$repos_json")
 

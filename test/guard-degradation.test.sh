@@ -116,6 +116,55 @@ assert_eq "…carrying the captured failure text as detail" "jq: error (at <stdi
   "$(jq -r '.detail' "$log_file")"
 assert_eq "…stamped with this cycle's id" "test-cycle" "$(jq -r '.cycle' "$log_file")"
 
+# --- The report's own bounds ------------------------------------------------
+# guard-degraded lands on the fleet-replicated union log, the unbounded input
+# requirements 4c and 4g exist because of, and a guard that fails
+# *persistently* — a date parse of a field that is simply always absent, a gh
+# outage across the repo loop — fires once per occurrence per cycle per node.
+# Both axes are capped: repeats of one site label, and the size of a `detail`
+# that for a gh api body has no bound of its own.
+
+reset_guard_counts() { unset guard_warn_counts; }
+
+: > "$log_file"; reset_guard_counts
+for _ in 1 2 3 4 5 6 7; do guard_warn "loop:site" "keeps failing"; done
+assert_eq "a persistently failing site is capped at GUARD_WARN_SITE_MAX reports" \
+  "3" "$(last_guard_events | jq -s 'length')"
+assert_eq "…numbered so a reader can see they are repeats" "1 2 3" \
+  "$(last_guard_events | jq -rs 'map(.n | tostring) | join(" ")')"
+assert_eq "…with only the last marked final, so the silence after it is legible" \
+  "3" "$(last_guard_events | jq -rs 'map(select(.final == true) | .n) | join(" ")')"
+
+: > "$log_file"; reset_guard_counts
+guard_warn "site:a" "broke"; guard_warn "site:b" "broke"; guard_warn "site:c" "broke"
+guard_warn "site:a" "broke"; guard_warn "site:b" "broke"
+assert_eq "the cap is per label, so a slug-keyed site still reports per slug" \
+  "5" "$(last_guard_events | jq -s 'length')"
+
+: > "$log_file"; reset_guard_counts
+guard_warn "big:site" "$(head -c 4000 /dev/zero | tr '\0' 'x')"
+assert_eq "an unbounded detail is capped to its leading 500 bytes" \
+  "500" "$(last_guard_events | jq -r '.detail | length')"
+
+# --- The management path reports to stderr, not to the shared log -----------
+# --status runs before the lock and deliberately creates no cycle directory,
+# so its cycle_id names a cycle that never ran; stamping the fleet's log with
+# one would record a failed read during somebody's read-only query.
+
+: > "$log_file"; reset_guard_counts
+manage_stderr="$(MANAGE_ACTION=status guard_warn "limit_status_report:rec_class" "jq: parse error" 2>&1 >/dev/null)"
+assert_eq "a management command writes no event to the union log" \
+  "0" "$(last_guard_events | jq -s 'length')"
+assert_eq "…and says so on stderr instead, naming the site" \
+  "agent-cycle: guard-degraded: limit_status_report:rec_class: jq: parse error" "$manage_stderr"
+
+: > "$log_file"; reset_guard_counts
+guard_warn "limit_status_report:rec_class" "jq: parse error"
+assert_eq "…while a real cycle still logs the same site" \
+  "1" "$(last_guard_events | jq -s 'length')"
+
+reset_guard_counts
+
 # =================================================================================
 # stage_budget_overrides — CONFIG_FILE read off disk (test 1: external;
 # test 2: {} is what a healthy unconfigured file also answers)
