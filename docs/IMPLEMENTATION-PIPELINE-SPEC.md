@@ -6874,7 +6874,9 @@ runs unattended.
       requirement 31b's re-request (`confirm_review_requested`);
     - where the pull request is `APPROVED`, `MERGEABLE`, every check
       genuinely green (an empty `statusCheckRollup` is excluded explicitly —
-      that is CI not having run, not CI having passed), and has been since
+      that is CI not having run, not CI having passed — while a `SKIPPED`
+      `CheckRun`, which every target repository carries on every pull
+      request, is accepted alongside `SUCCESS`/`NEUTRAL`), and has been since
       before `human_nudge_idle_hours` ago, posts one nudge comment naming
       `enabler_assignee` — unless one is already there, which a
       `<!-- agent-ops:human-nudge -->` marker comment makes idempotent rather
@@ -10164,7 +10166,12 @@ pull request, run the ones the change touches and any it could regress.
     request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
-    check rollup; `human_nudge_idle_hours: 0` disables the nudge while leaving
+    check rollup; a rollup whose only non-`SUCCESS` entries are `SKIPPED` —
+    the shape every target repository's pull requests carry, a `CheckRun`
+    gated off by a `paths:` filter or an `if:`, distinct from `StatusContext`
+    and so read by `.conclusion` alone, never `.state` — is nudged all the
+    same, while a `CANCELLED` or still-`IN_PROGRESS` (`conclusion` null)
+    entry still blocks it; `human_nudge_idle_hours: 0` disables the nudge while leaving
     the review-request self-heal unconditional; and a listing, a view, or a
     reviews read that fails is a `warning`, never silence. A pull request
     whose only legal candidate is its own author is a `warning` naming

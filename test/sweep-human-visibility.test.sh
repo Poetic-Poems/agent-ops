@@ -215,6 +215,15 @@ idle_view() {
   local rollup='[]'
   [[ "$green" == "yes" ]] && rollup='[{"conclusion":"SUCCESS"}]'
   [[ "$green" == "mixed" ]] && rollup='[{"conclusion":"SUCCESS"},{"conclusion":"FAILURE"}]'
+  # A `SKIPPED` `CheckRun` (a job gated off by a `paths:` filter or an `if:`,
+  # as every target repository carries on every pull request) has no `.state`
+  # field at all — `CheckRun` and `StatusContext` are distinct GitHub shapes —
+  # so this fixture omits it, the same as the real rollup would.
+  [[ "$green" == "skipped" ]] && rollup='[{"conclusion":"SUCCESS"},{"conclusion":"SKIPPED"}]'
+  [[ "$green" == "cancelled" ]] && rollup='[{"conclusion":"SUCCESS"},{"conclusion":"CANCELLED"}]'
+  # A `CheckRun` still running reports `status`, not `conclusion` — GitHub
+  # leaves `conclusion` null until the run completes.
+  [[ "$green" == "in_progress" ]] && rollup='[{"conclusion":"SUCCESS"},{"status":"IN_PROGRESS","conclusion":null}]'
   local extra=() comments='[]'
   [[ "$nudged" == "yes" ]] && extra+=('{"body":"reminder\n\n<!-- agent-ops:human-nudge -->"}')
   if [[ -n "$dq_at" ]]; then
@@ -443,6 +452,31 @@ printf 'Warwick-Allen\n' > "$tmp_dir/pending"
 idle_view APPROVED MERGEABLE "" "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an empty rollup (no checks run yet) is never nudged" "" "$out"
+
+# --- A SKIPPED CheckRun is not a failure: it is what a paths:-filtered or ------
+# --- if:-gated job reports, on every pull request in every target repo (#384) --
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE skipped "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "a rollup whose only non-SUCCESS entry is SKIPPED is nudged" \
+  "nudged" "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
+
+# --- A real failure state must still block the nudge, SKIPPED notwithstanding --
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE cancelled "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "a CANCELLED entry is never nudged" "" "$out"
+
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE in_progress "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an IN_PROGRESS entry is never nudged" "" "$out"
 
 # --- Merge-queue awareness (requirement 38f, agent-ops#374) ---------------------
 

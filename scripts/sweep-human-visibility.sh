@@ -357,10 +357,16 @@ $mq_marker"
   [[ "$mq_queued" != "true" ]] || continue
   # Vacuously "green" on an empty rollup is exactly the wrong answer — that is
   # CI not having run at all, not CI having passed — so an empty rollup is
-  # excluded explicitly rather than trusted through `all`.
+  # excluded explicitly rather than trusted through `all`. A `SKIPPED`
+  # `CheckRun` (a job gated off by a `paths:` filter or an `if:`) is not a
+  # failure either — every target repository carries at least one on every
+  # pull request (agent-ops#384) — so it is accepted alongside `SUCCESS` and
+  # `NEUTRAL`. `CheckRun` has no `.state` field, so the `.state == "SUCCESS"`
+  # arm is `StatusContext`'s alone; `CheckRun` is judged by `.conclusion` only.
   jq -e '(.statusCheckRollup // []) as $c
          | ($c | length) > 0
-         and ($c | all(.conclusion == "SUCCESS" or .conclusion == "NEUTRAL" or .state == "SUCCESS"))' \
+         and ($c | all(.conclusion == "SUCCESS" or .conclusion == "NEUTRAL"
+                       or .conclusion == "SKIPPED" or .state == "SUCCESS"))' \
     <<<"$pr_json" >/dev/null 2>&1 || continue
   jq -e '(.comments // []) | any((.body // "") | test("agent-ops:human-nudge"))' \
     <<<"$pr_json" >/dev/null 2>&1 && continue
