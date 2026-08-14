@@ -7118,10 +7118,14 @@ runs unattended.
     line meanwhile.
 
     The Script logs what the sweep did under the sweep's own event names —
-    `human-review-requested` and `human-nudged`, each
-    carrying the `repo` swept and the `pr_url` acted on — exactly as
-    requirement 17b's sweep logs `orphan-branch-recovered` /
-    `orphan-branch-released`, and deliberately not as `pr-ready`. A sweep
+    `human-review-requested`, `human-nudged` and `human-dequeue-notice`
+    (requirement 38f), each carrying the `repo` swept and the `pr_url` acted
+    on — exactly as requirement 17b's sweep logs `orphan-branch-recovered` /
+    `orphan-branch-released`, and deliberately not as `pr-ready`. The idle
+    nudge and the dequeue notice are logged under distinct event names rather
+    than sharing one, so requirement 38e's reduction can tell which of the
+    two actually resolved a given pull request's warning rather than reading
+    either as proof of the other. A sweep
     action is not a handoff: the Publisher's outcome ladder
     (`docs/DASHBOARD-SPEC.md`) reads a `pr-ready` anywhere in a cycle as "this
     cycle got a pull request to ready" and ranks it above every other reading,
@@ -7157,12 +7161,26 @@ runs unattended.
     - `lib/human-visibility-hygiene.sh`'s `human_visibility_violations` reduces
       the log union (`union_log`) to one entry per identity — a pull request's
       `pr_url` where the warning named one, the bare `repo` for a listing
-      failure that named none — keeping only the latest event for each,
-      exactly as `blocked_items`/`void_items` (`lib/cycle-state.sh`) keep the
-      latest attempt-failed/item-void per item. A later
-      `human-review-requested` or `human-nudged` event for the same identity —
-      the sweep succeeding next time — clears it; an unrelated warning never
-      does.
+      failure that named none — replaying each identity's events in order and
+      keeping one standing violation, exactly as `blocked_items`/`void_items`
+      (`lib/cycle-state.sh`) keep the latest attempt-failed/item-void per
+      item: a `warning` always becomes the new standing violation, regardless
+      of what preceded it. A later `human-review-requested`, `human-nudged` or
+      `human-dequeue-notice` event for the same identity — the sweep
+      succeeding next time — only clears it when the two share a *family*
+      (`review-request`, `nudge` or `dequeue-notice`, matched from the
+      warning's own detail text against which action produced the success):
+      three distinct actions can fire for one pull request in a single sweep
+      pass (requirement 38f), and succeeding at one proves nothing about
+      whether either of the other two would have — a dequeue notice posting
+      successfully must never clear a same-pass `could not request review
+      from …` warning (agent-ops#393). A warning shape none of the three
+      families recognises (most often the read failure that gates every
+      downstream check for that pull request) keeps the wider rule instead:
+      any of the three success events clears it, since each depends on that
+      same read having worked. An unrelated warning — a different identity,
+      or a different family with the family unmatched — never clears
+      anything.
     - The Script appends this cycle's own freshly-logged human-visibility
       events into `union_log` the moment the sweep (requirement 38c) finishes,
       the same technique requirement 34j's own reconciliation uses, so a
@@ -7302,14 +7320,22 @@ runs unattended.
       wait on `human_nudge_idle_hours`: this is new information a human has
       not seen, not the "forgot to click merge" case that threshold exists
       for. A failed POST is a `warning`, exactly as the ordinary idle nudge's
-      is — and, having no dedicated live-recheck class of its own in
-      requirement 38e's three (`could_not_request`/`could_not_post_nudge`/
-      `no_candidate`), falls into that reduction's fail-safe default: kept
-      selectable for as long as the pull request stays open and not a draft,
-      the same as any warning shape the three classes do not recognise —
-      correct by construction, since a later successful post flips the log's
-      latest event for that pull request to `human-nudged` before the
-      live-recheck ever runs. The notice addresses a human and nothing else:
+      is, and is logged and cleared under its own action (`dequeue-notice`)
+      and event (`human-dequeue-notice`) — never the idle nudge's `nudged`/
+      `human-nudged` — precisely so that a later successful idle nudge cannot
+      read back as this warning having resolved, nor the reverse (agent-ops
+      #393). Requirement 38e's log reduction recognises this warning's own
+      family and clears it only off a later `human-dequeue-notice` success
+      for the same pull request. `gather-human-visibility-hygiene.sh`'s own
+      live re-check, one step further on, has no dedicated class of its own
+      for it among its three (`could_not_request`/`could_not_post_nudge`/
+      `no_candidate`) — re-verifying that a posted comment actually landed
+      would mean the same kind of read `could_not_post_nudge` already makes
+      for the idle nudge's own marker, not yet done for this one — so it
+      falls into that script's own fail-safe default: kept selectable for as
+      long as the pull request stays open and not a draft, the same as any
+      warning shape its three classes do not recognise. The notice addresses
+      a human and nothing else:
       a dequeued pull request becomes no source's candidate, so the
       Co-Ordinator has no work to select from it —
       `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
@@ -7990,8 +8016,13 @@ What exists, and the requirements each part answers to:
    given a repo slug (and, for the nudge comment's header and marker, a cycle
    id and a node name), examines every open, non-draft, `pr_label`-carrying
    pull request and prints one JSON action object per pull request it acted on
-   (`human-review-requested`, `nudged`, `warning`) for the
-   Script to log under those same names. Fail-safe on every unanswered
+   (`human-review-requested`, `nudged`, `dequeue-notice`, `warning`) for the
+   Script to log as `human-review-requested`, `human-nudged`,
+   `human-dequeue-notice` and `warning` respectively — `nudged` (the ordinary
+   idle nudge) and `dequeue-notice` (the merge-queue-dequeue notice,
+   requirement 38f) are deliberately distinct actions, never merged into one
+   name, so requirement 38e's reduction can tell which of the two a pull
+   request's warning was actually resolved by. Fail-safe on every unanswered
    question — a read it cannot make is a `warning`, never an assumed clean
    answer; `SWEEP_GH` stubs `gh` (and is passed through as `HANDOFF_GH`, since
    the sweep's decisions are `lib/handoff.sh`'s) and `AGENT_OPS_CONFIG`
@@ -10459,11 +10490,20 @@ pull request, run the ones the change touches and any it could regress.
 38e. **A violation the sweep cannot heal is read back and re-verified, not
     guessed at.** `test/human-visibility-hygiene.test.sh` passes:
     `human_visibility_violations` keeps a repo-level (empty `pr_url`) warning
-    with nothing to clear it; a later `human-review-requested` or
-    `human-nudged` event clears a same-`pr_url` warning but leaves a
-    different `pr_url`'s or a different sweep's warning untouched; a repeated
-    identity keeps only its latest detail; and a torn log line is skipped, not
-    fatal. `test/gather-human-visibility-hygiene.test.sh` passes against a
+    with nothing to clear it; a later `human-review-requested` event clears a
+    same-`pr_url` `could not request review from …` warning, and a later
+    `human-nudged` event likewise clears a same-`pr_url` `could not post the
+    idle nudge comment` warning, but a `human-dequeue-notice` event for that
+    same `pr_url` does *not* clear either of those two — nor does a
+    `human-nudged`/`human-review-requested` event clear a `could not post the
+    merge-queue-dequeued notice` warning — proving the family split rather
+    than assuming it (agent-ops#393); a later event for a different `pr_url`
+    or a different sweep leaves an identity's warning untouched; an
+    unrecognised warning shape is cleared by any of the three success events,
+    the fail-safe default for a warning with no family of its own; a repeated
+    identity keeps only its latest detail regardless of family; and a torn
+    log line is skipped, not fatal.
+    `test/gather-human-visibility-hygiene.test.sh` passes against a
     stubbed `gh`: violations naming a different repo are ignored; a
     repo-level violation survives only while its listing still fails live and
     is dropped the moment a fresh listing succeeds; a pull-request violation
@@ -10524,15 +10564,16 @@ pull request, run the ones the change touches and any it could regress.
     repository is named the same as its owner is probed like any other.
     `test/sweep-human-visibility.test.sh` passes
     the merge-queue cases alongside its existing ones: a currently-queued
-    pull request is never idle-nudged; a checks-failure dequeue is nudged
-    even with `human_nudge_idle_hours: 0`, naming the removal time and
-    reason and carrying the `agent-ops:merge-queue-dequeued:<time>` marker;
-    an already-notified dequeue is not notified again, while a later, fresh
-    dequeue still gets its own notice; a pull request re-queued since a
-    recorded dequeue event gets neither a notice nor a nudge; an unreadable
-    merge-queue probe leaves the ordinary idle nudge behaving exactly as it
-    did before this requirement existed; and a failed dequeue-notice POST is
-    a `warning`, never silence.
+    pull request is never idle-nudged; a checks-failure dequeue produces its
+    own `dequeue-notice` action (never `nudged`) even with
+    `human_nudge_idle_hours: 0`, naming the removal time and reason and
+    carrying the `agent-ops:merge-queue-dequeued:<time>` marker; an
+    already-notified dequeue is not notified again, while a later, fresh
+    dequeue still gets its own `dequeue-notice`; a pull request re-queued
+    since a recorded dequeue event gets neither a notice nor a nudge; an
+    unreadable merge-queue probe leaves the ordinary idle nudge (still
+    `nudged`) behaving exactly as it did before this requirement existed; and
+    a failed dequeue-notice POST is a `warning`, never silence.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed

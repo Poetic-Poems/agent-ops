@@ -6,16 +6,28 @@
 # scripts/sweep-human-visibility.sh's `warning` events back into the set of
 # violations still standing.
 #
-# The rule is "most recent event per identity wins", the same shape
+# The rule is "most recent event per identity wins, but a success only
+# clears a warning that shares its family" — the same "latest wins" shape
 # `_latest_unresolved` already applies to a block and its clearance
-# (lib/cycle-state.sh) — asserted from both directions:
+# (lib/cycle-state.sh), narrowed by family so that three distinct actions
+# firing for one pull request in a single sweep pass (requirement 38f) do not
+# clear each other's unrelated warnings (agent-ops#393) — asserted from both
+# directions:
 #
-#   - **Too eager** keeps a violation a later success already answered. Every
-#     later `human-review-requested` or `human-nudged` for the same `pr_url`
-#     must clear the identical-`pr_url` warning that preceded it.
+#   - **Too eager** keeps a violation a later, *same-family* success already
+#     answered. A later `human-review-requested` clears a same-`pr_url`
+#     `could not request review from …` warning; a later `human-nudged`
+#     clears a same-`pr_url` `could not post the idle nudge comment` warning;
+#     a later `human-dequeue-notice` clears a same-`pr_url`
+#     `could not post the merge-queue-dequeued notice` warning; and any of
+#     the three clears a same-`pr_url` warning shape none of the three
+#     families recognises (the fail-safe default for a read failure that
+#     gates every downstream check).
 #   - **Too shy** drops a violation nothing has actually resolved: an
 #     unrelated warning (a different sweep entirely, or a different repo/PR)
-#     must never clear it, and a repo-level (empty `pr_url`) violation must
+#     must never clear it; a *different-family* success — a dequeue notice
+#     posting while a review-request warning stands, or vice versa — must
+#     never clear it either; and a repo-level (empty `pr_url`) violation must
 #     survive with no per-PR success able to touch it at all — the gap
 #     scripts/gather-human-visibility-hygiene.sh's own live re-check exists to
 #     close, not this reduction.
@@ -88,6 +100,62 @@ assert_eq "a later success clears the same pr_url's warning" \
             pr_url: "https://github.com/o/a/pull/9", reviewer: "foo"}'
 } > "$log"
 assert_eq "a later nudge clears the same pr_url's warning" \
+  "0" "$(jq 'length' <<<"$(human_visibility_violations "$log")")"
+
+# --- A dequeue notice, its own family, also clears its own warning ---------
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" "could not post the merge-queue-dequeued notice"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-dequeue-notice", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewer: "foo"}'
+} > "$log"
+assert_eq "a later dequeue notice clears the same pr_url's dequeue-notice warning" \
+  "0" "$(jq 'length' <<<"$(human_visibility_violations "$log")")"
+
+# --- agent-ops#393: a same-pass success of a DIFFERENT family must not mask
+# --- an unrelated, still-outstanding warning for the same pull request -----
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" "could not request review from foo"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-dequeue-notice", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewer: "foo"}'
+} > "$log"
+out="$(human_visibility_violations "$log")"
+assert_eq "a same-pass dequeue notice does not mask a review-request warning" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... the review-request warning survives verbatim" \
+  "could not request review from foo" "$(jq -r '.[0].detail' <<<"$out")"
+
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" "could not post the merge-queue-dequeued notice"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-review-requested", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewers: ["foo"]}'
+} > "$log"
+out="$(human_visibility_violations "$log")"
+assert_eq "a review-request success does not mask a dequeue-notice warning" \
+  "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... the dequeue-notice warning survives verbatim" \
+  "could not post the merge-queue-dequeued notice" "$(jq -r '.[0].detail' <<<"$out")"
+
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" "could not post the idle nudge comment"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-dequeue-notice", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewer: "foo"}'
+} > "$log"
+assert_eq "a dequeue notice does not mask an idle-nudge warning" \
+  "1" "$(jq 'length' <<<"$(human_visibility_violations "$log")")"
+
+# --- An unrecognised warning shape still clears off any success ------------
+{
+  warning_line "o/a" "https://github.com/o/a/pull/9" \
+    "could not read the pull request's state — skipping its review-state checks"
+  jq -nc '{ts: "2026-08-08T01:00:00Z", cycle: "c", node: "n",
+            event: "human-dequeue-notice", repo: "o/a",
+            pr_url: "https://github.com/o/a/pull/9", reviewer: "foo"}'
+} > "$log"
+assert_eq "an unrecognised warning shape is cleared by any success (fail-safe default)" \
   "0" "$(jq 'length' <<<"$(human_visibility_violations "$log")")"
 
 # --- An unrelated success does not clear a different identity --------------

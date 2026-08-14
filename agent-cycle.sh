@@ -4552,6 +4552,8 @@ if ! (( DRY_RUN )); then
           "$(jq -c --arg r "$sweep_slug" '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         nudged) log_event "human-nudged" "$(jq -c --arg r "$sweep_slug" \
           '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
+        dequeue-notice) log_event "human-dequeue-notice" "$(jq -c --arg r "$sweep_slug" \
+          '{repo: $r} + del(.action)' <<<"$sweep_action")" ;;
         warning) log_event "warning" "$(jq -c --arg r "$sweep_slug" \
           '{detail: ("human-visibility sweep (" + $r + "): " + (del(.action) | tostring))}' \
           <<<"$sweep_action")" ;;
