@@ -1088,8 +1088,17 @@ blocked_json="$(printf '%s\n' "$ALL_EVENTS" | open_blocked_items - | jq -c \
 # an open issue, or the pipeline's last verdict if it is still the pipeline's
 # move. Only marks newer than the block count, so a re-blocked item does not
 # inherit the resolved escalation of an older one.
-blocked_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson rows "$blocked_json" '
-  . as $events
+#
+# The rows arrive on stdin ahead of the events, never as an `--argjson`
+# (requirement 4g): the blocked extract grows with the fleet's history, and this
+# guard would swallow an `execve` past MAX_ARG_STRLEN as an empty enrichment —
+# every escalation and Enabler verdict silently dropped from a panel that still
+# rendered. `input` takes the rows, `inputs` the event stream behind them; the
+# order is the order the here-string prints them in.
+# shellcheck disable=SC2016  # jq's $rows/$events/$r/$esc/$exam, not the shell's.
+blocked_json="$(jq -nc '
+  input as $rows
+  | [ inputs ] as $events
   | [ $rows[]
       | . as $r
       | ([ $events[] | select(.event == "escalated" and (.item // "") == $r.item
@@ -1102,7 +1111,7 @@ blocked_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson rows "$blocked_js
                  escalation_url: ($esc.issue_url // "")} end)
         + (if $exam == null then {}
            else {enabler_outcome: ($exam.outcome // ""), enabler_ts: ($exam.ts // "")} end) ]' \
-  2>/dev/null || true)"
+  <<<"$blocked_json"$'\n'"$ALL_EVENTS" 2>/dev/null || true)"
 [[ -z "$blocked_json" ]] && blocked_json='[]'
 
 void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
@@ -1741,26 +1750,56 @@ config_json="$(jq -c --argjson t "$stage_budget_json" --argjson lock "$lock_stal
 # between ticks); it is surfaced under fleet because that is what it is.
 printf '%s' "$github_json"   > "$work_tmp/github.json"
 printf '%s' "$log_tail_json" > "$work_tmp/logtail.json"
+# So can the void and blocked extracts and the counts roll-up, and for the same
+# reason: all three grow with the fleet's history, so none of them may travel as
+# an `--argjson` value — a single argv entry, capped at MAX_ARG_STRLEN (131072
+# bytes) by `execve`, not by jq. This is requirement 4g's rule, which the Script
+# adopted after the 2026-08-12 outage; the Publisher was left behind, and on
+# 2026-08-14 the void extract reached 132539 bytes here and the cap bit again.
+# It bit differently, because this call site is unguarded and not under `set -e`:
+# jq never ran, `$data_json` came back empty, and the write below still emitted
+# `window.DASHBOARD_DATA = ;` — a JavaScript syntax error, so every dashboard on
+# every node stopped updating while each tick logged a successful write. Only
+# values bounded by configuration (a node name, the config object, a count) may
+# still ride argv.
+printf '%s' "$counts_json"  > "$work_tmp/counts.json"
+printf '%s' "$blocked_json" > "$work_tmp/blocked.json"
+printf '%s' "$void_json"    > "$work_tmp/void.json"
 data_json="$(jq -n \
   --arg generated_at "$now_iso" \
   --arg self_node "$self_node" \
   --argjson config "$config_json" \
   --argjson status "$status_json" \
-  --argjson counts "$counts_json" \
+  --slurpfile counts "$work_tmp/counts.json" \
   --slurpfile cyc "$cycles_file" \
   --argjson noop "$noop_json" \
-  --argjson blocked "$blocked_json" \
-  --argjson void "$void_json" \
+  --slurpfile blocked "$work_tmp/blocked.json" \
+  --slurpfile void "$work_tmp/void.json" \
   --slurpfile gh "$work_tmp/github.json" \
   --slurpfile lt "$work_tmp/logtail.json" \
   --argjson cron_tail "$cron_tail_json" \
   --argjson fleet_nodes "$fleet_nodes_json" \
   --argjson fleet_flags "$fleet_flags_json" \
   --arg max_prs "$max_open_agent_prs" \
-  '{generated_at: $generated_at, node: $self_node, config: $config, status: $status, counts: $counts,
-    cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked, void: $void, github: $gh[0], log_tail: $lt[0],
+  '{generated_at: $generated_at, node: $self_node, config: $config, status: $status,
+    counts: $counts[0], cycles: $cyc[0], noop_ticks: $noop, blocked: $blocked[0],
+    void: $void[0], github: $gh[0], log_tail: $lt[0],
     cron_tail: $cron_tail, max_open_agent_prs: ($max_prs|tonumber),
     fleet: {nodes: $fleet_nodes, flags: $fleet_flags, claims: ($gh[0].claims // [])}}')"
+
+# An assemble that failed must not be published. `set -e` is deliberately off
+# here, so a jq that dies — at `execve`, on a malformed input, out of memory —
+# leaves `$data_json` empty rather than stopping the script, and an empty
+# payload written out is not a thin dashboard but a broken one: the page's own
+# `data.js` fails to parse, so it keeps rendering whatever it loaded last and
+# never says why. Leaving the previous data.js in place is strictly better —
+# the page ages visibly against its own `generated_at`, which is the signal an
+# operator already reads — and the non-zero exit is what puts the reason in
+# cron.log instead of another line claiming a write.
+if ! jq -e . >/dev/null 2>&1 <<<"$data_json"; then
+  echo "publish-dashboard: could not assemble the payload; $data_file left unchanged" >&2
+  exit 1
+fi
 
 # --- Redact (defensive) & write atomically -----------------------------------
 redact() {

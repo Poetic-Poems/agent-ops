@@ -30,6 +30,12 @@
 #                         transcript could blow well past the cap and grow
 #                         data.js — exactly the size concern this budget exists
 #                         for
+#   the argv cap          the void extract grows with the log and once rode
+#                         into the assemble as an --argjson, so at 132539 bytes
+#                         `execve` refused it and every dashboard on the fleet
+#                         froze at once (requirement 4g)
+#   the failed assemble   whatever kills that jq, an empty payload must not be
+#                         written over a good data.js and reported as a write
 #
 # No network and no GitHub: every publish runs --no-github against a
 # synthesised state dir (a throwaway HOME, since config.json's state_dir is
@@ -1455,6 +1461,71 @@ assert_eq "nor does a skip count as a race loss" "0" \
 # and count none of them.
 assert_eq "a stand-down that carries more than the no-op shape is never aggregated" "0" \
   "$(jq -r '.noop_ticks.total' <<<"$wdata")"
+
+# --- A past-the-cap void extract still publishes (requirement 4g) ----------------
+# On 2026-08-14 the void extract reached 132539 bytes and the assemble's
+# `--argjson void` died at `execve` with `Argument list too long` — on every node
+# at once, because the extract is a property of the shared log, not of a node.
+# jq never ran, so the write that followed emitted `window.DASHBOARD_DATA = ;`:
+# a JavaScript syntax error, which froze every dashboard on the fleet while each
+# tick went on logging a successful write.
+#
+# The pin is the input rather than the plumbing, and the assertion beside it
+# proves the input is genuinely past MAX_ARG_STRLEN — otherwise a reintroduced
+# `--argjson` would pass here and fail on the fleet.
+v="$(new_home nodeV)"
+vlog="$v/.local/state/poetic-agents/log.jsonl"
+: > "$vlog"
+vpad="$(printf 'x%.0s' {1..220})"
+i=0
+while (( i < 600 )); do
+  printf '{"ts":"2026-07-26T00:00:00Z","event":"item-void","repo":"Poetic-Poems/agent-ops","item":"TD-BULK-%03d","stage":"coordinator","detail":"%s","evidence":"merged in #1"}\n' \
+    "$i" "$vpad" >> "$vlog"
+  i=$(( i + 1 ))
+done
+
+run_publish "$v"
+assert_eq "a publish whose void extract is past the cap exits 0" "0" "$?"
+vdata="$(data_of "$v")"
+jq -e . <<<"$vdata" >/dev/null 2>&1
+assert_eq "its data.js payload is valid JSON, not an empty assignment" "0" "$?"
+assert_eq "the void extract really is past MAX_ARG_STRLEN (131072 bytes)" "1" \
+  "$(( $(jq -c '.void' <<<"$vdata" | wc -c) > 131072 ))"
+assert_eq "and every voided item survives into data.js" "600" \
+  "$(jq '.void | length' <<<"$vdata")"
+
+# --- An assemble that failed is not published (the 2026-08-14 outage) ------------
+# The cap was the cause; publishing the wreckage is what hid it for 75 minutes.
+# Whatever kills the assemble — the cap, a malformed input, the OOM killer —
+# `set -e` is off here, so jq's death leaves an empty `$data_json` behind rather
+# than stopping the script. Writing that out replaces a working page with an
+# unparseable one; keeping the last good data.js lets the page age visibly
+# against its own `generated_at` instead, and the non-zero exit puts the reason
+# in cron.log.
+g="$(new_home nodeG)"
+make_cycle "$g" "${today_day}T040000Z-21" 0.25 model-a
+run_publish "$g"
+g_data_js="$g/.local/state/poetic-agents/dashboard/data.js"
+g_good="$(cat "$g_data_js")"
+
+# Fail the assemble and nothing else: it is the one jq call bound to
+# `generated_at`. As in the process-budget pin above, an exported function is
+# the only way to reach a jq the publisher looks up on a PATH it hardens for
+# cron itself.
+(
+  jq() {
+    local a
+    for a in "$@"; do [[ "$a" == "generated_at" ]] && return 126; done
+    command jq "$@"
+  }
+  export -f jq
+  env HOME="$g" "$PUBLISH" --no-github >/dev/null 2>"$tmp_dir/assemble.err"
+)
+assert_eq "a publish that cannot assemble its payload exits non-zero" "1" "$(( $? != 0 ))"
+assert_contains "and says why" "could not assemble" "$(cat "$tmp_dir/assemble.err")"
+assert_eq "and leaves the last good data.js untouched" "$g_good" "$(cat "$g_data_js")"
+assert_lacks "so no page is ever served an empty assignment" \
+  "window.DASHBOARD_DATA = ;" "$(cat "$g_data_js")"
 
 # ---------------------------------------------------------------------------------
 if (( failures > 0 )); then
