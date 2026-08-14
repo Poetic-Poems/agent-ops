@@ -67,8 +67,10 @@ case "$args" in
     exit 0 ;;
   "api repos/x/y/issues/199 --jq .state")
     exit 1 ;;
-  "api repos/x/y/pulls/205 --jq .state")
-    [[ -f "$S/pr-205-closed" ]] && echo closed || echo open ;;
+  "api repos/x/y/pulls/205")
+    state="open"; [[ -f "$S/pr-205-closed" ]] && state="closed"
+    labels="[]"; [[ -f "$S/pr-205-obsolete" ]] && labels='[{"name":"obsolete"}]'
+    printf '{"state":"%s","labels":%s}' "$state" "$labels" ;;
   "pr close 205 -R x/y --comment "*)
     exit 0 ;;
   *)
@@ -120,6 +122,24 @@ out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"superseded by #232
 assert_eq "the pull request is closed" \
   '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
   "$(jq -c . <<<"$out")"
+assert_contains "the comment does not mention the obsolete label — this PR does not carry it" \
+  "pr close 205" "$(cat "$c/calls.log" 2>/dev/null || true)"
+assert_eq "  ... confirmed: no mention of the label at all" "0" \
+  "$(grep -c 'obsolete.*corroboration' "$c/calls.log" 2>/dev/null || true)"
+
+# --- Case 3a: a pull request carrying the human-applied `obsolete` label names it in
+# the close comment, so the close is auditable from the comment alone
+# (TD-PPagop-26081308) — re-checked live off the same fetch that reads `state`,
+# never trusted from the void's own `detail`/`evidence`.
+c="$tmp_dir/case3a"; mkdir -p "$c"
+touch "$c/pr-205-obsolete"
+out="$(run "$c" '[{"item":"pr-205-abandoned-abc123","detail":"the author says it is dead","stage":"coordinator"}]')"
+assert_eq "the pull request is closed" \
+  '{"action":"closed","item":"pr-205-abandoned-abc123","kind":"pull-request","number":205,"closed_by":"sweep"}' \
+  "$(jq -c . <<<"$out")"
+assert_contains "the close comment names the obsolete label as corroboration" \
+  "obsolete\` label, which is the corroboration" \
+  "$(cat "$c/calls.log" 2>/dev/null || true)"
 
 # --- Case 3b: every corroborated writer's void is actioned -------------------------
 # Requirement 34d's guard (issue #243) corroborates `item-void` from all three
