@@ -1119,7 +1119,15 @@ void_json="$(printf '%s\n' "$ALL_EVENTS" | void_items - | jq -c \
 [[ -z "$void_json" ]] && void_json='[]'
 
 # --- Log tail ----------------------------------------------------------------
-log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL" 'sort_by(.ts) | reverse | .[0:$n]' 2>/dev/null)"
+# `review-gate-checks-read` (requirement 31c, TD-PPagop-26081404) is machine
+# bookkeeping — one `{ok}` event per ready-gate evaluation, existing only for
+# `review_gate_unknown_streak_verdict` to read — with nothing to show an
+# operator, so a run of them would displace rows that have something to say.
+# The escalation it feeds, `review-gate-checks-degraded`, is operator-facing
+# and stays.
+log_tail_json="$(printf '%s\n' "$ALL_EVENTS" | jq -sc --argjson n "$MAX_LOG_TAIL" '
+  map(select(.event != "review-gate-checks-read"))
+  | sort_by(.ts) | reverse | .[0:$n]' 2>/dev/null)"
 [[ -z "$log_tail_json" ]] && log_tail_json='[]'
 
 # --- cron.log tail -----------------------------------------------------------

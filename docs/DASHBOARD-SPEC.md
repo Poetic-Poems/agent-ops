@@ -504,6 +504,13 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              flags:  { disabled, limit },               // cached fleet flags (2.3a)
              claims: [ { repo, key, kind, node, cycle, item, source, ts, sha } ] },
   log_tail:  [ … ],                    // recent events, newest first, fleet-wide
+                                       //   minus review-gate-checks-read: pure
+                                       //   machine bookkeeping (implementation
+                                       //   spec 31c), one per ready-gate
+                                       //   evaluation with nothing an operator
+                                       //   can act on, which would otherwise
+                                       //   displace rows that have something
+                                       //   to say
   cron_tail: [ "line", … ] }
 ```
 
