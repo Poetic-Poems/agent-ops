@@ -3113,8 +3113,12 @@ runs unattended.
    accumulator (`test/needs-refinement.test.sh`), `work_gone_clearances`'s
    register/review/plan status maps (`test/work-gone.test.sh`), the Enabler
    and Refiner claim accumulators, and their own unparseable-verdict warnings
-   (`test/enabler-verdicts.test.sh`, `test/refiner-verdicts.test.sh`) — so no
-   fleet-state aggregate anywhere in this pipeline still reaches `jq` in argv.
+   (`test/enabler-verdicts.test.sh`, `test/refiner-verdicts.test.sh`). The
+   sites neither item enumerated — the review-feedback, abandoned-drafts and
+   issues gatherers' own candidate builds and folds, the per-repo entry build
+   that feeds the Co-Ordinator's input, `refiner_candidate_items`, and the
+   Co-Ordinator's recorded-refinement and voided accumulators — are the
+   residue TD-PPagop-26081406 records.
 5. If the work order is `{"selected": false}`, log `none-selected` with the
    Co-Ordinator's reason **and the fingerprint computed in requirement 3b**
    (omitted entirely, not stored empty, when the cycle was unfingerprintable —
