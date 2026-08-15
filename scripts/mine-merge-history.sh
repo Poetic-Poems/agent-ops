@@ -47,13 +47,21 @@
 #
 # ## Post-merge outcome
 #
+# A later PR only counts as an outcome at all when its title reads as a
+# correction: a title starting "revert" (case-insensitive) classifies as
+# `revert`, one starting "fix"/"hotfix"/"bug fix" as `follow-up-fix`, and
+# anything else — follow-on feature work, refactors, tech-debt filings that
+# merely cite the PR number — is not an outcome signal. The first cut of this
+# script counted any merged cross-referencing PR, which flagged 82–97% of
+# merged agent PRs fleet-wide as "followed up" (ordinary sequential work, not
+# corrections) — the noise the PR #432 review called out.
+#
 # "References the PR" is read from GitHub's own `cross-referenced` timeline
 # events on the merged PR's issue — populated whenever another issue or pull
 # request mentions it by number in a body or comment, including GitHub's own
-# "Revert" button flow, which auto-inserts a `Reverts owner/repo#N` line. A
-# cross-referencing pull request merged within 48 h of the original is
-# classified `revert` if its title starts with "revert" (case-insensitive),
-# else `follow-up-fix`.
+# "Revert" button flow, which auto-inserts a `Reverts owner/repo#N` line.
+# Only corrective-titled referencing PRs merged within 48 h count, a revert
+# preferred over a fix when the window holds both.
 #
 # "Touching the same files" is checked too, but only against *other PRs
 # carrying the same label in the same repo* merged in the same 48 h window —
@@ -63,10 +71,21 @@
 # one of per candidate; that is a materially larger read for a check this
 # script already reports adequately via label scope (this pipeline is, by
 # construction, the fleet's own follow-up author — see the investigation
-# report §3, "The two interventions are instructive"). A same-file follow-up
-# authored outside the label, and never referencing the original PR either, is
-# therefore not detected by this pass; the per-repo "Scope" note in the
-# generated baseline says so again next to the numbers it qualifies.
+# report §3, "The two interventions are instructive"). The overlap is
+# computed after dropping convention files nearly every PR in these repos
+# touches (CHANGELOG.md, TECH-DEBT.md — mandated by the contribution flow, so
+# shared by adjacent, unrelated work), and the overlapping PR must itself be
+# corrective-titled, per the same PR #432 review finding: 180 of the 289
+# pairs the first cut flagged were boilerplate-only overlap. A same-file
+# follow-up authored outside the label, and never referencing the original PR
+# either, is therefore not detected by this pass — nor is a genuine
+# correction whose title does not read as one; the per-repo "Scope" note in
+# the generated baseline says so again next to the numbers it qualifies.
+#
+# Even after those two filters, a repo whose work concentrates in a few large
+# files sees overlap fire on adjacent, unrelated fixes, so the baseline
+# reports the follow-up figure split by detection reason: the reference-based
+# share is the tighter signal, the file-overlap share an upper bound.
 #
 # ## Output and idempotency
 #
@@ -119,6 +138,39 @@ fi
 
 mkdir -p "$OUT_DIR"
 
+# --- Transient-failure retry around the metered `gh` wrapper ---------------
+#
+# lib/github-limit.sh's wrapper waits out rate-limit refusals but lets a
+# network failure (TLS handshake timeout, TCP i/o timeout) propagate — and a
+# run of this script is ~2000 sequential REST calls, so a single dropped
+# packet an hour in would discard the whole run and its spent budget. Each
+# read therefore retries a couple of times, through a temp file so a failed
+# attempt leaks no partial output into the caller (the wrapper replays what
+# it buffered even on failure, and a `--paginate` call can fail pages in).
+# MINE_RETRY_DELAY_SECONDS scales the backoff; tests set it to 0.
+gh_retry() {
+  local buf rc attempt delay
+  delay="${MINE_RETRY_DELAY_SECONDS:-5}"
+  buf="$(mktemp)" || return 1
+  rc=1
+  for attempt in 1 2 3; do
+    if gh "$@" >"$buf"; then
+      cat "$buf"; rm -f "$buf"; return 0
+    else
+      # Read inside the else: after a bare `fi` with no branch taken, $? is
+      # the if statement itself (0), not the failed condition.
+      rc=$?
+    fi
+    if (( attempt < 3 )); then
+      echo "mine-merge-history: transient gh failure (rc=$rc); retrying" >&2
+      sleep $(( attempt * delay ))
+      : >"$buf"
+    fi
+  done
+  rm -f "$buf"
+  return "$rc"
+}
+
 # --- One repo's every merged, labelled pull request, enriched -------------
 #
 # Prints one JSON array (never [] on total failure — an unreadable repo
@@ -131,7 +183,7 @@ mkdir -p "$OUT_DIR"
 mine_repo() {
   local slug="$1" label="$2"
   local listing prs
-  listing="$(gh api --paginate \
+  listing="$(gh_retry api --paginate \
     "repos/$slug/issues?labels=$label&state=closed&per_page=100" \
     --jq '.[] | select(.pull_request != null) | select(.pull_request.merged_at != null)
               | {number, title, created_at, merged_at: .pull_request.merged_at}')" \
@@ -144,13 +196,13 @@ mine_repo() {
     [[ -n "$pr" ]] || continue
     n="$(jq -r '.number' <<<"$pr")"
 
-    reviews="$(gh api --paginate "repos/$slug/pulls/$n/reviews?per_page=100" \
+    reviews="$(gh_retry api --paginate "repos/$slug/pulls/$n/reviews?per_page=100" \
       --jq '.[] | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED" or .state == "COMMENTED")
                 | {user: (.user.login // "unknown"), state}')" \
       || { echo "mine-merge-history: $slug#$n: reviews fetch failed" >&2; return 1; }
     reviews="$(jq -s -c '.' <<<"$reviews")" || reviews='[]'
 
-    timeline="$(gh api --paginate "repos/$slug/issues/$n/timeline?per_page=100" \
+    timeline="$(gh_retry api --paginate "repos/$slug/issues/$n/timeline?per_page=100" \
       --jq '.[] | {event, created_at,
                     xref_number: (.source.issue.number // null),
                     xref_title: (.source.issue.title // null),
@@ -163,7 +215,7 @@ mine_repo() {
     # prints unquoted text that is not valid JSON to slurp back — unlike every
     # other read here, this one stays array-per-page (`[.[]...]`) and is
     # flattened the same way the top-level PR listing is, just below.
-    files="$(gh api --paginate "repos/$slug/pulls/$n/files?per_page=100" \
+    files="$(gh_retry api --paginate "repos/$slug/pulls/$n/files?per_page=100" \
       --jq '[.[].filename]')" \
       || { echo "mine-merge-history: $slug#$n: files fetch failed" >&2; return 1; }
     files="$(jq -s -c '[.[][]] | unique' <<<"$files")" || files='[]'
@@ -204,6 +256,21 @@ def rank_pick(p):
     else $s[ ( ( ($n - 1) * p ) | round ) ] | round1
     end;
 
+# Convention files the contribution flow makes nearly every PR touch;
+# sharing one is evidence of adjacency, not correction, so they are
+# invisible to the file-overlap check (PR #432 review).
+def boilerplate: ["CHANGELOG.md", "TECH-DEBT.md"];
+
+# A later PR is an outcome signal only when its title reads as a
+# correction. Anything else — follow-on features, refactors, tech-debt
+# filings that merely cite a PR number — classifies as null and is
+# ignored (PR #432 review).
+def corrective_kind:
+  (.title // "" | ascii_downcase) as $t
+  | if ($t | startswith("revert")) then "revert"
+    elif ($t | test("^(fix|hotfix|bug ?fix)")) then "follow-up-fix"
+    else null end;
+
 . as $prs
 | ($prs | length) as $count
 | ($prs | map(.reviews[]) | group_by([.user, .state])
@@ -214,19 +281,24 @@ def rank_pick(p):
     . as $pr
     | ($pr.merged_at | fromdate) as $m
     | ($m + 172800) as $end   # 48h in seconds — the post-merge outcome window
-    | ([$pr.xrefs[] | select((.merged_at | fromdate) > $m and (.merged_at | fromdate) <= $end)]
-       | sort_by(.merged_at) | first) as $xref_hit
+    | ([$pr.xrefs[] | select((.merged_at | fromdate) > $m and (.merged_at | fromdate) <= $end)
+                    | select(corrective_kind != null)]
+       | sort_by([(if corrective_kind == "revert" then 0 else 1 end), .merged_at])
+       | first) as $xref_hit
     | ([$prs[] | select(.number != $pr.number)
                | select((.merged_at | fromdate) > $m and (.merged_at | fromdate) <= $end)
-               | select((($pr.files // []) - (($pr.files // []) - (.files // []))) | length > 0)]
-       | sort_by(.merged_at) | first) as $file_hit
+               | select(corrective_kind != null)
+               | (($pr.files // []) - boilerplate) as $mine
+               | ((.files // []) - boilerplate) as $theirs
+               | select(($mine - ($mine - $theirs)) | length > 0)]
+       | sort_by([(if corrective_kind == "revert" then 0 else 1 end), .merged_at])
+       | first) as $file_hit
     | if $xref_hit != null then
-        {number: $pr.number,
-         kind: (if ($xref_hit.title // "" | ascii_downcase | startswith("revert")) then "revert" else "follow-up-fix" end),
+        {number: $pr.number, kind: ($xref_hit | corrective_kind),
          reason: "reference", by: $xref_hit.number, by_title: $xref_hit.title,
          hours_after: (((($xref_hit.merged_at | fromdate) - $m) / 3600) | round1)}
       elif $file_hit != null then
-        {number: $pr.number, kind: "follow-up-fix", reason: "file-overlap",
+        {number: $pr.number, kind: ($file_hit | corrective_kind), reason: "file-overlap",
          by: $file_hit.number, by_title: $file_hit.title,
          hours_after: (((($file_hit.merged_at | fromdate) - $m) / 3600) | round1)}
       else null end
@@ -238,6 +310,10 @@ def rank_pick(p):
    post_merge: {
      reverts: ($outcomes | map(select(.kind == "revert")) | length),
      follow_up_fixes: ($outcomes | map(select(.kind == "follow-up-fix")) | length),
+     follow_ups_by_reason: {
+       reference: ($outcomes | map(select(.kind == "follow-up-fix" and .reason == "reference")) | length),
+       file_overlap: ($outcomes | map(select(.kind == "follow-up-fix" and .reason == "file-overlap")) | length)
+     },
      clean: ($count - ($outcomes | length)),
      detail: $outcomes
    }}
@@ -245,10 +321,12 @@ def rank_pick(p):
 
 render_repo_section() {
   local slug="$1" stats="$2"
-  local count reverts followups clean
+  local count reverts followups by_ref by_file clean
   count="$(jq -r '.count' <<<"$stats")"
   reverts="$(jq -r '.post_merge.reverts' <<<"$stats")"
   followups="$(jq -r '.post_merge.follow_up_fixes' <<<"$stats")"
+  by_ref="$(jq -r '.post_merge.follow_ups_by_reason.reference' <<<"$stats")"
+  by_file="$(jq -r '.post_merge.follow_ups_by_reason.file_overlap' <<<"$stats")"
   clean="$(jq -r '.post_merge.clean' <<<"$stats")"
 
   printf '### %s\n\n' "$slug"
@@ -275,8 +353,8 @@ render_repo_section() {
   fi
   printf '\n'
 
-  printf 'Post-merge outcome within 48 h: **%s** revert(s), **%s** follow-up fix(es), **%s** clean (no follow-up detected).\n\n' \
-    "$reverts" "$followups" "$clean"
+  printf 'Post-merge outcome within 48 h: **%s** revert(s), **%s** follow-up fix(es) — %s detected by reference, %s by file overlap alone — **%s** clean (no follow-up detected).\n\n' \
+    "$reverts" "$followups" "$by_ref" "$by_file" "$clean"
   local detail_count
   detail_count="$(jq -r '.post_merge.detail | length' <<<"$stats")"
   if [[ "$detail_count" != "0" ]]; then
@@ -313,7 +391,7 @@ fi
   # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
   printf 'Stage 0 baseline (D18, docs/reviews/2026-08-14-autonomy-investigation.md §3, §6), produced by `scripts/mine-merge-history.sh`. Every merged pull request in each repo below carrying the `%s` label, read from the GitHub REST API as of this run.\n\n' "$LABEL"
   printf '## Fleet summary\n\n'
-  printf '| Repo | Merged PRs | Open→merge median/p90 (h) | Ready→merge median/p90 (h) | Reverts | Follow-up fixes |\n|---|---|---|---|---|---|\n'
+  printf '| Repo | Merged PRs | Open→merge median/p90 (h) | Ready→merge median/p90 (h) | Reverts | Follow-up fixes (reference / file overlap) |\n|---|---|---|---|---|---|\n'
   fleet_count=0
   for slug in "${REPOS[@]}"; do
     [[ -n "${REPO_STATS[$slug]:-}" ]] || continue
@@ -326,7 +404,7 @@ fi
       "$(jq -r '.ready_to_merge_hours.median // "n/a"' <<<"$stats")" \
       "$(jq -r '.ready_to_merge_hours.p90 // "n/a"' <<<"$stats")" \
       "$(jq -r '.post_merge.reverts' <<<"$stats")" \
-      "$(jq -r '.post_merge.follow_up_fixes' <<<"$stats")"
+      "$(jq -r '"\(.post_merge.follow_up_fixes) (\(.post_merge.follow_ups_by_reason.reference) / \(.post_merge.follow_ups_by_reason.file_overlap))"' <<<"$stats")"
   done
   printf '| **Fleet total** | **%s** | | | | |\n\n' "$fleet_count"
 
@@ -342,7 +420,9 @@ fi
   # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
   printf -- '- Open→merge is PR-created to merged; ready→merge is the first `ready_for_review` timeline event (or PR-created, if the PR was never a draft) to merged.\n'
   # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
-  printf -- '- Post-merge outcome checks two things within 48 h of merge: (a) any issue or pull request that GitHub cross-references to the merged PR and that itself merged in the window — a `revert` if its title starts with "revert", else a `follow-up-fix`; (b) file overlap against other `%s`-labelled pull requests merged in the same window. A same-file follow-up authored outside the label, and never referencing the original PR, is not detected.\n' "$LABEL"
+  printf -- '- Post-merge outcome only counts a later merged pull request whose title reads as a correction — starting "revert" (a `revert`) or "fix"/"hotfix"/"bug fix" (a `follow-up-fix`); follow-on feature work, refactors, and tech-debt filings that merely cite the PR number are not outcome signals. Within 48 h of merge it checks: (a) any such corrective pull request that GitHub cross-references to the merged PR, a revert preferred over a fix when the window holds both; (b) file overlap against other corrective `%s`-labelled pull requests merged in the same window, ignoring convention files nearly every PR touches (`CHANGELOG.md`, `TECH-DEBT.md`). A same-file follow-up authored outside the label and never referencing the original PR is not detected, nor is a genuine correction whose title does not read as one.\n' "$LABEL"
+  # shellcheck disable=SC2016  # the backticks are literal Markdown, not command substitution
+  printf -- '- In a repo whose work concentrates in a few large files (agent-ops: `agent-cycle.sh` and friends), file overlap still fires on adjacent, unrelated fixes — one fix PR can "follow up" several predecessors at once. The file-overlap share of the follow-up figure is therefore an upper bound; the reference share is the tighter signal, which is why the tables report the two separately.\n'
   printf -- '- Nearest-rank median/p90 (no interpolation).\n\n'
 
   printf '## Raw data\n\n```json\n'
