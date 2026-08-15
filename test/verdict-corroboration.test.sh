@@ -45,6 +45,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
+
 failures=0
 
 assert_eq() {
@@ -196,13 +199,15 @@ assert_eq "the plain issues token admits every band" '["11","12","13"]' \
   "$(jq -c '[.[] | select(.source == "issues") | .item]' \
      <<<"$(coordinator_eligible_items "$(jq -c 'map(.sources = ["issues"])' <<<"$eligible_repos")" '[]')")"
 
-# Back-pressure (requirement 2.2a) narrows `sources` to the three finishing
-# bands and empties `issues`/`tech_debt`, but leaves `findings`,
-# `register_hygiene` and `human_visibility` populated. Reading the list rather
-# than the arrays is what stops a restricted cycle owing an account of bands it
-# was forbidden to select from.
-bp_repos="$(jq -c 'map(.sources = ["review-feedback","merge-conflicts","abandoned-drafts"]
-                      | .issues = [] | .tech_debt = [])' <<<"$eligible_repos")"
+# Back-pressure (requirement 2.2a) narrows `sources` to lib/handoff.sh's four
+# finishing bands (sourced above, issue #431) and empties `issues`/`tech_debt`,
+# but leaves `findings`, `register_hygiene` and `human_visibility` populated.
+# Reading the list rather than the arrays is what stops a restricted cycle
+# owing an account of bands it was forbidden to select from. `eligible_repos`'s
+# own `sources` only carries three of the four finishing bands (no
+# `dequeued`), so that is all the narrowing below leaves behind.
+bp_repos="$(jq -c 'map(.issues = [] | .tech_debt = [])' \
+  <<<"$(handoff_narrow_repos_to_finishing_sources "$eligible_repos")")"
 assert_eq "back-pressure's narrowed sources list bounds eligibility" \
   '["abandoned-drafts","merge-conflicts","review-feedback"]' \
   "$(jq -c '[.[].source] | unique' <<<"$(coordinator_eligible_items "$bp_repos" '[]')")"

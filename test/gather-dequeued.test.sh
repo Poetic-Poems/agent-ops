@@ -45,6 +45,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
+
 failures=0
 
 assert_eq() {
@@ -114,12 +117,14 @@ assert_eq "a new head after a fix yields a different ref, so an old block cannot
 # --- Back-pressure narrowing (requirement 2.2a) ---
 #
 # When back-pressure trips, the cycle narrows to the four *finishing* sources
-# rather than standing down.
+# rather than standing down. The filter itself is lib/handoff.sh's
+# handoff_narrow_repos_to_finishing_sources, sourced above — kept in one
+# definition (issue #431) rather than hand-copied here.
 ordered='[
   {"slug": "o/one", "sources": ["security", "review-feedback", "merge-conflicts", "dequeued", "abandoned-drafts", "tech-debt"], "review_feedback": [], "merge_conflicts": [], "dequeued": [{"ref": "pr-90-dequeued-1a2b3c4d5e6f"}], "abandoned_drafts": []},
   {"slug": "o/two", "sources": ["security", "review-feedback", "merge-conflicts", "dequeued", "abandoned-drafts", "issues"], "review_feedback": [], "merge_conflicts": [], "dequeued": [], "abandoned_drafts": []}
 ]'
-restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "dequeued" or . == "abandoned-drafts")))]' <<<"$ordered"; }
+restrict() { handoff_narrow_repos_to_finishing_sources "$ordered"; }
 
 assert_eq "restriction leaves only the four finishing sources selectable" \
   '["review-feedback","merge-conflicts","dequeued","abandoned-drafts"] ["review-feedback","merge-conflicts","dequeued","abandoned-drafts"]' \
