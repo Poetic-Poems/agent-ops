@@ -289,3 +289,48 @@ approver_token_get() {
 
   printf '%s' "$token"
 }
+
+# approver_token_identity_login [NOW_EPOCH]
+# Print the Pullwright Approver's own GitHub login — "<app-slug>[bot]", the
+# form every review or comment it submits carries as its `user.login` — or
+# return non-zero, printing nothing, on the same "gate unreadable" terms as
+# `approver_token_get`.
+#
+# This is the one call in this file that authenticates as the App itself
+# (`GET /app`, JWT-signed) rather than as an installation: an installation
+# token can post as the App but cannot ask GitHub what its own slug is, and
+# nothing else in this codebase names it — `approver_app_id` (config.json) is
+# the App's numeric id, not the `[bot]`-suffixed login its reviews carry.
+# `lib/approver.sh` needs this login to tell the Approver's own past reviews
+# on a pull request apart from a human's or another bot's when it counts a
+# refuse streak (D18 WI-5, agent-ops#408, design doc §5.2) — GitHub exposes no
+# other way to ask "which login does this App write as".
+#
+# Not cached, unlike `approver_token_get`'s installation token: this is asked
+# rarely (at most a few times per cycle, only while `merge_autonomy` is above
+# `human`) and the App's slug changes essentially never, so the complexity of
+# a second cache file buys nothing a fresh JWT-signed call each time does not
+# already give for free.
+approver_token_identity_login() {
+  local now="${1:-$(date +%s)}"
+  local app_id="${PULLWRIGHT_APPROVER_APP_ID:-}"
+  local key_path="${PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH:-}"
+  local curl_bin="${APPROVER_TOKEN_CURL:-curl}"
+
+  approver_token_credential_present || return 2
+
+  local jwt
+  jwt="$(_approver_token_jwt "$app_id" "$now" "$key_path")" || return 1
+
+  local response status body slug
+  response="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" \
+    | "$curl_bin" --config - -sS --max-time 30 -w $'\n%{http_code}' \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/app" 2>/dev/null)" || return 1
+  status="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  [[ "$status" == "200" ]] || return 1
+  slug="$(jq -r '.slug // empty' <<<"$body" 2>/dev/null)"
+  [[ -n "$slug" ]] || return 1
+  printf '%s[bot]' "$slug"
+}
