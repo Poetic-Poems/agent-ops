@@ -256,6 +256,46 @@ assert_contains "the card's tooltip spells out the same composition the cycle lo
   'title="1 changes-requested + 1 draft + 1 unraised claim(s) — plus 1 waiting on human (4 raw)"' \
   "$bp"
 
+# --- backpressure-claim-scope.json: which registry rows are "unraised claims" ---
+# The other direction of the same card. #434 taught it to count claims, and it
+# counted every row in the registry — but the registry is wider than the repos,
+# and holds rows for pull requests that already exist, so the gauge pinned red
+# against a gate that was open. `claim.sh count`'s rule, mirrored here, drops
+# four of the seven rows below:
+#
+#   enabler / refiner    pseudo-slug engagement tombstones (spec 35c). The cycle
+#                        asks for one configured repo at a time and so never sees
+#                        them; this page reads the whole registry in one call and
+#                        must re-impose that scope itself. Two rows, dropped.
+#   pr-700               the PR-keyed exclusion entry (#238), always dropped.
+#   pr-700-abandoned-…   an item claim on #700 — a draft already inside the sum
+#                        above, so counting it charges one unit of work twice.
+#                        Dropped.
+#   pr-701-conflict-…    an item claim on #701, which is approved and so sits in
+#                        the human's queue *outside* the sum. Here the claim is
+#                        the only record that the work is in flight. Kept.
+#   agent/342, td/TD-…   ordinary unraised claims, one per configured repo. Kept.
+#
+# So the gauge reads 0 changes-requested + 1 draft + 3 claims = 4 of 8, well
+# short of the cap — where counting the registry raw would have read 7 and
+# tripped it.
+bps="$(render backpressure-claim-scope.json)" || { printf 'FAIL - backpressure-claim-scope.json did not render:\n%s\n' "$bps"; exit 1; }
+bpsflat="$(tr '\n' ' ' <<<"$bps" | tr -s ' ')"
+assert_contains "the gauge counts only the claims the cycle's own gate would count" \
+  '4 <small> / 8 max' "$bpsflat"
+assert_contains "…so it does not trip a cap the pipeline is nowhere near" \
+  "background:var(--accent)" "$bps"
+assert_contains "the tooltip names the same three-claim figure" \
+  'title="0 changes-requested + 1 draft + 3 unraised claim(s) — plus 1 waiting on human (5 raw)"' \
+  "$bps"
+assert_contains "the raw open-PR line still counts only pull requests" \
+  "2 open, 1 waiting on human" "$bps"
+# The panel is deliberately not filtered the way the gauge is: a tombstone
+# holding an item off the whole fleet is what an operator hunting a stuck item
+# needs to see, whatever the gauge does with it.
+assert_contains "the live-claims panel still shows the pseudo-slug rows in full" \
+  "Poetic-Poems-agent-ops/342/1786772746" "$bps"
+
 # Single-quoted: these are literal rendered dollar amounts, not shell
 # expansions, so the SC2016 the pinned linter raises on them is a false
 # positive.

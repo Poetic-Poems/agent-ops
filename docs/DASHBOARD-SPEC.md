@@ -705,11 +705,23 @@ Then metric cards (spend today/total — fleet-wide, one shared account —
 failures, reached-ready, back-pressure gauge vs `max_open_agent_prs`. The
 gauge's own figure is the same four-part sum `agent-cycle.sh` trips its cap
 on (requirement 2.2) — draft PRs, ready PRs still `CHANGES_REQUESTED`, and
-live claims (registry rows keyed by an item rather than by an existing PR
-number, mirroring `claim.sh count`'s exclusion of `pr-<n>` entries) — rather
+live claims — rather
 than a figure the page derives from the open-PR listing alone: a live claim
 is work already in flight whose PR does not exist yet, so it cannot appear
-there. The card's `title` tooltip spells out the same split the cycle logs,
+there. Which registry rows those are is `claim.sh count`'s rule, transcribed
+rather than re-derived — a card reporting a different figure from the gate it
+depicts is worse than no card — and it excludes two kinds of row. Rows under a
+**pseudo-slug** (`enabler`, `refiner`) are the Enabler's and Refiner's
+engagement tombstones: never released, retired only by `claim.sh gc`, and
+never seen by the cycle, which asks `claim.sh count` for one configured repo
+at a time. The page reads the whole registry in one tree call, so it must
+re-impose that scope itself or the gauge climbs with every item the Enabler
+examines and pins red against an open gate. Rows **naming a pull request
+already in the sum** are that PR a second time: the `pr-<n>` exclusion entry
+always, and a `pr-<n>-<kind>-<scope>` item ref when its PR is among the drafts
+or changes-requested PRs counted above — but not when that PR sits in the
+human's queue (conflicted, dequeued), where the claim is the only record the
+work is in flight. The card's `title` tooltip spells out the same split the cycle logs,
 e.g. "1 changes-requested + 0 draft + 1 unraised claim(s) — plus 13 waiting
 on human (14 raw)", with a line underneath naming the raw open-PR total and,
 when it differs, how many of those are sitting only in a human's queue
@@ -1276,6 +1288,23 @@ number's twins elsewhere on the page.
   the pull-request hover card's pointer/focus behaviour, and which column the
   browser balances each cost block into — that is layout, and layout is what
   this stub does not do; it is covered by the manual check below.
+- The back-pressure card agrees with the gate it depicts, in both directions,
+  from two fixtures of its own. `backpressure-claims.json` (issue #427) holds
+  a changes-requested PR, a draft, an approved PR waiting on a human, one
+  unraised item claim and one `pr-<n>` exclusion entry: the gauge reads 3 of
+  3 and trips red, counting the claim the open-PR listing cannot show it and
+  not the exclusion entry, whose PR is in that listing already.
+  `backpressure-claim-scope.json` (the over-correction in PR #434) holds seven
+  registry rows against two PRs: the gauge reads 4 of 8 and does not trip,
+  having dropped the `enabler` and `refiner` pseudo-slug tombstones, the
+  `pr-<n>` entry, and the item claim on the draft already counted — while
+  keeping the item claim on the *approved* PR, which sits in the human's queue
+  outside the sum and so is the only record of that work in flight. Both
+  assert the `title` tooltip verbatim, because it is the composition
+  `agent-cycle.sh` logs and the two are meant to be readable against each
+  other. The live-claims panel below is asserted to still show the
+  pseudo-slug rows in full: the gauge's narrowing is a statement about the
+  cap, not about what an operator hunting a stuck item may see.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
