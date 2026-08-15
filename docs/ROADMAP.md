@@ -49,6 +49,7 @@ says why.
 | D16 | Infrastructure as code | **The configuration of the pipeline and of the orchestration layer / control plane is infrastructure-as-code.** Decided August 2026. Everything that configures an installation — `config.json`, compose files and Kubernetes manifests, schedules, secrets wiring, per-node deployment shape — is declared in version-controlled code and reaches a running installation only by applying a versioned change, never by hand-editing a live node. Today compose- and env-level fixes are walked out to each node by hand, and the drift detection of #131 exists to catch exactly the divergence that this rule makes structurally impossible. Phase 2's deployment-as-artefact and Kubernetes items are the first enforcement, and the control-plane skeleton (D6) grows up under the same rule. |
 | D17 | Merge queues | **Supported and recommended where available; never required.** Decided August 2026. A GitHub merge queue serialises landings and tests every candidate merged with the latest `main`, retiring the behind-but-green rework class that strict up-to-date rules otherwise create — Poetic-Poems adopts queues on its own repositories (tracked by #377). The product cannot mandate them: GitHub offers merge queues only on organisation-owned repositories — public on any plan, private only on Enterprise Cloud — and never on personal accounts, where D3's solo developers live. The pipeline therefore stays fully functional without a queue and becomes queue-aware where one exists: landings are asynchronous, a pull request can be `queued` or silently dequeued, and a push to a queued branch evicts it. Under a queue the merge act is enqueueing ("Merge when ready"). Below `agent-merges-routine` on D18's ladder that act is the human's, and the product never enqueues a pull request, exactly as it never merges one; at or above it, enqueueing is the Script's landing step, performed only after every D18 gate has passed. |
 | D18 | Merge autonomy | **An opt-in trust ladder; the default is the human gate.** Decided August 2026 (investigation: `docs/reviews/2026-08-14-autonomy-investigation.md`; rollout umbrella #402). `merge_autonomy` — `human` → `agent-approves` → `agent-merges-routine` → `agent-merges-all` — sets, per installation and per repository, who approves and who lands a pull request. At every level above `human`, approval and landing are acts of the Script under a non-author forge identity (a GitHub App, "Pullwright Approver"), performed only after every deterministic gate and an independent Approver verdict pass; no model ever holds approve or merge rights, and a human `CHANGES_REQUESTED` blocks landing at every level. Where a merge queue exists, landing is enqueueing (amending D17); otherwise it is GitHub auto-merge. Landings are capped by `merge_budget_per_day`, which replaces the human merge rate as the spend governor. The product default is `human`, unchanged from today — nothing a customer has not opted into ever lands a pull request. Poetic-Poems, customer zero, climbs the whole ladder. |
+| D19 | Rendered-preview checking | **A tiered preview check, with the browser in a shared renderer — never in the agent images.** Decided August 2026. Reviewing a web change means seeing the page a user will see, and the pipeline today stops two tiers short: it verifies a preview *deployed* (answers 2xx on `/`), never what it *serves*, never what it *renders*. On poetic-fiddle#319 the CSP defect was caught only by a human clicking the deployed preview; on agent-ops#424 a Reviewer tried to stage a browser onto its node by hand, failed for want of root, and handed the eyeballing back to the human — the nodes already think to check, and are blocked by tooling, not by intent or credentials. The check becomes a three-tier ladder, each tier priced and entered only when the diff warrants it: **deployed** — the preview exists and answers (today's `preview-deploy.sh`); **served** — fetch the routes the diff touches and read the HTML and response headers statically through the deployment-protection bypass, no browser required (Content-Security-Policy headers are the proven catch); **rendered** — a real browser executes the page and returns screenshots, console output, and the resulting DOM as artefacts the reviewing stage reads. How a preview is *obtained* sits behind a per-repo `preview` block in config — an adapter interface with Vercel as the proven first provider, others by demand — and a repository with no preview deployment, or one whose owner withholds its build system's credentials, declares a **local fallback**: build and serve the pull-request head from commands stated in config, then check that. The browser itself ships in one separately-deployable renderer container per installation, serving every node on demand — the dashboard-split precedent, honouring D14 — so agent images stay browser-free, idle nodes pay nothing for a capability they use occasionally, and the preview credentials live server-side in the renderer rather than passing through an agent's transcript. A rendered page is untrusted input: its content reaches the reviewing model as data, never as instructions. |
 
 ## End state
 
@@ -76,6 +77,11 @@ chooses:
   and CI guards ship with the product, race-safe for concurrent human and
   agent writers, and the pipeline works registers down as an ordinary
   source.
+- Rendered previews verified (D19): every web-facing change is checked at
+  the tier it needs — deployed, served, or fully rendered in a browser —
+  with the browser living in one shared renderer per installation, never
+  in the agent images, and a local build-and-serve fallback for
+  repositories with no preview deployment at all.
 - Several supported hosting options.
 - Source-available, under a marketable product name.
 
@@ -170,6 +176,20 @@ Pullwright organisation and carries its licence.
 - [x] Provider-qualified model identifiers in the config schema, so models
       from other providers can arrive later without a breaking change
       (D12). *[fleet]*
+- [ ] Read the served preview, not merely its status (D19, the *served*
+      tier): extend `scripts/preview-deploy.sh` with a fetch mode that
+      returns a chosen route's response headers and HTML through the
+      deployment-protection bypass without the secret ever entering the
+      transcript, and point the Implementor's and Reviewer's preview steps
+      at the routes the diff touches — response headers included, which is
+      the class poetic-fiddle#319 proved a status probe cannot catch.
+      *[fleet]*
+- [ ] Move the preview check behind per-repo configuration (D19): the
+      Vercel specifics — one project per secret, the bypass header, the
+      poetic-fiddle mention hardcoded into two prompts — become a `preview`
+      block in `config.json` (provider, URL resolution, credential shape,
+      or `none`), so an adopting repository declares its own arrangement
+      instead of inheriting Poetic's. *[fleet]*
 - [ ] Create the product repository in the Pullwright organisation (the
       name and org exist — D13); move the pipeline; reduce agent-ops to
       consumer config + deployment (D8). *[interactive]*
@@ -269,6 +289,26 @@ same way.
       CPU and GitHub traffic. The suite stays whole (D7) — the dashboard
       just becomes separately deployable (D14) — and the raw-data feed
       never leaves the installation's private boundary. *[interactive]*
+- [ ] The renderer (D19, the *rendered* tier): one separately-deployable
+      container per installation — the dashboard-split precedent — that
+      takes a URL or a built static page, drives a headless browser, and
+      returns screenshot, console log, and rendered DOM as artefacts to
+      the requesting stage; agent images stay browser-free. On Compose an
+      optional profile whose browser process exists only for the duration
+      of a job; on Kubernetes an on-demand Job, so scale-to-zero holds. It
+      alone holds the preview credentials, and it carries a stated resource
+      budget (D14) like every other container. Rendered output is untrusted
+      page content and reaches the model as data, never as instructions.
+      *[interactive]*
+- [ ] Local preview fallback (D19): where a repository has no preview
+      deployment — agent-ops#424's dashboard is the motivating case — or
+      will not share its build system's credentials, the renderer's builder
+      side clones the pull-request head, runs the build-and-serve commands
+      declared in the repo's `preview` block, and checks the result. The
+      expensive path by construction, so it is opt-in per repo,
+      concurrency-capped, cached between runs, and priced under D14; a
+      static page needs no build step and costs almost nothing.
+      *[interactive]*
 - [ ] Decide how the suite authenticates to the forge, so that no
       installation depends on a human's personal API quota. Every node, the
       Publisher, and every interactive session presents a personal access
@@ -398,6 +438,9 @@ dashboard; a feedback channel exists and is producing roadmap items.
       failure patterns. *[interactive]*
 - [ ] First non-Claude model provider supported end to end, chosen by
       design-partner demand (D12). *[interactive]*
+- [ ] Preview adapters beyond Vercel — Netlify, Cloudflare Pages, a plain
+      URL template over the forge's deployments API — chosen by
+      design-partner demand (D19). *[fleet]*
 
 ## Phase 4 — Delivery decision and launch
 
@@ -449,6 +492,7 @@ Parked deliberately, each with a decide-by gate:
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
 | State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale or measured resource cost (D14) demands |
 | Forge API identity — the owner's PAT, machine accounts, one GitHub App on the organisation, or one App per node | Phase 2, before secrets-based provisioning fixes the credential shape; priced for a Pullwright organisation whose repositories may be private. The Approver role is already decided — one GitHub App per installation (D18); this question still owns the authoring identity and capacity arithmetic |
+| What a rendered verdict is (D19) — screenshots a model eyeballs, scripted assertions the repo declares, a visual diff against a baseline, or some blend | First renderer commit, Phase 2 |
 | Multi-forge support (GitLab, Bitbucket, Gitea) | Revisit on design-partner demand, Phase 3 |
 | SaaS infrastructure | Only if Phase 4 chooses SaaS |
 
