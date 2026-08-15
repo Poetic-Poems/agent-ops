@@ -271,7 +271,9 @@ extract_block() {  # extract_block <start-literal> <end-literal>
     "$SCRIPT_DIR/scripts/gather-register-hygiene.sh"
 }
 
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
 merge_line="$(extract_block 'problems="$(jq -nc' 'void_problems")"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
 if [[ "$merge_line" != *'input as $a | input as $b | $a + $b'* ]]; then
   printf 'FAIL - could not extract the problems merge from scripts/gather-register-hygiene.sh (moved or reworded?)\n'
   failures=$(( failures + 1 ))
@@ -291,18 +293,20 @@ assert_eq "a merge onto an oversized problems array keeps every prior entry" \
 assert_eq "  ... plus the void problem just merged in" "1" \
   "$(jq '[.[] | select(. == "VOIDED STATUS  the newest one")] | length' <<<"$merged")"
 
-final_block="$(extract_block 'jq -nc \' 'body_json"')"
+final_block="$(extract_block 'jq -nc' 'body_json"')"
 if [[ "$final_block" != *'source: "register-hygiene"'* ]]; then
   printf 'FAIL - could not extract the final candidate build from scripts/gather-register-hygiene.sh (moved or reworded?)\n'
   failures=$(( failures + 1 ))
 fi
 run_final_block() {  # run_final_block <problems-json> <body-raw>
   local body_json
-  body_json="$(jq -Rs . <<<"$2")"
-  # problems/body_json/ref/url/dir_sha are consumed only by the eval'd
-  # final_block, invisible to shellcheck.
+  # body_json is consumed only by the eval'd final_block inside the subshell
+  # below (which inherits it), invisible to shellcheck.
   # shellcheck disable=SC2034
-  ( problems="$1" body_json="$body_json" ref="register-hygiene-abc123" \
+  body_json="$(jq -Rs . <<<"$2")"
+  # problems/ref/url/dir_sha are consumed only by the eval'd final_block too.
+  # shellcheck disable=SC2034
+  ( problems="$1" ref="register-hygiene-abc123" \
     url="https://github.com/o/a/tree/main/tech-debt" dir_sha="deadbeef"
     eval "$final_block" )
 }

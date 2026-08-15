@@ -1540,7 +1540,9 @@ extract_block() {  # extract_block <start-literal> <end-literal>
     "$SCRIPT_DIR/scripts/publish-dashboard.sh"
 }
 
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
 github_json_block="$(extract_block '  github_json="$(jq -n' 'claims_json")"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
 if [[ "$github_json_block" != *'input as $prs | input as $claims'* ]]; then
   printf 'FAIL - could not extract the github_json build from scripts/publish-dashboard.sh (moved or reworded?)\n'
   failures=$(( failures + 1 ))
@@ -1552,7 +1554,9 @@ run_github_json_block() {  # run_github_json_block <prs-json> <claims-json>
   ( prs_json="$1" claims_json="$2" gh_ok=true gh_err="" now_iso="2026-08-15T00:00:00Z" \
     inputs_json='{}' pr_index_file="$tmp_dir/empty-pr-index.json"
     printf '{}' > "$pr_index_file"
-    eval "$github_json_block"; printf '%s' "$github_json" )
+    eval "$github_json_block"
+    # shellcheck disable=SC2154  # set by the eval'd github_json_block
+    printf '%s' "$github_json" )
 }
 big_prs_json="$(jq -nc '[range(1300) | {repo: "o/a", number: ., title: ("pad " + ("x" * 100))}]')"
 assert_eq "the oversized prs fixture really is past MAX_ARG_STRLEN" "1" \
