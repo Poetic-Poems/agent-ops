@@ -1250,6 +1250,13 @@
   // ---------- claims panel ----------
   // The live claim registry: work the fleet holds that has not yet surfaced
   // as a PR. Every row here is an item no other node will pick up.
+  //
+  // Every row, deliberately — including the Enabler's and the Refiner's
+  // engagement tombstones, whose Repo column reads `enabler`/`refiner` rather
+  // than a repository. This is the registry as it is, and a tombstone holding
+  // an item off the fleet is exactly what an operator hunting a stuck item
+  // needs to see. The back-pressure card above counts a narrower set, for the
+  // reasons given there; the two are meant to differ.
   function claimsPanel() {
     var claims = fleetClaims();
     if (!claims.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No live claims — nothing is mid-flight."}));
@@ -2303,12 +2310,39 @@
       return !p.isDraft && p.review_decision !== "CHANGES_REQUESTED";
     }).length;
     var pipelineReadyN = readyN - humanQueueN;
-    // A `pr-<n>` entry excludes a peer from a PR that already exists (issue
-    // #238) — it is not work in flight without a PR yet, and that PR is
-    // already counted above, so counting the claim too would double it
-    // (mirrors lib/claim.sh's `do_count`).
+    // Which registry entries are "unraised claims" is lib/claim.sh's `do_count`
+    // rule, and this is a transcription of it, not a second opinion: a card
+    // that reports a different figure from the gate it depicts is worse than
+    // no card. Two exclusions, mirrored from there.
+    //
+    // First, the registry is wider than the repos. The Enabler and the Refiner
+    // claim engagement tombstones under the pseudo-slugs `enabler` and
+    // `refiner` (implementation spec 35c) — never released, retired only by
+    // `claim.sh gc` at `claim_ttl_hours`. `claim.sh count` is asked for one
+    // configured repo at a time and so never sees them, an invariant lib/claim.sh
+    // states in its own header; this page walks the whole registry in one tree
+    // call and must re-impose it, or the gauge climbs with every item the
+    // Enabler examines and pins red against a gate that is open.
+    //
+    // Second, a claim naming a pull request already counted above is that PR a
+    // second time. That is the `pr-<n>` exclusion entry (issue #238), dropped
+    // unconditionally because it is only ever written for a PR that exists, and
+    // the `pr-<n>-<kind>-<scope>` item ref the four finishing sources use,
+    // dropped only when its PR is in the draft or changes-requested sum. A
+    // conflicted or dequeued PR sits in the human's queue, is excluded from
+    // that sum, and its claim is then the only record of the work in flight —
+    // so that one keeps counting.
+    var claimRepos = ((D.config && D.config.repos) || []).map(function (r) { return r.slug; });
+    var countedPr = {};
+    openPrs.forEach(function (p) {
+      if (p.isDraft || p.review_decision === "CHANGES_REQUESTED") countedPr[p.repo + "#" + p.number] = true;
+    });
     var claimN = fleetClaims().filter(function (c) {
-      return !/^pr-\d+$/.test(c.key || "");
+      if (claimRepos.indexOf(c.repo) < 0) return false;
+      var key = c.key || "";
+      if (/^pr-\d+$/.test(key)) return false;
+      var named = /^pr-(\d+)-/.exec(key);
+      return !(named && countedPr[c.repo + "#" + named[1]]);
     }).length;
     var adjN = pipelineReadyN + draftN + claimN;
     var rawOpenN = readyN + draftN + claimN;

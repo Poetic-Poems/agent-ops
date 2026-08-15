@@ -1069,16 +1069,35 @@ runs unattended.
       claim-registry entries for those repos** (requirement 17a — work a
       node has claimed but not yet surfaced as a PR; an item-keyed entry is
       dropped the moment its PR exists), is ≥ `max_open_agent_prs`, stand
-      down. `lib/claim.sh count` excludes the PR-keyed `pr-<n>` exclusion
-      entries (requirement 17a, issue #238) from this figure: unlike an
-      item-keyed entry, a PR-keyed one is held past its PR's own raising —
-      until the claiming cycle ends (issue #360) — and the PR it targets is
-      already counted above through `gh pr list`, so counting the claim too
-      would double-count it for as long as that cycle's Reviewer stage runs.
-      This is the primary throttle on both spend and on the human gate silting
-      up. The count is approximate by design: N nodes can pass it
+      down. This is the primary throttle on both spend and on the human gate
+      silting up. The count is approximate by design: N nodes can pass it
       simultaneously, so the stated bound is `max_open_agent_prs +
       (nodes − 1)`, transient.
+
+      `lib/claim.sh count` drops every registry entry that names a pull
+      request the PR listing above has already counted, because such an entry
+      is that PR a second time rather than work in flight without one. Two
+      shapes name a PR. A PR-keyed `pr-<n>` entry (requirement 17a, issue
+      #238) is dropped unconditionally — it is only ever written for a PR that
+      exists, and unlike an item-keyed entry it is held past its PR's own
+      raising, until the claiming cycle ends (issue #360), so counting it
+      would double-count that PR for as long as that cycle's Reviewer stage
+      runs. An item-keyed entry whose ref is `pr-<n>-<kind>-<scope>` — the
+      shape the four finishing sources (requirements 3c, 3e, 3g and 3z; see
+      requirement 3p) key their items on — is dropped only when that PR is
+      among the drafts and
+      changes-requested PRs actually counted, which is why the caller passes
+      those numbers in per repo. A ready PR sitting in the human's queue is
+      *not* among them (see below), so a conflicted or dequeued PR the
+      pipeline is working keeps counting through its claim, which is then the
+      only record that the work is in flight.
+
+      The registry is wider than the configured repos: the Enabler and the
+      Refiner claim engagement tombstones under the pseudo-slugs `enabler` and
+      `refiner` (requirement 35c). Those never reach this count, because it is
+      taken one configured repo at a time — an invariant `lib/claim.sh` states
+      in its own header, and one any other reader of the registry (the
+      dashboard's back-pressure card among them) has to re-impose for itself.
 
       A ready PR whose `reviewDecision` is **not** `CHANGES_REQUESTED` —
       approved, or awaiting a first or re-review with nothing currently
@@ -10400,7 +10419,23 @@ pull request, run the ones the change touches and any it could regress.
    the EXIT trap's backstop, proven by running the real `cleanup` under
    `set -e`. `test/claim.test.sh` covers the back-pressure half: `count`
    counts the item-keyed entry a cycle just won and does not count a
-   `pr-<n>` entry surviving on its own.
+   `pr-<n>` entry surviving on its own; and, given the pull requests the
+   caller has already counted, it drops an item claim naming one of them
+   while keeping a claim on a PR the caller's sum does not hold — matching
+   whole numbers, so a claim on PR 90 survives a caller that counted PR 9.
+7e. **The back-pressure block hands its parts to each other correctly
+   (requirement 2.2).** The counting seam, not the parts: issue #427 and the
+   over-correction in PR #434 were both defects of this wiring, and both
+   shipped past a suite that tested `lib/claim.sh count` thoroughly and its
+   caller not at all. `test/backpressure-wiring.test.sh` passes, against the
+   block lifted verbatim from `agent-cycle.sh` with a `gh` stub replaying a
+   listing per repo and a `lib/claim.sh` stub recording its argv: each repo's
+   claim count is asked for against that repo's own drafts and
+   changes-requested PRs and no others, so a claim on an approved PR waiting
+   on a human keeps counting; a repo whose listing could not be read names no
+   PRs at all, counting every claim, which is the fail-closed reading beside
+   its own zeroed counts; and the composition line states the split the
+   operator and the dashboard card both read.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own

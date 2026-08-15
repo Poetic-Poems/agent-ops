@@ -4887,17 +4887,39 @@ fi
 # carries `pr_label` and is deliberately excluded from the sum — so a repo can
 # genuinely hold more open labelled PRs than the cap, and the cap is no
 # guarantee the page was big enough.
+#
+# Live claims count toward the cap too: a claim is work in flight that has
+# not yet surfaced as a PR, and N nodes counting only PRs would collectively
+# overshoot by the work each other had claimed but not yet raised. Still
+# approximate — two nodes can pass this check simultaneously — with a stated
+# bound of max_open_agent_prs + (nodes - 1), transient.
+#
+# "Not yet surfaced as a PR" is the whole of it, and it is why each repo's
+# claims are counted *here*, inside the same iteration as its own PR listing,
+# rather than in a second loop of their own: `claim.sh count` is told which of
+# this repo's pull requests the sum above already holds, and drops any claim
+# that merely names one of them. Two claim shapes name a PR. The PR-keyed
+# `pr-<n>` exclusion entry (issue #238) is held past its PR's own raising
+# (issue #360) and `claim.sh` drops it unconditionally; the item claim beside
+# it carries the `pr-<n>-<kind>-<scope>` ref the four finishing sources use,
+# and until now it was counted — a claimed abandoned draft was its own draft
+# PR *plus* its own claim, two against a cap it occupies once. Only the PRs
+# actually inside the sum are passed, so a conflicted or dequeued PR sitting
+# in the human's queue — excluded from the sum by the rule above — keeps
+# counting through its claim, which is then the only record of it in flight.
 ready_count=0
 human_queue_count=0
 draft_count=0
+claim_count=0
 listing_truncated=0
 while IFS= read -r slug; do
-  counts="$(gh pr list -R "$slug" --state open --label "$pr_label" \
-    --limit "$GITHUB_PR_LIST_LIMIT" --json isDraft,reviewDecision \
-    --jq '[([.[] | select(.isDraft | not)] | length),
+  prs_json="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --limit "$GITHUB_PR_LIST_LIMIT" --json number,isDraft,reviewDecision 2>/dev/null)" || prs_json=''
+  [[ -n "$prs_json" ]] || prs_json='[]'
+  counts="$(jq -r '[([.[] | select(.isDraft | not)] | length),
            ([.[] | select(.isDraft | not) | select(.reviewDecision != "CHANGES_REQUESTED")] | length),
            ([.[] | select(.isDraft)] | length),
-           length] | @tsv' 2>/dev/null)" || counts=''
+           length] | @tsv' <<<"$prs_json" 2>/dev/null)" || counts=''
   IFS=$'\t' read -r n_ready n_human n_draft n_total <<<"$counts"
   [[ "$n_ready" =~ ^[0-9]+$ ]] || n_ready=0
   [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
@@ -4912,22 +4934,14 @@ while IFS= read -r slug; do
   ready_count=$(( ready_count + n_ready ))
   human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
-done < <(jq -r '.[].slug' <<<"$all_repos_json")
-
-# Live claims count toward the cap too: a claim is work in flight that has
-# not yet surfaced as a PR (its item-keyed registry entry is dropped the
-# moment the PR exists), and N nodes counting only PRs would collectively
-# overshoot by the work each other had claimed but not yet raised. `claim.sh
-# count` reports only the item-keyed entries for that reason: the PR-keyed
-# `pr-<n>` exclusion entry alongside them is held past its PR's own raising
-# (issue #360), and the PR it names is already in the `gh pr list` counts
-# above, so counting it here would double-count that PR for as long as the
-# claiming cycle's Reviewer stage runs. Still approximate — two
-# nodes can pass this check simultaneously — with a stated bound of
-# max_open_agent_prs + (nodes - 1), transient.
-claim_count=0
-while IFS= read -r slug; do
-  n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" 2>&1)" \
+  # The pull requests this repo just contributed to the trip: its drafts, and
+  # its ready ones the pipeline still owes a change. Bounded by
+  # GITHUB_PR_LIST_LIMIT, so it may ride argv (requirement 4g). An unreadable
+  # listing leaves it empty, which counts every claim — the fail-closed
+  # reading, matching the zeroed counts above.
+  counted_prs="$(jq -r '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]
+                        | join(",")' <<<"$prs_json" 2>/dev/null)" || counted_prs=''
+  n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" "$counted_prs" 2>&1)" \
     || { guard_warn "claim-count:$slug" "$n"; n=0; }
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   claim_count=$(( claim_count + n ))
