@@ -3919,7 +3919,13 @@ implements.
    stage makes is a Script-issued `gh api` call under the Approver's own
    minted token (`approver_post_review`), never a prompt-issued `gh pr
    review` or `gh pr merge` — `prompts/approver.md` is explicitly forbidden
-   both, and the model's only output is a JSON verdict.
+   both, and the model's only output is a JSON verdict. A review GitHub
+   itself refused — an expired token, an installation that lost review
+   rights, an API outage — is logged as a `warning` naming the pull request
+   and the event (`approver_post_or_warn`, requirement 33) and changes
+   nothing else: the pull request stays exactly as the human already had it,
+   which is 8b's "a missing review, never a stranded PR" at the one point
+   where the failure is the write itself rather than the decision.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -5659,6 +5665,7 @@ implements.
     `dependabot-rebase-requested`,
     `disabled`, `enabled`,
     `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
+    `approver-verdict`, `approver-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
@@ -5748,7 +5755,20 @@ implements.
     since a run of failed salvages with no `recovered` among them is itself
     the evidence that a shape `extract_json_result` still cannot reach has
     recurred; a failed run with no session to resume at all writes no
-    `salvage` event, because no attempt was made. A
+    `salvage` event, because no attempt was made. An `approver-verdict`
+    (requirements 8b/8c) is written once per Approver engagement that reached
+    a verdict, carrying the `pr_url`, the `tier` it was judged at, the
+    `verdict` itself, the `refuse_streak` that tier was chosen against, and
+    `adjudication` — `true` where the streak, not the complexity grade, chose
+    the tier. It records what the Approver decided, never that GitHub accepted
+    the review: a review the API refused is a `warning` naming the pull
+    request and the event (`approver_post_or_warn`), so an operator finding an
+    `approver-verdict` with no review on the pull request has the write's own
+    failure logged beside it rather than having to infer it. An
+    `approver-escalated` (requirement 8c) carries the same `pr_url` plus the
+    `issue_number` and `issue_url` of the escalation an unsettled adjudication
+    raised; a filing that failed is a `warning` instead, since
+    `create_escalation_issue`'s own dedup makes the retry next cycle free. A
     `stage-start` carries the two caps that stage
     was given and where each came from — `backstop_min`, `inactivity_min`,
     `source` and `basis` (requirement 4f) — because a self-tuning number that
@@ -9284,12 +9304,16 @@ What exists, and the requirements each part answers to:
     `GH_TOKEN` set for that one invocation only, never exported — the one
     GitHub write this whole stage performs, and the only place in this
     codebase that mints a review under a non-owner identity. `agent-cycle.sh`'s
-    `run_approver_stage` and `approver_escalate` are the sole callers,
+    `run_approver_stage`, `approver_post_or_warn` and `approver_escalate` are
+    the sole callers,
     composing these primitives with `merge_autonomy_effective_level`
     (`lib/merge-autonomy.sh`), `create_escalation_issue` (component 2) and
     the ordinary `run_claude_stage` launch every other stage uses. Sourced,
     never executed. Regression-tested in `test/approver.test.sh` against a
-    stubbed `gh`. Must pass `shellcheck`.
+    stubbed `gh`, and the wiring those primitives hang off in
+    `test/approver-wiring.test.sh`, which lifts `run_approver_stage` and
+    `approver_post_or_warn` verbatim out of `agent-cycle.sh` rather than
+    restating their logic (acceptance check 8s). Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -11764,21 +11788,32 @@ pull request, run the ones the change touches and any it could regress.
     `trivial`/`standard`/`high` and anything else to `standard`;
     `approver_model_for_tier` picks `MODEL_COMPLEX` only for `high`;
     `approver_refuse_streak` counts a login's own trailing
-    `CHANGES_REQUESTED` reviews correctly across a synthetic multi-page
-    reviews list — stopping at that login's own most recent `APPROVED`,
-    ignoring `COMMENTED`/`DISMISSED`, reading `0` for a login that never
-    reviewed — and returns non-zero, printing nothing, when the list itself
-    could not be read; `approver_post_review` posts with `GH_TOKEN` set for
-    that one invocation only, never leaking into a later call under the
+    `CHANGES_REQUESTED` reviews correctly over the line-per-review shape
+    `--paginate --jq` emits — the aggregation runs once over every page's
+    lines at once, so no page boundary is observable to it — stopping at that
+    login's own most recent `APPROVED`, ignoring `COMMENTED` and `DISMISSED`,
+    ignoring another account's reviews entirely, reading `0` for a login that
+    never reviewed — and returns non-zero, printing nothing, when the list
+    itself could not be read; `approver_post_review` posts with `GH_TOKEN` set
+    for that one invocation only, never leaking into a later call under the
     stub's own default identity; `approver_prior_refusal_bodies` returns the
     same login's `REQUEST_CHANGES` bodies oldest-first and nothing on an
-    unreadable list. Driven through `agent-cycle.sh` at `merge_autonomy:
-    human`, `run_approver_stage` posts no review and logs nothing beyond the
-    ordinary cycle; at `agent-approves` with a stubbed Approver credential, a
-    `complexity:low` pull request gets a deterministic `APPROVE` with no
-    model launched, and a synthetic refuse streak of two routes the next
-    round to `approver_model_critical` rather than the tier the complexity
-    grade alone would pick. `scripts/doctor.sh` fails a `merge_autonomy`
+    unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`
+    and `approver_post_or_warn` verbatim out of `agent-cycle.sh` and drives
+    them with every GitHub call, model launch and log write stubbed: at
+    `merge_autonomy: human` the stage posts no review, launches no model and
+    logs nothing at all; at `agent-approves` a `complexity:low` pull request
+    gets a deterministic `APPROVE` with no model launched, `medium` and
+    `high` launch `approver_model_default` and `approver_model_complex`
+    respectively, a refusal's `reasons` become the `REQUEST_CHANGES` body,
+    and a synthetic refuse streak of two routes the next round to
+    `approver_model_critical` — for a `complexity:low` pull request too,
+    which the grade alone would have approved without a model at all. Each
+    failure path returns 0 having posted nothing and logged a `warning`: the
+    stage disabled (`approver_model_default` empty), the credential absent, a
+    verdict that would not parse, a verdict the Script does not recognise, and
+    a review GitHub refused; only an adjudication escalates.
+    `scripts/doctor.sh` fails a `merge_autonomy`
     above `human` configured with `approver_model_default` empty, the same
     shape its existing `approver_app_id` pairing check already fails on
     (`test/doctor.test.sh`).

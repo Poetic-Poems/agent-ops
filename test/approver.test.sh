@@ -164,6 +164,14 @@ assert_eq "a COMMENTED review neither extends nor resets the streak" "2" \
 
 reset_stub
 set_reviews \
+  "$(review "pullwright-approver[bot]" CHANGES_REQUESTED 1)" \
+  "$(review "pullwright-approver[bot]" DISMISSED 2)" \
+  "$(review "pullwright-approver[bot]" CHANGES_REQUESTED 3)"
+assert_eq "nor does a DISMISSED one — it carries no standing verdict either" "2" \
+  "$(approver_refuse_streak "$URL" "pullwright-approver[bot]")"
+
+reset_stub
+set_reviews \
   "$(review "a-human" CHANGES_REQUESTED 1)" \
   "$(review "pullwright-approver[bot]" CHANGES_REQUESTED 2)"
 assert_eq "another account's reviews never count toward this login's streak" "1" \
