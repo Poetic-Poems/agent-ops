@@ -568,7 +568,7 @@ refiner_policy_value() {
 # refiner_candidate_items REPOS_JSON POLICY_JSON REFINEMENTS_JSON BLOCKED_JSON VOID_JSON CLAIMED_JSON
 # Print, as a JSON array, every item from this cycle's pre-fetched source
 # arrays — `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-# `register_hygiene`, `issues`, `tech_debt`, `project_review`,
+# `dequeued`, `register_hygiene`, `issues`, `tech_debt`, `project_review`,
 # `implementation_plan` — that the Refiner may spend an engagement on: its
 # source's policy is not `exempt` (requirement 39a), it carries no refinement
 # yet (REFINEMENTS_JSON, requirement 3h), and it is not already blocked,
@@ -580,7 +580,7 @@ refiner_policy_value() {
 # specification without a second fetch, the same reason the Co-Ordinator is
 # handed it pre-fetched rather than told to query it.
 #
-# The first seven arrays are the same per-repo arrays requirement 3 assembles
+# The first eight arrays are the same per-repo arrays requirement 3 assembles
 # for the Co-Ordinator's own `ordered_repos_json`. `project_review` and
 # `implementation_plan` are not: the Co-Ordinator still reads `reviews/…` and
 # the plan document live (prompts/coordinator.md), so those two arrays exist
@@ -619,6 +619,7 @@ refiner_candidate_items() {
       | ($r.slug // "") as $repo
       | ( ($r.findings // [])[]?, ($r.review_feedback // [])[]?,
           ($r.abandoned_drafts // [])[]?, ($r.merge_conflicts // [])[]?,
+          ($r.dequeued // [])[]?,
           ($r.register_hygiene // [])[]?, ($r.issues // [])[]?,
           ($r.tech_debt // [])[]?, ($r.project_review // [])[]?,
           ($r.implementation_plan // [])[]? )

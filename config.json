@@ -2,17 +2,17 @@
   "repos": [
     {
       "slug": "Poetic-Poems/poetic",
-      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "project-review", "issues:low", "code-quality", "register-hygiene"]
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "dequeued", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "project-review", "issues:low", "code-quality", "register-hygiene"]
     },
     {
       "slug": "Poetic-Poems/poetic-fiddle",
-      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "implementation-plan", "project-review", "issues:low", "code-quality", "register-hygiene"],
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "dequeued", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "implementation-plan", "project-review", "issues:low", "code-quality", "register-hygiene"],
       "nice": 6,
       "implementation_plan_path": "docs/IMPLEMENTATION-PLAN.md"
     },
     {
       "slug": "Poetic-Poems/agent-ops",
-      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality", "register-hygiene"],
+      "sources": ["security", "issues:urgent", "review-feedback", "merge-conflicts", "dequeued", "human-visibility", "abandoned-drafts", "failed-runs", "issues:high", "tech-debt", "issues:medium", "issues:low", "code-quality", "register-hygiene"],
       "nice": -18
     }
   ],

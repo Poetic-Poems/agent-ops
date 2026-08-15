@@ -969,7 +969,7 @@ claim_branch_for() {  # <source> <item>
 # per-candidate live check the model performs unevenly. Two independent
 # sources, unioned and deduped by item: `lib/claim.sh claims`, the registry
 # already age-filtered to `claim_ttl_hours` — the only source for a file claim,
-# since the three finishing sources have no branch — and `lib/claim.sh
+# since the four finishing sources have no branch — and `lib/claim.sh
 # branches`, a live scan that still catches a claim the registry missed
 # (`state_repo` unset, or a failed best-effort write). By the time this runs,
 # step 2.1a's claim GC has already swept anything past the TTL, so a live
@@ -1355,7 +1355,7 @@ unaccounted_items() {  # <recorded-json> <eligible-json> <refinement-policy-json
 #
 # Read *after* requirement 2.2a's back-pressure decision, for the reason
 # requirement 3t's tech-debt-only predecessor was: a restricted cycle narrows
-# every repo's `sources` to the three finishing ones, and a verdict is owed no
+# every repo's `sources` to the four finishing ones, and a verdict is owed no
 # account of a band this cycle forbade it to select from. Which is also why
 # each band is gated on the repo's own `sources` here rather than on the array
 # merely being non-empty: back-pressure narrows the list without emptying
@@ -1417,6 +1417,7 @@ coordinator_eligible_items() {  # <ordered-repos-json> <blocked-json>
                            or (.rebase_requested // false)
                            or ((.superseded_by // null) != null))];
                  "merge-conflicts"),
+            band($r; $srcs; $e.dequeued; "dequeued"),
             band($r; $srcs; $e.abandoned_drafts; "abandoned-drafts"),
             band($r; $srcs; $e.human_visibility; "human-visibility"),
             band($r; $srcs; $e.register_hygiene; "register-hygiene"),
@@ -1454,16 +1455,17 @@ candidate_preclaimed() {  # <repo> <item> <claims-at-gather-json> -> 0 iff alrea
 
 # Requirement 17a/issue #238: which PR a finishing-source candidate targets, for
 # the PR-keyed claim below to key on. The candidate's own `pr_number` when it
-# carries a usable one — prompts/coordinator.md requires it on all three
+# carries a usable one — prompts/coordinator.md requires it on all four
 # finishing sources' work orders — and otherwise the number the *item ref*
-# itself embeds, because all three gather scripts mint their refs with it in
+# itself embeds, because all four gather scripts mint their refs with it in
 # them by construction (`pr-<n>-review-<id>`, `pr-<n>-conflict-<sha>`,
-# `pr-<n>-abandoned-<sha>`; requirements 3c, 3e, 3g). The fallback is the whole
-# point: this claim is the hard gate that excludes a peer fleet-wide, and a gate
-# that engages only when the model remembered to copy a field is not one — a
-# single omitted `pr_number` would silently reopen the three-nodes-on-PR-#205
-# failure this exists to close. Empty only when neither source yields a number,
-# which for these three sources cannot happen without a malformed ref.
+# `pr-<n>-dequeued-<sha>`, `pr-<n>-abandoned-<sha>`; requirements 3c, 3e, 3z,
+# 3g). The fallback is the whole point: this claim is the hard gate that
+# excludes a peer fleet-wide, and a gate that engages only when the model
+# remembered to copy a field is not one — a single omitted `pr_number` would
+# silently reopen the three-nodes-on-PR-#205 failure this exists to close.
+# Empty only when neither source yields a number, which for these four
+# sources cannot happen without a malformed ref.
 pr_number_for_candidate() {  # <candidate-json> <item-ref>
   local n
   n="$(jq -r '.pr_number // empty' <<<"$1" 2>/dev/null || true)"
@@ -2004,6 +2006,35 @@ gather_merge_conflicts() {
 
   out="$(jq -c '.conflicts' <<<"$nudge_result")"
   printf '%s\n' "$out" > "$cycle_dir/merge-conflicts-$safe.json"
+  printf '%s' "$out"
+}
+
+# Pre-fetch the ready PRs this system raised that GitHub's merge queue
+# dequeued over a merge-group checks failure (TD-PPagop-26081409, requirement
+# 3z). Same rationale as gather_merge_conflicts: a dequeue is a transition the
+# open-PR digest cannot see at all (no commit lands, `updatedAt` barely
+# moves), so the array is computed here and fed to the fingerprint verbatim
+# for the no-op short-circuit to notice it (see scripts/gather-dequeued.sh and
+# lib/noop-skip.sh). No nudge-then-takeover step exists for this source — no
+# bot is involved — so unlike gather_merge_conflicts this is a direct pass
+# through to the gatherer script.
+gather_dequeued() {
+  local slug="$1" out safe
+  safe="${slug//\//_}"
+  out="$("$SCRIPT_DIR/scripts/gather-dequeued.sh" "$slug" "$pr_label" "$branch_prefix" \
+        2>"$cycle_dir/dequeued-$safe.err" || true)"
+  # Requirement 34n's liveness retirement, same marker discipline as
+  # `merge-conflicts-$safe.ok`: written iff this cycle's own read produced a
+  # valid array and said nothing on stderr.
+  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1 \
+     && [[ ! -s "$cycle_dir/dequeued-$safe.err" ]]; then
+    : > "$cycle_dir/dequeued-$safe.ok"
+  fi
+  if [[ -z "$out" ]] || ! jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
+    printf '[]'
+    return
+  fi
+  printf '%s\n' "$out" > "$cycle_dir/dequeued-$safe.json"
   printf '%s' "$out"
 }
 
@@ -2602,7 +2633,7 @@ run_coordinator_stage_attempt() {  # <attempt-out-file> <prompt> [extra-budget-j
 # Each candidate is built straight from its own pre-fetched entry — the same
 # fields the Co-Ordinator's own contract in `prompts/coordinator.md`'s
 # "Output" section requires (`item`, `branch`/`pr_url`/`pr_number` for the
-# three finishing sources, the Dependabot `takeover` shape for
+# four finishing sources, the Dependabot `takeover` shape for
 # merge-conflicts) — with `context` a verbatim paste of the entry's own body
 # text and `acceptance` a generic instruction naming the source's standard
 # procedure, since there is no model here to compose a bespoke one.
@@ -2694,6 +2725,11 @@ fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinemen
              "Rebase the existing pull request onto its base and resolve the conflict.";
              ({pr_url: .pr_url, pr_number: .pr_number} + (if $takeover then {takeover: true} else {branch: .branch} end))))];
 
+    def dq_cands: [.[] | select(lists("dequeued")) | .slug as $r | .default_branch as $db | (.dequeued // [])[]
+      | mk($r; $db; "dequeued"; .ref; .title; (.body // "");
+          "Diagnose and fix the merge-group checks failure that got this pull request dequeued, then push to the existing branch.";
+          {branch: .branch, pr_url: .pr_url, pr_number: .pr_number, base: .base})];
+
     def ad_cands: [.[] | select(lists("abandoned-drafts")) | .slug as $r | .default_branch as $db | (.abandoned_drafts // [])[]
       | mk($r; $db; "abandoned-drafts"; .ref; .title; (.body // "");
           "Finish the existing draft pull request to the item'"'"'s own acceptance.";
@@ -2724,7 +2760,7 @@ fallback_select_candidate() {  # <ordered-repos-json> <default-model> <refinemen
           "Repair only the flagged register inconsistencies per TECH-DEBT.md'"'"'s claiming/filing discipline; touch nothing else.";
           {})];
 
-    [ sec_cands, issue_band("Urgent"), rf_cands, mc_cands, ad_cands, hv_cands,
+    [ sec_cands, issue_band("Urgent"), rf_cands, mc_cands, dq_cands, ad_cands, hv_cands,
       issue_band("High"), td_cands, issue_band("Medium"), issue_band("Low"), cq_cands, rh_cands ]
     | map(select(length > 0))
     | if length > 0 then (.[0] | sort_by(._rank) | .[0] | del(._rank)) else null end
@@ -4782,7 +4818,7 @@ done < <(jq -r '.[].slug' <<<"$repos_json")
 
 while IFS=$'\t' read -r _ slug default_branch; do
   sources="$(jq -c --arg s "$slug" '.[] | select(.slug == $s) | .sources' <<<"$repos_json")"
-  # Requirement 3o, gathered here — ahead of the three finishing sources below,
+  # Requirement 3o, gathered here — ahead of the four finishing sources below,
   # not after them as before — so their own candidate arrays can be filtered by
   # it: unconditional, regardless of `sources`, because any starting source's
   # item can be claimed.
@@ -4800,7 +4836,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
     | $claimed + ($items | map({repo: $r} + .))
   ' <<<"$claimed_fold_docs")"
   # Requirement 3p/issue #238: the PR numbers a peer already holds a claim on,
-  # for this repo. Filtered into the three finishing sources' own arrays below —
+  # for this repo. Filtered into the four finishing sources' own arrays below —
   # deterministic code, not something the Co-Ordinator is asked to notice and
   # apply itself, which is exactly the step a Co-Ordinator run "saw" a peer's
   # claim on PR #205 and reasoned past because the item ref didn't match.
@@ -4808,7 +4844,7 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # The claimed item refs themselves, applied below to every pre-fetched
   # source's array through exclude_claimed_items: the same
   # deterministic-code-not-model-judgement decision as the pr_number filter
-  # above, extended from the three finishing sources to everything the
+  # above, extended from the four finishing sources to everything the
   # Script pre-fetches. Every gather script mints a `ref` field that is the
   # exact string a claim on that item is keyed on, so the match needs no
   # re-derivation.
@@ -4850,6 +4886,12 @@ while IFS=$'\t' read -r _ slug default_branch; do
     emit_first_seen "$slug" merge-conflicts "$merge_conflicts_raw"
     merge_conflicts="$(exclude_claimed_items "$(exclude_claimed_prs "$merge_conflicts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
+  dequeued="[]"
+  if jq -e 'any(.[]; . == "dequeued")' <<<"$sources" >/dev/null 2>&1; then
+    dequeued_raw="$(gather_dequeued "$slug")"
+    emit_first_seen "$slug" dequeued "$dequeued_raw"
+    dequeued="$(exclude_claimed_items "$(exclude_claimed_prs "$dequeued_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
+  fi
   register_hygiene="[]"
   if jq -e 'any(.[]; . == "register-hygiene")' <<<"$sources" >/dev/null 2>&1; then
     register_hygiene_raw="$(gather_register_hygiene "$slug" "$default_branch" prefetch)"
@@ -4881,22 +4923,22 @@ while IFS=$'\t' read -r _ slug default_branch; do
     implementation_plan_path="$(jq -r --arg s "$slug" \
       '.[] | select(.slug == $s) | .implementation_plan_path // ""' <<<"$repos_json")"
   fi
-  # findings/review_feedback/abandoned_drafts/merge_conflicts/register_hygiene/
-  # issues/tech_debt are the pre-fetched bands themselves — issue threads
-  # (requirement 3d/#118) and the open tech-debt register (requirement
-  # 3t/#310) included — each unbounded past this call and each tens of
-  # kilobytes alone; $sources is this repo's configured source list, bounded
-  # by config, and stays in argv (requirement 4g). The seven bands arrive on
+  # findings/review_feedback/abandoned_drafts/merge_conflicts/dequeued/
+  # register_hygiene/issues/tech_debt are the pre-fetched bands themselves —
+  # issue threads (requirement 3d/#118) and the open tech-debt register
+  # (requirement 3t/#310) included — each unbounded past this call and each
+  # tens of kilobytes alone; $sources is this repo's configured source list,
+  # bounded by config, and stays in argv (requirement 4g). The eight bands arrive on
   # stdin, one document per line, bound positionally with `input as $name` in
   # the order printed (TD-PPagop-26081406) — never in argv, where past
   # MAX_ARG_STRLEN this build would silently drop the repo's whole entry.
   entry_docs="$(printf '%s\n' "$findings" "$review_feedback" "$abandoned_drafts" \
-    "$merge_conflicts" "$register_hygiene" "$issues" "$tech_debt")"
+    "$merge_conflicts" "$dequeued" "$register_hygiene" "$issues" "$tech_debt")"
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
     --arg ipp "$implementation_plan_path" \
-    'input as $findings | input as $rf | input as $ad | input as $mc | input as $rh
+    'input as $findings | input as $rf | input as $ad | input as $mc | input as $dq | input as $rh
      | input as $issues | input as $td
-     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
+     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, dequeued: $dq, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)' <<<"$entry_docs")"
   # $entry — one repo's whole pre-fetched sources, including issue threads
   # (requirement 3d/#118) and its open tech-debt register (requirement
@@ -5337,7 +5379,7 @@ done < <(jq -r 'keys[]' <<<"$void_register_ids_json" 2>/dev/null || true)
 # own source (issue #284's decision 2), never register-hygiene's: a violation
 # here means finished work is invisible to the human whose merge everything
 # waits on, ranked immediately after `merge-conflicts` (config.schema.json),
-# the same "finishing beats starting" class as the three sources around it —
+# the same "finishing beats starting" class as the four sources around it —
 # register-hygiene's cosmetic-repair, last-place rationale does not describe
 # it. Assigned, not appended: unlike `register_hygiene` above (which two
 # passes can each contribute to — the plain gather and the void
@@ -5406,19 +5448,22 @@ fi
 #     register ids, alongside the one 34i already makes for that repo's
 #     blocked ones — the recorded subtraction above is what keeps that
 #     residue, and so this read, bounded;
-#   - liveness, for the four shapes the cycle already gathers as structured
-#     data each cycle (TD-PPagop-26081303): a `dependabot-alert-<n>`/
+#   - liveness, for the five shapes the cycle already gathers as structured
+#     data each cycle (TD-PPagop-26081303, extended by TD-PPagop-26081409):
+#     a `dependabot-alert-<n>`/
 #     `code-scanning-alert-<n>`, a `register-hygiene-<hash>`, either
 #     merge-conflicts shape (`pr-<n>-conflict-<head-sha>`, which requirement
 #     34k deliberately excludes from its own close, and
 #     `pr-<n>-superseded-<head-sha>`, which it closes — same gather, so the
-#     same test decides both), or a `failed-run-<…>` is
+#     same test decides both), a `pr-<n>-dequeued-<head-sha>` (requirement 3z,
+#     excluded from 34k's close for the same reason as the conflict shape), or
+#     a `failed-run-<…>` is
 #     actioned once its id is absent from this cycle's own gather for that
 #     source, and that gather succeeded (`void_liveness_actioned`,
 #     lib/void-liveness.sh) — read off the same tee files the repo loop
-#     already wrote for the first three, and one further
+#     already wrote for the first four, and one further
 #     `gather_workflow_basenames` call per repo with still-unretired
-#     `failed-run-` void ids for the fourth; and
+#     `failed-run-` void ids for the fifth; and
 #   - a merged pull request, for a project-review ref, or a checked task-list
 #     box, for an implementation-plan task id — the same on-demand readers
 #     34i already calls for the blocked set (`gather_review_status`,
@@ -5435,9 +5480,9 @@ fi
 #     deliberately the *unnarrowed* array: `repos_json` carries `--repo`'s
 #     filter, under which every other repo would read as dropped, and
 #     `ordered_repos_json`'s own `sources` are rewritten by back-pressure
-#     (step 2.2a, further down) to the three finishing sources.
+#     (step 2.2a, further down) to the four finishing sources.
 #
-# Age-only retirement for the four liveness shapes was considered and
+# Age-only retirement for the five liveness shapes was considered and
 # rejected: a void whose id is *still being gathered* — a still-open alert, a
 # register-hygiene finding the register still has, a workflow still failing, a
 # PR still conflicted — is doing live suppression work every cycle, and
@@ -5513,13 +5558,15 @@ if (( void_retire_after_days > 0 )); then
   done < <(jq -r 'to_entries[] | .key + "\t" + (.value | join(" "))' \
            <<<"$(work_gone_plan_ids "$void_json")" 2>/dev/null || true)
 
-  # The four liveness shapes (TD-PPagop-26081303): per repo, whatever
-  # gather_findings/gather_register_hygiene/gather_merge_conflicts already
-  # wrote to the cycle dir during the repo loop — the `.ok` marker (this
-  # cycle's own read of that source succeeded) and the ids it currently
+  # The five liveness shapes (TD-PPagop-26081303, extended by TD-PPagop-26081409
+  # for `dequeued`): per repo, whatever
+  # gather_findings/gather_register_hygiene/gather_merge_conflicts/gather_dequeued
+  # already wrote to the cycle dir during the repo loop — the `.ok` marker
+  # (this cycle's own read of that source succeeded) and the ids it currently
   # yields — read straight off those tee files, so alert/register-hygiene/
-  # merge-conflict liveness costs no further `gh` call at all. `failed-run` is
-  # the one exception: gather-source-state.sh's own `workflows` digest names
+  # merge-conflict/dequeued liveness costs no further `gh` call at all.
+  # `failed-run` is the one exception: gather-source-state.sh's own `workflows`
+  # digest names
   # each still-failing workflow by id, not by the basename the item id is
   # minted from, so the id -> basename map is fetched here, bounded to the
   # repos that actually carry unretired `failed-run-` void residue (usually
@@ -5559,6 +5606,12 @@ if (( void_retire_after_days > 0 )); then
         || { guard_warn "void-liveness:vl_mc_ids:$vl_safe" "$vl_mc_ids"; vl_mc_ids='[]'; }
     fi
 
+    vl_dq_ok=false; vl_dq_ids='[]'
+    if [[ -f "$cycle_dir/dequeued-$vl_safe.ok" ]]; then
+      vl_dq_ok=true
+      vl_dq_ids="$(jq -c '[.[].ref]' "$cycle_dir/dequeued-$vl_safe.json" 2>/dev/null || echo '[]')"
+    fi
+
     vl_fr_ok=false; vl_fr_ids='[]'
     if jq -e --arg r "$vl_slug" 'index($r) != null' <<<"$void_failed_run_repos_json" >/dev/null 2>&1; then
       vl_basenames_json="$(gather_workflow_basenames "$vl_slug")"
@@ -5582,10 +5635,12 @@ if (( void_retire_after_days > 0 )); then
       --argjson alert_ok "$vl_alert_ok" --argjson alert_ids "$vl_alert_ids" \
       --argjson rh_ok "$vl_rh_ok" --argjson rh_ids "$vl_rh_ids" \
       --argjson mc_ok "$vl_mc_ok" --argjson mc_ids "$vl_mc_ids" \
+      --argjson dq_ok "$vl_dq_ok" --argjson dq_ids "$vl_dq_ids" \
       --argjson fr_ok "$vl_fr_ok" --argjson fr_ids "$vl_fr_ids" \
       '. + {($s): {alert: {ok: $alert_ok, ids: $alert_ids},
                    "register-hygiene": {ok: $rh_ok, ids: $rh_ids},
                    "merge-conflict": {ok: $mc_ok, ids: $mc_ids},
+                   "dequeued": {ok: $dq_ok, ids: $dq_ids},
                    "failed-run": {ok: $fr_ok, ids: $fr_ids}}}' \
       <<<"$void_liveness_gather_json" 2>/dev/null || printf '%s' "$void_liveness_gather_json")" # TD-PPagop-26081407: passes test 2 -- falls back to the unchanged prior aggregate, not a fabricated empty
   done < <(jq -r '.[].slug' <<<"$ordered_repos_json" 2>/dev/null || true)
@@ -5667,7 +5722,7 @@ fi
 # Co-Ordinator whole: drop any entry this repo's own blocked or void record
 # names, exactly as exclude_claimed_items already dropped claimed ones.
 # `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`,
-# `register_hygiene`, `human_visibility` and `tech_debt` all get the identical
+# `dequeued`, `register_hygiene`, `human_visibility` and `tech_debt` all get the identical
 # second pass `exclude_blocked_or_void_items` first gave `tech_debt` alone
 # (issue #310) — there is nothing about that exclusion tech-debt-specific,
 # only tech-debt was the band it was first proven on. Every band the repo
@@ -5689,7 +5744,7 @@ fi
 # void — with no per-item judgement left for it to apply, and no room for a
 # verdict like "requires per-item evaluation against blocked/void/claimed
 # records" to be true of any of them.
-for eligibility_band in findings review_feedback abandoned_drafts merge_conflicts register_hygiene human_visibility tech_debt; do
+for eligibility_band in findings review_feedback abandoned_drafts merge_conflicts dequeued register_hygiene human_visibility tech_debt; do
   while IFS= read -r eb_slug; do
     [[ -n "$eb_slug" ]] || continue
     eb_current="$(jq -c --arg s "$eb_slug" --arg f "$eligibility_band" \
@@ -5740,30 +5795,35 @@ enabler_eligible_json="$(enabler_eligible_items "$union_log" \
   "$enabler_after_coordinator_cycles" "$enabler_recheck_hours" "$open_issues_json" \
   "" "$refinement_after_coordinator_cycles")"
 
-# Issue #238's third acceptance: a blocked `merge-conflicts`/`abandoned-drafts`
-# item's ref is scoped to the head SHA it was detected at (requirements 3e,
-# 3g) precisely so a later push mints a fresh ref that no old block covers —
-# but the old ref itself is never cleared, only superseded, so without this
-# filter it would sit `enabler_eligible` forever, costing a full engagement
-# every time its recheck clock came round only to be voided as stale (as
-# happened to `pr-205-conflict-305ca060016d`, claimed and voided three minutes
-# later). This cycle's own fresh `merge_conflicts`/`abandoned_drafts` arrays —
-# already gathered into `ordered_repos_json` above — are the current truth for
-# every PR still in either state; a SHA-scoped ref absent from them has been
-# superseded (a newer push) or resolved outright, either way stale. Only refs
+# Issue #238's third acceptance: a blocked `merge-conflicts`/`dequeued`/
+# `abandoned-drafts` item's ref is scoped to the head SHA it was detected at
+# (requirements 3e, 3g, 3z) precisely so a later push mints a fresh ref that
+# no old block covers — but the old ref itself is never cleared, only
+# superseded, so without this filter it would sit `enabler_eligible` forever,
+# costing a full engagement every time its recheck clock came round only to be
+# voided as stale (as happened to `pr-205-conflict-305ca060016d`, claimed and
+# voided three minutes later). This cycle's own fresh
+# `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays — already gathered
+# into `ordered_repos_json` above — are the current truth for every PR still
+# in any of those states; a SHA-scoped ref absent from them has been
+# superseded (a newer push), resolved, or requeued, either way stale. Only refs
 # shaped `pr-<n>-conflict-<sha>`/`pr-<n>-superseded-<sha>`/
-# `pr-<n>-abandoned-<sha>` are tested — the merge-conflicts gather mints the
-# first two (requirement 3g) and both are scoped to the same head SHA, so both
-# go stale the same way, and a refused supersession void is recorded blocked
-# under the second (requirement 32a) exactly as a refused conflict void is
-# under the first. Every other blocked item kind (a tech-debt id, an issue
-# number, a review-feedback round) has no such re-detectable "current" state
-# to compare against, and
+# `pr-<n>-dequeued-<sha>`/`pr-<n>-abandoned-<sha>` are tested — the
+# merge-conflicts gather mints the first two (requirement 3g), both scoped to
+# the same head SHA, so both go stale the same way, and a refused supersession
+# void is recorded blocked under the second (requirement 32a) exactly as a
+# refused conflict void is under the first. `pr-<n>-dequeued-<sha>` (the
+# gather-dequeued.sh gather, requirement 3z) goes stale the identical way: a
+# fresh push (a fix, or anyone else's) or a re-queue mints no *new* ref this
+# script would test — it simply stops appearing in `dequeued`, which is what
+# "absent from the live set" already means. Every other blocked item kind (a
+# tech-debt id, an issue number, a review-feedback round) has no such
+# re-detectable "current" state to compare against, and
 # `test` on a plain id or number simply never matches the pattern. A jq
 # failure leaves the set unfiltered: this is a cost saving, never the
 # correctness gate (the Enabler still voids a stale item it does reach).
 live_pr_refs_json="$(jq -c \
-  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
+  '[.[] | .slug as $s | ((.merge_conflicts // []) + (.dequeued // []) + (.abandoned_drafts // []))[] | ($s + "#" + .ref)]' \
   <<<"$ordered_repos_json" 2>/dev/null || true)"
 # An *empty* live set and a *failed* derivation of one are opposite facts, and
 # only the guard below keeps them apart. Empty-on-success is meaningful — no PR
@@ -5783,7 +5843,7 @@ live_pr_refs_json="$(jq -c \
 stale_enabler_refs_json='[]'
 [[ -z "$live_pr_refs_json" ]] || { stale_enabler_refs_json="$(jq -c --argjson live "$live_pr_refs_json" '
   [ .[] | (.repo // "") as $repo | (.item // "") as $item
-        | select(($item | test("^pr-[0-9]+-(conflict|superseded|abandoned)-[0-9a-f]+$"))
+        | select(($item | test("^pr-[0-9]+-(conflict|superseded|dequeued|abandoned)-[0-9a-f]+$"))
                  and (($live | index($repo + "#" + $item)) == null)) ]
   ' <<<"$enabler_eligible_json" 2>&1)" \
   || { guard_warn "stale_enabler_refs_json" "$stale_enabler_refs_json"; stale_enabler_refs_json='[]'; }; }
@@ -5866,14 +5926,16 @@ refiner_allowed=1
 # --- 2.2a Back-pressure, decided (requirement 2.2a) ---
 # Deferred from step 2.2 until the sources were gathered. Back-pressure's stated
 # purpose is to throttle new work and stop the human gate silting up — and the
-# three *finishing* sources do neither: `review-feedback` answers a review the
+# four *finishing* sources do neither: `review-feedback` answers a review the
 # human has already written, `merge-conflicts` rebases a ready PR the human is
-# waiting to merge, and `abandoned-drafts` carries a stalled draft this system
-# started to completion. All are the activity that *un*-silts the gate — indeed
-# an abandoned draft is itself occupying one of the very back-pressure slots the
-# cap is counting, and a conflicted PR is one the human cannot merge to free a
-# slot until it is rebased. So when back-pressure trips we do not stand down if
-# any has work waiting; we restrict every repo's source list to those three.
+# waiting to merge, `dequeued` fixes the merge-group checks failure that got a
+# ready PR of ours removed from the human's own queue, and `abandoned-drafts`
+# carries a stalled draft this system started to completion. All are the
+# activity that *un*-silts the gate — indeed an abandoned draft is itself
+# occupying one of the very back-pressure slots the cap is counting, and a
+# conflicted or dequeued PR is one the human cannot merge to free a slot until
+# it is fixed. So when back-pressure trips we do not stand down if
+# any has work waiting; we restrict every repo's source list to those four.
 #
 # No new prompt machinery is needed for that, and deliberately so: the
 # Co-Ordinator is already told the runtime input's `sources` are authoritative
@@ -5883,10 +5945,10 @@ refiner_allowed=1
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
 if (( backpressure_tripped )); then
-  finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
+  finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
     log_event "stand-down" "$(jq -nc \
-      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, or abandoned draft is waiting to be finished" \
+      --arg r "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition), and no review feedback, merge conflict, dequeued pull request, or abandoned draft is waiting to be finished" \
       '{reason: $r}')"
     exit 0
   fi
@@ -5909,12 +5971,12 @@ if (( backpressure_tripped )); then
   # same job for the bands this block leaves populated (`findings`,
   # `register_hygiene`, `human_visibility`): `coordinator_eligible_items` reads
   # the list, not the array.
-  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))
+  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "dequeued" or . == "abandoned-drafts")))
                                     | .issues = []
                                     | .tech_debt = []]' \
     <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
-    --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, or abandoned-draft completion)" \
+    --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, dequeued, or abandoned-draft completion)" \
     '{detail: $d}')"
 fi
 
@@ -5926,7 +5988,7 @@ fi
 # hashes as part of each band's own array regardless. Taken here rather than at
 # "3c/3u. Pre-fetched-band eligibility" so that it reads what the Co-Ordinator
 # is actually about to be given: back-pressure just above empties `issues` and
-# `tech_debt` and narrows every repo's `sources` to the three finishing ones,
+# `tech_debt` and narrows every repo's `sources` to the four finishing ones,
 # and an eligible set counted before that would hold items this cycle forbids
 # it to select (see that block's own comment, and
 # `coordinator_eligible_items`').
@@ -6239,10 +6301,12 @@ for (( ci = 0; ci < n_cand; ci++ )); do
   pr_claim_lost=0
   c_pr_key=""
   if [[ "$c_source" == "review-feedback" || "$c_source" == "abandoned-drafts" \
+        || "$c_source" == "dequeued" \
         || ( "$c_source" == "merge-conflicts" && "$c_takeover" != "true" ) ]]; then
     # No new branch to create — the PR already exists (a human's review round for
     # review-feedback, this system's own stalled draft for abandoned-drafts, a
-    # ready-but-conflicted PR of ours for merge-conflicts). The lock is a
+    # ready-but-conflicted PR of ours for merge-conflicts, a checks-failure-
+    # dequeued PR of ours for dequeued). The lock is a
     # create-only registry file keyed on the item ref, not a branch create that
     # would 422 against the branch already there.
     #
@@ -6421,7 +6485,7 @@ fi
 preflight_reason="$(preflight_done_reason "$selected_repo" "$selected_item" "$selected_branch" \
   "$source_states_json" "$preflight_register_json")"
 # The ancestry check is the one live `gh` call in this section (lib/preflight.sh's
-# header explains why it is gated to the three sources whose branch predates the
+# header explains why it is gated to the four sources whose branch predates the
 # claim), so it only runs when the cheaper, pure checks above found nothing.
 if [[ -z "$preflight_reason" ]] && preflight_existing_branch_source "$selected_source"; then
   preflight_reason="$(preflight_branch_merged_reason "$selected_repo" "$selected_default_branch" "$selected_branch")"

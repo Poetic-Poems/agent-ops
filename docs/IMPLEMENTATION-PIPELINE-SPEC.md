@@ -586,7 +586,7 @@ and the schema must carry every one of them.
 <!-- config-table:start id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
-| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the same `issues`...[continued below](#extended-notes-repos) |
+| `repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `dequeued`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes. The `issues:<band>` tokens are the one source that appears more than once — the...[continued below](#extended-notes-repos) |
 | `state_dir` | `~/.local/state/poetic-agents` | Lock, shared log, per-cycle stage transcripts. |
 | `workspace_root` | `~/.cache/poetic-agents/workspaces` | Ephemeral clones live and die here, including the state repository's mirror. |
 | `state_repo` | `Poetic-Poems/agent-ops-state` | The private repository through which `state_dir` replicates between nodes (requirement 2.5). Its `main` carries the small shared surface: the claim registry (requirement 17a) and the fleet flags `fleet/disabled.json` and `fleet/limit.json` (requirements 2.3a and 2.1). Unset means a single-node operation: every mode of `scripts/state-sync.sh` becomes a no-op, and the fleet-flag reads and writes quietly do nothing. |
@@ -611,7 +611,7 @@ and the schema must carry every one of them.
 | `refiner_model` | `claude-haiku-4-5-20251001` | The Refiner (requirement 39). Cheap on purpose — unlike the Enabler, eligibility carries no threshold, so it runs as often as there is unrefined work. Empty disables the stage. |
 | `refined_label` | `refined` | The label the Script projects onto an issue-type item once the Refiner records it `refined` (requirement 39c). One-way and never read back — unlike `needs_refinement_label`'s hand-flag path, there is no hand-applied form of this label: the shared log is the sole record of whether an item is refined, exactly as requirement 34e already establishes for the negative marker. Empty disables the projection only: the `item-refined` event is still logged and the Co-Ordinator still...[continued below](#extended-notes-refined_label) |
 | `refiner_max_per_engagement` | `5` | How many unrefined items one Refiner engagement takes on (requirement 39b), chosen oldest-seen first so every node in the fleet reduces to the same set. `0` removes the class from engagements entirely. |
-| `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json`...[continued below](#extended-notes-refinement_policy) |
+| `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
 | `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
@@ -672,7 +672,7 @@ same value; no other qualifier is accepted.
 
 ### Extended notes: `repos`
 
-Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.
+Work-source lists per repo as in the table above (`security`, `issues:urgent`, `review-feedback`, `merge-conflicts`, `dequeued`, `human-visibility`, `abandoned-drafts`, `failed-runs`, `issues:high`, `tech-debt`, `issues:medium`, `implementation-plan`, `project-review`, `issues:low`, `code-quality`, `register-hygiene`); structure the config so a repo or source can be added without code changes.
 
 The `issues:<band>` tokens are the one source that appears more than once — the same `issues` source at four ranks (requirement 15e). A repo that lists none of them has the issues source off; one that lists a subset sees only issues in those bands.
 
@@ -721,7 +721,7 @@ It must not be `blocked` nor `obsolete`, for the reasons given against `enabler_
 
 ### Extended notes: `refinement_policy`
 
-Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
+Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -1106,16 +1106,18 @@ runs unattended.
       recoverable next cycle and opening work past a full cap is not.
 2.2a. **Back-pressure throttles starting work, not finishing it.** Compute the
    count in 2.2 but **defer the stand-down** until the sources are gathered
-   (requirements 3c, 3g and 3e). If back-pressure has tripped *and* any
-   `review_feedback`, `merge_conflicts` or `abandoned_drafts` candidate exists, do
+   (requirements 3c, 3g, 3z and 3e). If back-pressure has tripped *and* any
+   `review_feedback`, `merge_conflicts`, `dequeued` or `abandoned_drafts`
+   candidate exists, do
    not stand down: restrict every repo's `sources` to
-   `["review-feedback", "merge-conflicts", "abandoned-drafts"]` and continue. Only
+   `["review-feedback", "merge-conflicts", "dequeued", "abandoned-drafts"]` and
+   continue. Only
    stand down when the count is over and nothing is waiting to be finished. All
-   three are *finishing* sources — they complete an already-open PR rather than
-   opening a new one — and two are doubly apt here, because they already hold
+   four are *finishing* sources — they complete an already-open PR rather than
+   opening a new one — and three are doubly apt here, because they already hold
    back-pressure slots the cap counts: an abandoned draft occupies a slot nothing
-   will clear until the draft is finished, and a conflicted PR occupies one the
-   human cannot merge to free until it is rebased.
+   will clear until the draft is finished, and a conflicted or dequeued PR
+   occupies one the human cannot merge to free until it is fixed.
 
    Without this the pipeline deadlocks exactly when it is most stuck.
    `max_open_agent_prs` PRs all sitting on "changes requested" is a state the
@@ -1915,6 +1917,123 @@ runs unattended.
    is introduced — the acceptance test this requirement was written against
    (poetic-fiddle #129) is a candidate in the same `merge_conflicts` array
    every other conflicted PR is.
+3z. **Dequeued-PR pre-fetch (TD-PPagop-26081409, issue #374).** For each
+   configured repo whose `sources` include `dequeued`, run
+   `scripts/gather-dequeued.sh <slug> <pr_label> <branch_prefix>` and attach the
+   array to that repo's entry as `dequeued`. It prints the PRs *this system
+   raised that GitHub's merge queue removed over a merge-group checks failure
+   without merging*: open, **non-draft**, carrying `pr_label`, head branch under
+   `branch_prefix` (or `td/`), with `mergeable` exactly `MERGEABLE`, and whose
+   most recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`,
+   a non-null `dequeued_at`, and a `dequeue_reason` reading, case-insensitively,
+   exactly `failed_checks`, **and whose dequeue is still unanswered** — no
+   marked `actor=implementor` reply newer than `dequeued_at`, per the clause
+   below. Each entry carries a head-SHA-scoped ref, the PR number and URL, the
+   existing branch, its `base`, the head SHA, the `updatedAt`, the PR's own body
+   verbatim, and the probe's `dequeued_at` and `dequeue_reason`. The array is
+   ordered by `dequeued_at`, oldest first (`updated_at` breaking ties) — longest
+   unanswered, first offered.
+
+   - **Complementary to requirement 3g, never overlapping.** A merge queue
+     dequeues a pull request whose own head is green but whose speculative
+     merge with whatever sat ahead of it in the queue failed a required check —
+     a real defect in the pull request, of exactly the kind requirement 3g
+     already fixes autonomously when git surfaces it as a textual conflict
+     instead. Requiring `mergeable == "MERGEABLE"` here is what keeps the two
+     candidate rules from ever admitting the same PR head at once: a PR that is
+     both dequeued *and* now conflicting against a base that moved further
+     since is requirement 3g's candidate (a rebase is the fix it needs), not
+     this one's, and requirement 3g's own rule already excludes anything not
+     `CONFLICTING`.
+   - **The allow-list, not deny-list, reason gate.** GitHub documents
+     `RemovedFromMergeQueueEvent.reason` (and the `pull_request.dequeued`
+     webhook's own `reason`) as a free-text `String`, not a fixed enum —
+     checked 2026-08-14 against both the live GraphQL schema and
+     octokit/webhooks' JSON Schema for the webhook payload — so this is
+     deliberately an allow-list: only the one value confirmed against a real
+     GitHub deployment as meaning a merge-group checks failure
+     (`failed_checks`) is a candidate. A human manually removing their own
+     queue entry is a different `reason` string this rule never recognises, on
+     purpose — selecting it would have a cycle push a fix to a branch the
+     human just took back, the wrong-direction failure this requirement's own
+     tech-debt record was filed to prevent. An unreadable probe is never read
+     as "not dequeued", the one direction `merge_queue_probe`'s own contract
+     forbids, so a PR whose probe fails is simply not a candidate this cycle.
+   - **The dequeue must still be unanswered, and that clause is load-bearing.**
+     Every sibling finishing source stops yielding a candidate once the
+     pipeline has acted, because the condition it keys on clears by itself: a
+     rebase makes requirement 3g's `mergeable` stop reading `CONFLICTING`; any
+     activity resets requirement 3e's clock. This source has neither.
+     `RemovedFromMergeQueueEvent` is immutable timeline history, so the probe
+     returns the same `dequeued_at`/`dequeue_reason` for ever, and
+     `isInMergeQueue` returns to `true` only on a *human's* re-queue, which D17
+     reserves to them. Without this clause, the Implementor's own fix push
+     leaves every other clause true and moves only the head SHA — which mints a
+     *fresh* ref (below) that no `blocked`, `void` or `claimed` record covers —
+     so the pull request is selected again, at rank five, pointed at a
+     merge-group run already fixed, and again after each round that pushes
+     anything, for as long as the human takes to re-queue. That is the
+     re-selection loop `scripts/gather-review-feedback.sh`'s header calls
+     load-bearing to prevent, arising from the identical root cause: the agent
+     cannot clear the state it is keyed on. So candidacy also requires
+     `lib/handoff.sh`'s `handoff_round_answered` — requirement 34a's one
+     definition, shared with requirement 3c and requirement 38c — to answer
+     exactly `unanswered` for the round beginning at `dequeued_at`. Three
+     properties of that call are deliberate: the round starts at `dequeued_at`
+     rather than at the PR's birth, so a *second* dequeue after the fix
+     correctly re-opens candidacy; `REREQUESTS_JSON` is not passed, because a
+     review re-request does not answer a dequeue and passing the timeline would
+     let requirement 38c's own re-request read back as one
+     (tech-debt/TD-PPagop-26080804.md); and an `unknown` verdict — an
+     unreadable reviews or comments response — drops the PR for the cycle
+     rather than being collapsed into `unanswered`, the opposite of
+     requirement 3c's default, because here `unanswered` is the verdict that
+     creates work.
+   - **The ref is scoped to the head SHA** — `pr-<n>-dequeued-<head-sha>`, not
+     `pr-<n>-dequeued` — for the identical reason requirement 3g's own
+     `pr-<n>-conflict-<head-sha>` is: a block recorded against one dequeued
+     state must not swallow a later, possibly-resolvable one, and a re-detected
+     dequeue at the *same* head keeps the same ref and stays correctly blocked.
+     Unlike requirement 3g's, this scoping does **not** end the pull request's
+     candidacy — a fresh push replaces the ref rather than retiring it, which is
+     the clause above's job. The two are complementary and neither substitutes
+     for the other.
+   - **What it costs, per cycle.** One `merge_queue_probe` GraphQL call per PR
+     surviving the listing filter — so the cost scales with the number of open,
+     non-draft, `MERGEABLE`, `pr_label`-carrying PRs, not with the number of
+     dequeues — plus, for each PR that probe admits, two REST reads (its
+     reviews and its issue comments) for the answered clause. The bound on the
+     first is `GITHUB_PR_LIST_LIMIT`, **not** `max_open_agent_prs`: requirement
+     2.2's count deliberately excludes PRs waiting on a human, so a repo can
+     hold more open labelled PRs than the cap. The probe cannot be skipped
+     without weakening the gate, since an unreadable probe is never read as
+     "not dequeued"; the two reads behind it are ordered last, so they are paid
+     only for the PRs a dequeue has actually been found on.
+   - **Its candidacy turns on a transition no signal on the PR itself
+     carries** — sharper than requirement 3g's own case, since a dequeue moves
+     neither the head, `updatedAt`, nor even `mergeable`, which is what
+     requirement 3g's own array rides on. The only trace is a
+     `RemovedFromMergeQueueEvent` on the PR's timeline, read live each cycle by
+     `merge_queue_probe`. So this array, like requirement 3g's, is fed to the
+     no-op fingerprint verbatim (`lib/noop-skip.sh`) — without it, a dequeue
+     appearing or resolving would sit invisible behind a matching fingerprint
+     until the forced recheck.
+   - **Requirement 38f's human notice is independent of this rule, and
+     deliberately wider.** `scripts/sweep-human-visibility.sh` posts its
+     merge-queue-dequeued notice for every reason
+     `merge_queue_dequeue_actionable` admits — a deny-list excluding only
+     `"manual"` and `"merged"` (requirement 38f, agent-ops#394) — so a
+     dequeue this requirement's own allow-list does not recognise still
+     reaches a human even though nothing here can act on it. This
+     requirement narrows only which dequeues become Co-Ordinator-selectable
+     work, never which ones a human is told about.
+   - Claimed as a finishing source exactly like requirements 3c, 3e and 3g
+     (file claim on the existing branch, no new branch created; requirement
+     17a's PR-keyed claim taken alongside it) — the branch and the PR predate
+     the claim, and the Implementor works `prompts/implementor.md`'s "When
+     `source` is `dequeued`" procedure rather than opening a new one.
+   - Fails safe to `[]` (exit 0), with the same stderr discipline as
+     requirement 3g. `shellcheck`-clean.
 3i. **Register-hygiene pre-fetch.** For each configured repo whose `sources`
    include `register-hygiene`, run `scripts/gather-register-hygiene.sh <slug>
    <default_branch>` and attach the array to that repo's entry as
@@ -2068,10 +2187,10 @@ runs unattended.
 
    - every claim-registry entry younger than `claim_ttl_hours` for that repo
      (`lib/claim.sh claims`) — the only source for a *file* claim, since
-     `review-feedback`, `merge-conflicts` and `abandoned-drafts` finish an
+     `review-feedback`, `merge-conflicts`, `dequeued` and `abandoned-drafts` finish an
      existing PR and mint no branch; `age_hours` is the entry's exact age, and
      `pr_number` rides along when the underlying registry entry recorded one —
-     which, for the three finishing sources, is always, once requirement 17a's
+     which, for the four finishing sources, is always, once requirement 17a's
      PR-keyed claim exists alongside the item-keyed one; and
    - every live `td/*`/`<branch_prefix>*` branch on the target repository
      itself (`lib/claim.sh branches`), which still catches a claim the
@@ -2087,7 +2206,7 @@ runs unattended.
    claim, even before its draft PR appears) was a live check the Co-Ordinator
    itself had to perform — nominally `git ls-remote` per repo, in practice a
    step routinely skipped by the smaller model this stage runs on, and one that
-   the three finishing sources' file claims (invisible as branches) could never
+   the four finishing sources' file claims (invisible as branches) could never
    have covered even performed perfectly. `claimed` replaces it: exclusion 16's
    second bullet is now a lookup against pre-fetched data, not a live query, and
    it is complete over both claim shapes. A candidate whose repo+item is not in
@@ -2101,16 +2220,17 @@ runs unattended.
    issue number, an alert ref, a register-hygiene or project-review ref — none
    of which contain a character `claim_branch_for`'s sanitiser would have
    touched, so there is nothing lossy to recover from.
-3p. **PR-level candidate exclusion (issue #238).** The three finishing sources'
-   ref-per-round/per-head-SHA item refs (requirements 3c, 3e, 3g) mean a peer's
-   claim on a PR under one round's or one head's ref is invisible to exclusion
-   16's ordinary repo+item lookup against `claimed` the moment a fresh review
-   round or a fresh push mints a *different* ref for the *same* PR — which is
-   how PR #205 was worked by three nodes at once on 2026-08-07 (one poetic-2
-   Co-Ordinator run even *saw* a peer's claim on the PR and reasoned past it,
-   because the item ref genuinely didn't match). Deterministic code closes this,
-   not a comparison added to the Co-Ordinator's own judgement calls: for each
-   repo, before its `review_feedback`, `merge_conflicts` and `abandoned_drafts`
+3p. **PR-level candidate exclusion (issue #238).** The four finishing sources'
+   ref-per-round/per-head-SHA item refs (requirements 3c, 3e, 3g, 3z) mean a
+   peer's claim on a PR under one round's or one head's ref is invisible to
+   exclusion 16's ordinary repo+item lookup against `claimed` the moment a
+   fresh review round or a fresh push mints a *different* ref for the *same*
+   PR — which is how PR #205 was worked by three nodes at once on 2026-08-07
+   (one poetic-2 Co-Ordinator run even *saw* a peer's claim on the PR and
+   reasoned past it, because the item ref genuinely didn't match).
+   Deterministic code closes this, not a comparison added to the
+   Co-Ordinator's own judgement calls: for each repo, before its
+   `review_feedback`, `merge_conflicts`, `dequeued` and `abandoned_drafts`
    arrays are assembled into the runtime input, the Script drops any candidate
    whose `pr_number` appears among that repo's freshly gathered `claimed` set's
    `pr_number` values. A PR already excluded this way never reaches the
@@ -2122,9 +2242,9 @@ runs unattended.
    the same create-only way every other claim does.
 3q. **Item-level candidate exclusion.** The same deterministic-code-not-
    model-judgement decision as 3p, extended from PR numbers to item refs and
-   from the three finishing sources to every array the Script pre-fetches:
+   from the four finishing sources to every array the Script pre-fetches:
    for each repo, before its `issues`, `findings`, `tech_debt`,
-   `register_hygiene`, `review_feedback`, `merge_conflicts` and
+   `register_hygiene`, `review_feedback`, `merge_conflicts`, `dequeued` and
    `abandoned_drafts` arrays are assembled into the runtime input, the Script
    drops any entry whose `ref` — the exact string a claim on that item is
    keyed on, minted by every gather script by construction — appears among
@@ -2194,7 +2314,7 @@ runs unattended.
    the Co-Ordinator ever runs. It is read *after* requirement 2.2a's
    back-pressure decision, not at the second pass above, so that it describes
    the array the Co-Ordinator is actually handed: a back-pressured cycle
-   narrows every repo to the three finishing sources and empties `tech_debt`
+   narrows every repo to the four finishing sources and empties `tech_debt`
    with them, and the eligible set is then correctly empty for a verdict that
    was never allowed to consider the band. Requirement 3x extends that reading
    to every other pre-fetched band and folds all of them into one
@@ -2317,7 +2437,7 @@ runs unattended.
    **`void` is removed from `coordinator_input` entirely.** Every band the
    Script pre-fetches whole is now void-filtered before the Co-Ordinator ever
    runs, so a raw list for it to apply that same judgement to by eye no
-   longer has a use the eight pre-fetched bands need — and the three sources
+   longer has a use the nine pre-fetched bands need — and the three sources
    the Co-Ordinator still derives itself (`project-review`, `failed-runs`,
    `implementation-plan`) carry no array in `coordinator_input` for the Script
    to check a list against in the first place (requirement 3y's arrays for two
@@ -2737,8 +2857,8 @@ runs unattended.
      signal and keep the map in the shared library: `head_sha` covers every
      file-backed source at once (implementation-plan, project-review, the
      code); the pre-fetched `findings` cover security and code-quality
-     verbatim; the pre-fetched `review_feedback`, `merge_conflicts`
-     and `abandoned_drafts` arrays cover those three finishing sources verbatim,
+     verbatim; the pre-fetched `review_feedback`, `merge_conflicts`,
+     `dequeued` and `abandoned_drafts` arrays cover those four finishing sources verbatim,
      `register_hygiene` covers register-hygiene the same way, and `tech_debt`
      (requirement 3t) covers the tech-debt band the same way again (belt and
      braces in both cases — `head_sha` already moves whenever the register
@@ -3781,8 +3901,8 @@ runs unattended.
       already narrowed by back-pressure (2.2a) if it was tripped — is
       non-empty. This counts enabled source *categories*, not items, and is
       near-unconditional in practice: back-pressure narrows `.sources` to
-      the three finish-work sources rather than to empty, so a repo
-      configuring any of `review-feedback`/`merge-conflicts`/
+      the four finish-work sources rather than to empty, so a repo
+      configuring any of `review-feedback`/`merge-conflicts`/`dequeued`/
       `abandoned-drafts` keeps the count non-zero however back-pressured the
       fleet is. It is not a prediction that work remains — the chained
       cycle's own Co-Ordinator and gather decide that, and at full price,
@@ -3966,17 +4086,17 @@ runs unattended.
     repo's configured `sources`:
 
     - **`Urgent` is a global tier, second only to security.** Like
-      review-feedback, merge-conflicts and abandoned-drafts, it outranks the
-      plain repo-then-source walk: if any selectable urgent issue exists in any
-      repo, it is taken before any non-security item anywhere — including ahead
-      of the three finishing sources. Those tiers exist because finishing beats
-      starting; `Urgent` is the one signal that outranks even that, because it
-      is the human stating outright that this cannot wait, and a top band that
-      still queued behind three other tiers would not mean what it says. It
-      cannot starve the finishing sources either: back-pressure (requirement
-      2.2a) narrows the cycle to exactly those three once
-      `max_open_agent_prs` is reached, and that gate is applied to the runtime
-      input before the Co-Ordinator sees it.
+      review-feedback, merge-conflicts, dequeued and abandoned-drafts, it
+      outranks the plain repo-then-source walk: if any selectable urgent issue
+      exists in any repo, it is taken before any non-security item anywhere —
+      including ahead of the four finishing sources. Those tiers exist because
+      finishing beats starting; `Urgent` is the one signal that outranks even
+      that, because it is the human stating outright that this cannot wait,
+      and a top band that still queued behind four other tiers would not mean
+      what it says. It cannot starve the finishing sources either:
+      back-pressure (requirement 2.2a) narrows the cycle to exactly those four
+      once `max_open_agent_prs` is reached, and that gate is applied to the
+      runtime input before the Co-Ordinator sees it.
     - **`High` sits between failed-runs and tech-debt** in the per-repo walk.
       Below a red default branch, which is repo-wide breakage that blocks every
       other item's checks; above tech-debt, which is by construction work that
@@ -4017,12 +4137,12 @@ runs unattended.
       found the recorded blocker still holds — or recorded as void (an
       `item-void` event not followed by `unvoided`), which has no re-check to
       preserve for any source. For `findings`, `review_feedback`,
-      `abandoned_drafts`, `merge_conflicts`, `register_hygiene`,
+      `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`,
       `human_visibility` and
       `tech_debt`, both halves are already applied deterministically by the
       Script (requirement 3u) before the runtime input is assembled — there
       is nothing left here for the Co-Ordinator to check for any of those
-      seven sources. `issues` gets the same treatment for its void half and for a
+      eight sources. `issues` gets the same treatment for its void half and for a
       *stale* blocked entry; only a blocked issue carrying evidence fresh
       enough to warrant requirement 18a's live re-check ever reaches the
       Co-Ordinator;
@@ -4042,14 +4162,14 @@ runs unattended.
       an open PR whose branch or body already references the same alert
       (`ref`, alert URL, or the affected package/rule); for a `project-review`
       recommendation, an open PR whose branch or body references its ref
-      (`review-<date>-R-NN`); for the three finishing sources, whose own
+      (`review-<date>-R-NN`); for the four finishing sources, whose own
       ref-per-round/per-head-SHA item refs would otherwise dodge this bullet's
       repo+item lookup, requirement 3p has already dropped any candidate whose
       `pr_number` matches a peer's claim from `review_feedback`,
-      `merge_conflicts` and `abandoned_drafts` before this runtime input was
-      assembled — there is nothing left in those arrays for this exclusion to
-      apply to, deterministically, rather than a comparison added to this
-      judgement call;
+      `merge_conflicts`, `dequeued` and `abandoned_drafts` before this runtime
+      input was assembled — there is nothing left in those arrays for this
+      exclusion to apply to, deterministically, rather than a comparison added
+      to this judgement call;
     - a `project-review` recommendation that is already **done** — a *merged*
       PR references its ref (`review-<date>-R-NN`) — or that is already owned
       by a higher-priority source: the review mirrors debt-shaped
@@ -4159,9 +4279,9 @@ runs unattended.
     claim before the Implementor starts, walking the ranked candidates in
     order and handing the first successful claim onward (`lib/claim.sh`).
     The primitive is create-only, so GitHub arbitrates every race:
-    - *Branch claims* (every source except the three finishing ones —
-      `review-feedback`, `merge-conflicts` and `abandoned-drafts` — plus one
-      exception within `merge-conflicts` itself, below): a REST
+    - *Branch claims* (every source except the four finishing ones —
+      `review-feedback`, `merge-conflicts`, `dequeued` and `abandoned-drafts`
+      — plus one exception within `merge-conflicts` itself, below): a REST
       create-ref (`POST /git/refs`) on the target repository at the default
       branch's head. The claim branch **is** the
       working branch, derived deterministically so every node computes the same
@@ -4181,15 +4301,16 @@ runs unattended.
       claimed — only the *kind* of claim differs, decided by the work order's
       `takeover` field, which the Co-Ordinator sets and the Script reads
       before deriving `agent/<item-ref>` as usual.
-    - *File claims* (`review-feedback` and `abandoned-drafts`, plus every
-      `merge-conflicts` work order *except* a takeover, which finish an
-      existing PR and have no new branch to create): a create-only
+    - *File claims* (`review-feedback`, `dequeued` and `abandoned-drafts`,
+      plus every `merge-conflicts` work order *except* a takeover, which
+      finish an existing PR and have no new branch to create): a create-only
       contents-API PUT (no `sha`) of `claims/<repo>/<ref>.json` in the state
       repository. For `abandoned-drafts` the ref is scoped to the draft's head SHA
-      (`pr-<n>-abandoned-<head-sha>`), and for `merge-conflicts` likewise to the
-      PR's head SHA (`pr-<n>-conflict-<head-sha>`), so two nodes racing to finish
-      or rebase the same PR contend on the same file and one wins. A takeover
-      needs no separate file claim of its own: `agent/<item-ref>` is derived
+      (`pr-<n>-abandoned-<head-sha>`), for `merge-conflicts` likewise to the
+      PR's head SHA (`pr-<n>-conflict-<head-sha>`), and for `dequeued`
+      likewise again (`pr-<n>-dequeued-<head-sha>`), so two nodes racing to
+      finish, rebase, or fix the same PR contend on the same file and one
+      wins. A takeover needs no separate file claim of its own: `agent/<item-ref>` is derived
       from the same head-SHA-scoped ref, so two nodes racing to take over the
       *same* Dependabot PR compute the identical branch name and contend on
       that single `POST /git/refs` instead — one claim, not two.
@@ -4197,22 +4318,23 @@ runs unattended.
       excludes nothing about a peer working the *same* PR under a *different*
       round's or head's ref — the mechanism that let PR #205 be worked by three
       nodes at once. So immediately after winning a finishing-source item claim
-      taken via the file-claim path above — every `review-feedback` and
-      `abandoned-drafts` work order, and every `merge-conflicts` work order
-      except a takeover, which contends on its branch claim instead — the
-      Script takes a second, separate file claim keyed `pr-<number>` (same
+      taken via the file-claim path above — every `review-feedback`,
+      `dequeued` and `abandoned-drafts` work order, and every `merge-conflicts`
+      work order except a takeover, which contends on its branch claim instead —
+      the Script takes a second, separate file claim keyed `pr-<number>` (same
       repository, same create-only primitive) *before* handing the work order
       onward. The number is the candidate's own `pr_number` where it carries a
-      usable one, and otherwise the one its **item ref** embeds — all three
+      usable one, and otherwise the one its **item ref** embeds — all four
       finishing sources mint refs shaped `pr-<n>-review-<id>`,
-      `pr-<n>-conflict-<sha>` and `pr-<n>-abandoned-<sha>` (requirements 3c, 3e,
-      3g), so the Script derives it deterministically rather than depending on
-      the Co-Ordinator having copied a field: a gate that engages only when the
-      model remembered would silently reopen the very failure this closes. Only
-      a ref of none of those shapes yields no number, and then no PR-keyed claim
-      is taken. Losing it means a peer already holds this PR — under whatever
-      ref won there — so the item claim just won is released (nothing was
-      pushed under it) and selection falls through to the next candidate
+      `pr-<n>-conflict-<sha>`, `pr-<n>-dequeued-<sha>` and `pr-<n>-abandoned-<sha>`
+      (requirements 3c, 3e, 3g, 3z), so the Script derives it deterministically
+      rather than depending on the Co-Ordinator having copied a field: a gate
+      that engages only when the model remembered would silently reopen the
+      very failure this closes. Only a ref of none of those shapes yields no
+      number, and then no PR-keyed claim is taken. Losing it means a peer
+      already holds this PR — under whatever ref won there — so the item claim
+      just won is released (nothing was pushed under it) and selection falls
+      through to the next candidate
       exactly as a lost item claim would. Winning it holds both claims — but,
       unlike the item-keyed one, the PR-keyed claim is held until *this
       cycle's own end*, not until `pr-raised`: see *Release* below (issue
@@ -4470,7 +4592,8 @@ runs unattended.
     PR-derived sources do have one, but they do not need this rule, because
     their refs are scoped to the round or the head SHA that produced them
     (`pr-<n>-review-<review-id>`, `pr-<n>-conflict-<head-sha>`,
-    `pr-<n>-superseded-<head-sha>`, `pr-<n>-abandoned-<head-sha>` —
+    `pr-<n>-superseded-<head-sha>`, `pr-<n>-dequeued-<head-sha>`,
+    `pr-<n>-abandoned-<head-sha>` —
     requirement 20): a human reviewing again,
     or a commit landing on the branch, mints a fresh item id that no block
     covers, so evidence arriving there is never held behind a stale marker.
@@ -5216,11 +5339,12 @@ runs unattended.
     as the dedup key `review_gate_degraded_since` matches the run by. A
     `first-seen` (TD-PPagop-26081405, issue #248 acceptance 4) is written by
     `emit_first_seen` (agent-cycle.sh) the first time any node's gather ever
-    reports a given `{repo, item}` pair, for each of the seven pre-fetched
+    reports a given `{repo, item}` pair, for each of the eight pre-fetched
     arrays requirement 3q names (`issues`, `findings` — split into its own
     `security`/`code-quality` `source`, since one gather call answers for
     both — `tech_debt`, `register_hygiene`, `review_feedback`,
-    `merge_conflicts`, `abandoned_drafts`), carrying `repo`, `item`, `source`
+    `merge_conflicts`, `dequeued`, `abandoned_drafts`), carrying `repo`,
+    `item`, `source`
     (the same label the eventual `selection` for that item carries),
     `basis: "poll"` (every current source re-reads its target every cycle; a
     future event-native source, stage 3 of issue #248 recorded in
@@ -5243,7 +5367,7 @@ runs unattended.
     and the blocked/void pass further down (3u), so an item claimed, blocked
     or voided the same cycle it first appears still gets one — those
     exclusions only ever narrow what the Co-Ordinator is shown, never what
-    this fleet has seen. Seven sources, not all eleven that produce
+    this fleet has seen. Eight sources, not all twelve that produce
     selections, and by construction rather than by oversight: the event
     exists only where a pre-fetched candidate array does, so the other four
     are outside it and their pickups land permanently in
@@ -5567,9 +5691,10 @@ runs unattended.
       a URL citation is unaffected, since it carries its own `owner/repo`
       regardless of whether the entry names one. One item shape is decided by
       its id, rather than by the free-text body/branch test: a finishing-source
-      item **is** a pull request — requirements 3e, 3g and 23 mint its id as
+      item **is** a pull request — requirements 3e, 3g, 3z and 23 mint its id as
       `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
-      `pr-<n>-conflict-<head-sha>` or `pr-<n>-superseded-<head-sha>` — so a
+      `pr-<n>-conflict-<head-sha>`, `pr-<n>-superseded-<head-sha>` or
+      `pr-<n>-dequeued-<head-sha>` — so a
       citation of pull request `<n>`
       names item `pr-<n>-…`'s own pull request by the id's own construction,
       and the id, not the citation text, decides which live check applies to
@@ -5617,6 +5742,18 @@ runs unattended.
         is accepted — the same asymmetry the gatherer chose in the other
         direction, admitting a candidate on `CONFLICTING` and never on the
         transient `UNKNOWN`.
+      - `pr-<n>-dequeued-…` — a corroborated void of this shape closes
+        **nothing** either (34k excludes it too, TD-PPagop-26081409), for the
+        same reason as `-conflict-`: the void says the *dequeue* resolved, not
+        the pull request. The test again mirrors the one that minted the item
+        (requirement 3z, `gather-dequeued.sh`): the void is refused only while
+        the pull request's *current* head still matches the head SHA the item's
+        own id embeds — read out of the id, never trusted from the entry's own
+        `evidence` — **and** `merge_queue_probe`, re-read live, still reports it
+        not re-queued. A head that has moved (a fix landed, whichever cycle's)
+        or a probe that cannot answer both read as resolved, the same
+        ambiguous-accepts asymmetry the `-conflict-` shape's `null` mergeable
+        gets.
       - `pr-<n>-superseded-…` — a corroborated void of this shape *does* close
         pull request `<n>` (34k's ordinary act-on-void path, once the id shape
         distinguishes it from `-conflict-`, TD-PPagop-26081304). The
@@ -6118,7 +6255,8 @@ runs unattended.
     - **a pull request** (`pr-<n>-abandoned-…`, `-review-…`, `-superseded-…`)
       — closed the same way, iff still open.
 
-    **The `-conflict-` shape alone is excluded from the pull-request case
+    **The `-conflict-` and `-dequeued-` shapes are excluded from the
+    pull-request case
     above.** `pr-<n>-conflict-<head-sha>` names the pull request only to say
     the *conflict* on it resolved — the void is about the conflict, not about
     the pull request, which stays a live, ready PR of ours the moment the
@@ -6128,11 +6266,15 @@ runs unattended.
     #273, carrying a human `CHANGES_REQUESTED` review round — was closed
     unmerged when the unrelated item `pr-264-conflict-…` was voided after its
     conflict resolved, and both the PR and the review round were lost
-    (TD-PPagop-26080901). So a void of this shape closes nothing: it is left
+    (TD-PPagop-26080901). `pr-<n>-dequeued-<head-sha>` (requirement 3z) makes
+    the identical shape of claim about a dequeue rather than a conflict — the
+    pull request stays live and ready, waiting on the human's own re-queue —
+    so it is excluded on the same reasoning (TD-PPagop-26081409). So a void of
+    either shape closes nothing: it is left
     exactly like a void shape that names no GitHub object at all, below. The
     exclusion is decided before the per-call action cap, exactly as the
-    `stage` gate below is: this shape is never actionable on any cycle, so it
-    must neither consume one of the three slots nor be counted in the
+    `stage` gate below is: these shapes are never actionable on any cycle, so
+    they must neither consume one of the three slots nor be counted in the
     overflow the cap reports — a deferred count naming work nothing will ever
     do would have the Script log that warning every cycle in perpetuity,
     since a shape this never closes never earns the `void-object-closed`
@@ -6291,8 +6433,9 @@ runs unattended.
     `gh api repos/<slug>/compare/<default_branch>...<branch>` call —
     `identical` or `behind` means every commit on the branch is already an
     ancestor of `default_branch`, so the draft's work landed some other way
-    while it sat. Run only for `review-feedback`, `merge-conflicts` and
-    `abandoned-drafts` — the three sources whose branch and pull request
+    while it sat. Run only for `review-feedback`, `merge-conflicts`,
+    `dequeued` and
+    `abandoned-drafts` — the four sources whose branch and pull request
     predate the claim (`lib/preflight.sh`'s
     `preflight_existing_branch_source`) — and never for an ordinary
     `issues`/`tech-debt` claim, whose branch the Script has just created at
@@ -6368,33 +6511,37 @@ runs unattended.
         register ids (a `TD<date><nn>`/`TD-<scope>-<date><nn>` shape) by a
         further `scripts/gather-register-status.sh` call per repo, alongside
         the one requirement 34i already makes for that repo's blocked ones;
-      - **liveness**, for the four shapes the cycle already gathers as
-        structured data each cycle (TD-PPagop-26081303): a
+      - **liveness**, for the five shapes the cycle already gathers as
+        structured data each cycle (TD-PPagop-26081303, extended by
+        TD-PPagop-26081409): a
         `dependabot-alert-<n>`/`code-scanning-alert-<n>`, a
         `register-hygiene-<hash>`, either merge-conflicts shape
         (`pr-<n>-conflict-<head-sha>`, which 34k deliberately excludes from its
         own close, and `pr-<n>-superseded-<head-sha>`, which it closes — both
         come from the same gather, so the same absent-from-it test decides
         both, redundantly for the second, which also earns a
-        `void-object-closed` once that close lands), or a
+        `void-object-closed` once that close lands), a
+        `pr-<n>-dequeued-<head-sha>` (requirement 3z, excluded from 34k's own
+        close for the same reason the conflict shape is), or a
         `failed-run-<…>` is actioned once its id is (a) absent from this
         cycle's own gather for its source, decided only when that source's
         gather succeeded this cycle, and (b) nothing else — liveness is not
         itself the age test, which the second half of this rule still
-        applies uniformly. Age-only retirement for these four shapes was
+        applies uniformly. Age-only retirement for these five shapes was
         considered and rejected: a void whose id is *still being gathered* —
         a still-open alert, a register-hygiene finding the register still
-        has, a workflow still failing, a PR still conflicted — is doing live
+        has, a workflow still failing, a PR still conflicted or dequeued — is doing live
         suppression work every cycle, and retiring it on age alone would
         re-expose the item to be rediscovered void all over again, the exact
         rediscovery churn requirement 34k exists to stop. "This cycle's own
-        gather" is, for the first three, the same array the Co-Ordinator's
+        gather" is, for the first four, the same array the Co-Ordinator's
         runtime input already carries for that repo — read from the tee
         files `gather_findings`/`gather_register_hygiene`/
-        `gather_merge_conflicts` already write during the repo walk, before
+        `gather_merge_conflicts`/`gather_dequeued` already write during the
+        repo walk, before
         claim exclusion narrows them (a claimed alert is still an open one),
         so this costs no further `gh` call; "that source's gather succeeded"
-        is a `.ok` marker each of those three functions writes *only*
+        is a `.ok` marker each of those four functions writes *only*
         alongside its tee file — never on its own, since a marker with no
         array beside it reads downstream as "gathered, found nothing", the
         one sentence it exists to stop the cycle saying — and only when that
@@ -6476,7 +6623,7 @@ runs unattended.
         load-bearing twice over: `repos_json` carries `--repo`'s own filter,
         under which every other repo would read as dropped, and
         `ordered_repos_json`'s `sources` are rewritten by back-pressure
-        (requirement 2.2a) down to the three finishing sources, which would
+        (requirement 2.2a) down to the four finishing sources, which would
         mint a spurious `source-dropped` for `security` and
         `register-hygiene` on every back-pressured cycle. A `repos` array
         that is empty or unreadable decides nothing rather than retiring the
@@ -6764,11 +6911,13 @@ runs unattended.
     voided three minutes later, after the PR's head had already moved twice.)
 
     Before `enabler_allowed` is set, every eligible entry whose `item` matches
-    `pr-<n>-conflict-<sha>`, `pr-<n>-superseded-<sha>` or
+    `pr-<n>-conflict-<sha>`, `pr-<n>-superseded-<sha>`,
+    `pr-<n>-dequeued-<sha>` or
     `pr-<n>-abandoned-<sha>` is tested against this
-    cycle's own freshly gathered `merge_conflicts`/`abandoned_drafts` arrays
-    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirement
-    3g): if that exact ref is not among them — the head moved again, or the PR
+    cycle's own freshly gathered
+    `merge_conflicts`/`dequeued`/`abandoned_drafts` arrays
+    (already assembled into `ordered_repos_json` for the Co-Ordinator, requirements
+    3g, 3z): if that exact ref is not among them — the head moved again, or the PR
     resolved outright — the entry is dropped, and the drop is logged
     (`enabler-stale-refs-skipped`, an object payload `{skipped: [{repo,
     item}…]}` — log_event's envelope merge can only add objects, and the
@@ -6778,7 +6927,9 @@ runs unattended.
     (requirement 3g) is scoped to the same head SHA and comes from the same
     gather, and a supersession void requirement 34d refuses is recorded
     blocked under it (requirement 32a) exactly as a refused conflict void is
-    under `-conflict-`. No other blocked item kind
+    under `-conflict-`. `pr-<n>-dequeued-<sha>` (requirement 3z) is tested for
+    the identical reason — same head-SHA scoping, and its own gather is the
+    live set that decides it. No other blocked item kind
     is touched: a tech-debt id, an issue number, or a review-feedback round has
     no such re-detectable "current" state to compare against, and none of their
     refs match the pattern. A jq failure leaves the eligible set unfiltered — this
@@ -7437,13 +7588,21 @@ runs unattended.
       for the idle nudge's own marker, not yet done for this one — so it
       falls into that script's own fail-safe default: kept selectable for as
       long as the pull request stays open and not a draft, the same as any
-      warning shape its three classes do not recognise. The notice addresses
-      a human and nothing else:
-      a dequeued pull request becomes no source's candidate, so the
-      Co-Ordinator has no work to select from it —
-      `tech-debt/TD-PPagop-26081409.md` records that gap, and what a source
-      for it would have to decide, sharing `merge_queue_dequeue_actionable`'s
-      classification once it does.
+      warning shape its three classes do not recognise. The notice's own
+      gate is `merge_queue_dequeue_actionable`'s, above, and it is
+      deliberately *wider* than requirement 3z's: requirement 3z admits only
+      `failed_checks`, an allow-list, because it pushes a fix to the branch;
+      this notice admits everything except `"manual"` and `"merged"`, a
+      deny-list, because it only addresses a human. The three cases that
+      follow are therefore distinct. A `failed_checks` dequeue reaches both:
+      a human is told, and the pull request also becomes requirement 3z's
+      `dequeued` candidate for this system to fix itself. Any other
+      actionable reason — including one neither rule has learned to
+      recognise — reaches the notice alone, which is the point of the wider
+      gate: a human is the only remedy left for it, so they must be told
+      even though nothing here can act. A `"manual"` or `"merged"` removal
+      reaches neither, for the reasons given above.
+
 
     Every other reader of PR merge state in this repository is safe against a
     queued pull request without further code change — most by construction
@@ -7453,6 +7612,12 @@ runs unattended.
     - `scripts/gather-merge-conflicts.sh` (requirements 3g, 3s) selects only
       `mergeable == "CONFLICTING"`; a queued pull request is mergeable by
       definition and can never match.
+    - `scripts/gather-dequeued.sh` (requirement 3z) is the one exception to
+      "needs no code change" — it exists to read exactly this state, and
+      selects only `queued == "false"` with a non-null `dequeued_at`, so a
+      currently-queued pull request is excluded by its candidate rule's own
+      construction, the same direction every other reader here is already
+      safe in.
     - `scripts/gather-review-status.sh` and `lib/void-liveness.sh`
       (requirement 34i, 34n) key on `merged_at`/`"merged"` alone — an
       enqueued-but-not-yet-landed pull request is still open, and answers
@@ -7467,7 +7632,11 @@ runs unattended.
       (`scripts/gather-abandoned-drafts.sh`) are draft-only — GitHub does
       not allow enqueueing a draft, so this path cannot misfire on a queued
       pull request. The `conflict` shape's `mergeable == false` test is
-      unaffected for the same reason as `gather-merge-conflicts.sh` above.
+      unaffected for the same reason as `gather-merge-conflicts.sh` above,
+      and the `dequeued` shape's own live re-check (requirement 3z) reads
+      `merge_queue_probe` again directly, so a pull request re-queued since
+      the void was written reads as resolved rather than misread as still
+      broken.
     - `lib/handoff.sh` (requirements 31, 31a, 31b, 32, 32a, 38a) reads only
       `isDraft` and `reviewDecision`, never a merge-state field, and pushes
       nothing itself.
@@ -7500,8 +7669,8 @@ runs unattended.
     membership immediately before doing so, using the same
     `merge_queue_probe` query above (`prompts/implementor.md`'s
     "Merge-queue awareness" section, `prompts/reviewer.md`'s section of the
-    same name): before any push to a `review-feedback`, `merge-conflicts` or
-    `abandoned-drafts` branch (requirement 26, Implementor step 6's
+    same name): before any push to a `review-feedback`, `merge-conflicts`,
+    `dequeued` or `abandoned-drafts` branch (requirement 26, Implementor step 6's
     mergeable re-check), and before any push in the Reviewer's own steps 4
     and 6 (requirements 29, 30, 30a) when the pull request being reviewed is
     not a draft — which is only ever true for the Reviewer's own
@@ -7860,6 +8029,18 @@ What exists, and the requirements each part answers to:
    nudge/drop/pass-through behaviour in `test/nudge-dependabot-rebase.test.sh`,
    and the two together (through the real `gather-merge-conflicts.sh`, via
    `MERGE_CONFLICTS_GH`) in `test/merge-conflicts.test.sh`.
+3z. `scripts/gather-dequeued.sh` implementing requirement 3z: given a repo
+   slug, PR label and branch prefix, prints the JSON array of this system's
+   own PRs (open, non-draft, ours, `mergeable` exactly `MERGEABLE`) whose most
+   recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`, a
+   non-null `dequeued_at`, and `dequeue_reason` reading, case-insensitively,
+   `failed_checks`, and whose dequeue `lib/handoff.sh`'s
+   `handoff_round_answered` reports still `unanswered` as of `dequeued_at` —
+   each carrying the PR's body verbatim, its base, a head-SHA-scoped ref, and
+   the probe's own `dequeued_at`/`dequeue_reason`, ordered by `dequeued_at`
+   oldest first. Fails safe to `[]` (exit 0), including on a reviews or
+   comments read it cannot make. Must pass `shellcheck`; its candidate rule is
+   regression-tested in `test/gather-dequeued.test.sh`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
    repo slug, default branch and (requirement 34l) an optional JSON array of
    this repo's void register-shaped candidates, prints a JSON array holding
@@ -8149,8 +8330,8 @@ What exists, and the requirements each part answers to:
    that can become false again. `preflight_branch_merged_reason`
    is the other done-signal, kept separate because it is impure (one live
    `gh api compare` call against the target repository) and `preflight_existing_branch_source`
-   is the gate that scopes it to the three sources whose branch predates the
-   claim (review-feedback, merge-conflicts, abandoned-drafts) — see
+   is the gate that scopes it to the four sources whose branch predates the
+   claim (review-feedback, merge-conflicts, dequeued, abandoned-drafts) — see
    requirement 34m for why an ordinary claim's freshly created branch cannot
    use this check. `preflight_done_reason` and `preflight_open_pr_reason` are
    pure — they read nothing themselves — sourced after `lib/work-gone.sh`,
@@ -8184,7 +8365,7 @@ What exists, and the requirements each part answers to:
    `github_limit_verdict` and `github_limit_describe`; requirement 2.0a's `gh`
    wrapper, `github_limit_kind` and the pure `github_limit_wait_plan`; and the
    `GITHUB_PR_LIST_LIMIT` listing bound with `github_pr_list_truncated`, whose
-   callers — the back-pressure gate, the three PR-listing gatherers, and the
+   callers — the back-pressure gate, the four PR-listing gatherers, and the
    void guard's supersession corroboration (requirement 3s) — must agree on
    what a truncated page is even though they treat one differently. Sourced by
    both cycle scripts, `lib/claim.sh`, `lib/void-guard.sh` and every
@@ -8630,10 +8811,11 @@ What exists, and the requirements each part answers to:
     open object with a comment carrying the void's `detail`/`evidence`,
     printing one JSON action per outcome (`closed` — `closed_by: "sweep"` or
     `"already"` — `deferred`, `warning`) for the Script to log as
-    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` shape alone is
-    excluded from the pull-request case — it names a live PR the void says
+    `void-object-closed`. The `pr-<n>-conflict-<head-sha>` and
+    `pr-<n>-dequeued-<head-sha>` shapes are
+    excluded from the pull-request case — each names a live PR the void says
     nothing about closing — and left untouched exactly like any other id
-    shape; its sibling `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304)
+    shape; their sibling `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304)
     carries no such exclusion and closes through the ordinary `pr-<n>-…`
     branch. When the pull request being closed carries the human-applied
     `obsolete` label — re-checked live off the same fetch that reads its
@@ -8768,10 +8950,10 @@ What exists, and the requirements each part answers to:
     but never `first-seen` — most often an item that predates this
     instrumentation). `selection_only` is also where every pickup from the
     four sources requirement 33 leaves uncovered lands, and lands
-    permanently: `pickup_latency` describes the seven pre-fetched arrays that
+    permanently: `pickup_latency` describes the eight pre-fetched arrays that
     emit `first-seen`, not the fleet's whole intake, so a reader comparing
-    `median_seconds` against issue #248's own target is reading a
-    7-of-11-source figure by construction — `coverage` is what says so, and
+    `median_seconds` against issue #248's own target is reading an
+    8-of-12-source figure by construction — `coverage` is what says so, and
     requirement 33 is where the four are named.
     `cadence_bound_minutes` echoes `config.json`'s
     `schedule.cycle_interval_minutes` — the floor under every latency figure
@@ -9280,6 +9462,18 @@ pull request, run the ones the change touches and any it could regress.
    API, `scripts/gather-merge-conflicts.sh Poetic-Poems/poetic-fiddle
    autonomous-agent agent/` reports poetic-fiddle #129 (issue #250's acceptance
    test) as a `bot: true` candidate.
+2z. `scripts/gather-dequeued.sh Poetic-Poems/does-not-exist autonomous-agent
+   agent/` prints `[]` and exits 0 — a missing repo, a disabled feature, or an
+   API error never aborts the cycle (TD-PPagop-26081409, requirement 3z). Its
+   candidate rule — the `MERGEABLE`-only gate that keeps it from ever
+   overlapping requirement 3g's own candidates, the `failed_checks`-only
+   allow-list on `dequeue_reason`, the answered clause (only a marked
+   `actor=implementor` reply newer than `dequeued_at` excludes; any other
+   actor, an unmarked comment, or an earlier one does not; an unreadable
+   reviews or comments response drops the candidate rather than admitting it),
+   the `dequeued_at` ordering, and the head-SHA-scoped ref — is
+   regression-tested (through the real script, via `DEQUEUED_GH`/
+   `MERGE_QUEUE_GH`) in `test/gather-dequeued.test.sh`.
 2h. **Dependabot's own conflicted PRs are nudged, then — only after a full
    cycle at the same head — offered as a takeover (requirement 3s).**
    `lib/dependabot-bump.sh`'s family/version parsing and its
@@ -9459,7 +9653,7 @@ pull request, run the ones the change touches and any it could regress.
      prints `null`, not a crash or an empty-string candidate accepted
      downstream as one.
    - **`sources` bounds the mechanical pick (requirement 3x).** The same
-     fixture with its `sources` narrowed to the three finishing bands and its
+     fixture with its `sources` narrowed to the four finishing bands and its
      `issues`/`tech_debt` emptied — requirement 2.2a's own back-pressure
      shape — yields `null` rather than the security finding still sitting in
      its `findings` array, and yields that finding again the moment the token
@@ -9621,10 +9815,11 @@ pull request, run the ones the change touches and any it could regress.
    once went `blocked` will swallow the human's next attempt to unstick it.
 6d. **Back-pressure cannot deadlock the pipeline (requirement 2.2a).** Set
    `max_open_agent_prs` to 0 with a *finishing* candidate present — a
-   review-feedback round, a merge-conflicted PR *or* an abandoned draft: the cycle
+   review-feedback round, a merge-conflicted PR, a dequeued PR *or* an abandoned
+   draft: the cycle
    must **not** stand down, and must reach the Co-Ordinator with every repo's
    `sources` narrowed to
-   `["review-feedback", "merge-conflicts", "abandoned-drafts"]`. With none present
+   `["review-feedback", "merge-conflicts", "dequeued", "abandoned-drafts"]`. With none present
    it must stand down as before. This is the check that a system whose PRs have all
    been sent back for changes — or all stalled as abandoned drafts or wedged on
    conflicts, the very slots the cap is counting — can still dig itself out;
@@ -9655,6 +9850,31 @@ pull request, run the ones the change touches and any it could regress.
    uses a file claim, not a create-ref against the already-existing branch
    (requirement 17a), or every attempt would 422 and no conflicted PR could be
    picked up.
+6i. **A merge-group-checks-failure dequeue is fixed, not restarted
+   (requirements 3z, 15d; TD-PPagop-26081409).** With an open *non-draft* PR
+   carrying `pr_label` on a `branch_prefix` (or `td/`) branch whose `mergeable`
+   is `MERGEABLE` and whose most recent `merge_queue_probe` reports
+   `queued: false`, a non-null `dequeued_at`, and `dequeue_reason` exactly
+   `failed_checks`, a cycle must select it (`source: "dequeued"`, `item` the
+   head-SHA-scoped ref, `branch` the PR's existing branch), and the
+   Implementor must check out that branch, push a fix without opening a new PR
+   or branch, and never attempt to re-queue it. Assert the guards: a PR whose
+   `mergeable` is `CONFLICTING` is **not** a candidate here (that is
+   requirement 3g's job, and the two candidate rules must never both admit the
+   same PR head); a PR whose `dequeue_reason` is anything other than
+   `failed_checks` (including empty/unreadable) is **not** a candidate; a
+   currently-queued PR (`queued: true`) is never a candidate; and **a dequeue
+   the pipeline has already answered is not a candidate at a moved head** — a
+   marked `actor=implementor` reply newer than `dequeued_at` excludes the PR
+   even though the probe still reports the same dequeue, which is what stops
+   the fixed pull request being re-offered on every cycle until a human
+   re-queues it. Assert the clause's own edges too: the same reply *before*
+   `dequeued_at` does not exclude (so a second dequeue re-opens candidacy),
+   another actor's marked comment or an unmarked one does not exclude, and a
+   reviews or comments read that fails yields no candidate rather than one.
+   And assert the claim uses a file claim, not a create-ref against the
+   already-existing branch (requirement 17a), or every attempt would 422 and no
+   dequeued PR could be picked up.
 6g. **The review runs at the tier the work graded itself (requirements 26a,
    8a).** `test/cycle-state.test.sh`'s reviewer-complexity section passes: the
    resolution takes the highest valid grade among the summary's `complexity`
@@ -9680,7 +9900,10 @@ pull request, run the ones the change touches and any it could regress.
    carry it), a ready PR of ours turns `CONFLICTING` after its base moved (assert
    this one too — like the staleness transition it moves no other fingerprinted
    signal once the base advance is a cycle past, so the `merge_conflicts` array is
-   the only thing that can carry it), an item is unblocked or unvoided, a source is
+   the only thing that can carry it), a ready PR of ours is dequeued over a
+   merge-group checks failure (assert this one too — it moves *no* other
+   fingerprinted signal at all, not even `mergeable`, so the `dequeued` array
+   is the only thing that can carry it), an item is unblocked or unvoided, a source is
    added to `config.json`, or `prompts/coordinator.md` is edited. Each of those is a
    source of work, and
    any one of them missing from the fingerprint is an unbounded silent stall
@@ -9815,8 +10038,9 @@ pull request, run the ones the change touches and any it could regress.
    entry's own `repo` is resolved against the URL's own `owner/repo`, not the
    entry's, so a PR number that would match in the wrong repository is not
    corroboration. Assert the finishing sources are not caught by it: an item
-   `pr-<n>-abandoned-…`, `pr-<n>-review-…`, `pr-<n>-conflict-…` or
-   `pr-<n>-superseded-…` citing pull request `<n>` in the entry's own repo is
+   `pr-<n>-abandoned-…`, `pr-<n>-review-…`, `pr-<n>-conflict-…`,
+   `pr-<n>-superseded-…` or `pr-<n>-dequeued-…`
+   citing pull request `<n>` in the entry's own repo is
    corroborated by fetching that PR's own live state, while the same item
    citing a *different* pull request is still refused by the ordinary
    body/branch test. Assert every live state `void_finishing_pr_reason`
@@ -9838,7 +10062,16 @@ pull request, run the ones the change touches and any it could regress.
    definitively conflicting), `false` refused naming the conflict rather than
    the diff — including when `user.login` is `dependabot[bot]`, which buys
    this shape nothing since TD-PPagop-26081304 moved that excuse to
-   `-superseded-`. For `-superseded-` (requirement 3s, TD-PPagop-26081304), an
+   `-superseded-`. For `-dequeued-` (requirement 3z, TD-PPagop-26081409),
+   which 34k likewise closes nothing for, assert the two-part live re-check
+   and both of its ambiguous-accepts directions: an open PR still at the head
+   SHA the item's own id embeds whose `merge_queue_probe` still reports
+   `queued: false` is refused naming the dequeue rather than the diff; the
+   same PR corroborates once the probe reports it re-queued, once its current
+   head has moved past the SHA the id names (asserted without the probe
+   answering at all, so the head check alone decides it), and when the probe
+   cannot answer — the same asymmetry `-conflict-`'s `null` mergeable gets.
+   For `-superseded-` (requirement 3s, TD-PPagop-26081304), an
    open PR is corroborated only when **both**, re-derived live, hold: assert
    all four combinations — `user.login` is `dependabot[bot]` and
    `dependabot_newer_open_pr` (re-run against a stubbed currently-open
@@ -10103,7 +10336,9 @@ pull request, run the ones the change touches and any it could regress.
    which names a pull request but is not about closing it (TD-PPagop-26080901)
    — is left entirely alone too, with no API call made, exactly like the
    register id, and is excluded before the action cap, so it neither spends a
-   slot nor appears in the deferred count; its sibling shape
+   slot nor appears in the deferred count; a `pr-<n>-dequeued-<head-sha>` void
+   (requirement 3z, TD-PPagop-26081409) is left alone on the same terms, with
+   no `gh` call made, so assert that shape too; their sibling shape
    `pr-<n>-superseded-<head-sha>` (TD-PPagop-26081304) carries no such
    exclusion and closes through the ordinary pull-request branch, so assert
    it *does* make the `gh` call and is reported `closed`; a void carrying no
@@ -10248,8 +10483,9 @@ pull request, run the ones the change touches and any it could regress.
    retires, once its source stops yielding it (requirement 34n's liveness
    rule, TD-PPagop-26081303).** `test/cycle-state.test.sh`'s
    `void_liveness_actioned` section passes, against `lib/void-liveness.sh`:
-   for each of the four structured-gather shapes (an alert ref, a
-   register-hygiene ref, a `failed-run-` ref, a merge-conflict ref), an id
+   for each of the five structured-gather shapes (an alert ref, a
+   register-hygiene ref, a `failed-run-` ref, a merge-conflict ref, a
+   `pr-<n>-dequeued-<head-sha>` ref), an id
    still present in GATHER_JSON's `ids` for its repo+shape is never actioned,
    however old; an id absent from a `{ok: true}` gather is actioned, tagged
    `liveness-<shape>`; an id absent from a `{ok: false}` gather, or from a
@@ -10280,7 +10516,7 @@ pull request, run the ones the change touches and any it could regress.
    `source-dropped` verdict can be read; an entry whose shape names a
    source the repo still lists is never actioned; an entry whose shape names
    a source the repo no longer lists is actioned as `source-dropped`, tested
-   for each of the seven mapped shapes; the alert shape stays live while
+   for each of the eight mapped shapes; the alert shape stays live while
    *either* `security` or `code-quality` remains, and retires only when both
    are gone; a bare issue number and a `pr-<n>-stale` in a *configured* repo
    are never actioned however few sources remain; a repo-less void is
@@ -10955,11 +11191,11 @@ requirements above, which state only what is.
   human notices. Rather than rely on that, the `abandoned-drafts` source
   (requirement 3e) treats a draft this system raised, still open and untouched for
   `abandoned_draft_after_hours`, as selectable work — the pipeline finishes its own
-  stalled drafts. It ranks fifth, after security, urgent issues, review-feedback
-  and merge-conflicts, and ahead of
+  stalled drafts. It ranks seventh, after security, urgent issues, review-feedback,
+  merge-conflicts and dequeued, and ahead of
   all fresh work (requirement 15c): finishing beats starting, and it turns a slot
   silted with a dead draft into a PR a human can merge; under back-pressure it is
-  one of the three
+  one of the four
   finishing sources the cycle narrows to (requirement 2.2a). Four choices make it
   safe: the draft/label/branch filter keeps it to *our* stalled work (never a
   human's PR, never a ready one); the ref is scoped to the head SHA, so a
@@ -10980,7 +11216,7 @@ requirements above, which state only what is.
   resolves its own conflicts. It ranks fourth, after security, urgent issues and
   review-feedback,
   and ahead of all fresh work (requirement 15d): a human is waiting to land it and
-  nothing else on it can proceed first; under back-pressure it is one of the three
+  nothing else on it can proceed first; under back-pressure it is one of the four
   finishing sources the cycle narrows to (requirement 2.2a). It deliberately does
   *not* complete the underlying item — that is the eventual merge's job — so it
   touches only what the rebase requires. Two choices make it safe: `mergeable` must
@@ -10990,6 +11226,48 @@ requirements above, which state only what is.
   the no-op fingerprint verbatim so the conflict appearing still wakes the pipeline
   (requirement 3b), the same fix abandoned-drafts needs for its clock-based
   candidacy.
+- **A merge-queue dequeue over a merge-group checks failure is itself a work
+  source (TD-PPagop-26081409, issue #374).** Requirement 38f made the pipeline
+  merge-queue aware and told a human whenever GitHub dequeues a pull request of
+  ours without merging — but a checks-failure dequeue is not merely something
+  to tell a human about, it is a real defect in the pull request: its own head
+  is green, yet the speculative merge with whatever sat ahead of it in the
+  queue failed a required check. Left as a notice alone, that pull request
+  reads to every other source as approved, mergeable and green, and waits
+  indefinitely for a human to notice the notice comment and act — the same gap
+  a textual conflict would leave if requirement 3g did not exist. The
+  `dequeued` source (requirement 3z) closes it the same way: selectable work,
+  ranked fifth, immediately after `merge-conflicts` and for the identical
+  reason (a human is waiting to land it, and nothing else on it can proceed
+  until it is fixed); under back-pressure it is one of the four finishing
+  sources the cycle narrows to, alongside `merge-conflicts`. Two choices keep
+  it safe and non-overlapping: `mergeable` must be `MERGEABLE`, never
+  `CONFLICTING` — that PR is requirement 3g's alone, so the two candidate
+  rules can never admit the same head at once — and `dequeue_reason` is read
+  as an allow-list (`failed_checks` only, confirmed against a real GitHub
+  deployment), never a deny-list, because GitHub reports it as free text: a
+  human manually removing their own queue entry must never be misread as
+  something this system should push a fix over, which would undo the very
+  action the human just took. Because its candidacy turns on a
+  `RemovedFromMergeQueueEvent` no other signal on the pull request carries at
+  all — not even `mergeable`, which is what `merge-conflicts` rides on — the
+  candidate array is fed to the no-op fingerprint verbatim, the same fix
+  abandoned-drafts and merge-conflicts each need for their own invisible
+  transitions. The Implementor cannot re-queue what it fixes — D17 reserves
+  enqueueing for the human's own "Merge when ready" click — so it diagnoses
+  and fixes the merge-group's own failed run, then leaves the pull request
+  ready with a comment naming what it found, exactly as far as this system's
+  side of a merge queue can ever go. That last property is also what makes the
+  source's third choice necessary: because the agent is forbidden the one
+  action that clears the state it is keyed on, a fixed dequeue would otherwise
+  stay a candidate for ever, and the head-SHA-scoped ref would mint a fresh,
+  unblocked one on every fix push. So candidacy also requires the dequeue to be
+  *unanswered* — no marked `actor=implementor` reply newer than `dequeued_at` —
+  reusing `lib/handoff.sh`'s predicate rather than a second copy of it, exactly
+  as requirement 3c does for a review round it likewise cannot dismiss. This is
+  the first finishing source whose condition self-clears neither on a rebase
+  (`merge-conflicts`) nor on activity (`abandoned-drafts`), and the clause is
+  what gives it the property the other three get free.
 - **Dependabot's own conflicted PRs get one nudge before a takeover, never a
   force-push (requirement 3s, issue #250).** poetic-fiddle #129 sat
   merge-conflicting for twelve days: dependabot will rebase its own PR on
@@ -11227,7 +11505,7 @@ requirements above, which state only what is.
   live check by the model** (requirement 3o, issue #175). Exclusion 3 used to
   ask the Co-Ordinator to discover a peer's claim itself — nominally one
   `git ls-remote` per repo, but a check the fleet's smaller Co-Ordinator model
-  routinely skipped, and one the three finishing sources' file claims could
+  routinely skipped, and one the four finishing sources' file claims could
   never have shown up in even performed faithfully, since they mint no
   branch. The log's cost was concrete: item `78` logged nineteen `claim-lost`
   events across four nodes in one day, item `155` seven in one — each a paid
@@ -11299,9 +11577,10 @@ requirements above, which state only what is.
   accepted** (requirement 39, issue #248; surfaced in the review of #268).
   The "sources remain" half of the chain gate counts enabled source
   *categories*, not items, and back-pressure (2.2a) narrows a repo's
-  `.sources` to the three finish-work sources rather than to empty — so for
-  any fleet whose repos configure `review-feedback`, `merge-conflicts` or
-  `abandoned-drafts` the count is never zero and `max_chained_cycles` is the
+  `.sources` to the four finish-work sources rather than to empty — so for
+  any fleet whose repos configure `review-feedback`, `merge-conflicts`,
+  `dequeued` or `abandoned-drafts` the count is never zero and
+  `max_chained_cycles` is the
   only gate that ever fires. Nor can a chained cycle short-circuit on the
   no-op fingerprint (3b): the productive cycle's own PR changed the inputs
   the fingerprint hashes. The behaviour is therefore "after a productive

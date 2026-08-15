@@ -100,6 +100,23 @@ if [[ "$1" == "pr" && "$2" == "list" ]]; then
   if [[ -f "$f" ]]; then cat "$f"; else printf '[]'; fi
   exit 0
 fi
+# `gh api graphql ...` — `lib/merge-queue.sh`'s `merge_queue_probe`, called by
+# the `dequeued` shape's own live re-check (void_finishing_pr_reason). A
+# fixture `$d/mq-response.json`, rewritten between assertions, holds the raw
+# GraphQL response the real query would return; the caller's own `--jq`
+# filter is applied to it, same technique test/merge-queue.test.sh's stub
+# uses. No fixture at all means the probe fails, exactly like a real
+# unreachable/erroring `gh`.
+if [[ "$1 $2" == "api graphql" ]]; then
+  [[ -f "$d/mq-response.json" ]] || exit 1
+  jqfilter="" prev=""
+  for a in "$@"; do
+    [[ "$prev" == "--jq" ]] && jqfilter="$a"
+    prev="$a"
+  done
+  jq -c "$jqfilter" "$d/mq-response.json" 2>/dev/null
+  exit 0
+fi
 [[ "$1" == "api" ]] || exit 1
 if [[ "$2" == */contents/* ]]; then
   rest="${2#*/contents/}"
@@ -565,6 +582,8 @@ assert_eq "a merge-conflict id yields its PR number" \
   "205" "$(void_finishing_item_pr "pr-205-conflict-1a2b3c4d5e6f")"
 assert_eq "a superseded-bump id yields its PR number" \
   "205" "$(void_finishing_item_pr "pr-205-superseded-1a2b3c4d5e6f")"
+assert_eq "a dequeued id yields its PR number" \
+  "205" "$(void_finishing_item_pr "pr-205-dequeued-1a2b3c4d5e6f")"
 assert_eq "an ordinary tech-debt id yields nothing" \
   "" "$(void_finishing_item_pr "TD26051201")"
 assert_eq "a bare issue number yields nothing" "" "$(void_finishing_item_pr "224")"
@@ -585,6 +604,8 @@ assert_eq "a merge-conflict id names its source" \
   "conflict" "$(void_finishing_item_shape "pr-205-conflict-1a2b3c4d5e6f")"
 assert_eq "a superseded-bump id names its source" \
   "superseded" "$(void_finishing_item_shape "pr-205-superseded-1a2b3c4d5e6f")"
+assert_eq "a dequeued id names its source" \
+  "dequeued" "$(void_finishing_item_shape "pr-205-dequeued-1a2b3c4d5e6f")"
 assert_eq "an unrecognised middle word names no source" \
   "" "$(void_finishing_item_shape "pr-205-something-else")"
 assert_eq "the shape is read case-insensitively, as item ids are throughout" \
@@ -715,6 +736,53 @@ printf '{"state": "open", "mergeable": false, "user": {"login": "someone-else"}}
 out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "216" "pr-216-conflict-000000000000")"; rc=$?
 assert_eq "a conflict item whose PR is still conflicting is refused" "1" "$rc"
 assert_contains "  ... on the conflict, never on the diff" "still conflicting" "$out"
+
+# --- The `dequeued` shape (TD-PPagop-26081409): mirrors `conflict` — closes
+# nothing, re-derives its own claim live rather than trusting the entry's own
+# evidence. The test here is the head SHA embedded in the item's own id,
+# compared against the PR's *current* head, and — only when they still
+# match — `lib/merge-queue.sh`'s `merge_queue_probe`, re-read live.
+graphql_probe() {  # <queued: true|false> [dequeued_at] [reason]
+  local queued="$1" at="${2:-}" reason="${3:-}" nodes='[]'
+  if [[ -n "$at" ]]; then
+    nodes="$(jq -nc --arg at "$at" --arg r "$reason" '[{createdAt:$at, reason:$r}]')"
+  fi
+  jq -nc --argjson q "$queued" --argjson n "$nodes" \
+    '{data: {repository: {pullRequest: {isInMergeQueue: $q, timelineItems: {nodes: $n}}}}}' \
+    > "$tmp_dir/mq-response.json"
+}
+
+# #230: PR's current head still matches the item's embedded SHA, and the probe
+# still reports it not re-queued — nothing has changed since the dequeue this
+# item names, so the void is refused.
+printf '{"state": "open", "head": {"sha": "111111111111aaaabbbbcccc"}}' >"$tmp_dir/pr-230.json"
+graphql_probe false "2026-08-14T01:00:00Z" "failed_checks"
+out="$(void_finishing_pr_reason "Poetic-Poems/poetic" "230" "pr-230-dequeued-111111111111")"; rc=$?
+assert_eq "a dequeued item whose PR is still at the same head and not re-queued is refused" "1" "$rc"
+assert_contains "  ... on the dequeue, same head, not re-queued" "still at the same head and not re-queued" "$out"
+
+# #230 again, same head, but now re-queued since — a human acted, so the void
+# corroborates even though nothing about the code changed.
+graphql_probe true
+assert_eq "the same PR, now re-queued at the same head, corroborates" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "230" "pr-230-dequeued-111111111111"; echo $?)"
+
+# #231: PR's current head has moved past what the item names — a fix landed,
+# whether by this cycle or another — so the void corroborates regardless of
+# what the probe would say; deliberately no mq-response.json fixture removed
+# ahead of this call (queued:true is still cached from above), proving the
+# head check alone decided it rather than a lucky probe answer.
+printf '{"state": "open", "head": {"sha": "222222222222ddddeeeeffff"}}' >"$tmp_dir/pr-231.json"
+assert_eq "a dequeued item whose PR's head has since moved corroborates without even asking the probe" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "231" "pr-231-dequeued-111111111111"; echo $?)"
+
+# #233: same head as the item names, but the probe cannot answer at all (no
+# mq-response.json fixture) — accepted, the same "ambiguous accepts" asymmetry
+# the conflict shape's null-mergeable case gets above (#218).
+rm -f "$tmp_dir/mq-response.json"
+printf '{"state": "open", "head": {"sha": "333333333333aaaabbbbcccc"}}' >"$tmp_dir/pr-233.json"
+assert_eq "a dequeued item whose merge-queue probe cannot answer corroborates" \
+  "0" "$(void_finishing_pr_reason "Poetic-Poems/poetic" "233" "pr-233-dequeued-333333333333"; echo $?)"
 
 # `-superseded-` (TD-PPagop-26081304) is the shape requirement 34k *does*
 # close the pull request for, and the `-conflict-` shape's mergeability test

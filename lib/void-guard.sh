@@ -22,7 +22,7 @@
 #
 # The PR-diff check below only fires when the voided repo+item matches a
 # gathered candidate carrying a `pr_number` — the finishing sources
-# (review-feedback, merge-conflicts, abandoned-drafts). For everything else —
+# (review-feedback, merge-conflicts, dequeued, abandoned-drafts). For everything else —
 # most tech-debt items, every review recommendation, a failed-runs entry —
 # nothing tested the citation itself, only that the `evidence` field was
 # non-empty, and a model willing to assert a false reason is just as willing
@@ -129,6 +129,19 @@ VOID_GUARD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # that source this file alone reach their stubs through `VOID_GUARD_GH`.
 # shellcheck source=lib/github-limit.sh
 . "$VOID_GUARD_DIR/lib/github-limit.sh"
+
+# `merge_queue_probe` — needed to re-derive a `pr-<n>-dequeued-…` void's own
+# claim live, below (TD-PPagop-26081409) — is lib/merge-queue.sh's, sourced
+# for the same self-containment reason as the two above. Its own default
+# `gh_bin` reads `MERGE_QUEUE_GH`, never `VOID_GUARD_GH` directly, so
+# `void_finishing_pr_reason` passes `MERGE_QUEUE_GH="$gh_bin"` at the one call
+# site that needs it (below) rather than pinning it here at source time: this
+# file may be sourced before a caller (a test, `agent-cycle.sh`) has decided
+# what `VOID_GUARD_GH` even is, and a static pin here would freeze the wrong
+# value in — the same reason `gh_bin` itself is resolved fresh inside each
+# function rather than once at the top of the file.
+# shellcheck source=lib/merge-queue.sh
+. "$VOID_GUARD_DIR/lib/merge-queue.sh"
 
 # entry_field_text ENTRY_JSON FIELD
 # Print one field of a model-supplied entry as a single string — objects and
@@ -280,8 +293,8 @@ void_evidence_resolves() {
 # cycle's gathered candidates associate with the voided entry's repo and item.
 #
 # REPOS_JSON is the Co-Ordinator's own runtime input (requirement 3): an array
-# of repos each carrying its `findings`, `review_feedback`, `abandoned_drafts`
-# and `merge_conflicts` arrays. Those are the only PRs in scope, and that is the
+# of repos each carrying its `findings`, `review_feedback`, `abandoned_drafts`,
+# `merge_conflicts` and `dequeued` arrays. Those are the only PRs in scope, and that is the
 # point — the guard tests the void against the same facts the Co-Ordinator was
 # looking at when it made it, so it can never be refuted by something it could
 # not have known.
@@ -302,7 +315,7 @@ void_candidate_prs() {
         | select($repo == "" or .slug == $repo)
         | .slug as $slug
         | ((.findings // []) + (.review_feedback // [])
-           + (.abandoned_drafts // []) + (.merge_conflicts // []))[]
+           + (.abandoned_drafts // []) + (.merge_conflicts // []) + (.dequeued // []))[]
         | select((((.item // "") | tostring) | ascii_downcase) == $item and $item != "")
         | select((.pr_number // null) != null)
         | "\($slug)#\(.pr_number)"
@@ -412,9 +425,10 @@ void_evidence_cited_commit_shas() {
 # void_finishing_item_pr ITEM
 # Print the pull request number a finishing-source item id embeds, and
 # return 0 — ITEM shaped `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-
-# <review-id>`, `pr-<n>-conflict-<head-sha>` or `pr-<n>-superseded-<head-sha>`
-# (scripts/gather-abandoned-drafts.sh, gather-review-feedback.sh,
-# gather-merge-conflicts.sh) prints `<n>`. Prints nothing and returns 1 when
+# <review-id>`, `pr-<n>-conflict-<head-sha>`, `pr-<n>-superseded-<head-sha>`
+# or `pr-<n>-dequeued-<head-sha>` (scripts/gather-abandoned-drafts.sh,
+# gather-review-feedback.sh, gather-merge-conflicts.sh, gather-dequeued.sh)
+# prints `<n>`. Prints nothing and returns 1 when
 # ITEM is not shaped that way — an ordinary tech-debt id, issue number or
 # review recommendation mints nothing a PR number can be read out of.
 void_finishing_item_pr() {
@@ -426,15 +440,16 @@ void_finishing_item_pr() {
 
 # void_finishing_item_shape ITEM
 # Print which of the four finishing sources minted ITEM's id — `abandoned`,
-# `review`, `conflict` or `superseded` — and return 0. Prints nothing and
-# returns 1 for anything else, including a `pr-<n>-…` id whose middle word is
-# none of those: an unrecognised shape gets the strictest reading below, never
-# the most permissive one. Matched and reported case-insensitively, the same
-# discipline `void_candidate_prs` applies to item ids — the gatherers mint
-# these in lower case, but what reaches an entry is whatever the writer typed.
+# `review`, `conflict`, `superseded` or `dequeued` — and return 0. Prints
+# nothing and returns 1 for anything else, including a `pr-<n>-…` id whose
+# middle word is none of those: an unrecognised shape gets the strictest
+# reading below, never the most permissive one. Matched and reported
+# case-insensitively, the same discipline `void_candidate_prs` applies to
+# item ids — the gatherers mint these in lower case, but what reaches an
+# entry is whatever the writer typed.
 void_finishing_item_shape() {
   local item="$1" shape
-  shape="$(grep -oiE '^pr-[0-9]+-(abandoned|review|conflict|superseded)-' <<<"$item" 2>/dev/null || true)"
+  shape="$(grep -oiE '^pr-[0-9]+-(abandoned|review|conflict|superseded|dequeued)-' <<<"$item" 2>/dev/null || true)"
   [[ -n "$shape" ]] || return 1
   shape="${shape#*-}"
   shape="${shape#*-}"
@@ -493,6 +508,16 @@ void_finishing_item_shape() {
 #     definitively conflicting and is accepted, the same asymmetry the
 #     gatherer chose in the other direction — it admits a candidate on
 #     `CONFLICTING` and never on the transient `UNKNOWN`.
+#   - `pr-<n>-dequeued-…` — a corroborated void of this shape also closes
+#     *nothing* (requirement 34k excludes it too, TD-PPagop-26081409), for the
+#     same reason as `-conflict-`: the void says the *dequeue* resolved, not
+#     the pull request. The test again mirrors the one that minted the item
+#     (`gather-dequeued.sh`): refused only while the pull request's *current*
+#     head still matches the head SHA the item's own id embeds **and**
+#     `lib/merge-queue.sh`'s `merge_queue_probe`, re-read live, still reports
+#     it not re-queued. A head that has moved (a fix landed, whichever cycle's)
+#     or a probe that cannot answer both read as resolved, the same
+#     "ambiguous accepts" asymmetry the conflict shape's `null` mergeable gets.
 #   - `pr-<n>-superseded-…` — a corroborated void of this shape *does* close
 #     pull request `<n>` (requirement 34k's ordinary act-on-void path, once
 #     the id shape distinguishes it from `-conflict-`). Closing a Dependabot
@@ -520,6 +545,7 @@ void_finishing_item_shape() {
 void_finishing_pr_reason() {
   local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
   local pr_json state shape login files head_ref dependabot_open
+  local item_sha head_sha mq_probe
 
   pr_json="$("$gh_bin" api "repos/$slug/pulls/$num" 2>/dev/null)" || pr_json=""
   if [[ -z "$pr_json" ]]; then
@@ -543,6 +569,33 @@ void_finishing_pr_reason() {
     printf 'refuted: PR #%s in %s, whose conflict item %s reports resolved, is still conflicting against its base' \
       "$num" "$slug" "$item"
     return 1
+  fi
+
+  if [[ "$shape" == "dequeued" ]]; then
+    # Mirror of the conflict shape's own asymmetry (closes nothing —
+    # requirement 34k excludes this shape too, TD-PPagop-26081409): refuse
+    # only while the pull request is still exactly the state this item
+    # names — same head, still not re-queued. The item's own head SHA
+    # (scripts/gather-dequeued.sh mints `pr-<n>-dequeued-<head-sha>`, the
+    # same `head_sha:0:12` scoping gather-merge-conflicts.sh's own refs use)
+    # is read out of the id itself, never trusted from the entry's own
+    # `evidence`, and compared against the pull request's *current* head —
+    # a probe that cannot answer, or a head that has moved since (a fix
+    # landed, whether by this cycle or another), corroborates, the same
+    # asymmetry the `mergeable`-null case gets above.
+    item_sha="$(grep -oiE '[0-9a-f]{6,40}$' <<<"$item" 2>/dev/null || true)"
+    head_sha="$(jq -r '.head.sha // ""' <<<"$pr_json" 2>/dev/null || true)"
+    if [[ -n "$item_sha" && -n "$head_sha" ]] \
+      && [[ "${head_sha,,}" == "${item_sha,,}"* ]]; then
+      mq_probe="$(MERGE_QUEUE_GH="$gh_bin" merge_queue_probe "$slug" "$num" 2>/dev/null || true)"
+      if [[ -n "$mq_probe" ]] \
+        && [[ "$(jq -r '.queued' <<<"$mq_probe" 2>/dev/null || true)" == "false" ]]; then
+        printf 'refuted: PR #%s in %s, whose dequeue item %s reports resolved, is still at the same head and not re-queued' \
+          "$num" "$slug" "$item"
+        return 1
+      fi
+    fi
+    return 0
   fi
 
   if [[ "$shape" == "superseded" ]]; then
@@ -617,10 +670,11 @@ void_finishing_pr_reason() {
 # One item shape is corroborated differently: a finishing-source item *is* a
 # pull request. The gatherers mint its id from the PR's own number —
 # `pr-<n>-abandoned-<head-sha>`, `pr-<n>-review-<review-id>`,
-# `pr-<n>-conflict-<head-sha>`, `pr-<n>-superseded-<head-sha>`
+# `pr-<n>-conflict-<head-sha>`, `pr-<n>-superseded-<head-sha>`,
+# `pr-<n>-dequeued-<head-sha>`
 # (scripts/gather-abandoned-drafts.sh, gather-review-feedback.sh,
-# gather-merge-conflicts.sh) — so citing that very pull request is not a loose
-# association, it is the item's own definition.
+# gather-merge-conflicts.sh, gather-dequeued.sh) — so citing that very pull
+# request is not a loose association, it is the item's own definition.
 # Nothing will ever write `pr-205-abandoned-1a2b3c4d5e6f` in PR #205's body or
 # branch name, so the body/branch test below would refuse the most natural
 # evidence these items can carry. That refusal would fall precisely on the
@@ -636,7 +690,7 @@ void_finishing_pr_reason() {
 # `.item`: the gatherers put it in `.ref` and leave `.item` as whatever
 # register id the branch or body named, or `null`
 # (`scripts/gather-abandoned-drafts.sh`, `gather-review-feedback.sh`,
-# `gather-merge-conflicts.sh`). So the Co-Ordinator's extra candidate-diff test
+# `gather-merge-conflicts.sh`, `gather-dequeued.sh`). So the Co-Ordinator's extra candidate-diff test
 # is silent on this shape exactly as the Enabler's and the Implementor's
 # `repos: []` calls are, which is why the fetch here has to be the thing that
 # looks.

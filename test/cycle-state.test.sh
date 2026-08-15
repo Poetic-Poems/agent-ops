@@ -459,10 +459,11 @@ assert_eq "round-trip: a fresh verdict after the retirement re-enters the extrac
 # --- void_liveness_actioned (requirement 34n's liveness rule, --------------
 # --- TD-PPagop-26081303) ----------------------------------------------------
 #
-# The four shapes the cycle already gathers as structured data each cycle:
-# an alert ref, a register-hygiene ref, a failed-run ref and a merge-conflict
+# The five shapes the cycle already gathers as structured data each cycle:
+# an alert ref, a register-hygiene ref, a failed-run ref, a merge-conflict
 # ref (the addendum's `pr-<n>-conflict-<head-sha>` — "merge-conflict-
-# resolved" below). Each is tested for both halves of the rule: liveness (an
+# resolved" below) and a dequeued ref (TD-PPagop-26081409's own
+# `pr-<n>-dequeued-<head-sha>`). Each is tested for both halves of the rule: liveness (an
 # id still present in this cycle's own gather is never actioned, however old)
 # and the gather's own success (an id absent from a gather that did not
 # succeed decides nothing either).
@@ -478,6 +479,8 @@ void_shapes='[
   {"repo":"o/r","item":"pr-13-conflict-9f8e7d6c5b4a","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/r","item":"pr-14-superseded-1234567890ab","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/r","item":"pr-15-superseded-abcdef123456","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"pr-16-dequeued-fedcba098765","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/r","item":"pr-17-dequeued-0011223344ff","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/other","item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"},
   {"item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"}
 ]'
@@ -486,7 +489,8 @@ gather_map='{
     "alert": {"ok": true, "ids": ["dependabot-alert-1"]},
     "register-hygiene": {"ok": true, "ids": ["register-hygiene-aaaaaaaaaaaa"]},
     "failed-run": {"ok": false, "ids": []},
-    "merge-conflict": {"ok": true, "ids": ["pr-12-conflict-1a2b3c4d5e6f", "pr-14-superseded-1234567890ab"]}
+    "merge-conflict": {"ok": true, "ids": ["pr-12-conflict-1a2b3c4d5e6f", "pr-14-superseded-1234567890ab"]},
+    "dequeued": {"ok": true, "ids": ["pr-16-dequeued-fedcba098765"]}
   }
 }'
 liveness_out="$(void_liveness_actioned "$void_shapes" "$gather_map")"
@@ -533,6 +537,14 @@ assert_eq "merge-conflict-resolved: a superseded bump still reported this cycle 
 assert_eq "merge-conflict-resolved: a superseded bump no longer reported is actioned" \
   "liveness-merge-conflict" \
   "$(jq -r '.[] | select(.item == "pr-15-superseded-abcdef123456") | .by' <<<"$liveness_out")"
+
+# The `dequeued` shape (TD-PPagop-26081409): identical liveness rule, its own
+# gather key.
+assert_eq "dequeued: a dequeue still reported by this cycle's gather is kept" \
+  "0" "$(jq '[.[] | select(.item == "pr-16-dequeued-fedcba098765")] | length' <<<"$liveness_out")"
+assert_eq "dequeued: a dequeue no longer reported (fixed, or re-queued) is actioned" \
+  "liveness-dequeued" \
+  "$(jq -r '.[] | select(.item == "pr-17-dequeued-0011223344ff") | .by' <<<"$liveness_out")"
 assert_eq "a same-id void in a different repo, absent from GATHER_JSON, decides nothing" \
   "0" "$(jq '[.[] | select(.repo == "o/other")] | length' <<<"$liveness_out")"
 assert_eq "a repo-less (hand-appended) void matches no shape's repo lookup" \
@@ -621,6 +633,7 @@ cfg_void='[
   {"repo":"o/kept","item":"code-scanning-alert-2","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"register-hygiene-aaaaaaaaaaaa","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"pr-13-conflict-9f8e7d6c5b4a","ts":"2026-07-01T00:00:00Z"},
+  {"repo":"o/kept","item":"pr-16-dequeued-fedcba098765","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"failed-run-ci","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"review-2026-07-11-R-02","ts":"2026-07-01T00:00:00Z"},
   {"repo":"o/kept","item":"TD-PPagop-26081303","ts":"2026-07-01T00:00:00Z"},
@@ -632,7 +645,7 @@ cfg_void='[
   {"item":"dependabot-alert-1","ts":"2026-07-01T00:00:00Z"}
 ]'
 # Every mapped source still listed: nothing here is the config's business.
-cfg_all='[{"slug":"o/kept","sources":["security","code-quality","register-hygiene","merge-conflicts","failed-runs","project-review","tech-debt","implementation-plan","issues:high","review-feedback","abandoned-drafts","human-visibility"]},{"slug":"o/gone","sources":["security"]}]'
+cfg_all='[{"slug":"o/kept","sources":["security","code-quality","register-hygiene","merge-conflicts","dequeued","failed-runs","project-review","tech-debt","implementation-plan","issues:high","review-feedback","abandoned-drafts","human-visibility"]},{"slug":"o/gone","sources":["security"]}]'
 assert_eq "a repo still listing every mapped source actions nothing" \
   "0" "$(void_config_actioned "$cfg_void" "$cfg_all" | jq '[.[] | select(.repo == "o/kept")] | length')"
 
@@ -652,6 +665,8 @@ assert_eq "register-hygiene: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" register-hygiene-aaaaaaaaaaaa)"
 assert_eq "merge-conflict: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" pr-13-conflict-9f8e7d6c5b4a)"
+assert_eq "dequeued: source gone is source-dropped" \
+  "source-dropped" "$(by_item "$cfg_out" pr-16-dequeued-fedcba098765)"
 assert_eq "failed-run: source gone is source-dropped" \
   "source-dropped" "$(by_item "$cfg_out" failed-run-ci)"
 assert_eq "project-review: source gone is source-dropped" \
@@ -941,7 +956,7 @@ assert_eq "malformed input degrades to the untrimmed array" "not an array" \
 # narrower pass through exclude_blocked_or_void_issues.
 band_list="$(sed -n 's/^for eligibility_band in \(.*\); do$/\1/p' "$SCRIPT_DIR/agent-cycle.sh")"
 assert_eq "every pre-fetched band but issues reaches exclude_blocked_or_void_items" \
-  "findings review_feedback abandoned_drafts merge_conflicts register_hygiene human_visibility tech_debt" \
+  "findings review_feedback abandoned_drafts merge_conflicts dequeued register_hygiene human_visibility tech_debt" \
   "$band_list"
 
 # --- coordinator_input itself: no `void` key, and a trimmed `blocked` --------
