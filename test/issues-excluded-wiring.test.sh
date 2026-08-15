@@ -240,8 +240,8 @@ run_issues_excluded_cycle "o/r" '[{"number":125,"reason":"assigned"}]'
 after="$(lines_before)"
 assert_eq "an unchanged exclusion set logs nothing" "0" "$(( after - before ))"
 
-# ... reordered identically (same members, different array order) still
-# counts as unchanged, since the comparison sorts before comparing.
+# ... and a second identical cycle stays quiet too, so "logs nothing" is a
+# steady state rather than a one-cycle suppression.
 before="$(lines_before)"
 run_issues_excluded_cycle "o/r" \
   '[{"number":125,"reason":"assigned"}]'
@@ -259,6 +259,17 @@ assert_eq "a changed exclusion set logs exactly one event" \
 last_line="$(tail -n 1 "$log_file_path")"
 assert_eq "the changed set's count reflects the new size" \
   "2" "$(jq -r '.count' <<<"$last_line")"
+
+# ... the same two members in a different array order are the same set, not a
+# change: gather-issues.sh imposes no order on `excluded`, so without the
+# `sort_by` both sides of the comparison carry, a reordered-but-identical
+# report would log a spurious edge every time the order shifted.
+before="$(lines_before)"
+run_issues_excluded_cycle "o/r" \
+  '[{"number":140,"reason":"blocked-label"},{"number":125,"reason":"assigned"}]'
+after="$(lines_before)"
+assert_eq "the same members in a different order count as unchanged" \
+  "0" "$(( after - before ))"
 
 # --- 3d: a cleared set logs too, with count 0 -------------------------------
 before="$(lines_before)"
