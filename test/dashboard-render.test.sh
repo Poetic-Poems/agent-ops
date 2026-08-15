@@ -256,6 +256,46 @@ assert_contains "the card's tooltip spells out the same composition the cycle lo
   'title="1 changes-requested + 1 draft + 1 unraised claim(s) — plus 1 waiting on human (4 raw)"' \
   "$bp"
 
+# --- backpressure-claim-scope.json: which registry rows are "unraised claims" ---
+# The other direction of the same card. #434 taught it to count claims, and it
+# counted every row in the registry — but the registry is wider than the repos,
+# and holds rows for pull requests that already exist, so the gauge pinned red
+# against a gate that was open. `claim.sh count`'s rule, mirrored here, drops
+# four of the seven rows below:
+#
+#   enabler / refiner    pseudo-slug engagement tombstones (spec 35c). The cycle
+#                        asks for one configured repo at a time and so never sees
+#                        them; this page reads the whole registry in one call and
+#                        must re-impose that scope itself. Two rows, dropped.
+#   pr-700               the PR-keyed exclusion entry (#238), always dropped.
+#   pr-700-abandoned-…   an item claim on #700 — a draft already inside the sum
+#                        above, so counting it charges one unit of work twice.
+#                        Dropped.
+#   pr-701-conflict-…    an item claim on #701, which is approved and so sits in
+#                        the human's queue *outside* the sum. Here the claim is
+#                        the only record that the work is in flight. Kept.
+#   agent/342, td/TD-…   ordinary unraised claims, one per configured repo. Kept.
+#
+# So the gauge reads 0 changes-requested + 1 draft + 3 claims = 4 of 8, well
+# short of the cap — where counting the registry raw would have read 7 and
+# tripped it.
+bps="$(render backpressure-claim-scope.json)" || { printf 'FAIL - backpressure-claim-scope.json did not render:\n%s\n' "$bps"; exit 1; }
+bpsflat="$(tr '\n' ' ' <<<"$bps" | tr -s ' ')"
+assert_contains "the gauge counts only the claims the cycle's own gate would count" \
+  '4 <small> / 8 max' "$bpsflat"
+assert_contains "…so it does not trip a cap the pipeline is nowhere near" \
+  "background:var(--accent)" "$bps"
+assert_contains "the tooltip names the same three-claim figure" \
+  'title="0 changes-requested + 1 draft + 3 unraised claim(s) — plus 1 waiting on human (5 raw)"' \
+  "$bps"
+assert_contains "the raw open-PR line still counts only pull requests" \
+  "2 open, 1 waiting on human" "$bps"
+# The panel is deliberately not filtered the way the gauge is: a tombstone
+# holding an item off the whole fleet is what an operator hunting a stuck item
+# needs to see, whatever the gauge does with it.
+assert_contains "the live-claims panel still shows the pseudo-slug rows in full" \
+  "Poetic-Poems-agent-ops/342/1786772746" "$bps"
+
 # Single-quoted: these are literal rendered dollar amounts, not shell
 # expansions, so the SC2016 the pinned linter raises on them is a false
 # positive.
@@ -633,37 +673,73 @@ assert_contains "an enqueued-then-dequeued pull request belongs in the attention
   "removed from the merge queue without merging" "$out"
 
 # --- the cost section's column flow and its reading order (issue #330) -----------
-# The four cost blocks share one multi-column container, so the *split* between
+# The five cost blocks share one multi-column container, so the *split* between
 # columns is the browser's to choose by height and is not assertable here — no
 # layout, by design. What is assertable is the thing that choice rests on: a
 # multi-column flow fills each column top-to-bottom in document order, so
-# document order is the visual order, and the four blocks appended out of turn
+# document order is the visual order, and the blocks appended out of turn
 # would reorder the page silently while every existing assertion still passed.
-# The note's depth is checked with them because it is the block that moved: it
-# used to be a paragraph appended after the section, and only counts as the
-# last block of the flow if it is inside the container.
+# The notes' depth is checked with them because they are the blocks that
+# moved: the first used to be a paragraph appended after the section, and
+# only counts as a block of the flow if it is inside the container.
 out="$(render finished.json)" || { printf 'FAIL - finished.json did not render:\n%s\n' "$out"; exit 1; }
 
 assert_contains "the cost blocks share one multi-column container" \
   '<div class="costgrid">' "$out"
 assert_not_contains "and not the fixed two-column grid it replaced" \
   '<div class="two">' "$out"
+assert_contains "a second cost note names the page's fixed currency (issue #438)" \
+  "US dollars (USD)" "$out"
 
-# Each of the four markers occurs once in the page, so their order in the dump
-# is their order in the flow.
+# Bounded by the next section's own heading, since both `p.costnote` markers
+# now occur inside the grid and a range ending at the first would silently
+# drop the second one.
 cost_order="$(printf '%s\n' "$out" \
-  | sed -n '/<div class="costgrid">/,/<p class="costnote">/p' \
+  | sed -n '/<div class="costgrid">/,/Recent log events/p' \
   | grep -oE 'Est\. token cost by (day|model|actor)|class="costnote"' \
   | tr '\n' ' ')"
-assert_eq "the cost blocks flow in reading order — day, model, actor, then the note" \
-  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" ' \
+assert_eq "the cost blocks flow in reading order — day, model, actor, then both notes" \
+  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" class="costnote" ' \
   "$cost_order"
 
 # The serialiser indents two spaces per level, so six spaces is a child of the
 # container (four) inside the section (two) — the depth the three chart blocks
 # sit at, and no longer that of a paragraph appended beside the section.
-assert_contains "the note is a block of that container, not a paragraph after the section" \
+assert_contains "the notes are blocks of that container, not paragraphs after the section" \
   '      <p class="costnote">' "$out"
+
+# --- switch-scope-*.json: which switch a node card is actually claiming ----------
+# A fleet-wide --disable writes a local record on the node that issued it as
+# well as the fleet flag (implementation spec 2.3a). Before that record was
+# tagged `scope`, the issuing node alone wore the amber `disabled` badge while
+# its equally-stopped peers wore none — a fleet-wide stand-down rendering as a
+# fault peculiar to one node, on the page whose whole job here is to say which
+# is which.
+out="$(render switch-scope-mirror.json)" || { printf 'FAIL - switch-scope-mirror.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "a set fleet flag raises the fleet banner" \
+  "Fleet switch is set" "$out"
+assert_not_contains "and its local mirror does not raise a second banner beside it" \
+  "Pipeline disabled" "$out"
+assert_not_contains "nor badge the node that issued it as node-scoped" \
+  'node-scoped disable: “resize the VM”' "$out"
+assert_contains "while a peer's genuine --this-node disable still badges" \
+  'node-scoped disable: “editing lib/”' "$out"
+
+# The orphan: --enable on a peer clears the fleet flag but cannot reach this
+# node's file, so this node alone stays down under a decision lifted
+# elsewhere. Nothing else on the page accounts for that, which is exactly why
+# the banner and badge have to.
+out="$(render switch-scope-orphan.json)" || { printf 'FAIL - switch-scope-orphan.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_not_contains "with the fleet flag cleared there is no fleet banner" \
+  "Fleet switch is set" "$out"
+assert_contains "but the surviving mirror does raise this node's switch banner" \
+  "Pipeline disabled" "$out"
+assert_contains "saying what it is, rather than blaming a decision nobody made" \
+  "left over from a fleet-wide disable that has since been cleared" "$out"
+assert_contains "and the node's own card badges it, naming the command that clears it" \
+  "this node is standing down alone" "$out"
 
 printf '\n'
 if (( failures > 0 )); then

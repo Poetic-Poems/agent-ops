@@ -322,9 +322,9 @@ Keys:
 | `claim_ttl_hours` | `6` | Hours before a dead node's claim-registry entry is swept (`lib/claim.sh gc`); far beyond one full cycle. |
 | `abandoned_draft_after_hours` | `4` | Hours a draft PR this system raised may sit untouched before it counts as abandoned and finishing it becomes selectable work (the `abandoned-drafts` source). Beyond one full cycle, so a draft still being worked never qualifies. Also the staleness threshold `scripts/sweep-orphan-branches.sh` uses. |
 | `human_nudge_idle_hours` | `24` | Hours an approved, green pull request may sit idle — nothing left for the pipeline to do, only a merge click nobody was asked for — before `scripts/sweep-human-visibility.sh` posts one nudge comment naming `enabler_assignee`. `0` disables the nudge; the sweep still keeps a live review request on every such PR regardless (see [Configuration](#configuration) → `enabler_assignee`). |
-| `merge_queue_dequeue_notice_max_age_hours` | `24` | Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time. |
+| `merge_queue_dequeue_notice_max_age_hours` | `24` | Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time. `0` disables the notice entirely, at the cost of losing the only human signal this pipeline raises for a merge-group failure. |
 | `merge_autonomy` | `human` | The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver identity reviews; a human still merges), `agent-merges-routine` (the Approver identity reviews and the Script also lands routine pull requests) or `agent-merges-all` (the Script lands everything passing its gates). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs...[continued below](#extended-notes-merge_autonomy) |
-| `approver_app_id` | *(unset)* | The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration. |
+| `approver_app_id` | *(unset)* | The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its...[continued below](#extended-notes-approver_app_id) |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script files a crash-loop escalation issue — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. Neither class blames a repo or an item, so without this nothing ever surfaces a deterministic fleet-wide failure — the dashboard shows a healthy idle fleet. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where the crash-loop escalation issues are filed — the pipeline's own repository. Deduplicated like an Enabler escalation and assigned to `enabler_assignee`, so the pipeline never selects its own SOS as work. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself, and a key set here outranks the derivation for as long as it is there. A repo entry's own `stage_timeouts` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
@@ -447,6 +447,10 @@ Per source: `required` (never select unrefined), `preferred` (rank refined items
 ### Extended notes: `merge_autonomy`
 
 The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver identity reviews; a human still merges), `agent-merges-routine` (the Approver identity reviews and the Script also lands routine pull requests) or `agent-merges-all` (the Script lands everything passing its gates). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level. No approval or landing behaviour changes below `agent-approves` yet — `scripts/doctor.sh` validates the setting; nothing acts on it until the Approver stage lands.
+
+### Extended notes: `approver_app_id`
+
+The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.
 
 <!-- config-table:notes-end -->
 
@@ -2062,6 +2066,19 @@ forgotten `--enable --this-node` costs a few lost cycles on that node, not a
 silent permanent stand-down. `--status` on the node reports it, and its
 dashboard card carries the same badge a fleet disable shows, beside its role
 badge — so the stand-down is visible without a shell on the box.
+
+A plain `--disable` writes a local record too, on the node you typed it on:
+that write is what stands *that* node down while the fleet flag is still being
+published, and what keeps it down if the state repository turns out to be
+unreachable. It is tagged `scope: "fleet"` to mark it a mirror of the fleet
+switch rather than a stand-down of that node's own — so neither `--status` nor
+the dashboard reports the node you happened to type the command on as
+separately disabled, and `--enable --this-node` refuses to clear it (plain
+`--enable` is what undoes a fleet-wide disable, and clears both levels). One
+case is worth knowing about: run `--enable` on a *different* node and it
+clears the flag but cannot reach the first node's file, leaving that one node
+standing down alone. `--status` there and its dashboard card both say so in
+those words, and `--enable` on that node clears it.
 
 That covers most "I need this one node to stop for a while" cases. For
 anything it doesn't:

@@ -194,6 +194,19 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   same absent-means-unknown rule every other peer-only field on the card
   follows — a peer whose heartbeat predates the field, like one whose image
   or compose verdict does, renders no badge rather than a false "enabled".
+
+  **A record's `scope` decides which of those two things it is** (implementation
+  spec 2.3). A fleet-wide `--disable` also writes a local record on the node
+  that issued it, tagged `scope: "fleet"` — a *mirror* of the fleet switch, not
+  a stand-down of that node's own. While `fleet.flags.disabled` is set the page
+  suppresses both the local banner and that node's badge in favour of the fleet
+  banner, because one decision must not render as two problems, and an amber
+  **disabled** badge on exactly one node of a uniformly-down fleet reads as a
+  fault peculiar to that node. When the fleet flag is *clear* and a mirror
+  survives, the opposite applies and both render, saying so: that node alone is
+  standing down under a fleet decision lifted elsewhere — `--enable` on a peer
+  clears the flag but cannot reach this node's file — and nothing else on the
+  page would account for it.
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what
@@ -512,11 +525,15 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   published one (#155); null if
                                             //   unreported
                          switch: { disabled, reason, by,    // the node's OWN
-                                    actor, kind, since,      //   node-scoped
-                                    expires_at },            //   disable (#379,
-                                            //   `--disable --this-node`),
-                                            //   never the fleet one; null if
-                                            //   unreported
+                                    actor, kind, scope,      //   disable record
+                                    since, expires_at },     //   (#379); `scope`
+                                            //   is "node" for a real
+                                            //   `--disable --this-node` and
+                                            //   "fleet" for the local mirror a
+                                            //   fleet-wide --disable leaves on
+                                            //   the node that issued it (2.3);
+                                            //   never the fleet flag itself;
+                                            //   null if unreported
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -688,11 +705,23 @@ Then metric cards (spend today/total — fleet-wide, one shared account —
 failures, reached-ready, back-pressure gauge vs `max_open_agent_prs`. The
 gauge's own figure is the same four-part sum `agent-cycle.sh` trips its cap
 on (requirement 2.2) — draft PRs, ready PRs still `CHANGES_REQUESTED`, and
-live claims (registry rows keyed by an item rather than by an existing PR
-number, mirroring `claim.sh count`'s exclusion of `pr-<n>` entries) — rather
+live claims — rather
 than a figure the page derives from the open-PR listing alone: a live claim
 is work already in flight whose PR does not exist yet, so it cannot appear
-there. The card's `title` tooltip spells out the same split the cycle logs,
+there. Which registry rows those are is `claim.sh count`'s rule, transcribed
+rather than re-derived — a card reporting a different figure from the gate it
+depicts is worse than no card — and it excludes two kinds of row. Rows under a
+**pseudo-slug** (`enabler`, `refiner`) are the Enabler's and Refiner's
+engagement tombstones: never released, retired only by `claim.sh gc`, and
+never seen by the cycle, which asks `claim.sh count` for one configured repo
+at a time. The page reads the whole registry in one tree call, so it must
+re-impose that scope itself or the gauge climbs with every item the Enabler
+examines and pins red against an open gate. Rows **naming a pull request
+already in the sum** are that PR a second time: the `pr-<n>` exclusion entry
+always, and a `pr-<n>-<kind>-<scope>` item ref when its PR is among the drafts
+or changes-requested PRs counted above — but not when that PR sits in the
+human's queue (conflicted, dequeued), where the claim is the only record the
+work is in flight. The card's `title` tooltip spells out the same split the cycle logs,
 e.g. "1 changes-requested + 0 draft + 1 unraised claim(s) — plus 13 waiting
 on human (14 raw)", with a line underneath naming the raw open-PR total and,
 when it differs, how many of those are sitting only in a human's queue
@@ -751,11 +780,11 @@ ships wholesale — so this is rendering only: the Publisher is unchanged;
 **Co-Ordinator verdict quality** (immediately below the work sources, and
 deliberately: that panel is what the Co-Ordinator was handed, this one is how
 often its answer about it survived the Script checking that answer);
-the cost charts — by-day, by-model, by-actor and the cost note flowed through
-a CSS multi-column layout in that reading order, letting the browser balance
-the split by height rather than pinning by-day to a column of its own, since
-it runs to sixty rows against five each for the other two; recent log;
-`cron.log` tail.
+the cost charts — by-day, by-model, by-actor and the two cost notes flowed
+through a CSS multi-column layout in that reading order, letting the browser
+balance the split by height rather than pinning by-day to a column of its
+own, since it runs to sixty rows against five each for the other two; recent
+log; `cron.log` tail.
 
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
@@ -1201,7 +1230,15 @@ number's twins elsewhere on the page.
   check failed carries **image unverified** instead (#155). A node carrying a
   node-scoped disable (`switch.disabled`) shows a **disabled** badge beside
   its role badge, naming the reason and the expiry, while its own enabled
-  self carries no such badge (#379). A cycle whose
+  self carries no such badge (#379). Two further fixtures separate that from
+  the local record a fleet-wide `--disable` leaves on the node that issued it
+  (`switch.scope: "fleet"`, implementation spec 2.3): with the fleet flag set,
+  the page raises the fleet banner alone — no second banner for the mirror and
+  no **disabled** badge on the issuing node, while a peer's genuine
+  `--this-node` disable beside it still badges; with the flag cleared, the
+  surviving mirror raises this node's own banner and badge, both naming it as
+  a leftover of a fleet-wide disable since cleared rather than as a
+  node-scoped decision. A cycle whose
   `selection` carried `race_losses` (implementation spec 17d, #248) shows a
   blue **recovered race ×N** badge beside its title in the cycle history —
   informational, not a warning, since losing a claim race and then winning a
@@ -1251,6 +1288,23 @@ number's twins elsewhere on the page.
   the pull-request hover card's pointer/focus behaviour, and which column the
   browser balances each cost block into — that is layout, and layout is what
   this stub does not do; it is covered by the manual check below.
+- The back-pressure card agrees with the gate it depicts, in both directions,
+  from two fixtures of its own. `backpressure-claims.json` (issue #427) holds
+  a changes-requested PR, a draft, an approved PR waiting on a human, one
+  unraised item claim and one `pr-<n>` exclusion entry: the gauge reads 3 of
+  3 and trips red, counting the claim the open-PR listing cannot show it and
+  not the exclusion entry, whose PR is in that listing already.
+  `backpressure-claim-scope.json` (the over-correction in PR #434) holds seven
+  registry rows against two PRs: the gauge reads 4 of 8 and does not trip,
+  having dropped the `enabler` and `refiner` pseudo-slug tombstones, the
+  `pr-<n>` entry, and the item claim on the draft already counted — while
+  keeping the item claim on the *approved* PR, which sits in the human's queue
+  outside the sum and so is the only record of that work in flight. Both
+  assert the `title` tooltip verbatim, because it is the composition
+  `agent-cycle.sh` logs and the two are meant to be readable against each
+  other. The live-claims panel below is asserted to still show the
+  pseudo-slug rows in full: the gauge's narrowing is a statement about the
+  cap, not about what an operator hunting a stuck item may see.
 - On a node that has been up for at least ten minutes,
   `grep 'github: refreshing' <state_dir>/dashboard.log | tail -3` shows one
   line roughly every five minutes, and `github.fetched_at` in `data.js` is
@@ -1270,7 +1324,7 @@ number's twins elsewhere on the page.
   on a single node the header carries the detail itself and there is no strip.
 - On that same page, the cost section reads down the left column and on down
   the right, with no column running conspicuously past the other and the cost
-  note last (issue #330). This one is checked by eye in a browser, in both
+  notes last (issue #330). This one is checked by eye in a browser, in both
   colour schemes and on either side of the 760px breakpoint, because the split
   is decided by the browser from the rendered heights: nothing that runs
   without layout can see it, and the DOM-stub harness above deliberately
@@ -1577,7 +1631,12 @@ number's twins elsewhere on the page.
   in tokens and time, and no arithmetic on this page converts one into the
   other. The figure is worth showing — it is a good proxy for how hard the
   pipeline is working, and it is the only per-cycle cost signal there is — but
-  it has to be named for what it measures.
+  it has to be named for what it measures. A second `p.costnote` underneath
+  states the currency (USD) outright (issue #438): every dollar figure on the
+  page — cards, charts, the estimate note above it — is the same fixed
+  currency regardless of the Claude account's own billing region, and that
+  isn't obvious from a bare `$` sign to a reader whose local currency also
+  uses one.
 - **Cost is cut by actor as well as by model and by day, because the actor is
   the only one of the three anybody chooses.** The day is a fact about when the
   cron fired; the model is nearly a restatement of the actor, since
@@ -1596,7 +1655,7 @@ number's twins elsewhere on the page.
   relative height rather than measured against it. `column-count: 2` with
   `break-inside: avoid` on each block instead lets the browser's own balance
   algorithm decide the split from the rendered heights on every load: the
-  four blocks — day, model, actor, then the cost note — stay in that reading
+  blocks — day, model, actor, then the two cost notes — stay in that reading
   order and simply land wherever the shorter side is, no JS layout code and
   no new data needed.
 
@@ -1772,6 +1831,15 @@ number's twins elsewhere on the page.
   before this check existed) — the same absent-means-unknown rule the
   compose and image badges already follow, never a false "enabled" for a
   peer this node cannot actually answer for.
+
+  It also renders nothing for a record tagged `scope: "fleet"` while the fleet
+  flag is set: that record is the mirror a fleet-wide `--disable` leaves on the
+  node that issued it, and badging it would single that node out of a fleet
+  that is uniformly down. A mirror whose fleet flag has since been cleared is
+  the exception and the reason the tag is worth carrying — it badges amber and
+  says what it is, since that node is genuinely down alone and no banner on the
+  page explains why. A record with no `scope` reads as `"node"`, matching
+  `lib/toggle.sh`.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing

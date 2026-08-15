@@ -169,11 +169,11 @@
   p.costnote { font-size: 12px; color: var(--muted); max-width: 78ch; }
   /* By-day runs to sixty rows and by-model/by-actor to five each, so a fixed
      two-column split under- or over-fills a side depending on the day. A
-     multi-column flow instead lets the browser balance the four blocks —
-     day, model, actor, note, in that reading order — by height on its own:
-     each block stays whole (break-inside: avoid) and column-fill's default
-     "balance" walks them into the shorter side, so the split adapts every
-     render instead of being pinned to today's row counts (issue #330). */
+     multi-column flow instead lets the browser balance the blocks —
+     day, model, actor, then the notes, in that reading order — by height on
+     its own: each block stays whole (break-inside: avoid) and column-fill's
+     default "balance" walks them into the shorter side, so the split adapts
+     every render instead of being pinned to today's row counts (issue #330). */
   .costgrid { column-count: 2; column-gap: 20px; }
   @media (max-width: 760px) { .costgrid { column-count: 1; } }
   .costgrid > * { break-inside: avoid; margin: 0 0 20px; }
@@ -735,10 +735,35 @@
   // close for the fleet-wide switch, one level down. Absent (a peer whose
   // heartbeat predates this field, or one this node cannot answer for) and
   // enabled both render nothing.
+  //
+  // `sw.scope` (implementation spec 2.3) decides between three readings of a
+  // set switch, because a fleet-wide --disable writes a local record on the
+  // node that issued it too:
+  //
+  //   scope "node"  — a real --this-node stand-down. The badge as before.
+  //   scope "fleet", fleet flag set — a mirror of the banner already at the
+  //     top of the page. Badging it would put an amber "disabled" on exactly
+  //     one node of a fleet that is uniformly down, which reads as a second
+  //     fault on that node; render nothing and let the banner speak.
+  //   scope "fleet", fleet flag clear — the orphan: --enable on a *peer*
+  //     cleared the flag but could not reach this node's file, so this node
+  //     alone is still down under a lifted decision. That is the one case
+  //     this badge most needs to catch, and it names the fix.
+  //
+  // A record with no scope reads as "node", matching lib/toggle.sh.
   function switchBadge(sw) {
     if (!sw || !sw.disabled) return null;
+    var scope = sw.scope || "node";
+    var fleetSet = !!fleetFlags().disabled;
+    if (scope === "fleet" && fleetSet) return null;
     var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
     if (sw.actor || sw.by) detail += " — set by " + (sw.actor || sw.by);
+    if (scope === "fleet") {
+      detail += sw.expires_at ? ("; expires " + sw.expires_at) : "; no expiry";
+      return el("span", {class:"badge b-amber", style:"margin-left:6px", text:"disabled",
+        title: "left over from a fleet-wide disable that has since been cleared: " + detail
+             + " — this node is standing down alone; `agent-cycle.sh --enable` on it clears the record"});
+    }
     detail += sw.expires_at ? ("; expires " + sw.expires_at)
                             : "; no expiry — needs --enable --this-node";
     return el("span", {class:"badge b-amber", style:"margin-left:6px", text:"disabled",
@@ -1225,6 +1250,13 @@
   // ---------- claims panel ----------
   // The live claim registry: work the fleet holds that has not yet surfaced
   // as a PR. Every row here is an item no other node will pick up.
+  //
+  // Every row, deliberately — including the Enabler's and the Refiner's
+  // engagement tombstones, whose Repo column reads `enabler`/`refiner` rather
+  // than a repository. This is the registry as it is, and a tombstone holding
+  // an item off the fleet is exactly what an operator hunting a stuck item
+  // needs to see. The back-pressure card above counts a narrower set, for the
+  // reasons given there; the two are meant to differ.
   function claimsPanel() {
     var claims = fleetClaims();
     if (!claims.length) return el("div", {class:"panel"}, el("div", {class:"empty", text:"No live claims — nothing is mid-flight."}));
@@ -2101,7 +2133,17 @@
     // "no PRs", "nothing selected") is a consequence of it rather than news, and
     // an operator who reads them in the wrong order goes looking for a fault
     // that isn't there.
-    if (st.switch && st.switch.disabled) {
+    var ff = fleetFlags();
+    // Which of the two banners describes *this* node's switch honestly. A
+    // fleet-wide --disable writes a local record on the node that issued it
+    // (implementation spec 2.3a), tagged `scope: "fleet"`; while the fleet
+    // flag is still set that record is a mirror, and the local banner would
+    // report this node's own stand-down for a decision that was fleet-wide.
+    // Defer to the fleet banner below instead — it is the accurate one, and
+    // it is what an operator on any other node is reading.
+    var localMirrors = st.switch && st.switch.disabled
+                    && (st.switch.scope || "node") === "fleet" && !!ff.disabled;
+    if (st.switch && st.switch.disabled && !localMirrors) {
       var sw = st.switch;
       var detail = sw.reason ? ("“" + sw.reason + "”") : "no reason recorded";
       // Actor and kind (requirement 2.3, #244): whose decision this was, and
@@ -2112,16 +2154,22 @@
       if (sw.since) detail += " at " + sw.since;
       detail += sw.expires_at ? ("; expires " + sw.expires_at)
                               : "; no expiry — needs `agent-cycle.sh --enable`";
+      // The orphan: a mirror whose fleet flag has since been cleared, so this
+      // node is down alone under a decision that was lifted elsewhere. Nothing
+      // else on the page would explain it.
+      if ((sw.scope || "node") === "fleet") {
+        detail += " — left over from a fleet-wide disable that has since been cleared";
+      }
       banners.appendChild(el("div", {class:"banner amber"}, [
         el("span", {text: "⏸ Pipeline disabled — no cycles will start."}),
         el("span", {class:"sub", text: detail})
       ]));
     }
     // The fleet switch (2.3a) — suppressed when the local switch banner is
-    // already up: the node that set it writes both levels, and two banners
-    // saying one thing reads like two problems.
-    var ff = fleetFlags();
-    if (ff.disabled && !(st.switch && st.switch.disabled)) {
+    // already up and describes a stand-down of this node's own, since two
+    // banners saying one thing reads like two problems. A local record that
+    // merely mirrors this flag does not suppress it (see `localMirrors`).
+    if (ff.disabled && !(st.switch && st.switch.disabled && !localMirrors)) {
       var fdetail = ff.disabled.reason ? ("“" + ff.disabled.reason + "”") : "no reason recorded";
       if (ff.disabled.actor || ff.disabled.by) fdetail += " — set by " + (ff.disabled.actor || ff.disabled.by);
       fdetail += " (" + (ff.disabled.kind || "manual") + ")";
@@ -2262,12 +2310,39 @@
       return !p.isDraft && p.review_decision !== "CHANGES_REQUESTED";
     }).length;
     var pipelineReadyN = readyN - humanQueueN;
-    // A `pr-<n>` entry excludes a peer from a PR that already exists (issue
-    // #238) — it is not work in flight without a PR yet, and that PR is
-    // already counted above, so counting the claim too would double it
-    // (mirrors lib/claim.sh's `do_count`).
+    // Which registry entries are "unraised claims" is lib/claim.sh's `do_count`
+    // rule, and this is a transcription of it, not a second opinion: a card
+    // that reports a different figure from the gate it depicts is worse than
+    // no card. Two exclusions, mirrored from there.
+    //
+    // First, the registry is wider than the repos. The Enabler and the Refiner
+    // claim engagement tombstones under the pseudo-slugs `enabler` and
+    // `refiner` (implementation spec 35c) — never released, retired only by
+    // `claim.sh gc` at `claim_ttl_hours`. `claim.sh count` is asked for one
+    // configured repo at a time and so never sees them, an invariant lib/claim.sh
+    // states in its own header; this page walks the whole registry in one tree
+    // call and must re-impose it, or the gauge climbs with every item the
+    // Enabler examines and pins red against a gate that is open.
+    //
+    // Second, a claim naming a pull request already counted above is that PR a
+    // second time. That is the `pr-<n>` exclusion entry (issue #238), dropped
+    // unconditionally because it is only ever written for a PR that exists, and
+    // the `pr-<n>-<kind>-<scope>` item ref the four finishing sources use,
+    // dropped only when its PR is in the draft or changes-requested sum. A
+    // conflicted or dequeued PR sits in the human's queue, is excluded from
+    // that sum, and its claim is then the only record of the work in flight —
+    // so that one keeps counting.
+    var claimRepos = ((D.config && D.config.repos) || []).map(function (r) { return r.slug; });
+    var countedPr = {};
+    openPrs.forEach(function (p) {
+      if (p.isDraft || p.review_decision === "CHANGES_REQUESTED") countedPr[p.repo + "#" + p.number] = true;
+    });
     var claimN = fleetClaims().filter(function (c) {
-      return !/^pr-\d+$/.test(c.key || "");
+      if (claimRepos.indexOf(c.repo) < 0) return false;
+      var key = c.key || "";
+      if (/^pr-\d+$/.test(key)) return false;
+      var named = /^pr-(\d+)-/.exec(key);
+      return !(named && countedPr[c.repo + "#" + named[1]]);
     }).length;
     var adjN = pipelineReadyN + draftN + claimN;
     var rawOpenN = readyN + draftN + claimN;
@@ -2309,7 +2384,7 @@
 
     // ---------- cost & cadence + log ----------
     // A multi-column flow rather than a fixed grid: day, model, actor, then
-    // the note, in that order, letting the browser balance the split by
+    // the notes, in that order, letting the browser balance the split by
     // height (see .costgrid) instead of pinning day to a column of its own.
     var costgrid = el("div", {class:"costgrid"});
     costgrid.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
@@ -2323,6 +2398,9 @@
       "limits are not readable from here; check /usage in an interactive session. " +
       "All three charts cover the same transcripts — every actor of both pipelines, " +
       "across every node, since one Claude account pays for the fleet."}));
+    costgrid.appendChild(el("p", {class:"costnote", text:
+      "All figures on this page are US dollars (USD), regardless of the " +
+      "Claude account's own billing currency or region."}));
     app.appendChild(el("section", {}, costgrid));
 
     app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",

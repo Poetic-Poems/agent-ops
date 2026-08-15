@@ -14,8 +14,9 @@
 #     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
 #   - **The four warning classes are told apart (issue #284's decision 1).** A
 #     `could not request review from …` violation clears only once a human
-#     review is live or already given (`reviewRequests` non-empty, or
-#     `reviewDecision` of `APPROVED`/`CHANGES_REQUESTED`); a
+#     review is live or already given (`reviewRequests` non-empty, or a
+#     non-bot review with state `APPROVED`/`CHANGES_REQUESTED` in the reviews
+#     list — never `reviewDecision`, agent-ops#391, TD-PPagop-26081505); a
 #     `could not post the idle nudge comment` violation — logged only against
 #     an already-`APPROVED` pull request — clears only once a comment carrying
 #     both the exact `<!-- agent-ops:human-nudge -->` HTML-comment form and
@@ -74,11 +75,17 @@ assert_eq() {
 #
 # `$STUB_LIST_RC` steers whether the repo-level listing re-check still fails
 # (nonzero) or now succeeds (0, the default). `$STUB_PR_STATE`/`$STUB_PR_DRAFT`
-# steer a named pull request's live open/draft state; `$STUB_REVIEW_DECISION`
-# and `$STUB_REVIEW_REQUESTS` (nonzero means a pending request exists) steer
-# the request-class check; `$STUB_REVIEW_REQUESTS_JSON`, when set, overrides
-# `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests` array, for fixturing
-# a Bot-typed/`[bot]`-suffixed or team-shaped entry
+# steer a named pull request's live open/draft state; `$STUB_REVIEW_REQUESTS`
+# (nonzero means a pending request exists) and `$STUB_REVIEWS` (a JSON array
+# of `{author:{login},state}`, default `[]`) together steer the
+# request-class check — a non-bot `APPROVED`/`CHANGES_REQUESTED` entry in
+# `$STUB_REVIEWS` clears it the same as a pending request does, read from the
+# reviews list rather than `reviewDecision` (agent-ops#391,
+# TD-PPagop-26081505); `$STUB_REVIEW_DECISION` is still emitted by the stub
+# (mirroring `gh pr view`'s real payload) but the request-class check no
+# longer reads it — tests below set it to confirm that. `$STUB_REVIEW_REQUESTS_JSON`,
+# when set, overrides `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests`
+# array, for fixturing a Bot-typed/`[bot]`-suffixed or team-shaped entry
 # (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_COMMENT` steers which
 # nudge-related comment (if any) is present — `none` (default), `real` (the
 # genuine shape, both the exact `<!-- agent-ops:human-nudge -->` form and the
@@ -89,10 +96,9 @@ assert_eq() {
 # `prefixed-only` (the stamp on an ordinary pipeline comment carrying no
 # nudge marker at all); `$STUB_DEQUEUE_MARKER` (`yes`/`no`) steers whether the
 # merge-queue-dequeued marker comment is present instead; `$STUB_AUTHOR`
-# (default
-# `author`) and `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`,
-# default `[]`) steer the no-candidate-class check; `$STUB_VIEW_RC` set
-# nonzero makes the re-check itself unreadable, the fail-safe case.
+# (default `author`) and `$STUB_REVIEWS` also steer the no-candidate-class
+# check; `$STUB_VIEW_RC` set nonzero makes the re-check itself unreadable,
+# the fail-safe case.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -143,17 +149,17 @@ no_candidate_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","det
 dequeue_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the merge-queue-dequeued notice","ts":"2026-08-08T02:00:00Z"}]'
 
 # --- No input is [] ----------------------------------------------------------
-out="$(STUB_LIST_RC=0 "$GATHER" "o/a")"
-assert_eq "no violations-json argument is []" "[]" "$out"
-out="$(STUB_LIST_RC=0 "$GATHER" "o/a" '[]')"
+out="$(STUB_LIST_RC=0 "$GATHER" "o/a" </dev/null)"
+assert_eq "no stdin is []" "[]" "$out"
+out="$(STUB_LIST_RC=0 "$GATHER" "o/a" <<<'[]')"
 assert_eq "an empty array is []" "[]" "$out"
 
 # --- Violations for a different repo are ignored ----------------------------
-out="$(STUB_LIST_RC=0 "$GATHER" "o/other" "$request_level")"
+out="$(STUB_LIST_RC=0 "$GATHER" "o/other" <<<"$request_level")"
 assert_eq "violations naming a different repo are ignored" "[]" "$out"
 
 # --- A repo-level violation whose listing still fails survives -------------
-out="$(STUB_LIST_RC=1 "$GATHER" "o/a" "$repo_level")"
+out="$(STUB_LIST_RC=1 "$GATHER" "o/a" <<<"$repo_level")"
 assert_eq "a still-failing listing survives" "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 assert_eq "  ... ref is human-visibility-prefixed" \
@@ -162,29 +168,66 @@ assert_eq "  ... names the repo in its problem line" \
   "1" "$(jq -r '.[0].problems | map(select(startswith("HUMAN VISIBILITY  o/a:"))) | length' <<<"$out")"
 
 # --- A repo-level violation whose listing now succeeds is dropped ----------
-out="$(STUB_LIST_RC=0 "$GATHER" "o/a" "$repo_level")"
+out="$(STUB_LIST_RC=0 "$GATHER" "o/a" <<<"$repo_level")"
 assert_eq "a resolved listing is dropped" "[]" "$out"
 
 # --- could_not_request: no live request and no review is still live --------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
-        "$GATHER" "o/a" "$request_level")"
+        "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a request-class violation with no live request survives" "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
 # --- could_not_request: a pending review request clears it -----------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=1 \
-        "$GATHER" "o/a" "$request_level")"
+        "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a request-class violation with a pending request is dropped" "[]" "$out"
 
 # --- could_not_request: an approval clears it, even with no pending request
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        "$GATHER" "o/a" "$request_level")"
-assert_eq "a request-class violation on an approved pull request is dropped" "[]" "$out"
+# and an empty `reviewDecision` — this repository's own shape
+# (`required_approving_review_count: 0`, agent-ops#391): `reviewDecision`
+# can never read `APPROVED` here, so the drop must come from the reviews
+# list alone, never that field (TD-PPagop-26081505).
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"reviewer"},"state":"APPROVED"}]' \
+        "$GATHER" "o/a" <<<"$request_level")"
+assert_eq "a request-class violation with an approving review is dropped despite empty reviewDecision" \
+  "[]" "$out"
 
 # --- could_not_request: changes-requested also proves the request worked ---
+# Read the same way — from the reviews list, not `reviewDecision`.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"reviewer"},"state":"CHANGES_REQUESTED"}]' \
+        "$GATHER" "o/a" <<<"$request_level")"
+assert_eq "a request-class violation with a changes-requested review is dropped despite empty reviewDecision" \
+  "[]" "$out"
+
+# --- could_not_request: a non-empty reviewDecision changes nothing ---------
+# Another repository's ruleset can compute `reviewDecision` fine, but this
+# re-check no longer reads it either way — confirming the reviews-list path
+# alone drives the verdict on both kinds of repository.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUESTED STUB_REVIEW_REQUESTS=0 \
-        "$GATHER" "o/a" "$request_level")"
-assert_eq "a request-class violation on a changes-requested pull request is dropped" "[]" "$out"
+        STUB_REVIEWS='[]' \
+        "$GATHER" "o/a" <<<"$request_level")"
+assert_eq "a request-class violation survives a non-empty reviewDecision with no matching review" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_request: a COMMENTED-only review does not clear it ----------
+# Neither `APPROVED` nor `CHANGES_REQUESTED` — a comment-only review proves
+# nobody has actually approved or requested changes yet.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"reviewer"},"state":"COMMENTED"}]' \
+        "$GATHER" "o/a" <<<"$request_level")"
+assert_eq "a request-class violation with only a commented review survives" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_request: a bot's approval does not clear it -----------------
+# The same bot filter the `reviewRequests` half already applies — a Copilot
+# (or any `[bot]`-suffixed) review is never proof a human approved.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED"}]' \
+        "$GATHER" "o/a" <<<"$request_level")"
+assert_eq "a request-class violation with only a bot's approval survives" \
+  "1" "$(jq 'length' <<<"$out")"
 
 # --- could_not_request: a Bot-typed-only reviewRequests entry does not clear
 # it (tech-debt/TD-PPagop-26081403.md). Defensive: today's `gh pr view` never
@@ -195,7 +238,7 @@ assert_eq "a request-class violation on a changes-requested pull request is drop
 # dropping them, so the filter keeps the two readers agreed even then.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
         STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Bot","login":"copilot-pull-request-reviewer"}]' \
-        "$GATHER" "o/a" "$request_level")"
+        "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a Bot-typed-only pending request does not clear a request-class violation" \
   "1" "$(jq 'length' <<<"$out")"
 
@@ -206,7 +249,7 @@ assert_eq "a Bot-typed-only pending request does not clear a request-class viola
 # `type` fallback retained in the filter covers a REST-shaped payload too.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
         STUB_REVIEW_REQUESTS_JSON='[{"__typename":"User","login":"some-app[bot]"}]' \
-        "$GATHER" "o/a" "$request_level")"
+        "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a [bot]-suffixed-only pending request does not clear a request-class violation" \
   "1" "$(jq 'length' <<<"$out")"
 
@@ -217,7 +260,7 @@ assert_eq "a [bot]-suffixed-only pending request does not clear a request-class 
 # requirement 38a).
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" \
         STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Team","name":"Reviewers","slug":"reviewers-team"}]' \
-        "$GATHER" "o/a" "$request_level")"
+        "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a requested-team-only pending request clears a request-class violation" "[]" "$out"
 
 # --- no_candidate: still nobody to ask — survives ---------------------------
@@ -225,32 +268,32 @@ assert_eq "a requested-team-only pending request clears a request-class violatio
 # default author is also `author` with no reviews at all: exactly the state
 # `ensure_human_reviewer` read when it returned `skip\tno-candidate`.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "a no-candidate violation with still nobody to ask survives" "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... source is human-visibility" "human-visibility" "$(jq -r '.[0].source' <<<"$out")"
 
 # --- no_candidate: a non-author, non-bot reviewer now exists — dropped -----
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
         STUB_REVIEWS='[{"author":{"login":"Warwick-Allen"},"state":"APPROVED"}]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "a no-candidate violation is dropped once a real reviewer appears" "[]" "$out"
 
 # --- no_candidate: the author's own review is never a candidate ------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
         STUB_REVIEWS='[{"author":{"login":"author"},"state":"COMMENTED"}]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "the author's own review never counts as a candidate" "1" "$(jq 'length' <<<"$out")"
 
 # --- no_candidate: a bot reviewer is never a candidate ---------------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
         STUB_REVIEWS='[{"author":{"login":"dependabot[bot]"},"state":"COMMENTED"}]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "a bot reviewer is never a candidate" "1" "$(jq 'length' <<<"$out")"
 
 # --- no_candidate: a still-pending review is not yet a candidate -----------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author \
         STUB_REVIEWS='[{"author":{"login":"Warwick-Allen"},"state":"PENDING"}]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "an unsubmitted (pending) review is not yet a candidate" "1" "$(jq 'length' <<<"$out")"
 
 # --- no_candidate: a pending review request now exists — dropped -----------
@@ -259,7 +302,7 @@ assert_eq "an unsubmitted (pending) review is not yet a candidate" "1" "$(jq 'le
 # — exactly `STUB_REVIEWS='[]'` with `STUB_REVIEW_REQUESTS=1` — which the
 # `known`-reviewer check alone cannot see.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
-        STUB_REVIEW_REQUESTS=1 "$GATHER" "o/a" "$no_candidate_level")"
+        STUB_REVIEW_REQUESTS=1 "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "a no-candidate violation is dropped once a review request is already pending" \
   "[]" "$out"
 
@@ -270,7 +313,7 @@ assert_eq "a no-candidate violation is dropped once a review request is already 
 # before it ever reaches the filter.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
         STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Bot","login":"copilot-pull-request-reviewer"}]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "a Bot-typed-only pending request does not clear a no-candidate violation" \
   "1" "$(jq 'length' <<<"$out")"
 
@@ -280,13 +323,13 @@ assert_eq "a Bot-typed-only pending request does not clear a no-candidate violat
 # `ensure_human_reviewer`'s own pending read (requirement 38a).
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
         STUB_REVIEW_REQUESTS_JSON='[{"__typename":"Team","name":"Reviewers","slug":"reviewers-team"}]' \
-        "$GATHER" "o/a" "$no_candidate_level")"
+        "$GATHER" "o/a" <<<"$no_candidate_level")"
 assert_eq "a requested-team-only pending request clears a no-candidate violation" "[]" "$out"
 
 # --- no_candidate: enabler_assignee no longer names the author — dropped ---
 no_candidate_reassigned='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=someone-else","ts":"2026-08-08T02:00:00Z"}]'
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_AUTHOR=author STUB_REVIEWS='[]' \
-        "$GATHER" "o/a" "$no_candidate_reassigned")"
+        "$GATHER" "o/a" <<<"$no_candidate_reassigned")"
 assert_eq "a no-candidate violation is dropped once the assignee no longer names the author" \
   "[]" "$out"
 
@@ -295,7 +338,7 @@ assert_eq "a no-candidate violation is dropped once the assignee no longer names
 # nudge's own gate) — asserting this survives is what proves the request-class
 # check is not being reused here; a shared check would drop it immediately.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_COMMENT=none "$GATHER" "o/a" "$nudge_level")"
+        STUB_NUDGE_COMMENT=none "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a nudge-class violation with no marker comment survives despite APPROVED" \
   "1" "$(jq 'length' <<<"$out")"
 
@@ -306,21 +349,21 @@ assert_eq "a nudge-class violation with no marker comment survives despite APPRO
 # A pipeline comment merely discussing the marker in prose (no exact HTML
 # form) never clears the violation.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_COMMENT=prose "$GATHER" "o/a" "$nudge_level")"
+        STUB_NUDGE_COMMENT=prose "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a comment merely mentioning the marker in prose survives" \
   "1" "$(jq 'length' <<<"$out")"
 
 # A bystander (non-pipeline) comment quoting the exact HTML form, with no
 # pipeline-marker stamp, never clears the violation.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_COMMENT=fenced "$GATHER" "o/a" "$nudge_level")"
+        STUB_NUDGE_COMMENT=fenced "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a bystander comment quoting the exact marker with no stamp survives" \
   "1" "$(jq 'length' <<<"$out")"
 
 # An ordinary pipeline comment carrying the marker prefix but no nudge
 # marker at all never clears the violation.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_COMMENT=prefixed-only "$GATHER" "o/a" "$nudge_level")"
+        STUB_NUDGE_COMMENT=prefixed-only "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "an ordinary pipeline comment with no nudge marker survives" \
   "1" "$(jq 'length' <<<"$out")"
 
@@ -328,67 +371,87 @@ assert_eq "an ordinary pipeline comment with no nudge marker survives" \
 # Both the exact HTML form and the pipeline-marker stamp on the same comment
 # — the genuine shape sweep-human-visibility.sh itself posts.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_COMMENT=real "$GATHER" "o/a" "$nudge_level")"
+        STUB_NUDGE_COMMENT=real "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a nudge-class violation is dropped once the real marker comment appears" "[]" "$out"
 
 # --- dequeue_notice: absent marker survives, even while open ---------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_DEQUEUE_MARKER=no \
-        "$GATHER" "o/a" "$dequeue_level")"
+        "$GATHER" "o/a" <<<"$dequeue_level")"
 assert_eq "a dequeue-notice violation with no marker comment survives" \
   "1" "$(jq 'length' <<<"$out")"
 
 # --- dequeue_notice: the marker comment appearing clears it ----------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_DEQUEUE_MARKER=yes \
-        "$GATHER" "o/a" "$dequeue_level")"
+        "$GATHER" "o/a" <<<"$dequeue_level")"
 assert_eq "a dequeue-notice violation is dropped once the marker comment appears" "[]" "$out"
 
 # --- An unrecognised warning shape survives while open and not draft -------
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" "$unknown_level")"
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$unknown_level")"
 assert_eq "an unrecognised warning shape survives while open and not draft" \
   "1" "$(jq 'length' <<<"$out")"
 
 # --- A merged pull request is dropped regardless of class ------------------
-out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" "$request_level")"
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a merged pull request is dropped" "[]" "$out"
-out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" "$nudge_level")"
+out="$(STUB_PR_STATE=MERGED STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$nudge_level")"
 assert_eq "a merged pull request is dropped (nudge class)" "[]" "$out"
 
 # --- A closed pull request is dropped ---------------------------------------
-out="$(STUB_PR_STATE=CLOSED STUB_PR_DRAFT=false "$GATHER" "o/a" "$request_level")"
+out="$(STUB_PR_STATE=CLOSED STUB_PR_DRAFT=false "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a closed pull request is dropped" "[]" "$out"
 
 # --- A pull request now back in draft is dropped ----------------------------
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=true "$GATHER" "o/a" "$request_level")"
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=true "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "a draft pull request is dropped" "[]" "$out"
 
 # --- An unreadable re-check keeps the violation, fail-safe -----------------
-out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" "$request_level")"
+out="$(STUB_VIEW_RC=1 "$GATHER" "o/a" <<<"$request_level")"
 assert_eq "an unreadable re-check keeps the violation" "1" "$(jq 'length' <<<"$out")"
 
 # --- A repo-level and a pull-request violation for the same repo combine ---
 both="$(jq -c -n --argjson a "$repo_level" --argjson b "$request_level" '$a + $b')"
 out="$(STUB_LIST_RC=1 STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
-        "$GATHER" "o/a" "$both")"
+        "$GATHER" "o/a" <<<"$both")"
 assert_eq "a repo-level and a pull-request violation combine into one candidate" \
   "1" "$(jq 'length' <<<"$out")"
 assert_eq "  ... with two problem lines" "2" "$(jq -r '.[0].problems | length' <<<"$out")"
 
-# --- The argv cap (requirement 4g, TD-PPagop-26081406) ---
+# --- The CLI's own argv cap (requirement 4g, TD-PPagop-26081502) -----------
+#
+# `agent-cycle.sh` used to hand this script the whole fleet-wide violations
+# log as the script's own second positional argument — a single argv element
+# subject to the identical MAX_ARG_STRLEN cap the internal jq calls below
+# were hitting, and nothing inside the script could work around it: the
+# process never started. TD-PPagop-26081502 moves the violations array onto
+# stdin instead, mirroring test/nudge-dependabot-rebase.test.sh's own
+# stdin-fed candidates array. This drives the real script directly (no
+# extraction) over a violations log genuinely past MAX_ARG_STRLEN, proving
+# the CLI invocation itself no longer dies at execve.
+big_violations="$(jq -nc \
+  '[range(150) | {repo: "o/a", pr_url: "", detail: ("pad " + ("x" * 900)), ts: "2026-08-15T00:00:00Z"}]')"
+assert_eq "the oversized violations-log fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_violations" | wc -c) > 131072 ))"
+out="$(STUB_LIST_RC=1 "$GATHER" "o/a" <<<"$big_violations" 2>"$tmp_dir/cli-cap.err")"
+rc=$?
+assert_eq "the real script over an oversized violations log on stdin exits 0" "0" "$rc"
+assert_eq "  ... without an Argument list too long error" "" \
+  "$(grep -o 'Argument list too long' "$tmp_dir/cli-cap.err" || true)"
+assert_eq "  ... and still produces one candidate" "1" "$(jq 'length' <<<"$out")"
+assert_eq "  ... carrying every one of the 150 problem lines" \
+  "150" "$(jq '.[0].problems | length' <<<"$out")"
+
+# --- The internal jq argv cap (requirement 4g, TD-PPagop-26081406) ---
 #
 # The two survivor-accumulator appends and the final `problems` build all
 # used to ride into jq as --argjson: $problems alone grows with the survivor
 # set, unbounded past this call. Past MAX_ARG_STRLEN (131072 bytes) the build
 # died at execve and this repo's whole human-visibility candidate was lost.
-# Requirement 4g moves all three onto stdin.
-#
-# Not reached by driving the real script over its own CLI argument: the
-# script's own second positional argument (agent-cycle.sh's `$violations`) is
-# itself a single argv element subject to the identical MAX_ARG_STRLEN cap,
-# unconverted and unenumerated by TD-PPagop-26081406 — filed separately
-# rather than fixed as scope creep in this PR. So the append and the
-# `problems` build are each lifted by their own literal lines instead, the
-# same technique test/pr-claim-exclusion.test.sh's `extract_claims_fold`
-# uses, and driven directly with an oversized accumulator.
+# Requirement 4g moves all three onto stdin. The append and the `problems`
+# build are each lifted by their own literal lines and driven directly with
+# an oversized accumulator, the same technique
+# test/pr-claim-exclusion.test.sh's `extract_claims_fold` uses — the CLI-argv
+# case above already proves the real script end-to-end; this isolates the
+# internal accumulation logic itself.
 extract_block() {  # extract_block <start-literal> <end-literal>
   awk -v s="$1" -v e="$2" \
     'index($0, s) == 1 { on = 1 } on { print } on && index($0, e) > 0 { exit }' \

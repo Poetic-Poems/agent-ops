@@ -60,10 +60,17 @@ assert_contains() {
 
 # --- The config the sweep reads --------------------------------------------------
 config="$tmp_dir/config.json"
-write_config() {  # <enabler_assignee> <human_nudge_idle_hours>
-  jq -n --arg a "$1" --argjson h "$2" \
-    '{pr_label: "autonomous-agent", enabler_assignee: $a, human_nudge_idle_hours: $h}' \
-    > "$config"
+write_config() {  # <enabler_assignee> <human_nudge_idle_hours> [<merge_queue_dequeue_notice_max_age_hours>]
+  if [[ -n "${3:-}" ]]; then
+    jq -n --arg a "$1" --argjson h "$2" --argjson d "$3" \
+      '{pr_label: "autonomous-agent", enabler_assignee: $a, human_nudge_idle_hours: $h,
+        merge_queue_dequeue_notice_max_age_hours: $d}' \
+      > "$config"
+  else
+    jq -n --arg a "$1" --argjson h "$2" \
+      '{pr_label: "autonomous-agent", enabler_assignee: $a, human_nudge_idle_hours: $h}' \
+      > "$config"
+  fi
 }
 write_config warwickallen 24
 
@@ -394,6 +401,39 @@ idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an unmarked comment does not self-heal" "" "$out"
 
+# --- Self-heal: the green gate (agent-ops#338) --------------------------------
+# The self-heal replays only half of the Reviewer's own `ready` verdict, which
+# never fires without requirement 31c's green precondition — so an answered
+# round on a not-green pull request must stay a silent no-op, never a guessed
+# request, and the gate must short-circuit before `_sweep_round_answered` is
+# even asked (no `/reviews`/`/comments` read, hence no warning either).
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE mixed "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered round on a red (mixed) rollup makes no request" "" "$out"
+assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
+
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE "" "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered round on an empty (not-yet-run) rollup makes no request" "" "$out"
+assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
+
+# A SKIPPED CheckRun alongside SUCCESS is not a failure for the self-heal
+# either — it shares `_sweep_checks_green` with the idle nudge rather than a
+# stricter copy of it.
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE skipped "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered round on a rollup whose only non-SUCCESS entry is SKIPPED still self-heals" \
+  "human-review-requested" "$(jq -r '.action' <<<"$out")"
+
 # --- Self-heal: an unreadable round is a warning, never a guessed request -------
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
@@ -685,6 +725,22 @@ set_merge_queue false "$(recent_dequeue_at 48)" "failed_checks"
 out="$(run_sweep)"
 assert_eq "a dequeue past the default max age gets no notice, nor a nudge" "" "$out"
 assert_eq "  ... no comment posted" "0" "$(comment_count)"
+
+# `merge_queue_dequeue_notice_max_age_hours: 0` disables the notice
+# outright (agent-ops#429) — an explicit guard, not merely a zero-width
+# threshold: a same-second dequeue (age 0) would otherwise still satisfy
+# `age <= threshold` with threshold 0 and post anyway.
+write_config warwickallen 0 0
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no
+set_merge_queue false "$(recent_dequeue_at 0)" "failed_checks"
+out="$(run_sweep)"
+assert_eq "merge_queue_dequeue_notice_max_age_hours 0 disables the notice even for a same-second dequeue" \
+  "" "$out"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
+write_config warwickallen 24
 
 # An unreadable merge-queue probe must never be read as "definitely not
 # queued" — but it also must not break the pre-existing idle-nudge path,

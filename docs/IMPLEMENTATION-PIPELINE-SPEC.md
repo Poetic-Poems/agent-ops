@@ -91,7 +91,10 @@ a node updates by pulling a new image rather than by pulling a branch.
   build args, default 1000) with `HOME=/home/agent`, so `config.json`'s
   `~`-relative `state_dir` and `workspace_root` resolve under that home.
 - Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
-  `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
+  `flock` and `rsync` (requirement 2.5); `openssl`, which RS256-signs the
+  Approver App's JWT (requirement 14b) and is installed explicitly rather
+  than relied on to arrive transitively, since a missing binary would
+  surface only as a mint failure at run time; `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use), installed unpinned and therefore guarded at
   build time by a fixed-string `grep -aF` over the installed binary for both
   stderr diagnoses `review_gate_required_checks` keys on (requirement 31c) —
@@ -623,9 +626,9 @@ and the schema must carry every one of them.
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
-| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
+| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
 | `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
-| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
+| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -732,6 +735,10 @@ Per-source refinement policy (requirement 39a): `required`, `preferred` or `exem
 How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.
 
 Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
+
+### Extended notes: `merge_queue_dequeue_notice_max_age_hours`
+
+Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express that in config rather than by tuning this value near zero.
 
 ### Extended notes: `merge_autonomy`
 
@@ -1062,16 +1069,35 @@ runs unattended.
       claim-registry entries for those repos** (requirement 17a — work a
       node has claimed but not yet surfaced as a PR; an item-keyed entry is
       dropped the moment its PR exists), is ≥ `max_open_agent_prs`, stand
-      down. `lib/claim.sh count` excludes the PR-keyed `pr-<n>` exclusion
-      entries (requirement 17a, issue #238) from this figure: unlike an
-      item-keyed entry, a PR-keyed one is held past its PR's own raising —
-      until the claiming cycle ends (issue #360) — and the PR it targets is
-      already counted above through `gh pr list`, so counting the claim too
-      would double-count it for as long as that cycle's Reviewer stage runs.
-      This is the primary throttle on both spend and on the human gate silting
-      up. The count is approximate by design: N nodes can pass it
+      down. This is the primary throttle on both spend and on the human gate
+      silting up. The count is approximate by design: N nodes can pass it
       simultaneously, so the stated bound is `max_open_agent_prs +
       (nodes − 1)`, transient.
+
+      `lib/claim.sh count` drops every registry entry that names a pull
+      request the PR listing above has already counted, because such an entry
+      is that PR a second time rather than work in flight without one. Two
+      shapes name a PR. A PR-keyed `pr-<n>` entry (requirement 17a, issue
+      #238) is dropped unconditionally — it is only ever written for a PR that
+      exists, and unlike an item-keyed entry it is held past its PR's own
+      raising, until the claiming cycle ends (issue #360), so counting it
+      would double-count that PR for as long as that cycle's Reviewer stage
+      runs. An item-keyed entry whose ref is `pr-<n>-<kind>-<scope>` — the
+      shape the four finishing sources (requirements 3c, 3e, 3g and 3z; see
+      requirement 3p) key their items on — is dropped only when that PR is
+      among the drafts and
+      changes-requested PRs actually counted, which is why the caller passes
+      those numbers in per repo. A ready PR sitting in the human's queue is
+      *not* among them (see below), so a conflicted or dequeued PR the
+      pipeline is working keeps counting through its claim, which is then the
+      only record that the work is in flight.
+
+      The registry is wider than the configured repos: the Enabler and the
+      Refiner claim engagement tombstones under the pseudo-slugs `enabler` and
+      `refiner` (requirement 35c). Those never reach this count, because it is
+      taken one configured repo at a time — an invariant `lib/claim.sh` states
+      in its own header, and one any other reader of the registry (the
+      dashboard's back-pressure card among them) has to re-impose for itself.
 
       A ready PR whose `reviewDecision` is **not** `CHANGES_REQUESTED` —
       approved, or awaiting a first or re-review with nothing currently
@@ -1182,6 +1208,53 @@ runs unattended.
    bypass list (requirement 2.4) is unchanged, since a switch command must
    stay usable on every node regardless of `--this-node`.
 
+   **`scope` says which of those two a record is.** Because an unmodified
+   `--disable` writes both levels, the node that issues a fleet-wide
+   stand-down ends up holding a local record that is byte-identical to a
+   `--this-node` one — so every reader announced a node-scoped disable nobody
+   had asked for, and that node alone wore the dashboard's amber **disabled**
+   badge while its peers, equally down, wore none. The record therefore
+   carries `scope`: `"node"` for a stand-down of this node's own (a
+   `--this-node` disable, or an unmodified one on a single-node operation with
+   no `state_repo` configured), `"fleet"` for the local mirror of a fleet-wide
+   one. A record with no `scope` reads as `"node"` — what every record written
+   before the field existed effectively was, and the reading that keeps a node
+   down rather than one that talks itself out of a stand-down.
+
+   **This is not the same `scope` the `disabled` event carries** (issue #426,
+   requirement 33), and the two part company in exactly one case, so they are
+   computed separately rather than shared. The event records the operator's
+   *instruction*, which is why a `--disable` on an installation with no
+   `state_repo` still logs `scope: "fleet"` with `fleet_flag: "unconfigured"`
+   saying why nothing was published. The record answers a different question —
+   *is there a fleet flag for this to mirror?* — and with no state repo there
+   is none, so it is `"node"`. Tagging it `"fleet"` there would have `--status`
+   claim a mirror of a switch that cannot exist, and `--enable --this-node`
+   refuse to clear the only record holding that node down. Everywhere else,
+   including under `--this-node`, the two agree.
+
+   The local write still happens first and is tagged with the *intent*, since
+   it must be on disk before anything talks to GitHub; when the fleet publish
+   then fails, the record is retagged `"node"` in place — leaving
+   `disabled_at` and every other field untouched, because that node really is
+   standing down alone and a record still claiming `"fleet"` would describe a
+   switch that was never set. `--status` and the dashboard name a mirror as a
+   mirror rather than as a second decision (requirement 2.3's `--status`
+   bullet, `docs/DASHBOARD-SPEC.md`), and **`--enable --this-node` refuses a
+   `"fleet"` record outright** (exit 64, naming plain `--enable` as the
+   command that undoes a fleet-wide disable). That refusal is not tidiness:
+   the mirror is this node's fail-*closed* hold on itself for exactly the
+   window in which the fleet flag cannot be read — that flag fails *open*
+   (2.3a) — so clearing it while the fleet switch stands is how a node resumes
+   the work the fleet was stood down to prevent.
+
+   The mirror also closes a failure that had no signal at all. `--enable` run
+   on a *peer* clears `fleet/disabled.json` but cannot reach this node's file,
+   so the node stays down alone, indefinitely under `--for forever`, on a
+   decision that was lifted elsewhere. Tagged, that state is nameable: both
+   `--status` and the node's dashboard card report a record left over from a
+   cleared fleet-wide disable and name `--enable` on that node as the fix.
+
    The record carries `actor` and `kind` alongside `by` and `reason` (#244).
    `actor` is `toggle_actor` (`lib/toggle.sh`): `NODE_NAME` when set, else
    the invoking user at this host, falling through `id -un` to the numeric
@@ -1227,13 +1300,20 @@ runs unattended.
    - **`--status` distinguishes a node-scoped disable from a fleet-wide one, and
      says what clearing each leaves.** With neither set it reports the switch
      enabled; with only the fleet flag set it names that record and says a plain
-     `--enable` clears it fleet-wide; with only the local record set (a
-     `--this-node` disable) it says `--enable --this-node` clears it; with both
-     set it reports both records and spells out the asymmetry — `--enable`
-     clears both, `--enable --this-node` clears only the local record and
-     leaves the node down under the still-set fleet switch. An operator who
-     finds a node down for more than one reason is entitled to know which
-     command undoes which.
+     `--enable` clears it fleet-wide; with only a `scope: "node"` local record
+     set (a `--this-node` disable) it says `--enable --this-node` clears it;
+     with both set it reports both records and spells out the asymmetry —
+     `--enable` clears both, `--enable --this-node` clears only the local
+     record and leaves the node down under the still-set fleet switch. An
+     operator who finds a node down for more than one reason is entitled to
+     know which command undoes which.
+
+     A `scope: "fleet"` local record is not a second reason, and is never
+     reported as one. With the fleet flag still set, `--status` says the local
+     record mirrors it and that `--enable` clears both levels; with the fleet
+     flag clear it reports the orphan plainly — a mirror of a fleet switch
+     since cleared, probably by `--enable` on another node, leaving this node
+     standing down alone until `--enable` is run on it.
 
    Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
    being edited, do not run them" is no less true when a human runs them.
@@ -1249,16 +1329,35 @@ runs unattended.
    check it at cycle start, after the local switch and still before the
    lock; it costs one contents-API read.
 
+   The local half of that pair is a *mirror*, tagged `scope: "fleet"`
+   (requirement 2.3), and it is load-bearing rather than incidental: the fleet
+   flag fails open when the state repo is unreachable, so the mirror is what
+   holds the issuing node closed in that window. It is retagged `"node"` if
+   the fleet write fails, and no reader may present it as a stand-down of that
+   node's own while the fleet flag stands.
+
+   A successful flag *write* also primes the local cache, exactly as a
+   successful fetch does — otherwise the node that set a flag is the only one
+   in the fleet holding no local copy of it, and an outage in the next minute
+   drops it through this level's fail-open while every peer that had fetched
+   once reads the flag from cache and stops. `fleet_flag_delete` already drops
+   the cache on success; this is the other half of that symmetry, and it is
+   what lets `--status` tell an unreachable state repo from a switch someone
+   else cleared.
+
    **`--this-node` (requirement 2.3) opts a single node out of this level
    entirely.** `--disable --this-node` writes only the local record and skips
    the fleet publish outright — not a degraded fallback of the unmodified
    path, but the deliberate point of the flag: the rest of the fleet must keep
    running. `--enable --this-node` clears only the local record and never
    calls the fleet delete, so a fleet-wide disable (or a peer's own
-   node-scoped one) survives it untouched. Every other property of this
-   requirement — record shape, failure directions, expiry — is unchanged;
-   `--this-node` decides only which levels a write reaches, never how a
-   record already written is read or evaluated.
+   node-scoped one) survives it untouched — and it refuses outright when the
+   local record is a `scope: "fleet"` mirror, since clearing that one would
+   drop the issuing node's fail-closed hold on itself while the fleet switch
+   is still set. Every other property of this requirement — record shape,
+   failure directions, expiry — is unchanged; `--this-node` decides only which
+   levels a write reaches, never how a record already written is read or
+   evaluated.
 
    Failure directions, deliberately: a 404 is *clear*, definitively; an
    unreachable state repo falls back to the copy cached at the last
@@ -3446,6 +3545,11 @@ runs unattended.
    `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
    whose three arguments are a repo's whole reviews, comments and rerequests
    (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
+   TD-PPagop-26081502 converted the one site TD-PPagop-26081406 found but did
+   not enumerate: `agent-cycle.sh`'s own invocation of
+   `scripts/gather-human-visibility-hygiene.sh`, which handed that script's
+   whole `$violations` argument as a single argv element to the script's own
+   `execve` (`test/gather-human-visibility-hygiene.test.sh`).
    TD-PPagop-26081503 completed the sweep over four further sites found after
    TD-PPagop-26081406 resolved: `gather-source-state.sh`'s final state build
    (`test/gather-source-state.test.sh`), `gather-findings.sh`'s
@@ -3487,15 +3591,32 @@ runs unattended.
    bytes back into a single argv element and leave the threshold where it
    was. Their tests drive each build with a body past the cap.
 
-   One site outside every prior item's enumeration still delivers a
-   fleet-state aggregate in argv, and is filed rather than fixed:
+   No site outside every prior item's enumeration remains outstanding: the
+   two sites this requirement once filed rather than fixed —
    `agent-cycle.sh`'s own invocation of
-   `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
+   `scripts/gather-human-visibility-hygiene.sh`, which handed that script's
    whole `$violations` argument as a single argv element to the script's own
-   `execve`, a cap this requirement's `jq`-specific framing had not considered
-   until TD-PPagop-26081406 found it (TD-PPagop-26081502). That item is the
-   outstanding residue; this requirement claims no more than the sites named
+   `execve` (TD-PPagop-26081502), and `publish-dashboard.sh`'s own per-repo
+   `prs_json` fold and its queue-answers merge, both upstream of the
+   `github_json` build TD-PPagop-26081503 converted and still carrying the
+   fleet-wide PR index into `jq` as `--argjson` (TD-PPagop-26081506) — are
+   both now converted; this requirement claims no more than the sites named
    above.
+
+   **A shell script's own CLI invocation is bound by the same cap.**
+   `MAX_ARG_STRLEN` is a kernel-wide per-argument `execve` limit, not a
+   `jq`-specific one, and it binds a script's own positional arguments
+   exactly as it binds `jq --argjson` — a cap this requirement's
+   `jq`-specific framing had not considered until TD-PPagop-26081406 found
+   it (TD-PPagop-26081502). `agent-cycle.sh` used to hand
+   `scripts/gather-human-visibility-hygiene.sh` the fleet-wide
+   human-visibility violations log as that script's own second positional
+   argument, unbounded past the call; the script now reads it from stdin
+   instead, the same shape its own internal `jq` calls already took, and
+   `agent-cycle.sh` pipes `$violations` in rather than passing it
+   positionally. Regression-pinned in
+   `test/gather-human-visibility-hygiene.test.sh` by driving the real
+   script directly over a violations log genuinely past the cap.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is
@@ -7383,10 +7504,22 @@ runs unattended.
     - where nothing is `CHANGES_REQUESTED`-blocking it, ensures
       `ensure_human_reviewer` (requirement 38a, kept continuously rather than
       only at the moment of handoff);
-    - where something *is* `CHANGES_REQUESTED`-blocking it, but the round has
+    - where something *is* `CHANGES_REQUESTED`-blocking it, the round has
       already been answered — a marked reply from the Implementor after the
-      blocking review, and only that signal (see below) — repeats
-      requirement 31b's re-request (`confirm_review_requested`);
+      blocking review, and only that signal (see below) — and the pull
+      request's checks are genuinely green (`_sweep_checks_green`, the same
+      test the idle nudge below applies, shared rather than duplicated),
+      repeats requirement 31b's re-request (`confirm_review_requested`). An
+      answered round whose checks are *not* green is left entirely alone,
+      exactly like an unanswered one: this call stands in for the Reviewer's
+      own `ready` verdict (see below), and that verdict itself never fires
+      without requirement 31c's green precondition already holding, so
+      replaying only the "answered" half of it and skipping the "green" half
+      would re-request a human's review on a pull request whose next actor is
+      still the pipeline (agent-ops#338). The checks-green test is evaluated
+      first, off the same `pr view` payload already read for the round check
+      below, so a not-green pull request never even asks whether the round
+      was answered — it is a silent no-op, costing no further reads;
     - where the pull request is approved, `MERGEABLE`, not `BLOCKED`, every
       check genuinely green (an empty `statusCheckRollup` is excluded
       explicitly — that is CI not having run, not CI having passed — while a
@@ -7565,7 +7698,7 @@ runs unattended.
       draft, then survives its own warning class's own live check: a
       `could not request review from …` warning survives only while no human
       review is currently requested or already given (`gh pr view --json
-      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, once
+      reviewRequests,reviews` — a pending `reviewRequests` entry, once
       filtered of a Bot-typed or `[bot]`-suffixed one the same way
       `ensure_human_reviewer`'s own pending read is (requirement 38a,
       tech-debt/TD-PPagop-26081403.md; here the filter is defensive, keyed
@@ -7573,8 +7706,15 @@ runs unattended.
       `__typename`-keyed `User`/`Team` entries and drops Bot reviewers from
       the array entirely, so a Copilot-only request already arrives as `[]`;
       see Gotchas) — a requested team counts, neither
-      reader's filter can ever drop one — or a `reviewDecision` of `APPROVED`
-      or `CHANGES_REQUESTED`, is the request having worked after all); a
+      reader's filter can ever drop one — or a non-bot review with state
+      `APPROVED` or `CHANGES_REQUESTED` already exists, is the request having
+      worked after all. This is read from the reviews list, never
+      `reviewDecision` (agent-ops#391, TD-PPagop-26081505): that field is
+      computed against the base branch's *required* approving review count,
+      and on this repository's own ruleset, which sets that count to `0`, it
+      can never become `APPROVED` however many humans approve, so a check
+      keyed on it directly could never fire here — the same reasoning
+      requirement 38c's own `_handoff_pr_approved` read already applies); a
       `could not post the idle nudge comment` warning survives only while no
       comment carries both the exact `<!-- agent-ops:human-nudge -->`
       HTML-comment form and `lib/pipeline-marker.sh`'s own
@@ -7702,15 +7842,21 @@ runs unattended.
       including one this never learned to recognise, stays actionable, the
       same "unknown must not suppress" direction `merge_queue_probe`'s own
       contract takes. And the event's own age is bounded by
-      `merge_queue_dequeue_notice_max_age_hours` (default 24 h): a removal
-      older than that gets no notice even the first time a sweep reads it,
-      so a repository's queue adoption (or this requirement's own rollout)
-      does not retroactively read every already-old removal on every open,
-      labelled pull request as fresh news. The notice is idempotent per
-      removal event — `<!-- agent-ops:merge-queue-dequeued: <dequeued_at>
-      -->` — rather than per pull request, so a second dequeue after an
-      earlier one was already acknowledged gets its own notice rather than
-      being silently suppressed by the first. It does not wait on
+      `merge_queue_dequeue_notice_max_age_hours` (default 24 h; `minimum: 0`,
+      agent-ops#429): a removal older than that gets no notice even the first
+      time a sweep reads it, so a repository's queue adoption (or this
+      requirement's own rollout) does not retroactively read every
+      already-old removal on every open, labelled pull request as fresh
+      news. `0` disables the notice outright — an explicit `awk`-computed
+      guard around `mq_recent`, not merely a zero-width threshold a
+      same-second dequeue could still slip through — for a repository that
+      runs without a merge queue and should say so in config rather than by
+      tuning this value near zero; the trade-off is losing the only human
+      signal this pipeline raises for a merge-group failure. The notice is
+      idempotent per removal event — `<!-- agent-ops:merge-queue-dequeued:
+      <dequeued_at> -->` — rather than per pull request, so a second dequeue
+      after an earlier one was already acknowledged gets its own notice
+      rather than being silently suppressed by the first. It does not wait on
       `human_nudge_idle_hours`: this is new information a human has not
       seen, not the "forgot to click merge" case that threshold exists for.
       A failed POST is a `warning`, exactly as the ordinary idle nudge's
@@ -7749,6 +7895,21 @@ runs unattended.
       even though nothing here can act. A `"manual"` or `"merged"` removal
       reaches neither, for the reasons given above.
 
+    **Design note: `statusCheckRollup` is scoped wider than `--required`, on
+    purpose.** The self-heal's own green gate and the idle nudge's (both
+    requirement 38c, `_sweep_checks_green`) both read `statusCheckRollup` off
+    `gh pr view --json` — every check GitHub ran against the head commit,
+    required or not — never `lib/review-gate.sh`'s `gh pr checks --required`
+    (requirement 31c), which is scoped to the branch ruleset's required subset
+    alone. The two reads answer different questions: the review gate asks
+    whether GitHub would actually let the pull request merge, and a
+    non-required check has no say in that; the self-heal and the nudge ask
+    whether the pull request is genuinely finished, and a non-required check
+    still failing is real, uncorrected work sitting on it — telling a human
+    "this is answered" or "this is waiting on your merge click" while an
+    optional check is red would be untrue. This is a deliberate scope
+    difference between the two reads, not an inconsistency: neither would
+    serve the other's purpose if it used the other's field.
 
     Every other reader of PR merge state in this repository is safe against a
     queued pull request without further code change — most by construction
@@ -8218,10 +8379,12 @@ What exists, and the requirements each part answers to:
    repo-level listing failure only if the listing still fails; a pull request
    only if it is still open and not a draft, and its own warning class's own
    live signal still holds: a `could not request review from …` warning only
-   while `gh pr view --json reviewDecision,reviewRequests` shows no live
+   while `gh pr view --json reviewRequests,reviews` shows no live
    request (Bot-typed — `__typename`-keyed on this reader — and
    `[bot]`-suffixed entries excluded, a requested team
-   counted — tech-debt/TD-PPagop-26081403.md) and no review yet given; a
+   counted — tech-debt/TD-PPagop-26081403.md) and no non-bot review with
+   state `APPROVED` or `CHANGES_REQUESTED` yet given — never read from
+   `reviewDecision` (agent-ops#391, TD-PPagop-26081505); a
    `could not post the idle nudge comment` warning only while no comment
    carries both the exact `agent-ops:human-nudge` HTML-comment form and the
    pipeline-marker stamp on the same comment (agent-ops#390, #428); a `no legal
@@ -8747,7 +8910,14 @@ What exists, and the requirements each part answers to:
     top-level `merge_autonomy` key, and each repository's own override) is a
     `fail` where the level is above `human` and `approver_app_id` is empty,
     `ok` naming the level otherwise; doctor-only, since nothing yet consumes
-    the pairing at cycle start the way the two shared cross-key rules do —
+    the pairing at cycle start the way the two shared cross-key rules do;
+    and the environment half of the same identity, reconciled against the
+    config's (requirement 14b): a set `PULLWRIGHT_APPROVER_APP_ID` differing
+    from a set `approver_app_id` is a `fail` — the token wrapper mints
+    against the environment, and nothing else reports the divergence — an
+    env id with no config declaration is a `warn` (wired but undeclared),
+    and a level above `human` with no readable runtime credential in this
+    environment is a `warn`, the wrapper failing closed either way —
     then the reserved label
     names — `blocked` on an issue-side label key, `obsolete` on any label key
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
@@ -8849,6 +9019,72 @@ What exists, and the requirements each part answers to:
     both. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
     flags it wraps. Must pass `shellcheck`.
+14b. `lib/approver-token.sh` — the Pullwright Approver's installation-token
+    minting wrapper (D18 §5.3; the Approver identity requirement 2.3b's
+    ladder needs above `human`). `gh` cannot mint one: it authenticates as
+    the owner PAT or a user OAuth token, and an owner-PAT review is the
+    self-approval the App exists to retire. So this file does the exchange by
+    hand — sign a ~9-minute RS256 App JWT with `openssl` (the node image's
+    own, component 7), `POST` it to
+    `/app/installations/<id>/access_tokens`, take the ~1 h installation token
+    back. `approver_token_credential_present` is the identity check on its
+    own; `approver_token_get [NOW_EPOCH]` prints a valid token on stdout and
+    nothing else, taking `NOW_EPOCH` only so a test can reach an expiry
+    without waiting for one.
+    **Its exit status is the gate**: `0` a token, `2` no credential
+    configured or an unreadable key, `1` a mint attempted and refused
+    (network, rejected JWT, unparsable body). A caller must treat `1` and `2`
+    alike — *gate unreadable*, hand back — and never as a gate read and
+    passed; they stay distinct codes only so a log can tell "nothing
+    configured" from "something broke".
+    The identity comes from three environment variables, deliberately not
+    from `config.json` (the discipline `GH_TOKEN` already follows):
+    `PULLWRIGHT_APPROVER_APP_ID`, `PULLWRIGHT_APPROVER_INSTALLATION_ID` and
+    `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` — a path, not a key body, since an
+    RSA key is multi-line and `openssl`'s `-sign` wants a file. The App id,
+    unlike the key, is no secret and also lives in `config.json` as
+    `approver_app_id` (requirement 2.3b); `scripts/doctor.sh` reconciles the
+    two so they cannot drift apart silently — a set
+    `PULLWRIGHT_APPROVER_APP_ID` differing from a set `approver_app_id` is a
+    doctor `fail`, an env id with no config declaration a `warn`, and a
+    `merge_autonomy` level above `human` with no readable runtime credential
+    in doctor's environment a `warn` (the wrapper fails closed, so the
+    surprise is approvals that never come, never a wrong action).
+    **No fallback exists anywhere in it.** The file references no credential
+    but the App's own, so an absent key can never silently reroute an
+    approve/land call through the owner's token. The minted token reaches
+    stdout and nothing else — never a log, never persistent storage, and
+    never the JWT that produced it, which itself reaches `curl` through
+    `--config -` on stdin, never argv, where it would sit world-readable in
+    `/proc/<pid>/cmdline` for the length of the call. Its one cache is
+    tmpfs-only and best-effort:
+    `/dev/shm/pullwright-approver-token.<installation id>.json` — keyed by
+    installation id, so one installation's token is never served for
+    another's — mode 600, written `mktemp`-then-rename so no reader sees a
+    partial write, and read back only when the file is this user's own, is
+    not a symlink, and is more than 300 s from expiry — `/dev/shm` is
+    world-writable, so a cache file someone else planted at that predictable
+    path is ignored rather than served as a credential. Tmpfs-only is
+    enforced, not assumed: the cache directory's filesystem type is checked
+    before anything is written, so a disk-backed `APPROVER_TOKEN_CACHE_DIR`
+    disables caching rather than putting a live token on disk; and an
+    `expires_at` that does not parse is never guessed at — the token is
+    returned but not cached. Any cache failure at all is skipped silently
+    and the call mints fresh, which is correct and merely slower.
+    Sourced, never executed, and it sets no shell options, so a caller's own
+    `set -euo pipefail` decides. `APPROVER_TOKEN_CURL`,
+    `APPROVER_TOKEN_OPENSSL` and `APPROVER_TOKEN_CACHE_DIR` override the two
+    binaries and the cache directory for tests only — the directory override
+    passes through the same mount-type check, so it cannot re-introduce
+    disk. Nothing sources it yet —
+    WI-5's Approver stage is its first caller. Regression-tested in
+    `test/approver-token.test.sh` against a stubbed `curl` and a throwaway
+    RSA key real `openssl` signs, covering the success path, a cache hit, a
+    near-expiry refresh, each missing-credential shape, a planted cache
+    file, the JWT staying out of `curl`'s argv, the per-installation cache
+    key, a disk-backed cache directory refused, an unparsable `expires_at`
+    left uncached, a refused mint, an unreachable API, a malformed body and
+    an unusable cache directory. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -9411,6 +9647,20 @@ pull request, run the ones the change touches and any it could regress.
    that this node adds no node-scoped disable of its own; with both set it
    reports both and spells out that `--enable` clears both while `--enable
    --this-node` leaves the node down under the fleet switch.
+
+   The same file covers the record's `scope` (requirement 2.3): an unmodified
+   `--disable` tags its local record `fleet` while still publishing the flag,
+   and `--status` names that record as the fleet switch's mirror rather than
+   as a second, node-scoped disable; `--enable --this-node` refuses a mirror
+   with exit 64, naming plain `--enable`, and leaves the record in place; a
+   mirror that survives a peer's `--enable` is reported as a leftover of a
+   cleared fleet switch and cleared by `--enable` on its own node; a
+   `--disable` whose fleet publish fails is retagged `node` with its
+   `disabled_at` unmoved and no flag published, and `--enable --this-node`
+   then clears it; `--disable --this-node` tags `node`, and that scope
+   reaches peers through `toggle_switch_summary`; and a record written
+   without the field reads as `node` through both `toggle_scope` and the
+   summary.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
@@ -10196,7 +10446,23 @@ pull request, run the ones the change touches and any it could regress.
    the EXIT trap's backstop, proven by running the real `cleanup` under
    `set -e`. `test/claim.test.sh` covers the back-pressure half: `count`
    counts the item-keyed entry a cycle just won and does not count a
-   `pr-<n>` entry surviving on its own.
+   `pr-<n>` entry surviving on its own; and, given the pull requests the
+   caller has already counted, it drops an item claim naming one of them
+   while keeping a claim on a PR the caller's sum does not hold — matching
+   whole numbers, so a claim on PR 90 survives a caller that counted PR 9.
+7e. **The back-pressure block hands its parts to each other correctly
+   (requirement 2.2).** The counting seam, not the parts: issue #427 and the
+   over-correction in PR #434 were both defects of this wiring, and both
+   shipped past a suite that tested `lib/claim.sh count` thoroughly and its
+   caller not at all. `test/backpressure-wiring.test.sh` passes, against the
+   block lifted verbatim from `agent-cycle.sh` with a `gh` stub replaying a
+   listing per repo and a `lib/claim.sh` stub recording its argv: each repo's
+   claim count is asked for against that repo's own drafts and
+   changes-requested PRs and no others, so a claim on an approved PR waiting
+   on a human keeps counting; a repo whose listing could not be read names no
+   PRs at all, counting every claim, which is the fail-closed reading beside
+   its own zeroed counts; and the composition line states the split the
+   operator and the dashboard card both read.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
@@ -11097,8 +11363,14 @@ pull request, run the ones the change touches and any it could regress.
     returning `unknown`) is a `warning`, never a guessed request; a listing
     the stub splits across two pages — the shape `--paginate` produces — still
     self-heals when answered and is still silent when unanswered, which is
-    what holds `_sweep_round_answered`'s reads to the streamed form; a pull
-    request nudged once already is not nudged
+    what holds `_sweep_round_answered`'s reads to the streamed form; an
+    answered round on a pull request whose rollup is not green (empty or
+    mixed) produces no review request and no output at all — the green gate
+    (agent-ops#338) short-circuits before `_sweep_round_answered` is even
+    asked; the same answered round on a rollup whose only non-`SUCCESS` entry
+    is `SKIPPED` still self-heals, proving the self-heal shares
+    `_sweep_checks_green` with the idle nudge rather than a stricter copy of
+    it; a pull request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
     check rollup; an approved, `MERGEABLE`, green and idle pull request whose
@@ -11146,8 +11418,10 @@ pull request, run the ones the change touches and any it could regress.
     is dropped the moment a fresh listing succeeds; a pull-request violation
     of any class is dropped once it is merged, closed, or back in draft; a
     `could not request review from …` violation is dropped once
-    `reviewRequests` is non-empty, and separately once `reviewDecision` reads
-    `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
+    `reviewRequests` is non-empty, and separately once a non-bot review with
+    state `APPROVED` or `CHANGES_REQUESTED` exists in the reviews list —
+    never `reviewDecision`, agent-ops#391, TD-PPagop-26081505 — and otherwise
+    survives; a
     `reviewRequests` entry typed `Bot` (keyed `__typename`, the
     discriminator `gh pr view`'s exporter actually emits) or naming a
     `[bot]`-suffixed login alone does not drop it, while a
@@ -11226,10 +11500,13 @@ pull request, run the ones the change touches and any it could regress.
     `nudged`) behaving exactly as it did before this requirement existed; a
     failed dequeue-notice POST is a `warning`, never silence; a `"manual"`
     dequeue gets no notice even though it is otherwise fresh and
-    unacknowledged (agent-ops#394); and a dequeue older than
+    unacknowledged (agent-ops#394); a dequeue older than
     `merge_queue_dequeue_notice_max_age_hours` gets no notice even though it
     carries an actionable reason and no marker is on the pull request yet
-    (agent-ops#394).
+    (agent-ops#394); and `merge_queue_dequeue_notice_max_age_hours: 0`
+    disables the notice outright, even for a same-second dequeue whose age
+    (`0`) does not exceed the zero-width threshold arithmetic alone would
+    apply (agent-ops#429).
 38g. **Requirement 38c's ruleset dependency is reported, not silent
     (agent-ops#391).** `test/doctor.test.sh` passes, over the same
     single-target-repo fixture and `gh`/`rulesets` stub requirement 25a's own

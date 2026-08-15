@@ -1,45 +1,30 @@
-# deploy/docker/crontab — the pipeline schedule inside a node, run by
-# supercronic (the scheduler service). Five-field cron format; the shell that
-# runs each command inherits this container's environment, so $LOGDIR below is
-# the one set here.
+# deploy/docker/crontab.tmpl — the template render-crontab.sh renders over
+# deploy/docker/crontab at every container start (design decision D5). The
+# at-sign placeholders below come from config.json's `schedule`: several
+# active nodes on one shared Claude account must not all fire at once, so
+# each node lands on its own minute for the two heavy pipelines — a stable
+# hash of NODE_NAME by default, CYCLE_MINUTE in .env to choose, drawn only
+# from the minutes schedule.excluded_minutes does not rule out.
 #
-# It replaces the laptop crontab's pipeline lines and nothing else: the
-# personal update-main-branches.sh entry is deliberately absent, because it
-# refreshes the owner's interactive checkouts and a node has none — the cycles
-# clone their targets fresh from GitHub every time.
+# 38,53 is a comma-separated minute list, not a single minute
+# (issue #248, "faster heartbeat"): the node's own minute, then every
+# schedule.cycle_interval_minutes after it within the hour, each occurrence
+# dropped if it lands on an excluded minute. cron's minute field accepts
+# such a list natively. cycle_interval_minutes=60 collapses this back to
+# the single-minute, once-per-hour shape every release before it carried.
+# An idle firing stays cheap: lib/noop-skip.sh short-circuits before the
+# Co-Ordinator runs when nothing a fingerprint covers has changed.
 #
-# The redirections match the laptop's so the dashboard's log-derived views
-# keep working: cron.log and review-cron.log live in state_dir and are read
-# back by scripts/publish-dashboard.sh.
-#
-# Whether the cycle lines do anything at all is decided by AGENT_OPS_ROLE
-# (requirement 2.4): on a standby node each one writes a single line to its log
-# and exits.
-#
-# THIS FILE IS A FALLBACK. At container start, entrypoint.sh renders
-# crontab.tmpl over it (render-crontab.sh), replacing the cycle and review
-# minutes with this node's own offsets — a stable hash of NODE_NAME, or
-# CYCLE_MINUTE from .env — so several active nodes spread across the hour
-# instead of all firing together on one shared account. What is baked here
-# runs only when that render fails, and the entrypoint says so when it does.
+# Everything not a placeholder is documented in the baked crontab, which is
+# also the fallback whenever this template cannot be rendered.
 
 LOGDIR=/home/agent/.local/state/poetic-agents
 
 */5 * * * *  /app/scripts/publish-dashboard-launcher.sh
-0   * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
-29  3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
+38,53 * * * *  /app/agent-cycle.sh  >> $LOGDIR/cron.log        2>&1
+7 3 * * *  /app/review-cycle.sh >> $LOGDIR/review-cron.log 2>&1
 
-# The fleet's shared memory, both directions, on every node. The push
-# publishes this node's state as its own `nodes/<NODE_NAME>` branch — on an
-# active node that is its cycles, on a standby it is the heartbeat that tells
-# the fleet dashboard a spare is alive. The fetch materialises every peer's
-# branch for the union readers (blocked/void, the no-op fingerprint, the
-# usage-limit cooldown, the fleet dashboard). Offset cadences so the two do
-# not queue behind each other every single tick; the mirror lock arbitrates
-# when they do coincide.
 */5 * * * *  /app/scripts/state-sync.sh push  >> $LOGDIR/state-sync.log 2>&1
 */7 * * * *  /app/scripts/state-sync.sh fetch >> $LOGDIR/state-sync.log 2>&1
 
-# Bounds state_dir's own diagnostic and cron logs (TD26072501); log.jsonl
-# and review-log.jsonl are never touched — see scripts/rotate-logs.sh.
-19  * * * *  /app/scripts/rotate-logs.sh >> $LOGDIR/dashboard.log 2>&1
+19 * * * *  /app/scripts/rotate-logs.sh >> $LOGDIR/dashboard.log 2>&1

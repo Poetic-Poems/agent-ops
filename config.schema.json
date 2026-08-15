@@ -599,13 +599,13 @@
       }
     },
     "merge_queue_dequeue_notice_max_age_hours": {
-      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time.",
+      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time. 0 disables the notice entirely — a repository running without a merge queue loses the only human signal for a merge-group failure and should say so explicitly rather than via a near-zero value.",
       "type": "number",
-      "exclusiveMinimum": 0,
+      "minimum": 0,
       "default": 24,
       "x-docs": {
-        "readme": "Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time.",
-        "spec": "Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md.",
+        "readme": "Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time. `0` disables the notice entirely, at the cost of losing the only human signal this pipeline raises for a merge-group failure.",
+        "spec": "Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express that in config rather than by tuning this value near zero.",
         "value": {
           "readme": "`24`",
           "spec": "24 h"
@@ -628,8 +628,8 @@
       "type": "string",
       "default": "",
       "x-docs": {
-        "readme": "The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.",
-        "spec": "The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape.",
+        "readme": "The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.",
+        "spec": "The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"
