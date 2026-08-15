@@ -3260,18 +3260,24 @@ runs unattended.
    build on stdin beside the arrays it came from — an `--arg` there would put
    the same bytes back into a single argv element and leave the threshold
    where it was. Their tests drive each build with a body past the cap.
+   TD-PPagop-26081501 converted the one site TD-PPagop-26081406 found but did
+   not enumerate: `lib/handoff.sh`'s own `handoff_answer_events`, shared by
+   `scripts/gather-review-feedback.sh`'s direct call and
+   `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
+   which read a repo's whole reviews/comments/rerequests arrays as
+   `--argjson` — a single oversized review or comment body killed the call
+   at `execve` upstream of either caller's own candidate build
+   (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
 
-   Three sites outside either item's enumeration still deliver a fleet-state
-   aggregate in argv, and are filed rather than fixed: `lib/handoff.sh`'s
-   `handoff_answer_events`, which takes a repo's whole reviews/comments arrays
-   as `--argjson` (TD-PPagop-26081501); `agent-cycle.sh`'s own invocation of
-   `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
-   whole `$violations` argument as a single argv element to the script's own
-   `execve`, a cap this requirement's `jq`-specific framing had not considered
-   until TD-PPagop-26081406 found it (TD-PPagop-26081502); and the gatherers
-   and Publisher builds TD-PPagop-26081503 enumerates — `gather-findings.sh`,
+   Two sites outside either item's enumeration still deliver a fleet-state
+   aggregate in argv, and are filed rather than fixed: `agent-cycle.sh`'s own
+   invocation of `scripts/gather-human-visibility-hygiene.sh`, which hands
+   that script's whole `$violations` argument as a single argv element to the
+   script's own `execve`, a cap this requirement's `jq`-specific framing had
+   not considered until TD-PPagop-26081406 found it (TD-PPagop-26081502); and
+   the gatherers and Publisher builds TD-PPagop-26081503 enumerates — `gather-findings.sh`,
    `gather-source-state.sh`, `gather-register-hygiene.sh` and
-   `publish-dashboard.sh`. Those three items are the outstanding residue; this
+   `publish-dashboard.sh`. Those two items are the outstanding residue; this
    requirement claims no more than the sites named above.
 
    **The rule is the Publisher's too.** It was first written for the Script,

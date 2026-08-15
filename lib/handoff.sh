@@ -649,12 +649,33 @@ ensure_human_reviewer() {
 # does not answer the round either, for the same reason.
 handoff_answer_events() {
   local reviews="${1:-[]}" comments="${2:-[]}" rerequests="${3:-[]}"
-  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" \
-      --argjson reviews "$reviews" --argjson comments "$comments" --argjson rr "$rerequests" '
-    ([$reviews[]  | select((.body // "") | contains($marker) and contains($actor)) | .at]
-     + [$comments[] | select((.body // "") | contains($marker) and contains($actor)) | .at]
-     + [$rr[] | .at]) | sort
-  '
+  # REVIEWS_JSON, COMMENTS_JSON and REREQUESTS_JSON are a repo's whole
+  # reviews/comments/rerequests history, genuinely unbounded (requirement 4g,
+  # TD-PPagop-26081501) — delivered on stdin, one document per line, bound
+  # positionally with `input as $name` in the order printed, never in argv.
+  #
+  # The trailing `(try input catch null) as $extra` guard reproduces
+  # `--argjson`'s own failure mode for a multi-document argument — two
+  # concatenated arrays, the shape an unslurped `gh api --paginate` read
+  # leaves behind — which `--argjson` used to reject outright
+  # ("invalid JSON text passed to --argjson"). `input as $name` does not:
+  # it silently reads whichever document comes next, so a caller that hands
+  # over more than one document per argument would otherwise shift every
+  # later binding onto the wrong value instead of failing
+  # (test/handoff.test.sh's "two concatenated pages" pin). Counting the total
+  # is enough: three well-formed single-document arguments leave nothing
+  # behind for `$extra` to catch, and any argument that over-contributes
+  # leaves at least one document unconsumed at the end.
+  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" '
+    input as $reviews | input as $comments | input as $rr |
+    (try input catch null) as $extra |
+    if $extra != null then error("handoff_answer_events: multiple JSON documents in one argument")
+    else
+      ([$reviews[]  | select((.body // "") | contains($marker) and contains($actor)) | .at]
+       + [$comments[] | select((.body // "") | contains($marker) and contains($actor)) | .at]
+       + [$rr[] | .at]) | sort
+    end
+  ' <<<"$reviews"$'\n'"$comments"$'\n'"$rerequests"
 }
 
 # handoff_round_answered BLOCKING_AT REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]
@@ -693,11 +714,16 @@ handoff_round_answered() {
   # `jq -e 'type == "array"'` alone does not establish that: `jq` evaluates
   # the filter once per input document and exits on the last one's truth, so
   # two concatenated arrays — exactly what `gh api --paginate` emits per page
-  # — pass it, and then fail `--argjson` inside `handoff_answer_events`. A
-  # caller must hand these arguments over as one document each (see
-  # `_handoff_blocking_reviewers` above for the streaming read that
-  # guarantees it); the guards here are what stops one that does not from
-  # being read as an answer.
+  # — still pass it. It is `handoff_answer_events`'s own trailing-input guard
+  # that catches this now (TD-PPagop-26081501): since it reads its three
+  # arguments positionally off stdin (`input as $name`) rather than as
+  # `--argjson`, a multi-document argument is no longer rejected by `jq`
+  # itself, so that function asserts nothing is left over once all three
+  # bindings are read and errors if there is. A caller must still hand these
+  # arguments over as one document each (see `_handoff_blocking_reviewers`
+  # above for the streaming read that guarantees it); the checks above and
+  # that trailing guard together are what stop one that does not from being
+  # read as an answer.
   [[ -n "$blocking_at" ]] || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || { printf 'unknown'; return 0; }

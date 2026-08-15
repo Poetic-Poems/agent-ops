@@ -797,6 +797,40 @@ assert_eq "two concatenated pages are unknown, never answered" "unknown" \
 assert_eq "an array whose elements break the extraction is unknown" "unknown" \
   "$(handoff_round_answered "$BLOCK_AT" '[1,2,3]' '[]' 2>/dev/null)"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081501) -------------------------
+#
+# REVIEWS_JSON, COMMENTS_JSON and REREQUESTS_JSON used to ride into
+# `handoff_answer_events`'s own `jq` call as `--argjson`: genuinely unbounded,
+# the same shape TD-PPagop-26081401/26081406 already fixed elsewhere in this
+# file's siblings. Past MAX_ARG_STRLEN (131072 bytes) a single oversized
+# review or comment body made the call die at `execve`, and both callers
+# (scripts/gather-review-feedback.sh's direct call, and
+# scripts/sweep-human-visibility.sh's through `handoff_round_answered`) read
+# that failure back with no distinct "could not tell" outcome. Requirement 4g
+# moves all three onto stdin.
+oversized_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_body} > 131072 ))"
+
+# The marked reply itself is the oversized one — the exact shape the register
+# entry confirmed reproduces `/usr/bin/jq: Argument list too long` — sitting
+# alongside an oversized *unmarked* review, so the fix is proven to filter
+# correctly, not merely to avoid crashing. Built with the `printf` builtin,
+# not `jq --arg`: an `--arg` carrying the oversized body would hit the very
+# argv cap this section exists to prove the real code no longer does.
+oversized_marked_reply="$(printf '{"at": "2026-08-03T10:05:00Z", "body": "Addressed. %s %s cycle=X actor=implementor -->"}' \
+  "$oversized_body" "$PIPELINE_COMMENT_MARKER_PREFIX")"
+oversized_unmarked_review="$(printf '{"at": "2026-08-03T09:00:00Z", "body": "%s"}' "$oversized_body")"
+
+events="$(handoff_answer_events "[$oversized_unmarked_review]" "[$oversized_marked_reply]" '[]' 2>/dev/null)"; rc=$?
+assert_eq "a review/comment body past the argv cap no longer kills the call" "0" "$rc"
+assert_eq "  ... and still finds only the marked implementor reply" "1" "$(jq 'length' <<<"$events")"
+assert_eq "  ... at its own timestamp" "2026-08-03T10:05:00Z" "$(jq -r '.[0]' <<<"$events")"
+
+assert_eq "handoff_round_answered survives the same oversized bodies, reading the round answered" \
+  "answered" \
+  "$(handoff_round_answered "$BLOCK_AT" "[$oversized_unmarked_review]" "[$oversized_marked_reply]" 2>/dev/null)"
+
 printf '\n'
 if (( failures == 0 )); then
   printf 'all assertions passed\n'

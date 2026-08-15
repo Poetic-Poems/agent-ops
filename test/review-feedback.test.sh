@@ -455,11 +455,13 @@ assert_eq "a marked reply isolated alone on page two of the comments read answer
 # alone is past the cap — genuinely unbounded even though the candidate's own
 # `body` field is assembled from the reviews, not from $pr.body, because the
 # whole $pr object rides together regardless of which fields the jq program
-# reads. (The reviews/comments arrays cannot be grown the same way here:
-# lib/handoff.sh's own `handoff_answer_events` reads the same $reviews array
-# first, unconverted — TD-PPagop-26081406 did not enumerate it, so it is
-# left alone and filed separately rather than fixed as scope creep in this
-# PR.)
+# reads. (lib/handoff.sh's own `handoff_answer_events` reads the same
+# $reviews array first, before $fresh is even derived — TD-PPagop-26081406
+# did not enumerate it, so it was left alone and filed separately as
+# TD-PPagop-26081501; that item's own fix is pinned below, driving the real
+# script the same way rather than in TD-PPagop-26081501's own
+# test/handoff.test.sh, since only running the real script proves this
+# script's own upstream call is what benefits.)
 oversized_pr_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
 assert_eq "the oversized PR-body fixture really is past MAX_ARG_STRLEN" "1" \
   "$(( ${#oversized_pr_body} > 131072 ))"
@@ -485,6 +487,33 @@ assert_eq "a PR object past the argv cap still produces the candidate" "1" \
   "$(jq 'length' <<<"$out")"
 assert_eq "  ... and the ref still pins to the blocking review" \
   "pr-300-review-1" "$(jq -r '.[0].ref' <<<"$out")"
+
+# A single oversized *review* body (TD-PPagop-26081501): before that fix, this
+# died in `handoff_answer_events` (lib/handoff.sh), upstream of $fresh even
+# being derived, so a single oversized review failed the whole candidate rule
+# regardless of how small everything else stayed — the exact repro the
+# tech-debt record confirmed by hand.
+oversized_review_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "  ... (this fixture too) really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_review_body} > 131072 ))"
+cat > "$tmp_dir/prs.json" <<'JSON'
+[
+  {"number": 301, "title": "fix(oversized): pad a review body past the argv cap",
+   "headRefName": "agent/td-oversized-review", "headRefOid": "0ff512edb0dz",
+   "isDraft": false, "reviewDecision": "CHANGES_REQUESTED", "url": "https://github.com/o/r/pull/301", "body": ""}
+]
+JSON
+printf '[{"id": 2, "state": "CHANGES_REQUESTED", "submitted_at": "2026-08-01T00:05:00Z", "user": {"login": "Warwick-Allen"}, "body": "%s"}]' \
+  "$oversized_review_body" > "$tmp_dir/reviews.json"
+printf '[]' > "$tmp_dir/issue-comments.json"
+printf '[]' > "$tmp_dir/timeline.json"
+printf '[]' > "$tmp_dir/pr-comments.json"
+
+out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
+assert_eq "an oversized single review body no longer kills handoff_answer_events" "1" \
+  "$(jq 'length' <<<"$out")"
+assert_eq "  ... and the ref still pins to the blocking review" \
+  "pr-301-review-2" "$(jq -r '.[0].ref' <<<"$out")"
 
 # The review-body assembly and the per-candidate array append are inline, not
 # functions, so each is lifted by its own literal start/end lines — the same
