@@ -698,6 +698,111 @@ this_status_out="$(run_node "$a_home" agent-cycle.sh --status --this-node 2>&1)"
 assert_eq "--this-node with --status is a usage error" "64" "$?"
 assert_contains "and says so" "only modifies --disable or --enable" "$this_status_out"
 
+# --- `scope` (requirement 2.3): the local half of a fleet-wide --disable is a
+# mirror, not a second decision ----------------------------------------------
+#
+# An unmodified --disable writes both levels, so the node that issues a
+# fleet-wide stand-down ends up holding a local record byte-identical to a
+# --this-node one. Untagged, every reader announced a node-scoped disable
+# nobody had asked for, and that one node of a uniformly-down fleet wore the
+# dashboard's amber `disabled` badge while its equally-stopped peers wore none.
+
+a_switch="$a_home/.local/state/poetic-agents/disabled.json"
+
+run_node "$a_home" agent-cycle.sh --disable "resize the VM" --for forever >/dev/null 2>&1
+assert_eq "an unmodified --disable tags its local record as a fleet mirror" "fleet" \
+  "$(jq -r '.scope' "$a_switch" 2>/dev/null)"
+assert_eq "and still publishes the fleet flag" "1" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+
+assert_eq "and caches the flag it just wrote, like a successful fetch would" "1" \
+  "$(test -f "$a_home/.local/state/poetic-agents/fleet-cache/disabled.json" && echo 1 || echo 0)"
+
+mirror_status="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status names the local record as this fleet switch's mirror" \
+  "mirrors this fleet switch" "$mirror_status"
+assert_not_contains "and never reports it as a second, node-scoped disable" \
+  "also carries its own node-scoped disable" "$mirror_status"
+
+# The writer must not be the one node blind to a flag it set: with the state
+# repo unreachable it reads its own cache and still reports the fleet switch,
+# rather than falling through this level's fail-open to the orphan wording
+# below — which would tell an operator mid-outage that the switch they had
+# just set had been cleared.
+export GH_STUB_MODE=down
+offline_mirror_status="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+unset GH_STUB_MODE
+assert_contains "an unreachable state repo still reports the fleet switch from cache" \
+  "fleet:    DISABLED" "$offline_mirror_status"
+assert_not_contains "and never mistakes an outage for a switch cleared elsewhere" \
+  "has since been cleared" "$offline_mirror_status"
+
+# The mirror is this node's fail-*closed* hold on itself for exactly the window
+# where the fleet flag cannot be read — that flag fails open — so clearing it
+# under a live fleet switch is how a node resumes the work the fleet was stood
+# down to prevent. --enable --this-node must refuse rather than oblige.
+mirror_enable_out="$(run_node "$a_home" agent-cycle.sh --enable --this-node 2>&1)"
+assert_eq "--enable --this-node refuses a fleet mirror" "64" "$?"
+assert_contains "naming plain --enable as what undoes a fleet-wide disable" \
+  "Use --enable" "$mirror_enable_out"
+assert_eq "and leaves the mirror in place" "1" \
+  "$(test -f "$a_switch" && echo 1 || echo 0)"
+
+# The orphan, and the reason the tag is worth carrying: --enable on a *peer*
+# clears the fleet flag but cannot reach this node's file, so this node alone
+# stays down under a decision lifted elsewhere — indefinitely, on `--for
+# forever`. Untagged it read as a node-scoped disable nobody had set.
+run_node "$b_home" agent-cycle.sh --enable >/dev/null 2>&1
+assert_eq "a peer's --enable clears the fleet flag" "0" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+orphan_status="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status reports a surviving mirror as a cleared switch's leftover" \
+  "mirrors a fleet switch that has since been cleared" "$orphan_status"
+assert_contains "and names --enable as what clears it" \
+  "--enable clears it" "$orphan_status"
+
+run_node "$a_home" agent-cycle.sh --enable >/dev/null 2>&1
+assert_eq "--enable clears the orphaned mirror" "0" \
+  "$(test -f "$a_switch" && echo 1 || echo 0)"
+
+# A --disable whose fleet publish fails leaves this node standing down alone,
+# so the optimistic `fleet` tag has to be corrected: a record still claiming to
+# mirror a switch that was never set would have --status and the dashboard
+# describe a fleet-wide stand-down that does not exist.
+export GH_STUB_MODE=down
+run_node "$a_home" agent-cycle.sh --disable "fleet write will fail" --for 1h >/dev/null 2>&1
+unset GH_STUB_MODE
+assert_eq "a failed fleet publish retags the local record node-scoped" "node" \
+  "$(jq -r '.scope' "$a_switch" 2>/dev/null)"
+assert_eq "leaving its disabled_at as first written" "2026-07-17T12:00:00Z" \
+  "$(jq -r '.disabled_at' "$a_switch" 2>/dev/null)"
+assert_eq "and no fleet flag was published" "0" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+run_node "$a_home" agent-cycle.sh --enable --this-node >/dev/null 2>&1
+assert_eq "--enable --this-node clears that one, since it is genuinely node-scoped" "0" \
+  "$(test -f "$a_switch" && echo 1 || echo 0)"
+
+# The deliberate single-node case is unchanged, and travels to peers: a card
+# rendering another node's switch has to be able to tell the two apart, and
+# only the node holding the record knows which it is.
+run_node "$a_home" agent-cycle.sh --disable "editing lib/" --this-node --for 1h >/dev/null 2>&1
+assert_eq "--disable --this-node tags its record node-scoped" "node" \
+  "$(jq -r '.scope' "$a_switch" 2>/dev/null)"
+assert_eq "and toggle_switch_summary carries the scope to peers" "node" \
+  "$(jq -r '.scope' <<<"$(toggle_switch_summary "$a_home/.local/state/poetic-agents")")"
+
+# A record written before the field existed reads as node-scoped: what such a
+# record effectively was, and the direction that keeps a node down rather than
+# talking itself out of a stand-down.
+jq -c 'del(.scope)' "$a_switch" > "$tmp_dir/legacy-switch.json" && mv "$tmp_dir/legacy-switch.json" "$a_switch"
+assert_eq "a record with no scope reads as node-scoped" "node" \
+  "$(toggle_scope "$(jq -c '.record // {}' <<<"$(toggle_state "$a_home/.local/state/poetic-agents")")")"
+assert_eq "and toggle_switch_summary defaults it the same way" "node" \
+  "$(jq -r '.scope' <<<"$(toggle_switch_summary "$a_home/.local/state/poetic-agents")")"
+
+# Back to the baseline the limit tests below assume: nothing set at either level.
+run_node "$a_home" agent-cycle.sh --enable >/dev/null 2>&1
+
 # A usage limit published by one node stands another node down until resume_at.
 fleet_limit_publish "$slug" "$fs_a" "2030-01-01T00:00:00Z" "monthly-spend" true node-a
 rm -f "$b_log"

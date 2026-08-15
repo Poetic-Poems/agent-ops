@@ -149,7 +149,11 @@ stops cycles from starting (shared with review-cycle.sh).
                      untouched either way. Stands this one node down without a
                      container recreate — the rest of the fleet keeps working.
                      Combining it with anything but --disable or --enable is
-                     an error.
+                     an error. An unmodified --disable also writes a local
+                     record, but tags it `scope: "fleet"` to mark it a mirror
+                     of the fleet switch rather than a node-scoped stand-down;
+                     --enable --this-node refuses to clear one of those, since
+                     plain --enable is what undoes a fleet-wide disable.
   --clear-limit      Lift a usage-limit stand-down across the fleet (2.1). Use
                      it once the limit is actually gone — you raised the cap,
                      or the plan rolled over. Unlike --enable this touches no
@@ -710,17 +714,36 @@ limit_status_report() {
 # only the fleet one and, where both are in play, says plainly what each of
 # --enable and --enable --this-node would leave — the question an operator
 # who finds a node down for more than one reason actually has.
+#
+# The local record's `scope` (requirement 2.3) is what makes that answer
+# truthful rather than merely confident. A fleet-wide --disable writes both
+# levels, so the node that issued one has a local record it never asked for;
+# calling that "its own node-scoped disable" describes a second decision that
+# was never taken, and sends the operator looking for whoever made it.
 fleet_status_report() {
-  local local_disabled=0 fleet_state
-  [[ "$(jq -r '.state' <<<"$(toggle_state "$state_dir")")" == "disabled" ]] && local_disabled=1
+  local local_disabled=0 local_scope="node" local_state fleet_state
+  local_state="$(toggle_state "$state_dir")"
+  if [[ "$(jq -r '.state' <<<"$local_state")" == "disabled" ]]; then
+    local_disabled=1
+    local_scope="$(toggle_scope "$(jq -c '.record // {}' <<<"$local_state")")"
+  fi
   fleet_state="$(fleet_disabled_state "$state_repo" "$state_dir")"
   if [[ "$(jq -r '.state' <<<"$fleet_state")" == "disabled" ]]; then
     printf 'fleet:    DISABLED — %s\n' "$(toggle_describe "$(jq -c '.record' <<<"$fleet_state")")"
-    if (( local_disabled )); then
+    if (( local_disabled )) && [[ "$local_scope" == "fleet" ]]; then
+      printf '          the local record above mirrors this fleet switch — it is not a second, node-scoped disable; --enable clears both levels and every node resumes\n'
+    elif (( local_disabled )); then
       printf '          this node also carries its own node-scoped disable (above) — --enable clears both; --enable --this-node clears only the local record, leaving the fleet switch (and this node) still down\n'
     else
       printf '          this node has no node-scoped disable of its own — --enable clears the fleet switch and every node resumes\n'
     fi
+  elif (( local_disabled )) && [[ "$local_scope" == "fleet" ]]; then
+    # The orphan (requirement 2.3): --enable run on a *peer* clears the fleet
+    # flag but cannot reach this file, so this node alone stays down under a
+    # fleet decision that has since been lifted. Naming it is the whole point
+    # of the scope tag — otherwise this reads as a node-scoped disable nobody
+    # set, and the node waits out a `forever` TTL that no longer applies.
+    printf 'fleet:    not set — but the local record above mirrors a fleet switch that has since been cleared (probably by --enable on another node), so this node is standing down alone; --enable clears it\n'
   elif (( local_disabled )); then
     printf 'fleet:    not set — this node stands down on its own node-scoped disable above; --enable --this-node clears it\n'
   else
@@ -752,8 +775,23 @@ if [[ -n "$MANAGE_ACTION" ]]; then
                              "$disable_default_ttl_hours")"; then
         exit 64
       fi
+      # What this record *is*, not merely that it exists (requirement 2.3) —
+      # written before the record, because the record carries it.
+      #
+      # This is deliberately not the same question as `disable_scope` below,
+      # and the two part company in exactly one case. That one records the
+      # operator's *instruction* for the log (issue #426), so a --disable on
+      # an installation with no `state_repo` is still `scope: "fleet"`, with
+      # `fleet_flag: "unconfigured"` saying why nothing was published. This one
+      # answers "is there a fleet flag for this record to mirror?" — and with
+      # no state repo there is none, so it is `node`. Tagging it `fleet` would
+      # have --status claim a mirror of a switch that cannot exist, and
+      # --enable --this-node refuse to clear the only record holding this node
+      # down. Under --this-node both agree on `node`, for the same reason.
+      record_scope=node
+      if (( ! THIS_NODE )) && [[ -n "$state_repo" ]]; then record_scope=fleet; fi
       if ! record="$(toggle_disable "$state_dir" "$DISABLE_REASON" "$disable_spec" \
-                       "$disable_default_ttl_hours" "$by" "$actor" manual)"; then
+                       "$disable_default_ttl_hours" "$by" "$actor" manual "$record_scope")"; then
         exit 64
       fi
       printf 'agent-cycle: disabled — %s\n' "$(toggle_describe "$record")"
@@ -777,10 +815,19 @@ if [[ -n "$MANAGE_ACTION" ]]; then
         printf 'agent-cycle: node-scoped disable — only %s stands down; the rest of the fleet keeps running\n' "$actor"
       else
         fleet_flag_outcome="$(fleet_flag_write_outcome "$state_repo" disabled "$record" \
-          "fleet: disabled by $by — $DISABLE_REASON")"
+          "fleet: disabled by $by — $DISABLE_REASON" "$state_dir")"
         case "$fleet_flag_outcome" in
           ok) printf 'agent-cycle: fleet switch set — every node will stand down\n' ;;
-          failed) printf 'agent-cycle: WARNING — could not set the fleet switch (state repo unreachable?); only this node is disabled\n' >&2 ;;
+          failed)
+            # Retag before warning: no fleet switch was set, so the local
+            # record is no longer a mirror of anything — this node genuinely
+            # is standing down alone, and a record still claiming `fleet`
+            # would have --status and the dashboard describe a fleet
+            # stand-down that does not exist. `unconfigured` needs no retag:
+            # record_scope was already `node` when there is no state repo.
+            toggle_mark_scope "$state_dir" node
+            printf 'agent-cycle: WARNING — could not set the fleet switch (state repo unreachable?); only this node is disabled\n' >&2
+            ;;
         esac
       fi
       log_event "disabled" "$(jq -nc --argjson r "$record" --argjson x "${extends:-null}" \
@@ -800,6 +847,24 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       exit 0
       ;;
     enable)
+      # --this-node undoes a --disable --this-node. It must refuse a record
+      # tagged `fleet` (requirement 2.3), because clearing that one is never
+      # what the operator wanted and can be actively harmful: the mirror is
+      # this node's fail-closed hold on itself for exactly the window where
+      # the fleet flag cannot be read (state repo unreachable — see
+      # lib/toggle.sh's fleet section, which fails *open*), so dropping it
+      # while the fleet switch stands is how a node resumes work the fleet was
+      # stood down to prevent. Plain --enable is the right command in every
+      # case: it clears this record and issues the fleet delete, which is
+      # idempotent and treats an already-cleared flag as success.
+      if (( THIS_NODE )); then
+        enable_state="$(toggle_state "$state_dir")"
+        if [[ "$(jq -r '.state' <<<"$enable_state")" == "disabled" ]] \
+           && [[ "$(toggle_scope "$(jq -c '.record // {}' <<<"$enable_state")")" == "fleet" ]]; then
+          echo "agent-cycle: this node's disable record mirrors a fleet-wide --disable, not a --this-node one; --enable --this-node will not clear it. Use --enable, which clears both levels (harmless if the fleet switch is already clear)." >&2
+          exit 64
+        fi
+      fi
       record="$(toggle_clear "$state_dir")"
       if [[ -n "$record" ]]; then
         printf 'agent-cycle: enabled — cleared the disable set at %s (%s)\n' \

@@ -194,6 +194,19 @@ All paths derive from `config.json` (tilde-expanded `state_dir` and
   same absent-means-unknown rule every other peer-only field on the card
   follows — a peer whose heartbeat predates the field, like one whose image
   or compose verdict does, renders no badge rather than a false "enabled".
+
+  **A record's `scope` decides which of those two things it is** (implementation
+  spec 2.3). A fleet-wide `--disable` also writes a local record on the node
+  that issued it, tagged `scope: "fleet"` — a *mirror* of the fleet switch, not
+  a stand-down of that node's own. While `fleet.flags.disabled` is set the page
+  suppresses both the local banner and that node's badge in favour of the fleet
+  banner, because one decision must not render as two problems, and an amber
+  **disabled** badge on exactly one node of a uniformly-down fleet reads as a
+  fault peculiar to that node. When the fleet flag is *clear* and a mirror
+  survives, the opposite applies and both render, saying so: that node alone is
+  standing down under a fleet decision lifted elsewhere — `--enable` on a peer
+  clears the flag but cannot reach this node's file — and nothing else on the
+  page would account for it.
 - **`cycles/<cycle-id>/<stage>.out`** — the stage's `result` envelope: the
   final line of the event stream `claude --output-format stream-json` wrote,
   truncated into this file by `run_claude_stage` and identical to what
@@ -512,11 +525,15 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
                                             //   published one (#155); null if
                                             //   unreported
                          switch: { disabled, reason, by,    // the node's OWN
-                                    actor, kind, since,      //   node-scoped
-                                    expires_at },            //   disable (#379,
-                                            //   `--disable --this-node`),
-                                            //   never the fleet one; null if
-                                            //   unreported
+                                    actor, kind, scope,      //   disable record
+                                    since, expires_at },     //   (#379); `scope`
+                                            //   is "node" for a real
+                                            //   `--disable --this-node` and
+                                            //   "fleet" for the local mirror a
+                                            //   fleet-wide --disable leaves on
+                                            //   the node that issued it (2.3);
+                                            //   never the fleet flag itself;
+                                            //   null if unreported
                          live: { cycle, since, running, ended_at,
                                  stage, repo, item, source, title } } ],
                                             // what THAT node is doing; null
@@ -1201,7 +1218,15 @@ number's twins elsewhere on the page.
   check failed carries **image unverified** instead (#155). A node carrying a
   node-scoped disable (`switch.disabled`) shows a **disabled** badge beside
   its role badge, naming the reason and the expiry, while its own enabled
-  self carries no such badge (#379). A cycle whose
+  self carries no such badge (#379). Two further fixtures separate that from
+  the local record a fleet-wide `--disable` leaves on the node that issued it
+  (`switch.scope: "fleet"`, implementation spec 2.3): with the fleet flag set,
+  the page raises the fleet banner alone — no second banner for the mirror and
+  no **disabled** badge on the issuing node, while a peer's genuine
+  `--this-node` disable beside it still badges; with the flag cleared, the
+  surviving mirror raises this node's own banner and badge, both naming it as
+  a leftover of a fleet-wide disable since cleared rather than as a
+  node-scoped decision. A cycle whose
   `selection` carried `race_losses` (implementation spec 17d, #248) shows a
   blue **recovered race ×N** badge beside its title in the cycle history —
   informational, not a warning, since losing a claim race and then winning a
@@ -1772,6 +1797,15 @@ number's twins elsewhere on the page.
   before this check existed) — the same absent-means-unknown rule the
   compose and image badges already follow, never a false "enabled" for a
   peer this node cannot actually answer for.
+
+  It also renders nothing for a record tagged `scope: "fleet"` while the fleet
+  flag is set: that record is the mirror a fleet-wide `--disable` leaves on the
+  node that issued it, and badging it would single that node out of a fleet
+  that is uniformly down. A mirror whose fleet flag has since been cleared is
+  the exception and the reason the tag is worth carrying — it badges amber and
+  says what it is, since that node is genuinely down alone and no banner on the
+  page explains why. A record with no `scope` reads as `"node"`, matching
+  `lib/toggle.sh`.
 - **Blocked and void are shown as separate lists**, never merged into
   "items not being worked". They ask opposite things of the person reading:
   a blocked item may need them to clear its path; a void item needs nothing
