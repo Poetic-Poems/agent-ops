@@ -76,14 +76,19 @@ assert_eq "a repo absent from repos[] entirely still falls through to the top-le
 # --- The kill switch (fleet flag) ---
 #
 # The same stub-`gh`-backed-by-a-directory pattern test/toggle.test.sh uses
-# for its own fleet-flag assertions, reduced to the one method
-# lib/toggle.sh's fleet_flag_* helpers actually call.
+# for its own fleet-flag assertions, including its GH_STUB_MODE=down branch
+# (TD-PPagop-26081507's own assertions below need it to simulate an
+# unreachable state repo, same as toggle.test.sh's do).
 gh_backing="$tmp_dir/fleet-remote"
 mkdir -p "$gh_backing"
 gh_stub="$tmp_dir/gh-stub"
 cat > "$gh_stub" <<'STUB'
 #!/usr/bin/env bash
 set -uo pipefail
+if [[ "${GH_STUB_MODE:-ok}" == "down" ]]; then
+  echo "dial tcp: could not resolve host github.com" >&2
+  exit 1
+fi
 backing="${GH_STUB_BACKING:?}"
 method=GET path="" jq_expr=""
 declare -A f=()
@@ -180,6 +185,74 @@ assert_eq "with no state_repo the switch reads enabled" "enabled" \
   "$(merge_autonomy_kill_state "" "$tmp_dir/no-fleet" | jq -r '.state')"
 assert_eq "and merge_autonomy_effective_level falls through to the configured level" "agent-approves" \
   "$(merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "" "$tmp_dir/no-fleet")"
+
+# --- TD-PPagop-26081507: an unreachable state repo with no cached copy of
+#     the kill switch must fail *closed*, unlike every other fleet flag —
+#     this one flag's risk profile inverts once something arms a landing
+#     decision on it (see lib/merge-autonomy.sh's own header). An unreachable
+#     state repo that *does* have a cached copy still falls back to it,
+#     exactly as fleet_disabled_state does. ---
+
+# An established node: kill the switch once while reachable so a cache
+# exists holding the "disabled" record (a *clear* flag is never cached —
+# there is nothing to cache on a 404 — so this is the only cache content
+# a real node can hold).
+fs_established="$tmp_dir/fleet-state-established"
+mkdir -p "$fs_established"
+merge_autonomy_kill_set "$slug" "established-node coverage" "test-operator pid 2" >/dev/null
+merge_autonomy_kill_state "$slug" "$fs_established" >/dev/null
+assert_eq "an established node with a cached (set) copy falls back to it when unreachable" "disabled" \
+  "$(GH_STUB_MODE=down merge_autonomy_kill_state "$slug" "$fs_established" | jq -r '.state')"
+
+# Clear the switch again via a state dir whose cache we no longer need, so
+# the remaining assertions start from a known-clear remote without touching
+# fs_established's cache (fleet_flag_delete drops the cache of the STATE_DIR
+# it is passed, not every node's).
+merge_autonomy_kill_clear "$slug" "$fs" >/dev/null
+
+# A fresh node: never fetched successfully, so fleet-cache/ holds nothing at
+# all. This is the case the item exists for.
+fs_fresh="$tmp_dir/fleet-state-fresh"
+mkdir -p "$fs_fresh"
+assert_eq "a fresh node with no cache and an unreachable state repo fails the kill switch closed" "disabled" \
+  "$(GH_STUB_MODE=down merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.state')"
+assert_eq "and merge_autonomy_effective_level answers human regardless of the configured level" "human" \
+  "$(GH_STUB_MODE=down merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_fresh")"
+assert_eq "the synthesised record names why, for a human reading --status/doctor.sh" \
+  "state repo unreachable and no cached copy" \
+  "$(GH_STUB_MODE=down merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.record.reason' | grep -o 'state repo unreachable and no cached copy')"
+
+# Once reachable again (or once a cache exists), the same fresh node reads
+# clear exactly as before — the fail-closed direction is confined to the
+# unreachable-with-no-cache case, nothing broader.
+assert_eq "a reachable repo confirms clear on that same node once network returns" "enabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.state')"
+
+# The STATUS<TAB>RAW split must not truncate RAW: the flag is a file in the
+# state repository, so an operator who set it by hand through GitHub's web
+# editor leaves a pretty-printed record behind, and splitting with
+# `IFS=$'\t' read` would hand _toggle_eval a lone "{" — still `disabled`, but
+# with the operator's own reason replaced by "unreadable disable record" on
+# every --status and doctor.sh that reads it.
+mkdir -p "$gh_backing/fleet"
+cat > "$gh_backing/fleet/merge-autonomy-kill.json" <<'PRETTY'
+{
+  "disabled_at": "2026-08-15T09:00:00Z",
+  "expires_at": null,
+  "by": "an operator editing on github.com",
+  "reason": "hand-set through the web editor",
+  "actor": "operator@laptop",
+  "kind": "manual"
+}
+PRETTY
+fs_pretty="$tmp_dir/fleet-state-pretty"
+mkdir -p "$fs_pretty"
+assert_eq "a hand-edited, pretty-printed flag still reads disabled" "disabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.state')"
+assert_eq "and keeps the operator's own reason rather than truncating to line one" \
+  "hand-set through the web editor" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.reason')"
+rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 
 echo
 if (( failures == 0 )); then
