@@ -343,11 +343,13 @@ Keys:
 | `timeout_reviewer` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_enabler` | *(unset)* | Minutes, and an override. As above. |
 | `timeout_refiner` | *(unset)* | Minutes, and an override. As above. |
+| `timeout_approver` | *(unset)* | Minutes, and an override. As above. |
 | `inactivity_coordinator` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. A repo entry's own `stage_inactivity` outranks this key in turn, for that repo alone — see [`repos`](#extended-notes-repos). |
 | `inactivity_implementor` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_reviewer` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_enabler` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `inactivity_refiner` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `inactivity_approver` | *(unset)* | Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
 | `lock_stale_after` | *(unset)* | Hours, and a floor rather than the value. The threshold is derived from the stage backstops plus slack, so it moves with them; set this only to insist on something longer. |
 | `stage_budget` | *(unset)* | Tuning for how the stage budgets derive themselves. Every key has a default in the code and none of them is a timeout; you almost certainly want none of it. |
 | `limit_cooldown_default` | `3` | Hours. Stand-down after a usage-limit error. |

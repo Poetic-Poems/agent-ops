@@ -79,6 +79,10 @@
               "enabler": {
                 "type": "integer",
                 "minimum": 0
+              },
+              "approver": {
+                "type": "integer",
+                "minimum": 0
               }
             }
           },
@@ -100,6 +104,10 @@
                 "minimum": 0
               },
               "enabler": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "approver": {
                 "type": "integer",
                 "minimum": 0
               }
@@ -775,6 +783,18 @@
         }
       }
     },
+    "timeout_approver": {
+      "$ref": "#/$defs/timeoutMinutes",
+      "description": "Override for the Approver's wall-clock backstop, in minutes. Omit it: the backstop is derived per (actor, repository, model) and starts at a shipped prior.",
+      "x-docs": {
+        "readme": "Minutes, and an override. As above.",
+        "spec": "As `timeout_coordinator`, for the Approver.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
     "inactivity_coordinator": {
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Co-Ordinator's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
@@ -826,6 +846,18 @@
     "inactivity_refiner": {
       "$ref": "#/$defs/inactivityMinutes",
       "description": "Override for the Refiner's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
+      "x-docs": {
+        "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
+        "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
+        }
+      }
+    },
+    "inactivity_approver": {
+      "$ref": "#/$defs/inactivityMinutes",
+      "description": "Override for the Approver's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
       "x-docs": {
         "readme": "Minutes of total silence before the stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog.",
         "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog for that actor and leaves the backstop as the only cap.",
