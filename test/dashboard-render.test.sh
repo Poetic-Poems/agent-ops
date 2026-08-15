@@ -708,6 +708,43 @@ assert_eq "the cost blocks flow in reading order — day, model, actor, then bot
 assert_contains "the notes are blocks of that container, not paragraphs after the section" \
   '      <p class="costnote">' "$out"
 
+# --- cost-window.json: the model/actor charts' own time-frame selector (#334) ----
+# `cost_rows` carries four un-summed rows: two "today", one three days back,
+# one forty days back (well past a 30-day window but still inside the
+# fixture's own default "Lifetime" reading). The control re-aggregates these
+# client-side per `dashboard.costWindow`, so each persisted choice below is a
+# distinct render rather than a click this tree-building harness cannot
+# simulate — the same technique the spend-mode assertions above already use.
+out="$(render cost-window.json)" || { printf 'FAIL - cost-window.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "the selector renders above the model/actor charts, labelled to name them" \
+  "Time frame (model & actor charts)" "$out"
+assert_contains "with no persisted choice it defaults to the lifetime option" \
+  '<option value="all" selected="">' "$out"
+# shellcheck disable=SC2016
+assert_contains "and the model chart sums every row, including the 40-day-old one" \
+  '$11.00 · 2' "$out"
+
+out_1d="$(render cost-window.json '{"dashboard.costWindow":"1"}')" || \
+  { printf 'FAIL - cost-window.json (1-day window) did not render:\n%s\n' "$out_1d"; exit 1; }
+assert_contains "a persisted '1' choice marks that option selected" \
+  '<option value="1" selected="">' "$out_1d"
+# shellcheck disable=SC2016
+assert_contains "and the model chart sums only today's rows" \
+  '$2.00 · 1' "$out_1d"
+# shellcheck disable=SC2016
+assert_not_contains "excluding the 40-day-old row's amount" \
+  '$9.00' "$out_1d"
+
+out_7d="$(render cost-window.json '{"dashboard.costWindow":"7"}')" || \
+  { printf 'FAIL - cost-window.json (7-day window) did not render:\n%s\n' "$out_7d"; exit 1; }
+# shellcheck disable=SC2016
+assert_contains "a 7-day window includes the 3-day-old row alongside today's" \
+  '$1.50 · 2' "$out_7d"
+# shellcheck disable=SC2016
+assert_not_contains "but still excludes the 40-day-old row" \
+  '$9.00' "$out_7d"
+
 # --- switch-scope-*.json: which switch a node card is actually claiming ----------
 # A fleet-wide --disable writes a local record on the node that issued it as
 # well as the fleet flag (implementation spec 2.3a). Before that record was

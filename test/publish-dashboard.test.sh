@@ -209,6 +209,18 @@ assert_eq "every recent_costs row carries a real ISO instant" "3" \
 assert_eq "the cycle far outside COST_SCAN_DAYS is excluded from recent_costs too" \
   "0" "$(jq -r '[.counts.recent_costs[].ts | select(startswith("2020"))] | length' <<<"$data")"
 
+# cost_rows backs the model/actor charts' own time-frame selector (issue
+# #334): the same window as by_day/by_model/by_actor, but un-summed, so the
+# page can re-aggregate over whatever span the reader picks.
+assert_eq "cost_rows carries one row per in-window cycle" \
+  "3" "$(jq -r '.counts.cost_rows | length' <<<"$data")"
+assert_eq "cost_rows sums to the same total as spend_total_usd" \
+  "1" "$(jq -r '[.counts.cost_rows[].usd] | add' <<<"$data")"
+assert_eq "each cost_rows entry carries day, model and actor" "3" \
+  "$(jq -r '[.counts.cost_rows[] | select(.day != null and .model != null and .actor != null)] | length' <<<"$data")"
+assert_eq "the cycle far outside COST_SCAN_DAYS is excluded from cost_rows too" \
+  "0" "$(jq -r '[.counts.cost_rows[] | select(.model=="model-old")] | length' <<<"$data")"
+
 # The verdict-quality aggregate (issue #319) ships even when the log holds no
 # Co-Ordinator record at all, zeroed rather than absent: the page distinguishes
 # "no rejected verdicts in the window" from "this Publisher never recorded any

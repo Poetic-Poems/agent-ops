@@ -444,6 +444,10 @@ The `DASHBOARD_DATA` shape (the contract the page renders):
              by_day[], by_model[], by_actor[],   // both pipelines' actors
              recent_costs[],       // {ts, cost} per row, last 3 days, for the
                                     //   spend-today card's GMT/local/24h toggle
+             cost_rows[],           // {day, model, actor, usd} per row, the
+                                     //   whole COST_SCAN_DAYS window, unsummed
+                                     //   — backs the model/actor charts' own
+                                     //   time-frame selector (issue #334)
              coordinator_verdicts: {   // how often the Script rejects a
                window_from, window_to, //   Co-Ordinator verdict, and what
                runs, retries,          //   the fleet spent recovering
@@ -783,8 +787,12 @@ often its answer about it survived the Script checking that answer);
 the cost charts — by-day, by-model, by-actor and the two cost notes flowed
 through a CSS multi-column layout in that reading order, letting the browser
 balance the split by height rather than pinning by-day to a column of its
-own, since it runs to sixty rows against five each for the other two; recent
-log; `cron.log` tail.
+own, since it runs to sixty rows against five each for the other two, with a
+**time-frame selector** (issue #334) above the grid — one `<select>`, labelled
+as covering the model and actor charts specifically, offering 1/7/30/90 days
+and the unlabelled lifetime default — that re-aggregates `counts.cost_rows`
+client-side on change rather than re-fetching, so both charts redraw from the
+same choice with no round trip; recent log; `cron.log` tail.
 
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
