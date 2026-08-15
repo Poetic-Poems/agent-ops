@@ -135,12 +135,19 @@ code_scanning_json="$(fetch "repos/$slug/code-scanning/alerts?state=open&per_pag
 
 # Combine and order: security first, then by descending severity, so the
 # Co-Ordinator meets the highest-stakes finding at the top of the list.
-jq -n --argjson dep "$dependabot_json" --argjson cs "$code_scanning_json" '
+#
+# $dependabot_json and $code_scanning_json are each a repo's whole open
+# finding list — unbounded past this call (requirement 4g, TD-PPagop-26081503),
+# and a repo with a large backlog is exactly the repo whose findings band
+# matters most. Both arrive on stdin, one document per line, bound
+# positionally with `input as $name` in the printed order — never in argv.
+jq -n '
   def rank($s): {critical:5, high:4, error:3, medium:3, warning:2, low:2, note:1}[$s] // 0;
+  input as $dep | input as $cs |
   ($dep + $cs)
   | sort_by([ (if .security then 1 else 0 end), rank(.severity) ])
   | reverse
-'
+' <<<"$dependabot_json"$'\n'"$code_scanning_json"
 
 # A real failure on either call exits 1 so the Publisher (and any other
 # caller) can tell it apart from a repo with neither alert type enabled —
