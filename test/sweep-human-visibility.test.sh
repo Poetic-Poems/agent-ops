@@ -60,10 +60,17 @@ assert_contains() {
 
 # --- The config the sweep reads --------------------------------------------------
 config="$tmp_dir/config.json"
-write_config() {  # <enabler_assignee> <human_nudge_idle_hours>
-  jq -n --arg a "$1" --argjson h "$2" \
-    '{pr_label: "autonomous-agent", enabler_assignee: $a, human_nudge_idle_hours: $h}' \
-    > "$config"
+write_config() {  # <enabler_assignee> <human_nudge_idle_hours> [<merge_queue_dequeue_notice_max_age_hours>]
+  if [[ -n "${3:-}" ]]; then
+    jq -n --arg a "$1" --argjson h "$2" --argjson d "$3" \
+      '{pr_label: "autonomous-agent", enabler_assignee: $a, human_nudge_idle_hours: $h,
+        merge_queue_dequeue_notice_max_age_hours: $d}' \
+      > "$config"
+  else
+    jq -n --arg a "$1" --argjson h "$2" \
+      '{pr_label: "autonomous-agent", enabler_assignee: $a, human_nudge_idle_hours: $h}' \
+      > "$config"
+  fi
 }
 write_config warwickallen 24
 
@@ -718,6 +725,22 @@ set_merge_queue false "$(recent_dequeue_at 48)" "failed_checks"
 out="$(run_sweep)"
 assert_eq "a dequeue past the default max age gets no notice, nor a nudge" "" "$out"
 assert_eq "  ... no comment posted" "0" "$(comment_count)"
+
+# `merge_queue_dequeue_notice_max_age_hours: 0` disables the notice
+# outright (agent-ops#429) — an explicit guard, not merely a zero-width
+# threshold: a same-second dequeue (age 0) would otherwise still satisfy
+# `age <= threshold` with threshold 0 and post anyway.
+write_config warwickallen 0 0
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "" no
+set_merge_queue false "$(recent_dequeue_at 0)" "failed_checks"
+out="$(run_sweep)"
+assert_eq "merge_queue_dequeue_notice_max_age_hours 0 disables the notice even for a same-second dequeue" \
+  "" "$out"
+assert_eq "  ... no comment posted" "0" "$(comment_count)"
+write_config warwickallen 24
 
 # An unreadable merge-queue probe must never be read as "definitely not
 # queued" — but it also must not break the pre-existing idle-nudge path,

@@ -626,7 +626,7 @@ and the schema must carry every one of them.
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
-| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
+| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
 | `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
@@ -735,6 +735,10 @@ Per-source refinement policy (requirement 39a): `required`, `preferred` or `exem
 How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.
 
 Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
+
+### Extended notes: `merge_queue_dequeue_notice_max_age_hours`
+
+Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express that in config rather than by tuning this value near zero.
 
 ### Extended notes: `merge_autonomy`
 
@@ -7723,15 +7727,21 @@ runs unattended.
       including one this never learned to recognise, stays actionable, the
       same "unknown must not suppress" direction `merge_queue_probe`'s own
       contract takes. And the event's own age is bounded by
-      `merge_queue_dequeue_notice_max_age_hours` (default 24 h): a removal
-      older than that gets no notice even the first time a sweep reads it,
-      so a repository's queue adoption (or this requirement's own rollout)
-      does not retroactively read every already-old removal on every open,
-      labelled pull request as fresh news. The notice is idempotent per
-      removal event — `<!-- agent-ops:merge-queue-dequeued: <dequeued_at>
-      -->` — rather than per pull request, so a second dequeue after an
-      earlier one was already acknowledged gets its own notice rather than
-      being silently suppressed by the first. It does not wait on
+      `merge_queue_dequeue_notice_max_age_hours` (default 24 h; `minimum: 0`,
+      agent-ops#429): a removal older than that gets no notice even the first
+      time a sweep reads it, so a repository's queue adoption (or this
+      requirement's own rollout) does not retroactively read every
+      already-old removal on every open, labelled pull request as fresh
+      news. `0` disables the notice outright — an explicit `awk`-computed
+      guard around `mq_recent`, not merely a zero-width threshold a
+      same-second dequeue could still slip through — for a repository that
+      runs without a merge queue and should say so in config rather than by
+      tuning this value near zero; the trade-off is losing the only human
+      signal this pipeline raises for a merge-group failure. The notice is
+      idempotent per removal event — `<!-- agent-ops:merge-queue-dequeued:
+      <dequeued_at> -->` — rather than per pull request, so a second dequeue
+      after an earlier one was already acknowledged gets its own notice
+      rather than being silently suppressed by the first. It does not wait on
       `human_nudge_idle_hours`: this is new information a human has not
       seen, not the "forgot to click merge" case that threshold exists for.
       A failed POST is a `warning`, exactly as the ordinary idle nudge's
@@ -11341,10 +11351,13 @@ pull request, run the ones the change touches and any it could regress.
     `nudged`) behaving exactly as it did before this requirement existed; a
     failed dequeue-notice POST is a `warning`, never silence; a `"manual"`
     dequeue gets no notice even though it is otherwise fresh and
-    unacknowledged (agent-ops#394); and a dequeue older than
+    unacknowledged (agent-ops#394); a dequeue older than
     `merge_queue_dequeue_notice_max_age_hours` gets no notice even though it
     carries an actionable reason and no marker is on the pull request yet
-    (agent-ops#394).
+    (agent-ops#394); and `merge_queue_dequeue_notice_max_age_hours: 0`
+    disables the notice outright, even for a same-second dequeue whose age
+    (`0`) does not exceed the zero-width threshold arithmetic alone would
+    apply (agent-ops#429).
 38g. **Requirement 38c's ruleset dependency is reported, not silent
     (agent-ops#391).** `test/doctor.test.sh` passes, over the same
     single-target-repo fixture and `gh`/`rulesets` stub requirement 25a's own

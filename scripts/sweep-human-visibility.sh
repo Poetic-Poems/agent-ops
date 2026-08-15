@@ -61,7 +61,9 @@
 #      event rather than per pull request, so a second dequeue gets its own
 #      notice. Also bounded by `merge_queue_dequeue_notice_max_age_hours`, so
 #      a removal event that predates this feature is not read as new
-#      information merely because this is the first sweep to see it.
+#      information merely because this is the first sweep to see it. `0`
+#      disables the notice outright, guarded explicitly rather than left to
+#      fall out of the age arithmetic (agent-ops#429).
 #
 # ## Why the sweep may call `confirm_review_requested`, and only narrowly
 #
@@ -344,12 +346,19 @@ while IFS= read -r pr_url; do
   # `merge_queue_dequeue_notice_max_age_hours`: without it, the very first
   # sweep run after this feature (or this gate) lands would read every
   # already-old removal event on every open, labelled pull request as fresh
-  # news.
+  # news. `dequeue_max_age_hours: 0` disables the notice altogether
+  # (agent-ops#429) — an explicit guard rather than relying on the threshold
+  # arithmetic alone, which a same-second dequeue (age 0 <= threshold 0)
+  # would otherwise still let through. This guard skips only the dequeue
+  # notice's own `mq_recent` computation; requirement 38a/38c's review
+  # request and idle-nudge checks below are untouched by it.
   mq_recent=0
-  mq_dequeued_epoch="$(date -d "$mq_dequeued_at" +%s 2>/dev/null || echo 0)"
-  if (( mq_dequeued_epoch > 0 )); then
-    mq_age_threshold_seconds="$(awk -v h="$dequeue_max_age_hours" 'BEGIN{printf "%d", h*3600}')"
-    (( $(date +%s) - mq_dequeued_epoch <= mq_age_threshold_seconds )) && mq_recent=1
+  if awk -v h="$dequeue_max_age_hours" 'BEGIN{exit !(h>0)}'; then
+    mq_dequeued_epoch="$(date -d "$mq_dequeued_at" +%s 2>/dev/null || echo 0)"
+    if (( mq_dequeued_epoch > 0 )); then
+      mq_age_threshold_seconds="$(awk -v h="$dequeue_max_age_hours" 'BEGIN{printf "%d", h*3600}')"
+      (( $(date +%s) - mq_dequeued_epoch <= mq_age_threshold_seconds )) && mq_recent=1
+    fi
   fi
   if [[ "$mq_queued" == "false" && -n "$mq_dequeued_at" ]] \
       && merge_queue_dequeue_actionable "$mq_dequeue_reason" \
