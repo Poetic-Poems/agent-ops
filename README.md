@@ -2067,6 +2067,19 @@ silent permanent stand-down. `--status` on the node reports it, and its
 dashboard card carries the same badge a fleet disable shows, beside its role
 badge — so the stand-down is visible without a shell on the box.
 
+A plain `--disable` writes a local record too, on the node you typed it on:
+that write is what stands *that* node down while the fleet flag is still being
+published, and what keeps it down if the state repository turns out to be
+unreachable. It is tagged `scope: "fleet"` to mark it a mirror of the fleet
+switch rather than a stand-down of that node's own — so neither `--status` nor
+the dashboard reports the node you happened to type the command on as
+separately disabled, and `--enable --this-node` refuses to clear it (plain
+`--enable` is what undoes a fleet-wide disable, and clears both levels). One
+case is worth knowing about: run `--enable` on a *different* node and it
+clears the flag but cannot reach the first node's file, leaving that one node
+standing down alone. `--status` there and its dashboard card both say so in
+those words, and `--enable` on that node clears it.
+
 That covers most "I need this one node to stop for a while" cases. For
 anything it doesn't:
 

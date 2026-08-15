@@ -1189,6 +1189,53 @@ runs unattended.
    bypass list (requirement 2.4) is unchanged, since a switch command must
    stay usable on every node regardless of `--this-node`.
 
+   **`scope` says which of those two a record is.** Because an unmodified
+   `--disable` writes both levels, the node that issues a fleet-wide
+   stand-down ends up holding a local record that is byte-identical to a
+   `--this-node` one — so every reader announced a node-scoped disable nobody
+   had asked for, and that node alone wore the dashboard's amber **disabled**
+   badge while its peers, equally down, wore none. The record therefore
+   carries `scope`: `"node"` for a stand-down of this node's own (a
+   `--this-node` disable, or an unmodified one on a single-node operation with
+   no `state_repo` configured), `"fleet"` for the local mirror of a fleet-wide
+   one. A record with no `scope` reads as `"node"` — what every record written
+   before the field existed effectively was, and the reading that keeps a node
+   down rather than one that talks itself out of a stand-down.
+
+   **This is not the same `scope` the `disabled` event carries** (issue #426,
+   requirement 33), and the two part company in exactly one case, so they are
+   computed separately rather than shared. The event records the operator's
+   *instruction*, which is why a `--disable` on an installation with no
+   `state_repo` still logs `scope: "fleet"` with `fleet_flag: "unconfigured"`
+   saying why nothing was published. The record answers a different question —
+   *is there a fleet flag for this to mirror?* — and with no state repo there
+   is none, so it is `"node"`. Tagging it `"fleet"` there would have `--status`
+   claim a mirror of a switch that cannot exist, and `--enable --this-node`
+   refuse to clear the only record holding that node down. Everywhere else,
+   including under `--this-node`, the two agree.
+
+   The local write still happens first and is tagged with the *intent*, since
+   it must be on disk before anything talks to GitHub; when the fleet publish
+   then fails, the record is retagged `"node"` in place — leaving
+   `disabled_at` and every other field untouched, because that node really is
+   standing down alone and a record still claiming `"fleet"` would describe a
+   switch that was never set. `--status` and the dashboard name a mirror as a
+   mirror rather than as a second decision (requirement 2.3's `--status`
+   bullet, `docs/DASHBOARD-SPEC.md`), and **`--enable --this-node` refuses a
+   `"fleet"` record outright** (exit 64, naming plain `--enable` as the
+   command that undoes a fleet-wide disable). That refusal is not tidiness:
+   the mirror is this node's fail-*closed* hold on itself for exactly the
+   window in which the fleet flag cannot be read — that flag fails *open*
+   (2.3a) — so clearing it while the fleet switch stands is how a node resumes
+   the work the fleet was stood down to prevent.
+
+   The mirror also closes a failure that had no signal at all. `--enable` run
+   on a *peer* clears `fleet/disabled.json` but cannot reach this node's file,
+   so the node stays down alone, indefinitely under `--for forever`, on a
+   decision that was lifted elsewhere. Tagged, that state is nameable: both
+   `--status` and the node's dashboard card report a record left over from a
+   cleared fleet-wide disable and name `--enable` on that node as the fix.
+
    The record carries `actor` and `kind` alongside `by` and `reason` (#244).
    `actor` is `toggle_actor` (`lib/toggle.sh`): `NODE_NAME` when set, else
    the invoking user at this host, falling through `id -un` to the numeric
@@ -1234,13 +1281,20 @@ runs unattended.
    - **`--status` distinguishes a node-scoped disable from a fleet-wide one, and
      says what clearing each leaves.** With neither set it reports the switch
      enabled; with only the fleet flag set it names that record and says a plain
-     `--enable` clears it fleet-wide; with only the local record set (a
-     `--this-node` disable) it says `--enable --this-node` clears it; with both
-     set it reports both records and spells out the asymmetry — `--enable`
-     clears both, `--enable --this-node` clears only the local record and
-     leaves the node down under the still-set fleet switch. An operator who
-     finds a node down for more than one reason is entitled to know which
-     command undoes which.
+     `--enable` clears it fleet-wide; with only a `scope: "node"` local record
+     set (a `--this-node` disable) it says `--enable --this-node` clears it;
+     with both set it reports both records and spells out the asymmetry —
+     `--enable` clears both, `--enable --this-node` clears only the local
+     record and leaves the node down under the still-set fleet switch. An
+     operator who finds a node down for more than one reason is entitled to
+     know which command undoes which.
+
+     A `scope: "fleet"` local record is not a second reason, and is never
+     reported as one. With the fleet flag still set, `--status` says the local
+     record mirrors it and that `--enable` clears both levels; with the fleet
+     flag clear it reports the orphan plainly — a mirror of a fleet switch
+     since cleared, probably by `--enable` on another node, leaving this node
+     standing down alone until `--enable` is run on it.
 
    Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
    being edited, do not run them" is no less true when a human runs them.
@@ -1256,16 +1310,35 @@ runs unattended.
    check it at cycle start, after the local switch and still before the
    lock; it costs one contents-API read.
 
+   The local half of that pair is a *mirror*, tagged `scope: "fleet"`
+   (requirement 2.3), and it is load-bearing rather than incidental: the fleet
+   flag fails open when the state repo is unreachable, so the mirror is what
+   holds the issuing node closed in that window. It is retagged `"node"` if
+   the fleet write fails, and no reader may present it as a stand-down of that
+   node's own while the fleet flag stands.
+
+   A successful flag *write* also primes the local cache, exactly as a
+   successful fetch does — otherwise the node that set a flag is the only one
+   in the fleet holding no local copy of it, and an outage in the next minute
+   drops it through this level's fail-open while every peer that had fetched
+   once reads the flag from cache and stops. `fleet_flag_delete` already drops
+   the cache on success; this is the other half of that symmetry, and it is
+   what lets `--status` tell an unreachable state repo from a switch someone
+   else cleared.
+
    **`--this-node` (requirement 2.3) opts a single node out of this level
    entirely.** `--disable --this-node` writes only the local record and skips
    the fleet publish outright — not a degraded fallback of the unmodified
    path, but the deliberate point of the flag: the rest of the fleet must keep
    running. `--enable --this-node` clears only the local record and never
    calls the fleet delete, so a fleet-wide disable (or a peer's own
-   node-scoped one) survives it untouched. Every other property of this
-   requirement — record shape, failure directions, expiry — is unchanged;
-   `--this-node` decides only which levels a write reaches, never how a
-   record already written is read or evaluated.
+   node-scoped one) survives it untouched — and it refuses outright when the
+   local record is a `scope: "fleet"` mirror, since clearing that one would
+   drop the issuing node's fail-closed hold on itself while the fleet switch
+   is still set. Every other property of this requirement — record shape,
+   failure directions, expiry — is unchanged; `--this-node` decides only which
+   levels a write reaches, never how a record already written is read or
+   evaluated.
 
    Failure directions, deliberately: a 404 is *clear*, definitively; an
    unreachable state repo falls back to the copy cached at the last
@@ -9528,6 +9601,20 @@ pull request, run the ones the change touches and any it could regress.
    that this node adds no node-scoped disable of its own; with both set it
    reports both and spells out that `--enable` clears both while `--enable
    --this-node` leaves the node down under the fleet switch.
+
+   The same file covers the record's `scope` (requirement 2.3): an unmodified
+   `--disable` tags its local record `fleet` while still publishing the flag,
+   and `--status` names that record as the fleet switch's mirror rather than
+   as a second, node-scoped disable; `--enable --this-node` refuses a mirror
+   with exit 64, naming plain `--enable`, and leaves the record in place; a
+   mirror that survives a peer's `--enable` is reported as a leftover of a
+   cleared fleet switch and cleared by `--enable` on its own node; a
+   `--disable` whose fleet publish fails is retagged `node` with its
+   `disabled_at` unmoved and no flag published, and `--enable --this-node`
+   then clears it; `--disable --this-node` tags `node`, and that scope
+   reaches peers through `toggle_switch_summary`; and a record written
+   without the field reads as `node` through both `toggle_scope` and the
+   summary.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
