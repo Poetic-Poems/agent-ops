@@ -667,8 +667,9 @@ and the schema must carry every one of them.
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch commands.
 
-Every `*_model` key above (and `review.model` in `docs/REVIEW-PIPELINE-SPEC.md`)
-accepts a bare id (`claude-sonnet-5`) or a provider-qualified one
+Every `*_model` key above (and `project_review.defaults.model`, or a repo's own
+override, in `docs/REVIEW-PIPELINE-SPEC.md`) accepts a bare id
+(`claude-sonnet-5`) or a provider-qualified one
 (`anthropic/claude-sonnet-5`), resolved per requirement 1a. Anthropic is the
 only executable provider (D12, `docs/ROADMAP.md`), so the two forms are the
 same value; no other qualifier is accepted.
@@ -801,8 +802,10 @@ runs unattended.
    the offending key, not a value ever passed to `claude --model`. An empty
    value (the "disable this stage" convention `reviewer_model_complex` and
    `enabler_model` both use) passes through unresolved. `review-cycle.sh`
-   applies the same resolution to `review.model`
-   (`docs/REVIEW-PIPELINE-SPEC.md`). Both scripts share one implementation,
+   applies the same resolution to every repository's own resolved
+   `project_review.defaults.model` (or its own override in
+   `project_review.repos`, requirement 342) (`docs/REVIEW-PIPELINE-SPEC.md`).
+   Both scripts share one implementation,
    `lib/model-id.sh`'s `resolve_model_id`, so the two pipelines can never
    drift on what counts as a supported provider.
 1b. **The configuration has a machine-readable schema, and it is the startup
@@ -861,8 +864,8 @@ runs unattended.
    readers that must depend on nothing but bash, `jq` and `config.json` by
    design, so that what they read cannot drift from what is actually
    deployed — `deploy/docker/watchtower-pre-update.sh`, reading three keys
-   (`state_dir`, `lock_stale_after`, `review.lock_stale_after`) that carry no
-   schema `default` to take, and `scripts/check-node-image.sh`'s in-container
+   (`state_dir`, `lock_stale_after`, `project_review.lock_stale_after`) that
+   carry no schema `default` to take, and `scripts/check-node-image.sh`'s in-container
    grace read, which runs inside whatever image the node is currently running
    and so must stay correct against an image that predates `config_defaults`
    entirely — its `image_behind_grace_hours` key does carry a schema
@@ -871,8 +874,9 @@ runs unattended.
    (requirement 4f), which live in `lib/stage-budget.sh`'s
    `STAGE_BUDGET_PRIORS`. The last is the one case where a `default` here would
    be actively wrong rather than merely redundant: the `timeout_*`,
-   `inactivity_*` and `review.timeout_review` / `review.inactivity_review` keys
-   are *overrides*, and a reader distinguishes "configured" from "absent" only
+   `inactivity_*` and `project_review.defaults.timeout_review` /
+   `project_review.defaults.inactivity_review` (and their per-repo overrides)
+   keys are *overrides*, and a reader distinguishes "configured" from "absent" only
    by the key's absence. A `default` on `$defs/inactivityMinutes` or
    `$defs/timeoutMinutes` would be merged in by `config_defaults`, read as an
    explicit override, and win permanently — pinning the cap at the injected
@@ -3647,7 +3651,9 @@ runs unattended.
    `pr-<n>-review-…` draft (requirements 34d, 34k; TD-PPagop-26081308) — a
    repository without either label does not offer the human either control at
    all. `review-cycle.sh` does the same for
-   `review.pr_label` in each repository it is about to review, and
+   each repository's own resolved `project_review` pr_label (its override, or
+   `project_review.defaults.pr_label`, requirement 342) in each repository it
+   is about to review, and
    `create_escalation_issue` for `enabler_escalation_label` in the repository
    an escalation is filed in, which is often one no cycle otherwise touches.
    A label whose configured name is empty is switched off and is not created.
@@ -8798,8 +8804,9 @@ What exists, and the requirements each part answers to:
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
     those names — then the combinations that
     work but would silently surprise an operator later (a `warn`, not a
-    `fail`: the stage timeouts outrunning `lock_stale_after`, `review.pr_label`
-    colliding with `pr_label`, and the rest), then the model ids through
+    `fail`: the stage timeouts outrunning `lock_stale_after`, a repository's own
+    resolved `project_review` pr_label colliding with `pr_label`, and the
+    rest), then the model ids through
     `resolve_model_id`, the shipped and overridden prompts, the toolchain,
     the state and workspace directories, the rendered crontab and the
     `nice` reordering report (both below, and both offline-safe), and —
@@ -8961,7 +8968,11 @@ What exists, and the requirements each part answers to:
     `name`/`colour`/`description`, with the names taken from the config as
     `config_defaults` merges it — so a label name absent from `config.json`
     is the schema's own default rather than a literal repeated here — and an
-    empty name yielding nothing) and `labels_ensure` (create what is absent in
+    empty name yielding nothing) — except role `review`'s own pr_label, which
+    (requirement 342) is resolved per repository rather than read once from
+    the config, so `labels_catalogue` takes it as an explicit optional
+    argument the caller (already holding that repository's own resolved
+    value) passes through — and `labels_ensure` (create what is absent in
     one repository, reporting `created` or `failed` per label and nothing at
     all for those already there, so the steady state is silent). `LABELS_GH`
     overrides the `gh` binary for tests. Sourced by `agent-cycle.sh`,
@@ -8972,10 +8983,13 @@ What exists, and the requirements each part answers to:
     table property: renders the Markdown table body rows of the three prose
     configuration tables (this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s,
     and the two in `README.md`) from `config.schema.json`'s leaf keys, in the
-    schema's own property order — `schedule` and `review` flatten one level
-    into dotted keys (`schedule.review_hour`, `review.model`) in the parent's
-    position; every other object- or array-valued key (`repos`,
-    `prompt_overrides`) renders as a single row. Each key's value cell is,
+    schema's own property order — `schedule` and `project_review` flatten one
+    level into dotted keys (`schedule.review_hour`,
+    `project_review.lock_stale_after`) in the parent's position, and
+    `project_review.defaults` flattens one level further still
+    (`project_review.defaults.model`); every other object- or array-valued key
+    (`repos`, `project_review.repos`, `prompt_overrides`) renders as a single
+    row. Each key's value cell is,
     in order, its `x-docs.value` verbatim — one string for both documents,
     or an object keyed `readme`/`spec` for the keys whose two tables say
     different things there, the spec's `Value` column carrying the unit

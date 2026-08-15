@@ -145,12 +145,13 @@ git init --quiet --bare --initial-branch=main "$state_remote"
 
 review_date="$(date -u +%Y-%m-%d)"
 
-# The shipped config with any dated stand-down removed. `review.not_before`
-# (R3.3) is an operational value that comes and goes, and every assertion in
-# this file is about what happens *after* the stand-down checks — so a date set
-# for real reasons must not quietly decide whether this file tests anything.
+# The shipped config with any dated stand-down removed.
+# `project_review.defaults.not_before` (R3.3) is an operational value that
+# comes and goes, and every assertion in this file is about what happens
+# *after* the stand-down checks — so a date set for real reasons must not
+# quietly decide whether this file tests anything.
 claim_config="$tmp_dir/config.json"
-jq 'del(.review.not_before)' "$SCRIPT_DIR/config.json" > "$claim_config"
+jq 'del(.project_review.defaults.not_before)' "$SCRIPT_DIR/config.json" > "$claim_config"
 
 run_review() {  # run_review <home> <claim-gh> [env…] — real review-cycle.sh, offline
   local home="$1" claim_gh="$2"; shift 2

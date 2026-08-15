@@ -223,10 +223,14 @@ assert_rejected "a non-string prompt-override replace is rejected" \
 #     that. ---
 assert_rejected "a required key cannot be dropped" \
   'del(.branch_prefix)' 'config: missing required key "branch_prefix"'
-assert_rejected "a required review key cannot be dropped while review is configured" \
-  'del(.review.model)' 'config.review: missing required key "model"'
-assert_valid "the whole review block may be dropped (the review pipeline is optional)" \
-  'del(.review)'
+assert_rejected "a required project_review.defaults key cannot be dropped while project_review is configured" \
+  'del(.project_review.defaults.model)' 'config.project_review.defaults: missing required key "model"'
+assert_rejected "project_review.defaults cannot be dropped while project_review is configured" \
+  'del(.project_review.defaults)' 'config.project_review: missing required key "defaults"'
+assert_rejected "project_review.repos cannot be dropped while project_review is configured" \
+  'del(.project_review.repos)' 'config.project_review: missing required key "repos"'
+assert_valid "the whole project_review block may be dropped (the review pipeline is optional)" \
+  'del(.project_review)'
 assert_valid "an optional key may be absent" \
   'del(.state_repo, .schedule, .crash_loop_after)'
 
@@ -265,9 +269,9 @@ assert_defaults "an array item's own default is filled per item" \
   '.repos[0].nice = 7 | del(.repos[1].nice)' \
   '.repos[0].nice == 7 and .repos[1].nice == 0'
 assert_defaults "a required key with no schema default anywhere passes through untouched" \
-  '.review.model = "custom-model"' '.review.model == "custom-model"'
+  '.project_review.defaults.model = "custom-model"' '.project_review.defaults.model == "custom-model"'
 assert_defaults "a nested object's non-defaultable properties are not fabricated when absent" \
-  'del(.review)' '(.review | has("repos")) | not'
+  'del(.project_review)' '(.project_review | has("repos")) | not'
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
@@ -305,8 +309,10 @@ assert_rejected "an empty branch_prefix is rejected" \
 # as its own, in every repository it is configured for at once.
 assert_rejected "an empty pr_label is rejected" \
   '.pr_label = ""' 'config.pr_label: must not be empty'
-assert_rejected "an empty review.pr_label is rejected" \
-  '.review.pr_label = ""' 'config.review.pr_label: must not be empty'
+assert_rejected "an empty project_review.defaults.pr_label is rejected" \
+  '.project_review.defaults.pr_label = ""' 'config.project_review.defaults.pr_label: must not be empty'
+assert_rejected "an empty project_review repo pr_label override is rejected" \
+  '.project_review.repos[0].pr_label = ""' 'config.project_review.repos[0].pr_label: must not be empty'
 # The labels that *do* switch a projection off when empty must keep doing so:
 # tightening the two above must not tighten these by association.
 assert_valid "the optional labels may still be empty (each switches its projection off)" \
@@ -323,8 +329,18 @@ assert_rejected "a duplicated work source is rejected" \
   '.repos[0].sources += [.repos[0].sources[0]]' 'config.repos[0].sources: contains duplicate entries'
 assert_rejected "a repo slug that is not owner/name is rejected" \
   '.repos[0].slug = "poetic"' 'config.repos[0].slug: "poetic" does not match'
-assert_rejected "a review repo slug that is not owner/name is rejected" \
-  '.review.repos = ["poetic"]' 'config.review.repos[0]: "poetic" does not match'
+assert_rejected "a project_review repo slug that is not owner/name is rejected" \
+  '.project_review.repos = [{slug: "poetic"}]' 'config.project_review.repos[0].slug: "poetic" does not match'
+assert_rejected "a project_review repo entry with no slug is rejected" \
+  '.project_review.repos = [{model: "claude-sonnet-5"}]' \
+  'config.project_review.repos[0]: missing required key "slug"'
+assert_rejected "a misspelt key inside a project_review repo entry is rejected" \
+  '.project_review.repos[0].sluggg = "a/b"' \
+  'config.project_review.repos[0]: unknown key "sluggg"'
+assert_valid "a project_review repo entry may override any of defaults' own keys" \
+  '.project_review.repos[0] += {model: "claude-opus-5", pr_label: "custom-review", branch_prefix: "custom/", timeout_review: 30, inactivity_review: 5, min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z"}'
+assert_valid "a project_review repo entry carrying only slug inherits every default" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]'
 assert_rejected "a state_repo that is not owner/name is rejected" \
   '.state_repo = "agent-ops-state"' 'config.state_repo: "agent-ops-state" does not match'
 assert_valid "an empty state_repo is accepted (single-node operation)" \
@@ -338,6 +354,44 @@ assert_valid "every merge_autonomy level, top-level and per-repo, is accepted" \
   '.merge_autonomy = "agent-merges-all" | .repos[0].merge_autonomy = "agent-approves"'
 assert_valid "a repo with no merge_autonomy override is accepted (inherits the top-level key)" \
   '.merge_autonomy = "agent-approves"'
+
+# --- config_project_review_repos: the resolution rule (issue #342/requirement
+#     342) — a repo's own override wins when present and non-null, defaults[key]
+#     otherwise, and a repo carrying only `slug` inherits every default. ---
+assert_project_review() {
+  local desc="$1" mutation="$2" jq_check="$3" out
+  jq "$mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (mutation did not apply)"; return; }
+  out="$(config_defaults "$tmp/c.json" "$SCHEMA")" || { bad "$desc (config_defaults failed)"; return; }
+  out="$(config_project_review_repos "$out")" || { bad "$desc (config_project_review_repos failed)"; return; }
+  if jq -e "$jq_check" <<<"$out" >/dev/null 2>&1; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     check: %s\n     against: %s\n' "$desc" "$jq_check" "$out"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+assert_project_review "a repo entry with no overrides resolves to every default" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.[0].model == "claude-sonnet-5" and .[0].pr_label == "project-review"
+   and .[0].branch_prefix == "review/" and .[0].min_days_between_reviews == 13
+   and .[0].not_before == "2026-07-30T16:00:00Z"'
+assert_project_review "a repo's own override wins over the default, for that key alone" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \
+  '.[0].model == "claude-opus-5" and .[0].pr_label == "project-review"'
+assert_project_review "a repo may override every key defaults carries" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5",
+     pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1,
+     not_before: "2026-01-01T00:00:00Z", timeout_review: 30, inactivity_review: 5}]' \
+  '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", pr_label: "custom-review",
+     branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
+     timeout_review: 30, inactivity_review: 5}'
+assert_project_review "two repos resolve independently — one overriding, one inheriting" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"},
+     {slug: "Poetic-Poems/poetic-fiddle"}]' \
+  '.[0].model == "claude-opus-5" and .[1].model == "claude-sonnet-5"'
+assert_project_review "an absent project_review resolves to no repos, never an error" \
+  'del(.project_review)' '. == []'
 
 # --- Model identifiers. D12's whole point is that the qualifier is checked
 #     before it reaches `claude --model`, and the schema is the earlier of the
@@ -365,7 +419,9 @@ assert_doctor "doctor fails the refined label set to blocked — the projection 
 assert_doctor "doctor fails a PR label named obsolete, which every draft would then carry as its own close corroboration" \
   '.pr_label = "obsolete"' 1 'pr_label is "obsolete"'
 assert_doctor "doctor fails a label named Obsolete case-insensitively, as the void guard reads it" \
-  '.review.pr_label = "Obsolete"' 1 'review.pr_label is "Obsolete"'
+  '.project_review.defaults.pr_label = "Obsolete"' 1 'project_review pr_label is "Obsolete"'
+assert_doctor "doctor fails an obsolete label on a repo's own project_review override too" \
+  '.project_review.repos[0].pr_label = "Obsolete"' 1 'project_review pr_label is "Obsolete"'
 assert_doctor "doctor fails an excluded_minutes that leaves the renderer no minute" \
   '.schedule.excluded_minutes = [range(60)]' 1 'excludes every minute of the hour'
 # The stale-lock assertion this used to make is gone, and deliberately: the
@@ -390,8 +446,9 @@ assert_doctor "doctor warns on a per-repo stage_inactivity override, naming the 
 assert_doctor "a per-repo override wider than every prior widens the reported lock, matching what agent-cycle.sh derives" \
   '.repos[0].stage_timeouts = {"implementor": 300}' 0 \
   "the cycle lock is derived at 500 min"
-assert_doctor "doctor warns when the review label collides with the implementation one" \
-  '.review.pr_label = .pr_label' 0 'review.pr_label equals pr_label'
+assert_doctor "doctor warns when a repo's project_review label collides with the implementation one" \
+  '.project_review.repos[0].pr_label = .pr_label' 0 \
+  "Poetic-Poems/poetic's project_review pr_label ($(jq -r '.pr_label' "$CONFIG")) equals pr_label"
 assert_doctor "doctor warns when the mirror would outlive the node that writes it" \
   '.state_local_cycles_retained = 10' 0 'is below cycles_retained'
 assert_doctor "doctor warns when crash-loop escalation is configured with nowhere to file" \

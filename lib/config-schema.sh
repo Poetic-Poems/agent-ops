@@ -157,8 +157,8 @@ config_schema_errors() {
 # own but whose properties do — `schedule` is the case in point — is still
 # synthesised whole when absent, so every leaf under it reads its default too;
 # a key with no schema default anywhere on its path (a required field with
-# nothing to fall back to, `review.model` for instance) passes through
-# unchanged. This performs no validation of its own — a config invalid against
+# nothing to fall back to, `project_review.defaults.model` for instance)
+# passes through unchanged. This performs no validation of its own — a config invalid against
 # the schema is still merged, defaults and all, since a caller that wants the
 # gate calls config_schema_errors first.
 config_defaults() {
@@ -222,4 +222,30 @@ config_missing_plan_path_repos() {
   jq -r '[.[] | select((.sources // []) | any(. == "implementation-plan"))
               | select((.implementation_plan_path // "") == "") | .slug]
          | join(", ")' <<<"$repos_json"
+}
+
+# config_project_review_repos DEFAULTED_CONFIG_JSON
+# `project_review.repos`, each entry resolved against `project_review.defaults`
+# per requirement 342's rule: a key present and non-null on the repo's own
+# entry wins, `defaults[key]` otherwise; `slug` is never defaulted. One
+# implementation shared by every reader (review-cycle.sh, scripts/doctor.sh,
+# lib/labels.sh's caller) so they cannot resolve the same repository two
+# different ways. Takes the already-`config_defaults`-merged config, as every
+# caller already has one; prints `[]` (never fails) when `project_review` is
+# absent or malformed, so a caller need not special-case the optional block.
+config_project_review_repos() {
+  local defaulted_config="$1"
+  jq -c '
+    (.project_review.defaults // {}) as $d |
+    [ (.project_review.repos // [])[] |
+      . as $r |
+      { slug: $r.slug,
+        model: ($r.model // $d.model),
+        pr_label: ($r.pr_label // $d.pr_label),
+        branch_prefix: ($r.branch_prefix // $d.branch_prefix),
+        min_days_between_reviews: ($r.min_days_between_reviews // $d.min_days_between_reviews),
+        not_before: ($r.not_before // $d.not_before // ""),
+        timeout_review: ($r.timeout_review // $d.timeout_review),
+        inactivity_review: ($r.inactivity_review // $d.inactivity_review) } ]
+  ' <<<"$defaulted_config" 2>/dev/null || printf '[]'
 }

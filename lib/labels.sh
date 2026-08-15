@@ -49,21 +49,30 @@
 # is genuinely unwanted, and a stage that could apply the label itself could
 # corroborate its own judgement with it (TD-PPagop-26081308).
 
-# labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE
+# labels_catalogue CONFIG_FILE SCHEMA_FILE ROLE [REVIEW_PR_LABEL]
 # Print the labels a repository in ROLE needs, one per line, as
 # `name<TAB>colour<TAB>description`. ROLE is one of:
 #   target      — a repository the implementation pipeline works
 #   review      — a repository the project-review pipeline reviews
 #   escalation  — where escalation issues are filed (crash_loop_repo)
 #
+# REVIEW_PR_LABEL is used only for ROLE "review": project_review's pr_label is
+# resolved per repository (requirement 342 — an entry in `project_review.repos`
+# may override `project_review.defaults.pr_label`), so there is no longer one
+# global value this function could read out of the config itself. The caller
+# already knows the specific repository's effective label — review-cycle.sh
+# resolves it once per repo, scripts/doctor.sh once per configured entry — and
+# passes it through here rather than this function re-deriving a single value
+# that no longer exists.
+#
 # Reads config_defaults's merge rather than CONFIG_FILE directly (issue #197),
-# so the three label names below take config.schema.json's `default` without
+# so the label names below take config.schema.json's `default` without
 # repeating it here; config_defaults is assumed sourced by the caller, as
 # every caller of this file already sources lib/config-schema.sh.
 labels_catalogue() {
-  local config_file="$1" schema_file="$2" role="$3" defaulted
+  local config_file="$1" schema_file="$2" role="$3" review_pr_label="${4:-}" defaulted
   defaulted="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)" || return 0
-  jq -r --arg role "$role" '
+  jq -r --arg role "$role" --arg review_pr_label "$review_pr_label" '
     def entry($name; $colour; $description):
       if ($name // "") == "" then empty
       else [$name, $colour, $description] end;
@@ -90,7 +99,7 @@ labels_catalogue() {
          entry("complexity:high"; "f9d0c4";
                "Graded by the Implementor; picks the higher Reviewer tier") ]
      elif $role == "review" then
-       [ entry(.review.pr_label; "5319e7";
+       [ entry($review_pr_label; "5319e7";
                "Raised by the project-review pipeline") ]
      elif $role == "escalation" then
        [ entry(.enabler_escalation_label; "b60205";
@@ -143,9 +152,11 @@ labels_ensure() {
   return 0
 }
 
-# labels_ensure_role CONFIG_FILE SCHEMA_FILE REPO ROLE
+# labels_ensure_role CONFIG_FILE SCHEMA_FILE REPO ROLE [REVIEW_PR_LABEL]
 # The two above, together: what a repository in ROLE needs, ensured in REPO.
+# REVIEW_PR_LABEL is passed straight through to labels_catalogue; see its
+# comment for why ROLE "review" needs it.
 labels_ensure_role() {
-  local config_file="$1" schema_file="$2" repo="$3" role="$4"
-  labels_catalogue "$config_file" "$schema_file" "$role" | labels_ensure "$repo"
+  local config_file="$1" schema_file="$2" repo="$3" role="$4" review_pr_label="${5:-}"
+  labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label" | labels_ensure "$repo"
 }

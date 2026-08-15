@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# test/review-not-before.test.sh — `review.not_before` holds the weekly review
+# test/review-not-before.test.sh — `project_review.defaults.not_before` holds the weekly review
 # off until a date, and nothing else off at all.
 #
 # The requirement it serves (R3.3) is one the switch cannot express. `--disable`
@@ -26,7 +26,7 @@
 # Each case runs the real `review-cycle.sh` against a shim node: a directory of
 # symlinks back into the tree with its own `config.json`, which works because
 # the script takes SCRIPT_DIR from its own path and reads config from there.
-# `review.repos` is emptied so a run that is *not* stood down still finishes
+# `project_review.repos` is emptied so a run that is *not* stood down still finishes
 # without reaching for the network.
 #
 # No network. Run directly: ./test/review-not-before.test.sh — exit 0 iff all
@@ -111,15 +111,15 @@ stand_down_reason() {  # stand_down_reason <dir>
 
 # `repos: []` keeps a non-stood-down run offline; `state_repo: ""` keeps the
 # fleet switch from reaching for one.
-BASE='.review.repos = [] | .state_repo = ""'
+BASE='.project_review.repos = [] | .state_repo = ""'
 
 # --- In force --------------------------------------------------------------------
-d="$(make_node in-force "$BASE | .review.not_before = \"2099-01-01T00:00:00Z\"")"
+d="$(make_node in-force "$BASE | .project_review.defaults.not_before = \"2099-01-01T00:00:00Z\"")"
 out="$(run_review "$d")"
 assert_contains "a future not_before stands the review down" \
   "standing down until 2099-01-01T00:00:00Z" "$out"
 assert_contains "and the log says which rule did it" \
-  "review.not_before: no review before 2099-01-01T00:00:00Z" "$(stand_down_reason "$d")"
+  "project_review.defaults.not_before: no review before 2099-01-01T00:00:00Z" "$(stand_down_reason "$d")"
 assert_eq "with the date on the event, for the dashboard to read" "2099-01-01T00:00:00Z" \
   "$(events_of "$d" | jq -r 'select(.event == "review-stand-down") | .not_before' 2>/dev/null)"
 assert_eq "and the tick still ends 0, so cron does not call it a failure" "0" "$RC"
@@ -127,25 +127,25 @@ assert_eq "and the tick still ends 0, so cron does not call it a failure" "0" "$
 # --- Expired ---------------------------------------------------------------------
 # The property that distinguishes this from raising min_days_between_reviews:
 # nothing has to be put back by hand once the date passes.
-d="$(make_node expired "$BASE | .review.not_before = \"2000-01-01T00:00:00Z\"")"
+d="$(make_node expired "$BASE | .project_review.defaults.not_before = \"2000-01-01T00:00:00Z\"")"
 out="$(run_review "$d")"
 assert_lacks "a past not_before does not stand the review down" "standing down until" "$out"
 assert_lacks "and leaves no stand-down of its own in the log" \
-  "review.not_before" "$(stand_down_reason "$d")"
+  "project_review.defaults.not_before" "$(stand_down_reason "$d")"
 
 # --- Absent ----------------------------------------------------------------------
-d="$(make_node absent "$BASE | del(.review.not_before)")"
+d="$(make_node absent "$BASE | del(.project_review.defaults.not_before)")"
 out="$(run_review "$d")"
 assert_lacks "an absent key is not a stand-down" "standing down until" "$out"
-assert_lacks "nor is it reported as one" "review.not_before" "$(stand_down_reason "$d")"
+assert_lacks "nor is it reported as one" "project_review.defaults.not_before" "$(stand_down_reason "$d")"
 
-d="$(make_node empty "$BASE | .review.not_before = \"\"")"
+d="$(make_node empty "$BASE | .project_review.defaults.not_before = \"\"")"
 out="$(run_review "$d")"
 assert_lacks "and neither is an empty one" "standing down until" "$out"
 
 # --- Unparseable -----------------------------------------------------------------
 # Fails towards the operator's evident intent, not through it.
-d="$(make_node unparseable "$BASE | .review.not_before = \"next Thursday-ish\"")"
+d="$(make_node unparseable "$BASE | .project_review.defaults.not_before = \"next Thursday-ish\"")"
 out="$(run_review "$d")"
 assert_contains "an unparseable not_before stands down rather than running" \
   "not a date this system can parse" "$out"

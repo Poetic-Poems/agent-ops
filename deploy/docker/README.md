@@ -476,7 +476,8 @@ One overlap the spacing cannot remove, worth knowing rather than chasing:
 30 minutes apart, one node's review tick lands one minute before the other
 node's cycle (`03:05` and `03:06` here, `03:35` and `03:36` again). It is
 cheap on almost every day, because a review exits early unless
-`review.min_days_between_reviews` has passed for the repo it would review. The
+`project_review.defaults.min_days_between_reviews` (or a repo's own override)
+has passed for the repo it would review. The
 fleet-wide fix, if it ever stops being cheap, is `review_offset_minutes: 15` in
 `config.json`, which on this four-node ring interleaves reviews exactly between
 cycles on both hosts — at the cost of halving the gap between a node's own two
