@@ -169,11 +169,11 @@
   p.costnote { font-size: 12px; color: var(--muted); max-width: 78ch; }
   /* By-day runs to sixty rows and by-model/by-actor to five each, so a fixed
      two-column split under- or over-fills a side depending on the day. A
-     multi-column flow instead lets the browser balance the four blocks —
-     day, model, actor, note, in that reading order — by height on its own:
-     each block stays whole (break-inside: avoid) and column-fill's default
-     "balance" walks them into the shorter side, so the split adapts every
-     render instead of being pinned to today's row counts (issue #330). */
+     multi-column flow instead lets the browser balance the blocks —
+     day, model, actor, then the notes, in that reading order — by height on
+     its own: each block stays whole (break-inside: avoid) and column-fill's
+     default "balance" walks them into the shorter side, so the split adapts
+     every render instead of being pinned to today's row counts (issue #330). */
   .costgrid { column-count: 2; column-gap: 20px; }
   @media (max-width: 760px) { .costgrid { column-count: 1; } }
   .costgrid > * { break-inside: avoid; margin: 0 0 20px; }
@@ -2350,7 +2350,7 @@
 
     // ---------- cost & cadence + log ----------
     // A multi-column flow rather than a fixed grid: day, model, actor, then
-    // the note, in that order, letting the browser balance the split by
+    // the notes, in that order, letting the browser balance the split by
     // height (see .costgrid) instead of pinning day to a column of its own.
     var costgrid = el("div", {class:"costgrid"});
     costgrid.appendChild(el("div", {}, [ el("h2", {text:"Est. token cost by day"}), el("div", {class:"panel", style:"padding:14px"}, spendByDay()) ]));
@@ -2364,6 +2364,9 @@
       "limits are not readable from here; check /usage in an interactive session. " +
       "All three charts cover the same transcripts — every actor of both pipelines, " +
       "across every node, since one Claude account pays for the fleet."}));
+    costgrid.appendChild(el("p", {class:"costnote", text:
+      "All figures on this page are US dollars (USD), regardless of the " +
+      "Claude account's own billing currency or region."}));
     app.appendChild(el("section", {}, costgrid));
 
     app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
