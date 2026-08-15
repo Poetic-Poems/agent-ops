@@ -460,8 +460,16 @@ fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 # fleet_flag_fetch_status STATE_REPO STATE_DIR NAME
 # fleet_flag_fetch's own body, printing STATUS<TAB>RAW instead of RAW alone —
 # STATUS<TAB>RAW travels as one string on stdout, the same compound-return
-# idiom lib/review-gate.sh's own functions use, so a caller reads it with
-# `IFS=$'\t' read -r status raw <<<"$combined"`. STATUS is one of:
+# idiom lib/review-gate.sh's own functions use. Split it with parameter
+# expansion, never `IFS=$'\t' read`, which review-gate.sh can use only because
+# both of its fields are single-line: RAW here is a file fetched from the state
+# repository, so it holds whatever bytes that file holds, and a `read` would
+# silently truncate a pretty-printed record to its first line — leaving the
+# caller to read a valid flag as unparseable and lose the operator's own reason
+# from `--status` and scripts/doctor.sh. So:
+#   status="${combined%%$'\t'*}"
+#   raw="${combined#*$'\t'}"
+# STATUS is one of:
 #   clear        — no state repo configured, or a confirmed 404 (the flag
 #                  does not exist)
 #   live         — the fetch against the state repo just succeeded
@@ -494,7 +502,8 @@ fleet_flag_fetch_status() {
     return 0
   fi
   if [[ -f "$cache" ]]; then
-    printf 'cached\t%s' "$(cat "$cache")"
+    printf 'cached\t'
+    cat "$cache"
   else
     printf 'unreachable\t'
   fi

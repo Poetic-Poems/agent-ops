@@ -228,6 +228,32 @@ assert_eq "the synthesised record names why, for a human reading --status/doctor
 assert_eq "a reachable repo confirms clear on that same node once network returns" "enabled" \
   "$(merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.state')"
 
+# The STATUS<TAB>RAW split must not truncate RAW: the flag is a file in the
+# state repository, so an operator who set it by hand through GitHub's web
+# editor leaves a pretty-printed record behind, and splitting with
+# `IFS=$'\t' read` would hand _toggle_eval a lone "{" — still `disabled`, but
+# with the operator's own reason replaced by "unreadable disable record" on
+# every --status and doctor.sh that reads it.
+mkdir -p "$gh_backing/fleet"
+cat > "$gh_backing/fleet/merge-autonomy-kill.json" <<'PRETTY'
+{
+  "disabled_at": "2026-08-15T09:00:00Z",
+  "expires_at": null,
+  "by": "an operator editing on github.com",
+  "reason": "hand-set through the web editor",
+  "actor": "operator@laptop",
+  "kind": "manual"
+}
+PRETTY
+fs_pretty="$tmp_dir/fleet-state-pretty"
+mkdir -p "$fs_pretty"
+assert_eq "a hand-edited, pretty-printed flag still reads disabled" "disabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.state')"
+assert_eq "and keeps the operator's own reason rather than truncating to line one" \
+  "hand-set through the web editor" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.reason')"
+rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
+
 echo
 if (( failures == 0 )); then
   echo "All merge-autonomy assertions passed."

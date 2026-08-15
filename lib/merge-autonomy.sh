@@ -104,7 +104,11 @@ merge_autonomy_configured_level() {
 merge_autonomy_kill_state() {
   local combined status raw
   combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"
-  IFS=$'\t' read -r status raw <<<"$combined"
+  # Parameter expansion, not `IFS=$'\t' read` — see fleet_flag_fetch_status's
+  # own comment: RAW is a file from the state repository and may be several
+  # lines, which a `read` would truncate to the first one.
+  status="${combined%%$'\t'*}"
+  raw="${combined#*$'\t'}"
   if [[ -z "$raw" ]]; then
     if [[ "$status" == "unreachable" ]]; then
       printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":""}}'
