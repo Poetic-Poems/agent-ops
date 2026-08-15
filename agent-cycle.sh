@@ -3350,7 +3350,30 @@ log_reviewer_handback() {
   fi
 }
 
-# approver_escalate PR_URL TIER STREAK REASONS_JSON
+# approver_post_or_warn PR_URL EVENT BODY TOKEN
+# `approver_post_review` (lib/approver.sh) returns 0 only on a real 2xx from
+# GitHub, and its own header is explicit that a caller must not read a failure
+# as a posted review. This is that reading, in one place: a review GitHub
+# refused — an expired token, an App whose installation lost review rights, an
+# API outage — leaves the pull request exactly as it was, which is the
+# harmless half of requirement 8b's "a missing review, never a stranded PR".
+# The harmful half would be leaving no trace: every other way this stage can
+# fail to post logs a `warning`, so the one failure that happens at the moment
+# of the write must too, or an operator reading the log sees an
+# `approver-verdict` and no review on the pull request and has nothing to
+# connect them. Always returns 0 — the caller's own path is unchanged either
+# way.
+approver_post_or_warn() {
+  local pr_url="$1" event="$2" body="$3" token="$4"
+  if ! approver_post_review "$pr_url" "$event" "$body" "$token"; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg e "$event" \
+      --arg d "the Approver's $event review of $pr_url could not be posted — GitHub refused the write, so the pull request carries no App review this round" \
+      '{detail: $d, pr_url: $u, event: $e}')"
+  fi
+  return 0
+}
+
+# approver_escalate PR_URL REASONS_JSON
 # File (or find already-filed, via create_escalation_issue's own dedup) the
 # escalation issue for a pull request an Approver adjudication engagement
 # could not settle — land it, or refuse it and let a human decide. Unlike
@@ -3564,10 +3587,10 @@ $node_name
   if (( adjudicating )); then
     case "$verdict" in
       land)
-        approver_post_review "$pr_url" APPROVE "$review_body" "$token" || true
+        approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
         ;;
       refuse)
-        approver_post_review "$pr_url" REQUEST_CHANGES "$review_body" "$token" || true
+        approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
         approver_escalate "$pr_url" "$reasons_json"
         ;;
       escalate)
@@ -3581,15 +3604,15 @@ $node_name
   else
     case "$verdict" in
       approve)
-        approver_post_review "$pr_url" APPROVE "$review_body" "$token" || true
+        approver_post_or_warn "$pr_url" APPROVE "$review_body" "$token"
         ;;
       refuse)
-        approver_post_review "$pr_url" REQUEST_CHANGES "$review_body" "$token" || true
+        approver_post_or_warn "$pr_url" REQUEST_CHANGES "$review_body" "$token"
         ;;
       *)
         log_event "warning" "$(jq -nc --arg u "$pr_url" --arg v "${verdict:-empty}" \
-          --arg d "the Approver returned an unrecognised verdict (\"$v\") for $pr_url — no App review was posted this round" \
-          '{detail: $d, pr_url: $u}')"
+          --arg d "the Approver returned an unrecognised verdict (\"${verdict:-empty}\") for $pr_url — no App review was posted this round" \
+          '{detail: $d, pr_url: $u, verdict: $v}')"
         ;;
     esac
   fi
