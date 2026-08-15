@@ -110,9 +110,11 @@ fields, and `branch` names the existing branch.
 - **You cannot clear the block, by design.** GitHub does not let a PR's author
   dismiss or approve a review on their own PR, and this system raises PRs as
   the same account it runs as. The `CHANGES_REQUESTED` decision therefore stays
-  set until the human re-reviews, and that is the human gate working, not a
-  fault. Do not try to route around it — no `gh pr review --approve`, no
-  dismissing the review, no merging. Push the fix, reply, and stop.
+  set until the human re-reviews, and that is the landing gate working, not a
+  fault — the Script performs approval and landing where the installation's
+  trust level allows; you never do. Do not try to route around it — no
+  `gh pr review --approve`, no dismissing the review, no merging. Push the
+  fix, reply, and stop.
 - **Leave the PR ready, not draft.** It was already ready for review; putting it
   back to draft would read to the human as "not for you yet".
 - The `status: "complete"` you report means *the feedback is answered and

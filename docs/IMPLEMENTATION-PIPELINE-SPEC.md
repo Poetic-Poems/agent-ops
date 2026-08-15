@@ -46,9 +46,17 @@ cron (hourly)
    the work order and raises a draft pull request.
 5. The **Reviewer** — a headless Claude Code invocation that checks and
    corrects the Implementor's branch, then marks the pull request ready.
-6. The **Human Reviewer** — gives final approval and performs the merge on
-   every pull request, through the ordinary GitHub process. Not launched by
-   any part of this system.
+5a. The **Approver** — a headless Claude Code invocation, engaged only where
+   `merge_autonomy` is above `human` (D18, "## The Landing Gate"), that
+   independently judges a pull request the Reviewer has already marked ready
+   and returns a verdict. It writes no code and pushes nothing; the Script
+   turns its verdict into a real GitHub review — `APPROVE` or
+   `REQUEST_CHANGES` — posted under a non-author GitHub App identity
+   ("Pullwright Approver"), never under this system's own authoring account.
+6. The **Human Reviewer** — gives final approval (at `human`) or an
+   additional one alongside the Approver's own (above `human`), and performs
+   the merge on every pull request regardless of level, through the ordinary
+   GitHub process. Not launched by any part of this system.
 7. The **Enabler** — a headless Claude Code invocation, engaged rarely and at
    the end of a cycle, that re-examines items recorded as blocked which the
    pipeline has not cleared by itself. It unblocks, voids, or leaves them
@@ -603,6 +611,9 @@ and the schema must carry every one of them.
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
 | `reviewer_model_default` | `claude-sonnet-5` | Reviews of `low`- and `medium`-complexity work (requirement 8a). |
 | `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
+| `approver_model_default` | `claude-sonnet-5` | Standard-tier Approver engagements: work graded `complexity:medium` (requirement 8b). Empty disables the Approver stage. |
+| `approver_model_complex` | `claude-opus-5` | High-tier Approver engagements: work graded `complexity:high` (requirement 8b). Empty falls back to `approver_model_default`, which switches the escalation off. |
+| `approver_model_critical` | `claude-fable-5` | Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
@@ -627,7 +638,7 @@ and the schema must carry every one of them.
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
-| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
+| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review...[continued below](#extended-notes-merge_autonomy) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
@@ -742,16 +753,49 @@ Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `d
 
 ### Extended notes: `merge_autonomy`
 
-The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; the human still lands every pull request until a later work item arms automatic landing. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 <!-- config-table:notes-end -->
 
-## The Human Gate
+## The Landing Gate
 
 The only branch this system protects is each repository's default branch.
-No agent may push to it, or approve or merge a pull request targeting it —
-GitHub's branch protection enforces this anyway. A human does both, on every
-PR this system raises.
+**No model ever pushes to it, approves a pull request targeting it, or merges
+one** — GitHub's branch protection enforces this anyway, and it holds at
+every `merge_autonomy` level (D18, `docs/reviews/2026-08-14-autonomy-investigation.md`
+§5.1) this document's requirements implement: the model's own prohibition is
+unconditional, never something a trust level relaxes.
+
+Who else may approve or land a pull request this system raises is what
+`merge_autonomy` names, per repository (config, requirement 2.3b's own
+resolution, `lib/merge-autonomy.sh`):
+
+- **`human`** — today's behaviour, byte-for-byte, and the product default: a
+  human approves and a human merges, on every pull request. Nothing below
+  this section changes.
+- **`agent-approves`** — the Approver stage (requirements 8b/8c, `### The
+  Approver`) gives an independent second read, under a non-author GitHub App
+  identity ("Pullwright Approver"), and posts a real `APPROVE` or
+  `REQUEST_CHANGES` review. **A human still merges.** The App's review is
+  additional, not a replacement for the human's own — a `CHANGES_REQUESTED`
+  from either blocks the same way, and the App can never dismiss or approve
+  around a human's own `CHANGES_REQUESTED` any more than the pipeline's own
+  authoring identity could.
+- **`agent-merges-routine`**, **`agent-merges-all`** — accepted and validated
+  (requirement 2.3b: a level here with no `approver_app_id`, or with the
+  repository's own ruleset still requiring code-owner review, is a
+  `scripts/doctor.sh` failure) and reviewed identically to
+  `agent-approves` (requirement 8c), but land no differently: **a human
+  still merges every pull request at these levels too**, because no
+  requirement in this document arms an automatic merge or enqueue yet — that
+  is a later work item's job (the design's own WI-7). Configuring either
+  level today buys the same App review `agent-approves` does and nothing
+  more.
+
+The fleet-wide kill switch (requirement 2.3b) forces every repository's
+*effective* level to `human` regardless of what is configured, independent
+of this section — `merge_autonomy_effective_level` is what every approval
+path (`run_approver_stage`) reads, never the raw configured value.
 
 Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
@@ -765,9 +809,15 @@ humans, and the target repos' own rule (force-pushing requires explicit
 instruction) applies.
 
 The Reviewer's purpose is to spend cheap model time so that the Human
-Reviewer's time is spent on work that is already close to mergeable. The
-human gate is the only point at which a human is required; everything else
-runs unattended.
+Reviewer's time is spent on work that is already close to mergeable; the
+Approver's purpose, where configured, is to spend a second, independent
+slice of cheap model time so that a human's own approval — never withdrawn by
+any level above `human` — meets a pull request that has already survived one
+more adversarial read. At `human`, the landing gate is the only point at
+which a human is required and it is a single, undivided act (approve and
+merge together); above it, the human's residual act narrows to the merge
+itself, but never disappears within what this document currently
+implements.
 
 ## Requirements
 
@@ -1779,7 +1829,7 @@ runs unattended.
      Implementor once failed on would still be blocked when the human posted
      fresh guidance, and that guidance would land on a dead item. Per-round refs
      expire by irrelevance, like the review-dated `review-<date>-R-NN` refs.
-   - **Only branches under `branch_prefix`.** The Human Gate reserves every
+   - **Only branches under `branch_prefix`.** The Landing Gate reserves every
      other branch for humans; "they asked for changes" is not licence to push to
      a colleague's PR.
    - **The answered-from-events extraction and decision are `lib/handoff.sh`'s
@@ -3833,6 +3883,99 @@ runs unattended.
    event carries the resolved `complexity` and the chosen `model`
    (requirement 33), which is what lets the distribution of self-assessments
    be audited for drift.
+8b. **Approver stage (D18 WI-5, `docs/reviews/2026-08-14-autonomy-investigation.md`
+   §5.2).** Once the Reviewer's `ready` verdict has cleared every existing
+   gate — `review_gate_verdict`, the closing-keyword gate, the draft flip
+   (requirement 31a), the re-request (requirement 31b), `ensure_human_reviewer`
+   (requirement 38) — and only then, the Script resolves this repository's
+   effective `merge_autonomy` level (`merge_autonomy_effective_level`,
+   `lib/merge-autonomy.sh`, requirement 2.3b). At `human` nothing further
+   happens: the cycle logs `pr-ready` and releases the claim exactly as it
+   always has, with no Approver engagement of any kind. At any level above
+   `human`, the Script logs `pr-ready` and releases the claim exactly as it
+   always has, and only then runs the Approver stage (`### The Approver`) —
+   deliberately after, not before: a refusal is a GitHub review sitting on an
+   already-ready pull request, not a reason to keep it from the human, exactly
+   as a human's own `CHANGES_REQUESTED` never has, so nothing about the
+   handoff itself waits on this stage or can be affected by how it ends.
+
+   The tier follows the same resolved `complexity` requirement 8a already
+   computed for the Reviewer (raise-never-lower, requirement 26a): `low` maps
+   to **Trivial** — no model call, the Script itself posts an `APPROVE`
+   review — `medium` to **Standard** (`approver_model_default`) and `high` to
+   **High** (`approver_model_complex`, empty falling back to
+   `approver_model_default`, the same escalation-off convention requirement
+   8a's own `reviewer_model_complex` uses). A **Critical** fourth tier
+   (`approver_model_critical`, falling back to `approver_model_complex`) is
+   never chosen by complexity — see requirement 8c for what does choose it.
+
+   `approver_model_default` empty disables the whole stage (the same
+   convention `enabler_model` empty already uses for the Enabler) — every
+   level above `human` then behaves exactly as `human` does, logged as a
+   `warning` rather than acted on silently. `scripts/doctor.sh` fails a
+   configured level above `human` with `approver_model_default` unset, the
+   same fail-fast pairing it already applies to `approver_app_id`
+   (requirement 2.3b) — this is a defence a *correctly* configured
+   installation should never exercise at runtime, kept only for the same
+   reason `lib/approver-token.sh`'s own credential-absent path is a `warning`
+   and not a blocked pull request: an Approver that cannot run must cost a
+   missing review, never a stranded PR.
+8c. **Refuse-wins, and the adjudication path (D18 WI-5, same design §5.2).**
+   A refusal is posted as a real `REQUEST_CHANGES` review from the Approver's
+   own GitHub App identity (`lib/approver-token.sh`, requirement 14b), so
+   GitHub itself holds the pull request at `CHANGES_REQUESTED` and the
+   existing `review-feedback` source (requirement 3c) picks it up next cycle
+   — no new work source, no new gate, the same mechanism a human's own
+   `CHANGES_REQUESTED` already drives. Before choosing a tier, the Script
+   counts the Approver identity's own current refuse streak — the number of
+   `CHANGES_REQUESTED` reviews it has most recently posted on this pull
+   request in a row, read fresh from the reviews list and stopping at its own
+   most recent `APPROVE` (`approver_refuse_streak`, `lib/approver.sh`), never
+   a count kept independently of GitHub's own record. A streak of two or more
+   replaces the ordinary tiered engagement with one **adjudication**
+   engagement on `approver_model_critical`, regardless of what the complexity
+   grade alone would have chosen — the disagreement, not the diff, is what
+   this tier is for.
+
+   The adjudication prompt carries the pull request's prior refusal review
+   bodies, oldest first (`approver_prior_refusal_bodies`), so the engagement
+   judges whether those reasons were actually answered, not the diff cold a
+   third time. Its verdict is `land`, `refuse` or `escalate`: `land` posts an
+   `APPROVE` review; `refuse` posts a fresh `REQUEST_CHANGES` review *and*
+   raises an escalation issue (`approver_escalate`, reusing
+   `create_escalation_issue`, requirement 34a's shared identity for that
+   function, with the same `enabler_escalation_label` and `enabler_assignee`
+   every other escalation this pipeline raises uses); `escalate` raises the
+   same escalation issue without a fresh review, since the pull request
+   already sits at `CHANGES_REQUESTED` from the two refusals that triggered
+   this engagement. A stage failure or an unparseable verdict is treated the
+   same as an explicit `escalate` — "cannot settle" is not read as "nothing
+   wrong". The escalation issue's body states what a human should do (review
+   and merge the pull request themselves), why the pipeline stopped (two
+   Approver refusals an adjudication could not resolve), and the adjudication
+   engagement's own `reasons`; its footer names the pull request as
+   `pr-<n>-approver-adjudication`, which is what `create_escalation_issue`'s
+   own open-issue dedup matches on across repeated rounds, so a persisting
+   disagreement raises one issue, not one per cycle.
+
+   No stage merges, at any tier, at any `merge_autonomy` level this work item
+   implements. `agent-merges-routine` and `agent-merges-all` are accepted and
+   validated (requirement 2.3b) and run the identical Approver review this
+   requirement and 8b describe, but land no differently from
+   `agent-approves`: the human still merges every pull request, because no
+   landing/arming step exists yet (that is a later work item's job — see
+   "## The Landing Gate"). The cardinal rule survives regardless of level:
+   the model never holds approve or merge rights; every GitHub write this
+   stage makes is a Script-issued `gh api` call under the Approver's own
+   minted token (`approver_post_review`), never a prompt-issued `gh pr
+   review` or `gh pr merge` — `prompts/approver.md` is explicitly forbidden
+   both, and the model's only output is a JSON verdict. A review GitHub
+   itself refused — an expired token, an installation that lost review
+   rights, an API outage — is logged as a `warning` naming the pull request
+   and the event (`approver_post_or_warn`, requirement 33) and changes
+   nothing else: the pull request stays exactly as the human already had it,
+   which is 8b's "a missing review, never a stranded PR" at the one point
+   where the failure is the write itself rather than the decision.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -5248,7 +5391,7 @@ runs unattended.
     directly on the branch — committing, rebasing onto the current default
     branch, or force-pushing as it judges best, always with
     `--force-with-lease` (permitted only on `branch_prefix` branches, per
-    "The Human Gate"). Where it cannot fix
+    "The Landing Gate"). Where it cannot fix
     with confidence, it leaves a PR review comment describing the problem
     for the Human Reviewer. A `complexity:*` label (requirement 26a) plainly
     wrong for the diff counts as such a problem: having just read the whole
@@ -5376,7 +5519,7 @@ runs unattended.
     **This does not clear the block, and must not appear to.** Re-requesting
     review leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state`
     at `blocked` — verified against GitHub on poetic-fiddle #200, before and
-    after — so "The Human Gate" holds unchanged: the PR still needs an approving
+    after — so "The Landing Gate" holds unchanged: the PR still needs an approving
     review from a code owner that this system cannot give itself. All the
     re-request does is return the PR to the queue the human actually reads.
 
@@ -5572,6 +5715,7 @@ runs unattended.
     `dependabot-rebase-requested`,
     `disabled`, `enabled`,
     `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
+    `approver-verdict`, `approver-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
@@ -5661,7 +5805,20 @@ runs unattended.
     since a run of failed salvages with no `recovered` among them is itself
     the evidence that a shape `extract_json_result` still cannot reach has
     recurred; a failed run with no session to resume at all writes no
-    `salvage` event, because no attempt was made. A
+    `salvage` event, because no attempt was made. An `approver-verdict`
+    (requirements 8b/8c) is written once per Approver engagement that reached
+    a verdict, carrying the `pr_url`, the `tier` it was judged at, the
+    `verdict` itself, the `refuse_streak` that tier was chosen against, and
+    `adjudication` — `true` where the streak, not the complexity grade, chose
+    the tier. It records what the Approver decided, never that GitHub accepted
+    the review: a review the API refused is a `warning` naming the pull
+    request and the event (`approver_post_or_warn`), so an operator finding an
+    `approver-verdict` with no review on the pull request has the write's own
+    failure logged beside it rather than having to infer it. An
+    `approver-escalated` (requirement 8c) carries the same `pr_url` plus the
+    `issue_number` and `issue_url` of the escalation an unsettled adjudication
+    raised; a filing that failed is a `warning` instead, since
+    `create_escalation_issue`'s own dedup makes the retry next cycle free. A
     `stage-start` carries the two caps that stage
     was given and where each came from — `backstop_min`, `inactivity_min`,
     `source` and `basis` (requirement 4f) — because a self-tuning number that
@@ -8253,6 +8410,78 @@ runs unattended.
     finds it with its block gone, rather than sitting on the issue meaning
     nothing until a human removes it by hand.
 
+### The Approver
+
+D18 WI-5 (agent-ops#408; design `docs/reviews/2026-08-14-autonomy-investigation.md`
+§5.2/§5.3). Requirements 8b and 8c above state when and why the Script
+engages this stage; these state what the stage itself does once engaged.
+Physically placed here, after the Refiner, rather than immediately after
+"### The Reviewer" it follows in the pipeline's own running order — inserting
+it there would have meant renumbering every requirement from "### Logging and
+state" onward, and every one of their cross-references throughout this
+document, for a stage whose numbers do not otherwise need to be contiguous
+with the Reviewer's own.
+
+40. **One engagement, judge only, never fix.** The Approver runs in the same
+    ephemeral clone the Implementor and Reviewer already used, with the pull
+    request's branch checked out, and reads: the diff, the work order, the
+    Implementor's summary, the Reviewer's summary, and — on an adjudication
+    engagement only — the Approver's own prior `REQUEST_CHANGES` review
+    bodies on this pull request (requirement 8c). It may edit, commit, or
+    push nothing; unlike the Reviewer, which repairs a pull request and then
+    certifies its own repair, the Approver exists to be an independent second
+    read of the same diff, and repairing what it is reviewing would collapse
+    exactly the independence it exists to restore. `prompts/approver.md`
+    states this as the stage's own operating rule, not only as a convention
+    this requirement documents.
+41. **Posture follows tier.** Standard (`complexity:medium`): find a reason
+    to refuse; approve only if none is found. High (`complexity:high`):
+    the same posture, refuse-by-default — this tier exists because the diff
+    already earned `complexity:high` under requirement 26a's own rubric
+    (concurrency, security, state replication, CI/workflow machinery, or
+    shared library code), so the base rate of a genuine defect is higher and
+    the prompt is told to read expecting one. Adjudication: not a third
+    ordinary review — a ruling on whether the disagreement the two prior
+    refusals raised is real and unresolved (`refuse`), has since been
+    answered (`land`), or is a genuine judgement call neither side can settle
+    alone (`escalate`, favoured over a third guess).
+42. **Never writes to GitHub.** The Approver's prompt is explicitly
+    forbidden `gh pr review`, `gh pr comment`, `gh api .../reviews`,
+    `gh pr merge`, `gh pr ready`, or any other GitHub write — its entire
+    contribution is the verdict in its final JSON message. Every actual
+    GitHub write (`APPROVE`/`REQUEST_CHANGES`, the escalation issue on an
+    unresolved adjudication) is a Script-issued call under the Approver's own
+    minted App token (`approver_post_review`, `lib/approver.sh`;
+    `approver_token_get`, `lib/approver-token.sh`, requirement 14b) —
+    requirement 8c's own restatement of D18's cardinal rule, that the model
+    never holds approve or merge rights, applied at this stage specifically.
+43. **Ends with a single JSON object:**
+    `{"verdict": "approve" | "refuse", "reasons": […]}` on a Standard or High
+    engagement, `{"verdict": "land" | "refuse" | "escalate", "reasons": […]}`
+    on adjudication. `reasons` is a list of short, specific findings — it
+    becomes the body of the GitHub review the Script posts on a refusal, and
+    the evidence an escalation issue carries on adjudication, so it is
+    written for a reader with no other context, never merely "looks risky."
+    An unrecognised or missing `verdict`, or a stage that failed to launch or
+    produced no parseable JSON at all, is never read as either verdict: the
+    Script logs a `warning` and posts no review this round (requirement 8b)
+    — on adjudication specifically, it is treated the same as an explicit
+    `escalate` (requirement 8c), since "cannot settle" is not "nothing
+    wrong."
+44. **One-shot, no resumption, same foreground-wait discipline every other
+    stage in this pipeline follows.** The Approver is launched exactly once
+    per Reviewer-`ready` round via `run_claude_stage` (component 4d, the same
+    shared launcher every stage in this document uses), on
+    `approver_model_default`/`approver_model_complex`/`approver_model_critical`
+    per requirements 8b/8c, under the `approver` stage-budget key
+    (`lib/stage-budget.sh`'s `STAGE_BUDGET_PRIORS`, falling back to the
+    Implementor's own prior — requirement 4e's derivation — for any
+    installation with no history for this stage yet). A stage timeout, a
+    non-zero exit, or an unparseable final message ends the engagement with
+    no review posted (requirement 43) — never a blocked pull request, since
+    nothing about the human's own path to merging depends on this stage
+    having run at all.
+
 ## Components
 
 What exists, and the requirements each part answers to:
@@ -8769,6 +8998,11 @@ What exists, and the requirements each part answers to:
    carries the escalation issue's template, since the quality of that issue is
    the whole of requirement 36a's ask of a human; the Refiner's carries no
    such template, since it has no escalation power of its own.
+4e. `prompts/approver.md` implementing requirements 40–44 (D18 WI-5): judge
+   only, never fix, posture keyed to the tier it is told (Standard, High or
+   adjudication), no GitHub-write instruction of any kind, ends with a
+   verdict-only JSON object. Sourced by `agent-cycle.sh`'s `run_approver_stage`
+   only.
 4a. `lib/prompt-overrides.sh` implementing requirement 4a: `stage_prompt_text`
    (the assembled prompt for a stage, honouring `config.json`'s
    `prompt_overrides.<stage>.extend`/`.replace`) and `stage_prompt_sha` (the
@@ -9021,8 +9255,9 @@ What exists, and the requirements each part answers to:
     still reads as clear, TD-PPagop-26081602).
     `merge_autonomy_effective_level`
     combines both: `human` whenever the kill switch is set or unreadable,
-    the configured level otherwise — the one function a future
-    approval/landing path (WI-5, WI-7) must call. Sourced by
+    the configured level otherwise — the one function every
+    approval/landing path must call, `run_approver_stage` (requirement 8b)
+    among them. Sourced by
     `agent-cycle.sh` (the `--kill-merge-autonomy`/`--restore-merge-autonomy`
     flags and `--status`) and `scripts/doctor.sh` (the pairing and ruleset
     checks, requirement 2.3b); depends on `lib/toggle.sh`, sourced first by
@@ -9081,20 +9316,60 @@ What exists, and the requirements each part answers to:
     `expires_at` that does not parse is never guessed at — the token is
     returned but not cached. Any cache failure at all is skipped silently
     and the call mints fresh, which is correct and merely slower.
+
+    `approver_token_identity_login [NOW_EPOCH]` prints the App's own login
+    (`<slug>[bot]`, the form every review it submits carries as
+    `user.login`) — the one call in this file that authenticates as the App
+    itself (`GET /app`, JWT-signed) rather than as an installation, since an
+    installation token can post as the App but cannot ask GitHub what its own
+    slug is. `lib/approver.sh` needs it to tell the Approver's own past
+    reviews on a pull request apart from a human's or another bot's when it
+    counts a refuse streak (requirement 8c). Not cached — asked rarely
+    enough, and changes essentially never, that a second cache file buys
+    nothing a fresh call does not already give for free.
+
     Sourced, never executed, and it sets no shell options, so a caller's own
     `set -euo pipefail` decides. `APPROVER_TOKEN_CURL`,
     `APPROVER_TOKEN_OPENSSL` and `APPROVER_TOKEN_CACHE_DIR` override the two
     binaries and the cache directory for tests only — the directory override
     passes through the same mount-type check, so it cannot re-introduce
-    disk. Nothing sources it yet —
-    WI-5's Approver stage is its first caller. Regression-tested in
+    disk. Sourced by `agent-cycle.sh`; `run_approver_stage`
+    (requirements 8b/8c) is its first caller. Regression-tested in
     `test/approver-token.test.sh` against a stubbed `curl` and a throwaway
     RSA key real `openssl` signs, covering the success path, a cache hit, a
     near-expiry refresh, each missing-credential shape, a planted cache
     file, the JWT staying out of `curl`'s argv, the per-installation cache
     key, a disk-backed cache directory refused, an unparsable `expires_at`
-    left uncached, a refused mint, an unreachable API, a malformed body and
-    an unusable cache directory. Must pass `shellcheck`.
+    left uncached, a refused mint, an unreachable API, a malformed body,
+    an unusable cache directory, and the identity-login lookup's own success
+    and failure paths. Must pass `shellcheck`.
+14c. `lib/approver.sh` implementing requirements 8b, 8c and 40–43: the
+    Approver stage's own decision primitives. `approver_tier_for COMPLEXITY`
+    and `approver_model_for_tier TIER MODEL_DEFAULT MODEL_COMPLEX` are pure
+    lookups (requirement 8b). `approver_refuse_streak PR_URL LOGIN` reads the
+    pull request's reviews list fresh — one JSON object per page-safe line,
+    aggregated with `jq -s` across every page the same way
+    `lib/handoff.sh`'s `_handoff_latest_reviews` already does, never an
+    aggregate computed inside `gh api --paginate`'s own `--jq`, which would
+    silently disagree with itself past thirty reviews — and counts LOGIN's
+    own `CHANGES_REQUESTED` reviews back from the newest, stopping at its own
+    most recent `APPROVED` (requirement 8c). `approver_prior_refusal_bodies
+    PR_URL LOGIN` prints the same login's `REQUEST_CHANGES` review bodies,
+    oldest first, for the adjudication prompt. `approver_post_review PR_URL
+    EVENT BODY TOKEN` POSTs the actual `APPROVE`/`REQUEST_CHANGES` review,
+    `GH_TOKEN` set for that one invocation only, never exported — the one
+    GitHub write this whole stage performs, and the only place in this
+    codebase that mints a review under a non-owner identity. `agent-cycle.sh`'s
+    `run_approver_stage`, `approver_post_or_warn` and `approver_escalate` are
+    the sole callers,
+    composing these primitives with `merge_autonomy_effective_level`
+    (`lib/merge-autonomy.sh`), `create_escalation_issue` (component 2) and
+    the ordinary `run_claude_stage` launch every other stage uses. Sourced,
+    never executed. Regression-tested in `test/approver.test.sh` against a
+    stubbed `gh`, and the wiring those primitives hang off in
+    `test/approver-wiring.test.sh`, which lifts `run_approver_stage` and
+    `approver_post_or_warn` verbatim out of `agent-cycle.sh` rather than
+    restating their logic (acceptance check 8s). Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -11579,6 +11854,41 @@ pull request, run the ones the change touches and any it could regress.
     malformed trailing line is skipped rather than aborting the read; and
     `--since` bounds the window reported. `scripts/pickup-metrics.sh` passes
     `shellcheck`.
+8s. **The Approver runs only above `human`, picks its tier correctly, and
+    refuse-wins (requirements 8b, 8c).** `test/approver.test.sh` passes
+    against a stubbed `gh`: `approver_tier_for` maps `low`/`medium`/`high` to
+    `trivial`/`standard`/`high` and anything else to `standard`;
+    `approver_model_for_tier` picks `MODEL_COMPLEX` only for `high`;
+    `approver_refuse_streak` counts a login's own trailing
+    `CHANGES_REQUESTED` reviews correctly over the line-per-review shape
+    `--paginate --jq` emits — the aggregation runs once over every page's
+    lines at once, so no page boundary is observable to it — stopping at that
+    login's own most recent `APPROVED`, ignoring `COMMENTED` and `DISMISSED`,
+    ignoring another account's reviews entirely, reading `0` for a login that
+    never reviewed — and returns non-zero, printing nothing, when the list
+    itself could not be read; `approver_post_review` posts with `GH_TOKEN` set
+    for that one invocation only, never leaking into a later call under the
+    stub's own default identity; `approver_prior_refusal_bodies` returns the
+    same login's `REQUEST_CHANGES` bodies oldest-first and nothing on an
+    unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`
+    and `approver_post_or_warn` verbatim out of `agent-cycle.sh` and drives
+    them with every GitHub call, model launch and log write stubbed: at
+    `merge_autonomy: human` the stage posts no review, launches no model and
+    logs nothing at all; at `agent-approves` a `complexity:low` pull request
+    gets a deterministic `APPROVE` with no model launched, `medium` and
+    `high` launch `approver_model_default` and `approver_model_complex`
+    respectively, a refusal's `reasons` become the `REQUEST_CHANGES` body,
+    and a synthetic refuse streak of two routes the next round to
+    `approver_model_critical` — for a `complexity:low` pull request too,
+    which the grade alone would have approved without a model at all. Each
+    failure path returns 0 having posted nothing and logged a `warning`: the
+    stage disabled (`approver_model_default` empty), the credential absent, a
+    verdict that would not parse, a verdict the Script does not recognise, and
+    a review GitHub refused; only an adjudication escalates.
+    `scripts/doctor.sh` fails a `merge_autonomy`
+    above `human` configured with `approver_model_default` empty, the same
+    shape its existing `approver_app_id` pairing check already fails on
+    (`test/doctor.test.sh`).
 
 ## Host provisioning (human steps)
 
@@ -11646,6 +11956,18 @@ nothing, and the first answered probe (a fraction of a cent of
 one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
+
+The Approver (requirements 8b/8c) costs nothing at the product default
+(`merge_autonomy: human`): the stage is never engaged. Where an installation
+has raised the level, its own worst case mirrors the Reviewer's — Sonnet by
+default, Opus only for `complexity:high` — plus one deterministic,
+zero-token `APPROVE` for every `complexity:low` pull request, which the
+grading rubric (requirement 26a) already routes the majority of trivial work
+through. The Critical tier (`approver_model_critical`, the design's own
+Fable/Opus-class default) fires only on a refuse streak of two — a genuine,
+persistent disagreement — not per pull request, so its cost is bounded by how
+often the Standard/High tiers actually refuse something twice running, which
+the design accepts as noise (§5.2).
 
 The floor matters as much as the ceiling, because it is paid on every quiet
 day and nothing about it looks like waste. Before requirement 3b, an idle
@@ -12234,6 +12556,58 @@ requirements above, which state only what is.
   it (the private key's own configuration, for one) — but any rename or
   reshaping must land with them, while the key is still consumed by
   `scripts/doctor.sh` alone.
+- **A refuse streak is counted from the reviews list, not kept as private
+  state (D18 WI-5, requirement 8c).** `approver_refuse_streak` reads GitHub
+  fresh, every time, rather than incrementing a counter this pipeline stores
+  itself — the same discipline `lib/handoff.sh` and `lib/review-gate.sh`
+  already apply to every other fact this document gates a decision on, and
+  the same move agent-ops#449 made for `could_not_request`. A private counter
+  would need its own reconciliation the moment a cycle dies mid-write, or two
+  nodes touch the same pull request in the same hour; the reviews list
+  already cannot disagree with itself, and it is the one record GitHub itself
+  keeps that a `REQUEST_CHANGES` review actually posted, as opposed to one
+  this pipeline merely believes it posted.
+- **An Approver that cannot run costs a missing review, never a blocked pull
+  request (requirement 8b).** Every failure path in `run_approver_stage` —
+  the stage disabled, the credential absent, the identity login or the
+  refuse streak unreadable, the token unmintable, the engagement itself
+  timing out or returning nothing parseable — ends in a `warning` log event
+  and nothing else: the pull request still reaches `pr-ready` exactly as it
+  would at `merge_autonomy: human`. The alternative — hand the pull request
+  back, the same fail-closed instinct `review_gate_verdict` and
+  `confirm_pr_ready` apply to a fact about the *pull request* — was
+  considered and rejected here specifically, because none of these failures
+  are a fact about the pull request; they are facts about this node or this
+  installation's configuration, and the human's own path to merging depends
+  on none of them. `scripts/doctor.sh`'s own startup check (requirement 2.3b)
+  is what should catch a genuinely broken configuration, at a moment an
+  operator is looking, rather than a pull request being silently starved of
+  human review while it waits for a stage to hand back.
+- **The Trivial tier's zero-token approval leans on the grading rubric that
+  already exists, rather than duplicating it (requirement 8b).** The design
+  (§5.2) frames this tier as "`complexity:low`, no protected paths,
+  size-capped diff" — a protected-paths classifier and a size cap are a later
+  work item's job (WI-7), not built here. Nothing here waits for either:
+  requirement 26a's own rubric already forces anything touching
+  concurrency, security, state replication, CI/workflow machinery or shared
+  library code to grade `high`, never `low` — the same rubric that already
+  picks the Reviewer's own tier (requirement 8a). A second, independent
+  fence around the same ground would duplicate a judgement the Implementor
+  and Reviewer have already made twice; WI-7's classifier is a genuine
+  addition for the tiers this work item does not implement landing for
+  (`agent-merges-routine`/`agent-merges-all`), not a prerequisite for this
+  one's own deterministic approval.
+- **"### The Approver" sits after "### The Refiner", not after "### The
+  Reviewer" it logically follows.** Every section from "### Logging and
+  state" onward already occupies the integer range (33–39d) that would
+  otherwise have gone to a stage inserted at that point in the document, and
+  renumbering all of them — and every cross-reference to each, scattered
+  throughout this file — for one new section was judged far riskier than one
+  section whose own number range (40–44) does not physically follow its
+  place in the pipeline's running order. Requirements 8b/8c, in "### The
+  Script" where the Reviewer's own launch requirements already live, are
+  what a reader tracing the pipeline's actual sequence finds first, and they
+  point at "### The Approver" by name.
 
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.
@@ -12276,3 +12650,4 @@ confident, recurring no-op.
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |
 | Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
 | A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |
+| A safety justification written as "harmless until X lands," read after X has landed | TD-PPagop-26081507 recorded that the merge-autonomy kill switch's fail-open no-cache case was "harmless: nothing arms an approval or a landing on the flag" — explicitly, deliberately, "until WI-5 lands." WI-5 (this document's own Approver stage, requirements 8b/8c) is the first behaviour-affecting caller of `merge_autonomy_effective_level`, and it landed with that tech-debt item still `open` and its own fix (agent-ops#448) still unmerged: the justification expired the moment this stage started reading the kill switch for a real decision, and nothing forced the two facts to be checked against each other. | A deferred item whose own body names the change that revokes its justification is a dependency, not a footnote — treat "must not arm until X" the same as a numbered `Blocked-by:`, checked at the moment X is about to land, not left to a reader noticing the tech-debt file in passing. Landed here anyway, deliberately, because the exposure is layered — `merge_autonomy`'s product default is `human` fleet-wide, every level above it needs an explicit per-installation opt-in, and the live installation had not yet raised it past Stage 0 — but the register entry stays `open` and this row exists so the next reader does not have to rediscover the ordering risk from source. |
