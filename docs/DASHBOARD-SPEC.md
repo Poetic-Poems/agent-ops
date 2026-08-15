@@ -829,7 +829,16 @@ the *Implementor* model chosen for the item, and reading it would attribute a
 Co-Ordinator verdict to whichever model was about to do the work.
 
 The **recent log** is the newest 80 events, one row each: time, the event as a
-badge, **Node**, **Repo**, **Actor**, and the event's own detail. Those three
+badge, **Node**, **Repo**, **Actor**, and the event's own detail. A
+`disabled`/`enabled` event's badge additionally names its `scope` (issue
+#426, implementation spec requirement 33) — `disabled · node` or
+`disabled · fleet`, `enabled · node` or `enabled · fleet` — since the bare
+event name cannot say whether a stop or a resume was one node's own or the
+whole fleet's, and that is the first thing a reader scanning the tail asks.
+A fleet-scoped one whose `fleet_flag` reads `"failed"` additionally appends
+`fleet flag: failed` to the Detail cell: a local switch that changed while
+the fleet flag did not follow it is exactly the case an operator must not
+mistake for a clean transition. Those three
 columns are different kinds of answer to "where did this happen" — which
 machine ran it, which repository it was aimed at, which agent was acting — so
 each gets its own cell, read positionally, carrying a dash when the event does
@@ -1153,6 +1162,10 @@ number's twins elsewhere on the page.
   and from `handoff`, the review pipeline's named as the Project Reviewer, the
   clone step and the cycle-level events naming none, and a missing node
   keeping its own cell rather than letting the repository slide into it. A
+  `disabled`/`enabled` event's badge is asserted to carry its `scope` (issue
+  #426) — `disabled · node`, `enabled · fleet` — and a fleet-scoped one whose
+  `fleet_flag` is `"failed"` to append `fleet flag: failed` to its Detail
+  cell. A
   cycle fixture carrying `raced: true` renders the `↻ raced` badge beside its
   outcome badge, and no other cycle in that fixture renders it — the marker
   answers "how did this cycle get its outcome", not a second outcome of its

@@ -156,6 +156,17 @@ assert_contains "and a missing node keeps its own cell rather than shifting the 
   '<td class="mono muted"> — <td class="mono muted"> agent-ops <td class="mono muted"> —' \
   "$logflat"
 
+# --- disabled/enabled events carry their scope on the badge (issue #426) ----
+# The bare event name cannot say whether a stop was one node or the whole
+# fleet; `scope` is folded into the badge text itself rather than a new
+# column, since only these two events carry it.
+assert_contains "a node-scoped disable is badged 'disabled · node'" \
+  '<span class="badge b-grey"> disabled · node' "$logflat"
+assert_contains "a fleet-scoped enable is badged 'enabled · fleet'" \
+  '<span class="badge b-grey"> enabled · fleet' "$logflat"
+assert_contains "a failed fleet-flag outcome appends to the Detail cell" \
+  "fleet flag: failed" "$out"
+
 # --- Image-drift badges on the fleet strip (#155) ---------------------------
 # poetic-1 (self) is current and gets no badge; poetic-2 predates the check
 # (null, like an old version/compose verdict) and gets no badge either;
