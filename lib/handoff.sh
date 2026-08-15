@@ -663,6 +663,16 @@ ensure_human_reviewer() {
 # objects carrying `at`; omit it (or pass `[]`) to read the marked-reply
 # signal alone.
 #
+# All three arrive on stdin, one document each (requirement 4g,
+# TD-PPagop-26081501). Hand over exactly one document per argument: the three
+# are bound positionally, so a caller that concatenates pages — an unslurped
+# `gh api --paginate` read — would shift every later binding onto the wrong
+# value. That is refused rather than read: any document left unconsumed after
+# the three bindings, and any unparseable trailing bytes, exit 5 with
+# `handoff_answer_events: multiple JSON documents in one argument` on stderr
+# and print nothing. A caller must handle that ending — `handoff_round_answered`
+# below reads it as `unknown`, never `answered`.
+#
 # This is the extraction requirement 3c's candidate rule
 # (scripts/gather-review-feedback.sh) has always made; it lives here so a
 # second caller — `handoff_round_answered` below, and through it
@@ -688,22 +698,42 @@ handoff_answer_events() {
   # TD-PPagop-26081501) — delivered on stdin, one document per line, bound
   # positionally with `input as $name` in the order printed, never in argv.
   #
-  # The trailing `(try input catch null) as $extra` guard reproduces
-  # `--argjson`'s own failure mode for a multi-document argument — two
-  # concatenated arrays, the shape an unslurped `gh api --paginate` read
-  # leaves behind — which `--argjson` used to reject outright
-  # ("invalid JSON text passed to --argjson"). `input as $name` does not:
-  # it silently reads whichever document comes next, so a caller that hands
-  # over more than one document per argument would otherwise shift every
-  # later binding onto the wrong value instead of failing
-  # (test/handoff.test.sh's "two concatenated pages" pin). Counting the total
-  # is enough: three well-formed single-document arguments leave nothing
-  # behind for `$extra` to catch, and any argument that over-contributes
-  # leaves at least one document unconsumed at the end.
+  # The trailing `[inputs]` guard stands in for the rejection `--argjson`
+  # used to perform for a multi-document argument — two concatenated arrays,
+  # the shape an unslurped `gh api --paginate` read leaves behind, which it
+  # refused outright ("invalid JSON text passed to --argjson").
+  # `input as $name` refuses nothing: it reads whichever document comes next,
+  # so a caller that hands over more than one document per argument would
+  # otherwise shift every later binding onto the wrong value instead of
+  # failing (test/handoff.test.sh's "two concatenated pages" pin). Three
+  # well-formed single-document arguments leave nothing behind, and an
+  # argument that over-contributes leaves at least one document unconsumed,
+  # so a non-empty remainder is the assertion. The count is exact only while
+  # no argument contributes *zero* documents; both callers slurp each one
+  # with `jq -s -c` first, which guarantees exactly one, and this guard is
+  # the backstop for a third that does not.
+  #
+  # It counts the remainder with `[inputs]` rather than binding one more
+  # document, because each obvious spelling of that is wrong — all three
+  # cases below verified against both jq 1.6 and jq 1.7:
+  #
+  #   - `(try input catch null) as $extra` is caught by its own `try`. On
+  #     jq ≤ 1.6 `try` also catches the `error()` raised downstream of it in
+  #     the same pipeline, rebinding `$extra` to `null` and re-running the
+  #     else branch — so the guard never fires at all and the test pin above
+  #     fails, while CI's jq 1.7 image passes it;
+  #   - comparing that binding against `null` cannot tell "nothing left" from
+  #     a trailing document that *is* `null`, on either version;
+  #   - catching the read at all swallows a JSON *parse* error in trailing
+  #     bytes, which `--argjson` rejected too.
+  #
+  # `[inputs] | length` raises none of the three: it consumes whatever
+  # remains, counts a trailing `null` as the document it is, and lets a parse
+  # error propagate as jq's own exit 5.
   jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" '
     input as $reviews | input as $comments | input as $rr |
-    (try input catch null) as $extra |
-    if $extra != null then error("handoff_answer_events: multiple JSON documents in one argument")
+    ([inputs] | length) as $extra |
+    if $extra > 0 then error("handoff_answer_events: multiple JSON documents in one argument")
     else
       ([$reviews[]  | select((.body // "") | contains($marker) and contains($actor)) | .at]
        + [$comments[] | select((.body // "") | contains($marker) and contains($actor)) | .at]

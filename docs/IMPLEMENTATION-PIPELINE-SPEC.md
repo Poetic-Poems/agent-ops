@@ -3369,6 +3369,28 @@ runs unattended.
    `test/gather-unvoid-requests.test.sh`), `refiner_candidate_items`
    (`test/refiner-eligibility.test.sh`), and the Dependabot-conflict nudge's
    own accumulator (`test/nudge-dependabot-rebase.test.sh`).
+   TD-PPagop-26081501 converts the one site TD-PPagop-26081406 found but did
+   not enumerate: `lib/handoff.sh`'s own `handoff_answer_events`, shared by
+   `scripts/gather-review-feedback.sh`'s direct call and
+   `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
+   whose three arguments are a repo's whole reviews, comments and rerequests
+   (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
+
+   **A converted site binds by position, so each argument is one document.**
+   `input as $name` reads whichever document comes next; unlike the
+   `--argjson` it replaces, it does not reject an argument carrying two —
+   the shape an unslurped `gh api --paginate` read leaves behind — so every
+   later binding shifts onto the wrong value with nothing raised. What
+   guarantees one document per argument is the caller: each converted site
+   slurps its reads (`jq -s -c`) before handing them over. Only
+   `handoff_answer_events` additionally asserts it, by requiring the document
+   stream to be exhausted once its three bindings are read
+   (`[inputs] | length`, never a fourth `input` binding — `try` swallows the
+   assertion's own error on jq ≤ 1.6, and a bound document cannot be told
+   from a trailing literal `null` on any version). It asserts because its
+   verdict is `handoff_round_answered`'s tri-state, where a shifted binding
+   reads as an *answered* round and costs requirement 3c's silent starvation
+   rather than a visible failure.
 
    **The cap is per argv element, not per flag.** `--arg` is bound by
    `MAX_ARG_STRLEN` exactly as `--argjson` is, so a rendered string counts
@@ -3380,14 +3402,6 @@ runs unattended.
    build on stdin beside the arrays it came from — an `--arg` there would put
    the same bytes back into a single argv element and leave the threshold
    where it was. Their tests drive each build with a body past the cap.
-   TD-PPagop-26081501 converted the one site TD-PPagop-26081406 found but did
-   not enumerate: `lib/handoff.sh`'s own `handoff_answer_events`, shared by
-   `scripts/gather-review-feedback.sh`'s direct call and
-   `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
-   which read a repo's whole reviews/comments/rerequests arrays as
-   `--argjson` — a single oversized review or comment body killed the call
-   at `execve` upstream of either caller's own candidate build
-   (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
 
    Two sites outside either item's enumeration still deliver a fleet-state
    aggregate in argv, and are filed rather than fixed: `agent-cycle.sh`'s own
@@ -3395,8 +3409,9 @@ runs unattended.
    that script's whole `$violations` argument as a single argv element to the
    script's own `execve`, a cap this requirement's `jq`-specific framing had
    not considered until TD-PPagop-26081406 found it (TD-PPagop-26081502); and
-   the gatherers and Publisher builds TD-PPagop-26081503 enumerates — `gather-findings.sh`,
-   `gather-source-state.sh`, `gather-register-hygiene.sh` and
+   the gatherers and Publisher builds TD-PPagop-26081503 enumerates —
+   `gather-findings.sh`, `gather-source-state.sh`,
+   `gather-register-hygiene.sh` and
    `publish-dashboard.sh`. Those two items are the outstanding residue; this
    requirement claims no more than the sites named above.
 

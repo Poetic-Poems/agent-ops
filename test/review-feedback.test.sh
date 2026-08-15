@@ -462,16 +462,20 @@ assert_eq "a marked reply isolated alone on page two of the comments read answer
 # script the same way rather than in TD-PPagop-26081501's own
 # test/handoff.test.sh, since only running the real script proves this
 # script's own upstream call is what benefits.)
-oversized_pr_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
-assert_eq "the oversized PR-body fixture really is past MAX_ARG_STRLEN" "1" \
-  "$(( ${#oversized_pr_body} > 131072 ))"
+# One fixture for every argv-cap scenario below — the PR body, the review
+# body and the extracted-block runs all need the same "past MAX_ARG_STRLEN"
+# property and nothing else, so generating it once keeps them from drifting
+# apart silently when one is edited.
+oversized_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized-body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_body} > 131072 ))"
 
 cat > "$tmp_dir/prs.json" <<JSON
 [
   {"number": 300, "title": "fix(oversized): pad the PR body past the argv cap",
    "headRefName": "agent/td-oversized-fix", "headRefOid": "0ff512edb0dy",
    "isDraft": false, "reviewDecision": "CHANGES_REQUESTED",
-   "url": "https://github.com/o/r/pull/300", "body": "$oversized_pr_body"}
+   "url": "https://github.com/o/r/pull/300", "body": "$oversized_body"}
 ]
 JSON
 cat > "$tmp_dir/reviews.json" <<'JSON'
@@ -485,7 +489,7 @@ printf '[]' > "$tmp_dir/pr-comments.json"
 out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
 assert_eq "a PR object past the argv cap still produces the candidate" "1" \
   "$(jq 'length' <<<"$out")"
-assert_eq "  ... and the ref still pins to the blocking review" \
+assert_eq "  ... and the ref still pins to the blocking review (oversized PR body)" \
   "pr-300-review-1" "$(jq -r '.[0].ref' <<<"$out")"
 
 # A single oversized *review* body (TD-PPagop-26081501): before that fix, this
@@ -493,9 +497,6 @@ assert_eq "  ... and the ref still pins to the blocking review" \
 # being derived, so a single oversized review failed the whole candidate rule
 # regardless of how small everything else stayed — the exact repro the
 # tech-debt record confirmed by hand.
-oversized_review_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
-assert_eq "  ... (this fixture too) really is past MAX_ARG_STRLEN" "1" \
-  "$(( ${#oversized_review_body} > 131072 ))"
 cat > "$tmp_dir/prs.json" <<'JSON'
 [
   {"number": 301, "title": "fix(oversized): pad a review body past the argv cap",
@@ -504,7 +505,7 @@ cat > "$tmp_dir/prs.json" <<'JSON'
 ]
 JSON
 printf '[{"id": 2, "state": "CHANGES_REQUESTED", "submitted_at": "2026-08-01T00:05:00Z", "user": {"login": "Warwick-Allen"}, "body": "%s"}]' \
-  "$oversized_review_body" > "$tmp_dir/reviews.json"
+  "$oversized_body" > "$tmp_dir/reviews.json"
 printf '[]' > "$tmp_dir/issue-comments.json"
 printf '[]' > "$tmp_dir/timeline.json"
 printf '[]' > "$tmp_dir/pr-comments.json"
@@ -512,7 +513,7 @@ printf '[]' > "$tmp_dir/pr-comments.json"
 out="$(REVIEW_FEEDBACK_GH="$tmp_dir/gh" "$SCRIPT_DIR/scripts/gather-review-feedback.sh" o/r autonomous-agent 'agent/' 2>/dev/null)"
 assert_eq "an oversized single review body no longer kills handoff_answer_events" "1" \
   "$(jq 'length' <<<"$out")"
-assert_eq "  ... and the ref still pins to the blocking review" \
+assert_eq "  ... and the ref still pins to the blocking review (oversized review body)" \
   "pr-301-review-2" "$(jq -r '.[0].ref' <<<"$out")"
 
 # The review-body assembly and the per-candidate array append are inline, not
@@ -534,10 +535,6 @@ if [[ "$body_block" != *'input as $fr | input as $fc'* ]]; then
   failures=$(( failures + 1 ))
 fi
 
-oversized_review_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
-assert_eq "the oversized review-body fixture really is past MAX_ARG_STRLEN" "1" \
-  "$(( ${#oversized_review_body} > 131072 ))"
-
 run_body_block() {  # run_body_block <fresh-json> <fresh_comments-json>
   # fresh and fresh_comments are consumed only by the eval'd body_block,
   # invisible to shellcheck.
@@ -549,10 +546,10 @@ run_body_block() {  # run_body_block <fresh-json> <fresh_comments-json>
 # Bash-side JSON assembly, not jq --arg: an --arg carrying the oversized
 # string would hit the very argv cap this section exists to prove the real
 # code no longer does.
-fresh_oversized="$(printf '[{"state": "CHANGES_REQUESTED", "who": "Warwick-Allen", "at": "2026-08-01T00:05:00Z", "body": "%s"}]' "$oversized_review_body")"
+fresh_oversized="$(printf '[{"state": "CHANGES_REQUESTED", "who": "Warwick-Allen", "at": "2026-08-01T00:05:00Z", "body": "%s"}]' "$oversized_body")"
 built_body="$(run_body_block "$fresh_oversized" '[]')"
 assert_eq "a fresh-reviews array past the argv cap still assembles the body" "1" \
-  "$([[ "$built_body" == *"$oversized_review_body"* ]] && echo 1 || echo 0)"
+  "$([[ "$built_body" == *"$oversized_body"* ]] && echo 1 || echo 0)"
 # The assembly stays JSON-encoded rather than raw, because its only consumer
 # is the candidate build and it has to reach it on stdin: this string is the
 # concatenation of the two arrays just taken out of argv, so handing it on as
@@ -584,7 +581,7 @@ run_cand_block() {  # run_cand_block <pr-json> <body-json>
     reviewed_at="2026-08-01T00:05:00Z" slug="o/r"
     eval "${cand_block%|| \{}"; printf '%s' "$cand" )
 }
-oversized_body_json="$(printf '"%s"' "$oversized_review_body")"
+oversized_body_json="$(printf '"%s"' "$oversized_body")"
 assert_eq "the oversized assembled-body fixture really is past MAX_ARG_STRLEN" "1" \
   "$(( ${#oversized_body_json} > 131072 ))"
 built_cand="$(run_cand_block \
@@ -596,7 +593,7 @@ assert_eq "an assembled review body past the argv cap still produces the candida
 # string would hit the very cap this section exists to prove the real code no
 # longer does — the same trap the body assembly above sidesteps.
 assert_eq "  ... carrying the whole oversized body, not a truncation" "1" \
-  "$([[ "$(jq -r '.body' <<<"$built_cand")" == "$oversized_review_body" ]] && echo 1 || echo 0)"
+  "$([[ "$(jq -r '.body' <<<"$built_cand")" == "$oversized_body" ]] && echo 1 || echo 0)"
 
 # The per-candidate array append: $out (the whole review_feedback band
 # collected so far) and $cand both arrive on stdin now, not argv — pinned

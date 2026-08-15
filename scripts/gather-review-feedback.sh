@@ -306,7 +306,16 @@ while IFS= read -r pr; do
   # substring match is precise with no regex needed. Any other actor
   # (`script`, `enabler`, `reviewer`, `refiner`) or a legacy marker with no
   # `actor=` field at all does not match and must not close the round.
-  answer_events="$(handoff_answer_events "$reviews" "$issue_comments" "$rerequests")"
+  #
+  # It exits 5 on a multi-document argument (see its header). The three reads
+  # above each slurp with `jq -s -c`, so that ending would be a defect in
+  # this script rather than anything about this pull request: skip the
+  # candidate, and keep jq's diagnosis out of a gatherer whose stderr is read
+  # as news about the repo it is scanning. The `handoff_round_answered` check
+  # below reads the same failure as `unknown` and `continue`s regardless —
+  # this only stops the raw error line reaching the log first.
+  answer_events="$(handoff_answer_events "$reviews" "$issue_comments" "$rerequests" 2>/dev/null)" \
+    || continue
 
   # Answered iff an answer event happened after the blocking review was
   # submitted (`handoff_round_answered`, lib/handoff.sh). This is the whole
