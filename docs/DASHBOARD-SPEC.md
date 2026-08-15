@@ -768,11 +768,11 @@ ships wholesale — so this is rendering only: the Publisher is unchanged;
 **Co-Ordinator verdict quality** (immediately below the work sources, and
 deliberately: that panel is what the Co-Ordinator was handed, this one is how
 often its answer about it survived the Script checking that answer);
-the cost charts — by-day, by-model, by-actor and the cost note flowed through
-a CSS multi-column layout in that reading order, letting the browser balance
-the split by height rather than pinning by-day to a column of its own, since
-it runs to sixty rows against five each for the other two; recent log;
-`cron.log` tail.
+the cost charts — by-day, by-model, by-actor and the two cost notes flowed
+through a CSS multi-column layout in that reading order, letting the browser
+balance the split by height rather than pinning by-day to a column of its
+own, since it runs to sixty rows against five each for the other two; recent
+log; `cron.log` tail.
 
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t
@@ -1295,7 +1295,7 @@ number's twins elsewhere on the page.
   on a single node the header carries the detail itself and there is no strip.
 - On that same page, the cost section reads down the left column and on down
   the right, with no column running conspicuously past the other and the cost
-  note last (issue #330). This one is checked by eye in a browser, in both
+  notes last (issue #330). This one is checked by eye in a browser, in both
   colour schemes and on either side of the 760px breakpoint, because the split
   is decided by the browser from the rendered heights: nothing that runs
   without layout can see it, and the DOM-stub harness above deliberately
@@ -1602,7 +1602,12 @@ number's twins elsewhere on the page.
   in tokens and time, and no arithmetic on this page converts one into the
   other. The figure is worth showing — it is a good proxy for how hard the
   pipeline is working, and it is the only per-cycle cost signal there is — but
-  it has to be named for what it measures.
+  it has to be named for what it measures. A second `p.costnote` underneath
+  states the currency (USD) outright (issue #438): every dollar figure on the
+  page — cards, charts, the estimate note above it — is the same fixed
+  currency regardless of the Claude account's own billing region, and that
+  isn't obvious from a bare `$` sign to a reader whose local currency also
+  uses one.
 - **Cost is cut by actor as well as by model and by day, because the actor is
   the only one of the three anybody chooses.** The day is a fact about when the
   cron fired; the model is nearly a restatement of the actor, since
@@ -1621,7 +1626,7 @@ number's twins elsewhere on the page.
   relative height rather than measured against it. `column-count: 2` with
   `break-inside: avoid` on each block instead lets the browser's own balance
   algorithm decide the split from the rendered heights on every load: the
-  four blocks — day, model, actor, then the cost note — stay in that reading
+  blocks — day, model, actor, then the two cost notes — stay in that reading
   order and simply land wherever the shorter side is, no JS layout code and
   no new data needed.
 
