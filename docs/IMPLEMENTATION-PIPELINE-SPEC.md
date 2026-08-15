@@ -7382,10 +7382,22 @@ runs unattended.
     - where nothing is `CHANGES_REQUESTED`-blocking it, ensures
       `ensure_human_reviewer` (requirement 38a, kept continuously rather than
       only at the moment of handoff);
-    - where something *is* `CHANGES_REQUESTED`-blocking it, but the round has
+    - where something *is* `CHANGES_REQUESTED`-blocking it, the round has
       already been answered — a marked reply from the Implementor after the
-      blocking review, and only that signal (see below) — repeats
-      requirement 31b's re-request (`confirm_review_requested`);
+      blocking review, and only that signal (see below) — and the pull
+      request's checks are genuinely green (`_sweep_checks_green`, the same
+      test the idle nudge below applies, shared rather than duplicated),
+      repeats requirement 31b's re-request (`confirm_review_requested`). An
+      answered round whose checks are *not* green is left entirely alone,
+      exactly like an unanswered one: this call stands in for the Reviewer's
+      own `ready` verdict (see below), and that verdict itself never fires
+      without requirement 31c's green precondition already holding, so
+      replaying only the "answered" half of it and skipping the "green" half
+      would re-request a human's review on a pull request whose next actor is
+      still the pipeline (agent-ops#338). The checks-green test is evaluated
+      first, off the same `pr view` payload already read for the round check
+      below, so a not-green pull request never even asks whether the round
+      was answered — it is a silent no-op, costing no further reads;
     - where the pull request is approved, `MERGEABLE`, not `BLOCKED`, every
       check genuinely green (an empty `statusCheckRollup` is excluded
       explicitly — that is CI not having run, not CI having passed — while a
@@ -7748,6 +7760,21 @@ runs unattended.
       even though nothing here can act. A `"manual"` or `"merged"` removal
       reaches neither, for the reasons given above.
 
+    **Design note: `statusCheckRollup` is scoped wider than `--required`, on
+    purpose.** The self-heal's own green gate and the idle nudge's (both
+    requirement 38c, `_sweep_checks_green`) both read `statusCheckRollup` off
+    `gh pr view --json` — every check GitHub ran against the head commit,
+    required or not — never `lib/review-gate.sh`'s `gh pr checks --required`
+    (requirement 31c), which is scoped to the branch ruleset's required subset
+    alone. The two reads answer different questions: the review gate asks
+    whether GitHub would actually let the pull request merge, and a
+    non-required check has no say in that; the self-heal and the nudge ask
+    whether the pull request is genuinely finished, and a non-required check
+    still failing is real, uncorrected work sitting on it — telling a human
+    "this is answered" or "this is waiting on your merge click" while an
+    optional check is red would be untrue. This is a deliberate scope
+    difference between the two reads, not an inconsistency: neither would
+    serve the other's purpose if it used the other's field.
 
     Every other reader of PR merge state in this repository is safe against a
     queued pull request without further code change — most by construction
@@ -11092,8 +11119,14 @@ pull request, run the ones the change touches and any it could regress.
     returning `unknown`) is a `warning`, never a guessed request; a listing
     the stub splits across two pages — the shape `--paginate` produces — still
     self-heals when answered and is still silent when unanswered, which is
-    what holds `_sweep_round_answered`'s reads to the streamed form; a pull
-    request nudged once already is not nudged
+    what holds `_sweep_round_answered`'s reads to the streamed form; an
+    answered round on a pull request whose rollup is not green (empty or
+    mixed) produces no review request and no output at all — the green gate
+    (agent-ops#338) short-circuits before `_sweep_round_answered` is even
+    asked; the same answered round on a rollup whose only non-`SUCCESS` entry
+    is `SKIPPED` still self-heals, proving the self-heal shares
+    `_sweep_checks_green` with the idle nudge rather than a stricter copy of
+    it; a pull request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
     check rollup; an approved, `MERGEABLE`, green and idle pull request whose
