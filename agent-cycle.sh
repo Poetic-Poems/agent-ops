@@ -7231,6 +7231,14 @@ if [[ "$rev_status" == "ready" ]]; then
   # costs one field. `pr-ready` now means the PR is not a draft, not that
   # somebody said so; `handoff` records which of them made it true.
   handoff_result="$(jq -r '.handoff // ""' <<<"$review_json")"
+  # `safe: true` already guarantees one of the two arms below — the flip word
+  # is the last thing `handoff_complete_review` checks before it says so — so
+  # the case needs no `*)` arm refusing the handoff; the refusal for a flip
+  # that did not take is the `review_safe != "true"` block above. The default
+  # is still set, because the one place an unmatched word could surface is
+  # `pr-ready` below, and an unset variable under `errexit`/`nounset` would
+  # abort the cycle at exactly the point it records what it did.
+  handoff_by="script"
   case "$handoff_result" in
     already)
       handoff_by="reviewer"

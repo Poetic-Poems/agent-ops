@@ -667,6 +667,26 @@ ensure_human_reviewer() {
   return 0
 }
 
+# _handoff_complete_review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE
+#                                CK_WORD CK_REASON [HANDOFF RS RW HS HW]
+# Assemble `handoff_complete_review`'s one return shape. Not meant to be
+# called from outside this file — a plain formatter, split out only so
+# `handoff_complete_review`'s five return points below read as "here is the
+# verdict" rather than repeating the same eleven-argument `jq -nc` each time.
+_handoff_complete_review_json() {
+  local safe="$1" gw="$2" gr="$3" cu="$4" cw="$5" cr="$6"
+  local h="${7:-}" rs="${8:-}" rw="${9:-}" hs="${10:-}" hw="${11:-}"
+  jq -nc --argjson safe "$safe" --arg gw "$gw" --arg gr "$gr" --argjson cu "$cu" \
+    --arg cw "$cw" --arg cr "$cr" --arg h "$h" --arg rs "$rs" --arg rw "$rw" \
+    --arg hs "$hs" --arg hw "$hw" '
+    {safe: $safe,
+     gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
+     closing_keyword: {word: $cw, reason: $cr},
+     handoff: $h,
+     rereview: {state: $rs, who: $rw},
+     human_reviewer: {state: $hs, who: $hw}}'
+}
+
 # handoff_complete_review PR_URL DEFAULT_BRANCH ASSIGNEE
 # The one gate-and-flip implementation requirement 31c and 32b both bind
 # (agent-ops#440): run requirement 31c's review gate and requirement 25a's
@@ -706,7 +726,7 @@ ensure_human_reviewer() {
 # `safe` is the one field a caller must branch on before doing anything else:
 # `false` means the pull request must not be handed off, full stop, and every
 # field past `closing_keyword` is empty — there is nothing further to report,
-# because nothing further ran. It is false for exactly three reasons, in the
+# because nothing further ran. It is false for exactly four reasons, in the
 # order they are checked (a `dirty` review gate outranks everything else, the
 # same "the pull request's own fault always wins" rule
 # `review_gate_verdict` already applies between its own two sub-checks):
@@ -755,26 +775,6 @@ ensure_human_reviewer() {
 # terms, and the caller reads `safe` and the sub-verdicts rather than an exit
 # status — the same convention `review_gate_verdict` established for its own
 # combined word, extended one level up.
-# _handoff_complete_review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE
-#                                CK_WORD CK_REASON [HANDOFF RS RW HS HW]
-# Assemble `handoff_complete_review`'s one return shape. Not meant to be
-# called from outside this file — a plain formatter, split out only so the
-# five return points above read as "here is the verdict" rather than
-# repeating the same eleven-argument `jq -nc` each time.
-_handoff_complete_review_json() {
-  local safe="$1" gw="$2" gr="$3" cu="$4" cw="$5" cr="$6"
-  local h="${7:-}" rs="${8:-}" rw="${9:-}" hs="${10:-}" hw="${11:-}"
-  jq -nc --argjson safe "$safe" --arg gw "$gw" --arg gr "$gr" --argjson cu "$cu" \
-    --arg cw "$cw" --arg cr "$cr" --arg h "$h" --arg rs "$rs" --arg rw "$rw" \
-    --arg hs "$hs" --arg hw "$hw" '
-    {safe: $safe,
-     gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
-     closing_keyword: {word: $cw, reason: $cr},
-     handoff: $h,
-     rereview: {state: $rs, who: $rw},
-     human_reviewer: {state: $hs, who: $hw}}'
-}
-
 handoff_complete_review() {
   local url="${1:-}" default_branch="${2:-main}" assignee="${3:-}"
   local gate_combined gate_word="" gate_reason="" gate_rc=0 checks_unreadable=false
