@@ -7101,12 +7101,12 @@ runs unattended.
       already been answered — a marked reply from the Implementor after the
       blocking review, and only that signal (see below) — repeats
       requirement 31b's re-request (`confirm_review_requested`);
-    - where the pull request is `APPROVED`, `MERGEABLE`, every check
-      genuinely green (an empty `statusCheckRollup` is excluded explicitly —
-      that is CI not having run, not CI having passed — while a `SKIPPED`
-      `CheckRun`, which every target repository carries on every pull
-      request, is accepted alongside `SUCCESS`/`NEUTRAL`), and has been since
-      before `human_nudge_idle_hours` ago, posts one nudge comment naming
+    - where the pull request is approved, `MERGEABLE`, not `BLOCKED`, every
+      check genuinely green (an empty `statusCheckRollup` is excluded
+      explicitly — that is CI not having run, not CI having passed — while a
+      `SKIPPED` `CheckRun`, which every target repository carries on every
+      pull request, is accepted alongside `SUCCESS`/`NEUTRAL`), and has been
+      since before `human_nudge_idle_hours` ago, posts one nudge comment naming
       `enabler_assignee` — unless one is already there, which a comment
       carrying both the exact `<!-- agent-ops:human-nudge -->` marker and
       `lib/pipeline-marker.sh`'s own `PIPELINE_COMMENT_MARKER_PREFIX` stamp
@@ -7118,6 +7118,35 @@ runs unattended.
       conversation comment can never disable a future nudge (agent-ops#390).
       `human_nudge_idle_hours` of `0` disables the nudge only; the
       review-request self-heal above (both halves) is unconditional.
+      "Approved" is `_handoff_pr_approved`'s own verdict
+      (`lib/handoff.sh`) — derived from the reviews list, the same "latest
+      review per reviewer" computation `_handoff_blocking_reviewers` already
+      applies for the `CHANGES_REQUESTED` half — never GitHub's own
+      `reviewDecision`: that field is computed against the base branch's
+      *required* approving review count, and where a repository's ruleset
+      sets that to `0` — this repository's own, agent-ops#391 — it never
+      becomes `APPROVED` however many humans approve, so a gate reading it
+      directly could never fire here. An unreadable reviews list is a
+      `warning`, the same fail-safe default every other read in this script
+      gets.
+
+      `MERGEABLE` and not `BLOCKED` are two separate reads, and both are
+      required: `mergeable` answers the merge-*conflict* question alone
+      (`MERGEABLE`/`CONFLICTING`), while whether GitHub would let the merge
+      happen at all is `mergeStateStatus`. Since `_handoff_pr_approved`
+      reports "approved" on the *first* standing approval, a base branch
+      requiring two or more would otherwise be nudged — "only waiting on your
+      merge click" — while GitHub was still waiting on a second approval. No
+      configured repository requires more than one today, so this is
+      correctness in general rather than a live fix, and it costs nothing
+      where the required count is `0`: an approved, green, up-to-date pull
+      request there reads `CLEAN`, exactly as an unapproved one does, and a
+      required merge queue (all three target repositories carry a
+      `merge_queue` rule) does not read `BLOCKED` either, so requirement 38f's
+      own states stay reachable. Every other state — including an `UNKNOWN`
+      GitHub has not finished computing — falls through, the fail-open
+      direction the merge-queue probe already takes, since suppressing a
+      legitimate nudge is the worse of the two mistakes.
 
     This *is* the periodic, deterministic audit of requirement 38's own
     guarantee, made self-healing rather than merely reported: a violation this
@@ -7352,11 +7381,11 @@ runs unattended.
     that reads GitHub's merge-queue fields directly, and does so twice:
 
     - **The idle nudge (38c) never fires on a currently-queued pull
-      request.** A queued pull request reads `APPROVED`, `MERGEABLE` and
+      request.** A queued pull request reads approved, `MERGEABLE` and
       green exactly like one nobody has acted on yet — before this
       requirement, the nudge told a human "it is waiting on a merge click"
       after they had already clicked it. `mq_queued == "true"` is now an
-      additional skip alongside `reviewDecision`/`mergeable`/the check
+      additional skip alongside `_handoff_pr_approved`/`mergeable`/the check
       rollup; an unreadable probe (`mq_queued` empty) is not this skip and
       leaves the nudge behaving exactly as it did before this requirement
       existed.
@@ -7487,6 +7516,33 @@ runs unattended.
     `merged_at` — the queue's asynchronous landing makes this load-bearing
     rather than merely tidy, since "the human clicked merge" (enqueued) no
     longer implies "merged" the moment a click happens.
+
+38g. **The ruleset setting behind requirement 38c's own approval derivation
+    is reported, not silent (agent-ops#391).** GitHub computes
+    `reviewDecision` against the base branch's *required* approving review
+    count; where a target repository's ruleset sets that to `0`, the field
+    never becomes `APPROVED` however many humans approve — a fact
+    `_handoff_pr_approved` (requirement 38c) no longer depends on, but one
+    that cost a cross-repository investigation to find in the first place,
+    purely because nothing reported it. `scripts/doctor.sh`'s GitHub section
+    reads each configured `repos[].slug`'s active branch ruleset targeting
+    the default branch (`gh api repos/<slug>/rulesets`, the same technique
+    requirement 25a's own ruleset check uses), and reports the
+    `required_approving_review_count` GitHub actually enforces: the
+    **maximum** across every matching ruleset's `pull_request` rule, never
+    whichever the API happened to return last, because GitHub enforces the
+    strictest applicable rule — a repository with one ruleset requiring `1`
+    and another requiring `0` would otherwise be warned about a
+    `reviewDecision` that in fact reaches `APPROVED` there. `0` is a `warn`
+    naming agent-ops#391 and stating this is informational, not a requirement
+    38 fault; any other value is `ok`; no active ruleset carrying a
+    `pull_request` rule, or an unreadable `rulesets` endpoint, is a `skip` —
+    a repository may legitimately gate approvals through classic branch
+    protection instead, which this check does not read. A count that is not a
+    non-negative integer is not a count: it is passed over like an absent
+    rule rather than evaluated, since a non-numeric value would otherwise
+    compare as `0`, the one value that changes the verdict. Cheap,
+    read-only, one call per repository plus one per candidate ruleset.
 
 ### The Refiner
 
@@ -10531,6 +10587,13 @@ pull request, run the ones the change touches and any it could regress.
     total failure under `set -e`.
 
 38. **Human-visibility (requirements 38a–38c).** `test/handoff.test.sh` passes:
+    `_handoff_pr_approved` reads `true` for a standing `APPROVED` review with
+    nothing `CHANGES_REQUESTED`-blocking, `false` for the reverse, and `false`
+    again when the two positions are held by different reviewers (one
+    approver, one blocker); a later review supersedes an earlier one from the
+    same reviewer regardless of which state it moves to or from; a bot's
+    `APPROVED` review is never counted (agent-ops#391); and an unreadable
+    reviews list is a failure, never a guessed `false`.
     `ensure_human_reviewer` re-requests review from whoever has ever reviewed
     the pull request (any state) in preference to `assignee`; falls back to
     `assignee` only when nobody ever has; strikes the pull request's own author
@@ -10575,7 +10638,8 @@ pull request, run the ones the change touches and any it could regress.
     nudged; the same pull request whose round *is* answered — a marked
     Implementor reply after the blocking review — is re-requested via
     `confirm_review_requested`, still never nudged (the nudge's own
-    `reviewDecision == APPROVED` gate holds it off regardless); a reply
+    `_handoff_pr_approved` gate holds it off regardless, since the same
+    reviews fixture is still `CHANGES_REQUESTED`); a reply
     predating the blocking review, or one carrying no marker at all, does not
     self-heal it; a round this cannot read (`handoff_round_answered`
     returning `unknown`) is a `warning`, never a guessed request; a listing
@@ -10585,14 +10649,22 @@ pull request, run the ones the change touches and any it could regress.
     request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
-    check rollup; a rollup whose only non-`SUCCESS` entries are `SKIPPED` —
+    check rollup; an approved, `MERGEABLE`, green and idle pull request whose
+    `mergeStateStatus` is `BLOCKED` — the base branch requiring a second
+    approval `_handoff_pr_approved` cannot see — is not nudged either, while
+    `CLEAN`, `BEHIND` and an unresolved `UNKNOWN` all still are; a rollup
+    whose only non-`SUCCESS` entries are `SKIPPED` —
     the shape every target repository's pull requests carry, a `CheckRun`
     gated off by a `paths:` filter or an `if:`, distinct from `StatusContext`
     and so read by `.conclusion` alone, never `.state` — is nudged all the
     same, while a `CANCELLED` or still-`IN_PROGRESS` (`conclusion` null)
     entry still blocks it; `human_nudge_idle_hours: 0` disables the nudge while leaving
     the review-request self-heal unconditional; and a listing, a view, or a
-    reviews read that fails is a `warning`, never silence. A pull request
+    reviews read that fails is a `warning`, never silence — an unreadable
+    reviews list warns twice for the same pull request, once from
+    `ensure_human_reviewer`'s own candidate check and once from
+    `_handoff_pr_approved`'s idle-nudge check, since each reads it
+    independently and neither may mask the other's failure. A pull request
     whose only legal candidate is its own author is a `warning` naming
     `enabler_assignee`, not silence — the one `skip` reason the sweep itself
     surfaces, read off requirement 38a's `skip\tno-candidate` detail, unlike a
@@ -10696,6 +10768,19 @@ pull request, run the ones the change touches and any it could regress.
     `merge_queue_dequeue_notice_max_age_hours` gets no notice even though it
     carries an actionable reason and no marker is on the pull request yet
     (agent-ops#394).
+38g. **Requirement 38c's ruleset dependency is reported, not silent
+    (agent-ops#391).** `test/doctor.test.sh` passes, over the same
+    single-target-repo fixture and `gh`/`rulesets` stub requirement 25a's own
+    ruleset-drift cases (acceptance check 8m) use: an active default-branch
+    ruleset whose `pull_request` rule carries `required_approving_review_count:
+    1` is `ok`, naming the count; the same with `0` is a `warn` naming
+    agent-ops#391 and stating this is informational, not a requirement 38
+    fault; an active default-branch ruleset with no `pull_request` rule, and
+    no active ruleset targeting the default branch at all, are both the same
+    `skip`; an unreadable `rulesets` endpoint is its own `skip`; two active
+    default-branch rulesets requiring `0` and `1` report the strictest — `ok`
+    at `1` — in both list orders, so the verdict does not depend on what the
+    API returned last; and none of these fail `doctor.sh` itself.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed

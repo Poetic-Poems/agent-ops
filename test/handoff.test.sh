@@ -439,6 +439,60 @@ assert_eq "  ... and neither reached the API" "0" "$(posts)"
 ) >/dev/null 2>&1
 assert_eq "confirm_review_requested's call-site shape survives set -e" "0" "$?"
 
+# --- _handoff_pr_approved: the APPROVED half of the same computation -----------
+# (agent-ops#391). `reviewDecision` never becomes `APPROVED` on a repository
+# whose branch ruleset requires zero approving reviews — this repository's
+# own — however many humans approve, so requirement 38c's idle nudge cannot
+# depend on that field. `_handoff_pr_approved` derives it instead from the
+# same reviews list `_handoff_blocking_reviewers` reads above, sharing
+# `_handoff_latest_reviews` with it (one definition, two callers, requirement
+# 34a's own argument). Still the same stub as `confirm_review_requested`'s
+# section above.
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen APPROVED)"
+out="$(_handoff_pr_approved o/r 111)"; rc=$?
+assert_eq "an approved PR with nothing blocking reads approved" "true" "$out"
+assert_eq "  ... and exits 0" "0" "$rc"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+out="$(_handoff_pr_approved o/r 111)"
+assert_eq "changes requested with no approval reads not approved" "false" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)" "$(review Warwick-Allen APPROVED)"
+out="$(_handoff_pr_approved o/r 111)"
+assert_eq "a later approval supersedes an earlier changes-requested" "true" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen APPROVED)" "$(review Warwick-Allen CHANGES_REQUESTED)"
+out="$(_handoff_pr_approved o/r 111)"
+assert_eq "a later changes-requested supersedes an earlier approval" "false" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen APPROVED)" "$(review octocat CHANGES_REQUESTED)"
+out="$(_handoff_pr_approved o/r 111)"
+assert_eq "one approver and a different blocker: still not approved" "false" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review 'copilot-pull-request-reviewer[bot]' APPROVED Bot)"
+out="$(_handoff_pr_approved o/r 111)"
+assert_eq "a bot's approval is not a human's" "false" "$out"
+
+review_n=0
+reset_review_stub works
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf '/reviews' >"$tmp_dir/api-fail"
+out="$(_handoff_pr_approved o/r 111)"; rc=$?
+assert_eq "unreadable reviews is a failure, never a guessed answer" "" "$out"
+assert_eq "  ... and exits 1" "1" "$rc"
+
 # --- ensure_human_reviewer: the case confirm_review_requested has nobody for ---
 # (requirement 38a). poetic-fiddle #170: approved, green, idle 6.8 days, nobody
 # ever asked again once the review that approved it consumed the request that

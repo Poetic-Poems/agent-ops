@@ -209,27 +209,30 @@ _handoff_pr_parts() {
   printf '%s/%s\t%s' "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}" "${BASH_REMATCH[3]}"
 }
 
-# _handoff_blocking_reviewers SLUG NUMBER
-# Print, one per line, the logins of the humans whose review currently blocks
-# the pull request. Returns non-zero, printing nothing, when GitHub could not be
+# _handoff_latest_reviews SLUG NUMBER
+# Print a compact JSON array of `{login, state}`, one entry per non-bot
+# reviewer, giving each reviewer's *standing position* — the last of their own
+# APPROVED or CHANGES_REQUESTED reviews, a COMMENTED review never changing it.
+# This is the one computation GitHub's own `reviewDecision` performs, and both
+# `_handoff_blocking_reviewers` (the CHANGES_REQUESTED half) and
+# `_handoff_pr_approved` (the APPROVED half) below read it rather than each
+# deriving it separately — one definition, two callers, requirement 34a's own
+# argument. Returns non-zero, printing nothing, when GitHub could not be
 # asked — the same rule as `_handoff_draft_flag`, for the same reason.
 #
-# "Currently blocks" is computed the way GitHub computes `reviewDecision`, not
-# by taking the newest review: only APPROVED and CHANGES_REQUESTED count, and
-# the last of those *per reviewer* is that reviewer's standing position. A
-# COMMENTED review does not change anyone's decision, so a human who requested
-# changes and then added a comment is still blocking — and reading their newest
-# review would have concluded otherwise and asked nobody for anything.
-#
-# Bots are excluded. This org runs Copilot code review on every PR, and a bot
-# can be re-requested exactly like a person: doing so would spend money and
-# noise on the one reviewer that is not the human this exists to reach.
+# Bots are excluded. This org runs Copilot code review on every PR, and a
+# Bot-authored review is not a human's standing position, whichever way a
+# caller reads it: not a reviewer to re-request (a bot can be, exactly like a
+# person, and doing so would spend money and noise on the one reviewer that
+# is not the human this exists to reach), and not a vote towards "approved"
+# either.
 #
 # The PR's author needs no exclusion — GitHub forbids requesting changes on
-# your own pull request, so an author can never appear in this set. That is
-# also what makes the set safe to POST verbatim: requesting a review from the
-# author is a 422, and it is unreachable here.
-_handoff_blocking_reviewers() {
+# your own pull request, so an author can never appear in this set as
+# CHANGES_REQUESTED. That is also what makes `_handoff_blocking_reviewers`'s
+# set safe to POST verbatim: requesting a review from the author is a 422, and
+# it is unreachable here.
+_handoff_latest_reviews() {
   local slug="$1" number="$2" gh_bin="${HANDOFF_GH:-gh}" lines
   # One JSON object per line rather than an array: `--paginate` concatenates a
   # separate document per page, so an aggregate written inside `--jq` would be
@@ -240,12 +243,43 @@ _handoff_blocking_reviewers() {
                       | {login: .user.login,
                          bot: (((.user.type // "User") == "Bot") or (.user.login | endswith("[bot]"))),
                          state: .state}' 2>/dev/null)" || return 1
-  jq -s -r '
+  jq -s -c '
     [.[] | select(.bot | not)
          | select(.state == "APPROVED" or .state == "CHANGES_REQUESTED")]
-    | group_by(.login) | map(last)
-    | map(select(.state == "CHANGES_REQUESTED") | .login)
-    | unique | .[]' <<<"$lines" 2>/dev/null || return 1
+    | group_by(.login) | map(last) | map({login, state})' <<<"$lines" 2>/dev/null || return 1
+}
+
+# _handoff_blocking_reviewers SLUG NUMBER
+# Print, one per line, the logins of the humans whose review currently blocks
+# the pull request — every standing CHANGES_REQUESTED position from
+# `_handoff_latest_reviews`. Returns non-zero, printing nothing, on the same
+# "could not ask" terms as that function.
+_handoff_blocking_reviewers() {
+  local slug="$1" number="$2" latest
+  latest="$(_handoff_latest_reviews "$slug" "$number")" || return 1
+  jq -r '.[] | select(.state == "CHANGES_REQUESTED") | .login' <<<"$latest" 2>/dev/null || return 1
+}
+
+# _handoff_pr_approved SLUG NUMBER
+# Print `true` when the pull request has at least one standing APPROVED
+# position and nothing standing CHANGES_REQUESTED — the "approved" verdict
+# GitHub's own `reviewDecision` would report if this repository's branch
+# ruleset required at least one approving review. `false` otherwise. Returns
+# non-zero, printing nothing, on the same "could not ask" terms as
+# `_handoff_latest_reviews`.
+#
+# Exists because `reviewDecision` itself cannot be trusted for this: GitHub
+# computes it against the base branch's *required* approving review count,
+# and where that count is `0` — this repository's own ruleset, agent-ops#391
+# — the field never becomes `APPROVED` no matter how many humans approve, so
+# a caller gating on the field directly can never fire. Deriving the same
+# verdict from the reviews list itself, the way `_handoff_blocking_reviewers`
+# already does for its own half, has no such dependency.
+_handoff_pr_approved() {
+  local slug="$1" number="$2" latest
+  latest="$(_handoff_latest_reviews "$slug" "$number")" || return 1
+  jq -r '(any(.[]; .state == "APPROVED")) and (all(.[]; .state != "CHANGES_REQUESTED"))' \
+    <<<"$latest" 2>/dev/null || return 1
 }
 
 # _handoff_known_reviewers SLUG NUMBER
