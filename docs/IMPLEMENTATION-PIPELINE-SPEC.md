@@ -12538,9 +12538,18 @@ requirements above, which state only what is.
   node with a cached copy keeps using it through a transient outage exactly
   as before, so the fail-closed blast radius is confined to fresh containers
   during an outage: the one population that cannot know whether an operator
-  has pulled the lever. `fleet_flag_fetch` itself, and every other caller of
-  it (`fleet/disabled.json`, the usage-limit flag), is unchanged — this
-  asymmetry is this one flag's alone. One residual fail-open case survived,
+  has pulled the lever. The fail-closed resolution is this one flag's alone:
+  `fleet_flag_fetch` and its own callers (`fleet/disabled.json`, the
+  usage-limit flag) still resolve a flag they cannot read to "nothing stands
+  you down". The repo-existence probe below is the one thing they do share,
+  since it sits in the fetch itself rather than in the status wrapper — so
+  for every flag, a flag-file 404 whose probe does not confirm the repo
+  visible falls back to the last-fetched cache the way a transport failure
+  always has, and reads as clear only when there is no cache to fall back
+  to. For the two fail-open flags that is a narrower fail-open than before
+  and never a wider one: the worst case is a node standing down for a cycle
+  on a stale copy of a flag that has in fact been cleared, until a probe
+  succeeds and drops the cache. One residual fail-open case survived,
   knowingly, at TD-PPagop-26081507's own landing (found in PR #448's
   review): "unreachable" there meant only a transport-level failure, because
   the contents API answers a repo-level 404 — the state repo missing, or
