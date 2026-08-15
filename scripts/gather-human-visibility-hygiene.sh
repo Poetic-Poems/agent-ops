@@ -175,7 +175,7 @@ jq -e 'type == "array"' <<<"$violations_json" >/dev/null 2>&1 || violations_json
 
 # _warning_class DETAIL
 # Classify a sweep warning's detail text into the live check that resolves
-# it. Prefix/substring matched against the three fixed shapes
+# it. Prefix/substring matched against the fixed shapes
 # sweep-human-visibility.sh's own `warn` calls produce; anything else is
 # `unknown`.
 _warning_class() {
@@ -183,6 +183,7 @@ _warning_class() {
     "could not request review from"*) printf 'could_not_request' ;;
     *"idle nudge comment"*) printf 'could_not_post_nudge' ;;
     "no legal review-request candidate"*) printf 'no_candidate' ;;
+    *"merge-queue-dequeued notice"*) printf 'dequeue_notice' ;;
     *) printf 'unknown' ;;
   esac
 }
@@ -276,6 +277,15 @@ _pr_violation_survives() {
                           | length' <<<"$json" 2>/dev/null || echo 0)"
       if [[ "$known_other" != "0" ]] || [[ "$requests" != "0" ]] \
           || { [[ -n "$assignee" ]] && [[ "$assignee" != "$author_login" ]]; }; then
+        printf 'drop'
+      else
+        printf 'keep'
+      fi
+      ;;
+    dequeue_notice)
+      has_marker="$(jq -r '(.comments // []) | any((.body // "") | contains("<!-- agent-ops:merge-queue-dequeued:"))' \
+                     <<<"$json" 2>/dev/null || echo false)"
+      if [[ "$has_marker" == "true" ]]; then
         printf 'drop'
       else
         printf 'keep'
