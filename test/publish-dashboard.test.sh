@@ -1576,6 +1576,112 @@ assert_eq "a claims array past the argv cap still builds valid github_json" "130
 assert_eq "  ... with ok/error/fetched_at and inputs still intact" "true  2026-08-15T00:00:00Z" \
   "$(jq -r '"\(.ok) \(.error) \(.fetched_at)"' <<<"$built_github_json")"
 
+# --- The per-repo prs_json fold's own argv cap (requirement 4g, TD-PPagop-26081506) --
+# `$prs_json` here is the running fleet-wide accumulator this same per-repo
+# loop has already folded every earlier repo's page into, and `$prs` is the
+# page just fetched for one more repo; both used to ride into this fold as
+# `--argjson` values.
+#
+# Not reached by driving the real script over its own CLI: an accumulated
+# `$prs_json` big enough to reach here past the cap would already have died at
+# this very call, one repo earlier in the same per-repo loop — there is no
+# separate downstream site to observe the death at, unlike `github_json`
+# above. So the fold is lifted by its own literal lines, the same
+# extract_block technique, and driven directly with an oversized `$prs_json`.
+#
+# The fold's own filter calls `checks_of`, which lives in `$PR_JQ` — lifted
+# the same way, by its own start/end markers, so the extracted fold runs with
+# the exact function the real script prepends to it.
+extract_var_block() {  # extract_var_block <start-literal> <end-literal>
+  awk -v s="$1" -v e="$2" '
+    index($0, s) == 1 { on = 1; print; next }
+    on { print }
+    on && index($0, e) > 0 { exit }
+  ' "$SCRIPT_DIR/scripts/publish-dashboard.sh"
+}
+pr_jq_start="PR_JQ='"
+pr_jq_end="'"
+pr_jq_def="$(extract_var_block "$pr_jq_start" "$pr_jq_end")"
+if [[ "$pr_jq_def" != *'def checks_of:'* ]]; then
+  printf 'FAIL - could not extract PR_JQ from scripts/publish-dashboard.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+# The fold's own opening/closing lines, as literal source text — the closing
+# line's `\n` is doubled (`\\n`) so awk's own `-v` escape processing collapses
+# it back to a single backslash before the substring match runs, rather than
+# turning it into a real newline that can never match.
+prs_fold_start="    prs_json=\"\$(jq -nc --arg slug \"\$slug\" \"\$PR_JQ\"'"
+prs_fold_end="<<<\"\$prs_json\"\$'\\\\n'\"\$prs\")\""
+prs_fold_block="$(extract_block "$prs_fold_start" "$prs_fold_end")"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$prs_fold_block" != *'input as $cur | input as $add'* ]]; then
+  printf 'FAIL - could not extract the per-repo prs_json fold from scripts/publish-dashboard.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_prs_fold_block() {  # run_prs_fold_block <prs_json-accumulator> <prs-page>
+  # PR_JQ/prs_json/prs/slug are consumed only by the eval'd definitions,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( eval "$pr_jq_def"
+    prs_json="$1" prs="$2" slug="o/new"
+    eval "$prs_fold_block"
+    printf '%s' "$prs_json" )
+}
+big_prs_accum="$(jq -nc '[range(1300) | {repo: "o/a", number: ., title: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized prs_json accumulator fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_prs_accum" | wc -c) > 131072 ))"
+new_repo_page='[{"number":9001,"title":"new","url":"u","isDraft":false,"state":"OPEN","mergeable":"MERGEABLE","mergeStateStatus":"CLEAN","headRefName":"h","createdAt":"2026-08-15T00:00:00Z","reviewDecision":"","statusCheckRollup":[]}]'
+folded_prs_json="$(run_prs_fold_block "$big_prs_accum" "$new_repo_page")"
+jq -e . <<<"$folded_prs_json" >/dev/null 2>&1
+assert_eq "an accumulator past the argv cap still folds a new repo's page" "0" "$?"
+assert_eq "  ... carrying every one of the 1300 prior pull requests" \
+  "1301" "$(jq 'length' <<<"$folded_prs_json")"
+assert_eq "  ... plus the newly folded one, under the folding repo's own slug" \
+  "o/new" "$(jq -r '.[-1].repo' <<<"$folded_prs_json")"
+
+# --- The queue-answers merge's own argv cap (requirement 4g, TD-PPagop-26081506) --
+# By this point in the tick `$prs_json` is the whole cross-repo PR index —
+# the per-repo loop above has finished folding every repo in — and it used to
+# ride into this merge as another `--argjson` value. `$queue_answers` is
+# already a filename the real script builds (the merge-queue probe's own tsv
+# scratch file), so it travels as `--rawfile`, a file jq reads itself rather
+# than an argv element, and is unaffected by this conversion.
+#
+# Not reached by driving the real script over its own CLI, for the same
+# reason as the fold above: an oversized `$prs_json` would already have died
+# at that earlier call. So this merge, too, is lifted by its own literal
+# lines and driven directly.
+queue_merge_start="  prs_json=\"\$(jq -nc --rawfile qa \"\$queue_answers\" '"
+queue_merge_end="<<<\"\$prs_json\" 2>/dev/null)\""
+queue_merge_block="$(extract_block "$queue_merge_start" "$queue_merge_end")"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$queue_merge_block" != *'input as $prs'* ]]; then
+  printf 'FAIL - could not extract the queue-answers merge from scripts/publish-dashboard.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_queue_merge_block() {  # run_queue_merge_block <prs-json> <queue-answers-file>
+  # prs_json/queue_answers are consumed only by the eval'd queue_merge_block,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( prs_json="$1" queue_answers="$2"
+    eval "$queue_merge_block"
+    printf '%s' "$prs_json" )
+}
+big_prs_index="$(jq -nc '[range(1300) | {repo: "o/a", number: ., isDraft: false, title: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized cross-repo prs index fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_prs_index" | wc -c) > 131072 ))"
+qa_file="$tmp_dir/queue-answers-oversized.tsv"
+printf 'o/a#0\ttrue\tfalse\ttrue\tfalse\n' > "$qa_file"
+merged_prs_json="$(run_queue_merge_block "$big_prs_index" "$qa_file")"
+jq -e . <<<"$merged_prs_json" >/dev/null 2>&1
+assert_eq "a cross-repo index past the argv cap still merges valid queue answers" "0" "$?"
+assert_eq "  ... carrying every one of the 1300 pull requests" \
+  "1300" "$(jq 'length' <<<"$merged_prs_json")"
+assert_eq "  ... with the one queued answer applied to the pull request it names" \
+  "true" "$(jq -r '.[0].queued' <<<"$merged_prs_json")"
+assert_eq "  ... and every other pull request left unqueued, not defaulted queued" \
+  "null" "$(jq -r '.[1].queued' <<<"$merged_prs_json")"
+
 # --- An assemble that failed is not published (the 2026-08-14 outage) ------------
 # The cap was the cause; publishing the wreckage is what hid it for 75 minutes.
 # Whatever kills the assemble — the cap, a malformed input, the OOM killer —
