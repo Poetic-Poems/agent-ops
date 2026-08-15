@@ -1378,7 +1378,7 @@ time (never committed to the repo under review).
 <!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Default | Notes |
 |---|---|---|
-| `project_review.lock_stale_after` | *(unset)* | Hours, and a floor. Derived from the review backstop, doubled because two repositories can be reviewed back to back inside one lock. |
+| `project_review.lock_stale_after` | *(unset)* | Hours, and a floor. Derived from the review backstop, multiplied by how many repositories are configured for review (floored at one), since they can all be reviewed back to back inside one lock. |
 | `project_review.defaults.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
 | `project_review.defaults.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`. |
 | `project_review.defaults.branch_prefix` | `review/` | Branch name `review/<date>`. |

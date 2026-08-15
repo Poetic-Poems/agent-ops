@@ -182,7 +182,7 @@ the one long enough for that today.
 <!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
-| `project_review.lock_stale_after` | *(unset)* | A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation doubles the widest Reviewer-Agent backstop, because one lock can span two repositories reviewed back to back, and adds the same slack. |
+| `project_review.lock_stale_after` | *(unset)* | A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation multiplies the widest Reviewer-Agent backstop by the number of repositories configured for review (floored at one, so a single-repository installation is unaffected), because one lock can span all of them reviewed back to back, and adds the same slack. |
 | `project_review.defaults.model` | `claude-sonnet-5` | The Reviewer-Agent's model — the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes. |
 | `project_review.defaults.pr_label` | `project-review` | Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. It must not be `obsolete`, for the reason given against the implementation `pr_label`. |
 | `project_review.defaults.branch_prefix` | `review/` | Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed. |
@@ -255,11 +255,28 @@ R1a. **Model id resolution (D12 groundwork).** Every configured repository's
    same rule `agent-cycle.sh` applies to its own model keys
    (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1a): a bare id means
    `anthropic/`, an `anthropic/`-qualified id has the qualifier stripped, and
-   any other qualifier is a fail-fast config error naming
-   `project_review.model`, not a value passed to `claude --model`. Every
-   configured repository's model is validated in this one sweep, before any
-   repository is worked, so a bad model on one repository is never discovered
-   only after others have already been reviewed.
+   any other qualifier is a fail-fast config error naming the precise key the
+   value came from — `project_review.repos[i].model` for a repository's own
+   override, `project_review.defaults.model` when it does not have one — never
+   the generic `project_review.model`, so the error points at the exact key to
+   fix (`lib/config-schema.sh`'s `config_project_review_repos` resolves each
+   repository's `model_key` alongside its `model` for this). Every configured
+   repository's model is validated in this one sweep, before any repository is
+   worked, so a bad model on one repository is never discovered only after
+   others have already been reviewed.
+
+R1b. **Duplicate-slug refusal.** Requirement 342's resolution rule assumes
+   exactly one `project_review.repos` entry per repository; two entries naming
+   the same `slug` leave no way to say which one's overrides apply. Checked
+   immediately after `project_review_repos_json` is resolved, before the model
+   sweep above: `lib/config-schema.sh`'s `config_duplicate_project_review_slugs`
+   — a third cross-key rule the schema itself cannot state, alongside
+   `agent-cycle.sh`'s own two (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+   requirement 1b) — names every slug appearing more than once, and the Script
+   refuses to start naming them, exactly as `scripts/doctor.sh`'s own `fail`
+   does against the same function, so the two can never drift on what counts
+   as a fault. An empty `project_review.repos` has nothing to duplicate and is
+   not a fault.
 
 R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID, start
    time, and the writer's hostname (`host`, as the implementation pipeline's
@@ -295,25 +312,39 @@ R3. **Stand-down checks.** Each logs its reason and exits 0:
    2. *Implementation pipeline busy* — if `lock.json` is held by a live
       process, stand down and wait for the next tick (defer to it, per
       "Relationship to the existing pipelines").
-   3. *A dated stand-down* — if `project_review.defaults.not_before` is set
-      and now is before it, stand down the whole cycle, logging the timestamp
-      on the event so an operator can tell this apart from a switch. Checked
-      before the lock, like R2a, so a review that must not start never takes a
-      lock a roll would then defer for. This is the installation-wide value
-      only: a repository's own `not_before` override (requirement 342) is
-      resolved separately, per repository, into R4's skip-guard below, once
-      the cycle is under way — an override can hold one repository off
-      *longer* than this value, but cannot escape it while it is in force.
-      This exists because R2a's switch is deliberately **shared** with
-      the implementation pipeline: holding the weekly review off until a date
-      while cycles carry on is a thing the switch cannot say. A value
-      `date -d` cannot parse stands the pipeline down rather than running
-      through it — the operator evidently meant to hold reviews off, and
-      guessing otherwise spends whatever they were protecting. Absent or
-      empty is not a stand-down. Preferred over raising
-      `min_days_between_reviews` because it expires by itself: a threshold
-      has to be put back by hand, and one left raised throttles every repo
-      indefinitely without anyone noticing.
+   3. *A dated stand-down, tier one* — if `project_review.defaults.not_before`
+      is set and now is before it, stand down the whole cycle, logging the
+      timestamp on the event so an operator can tell this apart from a
+      switch. Checked before the lock, like R2a, so a review that must not
+      start never takes a lock a roll would then defer for. This is the
+      installation-wide value only: a repository's own `not_before` override
+      (requirement 342) is resolved separately, per repository, into R4's
+      skip-guard below, once the cycle is under way — an override can hold
+      one repository off *longer* than this value, but cannot escape it
+      while it is in force. This exists because R2a's switch is deliberately
+      **shared** with the implementation pipeline: holding the weekly review
+      off until a date while cycles carry on is a thing the switch cannot
+      say. A value `date -d` cannot parse stands the pipeline down rather
+      than running through it — the operator evidently meant to hold
+      reviews off, and guessing otherwise spends whatever they were
+      protecting. Absent or empty is not a stand-down. Preferred over
+      raising `min_days_between_reviews` because it expires by itself: a
+      threshold has to be put back by hand, and one left raised throttles
+      every repo indefinitely without anyone noticing.
+   4. *A dated stand-down, tier two* — checked immediately after tier one,
+      also before the lock: even where `project_review.defaults.not_before`
+      itself does not trip tier one — absent, or already past — the whole
+      cycle still stands down when *every* configured repository's own
+      resolved `not_before` (its override, or the inherited default,
+      already resolved into `project_review_repos_json`) is future or
+      unparseable. This is the case tier one alone misses: a
+      `project_review.defaults.not_before` left unset while every
+      repository overrides its own, which tier one — reading only the
+      installation-wide key — would let straight through to the lock, for a
+      cycle certain to have R4's skip-guard skip every repository anyway.
+      Vacuously false, not true, on an empty `project_review.repos`: nothing
+      configured means nothing this tier could ever hold back, not that
+      everything is held.
 
 R2a. **The switch.** Before the lock, read the shared switch
    (`state_dir/disabled.json`) through `lib/toggle.sh` and stand down while it
@@ -557,8 +588,10 @@ R7b. **One stage launcher, shared.** `run_claude_stage` is sourced from
    each number came from. `project_review.lock_stale_after` becomes a floor
    under a derived threshold, which takes the *widest* `timeout_review` /
    `inactivity_review` configured across every repository this run might
-   touch — not any one repository's own — and doubles it because one lock can
-   span two repositories reviewed back to back.
+   touch — not any one repository's own — and multiplies it by the number of
+   repositories configured for review (floored at one, so a single-repository
+   installation is unaffected), because one lock can span all of them
+   reviewed back to back.
 
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one

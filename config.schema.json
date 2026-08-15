@@ -1109,8 +1109,8 @@
           "type": "number",
           "exclusiveMinimum": 0,
           "x-docs": {
-            "readme": "Hours, and a floor. Derived from the review backstop, doubled because two repositories can be reviewed back to back inside one lock.",
-            "spec": "A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation doubles the widest Reviewer-Agent backstop, because one lock can span two repositories reviewed back to back, and adds the same slack.",
+            "readme": "Hours, and a floor. Derived from the review backstop, multiplied by how many repositories are configured for review (floored at one), since they can all be reviewed back to back inside one lock.",
+            "spec": "A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation multiplies the widest Reviewer-Agent backstop by the number of repositories configured for review (floored at one, so a single-repository installation is unaffected), because one lock can span all of them reviewed back to back, and adds the same slack.",
             "value": "*(unset)*"
           }
         },

@@ -8782,16 +8782,23 @@ What exists, and the requirements each part answers to:
     1b's merge of a config with the schema's `default`s, which is where every
     reader of `config.json` takes its fallback values; and
     `config_enabler_assignee_ok` and
-    `config_missing_plan_path_repos`, the two cross-key rules the schema
-    itself cannot state — each holds *between* two keys — shared the same
-    way, so `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can
-    never drift on either. `doctor.sh` is the operator's command: it runs the
-    schema check, then those two cross-key rules, then the D18 merge-autonomy
+    `config_missing_plan_path_repos`, two cross-key rules the schema itself
+    cannot state — each holds *between* two keys — shared the same way, so
+    `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can never
+    drift on either. A third, `config_duplicate_project_review_slugs`, holds
+    between two *entries* of `project_review.repos` rather than between two
+    keys of one object — two entries naming the same repository leave
+    requirement 342's resolution rule (`docs/REVIEW-PIPELINE-SPEC.md`) with no
+    way to say which one's overrides apply — and is shared the same way
+    between `review-cycle.sh`'s own startup refusal and `doctor.sh`'s `fail`
+    (`docs/REVIEW-PIPELINE-SPEC.md` requirement R1b) instead of
+    `agent-cycle.sh`'s. `doctor.sh` is the operator's command: it runs the
+    schema check, then those three cross-key rules, then the D18 merge-autonomy
     pairing (requirement 2.3b) — every configured *source* of a level (the
     top-level `merge_autonomy` key, and each repository's own override) is a
     `fail` where the level is above `human` and `approver_app_id` is empty,
     `ok` naming the level otherwise; doctor-only, since nothing yet consumes
-    the pairing at cycle start the way the two shared cross-key rules do;
+    the pairing at cycle start the way the three shared cross-key rules do;
     and the environment half of the same identity, reconciled against the
     config's (requirement 14b): a set `PULLWRIGHT_APPROVER_APP_ID` differing
     from a set `approver_app_id` is a `fail` — the token wrapper mints

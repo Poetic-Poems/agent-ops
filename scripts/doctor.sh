@@ -181,6 +181,19 @@ else
   ok "every repo listing implementation-plan names its plan document"
 fi
 
+# Requirement 342's resolution rule assumes exactly one project_review.repos
+# entry per repository; two entries for the same slug leave no way to say
+# which one's overrides apply, so review-cycle.sh refuses to start rather
+# than silently letting the later entry win (lib/config-schema.sh's
+# config_duplicate_project_review_slugs, docs/REVIEW-PIPELINE-SPEC.md
+# requirement R1b).
+duplicate_review_slugs="$(config_duplicate_project_review_slugs "$project_review_repos_json")"
+if [[ -n "$duplicate_review_slugs" ]]; then
+  fail "project_review.repos lists [$duplicate_review_slugs] more than once — review-cycle.sh refuses to start, since requirement 342's resolution rule cannot tell which entry's overrides should apply"
+else
+  ok "every project_review.repos entry names a distinct repository"
+fi
+
 # D18 (docs/reviews/2026-08-14-autonomy-investigation.md §5.3, requirement
 # 2.3b): any merge_autonomy level above `human` needs a non-author identity —
 # the Approver GitHub App — able to hold review and merge rights, since

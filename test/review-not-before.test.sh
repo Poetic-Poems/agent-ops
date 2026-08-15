@@ -8,7 +8,7 @@
 # back would stop the implementation cycles for the same window — and the case
 # this exists for is precisely "no reviews until Thursday, but keep working".
 #
-# Four behaviours, and the last two are the ones that would fail quietly:
+# Five behaviours, and the middle three are the ones that would fail quietly:
 #
 #   in force      a timestamp in the future stands the review down, and says so
 #                 in the log with the date attached, so an operator reading
@@ -22,12 +22,20 @@
 #   unparseable   stands down rather than running. The operator plainly meant
 #                 to hold reviews off; running through a value we could not
 #                 read would spend exactly the quota they were protecting
+#   tier two      `project_review.defaults.not_before` is only the
+#                 installation-wide half (requirement 342); when it is itself
+#                 unset but every configured repository's own override still
+#                 holds it off, the whole cycle stands down before the lock
+#                 too, rather than taking it for a run R4's skip-guard would
+#                 skip every repository of anyway
 #
 # Each case runs the real `review-cycle.sh` against a shim node: a directory of
 # symlinks back into the tree with its own `config.json`, which works because
 # the script takes SCRIPT_DIR from its own path and reads config from there.
 # `project_review.repos` is emptied so a run that is *not* stood down still finishes
-# without reaching for the network.
+# without reaching for the network — except the tier-two case, which needs real
+# entries to exercise the per-repository resolution, and relies instead on the
+# stand-down itself firing before any repository is touched.
 #
 # No network. Run directly: ./test/review-not-before.test.sh — exit 0 iff all
 # passed.
@@ -132,16 +140,41 @@ out="$(run_review "$d")"
 assert_lacks "a past not_before does not stand the review down" "standing down until" "$out"
 assert_lacks "and leaves no stand-down of its own in the log" \
   "project_review.defaults.not_before" "$(stand_down_reason "$d")"
+assert_lacks "nor does tier two fire — an empty project_review.repos has nothing to hold back" \
+  "every configured repository's own not_before" "$out"
 
 # --- Absent ----------------------------------------------------------------------
 d="$(make_node absent "$BASE | del(.project_review.defaults.not_before)")"
 out="$(run_review "$d")"
 assert_lacks "an absent key is not a stand-down" "standing down until" "$out"
 assert_lacks "nor is it reported as one" "project_review.defaults.not_before" "$(stand_down_reason "$d")"
+assert_lacks "and tier two is vacuously false, not true, on an empty project_review.repos" \
+  "every configured repository's own not_before" "$out"
 
 d="$(make_node empty "$BASE | .project_review.defaults.not_before = \"\"")"
 out="$(run_review "$d")"
 assert_lacks "and neither is an empty one" "standing down until" "$out"
+
+# --- Tier two: every configured repo held on its own override, with
+#     project_review.defaults.not_before itself left unset --------------------------
+# Tier one alone reads only the installation-wide key, so it would let this
+# straight through to the lock even though every configured repository is
+# individually held. `repos` carries two real entries here (rather than the
+# empty array every other case above uses) precisely to exercise that: tier
+# two must resolve each entry's own `not_before` override from
+# project_review_repos_json and stand the whole cycle down before ever
+# reaching a repository's own skip-guard or the network.
+d="$(make_node tier-two-all-held ".project_review.defaults.not_before = \"\" \
+  | .project_review.repos = [ {slug: \"Poetic-Poems/poetic\", not_before: \"2099-01-01T00:00:00Z\"}, \
+                               {slug: \"Poetic-Poems/poetic-fiddle\", not_before: \"2099-06-01T00:00:00Z\"} ] \
+  | .state_repo = \"\"")"
+out="$(run_review "$d")"
+assert_contains "every repository held on its own override stands the whole cycle down" \
+  "every configured repository's own not_before" "$out"
+assert_contains "naming requirement 342, the resolution rule tier one alone would miss" \
+  "every configured repository's own not_before holds it off (requirement 342)" \
+  "$(stand_down_reason "$d")"
+assert_eq "and the tick still ends 0" "0" "$RC"
 
 # --- Unparseable -----------------------------------------------------------------
 # Fails towards the operator's evident intent, not through it.

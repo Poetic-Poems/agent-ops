@@ -375,21 +375,25 @@ assert_project_review "a repo entry with no overrides resolves to every default"
   '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
   '.[0].model == "claude-sonnet-5" and .[0].pr_label == "project-review"
    and .[0].branch_prefix == "review/" and .[0].min_days_between_reviews == 13
-   and .[0].not_before == "2026-07-30T16:00:00Z"'
+   and .[0].not_before == "2026-07-30T16:00:00Z"
+   and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "a repo's own override wins over the default, for that key alone" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"}]' \
-  '.[0].model == "claude-opus-5" and .[0].pr_label == "project-review"'
+  '.[0].model == "claude-opus-5" and .[0].pr_label == "project-review"
+   and .[0].model_key == "project_review.repos[0].model"'
 assert_project_review "a repo may override every key defaults carries" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1,
      not_before: "2026-01-01T00:00:00Z", timeout_review: 30, inactivity_review: 5}]' \
-  '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", pr_label: "custom-review",
-     branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
+  '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", model_key: "project_review.repos[0].model",
+     pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
      timeout_review: 30, inactivity_review: 5}'
 assert_project_review "two repos resolve independently — one overriding, one inheriting" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"},
      {slug: "Poetic-Poems/poetic-fiddle"}]' \
-  '.[0].model == "claude-opus-5" and .[1].model == "claude-sonnet-5"'
+  '.[0].model == "claude-opus-5" and .[1].model == "claude-sonnet-5"
+   and .[0].model_key == "project_review.repos[0].model"
+   and .[1].model_key == "project_review.defaults.model"'
 assert_project_review "an absent project_review resolves to no repos, never an error" \
   'del(.project_review)' '. == []'
 
@@ -412,6 +416,11 @@ assert_doctor "doctor passes an Enabler disabled outright" \
   '.enabler_model = "" | .enabler_assignee = ""' 0 'the Enabler is disabled'
 assert_doctor "doctor fails an implementation-plan source with no path, as agent-cycle.sh would" \
   '.repos[0].sources += ["implementation-plan"]' 1 'list the implementation-plan source with no implementation_plan_path'
+assert_doctor "doctor fails duplicate slugs in project_review.repos, as review-cycle.sh would" \
+  '.project_review.repos[1].slug = .project_review.repos[0].slug' 1 \
+  'project_review.repos lists [Poetic-Poems/poetic] more than once'
+assert_doctor "doctor passes distinct project_review.repos slugs" \
+  '.' 0 'every project_review.repos entry names a distinct repository'
 assert_doctor "doctor fails a label set to blocked, which would make its item unselectable" \
   '.unvoid_label = "blocked"' 1 'unvoid_label is "blocked"'
 assert_doctor "doctor fails the refined label set to blocked — the projection would bury the item as it became workable" \
@@ -595,6 +604,16 @@ run_cycle_guard "$(jq -c '.enabler_assignee = ""' "$CONFIG")"
 assert_eq "an unassigned enabled Enabler still exits 1, past the schema gate" "1" "$guard_rc"
 assert_contains "the enabler_assignee guard still fires, shared with doctor.sh" \
   "enabler_model is set but enabler_assignee is not configured" "$guard_out"
+assert_not_contains "a config the schema accepts is not reported as a schema failure" \
+  "does not match config.schema.json" "$guard_out"
+
+# review-cycle.sh's own cross-key guard: duplicate project_review.repos slugs
+# (requirement R1b), shared with doctor.sh's own `fail` above through the same
+# lib/config-schema.sh function.
+run_review_guard "$(jq -c '.project_review.repos[1].slug = .project_review.repos[0].slug' "$CONFIG")"
+assert_eq "duplicate project_review.repos slugs exit 1, past the schema gate" "1" "$guard_rc"
+assert_contains "the duplicate-slug guard names the repeated slug" \
+  "project_review.repos lists [Poetic-Poems/poetic] more than once" "$guard_out"
 assert_not_contains "a config the schema accepts is not reported as a schema failure" \
   "does not match config.schema.json" "$guard_out"
 

@@ -164,14 +164,29 @@ workspace_root="$(expand_home "$(cfg '.workspace_root')")"
 # scripts/doctor.sh, so the two scripts cannot resolve the same repository two
 # different ways (requirement 342).
 project_review_repos_json="$(config_project_review_repos "$DEFAULTED_CONFIG")"
+# Requirement 342's resolution rule assumes exactly one entry per repository;
+# two entries for the same slug leave no way to say which one's overrides
+# apply, so this refuses to start rather than silently letting the later
+# entry win (lib/config-schema.sh's config_duplicate_project_review_slugs,
+# shared with scripts/doctor.sh's own `fail` so the two can never drift,
+# docs/REVIEW-PIPELINE-SPEC.md requirement R1b).
+duplicate_review_slugs="$(config_duplicate_project_review_slugs "$project_review_repos_json")"
+if [[ -n "$duplicate_review_slugs" ]]; then
+  echo "review-cycle: project_review.repos lists [$duplicate_review_slugs] more than once — refusing to start rather than guess which entry's overrides apply" >&2
+  exit 1
+fi
 # Every configured repository's own resolved model is validated up front, at
 # the same fail-fast position the single installation-wide value used to
 # occupy (D12, requirement 1a) — a bad model on any one repository must not be
-# discovered only after other repositories have already been reviewed.
-while IFS= read -r configured_model; do
+# discovered only after other repositories have already been reviewed. Each
+# is validated against its own `model_key` (`project_review.repos[i].model`,
+# or `project_review.defaults.model` when the repository does not override
+# it), not a generic `project_review.model`, so a resolution error names the
+# exact key to fix.
+while IFS=$'\t' read -r configured_model_key configured_model; do
   [[ -n "$configured_model" ]] || continue
-  resolve_model_id project_review.model "$configured_model" >/dev/null
-done < <(jq -r '[.[].model] | unique | .[]' <<<"$project_review_repos_json")
+  resolve_model_id "$configured_model_key" "$configured_model" >/dev/null
+done < <(jq -r '[.[] | [.model_key, .model]] | unique | .[] | @tsv' <<<"$project_review_repos_json")
 # A stand-down with a date on it (R3.3), read from project_review.defaults
 # directly rather than from project_review_repos_json above: this is the
 # installation-wide gate, checked once before the lock is even taken, exactly
@@ -498,6 +513,43 @@ if [[ -n "$review_not_before" ]]; then
   fi
 fi
 
+# --- The dated stand-down, tier two: every configured repo held (R3.3) ---
+# The check above reads only `project_review.defaults.not_before` — the
+# installation-wide gate a repository with no override inherits. A
+# repository can also be held individually, on its own `not_before` override
+# (requirement 342), already resolved into project_review_repos_json above.
+# When `defaults.not_before` itself does not trip the check above — absent,
+# or already past — but *every* configured repository is still individually
+# held (each one's own resolved not_before, override or inherited default,
+# is future or unparseable), there is nothing this run could review, and
+# taking the lock only to have R4's skip-guard skip every repository once the
+# cycle is under way would hold it for nothing. Vacuous only in the direction
+# that cannot false-positive: no repository configured at all means nothing
+# for this gate to ever hold back, not that everything is held, so it does
+# not stand the run down on an empty project_review.repos.
+if [[ "$(jq 'length' <<<"$project_review_repos_json")" != "0" ]]; then
+  now_epoch="$(date +%s)"
+  all_repos_held=1
+  while IFS= read -r held_not_before; do
+    if [[ -z "$held_not_before" ]]; then
+      all_repos_held=0
+      break
+    fi
+    held_epoch="$(date -d "$held_not_before" +%s 2>/dev/null || echo "")"
+    if [[ -n "$held_epoch" ]] && (( now_epoch >= held_epoch )); then
+      all_repos_held=0
+      break
+    fi
+  done < <(jq -r '.[].not_before' <<<"$project_review_repos_json")
+  if (( all_repos_held )); then
+    log_event "review-stand-down" "$(jq -nc --argjson repos \
+      "$(jq -c '[.[] | {slug, not_before}]' <<<"$project_review_repos_json")" \
+      '{reason: "every configured repository'"'"'s own not_before holds it off (requirement 342)", repos: $repos}')"
+    (( ONCE )) && echo "review-cycle: standing down — every configured repository's own not_before (requirement 342) holds it off" >&2
+    exit 0
+  fi
+fi
+
 # --- Lock (R2) ---
 acquire_lock() {
   if [[ -f "$lock_file" ]]; then
@@ -585,15 +637,19 @@ lock_budget_overrides="$(jq -nc --argjson repos "$project_review_repos_json" '
     inactivity:  ([$repos[] | .inactivity_review | select(. != null)] | if length > 0 then max else null end) }')"
 lock_stale_after_sec="$(jq -nr --argjson t "$stage_budget_json" \
   --argjson o "$lock_budget_overrides" --argjson priors "$STAGE_BUDGET_PRIORS" \
-  --argjson configured "$lock_stale_configured_hours" '
+  --argjson configured "$lock_stale_configured_hours" \
+  --argjson repos "$project_review_repos_json" '
     ([ ($priors["project-reviewer"].backstop // 0),
        ($o.backstop // empty),
        ((($t.cells // {}) | to_entries[]
          | select(.value.actor == "project-reviewer") | .value.backstop_min) // empty) ]
      | map(select(type == "number")) | max) as $cap
-    # Two repositories can be reviewed back to back inside one lock, which is
-    # why this doubles the widest single cap rather than taking it as given.
-    | ((($cap * 2) + 30) * 60) as $derived
+    # Every configured repository could be reviewed back to back inside one
+    # lock, which is why this multiplies the widest single cap by their count
+    # rather than taking it as given — floored at one, so a single-repository
+    # installation is unaffected.
+    | ([($repos | length), 1] | max) as $repo_count
+    | ((($cap * $repo_count) + 30) * 60) as $derived
     | ([$derived, ($configured * 3600)] | max | ceil)' 2>/dev/null || printf 21600)"
 
 acquire_lock
@@ -773,7 +829,7 @@ review_one() {
   # in project_review.repos, or project_review.defaults otherwise. Already
   # validated (the model-id sweep before the lock, above), so this is a
   # straight re-derivation rather than a fresh check.
-  model="$(resolve_model_id project_review.model "$(jq -r '.model' <<<"$entry")")"
+  model="$(resolve_model_id "$(jq -r '.model_key' <<<"$entry")" "$(jq -r '.model' <<<"$entry")")"
   pr_label="$(jq -r '.pr_label' <<<"$entry")"
   branch_prefix="$(jq -r '.branch_prefix' <<<"$entry")"
 
