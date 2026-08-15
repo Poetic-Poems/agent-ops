@@ -286,7 +286,11 @@ while IFS=$'\t' read -r v_item v_detail; do
 done < <(jq -r '.[] | select((.item // "") != "") | [.item, (.detail // "no reason given")] | @tsv' \
          <<<"$void_json" 2>/dev/null || true)
 
-problems="$(jq -c -n --argjson a "$problems" --argjson b "$void_problems" '$a + $b')"
+# $problems and $void_problems both grow with the register — unbounded past
+# this call (requirement 4g, TD-PPagop-26081503). Both arrive on stdin, one
+# document per line, bound positionally with `input as $name` in the printed
+# order — never in argv.
+problems="$(jq -nc 'input as $a | input as $b | $a + $b' <<<"$problems"$'\n'"$void_problems")"
 if [[ "$(jq 'length' <<<"$problems" 2>/dev/null || echo 0)" == "0" ]]; then
   printf '[]'
   exit 0
@@ -295,15 +299,21 @@ body="$out$(jq -r 'if length == 0 then "" else
   "\n\nVOIDED STATUS (requirement 34l, not td-check.pl'"'"'s own): the fleet'"'"'s void log records the following items as already done, but their register status has not been flipped:\n" + (map("  " + .) | join("\n"))
   end' <<<"$void_problems" 2>/dev/null || true)"
 
+# $body is rendered from the same register report $problems is drawn from and
+# is the larger of the two, so it has to travel on stdin as well: an
+# `--arg body` here would have left the argv cap exactly where it was, one
+# flag over (requirement 4g, TD-PPagop-26081503). Left JSON-encoded (no `-r`)
+# so it binds directly with `input`.
+body_json="$(jq -Rs . <<<"$body")"
+
 jq -nc \
   --arg ref "$ref" \
   --arg url "$url" \
   --arg blob_sha "$dir_sha" \
-  --argjson problems "$problems" \
-  --arg body "$body" \
-  '[{source: "register-hygiene",
+  'input as $problems | input as $body |
+   [{source: "register-hygiene",
      ref: $ref,
      url: $url,
      blob_sha: $blob_sha,
      problems: $problems,
-     body: $body}]'
+     body: $body}]' <<<"$problems"$'\n'"$body_json"

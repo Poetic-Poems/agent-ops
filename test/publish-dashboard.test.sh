@@ -1518,6 +1518,64 @@ assert_eq "the void extract really is past MAX_ARG_STRLEN (131072 bytes)" "1" \
 assert_eq "and every voided item survives into data.js" "600" \
   "$(jq '.void | length' <<<"$vdata")"
 
+# --- The github_json build's own argv cap (requirement 4g, TD-PPagop-26081503) --
+# `$prs` and `$claims` are the whole cross-repo PR index and claims cache, both
+# of which grow with the fleet, and used to ride into this build as two more
+# `--argjson` values.
+#
+# Not reached by driving the real script over its own CLI: two earlier,
+# unconverted folds (`prs_json`'s own per-repo accumulation and its
+# queue-answers merge, both outside TD-PPagop-26081503's four enumerated
+# sites) take the same accumulator as their own `--argjson` first, so an
+# accumulated `$prs_json` large enough to reach this build past the cap would
+# already have died at one of those two calls before ever getting here — the
+# same "cannot be driven end-to-end" situation
+# test/gather-human-visibility-hygiene.test.sh documents for its own
+# survivors-accumulator append. So the build is lifted by its own literal
+# lines instead, the same extract_block technique, and driven directly with
+# an oversized $prs_json.
+extract_block() {  # extract_block <start-literal> <end-literal>
+  awk -v s="$1" -v e="$2" \
+    'index($0, s) == 1 { on = 1 } on { print } on && index($0, e) > 0 { exit }' \
+    "$SCRIPT_DIR/scripts/publish-dashboard.sh"
+}
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+github_json_block="$(extract_block '  github_json="$(jq -n' 'claims_json")"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$github_json_block" != *'input as $prs | input as $claims'* ]]; then
+  printf 'FAIL - could not extract the github_json build from scripts/publish-dashboard.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_github_json_block() {  # run_github_json_block <prs-json> <claims-json>
+  # prs_json/claims_json/gh_ok/gh_err/now_iso/inputs_json/pr_index_file are
+  # consumed only by the eval'd github_json_block, invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( prs_json="$1" claims_json="$2" gh_ok=true gh_err="" now_iso="2026-08-15T00:00:00Z" \
+    inputs_json='{}' pr_index_file="$tmp_dir/empty-pr-index.json"
+    printf '{}' > "$pr_index_file"
+    eval "$github_json_block"
+    # shellcheck disable=SC2154  # set by the eval'd github_json_block
+    printf '%s' "$github_json" )
+}
+big_prs_json="$(jq -nc '[range(1300) | {repo: "o/a", number: ., title: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized prs fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_prs_json" | wc -c) > 131072 ))"
+built_github_json="$(run_github_json_block "$big_prs_json" '[]')"
+jq -e . <<<"$built_github_json" >/dev/null 2>&1
+assert_eq "a prs array past the argv cap still builds valid github_json" "0" "$?"
+assert_eq "  ... carrying every one of the 1300 pull requests" \
+  "1300" "$(jq '.prs | length' <<<"$built_github_json")"
+
+big_claims_json="$(jq -nc '[range(1300) | {repo: "o/a", ts: "2026-08-15T00:00:00Z", detail: ("pad " + ("x" * 100))}]')"
+assert_eq "the oversized claims fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_claims_json" | wc -c) > 131072 ))"
+built_github_json="$(run_github_json_block '[]' "$big_claims_json")"
+assert_eq "a claims array past the argv cap still builds valid github_json" "1300" \
+  "$(jq '.claims | length' <<<"$built_github_json")"
+assert_eq "  ... with ok/error/fetched_at and inputs still intact" "true  2026-08-15T00:00:00Z" \
+  "$(jq -r '"\(.ok) \(.error) \(.fetched_at)"' <<<"$built_github_json")"
+
 # --- An assemble that failed is not published (the 2026-08-14 outage) ------------
 # The cap was the cause; publishing the wreckage is what hid it for 75 minutes.
 # Whatever kills the assemble — the cap, a malformed input, the OOM killer —

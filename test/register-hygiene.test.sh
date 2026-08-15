@@ -252,6 +252,82 @@ assert_eq "an unknown repo yields [] and exit 0, never a broken cycle" "[]" \
   "$(PATH="${PATH#"$tmp_dir/bin:"}" "$GATHER" "Poetic-Poems/does-not-exist" main 2>/dev/null)"
 assert_eq "  ... and exits 0" "0" "$?"
 
+# --- The argv cap (requirement 4g, TD-PPagop-26081503) ---
+#
+# $problems and $void_problems both grow with the register, and $body is
+# rendered from the same set and is the larger of the two — all three used to
+# ride into jq as --argjson/--arg. Past MAX_ARG_STRLEN (131072 bytes) the
+# merge or the final build died at execve and this repo's whole
+# register-hygiene candidate was lost.
+#
+# Not reached by driving the real script over its own CLI: a real drifted
+# register's problem count never approaches the cap. So the merge and the
+# final build are each lifted by their own literal lines instead, the same
+# technique test/gather-human-visibility-hygiene.test.sh's extract_block
+# uses, and driven directly with oversized accumulators.
+extract_block() {  # extract_block <start-literal> <end-literal>
+  awk -v s="$1" -v e="$2" \
+    'index($0, s) == 1 { on = 1 } on { print } on && index($0, e) > 0 { exit }' \
+    "$SCRIPT_DIR/scripts/gather-register-hygiene.sh"
+}
+
+# shellcheck disable=SC2016  # both single-quoted args are literal source text to match, not meant to expand
+merge_line="$(extract_block 'problems="$(jq -nc' 'void_problems")"')"
+# shellcheck disable=SC2016  # literal source text, not meant to expand
+if [[ "$merge_line" != *'input as $a | input as $b | $a + $b'* ]]; then
+  printf 'FAIL - could not extract the problems merge from scripts/gather-register-hygiene.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_merge_line() {  # run_merge_line <problems-json> <void_problems-json>
+  # problems/void_problems are consumed only by the eval'd merge_line,
+  # invisible to shellcheck.
+  # shellcheck disable=SC2034
+  ( problems="$1" void_problems="$2"; eval "$merge_line"; printf '%s' "$problems" )
+}
+big_problems="$(jq -nc '[range(1300) | ("BAD FIELD  tech-debt/TD-PPtest-" + (. | tostring) + ".md pad " + ("x" * 100))]')"
+assert_eq "the oversized problems fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( $(printf '%s' "$big_problems" | wc -c) > 131072 ))"
+merged="$(run_merge_line "$big_problems" '["VOIDED STATUS  the newest one"]')"
+assert_eq "a merge onto an oversized problems array keeps every prior entry" \
+  "1301" "$(jq 'length' <<<"$merged")"
+assert_eq "  ... plus the void problem just merged in" "1" \
+  "$(jq '[.[] | select(. == "VOIDED STATUS  the newest one")] | length' <<<"$merged")"
+
+final_block="$(extract_block 'jq -nc' 'body_json"')"
+if [[ "$final_block" != *'source: "register-hygiene"'* ]]; then
+  printf 'FAIL - could not extract the final candidate build from scripts/gather-register-hygiene.sh (moved or reworded?)\n'
+  failures=$(( failures + 1 ))
+fi
+run_final_block() {  # run_final_block <problems-json> <body-raw>
+  local body_json
+  # body_json is consumed only by the eval'd final_block inside the subshell
+  # below (which inherits it), invisible to shellcheck.
+  # shellcheck disable=SC2034
+  body_json="$(jq -Rs . <<<"$2")"
+  # problems/ref/url/dir_sha are consumed only by the eval'd final_block too.
+  # shellcheck disable=SC2034
+  ( problems="$1" ref="register-hygiene-abc123" \
+    url="https://github.com/o/a/tree/main/tech-debt" dir_sha="deadbeef"
+    eval "$final_block" )
+}
+big_problems_final="$(jq -nc '[range(1300) | ("BAD FIELD pad " + ("x" * 100))]')"
+oversized_body="$(head -c 140000 < /dev/zero | tr '\0' 'x')"
+assert_eq "the oversized register-hygiene body fixture really is past MAX_ARG_STRLEN" "1" \
+  "$(( ${#oversized_body} > 131072 ))"
+built="$(run_final_block "$big_problems_final" "$oversized_body")"
+assert_eq "a problems array and body both past the argv cap still produce the candidate" "1" \
+  "$(jq 'length' <<<"$built")"
+assert_eq "  ... carrying every one of the 1300 problem lines" \
+  "1300" "$(jq '.[0].problems | length' <<<"$built")"
+# Compared in bash, not with `jq -r`: an oversized body is what this section
+# exists to prove no longer rides through an --arg, but the comparison itself
+# must not hit the same cap either.
+assert_eq "  ... carrying the whole oversized body, not a truncation" "1" \
+  "$([[ "$(jq -r '.[0].body' <<<"$built")" == "$oversized_body" ]] && echo 1 || echo 0)"
+assert_eq "  ... with the source, ref and blob_sha intact" \
+  "register-hygiene register-hygiene-abc123 deadbeef" \
+  "$(jq -r '.[0] | "\(.source) \(.ref) \(.blob_sha)"' <<<"$built")"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
