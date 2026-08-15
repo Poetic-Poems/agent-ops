@@ -77,12 +77,19 @@
 #     cycle push a fix to a branch the human just took back, so an unrecognised
 #     or absent reason is never a candidate, on the same "the wrong direction
 #     here is unsafe" reasoning gather-merge-conflicts.sh applies to `UNKNOWN`.
+#   - **the dequeue has not already been answered** — no marked
+#     `actor=implementor` reply on the pull request, in a review body or a
+#     general comment, is newer than `dequeued_at`. See "Why the dequeue must
+#     still be unanswered" below: this is the clause that stops a fixed
+#     dequeue being selected again for ever, and it is load-bearing, not a
+#     refinement.
 #
 # A probe that cannot answer (network failure, an unreadable response) is
 # never read as "not dequeued" — the one direction `merge_queue_probe`'s own
 # contract forbids — so a PR whose probe fails is simply not a candidate this
 # cycle, exactly as one gather-merge-conflicts.sh could not read `mergeable`
-# for would not be.
+# for would not be. The reviews/comments read behind the answered clause fails
+# the same way, and for a sharper reason — see that section.
 #
 # ## Why this source and merge-conflicts never overlap
 #
@@ -95,6 +102,56 @@
 # `CONFLICTING`, so the two candidate rules partition on `mergeable` and can
 # never both admit the same PR head at once.
 #
+# ## Why the dequeue must still be unanswered
+#
+# Every sibling finishing source stops yielding a candidate once the pipeline
+# has done its part, because the condition it keys on clears by itself: a
+# rebase makes requirement 3g's `mergeable` stop reading `CONFLICTING`; any
+# activity resets requirement 3e's `abandoned_draft_after_hours` clock. This
+# source has neither. `RemovedFromMergeQueueEvent` is immutable timeline
+# history, so `merge_queue_probe` returns the same `dequeued_at` and
+# `dequeue_reason` for ever, and `isInMergeQueue` only returns to `true` when a
+# *human* clicks "Merge when ready" again — which D17 deliberately reserves to
+# them. So after the Implementor diagnoses the merge-group failure and pushes
+# its fix, every other clause above still holds, and the only thing that has
+# moved is the head SHA. The ref is scoped to that (below), so the fix does not
+# retire the old ref, it *replaces* it with one no `blocked`, `void` or
+# `claimed` record covers — and the pull request is offered again, at rank
+# five, pointed at a merge-group run that is already fixed. Because this array
+# feeds the no-op fingerprint verbatim (lib/noop-skip.sh), each replacement
+# busts the fingerprint and wakes the pipeline for it.
+#
+# This is the failure gather-review-feedback.sh's own header calls
+# load-bearing, arising here from the same root cause: the agent cannot clear
+# the state it is keyed on. That script answers it by requiring the blocking
+# review round to be unanswered; requirement 3z answers it the same way, via
+# the same predicate — `handoff_round_answered` (lib/handoff.sh), one
+# definition for the two callers that must agree on what "answered" means
+# (requirement 34a).
+#
+# Three properties of how it is called here are deliberate:
+#
+#   - **The round starts at `dequeued_at`, not at the pull request's birth.**
+#     Keying on the timestamp rather than on "has any implementor comment"
+#     is what keeps the clause exact: a *second* dequeue after the fix stamps a
+#     later `dequeued_at` than the answering comment, so the pull request
+#     correctly becomes a candidate again. The clause suppresses the
+#     re-selection loop without making one fixed dequeue a permanent
+#     exclusion.
+#   - **`REREQUESTS_JSON` is deliberately not passed.** A review-requested
+#     event does not answer a dequeue, and passing the timeline would let
+#     sweep-human-visibility.sh's own re-request — posted beside the very
+#     requirement 38f notice this source rides alongside — read back next
+#     cycle as an answer to itself (tech-debt/TD-PPagop-26080804.md). Only a
+#     marked `actor=implementor` reply closes this round.
+#   - **A read this cannot make yields no candidate, never "unanswered".**
+#     gather-review-feedback.sh defaults an unreadable comments read to `[]`,
+#     which reads as `unanswered` and *admits* its candidate; that is safe
+#     there and unsafe here, because here `unanswered` is the verdict that
+#     creates work. So a failed or non-array read drops the pull request for
+#     this cycle, exactly as an unreadable `merge_queue_probe` does, and
+#     `unknown` is never collapsed into `unanswered`.
+#
 # ## Why the ref is scoped to the head SHA
 #
 # Same reasoning as gather-merge-conflicts.sh's own `pr-<n>-conflict-<sha>`
@@ -102,10 +159,13 @@
 # something clears it, so a bare `pr-<n>-dequeued` that an Implementor once
 # failed to resolve would still read blocked after a fresh push — including
 # the Implementor's own fix — changed the very state the item names. Scoping
-# to the head SHA means a fresh push naturally retires the old ref (this
-# script simply stops yielding it — the PR's `dequeued_at` now describes a
-# head nobody is offering a candidate for) while a re-detected dequeue at the
+# to the head SHA means a block recorded against one dequeued state does not
+# swallow a later, possibly-resolvable one, while a re-detected dequeue at the
 # *same* head keeps the same ref and stays correctly blocked.
+#
+# What it does *not* do is end the pull request's candidacy: a fresh push
+# replaces the ref rather than retiring it, which is the answered clause's job
+# above. The two are complementary and neither substitutes for the other.
 #
 # Fails safe: always prints a valid JSON array and exits 0. A repo with no
 # actionable dequeues contributes `[]`; an API that will not answer
@@ -116,6 +176,11 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# The marker before handoff: `handoff_answer_events` reads
+# `PIPELINE_COMMENT_MARKER_PREFIX` from this file, the same order
+# gather-review-feedback.sh sources them in.
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 # Rate-limit-aware `gh`: sourcing this wraps every `gh` call below (including
 # the one inside merge_queue_probe, which defaults to the same shadowed name)
 # so a refusal GitHub will lift in seconds is waited out rather than
@@ -127,6 +192,10 @@ MERGE_QUEUE_GH="$GH"
 export MERGE_QUEUE_GH
 # shellcheck source=lib/merge-queue.sh
 . "$SCRIPT_DIR/lib/merge-queue.sh"
+# `handoff_round_answered`, the answered clause's one definition (requirement
+# 34a) — see "Why the dequeue must still be unanswered" above.
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 
 slug="${1:-}"
 pr_label="${2:-autonomous-agent}"
@@ -175,6 +244,7 @@ out='[]'
 emit() {  # <pr-json>
   local pr="$1" number head_sha item cand docs
   local mq_probe mq_queued mq_dequeued_at mq_dequeue_reason
+  local reviews issue_comments answered
   number="$(jq -r '.number' <<<"$pr")"
   head_sha="$(jq -r '.headRefOid // ""' <<<"$pr")"
   [[ -n "$head_sha" ]] || return 0
@@ -187,6 +257,49 @@ emit() {  # <pr-json>
   [[ "$mq_queued" == "false" ]] || return 0
   [[ -n "$mq_dequeued_at" ]] || return 0
   [[ "${mq_dequeue_reason,,}" == "failed_checks" ]] || return 0
+
+  # The answered clause (see "Why the dequeue must still be unanswered"). Read
+  # last of the gates, so it costs nothing for the PRs the probe already
+  # rejected. Both collections: the Implementor's summary lands via `gh pr
+  # comment` (issue comments) but the same marked reply in a review body counts
+  # too, and the two file under different endpoints — gather-review-feedback.sh
+  # reads both for the same reason.
+  #
+  # Streamed one object per line and slurped into a single document below:
+  # `handoff_round_answered` needs one JSON array per argument, and
+  # `--paginate` emits one array *per page*, which its own guards would then
+  # have to reject as `unknown` (see that function's note on `jq -e 'type ==
+  # "array"'`).
+  #
+  # Each read's *exit status* is what decides, and it has to be: an empty
+  # stream slurps to a perfectly valid `[]`, so a failed read and a pull
+  # request nobody has commented on are indistinguishable by their output
+  # alone. `[]` would then read as `unanswered` and offer the candidate, which
+  # is the one direction this source must not fail in — hence the early return
+  # rather than gather-review-feedback.sh's `|| issue_comments='[]'`.
+  reviews="$("$GH" api "repos/$slug/pulls/$number/reviews" --paginate \
+              --jq '.[] | select(.submitted_at != null)
+                        | {at: .submitted_at, body: (.body // "")}' \
+              2>/dev/null)" \
+    || { warn "could not read pr #$number's reviews; not offering it this cycle"; return 0; }
+  reviews="$(jq -s -c '.' <<<"$reviews" 2>/dev/null)" \
+    || { warn "could not assemble pr #$number's reviews; not offering it this cycle"; return 0; }
+  issue_comments="$("$GH" api "repos/$slug/issues/$number/comments" --paginate \
+                      --jq '.[] | {at: .created_at, body: (.body // "")}' \
+                      2>/dev/null)" \
+    || { warn "could not read pr #$number's comments; not offering it this cycle"; return 0; }
+  issue_comments="$(jq -s -c '.' <<<"$issue_comments" 2>/dev/null)" \
+    || { warn "could not assemble pr #$number's comments; not offering it this cycle"; return 0; }
+
+  # `unanswered` and nothing else: `unknown` is never collapsed into it, for
+  # the same reason the reads above fail closed. REREQUESTS_JSON is
+  # deliberately omitted (header, second bullet).
+  answered="$(handoff_round_answered "$mq_dequeued_at" "$reviews" "$issue_comments")"
+  [[ "$answered" == "unanswered" ]] || {
+    [[ "$answered" == "answered" ]] \
+      || warn "could not judge whether pr #$number's dequeue was answered; not offering it this cycle"
+    return 0
+  }
 
   # The originating item, so the Implementor can find the tech-debt entry or
   # issue this PR came from — best-effort, absence is normal. Same regex
@@ -236,6 +349,15 @@ while IFS= read -r pr; do
   emit "$pr"
 done < <(jq -c '.[]' <<<"$ours" 2>/dev/null || true)
 
-# Longest-waiting first: the PR whose dequeue notice has sat unanswered
-# longest goes first, matching gather-merge-conflicts.sh's own ordering.
-jq -c 'sort_by(.updated_at)' <<<"$out"
+# Longest-waiting first: the PR whose dequeue has sat unanswered longest goes
+# first. gather-merge-conflicts.sh orders on `updated_at` because a conflict
+# carries no timestamp of its own, but a dequeue does — and here the two are
+# not interchangeable. `updatedAt` moves on any comment, *including the
+# merge-queue-dequeued notice requirement 38f posts on this very pull request*,
+# so ordering on it would let the act of telling the human reset the pull
+# request's place in the queue, and a PR dequeued days ago but commented on
+# this morning would sort last. `dequeued_at` measures what the ordering
+# claims to measure, and after the clause above it is literally the start of
+# the unanswered round. `updated_at` breaks ties, keeping the order total for
+# two dequeues sharing a timestamp.
+jq -c 'sort_by(.dequeued_at, .updated_at)' <<<"$out"

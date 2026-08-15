@@ -118,11 +118,15 @@ heading, the Script gives you one JSON object:
 - Each entry's `dequeued` is the repo's own PRs that GitHub's merge queue
   removed over a merge-group checks failure without merging — open, non-draft,
   ours by label on a branch we own, `mergeable` exactly `MERGEABLE` (never
-  overlapping `merge_conflicts`), and whose `dequeue_reason` reads
-  `failed_checks` — **already fetched and filtered for you** by the Script,
-  and already cross-referenced against `claimed`, `blocked` and `void` the
-  same way (see "Dequeued pull requests" below). An empty array means nothing
-  of ours is dequeued and actionable — do not go looking.
+  overlapping `merge_conflicts`), whose `dequeue_reason` reads `failed_checks`,
+  and which no Implementor has answered since the dequeue — **already fetched
+  and filtered for you** by the Script, and already cross-referenced against
+  `claimed`, `blocked` and `void` the same way (see "Dequeued pull requests"
+  below). An empty array means nothing of ours is dequeued and actionable — do
+  not go looking. Note the last of those filters in particular: a dequeue
+  cannot clear itself and this system cannot re-queue, so a pull request an
+  earlier cycle already fixed drops out of this array only because the Script
+  read its answering comment — not because anything about the dequeue changed.
 - Each entry's `abandoned_drafts` is the repo's own draft PRs that a previous
   cycle raised and then abandoned — open, still draft, carrying our label on a
   branch we own, and untouched for at least the staleness threshold — **already
@@ -717,16 +721,20 @@ dequeued and conflicting belongs to that source instead, and its own rule
 already excludes anything not `CONFLICTING`), and the pull request's most
 recent merge-queue removal reads `dequeue_reason: "failed_checks"` — the one
 reason this system can act on; a human manually removing their own queue
-entry mints a different reason and is never offered here. **An entry's
-presence in this array is the candidate test.** If the array is empty, this
-source has no candidates.
+entry mints a different reason and is never offered here — and the dequeue is
+still *unanswered*, meaning no Implementor of ours has replied to it since.
+**An entry's presence in this array is the candidate test.** If the array is
+empty, this source has no candidates.
 
-Take the **oldest `updated_at` first** (the array is already in that order —
-that PR has been waiting longest), and:
+Take the **oldest `dequeued_at` first** (the array is already in that order —
+that PR's dequeue has gone unanswered longest), and:
 
 - `item` is the entry's `ref` (e.g. `pr-57-dequeued-1a2b3c4d5e6f`). Use it
-  exactly; it is scoped to this PR's current head on purpose, so a later push
-  becomes a fresh item that no old block covers.
+  exactly; it is scoped to this PR's current head on purpose, so a block
+  recorded against one dequeued state cannot swallow a later one. Note that
+  the scoping does *not* stop a fixed PR being re-offered — the Script's
+  answered filter is what does that — so do not treat a fresh ref as evidence
+  that the work is new.
 - `context` must carry the entry's `body` (the PR's own description) verbatim,
   plus its `url`, `number`, `branch`, `base`, `head_sha`, `dequeued_at`,
   `dequeue_reason`, and — where the entry names an `item` — that originating

@@ -1926,10 +1926,13 @@ runs unattended.
    `branch_prefix` (or `td/`), with `mergeable` exactly `MERGEABLE`, and whose
    most recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`,
    a non-null `dequeued_at`, and a `dequeue_reason` reading, case-insensitively,
-   exactly `failed_checks`. Each entry carries a head-SHA-scoped ref, the PR
-   number and URL, the existing branch, its `base`, the head SHA, the
-   `updatedAt`, the PR's own body verbatim, and the probe's `dequeued_at` and
-   `dequeue_reason`.
+   exactly `failed_checks`, **and whose dequeue is still unanswered** — no
+   marked `actor=implementor` reply newer than `dequeued_at`, per the clause
+   below. Each entry carries a head-SHA-scoped ref, the PR number and URL, the
+   existing branch, its `base`, the head SHA, the `updatedAt`, the PR's own body
+   verbatim, and the probe's `dequeued_at` and `dequeue_reason`. The array is
+   ordered by `dequeued_at`, oldest first (`updated_at` breaking ties) — longest
+   unanswered, first offered.
 
    - **Complementary to requirement 3g, never overlapping.** A merge queue
      dequeues a pull request whose own head is green but whose speculative
@@ -1956,12 +1959,56 @@ runs unattended.
      tech-debt record was filed to prevent. An unreadable probe is never read
      as "not dequeued", the one direction `merge_queue_probe`'s own contract
      forbids, so a PR whose probe fails is simply not a candidate this cycle.
+   - **The dequeue must still be unanswered, and that clause is load-bearing.**
+     Every sibling finishing source stops yielding a candidate once the
+     pipeline has acted, because the condition it keys on clears by itself: a
+     rebase makes requirement 3g's `mergeable` stop reading `CONFLICTING`; any
+     activity resets requirement 3e's clock. This source has neither.
+     `RemovedFromMergeQueueEvent` is immutable timeline history, so the probe
+     returns the same `dequeued_at`/`dequeue_reason` for ever, and
+     `isInMergeQueue` returns to `true` only on a *human's* re-queue, which D17
+     reserves to them. Without this clause, the Implementor's own fix push
+     leaves every other clause true and moves only the head SHA — which mints a
+     *fresh* ref (below) that no `blocked`, `void` or `claimed` record covers —
+     so the pull request is selected again, at rank five, pointed at a
+     merge-group run already fixed, and again after each round that pushes
+     anything, for as long as the human takes to re-queue. That is the
+     re-selection loop `scripts/gather-review-feedback.sh`'s header calls
+     load-bearing to prevent, arising from the identical root cause: the agent
+     cannot clear the state it is keyed on. So candidacy also requires
+     `lib/handoff.sh`'s `handoff_round_answered` — requirement 34a's one
+     definition, shared with requirement 3c and requirement 38c — to answer
+     exactly `unanswered` for the round beginning at `dequeued_at`. Three
+     properties of that call are deliberate: the round starts at `dequeued_at`
+     rather than at the PR's birth, so a *second* dequeue after the fix
+     correctly re-opens candidacy; `REREQUESTS_JSON` is not passed, because a
+     review re-request does not answer a dequeue and passing the timeline would
+     let requirement 38c's own re-request read back as one
+     (tech-debt/TD-PPagop-26080804.md); and an `unknown` verdict — an
+     unreadable reviews or comments response — drops the PR for the cycle
+     rather than being collapsed into `unanswered`, the opposite of
+     requirement 3c's default, because here `unanswered` is the verdict that
+     creates work.
    - **The ref is scoped to the head SHA** — `pr-<n>-dequeued-<head-sha>`, not
      `pr-<n>-dequeued` — for the identical reason requirement 3g's own
-     `pr-<n>-conflict-<head-sha>` is: a fresh push (the Implementor's own fix,
-     or anyone else's) retires the ref by simply no longer appearing in this
-     array, while a block recorded against one dequeued state does not swallow
-     a later, possibly-resolvable one.
+     `pr-<n>-conflict-<head-sha>` is: a block recorded against one dequeued
+     state must not swallow a later, possibly-resolvable one, and a re-detected
+     dequeue at the *same* head keeps the same ref and stays correctly blocked.
+     Unlike requirement 3g's, this scoping does **not** end the pull request's
+     candidacy — a fresh push replaces the ref rather than retiring it, which is
+     the clause above's job. The two are complementary and neither substitutes
+     for the other.
+   - **What it costs, per cycle.** One `merge_queue_probe` GraphQL call per PR
+     surviving the listing filter — so the cost scales with the number of open,
+     non-draft, `MERGEABLE`, `pr_label`-carrying PRs, not with the number of
+     dequeues — plus, for each PR that probe admits, two REST reads (its
+     reviews and its issue comments) for the answered clause. The bound on the
+     first is `GITHUB_PR_LIST_LIMIT`, **not** `max_open_agent_prs`: requirement
+     2.2's count deliberately excludes PRs waiting on a human, so a repo can
+     hold more open labelled PRs than the cap. The probe cannot be skipped
+     without weakening the gate, since an unreadable probe is never read as
+     "not dequeued"; the two reads behind it are ordered last, so they are paid
+     only for the PRs a dequeue has actually been found on.
    - **Its candidacy turns on a transition no signal on the PR itself
      carries** — sharper than requirement 3g's own case, since a dequeue moves
      neither the head, `updatedAt`, nor even `mergeable`, which is what
@@ -7931,9 +7978,12 @@ What exists, and the requirements each part answers to:
    own PRs (open, non-draft, ours, `mergeable` exactly `MERGEABLE`) whose most
    recent `lib/merge-queue.sh` `merge_queue_probe` reports `queued: false`, a
    non-null `dequeued_at`, and `dequeue_reason` reading, case-insensitively,
-   `failed_checks` — each carrying the PR's body verbatim, its base, a
-   head-SHA-scoped ref, and the probe's own `dequeued_at`/`dequeue_reason`.
-   Fails safe to `[]` (exit 0). Must pass `shellcheck`; its candidate rule is
+   `failed_checks`, and whose dequeue `lib/handoff.sh`'s
+   `handoff_round_answered` reports still `unanswered` as of `dequeued_at` —
+   each carrying the PR's body verbatim, its base, a head-SHA-scoped ref, and
+   the probe's own `dequeued_at`/`dequeue_reason`, ordered by `dequeued_at`
+   oldest first. Fails safe to `[]` (exit 0), including on a reviews or
+   comments read it cannot make. Must pass `shellcheck`; its candidate rule is
    regression-tested in `test/gather-dequeued.test.sh`.
 3i. `scripts/gather-register-hygiene.sh` implementing requirement 3i: given a
    repo slug, default branch and (requirement 34l) an optional JSON array of
@@ -9361,7 +9411,11 @@ pull request, run the ones the change touches and any it could regress.
    API error never aborts the cycle (TD-PPagop-26081409, requirement 3z). Its
    candidate rule — the `MERGEABLE`-only gate that keeps it from ever
    overlapping requirement 3g's own candidates, the `failed_checks`-only
-   allow-list on `dequeue_reason`, and the head-SHA-scoped ref — is
+   allow-list on `dequeue_reason`, the answered clause (only a marked
+   `actor=implementor` reply newer than `dequeued_at` excludes; any other
+   actor, an unmarked comment, or an earlier one does not; an unreadable
+   reviews or comments response drops the candidate rather than admitting it),
+   the `dequeued_at` ordering, and the head-SHA-scoped ref — is
    regression-tested (through the real script, via `DEQUEUED_GH`/
    `MERGE_QUEUE_GH`) in `test/gather-dequeued.test.sh`.
 2h. **Dependabot's own conflicted PRs are nudged, then — only after a full
@@ -9752,11 +9806,19 @@ pull request, run the ones the change touches and any it could regress.
    `mergeable` is `CONFLICTING` is **not** a candidate here (that is
    requirement 3g's job, and the two candidate rules must never both admit the
    same PR head); a PR whose `dequeue_reason` is anything other than
-   `failed_checks` (including empty/unreadable) is **not** a candidate; and a
-   currently-queued PR (`queued: true`) is never a candidate. And assert the
-   claim uses a file claim, not a create-ref against the already-existing
-   branch (requirement 17a), or every attempt would 422 and no dequeued PR
-   could be picked up.
+   `failed_checks` (including empty/unreadable) is **not** a candidate; a
+   currently-queued PR (`queued: true`) is never a candidate; and **a dequeue
+   the pipeline has already answered is not a candidate at a moved head** — a
+   marked `actor=implementor` reply newer than `dequeued_at` excludes the PR
+   even though the probe still reports the same dequeue, which is what stops
+   the fixed pull request being re-offered on every cycle until a human
+   re-queues it. Assert the clause's own edges too: the same reply *before*
+   `dequeued_at` does not exclude (so a second dequeue re-opens candidacy),
+   another actor's marked comment or an unmarked one does not exclude, and a
+   reviews or comments read that fails yields no candidate rather than one.
+   And assert the claim uses a file claim, not a create-ref against the
+   already-existing branch (requirement 17a), or every attempt would 422 and no
+   dequeued PR could be picked up.
 6g. **The review runs at the tier the work graded itself (requirements 26a,
    8a).** `test/cycle-state.test.sh`'s reviewer-complexity section passes: the
    resolution takes the highest valid grade among the summary's `complexity`
@@ -11110,7 +11172,17 @@ requirements above, which state only what is.
   enqueueing for the human's own "Merge when ready" click — so it diagnoses
   and fixes the merge-group's own failed run, then leaves the pull request
   ready with a comment naming what it found, exactly as far as this system's
-  side of a merge queue can ever go.
+  side of a merge queue can ever go. That last property is also what makes the
+  source's third choice necessary: because the agent is forbidden the one
+  action that clears the state it is keyed on, a fixed dequeue would otherwise
+  stay a candidate for ever, and the head-SHA-scoped ref would mint a fresh,
+  unblocked one on every fix push. So candidacy also requires the dequeue to be
+  *unanswered* — no marked `actor=implementor` reply newer than `dequeued_at` —
+  reusing `lib/handoff.sh`'s predicate rather than a second copy of it, exactly
+  as requirement 3c does for a review round it likewise cannot dismiss. This is
+  the first finishing source whose condition self-clears neither on a rebase
+  (`merge-conflicts`) nor on activity (`abandoned-drafts`), and the clause is
+  what gives it the property the other three get free.
 - **Dependabot's own conflicted PRs get one nudge before a takeover, never a
   force-push (requirement 3s, issue #250).** poetic-fiddle #129 sat
   merge-conflicting for twelve days: dependabot will rebase its own PR on

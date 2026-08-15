@@ -89,11 +89,16 @@ VOID_LIVENESS_FAILED_RUN_RE='^failed-run-.+$'
 VOID_LIVENESS_MERGE_CONFLICT_RE='^pr-[0-9]+-(conflict|superseded)-[0-9a-f]{6,40}$'
 
 # scripts/gather-dequeued.sh's own ref shape (TD-PPagop-26081409), scoped to
-# a head SHA the same way: `pr-<n>-dequeued-<head-sha>`. A fresh push (a fix,
-# whether this system's own or anyone else's) or a re-queue retires it the
-# same absent-from-this-cycle's-gather way the merge-conflict shapes do —
-# gather-dequeued.sh simply stops yielding it, since its candidate rule reads
-# `merge_queue_probe` live each cycle.
+# a head SHA the same way: `pr-<n>-dequeued-<head-sha>`. It retires from the
+# void extract by the same absent-from-this-cycle's-gather test the
+# merge-conflict shapes use, since that script's candidate rule is re-read live
+# each cycle — but note *what* makes it absent, which differs from the shapes
+# above. A re-queue, a merge, a close or a draft ends the pull request's
+# candidacy outright; the Implementor's own fix push does not, and is caught
+# instead by that script's answered clause (its "Why the dequeue must still be
+# unanswered" section). A push alone merely replaces this ref with one at the
+# new head, which is why the clause and not the scoping is what stops the entry
+# reappearing for ever.
 VOID_LIVENESS_DEQUEUED_RE='^pr-[0-9]+-dequeued-[0-9a-f]{6,40}$'
 
 # void_liveness_actioned VOID_JSON GATHER_JSON

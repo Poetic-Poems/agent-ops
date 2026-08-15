@@ -99,9 +99,18 @@
 # request's own timeline, read live each cycle by `lib/merge-queue.sh`'s
 # `merge_queue_probe` — a fact that exists nowhere else in this system's state.
 # gather-dequeued.sh samples that probe and this array carries the result, so a
-# fresh dequeue *adds an entry* and busts the fingerprint, and a fix (or a
-# re-queue) that resolves it removes the entry the same way. Same failure shape
-# as merge_conflicts and abandoned_drafts; same fix.
+# fresh dequeue *adds an entry* and busts the fingerprint, and a re-queue that
+# resolves it removes the entry the same way. Same failure shape as
+# merge_conflicts and abandoned_drafts; same fix.
+#
+# A *fix* removes the entry too, but by a different route worth knowing here,
+# because it is the one case where this array's churn is not the signal it looks
+# like: the dequeue itself never clears (the timeline event is permanent), so
+# what drops the pull request is gather-dequeued.sh's answered clause noticing
+# the Implementor's marked reply. Until that clause was added, a fix merely
+# re-keyed the entry to the new head SHA — busting this fingerprint on every
+# round while nothing had actually changed, which is precisely the wake-up this
+# file exists to avoid paying for twice.
 #
 # `claimed` (requirement 3o) is hashed too, projected to `repo|item` like
 # `blocked`/`void`, for the same class of gap `abandoned_drafts` and

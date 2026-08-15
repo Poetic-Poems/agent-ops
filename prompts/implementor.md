@@ -266,6 +266,18 @@ human to re-queue — you cannot re-queue it yourself.
   and fixed, naming the failed `merge_group` run you diagnosed it from, and
   saying plainly that it needs a fresh "Merge when ready" click — that comment
   is the whole of what you can do to move this forward.
+- **That comment is not a courtesy — it is what closes this item.** Because you
+  cannot re-queue the pull request, nothing you *do* to the branch changes any
+  of the conditions this work order was selected on: the dequeue event is
+  permanent, and the pull request stays open, non-draft and mergeable. Your
+  marked comment is the only signal that says the round was answered, and
+  requirement 3z's candidate rule reads exactly that (`lib/handoff.sh`'s
+  `handoff_round_answered`, keyed on the work order's `dequeued_at`). Skip it,
+  or post it without finishing the round properly, and the next cycle offers
+  this same pull request again at your new head — a fresh item no block covers,
+  pointed at the merge-group run you have just fixed. Post it after your push,
+  once, in the ordinary way; the marker your comments already carry is what
+  makes it count.
 - **Do not close the loop on the originating item.** Unlike `abandoned-drafts`,
   fixing a merge-group failure does **not** complete the underlying work — the
   item is done when the pull request *merges*, which is still the human's
