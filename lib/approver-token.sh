@@ -45,8 +45,9 @@
 # `approver_token_get` prints it to stdout and nowhere else; every error path
 # below prints a diagnosis, never the token or the JWT that produced it. The
 # one cache this file keeps is best-effort and tmpfs-only — `/dev/shm` by
-# default, mode 600 — so a token can be reused across separate invocations
-# within its lifetime without ever touching a disk-backed path; if that
+# default, mode 600, and read back only when the file is this user's own (see
+# `_approver_token_cache_read`) — so a token can be reused across separate
+# invocations within its lifetime without ever touching a disk-backed path; if that
 # directory is unusable for any reason, caching is simply skipped and every
 # call mints fresh, which is correct, just less efficient.
 #
@@ -133,9 +134,20 @@ _approver_token_cache_file() {
 # expire within REFRESH_BUFFER_SECONDS of NOW_EPOCH. Silent, non-zero
 # otherwise — a missing, unreadable, malformed or near-expiry cache is simply
 # "mint a fresh one", never an error.
+#
+# The provenance check is not decoration. The default cache directory
+# `/dev/shm` is mode 1777, and this file's name in it is fixed and
+# predictable, so any local user can create it first — the sticky bit stops
+# them replacing *our* file, not claiming the name before we do. Without the
+# check below we would then read a token of their choosing and hand it to a
+# caller as the Approver's credential. So: not a symlink, and owned by this
+# user, or it is not ours and we mint fresh instead. (The write path needs no
+# equivalent — it is `mktemp` plus a rename, which replaces a planted symlink
+# rather than following it, and cannot rename over a file it does not own.)
 _approver_token_cache_read() {
   local cache_file="$1" now="$2" buffer="$3"
   [[ -n "$cache_file" && -r "$cache_file" ]] || return 1
+  [[ ! -L "$cache_file" && -O "$cache_file" ]] || return 1
   local token exp
   token="$(jq -r '.token // empty' "$cache_file" 2>/dev/null)"
   exp="$(jq -r '.exp_epoch // empty' "$cache_file" 2>/dev/null)"

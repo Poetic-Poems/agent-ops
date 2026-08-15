@@ -211,6 +211,24 @@ out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
 assert_eq "response missing the token field: exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
 
+# --- A cache file this user does not own is never served as a credential ----
+# The default cache directory is /dev/shm, mode 1777, and this file's name in
+# it is fixed — so any local user can create it before we do. Such a file must
+# be ignored and a fresh token minted, never handed back as the Approver's.
+# Ownership cannot be faked here without root, so the symlink half of the same
+# check stands in: a symlink is never something this file wrote.
+setup_env
+rm -f "$cache_dir"/*
+printf '{"token":"ghs_PLANTED","expires_at":"2099-01-01T00:00:00Z","exp_epoch":4070908800}' \
+  > "$tmp_dir/planted.json"
+ln -s "$tmp_dir/planted.json" "$cache_dir/pullwright-approver-token.json"
+stub_curl 201 '{"token":"ghs_minted999","expires_at":"2026-08-14T20:00:00Z"}'
+out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+assert_eq "planted cache file: still succeeds" "0" "$rc"
+assert_eq "  ... the planted token is never returned" "ghs_minted999" "$out"
+assert_eq "  ... a real mint happened instead of trusting the cache" "1" "$(call_count)"
+rm -f "$cache_dir/pullwright-approver-token.json" "$tmp_dir/planted.json"
+
 # --- Caching is best-effort: an unusable cache directory never blocks a mint
 setup_env
 APPROVER_TOKEN_CACHE_DIR="$tmp_dir/no-such-cache-dir"

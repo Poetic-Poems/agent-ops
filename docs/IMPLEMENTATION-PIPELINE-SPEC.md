@@ -91,7 +91,10 @@ a node updates by pulling a new image rather than by pulling a branch.
   build args, default 1000) with `HOME=/home/agent`, so `config.json`'s
   `~`-relative `state_dir` and `workspace_root` resolve under that home.
 - Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
-  `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
+  `flock` and `rsync` (requirement 2.5); `openssl`, which RS256-signs the
+  Approver App's JWT (requirement 14b) and is installed explicitly rather
+  than relied on to arrive transitively, since a missing binary would
+  surface only as a mint failure at run time; `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use), installed unpinned and therefore guarded at
   build time by a fixed-string `grep -aF` over the installed binary for both
   stderr diagnoses `review_gate_required_checks` keys on (requirement 31c) —
@@ -8838,6 +8841,55 @@ What exists, and the requirements each part answers to:
     both. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
     flags it wraps. Must pass `shellcheck`.
+14b. `lib/approver-token.sh` — the Pullwright Approver's installation-token
+    minting wrapper (D18 §5.3; the Approver identity requirement 2.3b's
+    ladder needs above `human`). `gh` cannot mint one: it authenticates as
+    the owner PAT or a user OAuth token, and an owner-PAT review is the
+    self-approval the App exists to retire. So this file does the exchange by
+    hand — sign a ~9-minute RS256 App JWT with `openssl` (the node image's
+    own, component 7), `POST` it to
+    `/app/installations/<id>/access_tokens`, take the ~1 h installation token
+    back. `approver_token_credential_present` is the identity check on its
+    own; `approver_token_get [NOW_EPOCH]` prints a valid token on stdout and
+    nothing else, taking `NOW_EPOCH` only so a test can reach an expiry
+    without waiting for one.
+    **Its exit status is the gate**: `0` a token, `2` no credential
+    configured or an unreadable key, `1` a mint attempted and refused
+    (network, rejected JWT, unparsable body). A caller must treat `1` and `2`
+    alike — *gate unreadable*, hand back — and never as a gate read and
+    passed; they stay distinct codes only so a log can tell "nothing
+    configured" from "something broke".
+    The identity comes from three environment variables, deliberately not
+    from `config.json` (the discipline `GH_TOKEN` already follows):
+    `PULLWRIGHT_APPROVER_APP_ID`, `PULLWRIGHT_APPROVER_INSTALLATION_ID` and
+    `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` — a path, not a key body, since an
+    RSA key is multi-line and `openssl`'s `-sign` wants a file. Nothing
+    reconciles the App id here with the `approver_app_id` config key
+    `scripts/doctor.sh` validates (requirement 2.3b): doctor checks the
+    config, this file reads the environment, and a node can satisfy one
+    without the other.
+    **No fallback exists anywhere in it.** The file references no credential
+    but the App's own, so an absent key can never silently reroute an
+    approve/land call through the owner's token. The minted token reaches
+    stdout and nothing else — never a log, never persistent storage, and
+    never the JWT that produced it. Its one cache is tmpfs-only and
+    best-effort: `/dev/shm/pullwright-approver-token.json`, mode 600, written
+    `mktemp`-then-rename so no reader sees a partial write, and read back
+    only when the file is this user's own, is not a symlink, and is more than
+    300 s from expiry — `/dev/shm` is world-writable, so a cache file
+    someone else planted at that fixed path is ignored rather than served as
+    a credential. Any cache failure at all is skipped silently and the call
+    mints fresh, which is correct and merely slower.
+    Sourced, never executed, and it sets no shell options, so a caller's own
+    `set -euo pipefail` decides. `APPROVER_TOKEN_CURL`,
+    `APPROVER_TOKEN_OPENSSL` and `APPROVER_TOKEN_CACHE_DIR` override the two
+    binaries and the cache directory for tests only. Nothing sources it yet —
+    WI-5's Approver stage is its first caller. Regression-tested in
+    `test/approver-token.test.sh` against a stubbed `curl` and a throwaway
+    RSA key real `openssl` signs, covering the success path, a cache hit, a
+    near-expiry refresh, each missing-credential shape, a planted cache file,
+    a refused mint, an unreachable API, a malformed body and an unusable
+    cache directory. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
