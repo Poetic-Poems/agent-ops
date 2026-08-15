@@ -730,9 +730,10 @@ What exists, and the requirements each part answers to:
    stage never depends on context it was not given.
 3. `.claude/skills/project-review/` — the vendored skill (pinned; re-sync
    from upstream deliberately).
-4. `config.json` — the `review` block.
+4. `config.json` — the `project_review` block.
 5. `README.md` — a "Weekly project review" section: what it does and why (the
-   loop it closes), every `review.*` config key, how to install the cron entry,
+   loop it closes), every `project_review.*` config key, how to install the
+   cron entry,
    how to operate it (`--dry-run`, `--once`, `--repo`, reading
    `review-log.jsonl` and the transcripts), how the outputs feed the
    implementation pipeline / `project-remediation`, and how to uninstall.
@@ -782,6 +783,35 @@ a pull request, run the ones the change touches and any it could regress.
    when the clone then fails, `release branch` is invoked for the same key —
    the leak the implementation pipeline fixed in its own workspace path
    (#55) must not be reintroduced here.
+4e. **Per-repository resolution, and duplicate slugs refused (R1b).**
+   `test/config-schema.test.sh` passes: `config_project_review_repos` resolves
+   an entry carrying only `slug` to every one of `project_review.defaults`'
+   values, an entry setting a key to its own value for that key alone, and an
+   explicit `null` back to the default — including the `model_key` each
+   resolution names, which is what an unsupported provider is reported
+   against (R1a). `config_defaults` fabricates none of the overridable keys
+   into a `repos[]` entry: a schema `default` on one would materialise it in
+   every entry, so the entry would always "set" it and `defaults` could never
+   apply — which is why only the properties under `defaults` may carry one.
+   And a config naming the same `slug` twice exits `review-cycle.sh` 1 before
+   the lock, naming the repeated slug, while `scripts/doctor.sh` `fail`s on
+   the same config through the same `lib/config-schema.sh` function. Check the
+   refusal against the *review* script and not by inference from `doctor.sh`:
+   `uniqueItems` cannot express this rule — it compares whole objects, so two
+   entries for one repository carrying different overrides are distinct to it
+   — so nothing else catches it, and the run would otherwise resolve that
+   repository from whichever entry it happened to read last.
+4f. **The dated stand-down is two-tier (R3.3).**
+   `test/review-not-before.test.sh` passes: a future
+   `project_review.defaults.not_before` stands the whole cycle down before the
+   lock, with the date on the event; and with that key empty while *every*
+   configured repository's own `not_before` override is still in the future,
+   the cycle stands down before the lock too, logging one `review-stand-down`
+   naming requirement 342. An empty `project_review.repos` is vacuously *not*
+   a stand-down. Tier two is the half that fails quietly: tier one alone reads
+   the installation-wide key, so a fleet held entirely on per-repository
+   overrides would take the lock on every tick for a run R4's skip-guard then
+   skips every repository of.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `tech-debt/`
    change but **not** `.claude/skills/project-review/` — confirm the injected

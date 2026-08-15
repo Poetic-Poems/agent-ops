@@ -272,6 +272,16 @@ assert_defaults "a required key with no schema default anywhere passes through u
   '.project_review.defaults.model = "custom-model"' '.project_review.defaults.model == "custom-model"'
 assert_defaults "a nested object's non-defaultable properties are not fabricated when absent" \
   'del(.project_review)' '(.project_review | has("repos")) | not'
+# config_defaults fills schema defaults into array items too (the assertion two
+# above), which is exactly why no per-repo project_review override may declare
+# one: an entry would be materialised carrying the key, so it would always
+# "set" it and project_review.defaults could never apply to that repository
+# again. Exact equality, so adding a `default` to any of the seven overridable
+# keys under `project_review.repos[]` fails here rather than silently in a
+# review a week later.
+assert_defaults "no project_review per-repo override is fabricated into a repos entry" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic"}]' \
+  '.project_review.repos[0] == {slug: "Poetic-Poems/poetic"}'
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
@@ -388,6 +398,10 @@ assert_project_review "a repo may override every key defaults carries" \
   '.[0] == {slug: "Poetic-Poems/poetic", model: "claude-opus-5", model_key: "project_review.repos[0].model",
      pr_label: "custom-review", branch_prefix: "custom/", min_days_between_reviews: 1, not_before: "2026-01-01T00:00:00Z",
      timeout_review: 30, inactivity_review: 5}'
+assert_project_review "an explicit null inherits, exactly as an absent key does" \
+  '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: null, min_days_between_reviews: null}]' \
+  '.[0].model == "claude-sonnet-5" and .[0].min_days_between_reviews == 13
+   and .[0].model_key == "project_review.defaults.model"'
 assert_project_review "two repos resolve independently — one overriding, one inheriting" \
   '.project_review.repos = [{slug: "Poetic-Poems/poetic", model: "claude-opus-5"},
      {slug: "Poetic-Poems/poetic-fiddle"}]' \

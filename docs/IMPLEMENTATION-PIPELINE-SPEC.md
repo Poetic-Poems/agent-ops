@@ -812,7 +812,7 @@ runs unattended.
    gate both pipelines run on.** `config.schema.json` states the shape of
    `config.json` — every key an installation may set, its type, its
    constraints, and the value the code falls back to when it is absent. It
-   covers both pipelines' keys, including the `review` object of
+   covers both pipelines' keys, including the `project_review` object of
    `docs/REVIEW-PIPELINE-SPEC.md`, because there is one configuration file
    and a schema that described half of it would licence the other half to
    drift. Every object in it is closed (`additionalProperties: false`), which

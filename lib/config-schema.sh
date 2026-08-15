@@ -264,7 +264,7 @@ config_project_review_repos() {
       (.project_review.repos[$i]) as $r |
       { slug: $r.slug,
         model: ($r.model // $d.model),
-        model_key: (if ($r | has("model"))
+        model_key: (if ($r.model != null)
                      then "project_review.repos[\($i)].model"
                      else "project_review.defaults.model" end),
         pr_label: ($r.pr_label // $d.pr_label),

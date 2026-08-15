@@ -368,7 +368,7 @@ because Anthropic is the only executable provider today. A qualifier naming
 any other provider is rejected at cycle start with an error naming the key,
 not passed to the `claude` CLI. No existing config needs to change.
 
-The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
+The `project_review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
 
 <!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 
@@ -1373,7 +1373,7 @@ spend quota at the same moment. The `project-review` skill it runs is vendored
 at `.claude/skills/project-review/` and staged into each ephemeral clone at run
 time (never committed to the repo under review).
 
-### Configuration (`review` block in `config.json`)
+### Configuration (`project_review` block in `config.json`)
 
 <!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Default | Notes |
