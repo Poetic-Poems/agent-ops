@@ -2229,20 +2229,55 @@ gather_human_visibility_hygiene() {
 }
 
 # Pre-fetch the repo's open issues, whole threads included (requirement 3j) —
-# the deterministic exclusions (assigned, labelled `blocked`, pull requests)
-# already applied, the judgement ones left to the Co-Ordinator. This source
-# used to be the Co-Ordinator's own `gh` read, and a cycle was observed
-# skipping the entire walk on a "the input carries no issues" misreading; the
-# array makes the candidate set an input rather than an errand (see
-# scripts/gather-issues.sh for the incident and the contract).
+# the deterministic exclusions (assigned, labelled `blocked`, unresolved
+# `Blocked-by:`, pull requests) already applied, the judgement ones left to
+# the Co-Ordinator. This source used to be the Co-Ordinator's own `gh` read,
+# and a cycle was observed skipping the entire walk on a "the input carries
+# no issues" misreading; the array makes the candidate set an input rather
+# than an errand (see scripts/gather-issues.sh for the incident and the
+# contract).
+#
+# scripts/gather-issues.sh now prints `{candidates, excluded}` rather than a
+# bare array (agent-ops#447): `candidates` is written to `issues-$safe.json`
+# exactly as the whole array always was, so this function still *returns*
+# a bare array and every caller of `gather_issues` is unchanged. `excluded`
+# — the number and reason for every deterministic drop — is written
+# alongside it to `issues-excluded-$safe.json`, read back by the caller
+# (below) to log it and fold it into the Co-Ordinator's own runtime input,
+# because a drop nothing downstream could see was the defect: see
+# `gather_issues_excluded`.
 gather_issues() {
-  local slug="$1" out safe
+  local slug="$1" out safe raw candidates excl
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
+  raw="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
         2>"$cycle_dir/issues-$safe.err" || true)"
-  if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
-    printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
-    printf '%s' "$out"
+  candidates='[]'; excl='[]'
+  if [[ -n "$raw" ]] && jq -e 'type == "object"' <<<"$raw" >/dev/null 2>&1; then
+    if jq -e '.candidates | type == "array"' <<<"$raw" >/dev/null 2>&1; then
+      candidates="$(jq -c '.candidates' <<<"$raw")"
+    fi
+    if jq -e '.excluded | type == "array"' <<<"$raw" >/dev/null 2>&1; then
+      excl="$(jq -c '.excluded' <<<"$raw")"
+    fi
+  fi
+  out="$candidates"
+  printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
+  printf '%s\n' "$excl" > "$cycle_dir/issues-excluded-$safe.json"
+  printf '%s' "$out"
+}
+
+# gather_issues_excluded SLUG — read back the sibling exclusion report
+# `gather_issues` (above) just wrote for this repo, or `[]` if it never ran
+# (a repo whose `sources` carries no `issues` band, or one whose gather
+# failed entirely). Kept a separate read rather than a second return value,
+# because a shell function has only the one stdout channel and `gather_issues`
+# already spends it on the candidates array every existing caller depends on.
+gather_issues_excluded() {
+  local slug="$1" safe file
+  safe="${slug//\//_}"
+  file="$cycle_dir/issues-excluded-$safe.json"
+  if [[ -s "$file" ]] && jq -e 'type == "array"' <"$file" >/dev/null 2>&1; then
+    jq -c '.' <"$file"
   else
     printf '[]'
   fi
@@ -5033,10 +5068,26 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # `issues:low`, requirement 15e), so any band in `sources` warrants the one
   # fetch — the band is per issue, not per fetch.
   issues="[]"
+  issues_excluded="[]"
   if jq -e 'any(.[]; startswith("issues"))' <<<"$sources" >/dev/null 2>&1; then
     issues_raw="$(gather_issues "$slug")"
     emit_first_seen "$slug" issues "$issues_raw"
     issues="$(exclude_claimed_items "$issues_raw" "$claimed_item_refs_json")"
+    # Requirement 16.4's deterministic drops (assigned, `blocked`-labelled,
+    # unresolved `Blocked-by:`), reported rather than lost the moment
+    # scripts/gather-issues.sh applies them (agent-ops#447): logged once per
+    # repo, only when there is something to say, so a quiet cycle costs no
+    # line and a repo with drops leaves an `issues-excluded` event any reader
+    # of the shared log — the cycle record, the dashboard's log tail — can
+    # see without re-deriving the filter by hand.
+    issues_excluded="$(gather_issues_excluded "$slug")"
+    if [[ "$(jq 'length' <<<"$issues_excluded" 2>/dev/null || echo 0)" != "0" ]]; then
+      log_event "issues-excluded" "$(jq -nc --arg r "$slug" --argjson ex "$issues_excluded" \
+        '{repo: $r, count: ($ex | length),
+          detail: (($ex | length | tostring) + " issue(s) excluded: "
+                   + ([$ex[] | "#\(.number) (\(.reason))"] | join(", "))),
+          excluded: $ex}')"
+    fi
   fi
   tech_debt="[]"
   if jq -e 'any(.[]; . == "tech-debt")' <<<"$sources" >/dev/null 2>&1; then
@@ -5065,11 +5116,15 @@ while IFS=$'\t' read -r _ slug default_branch; do
   # MAX_ARG_STRLEN this build would silently drop the repo's whole entry.
   entry_docs="$(printf '%s\n' "$findings" "$review_feedback" "$abandoned_drafts" \
     "$merge_conflicts" "$dequeued" "$register_hygiene" "$issues" "$tech_debt")"
+  # `issues_excluded` rides in as its own --argjson, not on this stdin
+  # stream: unlike the eight bands above, it is bounded by the gatherer's own
+  # 100-item page (scripts/gather-issues.sh) and each entry is a bare number
+  # and a short reason, tens of bytes at most — nowhere near MAX_ARG_STRLEN.
   entry="$(jq -nc --arg slug "$slug" --arg db "$default_branch" --argjson sources "$sources" \
-    --arg ipp "$implementation_plan_path" \
+    --arg ipp "$implementation_plan_path" --argjson ie "$issues_excluded" \
     'input as $findings | input as $rf | input as $ad | input as $mc | input as $dq | input as $rh
      | input as $issues | input as $td
-     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, dequeued: $dq, register_hygiene: $rh, human_visibility: [], issues: $issues, tech_debt: $td}
+     | {slug: $slug, default_branch: $db, sources: $sources, findings: $findings, review_feedback: $rf, abandoned_drafts: $ad, merge_conflicts: $mc, dequeued: $dq, register_hygiene: $rh, human_visibility: [], issues: $issues, issues_excluded: $ie, tech_debt: $td}
      + (if $ipp == "" then {} else {implementation_plan_path: $ipp} end)' <<<"$entry_docs")"
   # $entry — one repo's whole pre-fetched sources, including issue threads
   # (requirement 3d/#118) and its open tech-debt register (requirement

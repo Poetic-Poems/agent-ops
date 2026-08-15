@@ -151,10 +151,16 @@ chmod +x "$tmp_dir/bin/gh"
 export PATH="$tmp_dir/bin:$PATH"
 
 # Half one: the dependency is still open. #196 must never reach the
-# candidates array — held by code, before any block is ever recorded.
-issues_before="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r)"
+# candidates array — held by code, before any block is ever recorded — and
+# must instead be reported in the sibling `excluded` array, naming why
+# (agent-ops#447).
+issues_before_json="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r)"
+issues_before="$(jq -c '.candidates' <<<"$issues_before_json")"
 assert_eq "an unresolved Blocked-by reference holds the candidate out" \
   '0' "$(jq 'length' <<<"$issues_before")"
+excluded_before="$(jq -c '.excluded' <<<"$issues_before_json")"
+assert_eq "and it is reported excluded, naming the unresolved reference" \
+  '{"number":196,"reason":"blocked-by: #195"}' "$(jq -c '.[0]' <<<"$excluded_before")"
 
 # Simulate the shape of an already-blocked #196 (as if a Co-Ordinator, before
 # this convention existed, had attempt-failed it) and confirm the pre-extract
@@ -169,11 +175,14 @@ assert_eq "and the pre-extract release clears nothing while it stands" \
 # Half two: #195 closes. Within the very next gather, #196 must reappear as
 # a candidate, and the already-recorded block must clear in that same cycle.
 echo "closed" > "$dep_state_file"
-issues_after="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r)"
+issues_after_json="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r)"
+issues_after="$(jq -c '.candidates' <<<"$issues_after_json")"
 assert_eq "a resolved Blocked-by reference lets the candidate through" \
   '1' "$(jq 'length' <<<"$issues_after")"
 assert_eq "and it is still #196, thread intact" \
   '196' "$(jq -r '.[0].number' <<<"$issues_after")"
+assert_eq "and it is no longer reported excluded" \
+  '0' "$(jq '.excluded | length' <<<"$issues_after_json")"
 
 issues_by_repo_after="$(jq -nc --argjson issues "$issues_after" \
   '{"o/r": ($issues | map({key: (.number | tostring), value: {body: (.body // ""), comments: (.comments // [])}}) | from_entries)}')"

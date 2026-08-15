@@ -57,6 +57,9 @@ heading, the Script gives you one JSON object:
       "issues": [
         {"source": "issues", "ref": "52", "number": 52, "url": "https://github.com/…/issues/52", "title": "…", "priority": "Medium", "labels": ["enhancement"], "author": "…", "created_at": "…", "updated_at": "…", "body": "…the issue body, verbatim…", "comments": [{"author": "…", "created_at": "…", "body": "…every comment, verbatim, oldest first…"}]}
       ],
+      "issues_excluded": [
+        {"number": 61, "reason": "assigned"}
+      ],
       "register_hygiene": [
         {"source": "register-hygiene", "ref": "register-hygiene-413128de0d60", "url": "https://github.com/…/tree/main/tech-debt", "blob_sha": "413128de0d60d9502bf469348bc70fbbacccf569", "problems": ["STALE FIELD    TD-PPpoet-26072424.md (resolved: set on an open item)"], "body": "…the whole of the consistency check's output, verbatim…"}
       ],
@@ -182,6 +185,15 @@ heading, the Script gives you one JSON object:
   These are the `issues:<band>` sources' only candidates. An empty array means
   the repo has no issue candidates — do not go looking, and never read it as
   issue data having been withheld.
+- Each entry's `issues_excluded` is the number and reason for every issue the
+  Script's own deterministic filter just dropped from `issues` above —
+  `{"number": 125, "reason": "assigned" | "blocked-label" | "blocked-by: <ref>"}`
+  — record only, not a candidate list: nothing in it is yours to select,
+  re-check, or report `needs_refinement` over (agent-ops#447). It exists so a
+  human reading the cycle log or the dashboard can see a drop that used to
+  vanish without a trace, most often an issue an Enabler refinement (or a
+  human's own assignment) is quietly sitting on; an empty array is the normal
+  case and means nothing was dropped this cycle.
 - Each entry's `findings` is the repo's open Dependabot alerts and
   code-scanning alerts, **already fetched and normalised for you** by the
   Script, and already cross-referenced against `claimed`, `blocked` and `void`

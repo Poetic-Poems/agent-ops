@@ -6,7 +6,9 @@
 #
 # Usage: gather-issues.sh <owner/repo>
 #
-# Prints a JSON array; each entry is one candidate issue:
+# Prints one JSON object, `{"candidates": […], "excluded": […]}`:
+#
+# `candidates` — one entry per candidate issue:
 #
 #   {
 #     "source": "issues",
@@ -21,6 +23,16 @@
 #     "body": "…verbatim…",
 #     "comments": [{"author": "…", "created_at": "…", "body": "…verbatim…"}]
 #   }
+#
+# `excluded` — one entry per issue the deterministic filter below dropped
+# (requirement 16.4's deterministic half; agent-ops#447), each
+# `{"number": 125, "reason": "assigned" | "blocked-label" | "blocked-by: <ref>"}`
+# — never a PR the issues endpoint interleaves, which is dropped unreported
+# because it was never a candidate issue to begin with. This is what lets a
+# caller report "N issues excluded, and why" instead of a drop nothing else
+# ever recorded: before this, the three deterministic drops removed an issue
+# from candidacy with nothing on stdout, nothing on stderr, and nothing in
+# the shared log to say it had happened.
 #
 # ## Why issues are pre-fetched at all
 #
@@ -66,13 +78,14 @@
 # ## Degrading, and the 100-item windows
 #
 # Like gather-findings.sh — and unlike gather-source-state.sh — this output
-# is *given to* the Co-Ordinator, so degrading to `[]` (exit 0) on any API
-# failure is safe: the fingerprint then faithfully records "the Co-Ordinator
-# saw no issues", and the source-state issues digest, sampled independently,
-# still busts the fingerprint when a real issue changes. Failures are loud on
-# stderr (teed into the cycle record as issues-<repo>.err) for the same
-# reason gather-review-feedback.sh's are: an empty array indistinguishable
-# from "no open issues" once cost a debugging round.
+# is *given to* the Co-Ordinator, so degrading to the empty shape (exit 0) on
+# any API failure is safe: the fingerprint then faithfully records "the
+# Co-Ordinator saw no issues", and the source-state issues digest, sampled
+# independently, still busts the fingerprint when a real issue changes.
+# Failures are loud on stderr (teed into the cycle record as
+# issues-<repo>.err) for the same reason gather-review-feedback.sh's are: an
+# empty result indistinguishable from "no open issues" once cost a debugging
+# round.
 #
 # Both reads take one 100-item page, like every gatherer here. More than 100
 # open unassigned issues, or a thread past 100 comments, is a repo-hygiene
@@ -96,11 +109,11 @@ if [[ -z "$slug" ]]; then
   exit 64
 fi
 
-# Print `[]` and exit 0, having said why on stderr: a gatherer that aborted
-# the cycle would make cost control a reliability risk.
+# Print the empty shape and exit 0, having said why on stderr: a gatherer
+# that aborted the cycle would make cost control a reliability risk.
 degrade() {
   echo "gather-issues: $slug: $*" >&2
-  printf '[]\n'
+  printf '{"candidates":[],"excluded":[]}\n'
   exit 0
 }
 
@@ -110,18 +123,24 @@ jq -e 'type == "array"' <<<"$issues_raw" >/dev/null 2>&1 \
   || degrade "issues list payload is not an array"
 
 # The deterministic filter and the entry shape. `has("pull_request")` drops
-# the PRs the issues endpoint interleaves; the assignees check drops assigned
-# issues (requirement 16.4's deterministic half — this also covers the
-# Enabler's escalation issues, which are always assigned); the label check
-# drops `blocked` whatever its case. The Priority parse mirrors
+# the PRs the issues endpoint interleaves — never reported in `excluded`,
+# since a PR was never a candidate issue to begin with; the assignees check
+# drops assigned issues (requirement 16.4's deterministic half — this also
+# covers the Enabler's escalation issues, which are always assigned); the
+# label check drops `blocked` whatever its case. The Priority parse mirrors
 # gather-source-state.sh verbatim.
 #
-# A fourth, structured drop happens below, once each candidate's whole
-# thread is in hand: a `Blocked-by:` reference (requirement 34j) naming a
-# still-open issue or pull request holds the candidate back the same way —
+# `excluded` mirrors the same two drops, reason-tagged (agent-ops#447):
+# assigned wins the tag when an issue is somehow both assigned and
+# `blocked`-labelled, matching the order the filter below checks them in.
+#
+# A third, structured drop happens below, once each candidate's whole thread
+# is in hand: a `Blocked-by:` reference (requirement 34j) naming a still-open
+# issue or pull request holds the candidate back the same way —
 # deterministically, before the Co-Ordinator ever sees it — so an item
 # declaring a dependency never earns a judgement, or an `attempt-failed`,
-# while that dependency stands.
+# while that dependency stands. It is appended to `excluded` in the loop
+# below, once the unresolved reference is known.
 candidates="$(jq -c '
   [.[]
    | select(has("pull_request") | not)
@@ -141,6 +160,16 @@ candidates="$(jq -c '
       body: (.body // "")}]
   | sort_by(.number)' <<<"$issues_raw" 2>/dev/null)" \
   || degrade "issues filter failed"
+
+excluded="$(jq -c '
+  [.[]
+   | select(has("pull_request") | not)
+   | select(((.assignees // []) | length) > 0
+            or (([.labels[]?.name | ascii_downcase] | index("blocked")) != null))
+   | {number: .number,
+      reason: (if ((.assignees // []) | length) > 0 then "assigned" else "blocked-label" end)}]
+  | sort_by(.number)' <<<"$issues_raw" 2>/dev/null)" \
+  || degrade "issues excluded-filter failed"
 
 out='[]'
 while IFS= read -r candidate; do
@@ -181,6 +210,16 @@ $(jq -r '[.[].body] | join("\n")' <<<"$comments")"
       fi
     done < <(jq -r '.[]' <<<"$dep_refs")
     if (( dep_unresolved == 1 )); then
+      # $ref still names the one unresolved reference the loop above broke
+      # on — bash keeps a loop variable's value past its own `break`. It is
+      # bare (`195`) for a same-repo reference and already qualified
+      # (`owner/repo#42`) for a cross-repo one (see dependency_refs); a
+      # display form always carries the `#` a reader expects.
+      ref_display="$ref"; [[ "$ref_display" == */* ]] || ref_display="#$ref_display"
+      excl_entry="$(jq -nc --argjson n "$n" --arg ref "$ref_display" \
+        '{number: $n, reason: ("blocked-by: " + $ref)}')" || degrade "excluded entry assembly failed for issue #$n"
+      excluded="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' <<<"$excluded"$'\n'"$excl_entry")" \
+        || degrade "excluded array assembly failed at issue #$n"
       continue
     fi
   fi
@@ -199,4 +238,8 @@ $(jq -r '[.[].body] | join("\n")' <<<"$comments")"
     || degrade "array assembly failed at issue #$n"
 done < <(jq -c '.[]' <<<"$candidates")
 
-printf '%s\n' "$out"
+# $out and $excluded both arrive on stdin, never as --argjson: both are
+# unbounded past this call the same way requirement 4g already treats every
+# other aggregate this script builds.
+printf '%s\n' "$out" "$excluded" \
+  | jq -nc 'input as $c | input as $e | {candidates: $c, excluded: ($e | sort_by(.number))}'

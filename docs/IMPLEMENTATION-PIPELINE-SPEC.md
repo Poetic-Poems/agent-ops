@@ -2168,15 +2168,21 @@ runs unattended.
      and only the failure prints to stderr. `shellcheck`-clean.
 3j. **Issues pre-fetch.** For each configured repo whose `sources` include any
    `issues:<band>` entry (one source at four ranks — any band warrants the one
-   fetch), run `scripts/gather-issues.sh <slug>` and attach the array to that
-   repo's entry as `issues`. Each entry is one candidate issue, whole thread
-   included: `source: "issues"`, the bare issue number as `ref` (and as
-   `number`), `url`, `title`, the `Priority` band as `priority` (read exactly
-   as the source-state digest reads it — same field, same four names, same
-   `Medium` default — because a band the digest and the candidate set derived
+   fetch), run `scripts/gather-issues.sh <slug>`, which prints
+   `{"candidates": […], "excluded": […]}`, and attach `.candidates` to that
+   repo's entry as `issues` and `.excluded` as `issues_excluded`. Each
+   `issues` entry is one candidate issue, whole thread included:
+   `source: "issues"`, the bare issue number as `ref` (and as `number`),
+   `url`, `title`, the `Priority` band as `priority` (read exactly as the
+   source-state digest reads it — same field, same four names, same `Medium`
+   default — because a band the digest and the candidate set derived
    differently is the fingerprint failure requirement 3b exists to prevent),
    `labels`, `author`, `created_at`, `updated_at`, the `body` verbatim, and
-   `comments` (author, timestamp, body — verbatim, oldest first).
+   `comments` (author, timestamp, body — verbatim, oldest first). Each
+   `issues_excluded` entry is `{number, reason}` — one per issue the
+   deterministic filter below dropped, `reason` one of `"assigned"`,
+   `"blocked-label"`, or `"blocked-by: <ref>"` — see "The deterministic drop is
+   reported, not lost" below.
 
    - **Why this source is pre-fetched at all.** It used to be the
      Co-Ordinator's own read, and that contract failed closed: cycle
@@ -2208,12 +2214,28 @@ runs unattended.
      blocked issue carrying fresh evidence stays, because requirement 18a's
      mandatory re-check needs the thread and `updated_at` in front of the
      Co-Ordinator to decide whether that evidence unblocks it.
-   - **Degrades to `[]` (exit 0) on any API failure**, like requirement 3a
-     and unlike the source-state digest: the array is *given to* the
-     Co-Ordinator, so an empty array is a faithful record of the input it
-     got, and the independently sampled issues digest still busts the
-     fingerprint when a real issue moves during the degradation. Failures are
-     loud on stderr (teed to `issues-<repo>.err` in the cycle record).
+   - **The deterministic drop is reported, not lost** (agent-ops#447). Before
+     this, the three drops above left nothing behind anywhere — no line on
+     stdout, no line on stderr, no event in the shared log — so an issue an
+     Enabler had just refined, or a human had assigned to themselves for
+     their own reasons, could sit permanently unselectable with nobody able
+     to tell why short of reading the filter's source. `issues_excluded`
+     (above) is that record: the Script logs an `issues-excluded` event
+     (requirement 33) per repo, once per cycle, whenever it is non-empty,
+     carrying the same `{number, reason}` pairs and a `count`, so the cycle
+     log and the dashboard's log tail can both show "N issues excluded, and
+     why" without a reader re-deriving the filter. The Co-Ordinator receives
+     the same array as `issues_excluded` on its own runtime input
+     (prompts/coordinator.md) — informational only, never a candidate list:
+     nothing in it is eligible for selection, a re-check, or a
+     `needs_refinement` report.
+   - **Degrades to the empty shape (exit 0) on any API failure**, like
+     requirement 3a and unlike the source-state digest: the output is *given
+     to* the Co-Ordinator, so an empty `candidates`/`issues_excluded` pair is
+     a faithful record of the input it got, and the independently sampled
+     issues digest still busts the fingerprint when a real issue moves during
+     the degradation. Failures are loud on stderr (teed to
+     `issues-<repo>.err` in the cycle record).
    - Both reads take one 100-item page, like every gatherer. The bound is
      stated in the script header rather than silently applied.
 3k. **Implementation-plan path passthrough.** The `implementation-plan` source
@@ -4307,10 +4329,50 @@ runs unattended.
       `Blocked-by:` dependency (requirement 34j), or is a question or
       discussion rather than actionable work — the first three are
       deterministic and already applied by the Script (requirement 3j drops
-      them from the `issues` array before the Co-Ordinator sees it); the
+      them from the `issues` array before the Co-Ordinator sees it, and
+      reports each drop and its reason in `issues_excluded`, below); the
       judgement half is the Co-Ordinator's, over the whole thread
       (requirement 14a), since a comment can block, close, re-scope, or
-      answer an issue that its body alone would make look selectable;
+      answer an issue that its body alone would make look selectable.
+
+      **The assignee exclusion is a permanent, deliberate rule, not an
+      incidental side effect** (agent-ops#447). It is load-bearing for the
+      Enabler's escalation protocol: requirement 36a assigns every escalation
+      issue to `enabler_assignee` precisely *so that* this exclusion keeps the
+      pipeline from ever selecting its own request for human help as if it
+      were work, and requirement 38b assigns `enabler_assignee` to a
+      Co-Ordinator-recorded refinement block for the matching reason — an
+      issue still gated on a decision only a human can make must stay off the
+      candidate list until they act, and the config-time guard next to
+      `enabler_assignee` (Configuration table) exists only because an
+      unassigned escalation would defeat both at once. A human's own,
+      unrelated assignment to themselves is read exactly the same way: an
+      issue somebody has claimed by hand is theirs to work, not the
+      pipeline's, and this rule does not distinguish the two — there is no
+      reliable way to tell "assigned because a human is doing this" from
+      "assigned because this system's own bookkeeping put them there and
+      has not yet taken it off" from the assignee list alone. The rule
+      therefore stays a hard exclusion, and stays permanent: it is not eligible
+      for the Co-Ordinator's `needs_refinement` under requirement 16a, which is
+      scoped to items *reached and evaluated in this cycle's own priority
+      walk* — an assigned issue is dropped before that walk ever sees it, so
+      there is nothing for the Co-Ordinator to report a judgement about.
+
+      What was missing was never the rule — it was visibility into when the
+      rule outlives its own reason. Both projections above are meant to be
+      temporary, self-removing the moment their block clears (requirement 38b),
+      but a removal that fails (an unreadable assignee list, a `gh` call that
+      does not take) previously left an issue silently, permanently
+      unselectable, readable only by a human already suspicious enough to read
+      the filter's own source: agent-ops#338 sat this way for two days.
+      `issues_excluded` (requirement 3j) is the fix, and a *reporting* one
+      deliberately, not a *relaxing* one — narrowing the exclusion would only
+      let the pipeline pick up exactly the escalation and refinement-tracking
+      issues it exists to keep off the list. An `assigned` reason on a live
+      `issues_excluded` entry, cycle after cycle, is now the signal a human
+      needs to notice a stuck removal and clear it by hand — see also
+      requirement 36b's own duty to say so directly in a refinement's own
+      comment, when the item being refined is assigned at the time;
     - a security finding whose only available fix is one a human must choose
       (e.g. a Dependabot alert with no non-breaking upgrade, needing a major
       version bump that changes the repo's public behaviour) — flag it, don't
@@ -5446,6 +5508,7 @@ runs unattended.
     `disabled`, `enabled`,
     `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
+    `issues-excluded`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
     `ok: true|false` — machine-read by the streak verdict, and kept out of
@@ -5517,7 +5580,19 @@ runs unattended.
     median/p90 while still counting them, so the exclusion is visible rather
     than a silent drop. Kept out of the dashboard's log tail for the same
     reason `review-gate-checks-read` is: machine bookkeeping with nothing an
-    operator can act on, read only by `scripts/pickup-metrics.sh`. A
+    operator can act on, read only by `scripts/pickup-metrics.sh`. An
+    `issues-excluded` event (requirement 3j; agent-ops#447) carries `repo`,
+    `count` and `excluded` — the same `{number, reason}` array
+    `scripts/gather-issues.sh` reports as `issues_excluded` — plus a `detail`
+    string ("N issue(s) excluded: #125 (assigned), …") for the dashboard's
+    generic log-tail renderer, which shows any event's `detail` verbatim with
+    no event-specific rendering of its own. Logged by `gather_issues`'s
+    caller (agent-cycle.sh) once per repo per cycle, and only when the
+    exclusion array is non-empty — an operator scanning a quiet cycle should
+    not have to skip past a row saying nothing was dropped. Unlike
+    `first-seen` and `review-gate-checks-read`, it **stays** in the dashboard's
+    log tail: a drop that just made an issue unselectable is exactly the kind
+    of fact an operator can act on, not bookkeeping to hide. A
     `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
@@ -7173,6 +7248,29 @@ runs unattended.
       - **any other item type**: the specification is returned in `refined_spec`
         as self-contained markdown, because there is no thread to write into and
         no actor here may edit the register. Requirement 3h is its carrier.
+
+      **The unselectability note** (agent-ops#447). For an issue item, before
+      posting, the Enabler checks the issue's own live assignees — not merely
+      the runtime input, which carries no assignee field — because requirement
+      16.4 excludes an assigned issue from the `issues` source regardless of
+      how good the refinement just written for it is: the two gatherers apply
+      that exclusion on different terms (`scripts/gather-issues.sh` deterministically,
+      `scripts/gather-hand-flagged-refinements.sh` not at all, by design — see
+      requirement 16.4's own note on why the exclusion stays permanent), so an
+      item can be *specified* here while remaining *unselectable* there, with
+      nothing about the refinement comment itself saying so. Where the issue
+      is currently assigned, the comment states plainly that it is presently
+      excluded from selection for that reason and what would release it: if
+      the assignment is this block's own projection (requirement 38b), that it
+      is expected to clear automatically the moment this verdict processes,
+      and if it is not — an assignee the Enabler cannot attribute to this
+      block, most often a human's own — that a human needs to remove it
+      before the issue becomes selectable, however complete the specification
+      above it now is. This is a **note**, never a **verdict**: it changes
+      nothing about the choice between `unblocked`, `still-blocked` and
+      `escalate` below, and never turns a refinement into an escalation on its
+      own — the assignment is ordinary, expected, load-bearing state, not a
+      decision gate.
     - **Escalates**, where a human must decide, answer, or act first — through
       the unchanged protocol of requirement 36a, in a **separate** issue. Never
       the work item's own issue: that protocol ends with "close this issue when
@@ -8283,16 +8381,19 @@ What exists, and the requirements each part answers to:
    own gate and assignment between the two) `test/human-visibility-wiring.test.sh`;
    must pass `shellcheck`.
 3j. `scripts/gather-issues.sh` implementing requirement 3j: given a repo slug,
-   prints the JSON array of the repo's candidate issues — open, unassigned,
-   not labelled `blocked`, naming no unresolved `Blocked-by:` reference
-   (requirement 34j, each reference's state checked live once the
-   candidate's whole thread is in hand), pull requests dropped — each
-   carrying the bare issue number as its ref, the `Priority` band (default
-   `Medium`, read as the source-state digest reads it), and the whole thread
-   verbatim (`body` plus `comments`). Fails safe to `[]` (exit 0) with
-   failures loud on stderr. Its filter and shape are regression-tested in
-   `test/issues-prefetch.test.sh` and `test/dependency-gate.test.sh`; must
-   pass `shellcheck`.
+   prints `{"candidates": […], "excluded": […]}`. `candidates` is the JSON
+   array of the repo's candidate issues — open, unassigned, not labelled
+   `blocked`, naming no unresolved `Blocked-by:` reference (requirement 34j,
+   each reference's state checked live once the candidate's whole thread is
+   in hand), pull requests dropped — each carrying the bare issue number as
+   its ref, the `Priority` band (default `Medium`, read as the source-state
+   digest reads it), and the whole thread verbatim (`body` plus `comments`).
+   `excluded` is `{number, reason}` for every issue the three deterministic
+   drops above removed (never a pull request), `reason` one of `"assigned"`,
+   `"blocked-label"`, `"blocked-by: <ref>"` (agent-ops#447). Fails safe to
+   `{"candidates":[],"excluded":[]}` (exit 0) with failures loud on stderr.
+   Its filter and shape are regression-tested in `test/issues-prefetch.test.sh`
+   and `test/dependency-gate.test.sh`; must pass `shellcheck`.
 3t. `scripts/gather-tech-debt.sh` implementing requirement 3t: given a repo
    slug and default branch, reads the register in one tarball fetch (like
    `scripts/gather-register-hygiene.sh`) and prints the JSON array of the
