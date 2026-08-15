@@ -12,7 +12,7 @@
 #   - **A violation that still reproduces live becomes exactly one candidate**,
 #     `source: "human-visibility"` (its own source, issue #284's decision 2 —
 #     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
-#   - **The three warning classes are told apart (issue #284's decision 1).** A
+#   - **The four warning classes are told apart (issue #284's decision 1).** A
 #     `could not request review from …` violation clears only once a human
 #     review is live or already given (`reviewRequests` non-empty, or
 #     `reviewDecision` of `APPROVED`/`CHANGES_REQUESTED`); a
@@ -26,7 +26,11 @@
 #     non-bot, submitted review appears, a review request is already pending
 #     (CODEOWNERS' own auto-request, before anyone has reviewed), or the
 #     assignee named in its own detail text no longer names the pull
-#     request's author.
+#     request's author. A `could not post the merge-queue-dequeued notice`
+#     violation (TD-PPagop-26081504) clears only once the
+#     `agent-ops:merge-queue-dequeued:` marker comment actually appears, the
+#     same marker-read shape as the nudge class, never the request class's
+#     "has this been reviewed" check.
 #   - **A pull-request violation of any class is dropped once merged, closed
 #     or back in draft**, and a repo-level listing failure is dropped only
 #     once the listing itself succeeds live.
@@ -74,7 +78,9 @@ assert_eq() {
 # `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests` array, for fixturing
 # a Bot-typed/`[bot]`-suffixed or team-shaped entry
 # (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_MARKER` (`yes`/`no`) steers
-# whether the nudge marker comment is present; `$STUB_AUTHOR` (default
+# whether the nudge marker comment is present; `$STUB_DEQUEUE_MARKER`
+# (`yes`/`no`) likewise steers whether the merge-queue-dequeued marker
+# comment is present; `$STUB_AUTHOR` (default
 # `author`) and `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`,
 # default `[]`) steer the no-candidate-class check; `$STUB_VIEW_RC` set
 # nonzero makes the re-check itself unreadable, the fail-safe case.
@@ -93,6 +99,7 @@ case "${1:-} ${2:-}" in
     [[ -z "${STUB_REVIEW_REQUESTS_JSON:-}" ]] || reqs="$STUB_REVIEW_REQUESTS_JSON"
     comments="[]"
     [[ "${STUB_NUDGE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:human-nudge -->"}]'
+    [[ "${STUB_DEQUEUE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:merge-queue-dequeued:2026-08-08T02:00:00Z -->"}]'
     printf '{"state":"%s","isDraft":%s,"reviewDecision":"%s","reviewRequests":%s,"comments":%s,"author":{"login":"%s"},"reviews":%s}\n' \
       "${STUB_PR_STATE:-OPEN}" "${STUB_PR_DRAFT:-false}" "${STUB_REVIEW_DECISION:-}" "$reqs" "$comments" \
       "${STUB_AUTHOR:-author}" "${STUB_REVIEWS:-[]}"
@@ -111,6 +118,7 @@ request_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":
 nudge_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the idle nudge comment","ts":"2026-08-08T02:00:00Z"}]'
 unknown_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not read the pull request'"'"'s state — skipping the idle check","ts":"2026-08-08T02:00:00Z"}]'
 no_candidate_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"no legal review-request candidate — known reviewers are empty or only the author; enabler_assignee=author","ts":"2026-08-08T02:00:00Z"}]'
+dequeue_level='[{"repo":"o/a","pr_url":"https://github.com/o/a/pull/9","detail":"could not post the merge-queue-dequeued notice","ts":"2026-08-08T02:00:00Z"}]'
 
 # --- No input is [] ----------------------------------------------------------
 out="$(STUB_LIST_RC=0 "$GATHER" "o/a")"
@@ -273,6 +281,17 @@ assert_eq "a nudge-class violation with no marker comment survives despite APPRO
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
         STUB_NUDGE_MARKER=yes "$GATHER" "o/a" "$nudge_level")"
 assert_eq "a nudge-class violation is dropped once the marker comment appears" "[]" "$out"
+
+# --- dequeue_notice: absent marker survives, even while open ---------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_DEQUEUE_MARKER=no \
+        "$GATHER" "o/a" "$dequeue_level")"
+assert_eq "a dequeue-notice violation with no marker comment survives" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- dequeue_notice: the marker comment appearing clears it ----------------
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_DEQUEUE_MARKER=yes \
+        "$GATHER" "o/a" "$dequeue_level")"
+assert_eq "a dequeue-notice violation is dropped once the marker comment appears" "[]" "$out"
 
 # --- An unrecognised warning shape survives while open and not draft -------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false "$GATHER" "o/a" "$unknown_level")"
