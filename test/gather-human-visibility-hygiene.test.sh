@@ -17,10 +17,12 @@
 #     review is live or already given (`reviewRequests` non-empty, or
 #     `reviewDecision` of `APPROVED`/`CHANGES_REQUESTED`); a
 #     `could not post the idle nudge comment` violation — logged only against
-#     an already-`APPROVED` pull request — clears only once the
-#     `agent-ops:human-nudge` marker comment actually appears, never merely
-#     because the pull request is approved. Using the request-class check for
-#     both would silently drop every nudge-class warning on sight; this
+#     an already-`APPROVED` pull request — clears only once a comment carrying
+#     both the exact `<!-- agent-ops:human-nudge -->` HTML-comment form and
+#     the pipeline-marker stamp appears on the same comment, never merely
+#     because the pull request is approved, and never from a comment carrying
+#     only one of the two (agent-ops#390, #428). Using the request-class check
+#     for both would silently drop every nudge-class warning on sight; this
 #     confirms it does not. A `no legal review-request candidate` violation
 #     (tech-debt/TD-PPagop-26081001.md) clears only once a non-author,
 #     non-bot, submitted review appears, a review request is already pending
@@ -77,10 +79,17 @@ assert_eq() {
 # the request-class check; `$STUB_REVIEW_REQUESTS_JSON`, when set, overrides
 # `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests` array, for fixturing
 # a Bot-typed/`[bot]`-suffixed or team-shaped entry
-# (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_MARKER` (`yes`/`no`) steers
-# whether the nudge marker comment is present; `$STUB_DEQUEUE_MARKER`
-# (`yes`/`no`) likewise steers whether the merge-queue-dequeued marker
-# comment is present; `$STUB_AUTHOR` (default
+# (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_COMMENT` steers which
+# nudge-related comment (if any) is present — `none` (default), `real` (the
+# genuine shape, both the exact `<!-- agent-ops:human-nudge -->` form and the
+# `PIPELINE_COMMENT_MARKER_PREFIX` stamp on the same comment), `prose` (the
+# stamp, but only prose mentioning the marker, no exact HTML form —
+# a Reviewer summarising a change to this check), `fenced` (the exact HTML
+# form quoted in a fenced code block, with no stamp — a bystander write), or
+# `prefixed-only` (the stamp on an ordinary pipeline comment carrying no
+# nudge marker at all); `$STUB_DEQUEUE_MARKER` (`yes`/`no`) steers whether the
+# merge-queue-dequeued marker comment is present instead; `$STUB_AUTHOR`
+# (default
 # `author`) and `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`,
 # default `[]`) steer the no-candidate-class check; `$STUB_VIEW_RC` set
 # nonzero makes the re-check itself unreadable, the fail-safe case.
@@ -98,7 +107,20 @@ case "${1:-} ${2:-}" in
     [[ "${STUB_REVIEW_REQUESTS:-0}" == "0" ]] || reqs='[{"login":"reviewer"}]'
     [[ -z "${STUB_REVIEW_REQUESTS_JSON:-}" ]] || reqs="$STUB_REVIEW_REQUESTS_JSON"
     comments="[]"
-    [[ "${STUB_NUDGE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:human-nudge -->"}]'
+    case "${STUB_NUDGE_COMMENT:-none}" in
+      real)
+        comments='[{"body":"reminder\n\n<!-- agent-ops:pipeline-comment cycle=c1 actor=script -->\n<!-- agent-ops:human-nudge -->"}]'
+        ;;
+      prose)
+        comments='[{"body":"Reviewed. This touches the agent-ops:human-nudge gate.\n\n<!-- agent-ops:pipeline-comment cycle=c1 actor=reviewer -->"}]'
+        ;;
+      fenced)
+        comments='[{"body":"a bystander quoting the marker\n\n<!-- agent-ops:human-nudge -->"}]'
+        ;;
+      prefixed-only)
+        comments='[{"body":"unrelated pipeline comment\n\n<!-- agent-ops:pipeline-comment cycle=c1 actor=reviewer -->"}]'
+        ;;
+    esac
     [[ "${STUB_DEQUEUE_MARKER:-no}" != "yes" ]] || comments='[{"body":"<!-- agent-ops:merge-queue-dequeued:2026-08-08T02:00:00Z -->"}]'
     printf '{"state":"%s","isDraft":%s,"reviewDecision":"%s","reviewRequests":%s,"comments":%s,"author":{"login":"%s"},"reviews":%s}\n' \
       "${STUB_PR_STATE:-OPEN}" "${STUB_PR_DRAFT:-false}" "${STUB_REVIEW_DECISION:-}" "$reqs" "$comments" \
@@ -273,14 +295,41 @@ assert_eq "a no-candidate violation is dropped once the assignee no longer names
 # nudge's own gate) — asserting this survives is what proves the request-class
 # check is not being reused here; a shared check would drop it immediately.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_MARKER=no "$GATHER" "o/a" "$nudge_level")"
+        STUB_NUDGE_COMMENT=none "$GATHER" "o/a" "$nudge_level")"
 assert_eq "a nudge-class violation with no marker comment survives despite APPROVED" \
   "1" "$(jq 'length' <<<"$out")"
 
-# --- could_not_post_nudge: the marker comment appearing clears it ----------
+# --- could_not_post_nudge: an unanchored substring test would wrongly clear ---
+# --- this — the discriminating cases from agent-ops#390/#428, applied here ----
+# --- the same way sweep-human-visibility.sh's own re-check is tested ----------
+#
+# A pipeline comment merely discussing the marker in prose (no exact HTML
+# form) never clears the violation.
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
-        STUB_NUDGE_MARKER=yes "$GATHER" "o/a" "$nudge_level")"
-assert_eq "a nudge-class violation is dropped once the marker comment appears" "[]" "$out"
+        STUB_NUDGE_COMMENT=prose "$GATHER" "o/a" "$nudge_level")"
+assert_eq "a comment merely mentioning the marker in prose survives" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# A bystander (non-pipeline) comment quoting the exact HTML form, with no
+# pipeline-marker stamp, never clears the violation.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+        STUB_NUDGE_COMMENT=fenced "$GATHER" "o/a" "$nudge_level")"
+assert_eq "a bystander comment quoting the exact marker with no stamp survives" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# An ordinary pipeline comment carrying the marker prefix but no nudge
+# marker at all never clears the violation.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+        STUB_NUDGE_COMMENT=prefixed-only "$GATHER" "o/a" "$nudge_level")"
+assert_eq "an ordinary pipeline comment with no nudge marker survives" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_post_nudge: the real nudge comment appearing clears it ------
+# Both the exact HTML form and the pipeline-marker stamp on the same comment
+# — the genuine shape sweep-human-visibility.sh itself posts.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+        STUB_NUDGE_COMMENT=real "$GATHER" "o/a" "$nudge_level")"
+assert_eq "a nudge-class violation is dropped once the real marker comment appears" "[]" "$out"
 
 # --- dequeue_notice: absent marker survives, even while open ---------------
 out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_DEQUEUE_MARKER=no \
