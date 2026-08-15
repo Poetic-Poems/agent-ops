@@ -69,6 +69,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/merge-autonomy.sh
+. "$SCRIPT_DIR/lib/merge-autonomy.sh"
 # shellcheck source=lib/noop-skip.sh
 . "$SCRIPT_DIR/lib/noop-skip.sh"
 # shellcheck source=lib/fleet.sh
@@ -124,6 +126,8 @@ usage: agent-cycle.sh [--dry-run] [--once] [--repo <slug>]
        agent-cycle.sh --disable [<reason>] [--for <90m|4h|2d|forever>] [--until <timestamp>] [--this-node]
        agent-cycle.sh --enable [--this-node]
        agent-cycle.sh --clear-limit [<reason>]
+       agent-cycle.sh --kill-merge-autonomy [<reason>]
+       agent-cycle.sh --restore-merge-autonomy
        agent-cycle.sh --status
 
 Run one cycle of the autonomous agent pipeline, or manage the switch that
@@ -155,10 +159,24 @@ stops cycles from starting (shared with review-cycle.sh).
                      or the plan rolled over. Unlike --enable this touches no
                      switch: it clears fleet/limit.json and logs a
                      `limit-cleared` event that supersedes the cooldown.
+  --kill-merge-autonomy [reason]
+                     Force every repo's effective `merge_autonomy` to `human`
+                     fleet-wide, immediately, regardless of config.json or any
+                     per-repo override — the D18 kill switch (docs/reviews/
+                     2026-08-14-autonomy-investigation.md §6). A reason is
+                     required, on the same terms as --disable. Reuses the
+                     fleet-flag mechanism --disable/--enable share
+                     (fleet/merge-autonomy-kill.json) but stops nothing else:
+                     cycles keep running normally, only approval and landing
+                     are forced back to human.
+  --restore-merge-autonomy
+                     Clear the kill switch and let each repo's configured
+                     `merge_autonomy` level — and any per-repo override —
+                     govern again.
   --status           Report the switch — distinguishing a node-scoped disable,
                      a fleet disable, or both, and what clearing each leaves —
-                     any usage-limit stand-down, and whether either pipeline
-                     is running.
+                     any usage-limit stand-down, the merge-autonomy kill
+                     switch, and whether either pipeline is running.
   --help             Display this help and exit.
 
 --dry-run and --once bypass the no-op short-circuit (requirement 3b): a human
@@ -188,10 +206,11 @@ DISABLE_REASON=""
 DISABLE_FOR=""
 DISABLE_UNTIL=""
 CLEAR_LIMIT_REASON=""
+KILL_MERGE_AUTONOMY_REASON=""
 THIS_NODE=0
 set_manage_action() {
   if [[ -n "$MANAGE_ACTION" ]]; then
-    echo "agent-cycle: --disable, --enable, --clear-limit and --status are mutually exclusive" >&2
+    echo "agent-cycle: --disable, --enable, --clear-limit, --kill-merge-autonomy, --restore-merge-autonomy and --status are mutually exclusive" >&2
     exit 64
   fi
   MANAGE_ACTION="$1"
@@ -214,6 +233,13 @@ while [[ $# -gt 0 ]]; do
       # self-explanatory in a way that one being imposed is not.
       if [[ $# -gt 0 && "$1" != --* ]]; then CLEAR_LIMIT_REASON="$1"; shift; fi
       ;;
+    --kill-merge-autonomy)
+      set_manage_action kill-merge-autonomy; shift
+      # A reason is required, same as --disable's — the next person to
+      # wonder why every repo is stuck at human is entitled to one.
+      if [[ $# -gt 0 && "$1" != --* ]]; then KILL_MERGE_AUTONOMY_REASON="$1"; shift; fi
+      ;;
+    --restore-merge-autonomy) set_manage_action restore-merge-autonomy; shift ;;
     --status) set_manage_action status; shift ;;
     --for) DISABLE_FOR="${2:-}"; shift 2 ;;
     --until) DISABLE_UNTIL="${2:-}"; shift 2 ;;
@@ -225,7 +251,7 @@ done
 
 if [[ -n "$MANAGE_ACTION" ]]; then
   if (( DRY_RUN || ONCE )) || [[ -n "$REPO_FILTER" ]]; then
-    echo "agent-cycle: --disable/--enable/--clear-limit/--status manage stand-down state; they do not run a cycle" >&2
+    echo "agent-cycle: --disable/--enable/--clear-limit/--kill-merge-autonomy/--restore-merge-autonomy/--status manage stand-down state; they do not run a cycle" >&2
     exit 64
   fi
   if [[ "$MANAGE_ACTION" != "disable" ]] && [[ -n "$DISABLE_FOR" || -n "$DISABLE_UNTIL" ]]; then
@@ -234,6 +260,10 @@ if [[ -n "$MANAGE_ACTION" ]]; then
   fi
   if [[ "$MANAGE_ACTION" == "disable" && -z "$DISABLE_REASON" ]]; then
     echo "agent-cycle: --disable needs a reason, e.g. --disable 'editing lib/cycle-state.sh'" >&2
+    exit 64
+  fi
+  if [[ "$MANAGE_ACTION" == "kill-merge-autonomy" && -z "$KILL_MERGE_AUTONOMY_REASON" ]]; then
+    echo "agent-cycle: --kill-merge-autonomy needs a reason, e.g. --kill-merge-autonomy 'Approver App misbehaving'" >&2
     exit 64
   fi
 fi
@@ -728,12 +758,29 @@ fleet_status_report() {
   fi
 }
 
+# The D18 kill switch (requirement 2.3b) — a separate flag from the fleet
+# switch above, so killing merge autonomy never stops cycles running and
+# disabling the pipeline never touches this. Reported alongside the other two
+# stand-downs because all three answer some version of "why is this pipeline
+# behaving the way it is right now".
+merge_autonomy_status_report() {
+  local ma_state
+  ma_state="$(merge_autonomy_kill_state "$state_repo" "$state_dir")"
+  if [[ "$(jq -r '.state' <<<"$ma_state")" == "disabled" ]]; then
+    printf 'merge_autonomy: KILLED — %s\n' "$(toggle_describe "$(jq -c '.record' <<<"$ma_state")")"
+    printf '          every repo'"'"'s effective level is human regardless of merge_autonomy; --restore-merge-autonomy clears it\n'
+  else
+    printf 'merge_autonomy: not killed — each repo runs at its configured level\n'
+  fi
+}
+
 if [[ -n "$MANAGE_ACTION" ]]; then
   case "$MANAGE_ACTION" in
     status)
       toggle_status_report "$state_dir" "cycle=$lock_file" "review=$review_lock_file"
       fleet_status_report
       limit_status_report
+      merge_autonomy_status_report
       exit 0
       ;;
     disable)
@@ -878,6 +925,47 @@ if [[ -n "$MANAGE_ACTION" ]]; then
         printf 'agent-cycle: usage-limit stand-down lifted (resume_at was %s)\n' "$was"
       else
         printf 'agent-cycle: no usage-limit stand-down was in force\n'
+      fi
+      refresh_dashboard
+      exit 0
+      ;;
+    kill-merge-autonomy)
+      # D18 §6 (requirement 2.3b): a permanent operational control, not
+      # scaffolding — inherently fleet-wide, so unlike --disable there is no
+      # --this-node form and no local record to write first. With no
+      # state_repo configured this is a single-node install and the flag
+      # cannot be published anywhere every future read would see it — say so
+      # rather than pretend the kill took effect.
+      by="$(toggle_actor) pid $$"
+      if [[ -z "$state_repo" ]]; then
+        echo "agent-cycle: no state_repo configured — --kill-merge-autonomy has nothing to publish to (single-node install; the config's own merge_autonomy already governs)" >&2
+        exit 64
+      fi
+      outcome="$(merge_autonomy_kill_set "$state_repo" "$KILL_MERGE_AUTONOMY_REASON" "$by")"
+      case "$outcome" in
+        ok) printf 'agent-cycle: merge-autonomy kill switch set — every repo'"'"'s effective level is now human\n' ;;
+        *) echo "agent-cycle: WARNING — could not set the merge-autonomy kill switch (state repo unreachable?)" >&2 ;;
+      esac
+      log_event "merge-autonomy-killed" "$(jq -nc --arg r "$KILL_MERGE_AUTONOMY_REASON" \
+        --arg by "$by" --arg actor "$(toggle_actor)" --arg outcome "$outcome" \
+        '{reason: $r, by: $by, actor: $actor, kind: "manual", fleet_flag: $outcome}')"
+      refresh_dashboard
+      exit 0
+      ;;
+    restore-merge-autonomy)
+      if [[ -z "$state_repo" ]]; then
+        printf 'agent-cycle: no state_repo configured — the kill switch was never publishable (single-node install)\n'
+        exit 0
+      fi
+      outcome="$(merge_autonomy_kill_clear "$state_repo" "$state_dir")"
+      case "$outcome" in
+        ok) printf 'agent-cycle: merge-autonomy kill switch cleared — each repo'"'"'s configured level governs again\n' ;;
+        unconfigured) printf 'agent-cycle: merge-autonomy kill switch was not set\n' ;;
+        *) echo "agent-cycle: WARNING — could not clear the merge-autonomy kill switch; every repo still forced to human. Re-run --restore-merge-autonomy, or delete fleet/merge-autonomy-kill.json in $state_repo by hand." >&2 ;;
+      esac
+      if [[ "$outcome" == "ok" ]]; then
+        log_event "merge-autonomy-restored" "$(jq -nc --arg by "$(toggle_actor)" \
+          '{detail: "cleared by hand", by: $by, actor: $by, kind: "manual"}')"
       fi
       refresh_dashboard
       exit 0

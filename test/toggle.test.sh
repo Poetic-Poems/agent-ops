@@ -14,6 +14,15 @@
 #     not return non-zero, because every call site is `x="$(toggle_clear …)"`
 #     under `set -e` (the trap in the Gotchas table).
 #
+# The offline e2e section below also covers `agent-cycle.sh --kill-merge-
+# autonomy`/`--restore-merge-autonomy` (D18, requirement 2.3b): a fourth fleet
+# flag built on this file's own `fleet_flag_*` machinery, exercised here
+# rather than in test/merge-autonomy.test.sh because the CLI harness — the
+# node/log/gh-backing scaffolding — already lives in this file for the switch
+# and the limit flag, and a fourth flag reusing the identical mechanism does
+# not earn a second copy of it. lib/merge-autonomy.sh's own config-resolution
+# and kill-switch unit coverage is test/merge-autonomy.test.sh's job.
+#
 # No test framework is used (none exists elsewhere in this repo). Run directly:
 #
 #   ./test/toggle.test.sh
@@ -467,8 +476,9 @@ new_home() {  # new_home <name> -> prints a throwaway node HOME
 
 run_node() {  # run_node <home> <script> [args…]
   local home="$1" script="$2"; shift 2
-  # DASHBOARD_GH_CMD: agent-cycle.sh's --disable/--enable/--clear-limit paths
-  # end in refresh_dashboard(), which shells out to publish-dashboard.sh as a
+  # DASHBOARD_GH_CMD: agent-cycle.sh's --disable/--enable/--clear-limit/
+  # --kill-merge-autonomy/--restore-merge-autonomy paths all end in
+  # refresh_dashboard(), which shells out to publish-dashboard.sh as a
   # separate process — TOGGLE_GH's PATH-independent stub reaches every other
   # `gh` call this section makes, but not that one, since publish-dashboard.sh
   # resolves `gh` through this seam instead of PATH (see its own PATH comment).
@@ -740,6 +750,56 @@ assert_contains "the superseded limit-hit is still in the log" \
 assert_not_contains "and the cycle no longer stands down for the usage limit" \
   'usage-limit cooldown' "$(tail -n +$(( b_log_before + 1 )) "$b_log" 2>/dev/null)"
 rm -f "$gh_backing/fleet/limit.json"
+
+# --- --kill-merge-autonomy / --restore-merge-autonomy (D18, requirement 2.3b) ---
+# A third fleet flag, independent of the switch and the limit above: killing
+# merge autonomy must publish its own file under its own name and must not
+# touch fleet/disabled.json or fleet/limit.json (both already confirmed clear
+# by this point in the run).
+kill_out="$(run_node "$a_home" agent-cycle.sh --kill-merge-autonomy "Approver App misbehaving" 2>&1)"
+assert_contains "--kill-merge-autonomy reports the switch set" \
+  "merge-autonomy kill switch set" "$kill_out"
+assert_eq "--kill-merge-autonomy publishes fleet/merge-autonomy-kill.json" "1" \
+  "$(test -f "$gh_backing/fleet/merge-autonomy-kill.json" && echo 1 || echo 0)"
+assert_eq "the record names the actor that set it" "fleet-node-a" \
+  "$(jq -r '.actor' "$gh_backing/fleet/merge-autonomy-kill.json")"
+assert_eq "and records a manual kind" "manual" \
+  "$(jq -r '.kind' "$gh_backing/fleet/merge-autonomy-kill.json")"
+assert_eq "and the reason given" "Approver App misbehaving" \
+  "$(jq -r '.reason' "$gh_backing/fleet/merge-autonomy-kill.json")"
+assert_eq "neither the fleet switch nor the limit flag is touched" "0 0" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo -n 1 || echo -n 0)$(printf ' ')$(test -f "$gh_backing/fleet/limit.json" && echo -n 1 || echo -n 0)"
+assert_contains "the merge-autonomy-killed event is logged" \
+  '"event":"merge-autonomy-killed"' "$(cat "$a_log" 2>/dev/null)"
+
+status_out="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status reports the kill switch set" "merge_autonomy: KILLED" "$status_out"
+assert_contains "  ... naming what clears it" "--restore-merge-autonomy clears it" "$status_out"
+
+restore_out="$(run_node "$a_home" agent-cycle.sh --restore-merge-autonomy 2>&1)"
+assert_contains "--restore-merge-autonomy reports the switch cleared" \
+  "merge-autonomy kill switch cleared" "$restore_out"
+assert_eq "--restore-merge-autonomy removes fleet/merge-autonomy-kill.json" "0" \
+  "$(test -f "$gh_backing/fleet/merge-autonomy-kill.json" && echo 1 || echo 0)"
+assert_contains "the merge-autonomy-restored event is logged" \
+  '"event":"merge-autonomy-restored"' "$(cat "$a_log" 2>/dev/null)"
+
+status_out2="$(run_node "$a_home" agent-cycle.sh --status 2>&1)"
+assert_contains "--status reports the kill switch clear again" "merge_autonomy: not killed" "$status_out2"
+
+# A required reason, the same terms as --disable's.
+bare_kill_out="$(run_node "$a_home" agent-cycle.sh --kill-merge-autonomy 2>&1)"
+bare_kill_rc=$?
+assert_eq "--kill-merge-autonomy with no reason is a usage error" "64" "$bare_kill_rc"
+assert_contains "naming what is missing" "needs a reason" "$bare_kill_out"
+
+# Restoring an already-clear switch is a normal, idempotent outcome.
+already_clear_out="$(run_node "$a_home" agent-cycle.sh --restore-merge-autonomy 2>&1)"
+assert_contains "--restore-merge-autonomy on an already-clear switch says so" \
+  "was not set" "$already_clear_out"
+assert_eq "and exits cleanly" "0" "$?"
+
+rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 
 # --- A manual fleet/limit.json is honoured, never probed (#244) -----------
 # An operator's stand-down is a decision, not an inference: the cycle must

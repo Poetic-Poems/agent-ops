@@ -329,6 +329,15 @@ assert_rejected "a state_repo that is not owner/name is rejected" \
   '.state_repo = "agent-ops-state"' 'config.state_repo: "agent-ops-state" does not match'
 assert_valid "an empty state_repo is accepted (single-node operation)" \
   '.state_repo = ""'
+assert_rejected "an unknown merge_autonomy level is rejected" \
+  '.merge_autonomy = "agent-does-everything"' 'config.merge_autonomy: "agent-does-everything" is not one of'
+assert_rejected "an unknown per-repo merge_autonomy override is rejected" \
+  '.repos[0].merge_autonomy = "agent-does-everything"' \
+  'config.repos[0].merge_autonomy: "agent-does-everything" is not one of'
+assert_valid "every merge_autonomy level, top-level and per-repo, is accepted" \
+  '.merge_autonomy = "agent-merges-all" | .repos[0].merge_autonomy = "agent-approves"'
+assert_valid "a repo with no merge_autonomy override is accepted (inherits the top-level key)" \
+  '.merge_autonomy = "agent-approves"'
 
 # --- Model identifiers. D12's whole point is that the qualifier is checked
 #     before it reaches `claude --model`, and the schema is the earlier of the
@@ -391,6 +400,22 @@ assert_doctor "doctor reports a schema violation as a failure, naming the path" 
   '.pr_labell = "x"' 1 'config: unknown key "pr_labell"'
 assert_doctor "doctor passes the shipped configuration" \
   '.' 0 'No failures'
+
+# --- D18 (requirement 2.3b): merge_autonomy above human needs an Approver
+#     identity configured. Doctor-only — nothing at cycle start consumes this
+#     pairing yet, so there is no matching agent-cycle.sh refusal to mirror,
+#     unlike the two shared cross-key rules above. ---
+assert_doctor "doctor fails a merge_autonomy level above human with no approver_app_id, naming the key" \
+  '.merge_autonomy = "agent-approves"' 1 \
+  'merge_autonomy is "agent-approves" with no approver_app_id configured'
+assert_doctor "doctor fails a per-repo merge_autonomy override above human with no approver_app_id, naming the repo" \
+  '.repos[0].merge_autonomy = "agent-merges-all"' 1 \
+  "Poetic-Poems/poetic's merge_autonomy override is \"agent-merges-all\" with no approver_app_id configured"
+assert_doctor "doctor passes a merge_autonomy level above human once approver_app_id is set" \
+  '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' 0 \
+  'merge_autonomy is "agent-approves"'
+assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id" \
+  '.merge_autonomy = "human"' 0 'merge_autonomy is "human"'
 
 # --- The gate is a startup refusal in the real entry points, not merely in
 #     the library function above (requirement 1b): agent-cycle.sh and

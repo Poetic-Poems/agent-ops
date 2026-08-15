@@ -367,6 +367,54 @@ run_doctor \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}'
 assert_eq "and requiring 0 approving reviews is a warn, not a failure" "0" "$rc"
 
+# --- D18 §5.3 (requirement 2.3b): merge_autonomy at agent-merges-routine+
+#     while the ruleset still requires code-owner review ---------------------
+# Reuses the same ruleset pass as requirement 38's check above (one API read,
+# two facts), so the fixture shape is identical; only merge_autonomy and
+# require_code_owner_review vary. A per-repo config is needed here, unlike
+# the requirement-38 block above, since the level under test lives on
+# $base_config itself.
+ma_config="$tmp/ma-config.json"
+
+jq '.merge_autonomy = "agent-merges-routine" | .approver_app_id = "123456"' "$base_config" > "$ma_config"
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+rc=$?
+assert_contains "agent-merges-routine with code-owner review still required fails, naming the repo and level" \
+  "[fail] $slug's merge_autonomy is \"agent-merges-routine\" but its default-branch ruleset still requires code-owner review" "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":false}}]}' \
+  bash "$DOCTOR" --config "$ma_config" 2>&1)"
+assert_not_contains "agent-merges-routine with code-owner review off does not fail" \
+  "still requires code-owner review" "$out"
+
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
+  bash "$DOCTOR" --config "$base_config" 2>&1)"
+assert_not_contains "merge_autonomy at the default (human) is unaffected by code-owner review either way" \
+  "still requires code-owner review" "$out"
+
+ma_approves_config="$tmp/ma-approves-config.json"
+jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' "$base_config" > "$ma_approves_config"
+out="$(env PATH="$stub_bin:$PATH" \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_not_contains "agent-approves (below the routine tier) is unaffected by code-owner review" \
+  "still requires code-owner review" "$out"
+
+# --- The kill switch's own live state (requirement 2.3b), reported once per
+#     run alongside state_repo's own access check ---------------------------
+run_doctor
+assert_contains "with no state_repo configured, the kill switch is reported not-set" \
+  "[ ok ] the merge-autonomy kill switch is not set" "$out"
+
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'
