@@ -106,10 +106,19 @@
 #                             `ensure_human_reviewer` (`lib/handoff.sh`)
 #                             itself reasons from, read rather than acted on.
 #   could_not_post_nudge   — did the nudge comment land after all: `gh pr
-#                             view --json comments`, searched for the
-#                             `<!-- agent-ops:human-nudge -->` marker
-#                             `sweep-human-visibility.sh` itself posts and
-#                             checks for idempotency.
+#                             view --json comments`, searched for a comment
+#                             carrying both the exact `<!-- agent-ops:human-
+#                             nudge -->` HTML-comment form and `lib/
+#                             pipeline-marker.sh`'s own
+#                             `PIPELINE_COMMENT_MARKER_PREFIX` stamp — the
+#                             same conjunction `sweep-human-visibility.sh`
+#                             itself checks for idempotency (agent-ops#390,
+#                             #428). Neither alone is safe: the HTML form
+#                             alone still matches a comment merely quoting or
+#                             discussing the marker (a Reviewer summarising a
+#                             change to this very check, say), and the prefix
+#                             alone is stamped on every pipeline comment,
+#                             nudge or not.
 #   dequeue_notice          — did the dequeue notice land after all: `gh pr
 #                             view --json comments`, searched for the
 #                             `<!-- agent-ops:merge-queue-dequeued:` marker
@@ -172,6 +181,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # violation that had already resolved.
 # shellcheck source=lib/github-limit.sh
 . "$SCRIPT_DIR/lib/github-limit.sh"
+# PIPELINE_COMMENT_MARKER_PREFIX, for the could_not_post_nudge re-check below:
+# the exact `<!-- agent-ops:human-nudge -->` HTML form alone still matches a
+# comment merely quoting or discussing the marker, so the re-check also
+# requires this stamp on the same comment (agent-ops#390, #428).
+# shellcheck source=lib/pipeline-marker.sh
+. "$SCRIPT_DIR/lib/pipeline-marker.sh"
 
 slug="${1:-}"
 violations_json="${2:-[]}"
@@ -244,7 +259,20 @@ _pr_violation_survives() {
       fi
       ;;
     could_not_post_nudge)
-      has_marker="$(jq -r '(.comments // []) | any((.body // "") | test("agent-ops:human-nudge"))' \
+      # An unanchored substring test here would fire on any comment merely
+      # *discussing* the marker — a Reviewer summarising a change to this
+      # very check would quote the gate and thereby drop a still-live
+      # violation (agent-ops#390, #428). Requiring the exact HTML-comment
+      # form rules out prose that only mentions the bare token, but not a
+      # fenced code block quoting the literal string; requiring
+      # `PIPELINE_COMMENT_MARKER_PREFIX` on the *same* comment additionally
+      # rules out a non-pipeline write reproducing that string verbatim.
+      # Neither condition alone is enough — the prefix is stamped on every
+      # pipeline comment, including an ordinary Reviewer summary — so both
+      # must hold on the one comment that is the real nudge.
+      has_marker="$(jq -r --arg mark "$PIPELINE_COMMENT_MARKER_PREFIX" \
+                     '(.comments // []) | any(((.body // "") | contains("<!-- agent-ops:human-nudge -->"))
+                                               and ((.body // "") | contains($mark)))' \
                      <<<"$json" 2>/dev/null || echo false)"
       if [[ "$has_marker" == "true" ]]; then
         printf 'drop'

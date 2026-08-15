@@ -7574,9 +7574,14 @@ runs unattended.
       see Gotchas) — a requested team counts, neither
       reader's filter can ever drop one — or a `reviewDecision` of `APPROVED`
       or `CHANGES_REQUESTED`, is the request having worked after all); a
-      `could not post the idle nudge comment` warning survives only while the
-      `<!-- agent-ops:human-nudge -->` marker comment
-      `scripts/sweep-human-visibility.sh` itself checks for is still absent;
+      `could not post the idle nudge comment` warning survives only while no
+      comment carries both the exact `<!-- agent-ops:human-nudge -->`
+      HTML-comment form and `lib/pipeline-marker.sh`'s own
+      `PIPELINE_COMMENT_MARKER_PREFIX` stamp on the same comment — the same
+      conjunction `scripts/sweep-human-visibility.sh` itself checks for
+      (agent-ops#390, #428); neither alone is safe, since the HTML form alone
+      still matches a comment merely discussing the marker and the stamp
+      alone is on every pipeline comment, nudge or not;
       a `no legal review-request candidate` warning (requirement 38a's
       `skip\tno-candidate`, tech-debt/TD-PPagop-26081001.md) survives only
       while `gh pr view --json author,reviews,reviewRequests` still shows no
@@ -8216,8 +8221,9 @@ What exists, and the requirements each part answers to:
    request (Bot-typed — `__typename`-keyed on this reader — and
    `[bot]`-suffixed entries excluded, a requested team
    counted — tech-debt/TD-PPagop-26081403.md) and no review yet given; a
-   `could not post the idle nudge comment` warning only while the
-   `agent-ops:human-nudge` marker comment is still absent; a `no legal
+   `could not post the idle nudge comment` warning only while no comment
+   carries both the exact `agent-ops:human-nudge` HTML-comment form and the
+   pipeline-marker stamp on the same comment (agent-ops#390, #428); a `no legal
    review-request candidate` warning (tech-debt/TD-PPagop-26081001.md) only
    while `gh pr view --json author,reviews,reviewRequests` still shows no
    non-author, non-bot, submitted review, no review request already pending
@@ -11145,11 +11151,17 @@ pull request, run the ones the change touches and any it could regress.
     array entirely, so in production a Copilot-only request arrives as `[]`
     and is the "otherwise survives" case (see Gotchas); a
     `could not post the idle nudge comment` violation on an `APPROVED` pull
-    request survives while the `agent-ops:human-nudge` marker comment is
-    absent — confirming the classes are told apart, not read off the same
+    request survives while no comment carries both the exact
+    `<!-- agent-ops:human-nudge -->` HTML-comment form and the pipeline-marker
+    stamp — confirming the classes are told apart, not read off the same
     "has a human reviewed this" check, which would otherwise drop every
-    nudge-class violation on sight — and is dropped once the marker appears; a
-    `could not post the merge-queue-dequeued notice` violation
+    nudge-class violation on sight — and separately survives a comment
+    carrying the stamp but only prose mentioning the marker, a comment
+    carrying the exact HTML form in a fenced code block but no stamp, and an
+    ordinary pipeline comment carrying the stamp but no nudge marker at all
+    (agent-ops#390, #428, mirroring `test/sweep-human-visibility.test.sh`'s own
+    discriminating cases), and is dropped only once a single comment carries
+    both; a `could not post the merge-queue-dequeued notice` violation
     (TD-PPagop-26081504) survives while the `agent-ops:merge-queue-dequeued:`
     marker comment is absent and is dropped once it appears, the same
     marker-read shape as the nudge class; a
