@@ -5430,17 +5430,17 @@ runs unattended.
     followed; `enabled` is logged whenever anything was actually cleared — the
     local record, the fleet flag, or both — including a `--enable` run on a
     node with no local record of its own but a live fleet flag, which a
-    `record`-only condition used to leave silently absent from the log.
-    A `chained` event (requirement 39) is
-    logged by the parent cycle, from its own cleanup, immediately before it
-    launches its continuation: `depth` is the launching child's own place in
-    the lineage (the parent's plus one) and `max_chained_cycles` is the cap in
-    force, so a lineage's length is reconstructable from the log without
-    inferring it from consecutive `cycle-start` timestamps. `selection`, and any `attempt-failed` or `item-void`
-    raised once an item has been selected, must carry both `repo` and `item` —
-    requirements 34 and 34c key on them, so an event that omits them cannot
-    pin any state on the item it names, and the omission is invisible until you
-    notice the same work being redone.
+    `record`-only condition used to leave silently absent from the log. A
+    `chained` event (requirement 39) is logged by the parent cycle, from its
+    own cleanup, immediately before it launches its continuation: `depth` is
+    the launching child's own place in the lineage (the parent's plus one) and
+    `max_chained_cycles` is the cap in force, so a lineage's length is
+    reconstructable from the log without inferring it from consecutive
+    `cycle-start` timestamps. `selection`, and any `attempt-failed` or
+    `item-void` raised once an item has been selected, must carry both `repo`
+    and `item` — requirements 34 and 34c key on them, so an event that omits
+    them cannot pin any state on the item it names, and the omission is
+    invisible until you notice the same work being redone.
 33a. **Metering.** Every `stage-end` event additionally carries the per-stage
     metering record: `model` (the model id passed to the invocation),
     `cost_usd`, `duration_ms`, `num_turns`, `is_error` (pulled from the
