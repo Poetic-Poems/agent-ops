@@ -1293,7 +1293,15 @@ runs unattended.
    `--kill-merge-autonomy`, the record carries `actor`/`kind` exactly as
    `toggle_disable`'s own (`kind` always `manual` — nothing automatic writes
    this flag), and `--status` reports it (`merge_autonomy: KILLED — …` or
-   `not killed`) alongside the switch and the usage-limit stand-down. Unlike
+   `not killed`) alongside the switch and the usage-limit stand-down — a
+   report driven by the same "anything but clear reads as killed" test
+   `merge_autonomy_effective_level` applies, so what `--status` and
+   `scripts/doctor.sh` say and what a level resolution does cannot disagree.
+   Each command logs its own event (requirement 33): `merge-autonomy-killed`
+   carrying the record's `reason`/`by`/`actor`/`kind` and the
+   `fleet_flag` outcome word, on the same terms as `disabled`'s; and
+   `merge-autonomy-restored`, logged by outcome rather than by instruction —
+   only where a flag was actually cleared, exactly as `enabled` is. Unlike
    the fleet switch there is no local record and no `--this-node` form: the
    kill switch is described as "a permanent operational control, not
    scaffolding" (§6) precisely because a single Approver App identity governs
@@ -5396,7 +5404,8 @@ runs unattended.
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
-    `disabled`, `enabled`, `salvage`, `chained`,
+    `disabled`, `enabled`,
+    `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying

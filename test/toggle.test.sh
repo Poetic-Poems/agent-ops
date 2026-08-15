@@ -15,11 +15,11 @@
 #     under `set -e` (the trap in the Gotchas table).
 #
 # The offline e2e section below also covers `agent-cycle.sh --kill-merge-
-# autonomy`/`--restore-merge-autonomy` (D18, requirement 2.3b): a fourth fleet
+# autonomy`/`--restore-merge-autonomy` (D18, requirement 2.3b): a third fleet
 # flag built on this file's own `fleet_flag_*` machinery, exercised here
 # rather than in test/merge-autonomy.test.sh because the CLI harness — the
 # node/log/gh-backing scaffolding — already lives in this file for the switch
-# and the limit flag, and a fourth flag reusing the identical mechanism does
+# and the limit flag, and a third flag reusing the identical mechanism does
 # not earn a second copy of it. lib/merge-autonomy.sh's own config-resolution
 # and kill-switch unit coverage is test/merge-autonomy.test.sh's job.
 #
@@ -795,9 +795,13 @@ assert_contains "naming what is missing" "needs a reason" "$bare_kill_out"
 
 # Restoring an already-clear switch is a normal, idempotent outcome.
 already_clear_out="$(run_node "$a_home" agent-cycle.sh --restore-merge-autonomy 2>&1)"
+# Captured here, not after the assert_contains below: assert_contains always
+# returns 0 (it counts a failure rather than returning one), so reading `$?`
+# after it would compare 0 against 0 and assert nothing at all.
+already_clear_rc=$?
 assert_contains "--restore-merge-autonomy on an already-clear switch says so" \
   "was not set" "$already_clear_out"
-assert_eq "and exits cleanly" "0" "$?"
+assert_eq "and exits cleanly" "0" "$already_clear_rc"
 
 rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 

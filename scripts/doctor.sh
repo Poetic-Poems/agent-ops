@@ -668,7 +668,10 @@ if ((gh_ready)); then
   # a network call and belongs here rather than the offline Configuration
   # section above.
   ma_kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir")" 2>/dev/null)"
-  if [[ "$ma_kill_state" == "disabled" ]]; then
+  # `!= enabled`, not `== disabled`: the same test merge_autonomy_effective_level
+  # applies, so this report cannot say "not set" about a flag that is in fact
+  # forcing every repo to human (an expired record reads as neither word).
+  if [[ "$ma_kill_state" != "enabled" ]]; then
     warn "the merge-autonomy kill switch is SET — every repo's effective level is forced to human regardless of merge_autonomy; agent-cycle.sh --restore-merge-autonomy clears it"
   else
     ok "the merge-autonomy kill switch is not set — merge_autonomy governs as configured"

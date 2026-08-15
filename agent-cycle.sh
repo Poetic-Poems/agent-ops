@@ -766,7 +766,12 @@ fleet_status_report() {
 merge_autonomy_status_report() {
   local ma_state
   ma_state="$(merge_autonomy_kill_state "$state_repo" "$state_dir")"
-  if [[ "$(jq -r '.state' <<<"$ma_state")" == "disabled" ]]; then
+  # Anything but `enabled` is killed, the same test merge_autonomy_effective_level
+  # itself applies — not `== "disabled"`. _toggle_eval also speaks `expired`,
+  # and a record carrying an expiry it has passed resolves to `human` there
+  # while reading as "not killed" here, which is the one way this report can
+  # tell an operator the opposite of what the pipeline is doing.
+  if [[ "$(jq -r '.state' <<<"$ma_state")" != "enabled" ]]; then
     printf 'merge_autonomy: KILLED — %s\n' "$(toggle_describe "$(jq -c '.record' <<<"$ma_state")")"
     printf '          every repo'"'"'s effective level is human regardless of merge_autonomy; --restore-merge-autonomy clears it\n'
   else
