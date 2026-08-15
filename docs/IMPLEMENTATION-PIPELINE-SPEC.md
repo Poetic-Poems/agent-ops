@@ -7527,14 +7527,22 @@ runs unattended.
     purely because nothing reported it. `scripts/doctor.sh`'s GitHub section
     reads each configured `repos[].slug`'s active branch ruleset targeting
     the default branch (`gh api repos/<slug>/rulesets`, the same technique
-    requirement 25a's own ruleset check uses), and reports its `pull_request`
-    rule's `required_approving_review_count`: `0` is a `warn` naming
-    agent-ops#391 and stating this is informational, not a requirement 38
-    fault; any other value is `ok`; no active ruleset carrying a
+    requirement 25a's own ruleset check uses), and reports the
+    `required_approving_review_count` GitHub actually enforces: the
+    **maximum** across every matching ruleset's `pull_request` rule, never
+    whichever the API happened to return last, because GitHub enforces the
+    strictest applicable rule — a repository with one ruleset requiring `1`
+    and another requiring `0` would otherwise be warned about a
+    `reviewDecision` that in fact reaches `APPROVED` there. `0` is a `warn`
+    naming agent-ops#391 and stating this is informational, not a requirement
+    38 fault; any other value is `ok`; no active ruleset carrying a
     `pull_request` rule, or an unreadable `rulesets` endpoint, is a `skip` —
     a repository may legitimately gate approvals through classic branch
-    protection instead, which this check does not read. Cheap, read-only,
-    one call per repository plus one per candidate ruleset.
+    protection instead, which this check does not read. A count that is not a
+    non-negative integer is not a count: it is passed over like an absent
+    rule rather than evaluated, since a non-numeric value would otherwise
+    compare as `0`, the one value that changes the verdict. Cheap,
+    read-only, one call per repository plus one per candidate ruleset.
 
 ### The Refiner
 
@@ -10769,8 +10777,10 @@ pull request, run the ones the change touches and any it could regress.
     agent-ops#391 and stating this is informational, not a requirement 38
     fault; an active default-branch ruleset with no `pull_request` rule, and
     no active ruleset targeting the default branch at all, are both the same
-    `skip`; an unreadable `rulesets` endpoint is its own `skip`; and none of
-    these fail `doctor.sh` itself.
+    `skip`; an unreadable `rulesets` endpoint is its own `skip`; two active
+    default-branch rulesets requiring `0` and `1` report the strictest — `ok`
+    at `1` — in both list orders, so the verdict does not depend on what the
+    API returned last; and none of these fail `doctor.sh` itself.
 39. **Finish-then-continue's chain decision is a pure, tested function of what
     a cycle already gathered.** `test/chain.test.sh` passes: `chain_sources_remain`
     sums `.sources` across every repo, zero when every repo's is empty, summed

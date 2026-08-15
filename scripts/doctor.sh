@@ -553,10 +553,26 @@ if ((gh_ready)); then
       [[ "$(jq -r '(.conditions.ref_name.include // []) | any(. == "~DEFAULT_BRANCH")' <<<"$ruleset_detail" 2>/dev/null)" == "true" ]] \
         || continue
       count="$(jq -r '[.rules[]? | select(.type == "pull_request")
-                       | .parameters.required_approving_review_count] | .[0] // empty' \
+                       | .parameters.required_approving_review_count] | max // empty' \
                 <<<"$ruleset_detail" 2>/dev/null)"
-      [[ -n "$count" ]] || continue
-      required_count="$count"
+      # A count this cannot do arithmetic on is no count at all: `max` of an
+      # empty list is `null`, dropped by `// empty` above, and anything else
+      # non-numeric would silently evaluate as `0` in the comparison below —
+      # the one value that changes the verdict.
+      [[ "$count" =~ ^[0-9]+$ ]] || continue
+      # The *strictest* applicable rule wins, not the last one the API
+      # happened to return. Where two active rulesets both target the default
+      # branch and both carry a `pull_request` rule, GitHub enforces the
+      # higher `required_approving_review_count`, so reporting whichever came
+      # last could `warn` "reviewDecision never becomes APPROVED here" about a
+      # repository where a second ruleset requires 1 and it does. Every target
+      # repository has exactly one such ruleset today — agent-ops's second
+      # active branch ruleset (the agent-ops#261 nudge-test vehicle) targets
+      # `refs/heads/nudge-test/base`, not `~DEFAULT_BRANCH`, and is excluded
+      # above — so this is correctness in general rather than a live fix.
+      if [[ -z "$required_count" ]] || (( count > required_count )); then
+        required_count="$count"
+      fi
       found_pr_rule=1
     done < <(jq -r '.[] | select(.target == "branch" and .enforcement == "active") | .id' \
               <<<"$ruleset_repo_json" 2>/dev/null)
