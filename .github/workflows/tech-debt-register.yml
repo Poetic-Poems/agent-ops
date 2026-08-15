@@ -4,9 +4,12 @@ name: Tech-debt register check
 # carry well-formed frontmatter — id matching its filename and the
 # repository's declared scope, a recognised status, resolution fields
 # consistent with that status — no register file may ever be deleted or
-# renamed (the append-only Ledger guarantee), and the retired single-file
-# format's "### TD" item sections must not regrow inside TECH-DEBT.md,
-# which holds only policy.
+# renamed (the append-only Ledger guarantee), an open item's body is
+# append-only — existing text may not be rewritten unless its status: field
+# moves too (a stale writer silently overwriting an already-resolved item,
+# or a policy breach), though appending new text is always allowed — and
+# the retired single-file format's "### TD" item sections must not regrow
+# inside TECH-DEBT.md, which holds only policy.
 #
 # Deliberately `pull_request` (not `pull_request_target`), so a fork PR never
 # runs with write-scoped secrets, and ungated by `paths:` — the register is
@@ -49,6 +52,9 @@ jobs:
             echo "$removed"
             exit 1
           fi
+      - name: Open item bodies are append-only while status is unchanged
+        if: github.event_name == 'pull_request'
+        run: perl scripts/check-tech-debt-open-rewrites.pl "origin/${GITHUB_BASE_REF}" HEAD
       - name: Old format must not regrow
         # Item bodies belong in tech-debt/, never as "### TD..." sections in
         # the policy document — whether or not the directory exists yet.

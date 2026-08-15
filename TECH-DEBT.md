@@ -20,15 +20,22 @@ append-only Ledger guarantee — IDs are never reused), and no old-format
 
 ## Filing an item
 
-1. Allocate the ID with `scripts/next-tech-debt-id.pl --ref origin/main`
-   (after a `git fetch origin`). It cannot see IDs allocated on unmerged
-   branches, so also skim open pull requests and `td/*` branches. If two
-   filings do collide, git surfaces it as an add/add conflict on the
-   filename; the later one renames to the next free NN before merging.
-2. Create `tech-debt/<id>.md` with frontmatter `id`, `title`,
+1. Reserve the ID with `scripts/reserve-tech-debt-id.pl`. It fetches
+   `origin/main` itself and pushes a `td/<id>` branch from it — the same
+   race-safe lock "Claiming an item" below uses — retrying with the next
+   `NN` itself whenever a push is rejected, so unlike a plain scan there is
+   nothing left to check for a collision by hand. It prints the reserved
+   `id` on success.
+2. `git fetch origin td/<id>` and check out that branch. Create
+   `tech-debt/<id>.md` on it with frontmatter `id`, `title`,
    `status: open`, `filed` (today, matching the ID's date), an optional
    `review:` provenance line (`<review-folder> R-NN`), and a body
-   describing what, why it matters, where, and a suggested fix.
+   describing what, why it matters, where, and a suggested fix. Commit and
+   push, then open a pull request — this is the same `td/<id>` branch
+   "Claiming an item" would later reuse to work the item once merged,
+   deleted, and re-created; abandoning the filing (closing the PR without
+   merging and deleting the branch) simply releases the reservation, the
+   same way abandoning a claim does.
    (`legacy-id:` appears only on items migrated from the old single-file
    register; segments of either ID resolve via
    `scripts/get-tech-debt-record.pl`.)

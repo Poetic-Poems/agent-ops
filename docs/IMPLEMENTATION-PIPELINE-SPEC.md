@@ -572,10 +572,14 @@ Conventions shared by both repos (agents must honour all of these):
   **draft** pull request immediately, so the claim is visible; flip to
   `resolved` and mark the PR ready when done.
   `scripts/get-tech-debt-record.pl` resolves an ID to its record,
-  `scripts/next-tech-debt-id.pl` allocates IDs, and
-  `scripts/td-check.pl` cross-checks the register against its own rules (exit
-  0 consistent, 1 problems). All three are canonical in `Poetic-Poems/poetic`
-  and held here as byte-identical copies
+  `scripts/next-tech-debt-id.pl` allocates IDs by scanning the register at a
+  ref, `scripts/reserve-tech-debt-id.pl` allocates an ID atomically by
+  pushing its `td/<id>` branch from `origin/main` (the "Filing an item"
+  workflow's own reservation step), `scripts/td-check.pl` cross-checks the
+  register against its own rules (exit 0 consistent, 1 problems), and
+  `scripts/check-tech-debt-open-rewrites.pl` flags a pull request that
+  rewrites an open item's body without moving its `status:`. All five are
+  canonical in `Poetic-Poems/poetic` and held here as byte-identical copies
   (`.github/workflows/td-tooling-drift.yml`).
 - CI runs on every PR (build/lint/test workflows plus CodeQL and
   commit-format checks). A PR is not finished until its checks pass and
