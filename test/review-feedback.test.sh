@@ -40,6 +40,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 # shellcheck source=lib/pipeline-marker.sh
 . "$SCRIPT_DIR/lib/pipeline-marker.sh"
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 
 failures=0
 
@@ -281,12 +283,12 @@ ordered='[
   {"slug": "o/one", "sources": ["security", "review-feedback", "tech-debt", "issues"], "review_feedback": [{"ref": "pr-57-review-2"}]},
   {"slug": "o/two", "sources": ["security", "review-feedback", "issues"], "review_feedback": []}
 ]'
-# Narrowing is to the three *finishing* sources (review-feedback, merge-conflicts
-# and abandoned-drafts); this fixture only carries review-feedback, so the result
-# is review-feedback alone. Kept in step with agent-cycle.sh's filter (requirement
-# 2.2a); the merge-conflicts and abandoned-drafts sides are exercised in their own
-# tests.
-restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' <<<"$ordered"; }
+# Narrowing is to lib/handoff.sh's handoff_narrow_repos_to_finishing_sources
+# (requirement 2.2a, issue #431) — the four *finishing* sources
+# (review-feedback, merge-conflicts, dequeued, abandoned-drafts); this fixture
+# only carries review-feedback, so the result is review-feedback alone. The
+# other three sides are exercised in their own tests.
+restrict() { handoff_narrow_repos_to_finishing_sources "$ordered"; }
 
 assert_eq "restriction leaves only review-feedback selectable" \
   '["review-feedback"] ["review-feedback"]' \

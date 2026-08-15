@@ -5971,10 +5971,8 @@ if (( backpressure_tripped )); then
   # same job for the bands this block leaves populated (`findings`,
   # `register_hygiene`, `human_visibility`): `coordinator_eligible_items` reads
   # the list, not the array.
-  ordered_repos_json="$(jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "dequeued" or . == "abandoned-drafts")))
-                                    | .issues = []
-                                    | .tech_debt = []]' \
-    <<<"$ordered_repos_json")"
+  ordered_repos_json="$(handoff_narrow_repos_to_finishing_sources "$ordered_repos_json")"
+  ordered_repos_json="$(jq -c '[.[] | .issues = [] | .tech_debt = []]' <<<"$ordered_repos_json")"
   log_event "warning" "$(jq -nc \
     --arg d "back-pressure: $adjusted_open_count open agent PRs with a pipeline-side next action >= $max_open_agent_prs ($open_composition) — restricted to finishing sources ($finishing_waiting PR(s) awaiting review-feedback, merge-conflict, dequeued, or abandoned-draft completion)" \
     '{detail: $d}')"

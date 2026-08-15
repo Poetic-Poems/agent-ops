@@ -748,3 +748,29 @@ handoff_round_answered() {
     printf 'unanswered'
   fi
 }
+
+# handoff_narrow_repos_to_finishing_sources REPOS_JSON
+# Requirement 2.2a's back-pressure narrowing: given a JSON array of repo
+# objects each carrying a `sources` array, print the same array with every
+# entry's `sources` narrowed down to the four *finishing* sources —
+# `review-feedback`, `merge-conflicts`, `dequeued`, `abandoned-drafts` — the
+# ones that finish an already-open pull request rather than start a new one,
+# which is the one activity a tripped back-pressure gate still permits.
+# Anything else in `sources` (`security`, `tech-debt`, `issues`, …) is dropped;
+# a repo whose own `sources` carries none of the four is left with an empty
+# list, same as `map(select(...))` always did.
+#
+# This is the one definition of that filter: agent-cycle.sh's own back-pressure
+# block calls it instead of inlining the `map(select(...))` expression, and so
+# does every test that pins the narrowing, rather than each hand-copying the
+# four source names and drifting the moment a fifth finishing source is added
+# (issue #431 — four stale hand-copies were found the moment `dequeued` became
+# the fourth). Fields other than `sources` (`issues`, `tech_debt`, …) are left
+# untouched; callers that also need those emptied do that separately, since
+# it is not part of this same rule and no caller of this function duplicates
+# it.
+handoff_narrow_repos_to_finishing_sources() {
+  local repos_json="${1:-[]}"
+  jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "dequeued" or . == "abandoned-drafts")))]' \
+    <<<"$repos_json"
+}

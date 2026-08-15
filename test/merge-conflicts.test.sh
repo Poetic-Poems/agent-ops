@@ -39,6 +39,9 @@ set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
+
 failures=0
 
 assert_eq() {
@@ -120,18 +123,22 @@ assert_eq "a new head after a resolution yields a different ref, so an old block
 
 # --- Back-pressure narrowing (requirement 2.2a) ---
 #
-# When back-pressure trips, the cycle narrows to the three *finishing* sources
+# When back-pressure trips, the cycle narrows to the four *finishing* sources
 # rather than standing down, so a gate full of stalled work can still be cleared.
 # Tested here rather than live because reaching the branch needs
 # max_open_agent_prs exceeded *and* a finishing candidate waiting at the same
-# moment — the exact state nobody wants to be discovering the behaviour of.
+# moment — the exact state nobody wants to be discovering the behaviour of. The
+# filter itself is lib/handoff.sh's handoff_narrow_repos_to_finishing_sources,
+# sourced above — kept in one definition (issue #431) rather than hand-copied
+# here; this fixture's own `sources` lists only carry three of the four, so
+# `dequeued` is exercised in its own test instead.
 ordered='[
   {"slug": "o/one", "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "tech-debt"], "review_feedback": [], "merge_conflicts": [{"ref": "pr-90-conflict-1a2b3c4d5e6f"}], "abandoned_drafts": []},
   {"slug": "o/two", "sources": ["security", "review-feedback", "merge-conflicts", "abandoned-drafts", "issues"], "review_feedback": [], "merge_conflicts": [], "abandoned_drafts": []}
 ]'
-restrict() { jq -c '[.[] | .sources = (.sources | map(select(. == "review-feedback" or . == "merge-conflicts" or . == "abandoned-drafts")))]' <<<"$ordered"; }
+restrict() { handoff_narrow_repos_to_finishing_sources "$ordered"; }
 
-assert_eq "restriction leaves only the three finishing sources selectable" \
+assert_eq "restriction leaves only the finishing sources present in this fixture selectable" \
   '["review-feedback","merge-conflicts","abandoned-drafts"] ["review-feedback","merge-conflicts","abandoned-drafts"]' \
   "$(restrict | jq -r '[.[] | (.sources | tojson)] | join(" ")')"
 assert_eq "security and fresh sources are narrowed away — a full gate means finish, don't start" \
