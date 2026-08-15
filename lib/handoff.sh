@@ -663,6 +663,16 @@ ensure_human_reviewer() {
 # objects carrying `at`; omit it (or pass `[]`) to read the marked-reply
 # signal alone.
 #
+# All three arrive on stdin, one document each (requirement 4g,
+# TD-PPagop-26081501). Hand over exactly one document per argument: the three
+# are bound positionally, so a caller that concatenates pages — an unslurped
+# `gh api --paginate` read — would shift every later binding onto the wrong
+# value. That is refused rather than read: any document left unconsumed after
+# the three bindings, and any unparseable trailing bytes, exit 5 with
+# `handoff_answer_events: multiple JSON documents in one argument` on stderr
+# and print nothing. A caller must handle that ending — `handoff_round_answered`
+# below reads it as `unknown`, never `answered`.
+#
 # This is the extraction requirement 3c's candidate rule
 # (scripts/gather-review-feedback.sh) has always made; it lives here so a
 # second caller — `handoff_round_answered` below, and through it
@@ -683,12 +693,53 @@ ensure_human_reviewer() {
 # does not answer the round either, for the same reason.
 handoff_answer_events() {
   local reviews="${1:-[]}" comments="${2:-[]}" rerequests="${3:-[]}"
-  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" \
-      --argjson reviews "$reviews" --argjson comments "$comments" --argjson rr "$rerequests" '
-    ([$reviews[]  | select((.body // "") | contains($marker) and contains($actor)) | .at]
-     + [$comments[] | select((.body // "") | contains($marker) and contains($actor)) | .at]
-     + [$rr[] | .at]) | sort
-  '
+  # REVIEWS_JSON, COMMENTS_JSON and REREQUESTS_JSON are a repo's whole
+  # reviews/comments/rerequests history, genuinely unbounded (requirement 4g,
+  # TD-PPagop-26081501) — delivered on stdin, one document per line, bound
+  # positionally with `input as $name` in the order printed, never in argv.
+  #
+  # The trailing `[inputs]` guard stands in for the rejection `--argjson`
+  # used to perform for a multi-document argument — two concatenated arrays,
+  # the shape an unslurped `gh api --paginate` read leaves behind, which it
+  # refused outright ("invalid JSON text passed to --argjson").
+  # `input as $name` refuses nothing: it reads whichever document comes next,
+  # so a caller that hands over more than one document per argument would
+  # otherwise shift every later binding onto the wrong value instead of
+  # failing (test/handoff.test.sh's "two concatenated pages" pin). Three
+  # well-formed single-document arguments leave nothing behind, and an
+  # argument that over-contributes leaves at least one document unconsumed,
+  # so a non-empty remainder is the assertion. The count is exact only while
+  # no argument contributes *zero* documents; both callers slurp each one
+  # with `jq -s -c` first, which guarantees exactly one, and this guard is
+  # the backstop for a third that does not.
+  #
+  # It counts the remainder with `[inputs]` rather than binding one more
+  # document, because each obvious spelling of that is wrong — all three
+  # cases below verified against both jq 1.6 and jq 1.7:
+  #
+  #   - `(try input catch null) as $extra` is caught by its own `try`. On
+  #     jq ≤ 1.6 `try` also catches the `error()` raised downstream of it in
+  #     the same pipeline, rebinding `$extra` to `null` and re-running the
+  #     else branch — so the guard never fires at all and the test pin above
+  #     fails, while CI's jq 1.7 image passes it;
+  #   - comparing that binding against `null` cannot tell "nothing left" from
+  #     a trailing document that *is* `null`, on either version;
+  #   - catching the read at all swallows a JSON *parse* error in trailing
+  #     bytes, which `--argjson` rejected too.
+  #
+  # `[inputs] | length` raises none of the three: it consumes whatever
+  # remains, counts a trailing `null` as the document it is, and lets a parse
+  # error propagate as jq's own exit 5.
+  jq -c -n --arg marker "$PIPELINE_COMMENT_MARKER_PREFIX" --arg actor "actor=implementor -->" '
+    input as $reviews | input as $comments | input as $rr |
+    ([inputs] | length) as $extra |
+    if $extra > 0 then error("handoff_answer_events: multiple JSON documents in one argument")
+    else
+      ([$reviews[]  | select((.body // "") | contains($marker) and contains($actor)) | .at]
+       + [$comments[] | select((.body // "") | contains($marker) and contains($actor)) | .at]
+       + [$rr[] | .at]) | sort
+    end
+  ' <<<"$reviews"$'\n'"$comments"$'\n'"$rerequests"
 }
 
 # handoff_round_answered BLOCKING_AT REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]
@@ -727,11 +778,16 @@ handoff_round_answered() {
   # `jq -e 'type == "array"'` alone does not establish that: `jq` evaluates
   # the filter once per input document and exits on the last one's truth, so
   # two concatenated arrays — exactly what `gh api --paginate` emits per page
-  # — pass it, and then fail `--argjson` inside `handoff_answer_events`. A
-  # caller must hand these arguments over as one document each (see
-  # `_handoff_blocking_reviewers` above for the streaming read that
-  # guarantees it); the guards here are what stops one that does not from
-  # being read as an answer.
+  # — still pass it. It is `handoff_answer_events`'s own trailing-input guard
+  # that catches this now (TD-PPagop-26081501): since it reads its three
+  # arguments positionally off stdin (`input as $name`) rather than as
+  # `--argjson`, a multi-document argument is no longer rejected by `jq`
+  # itself, so that function asserts nothing is left over once all three
+  # bindings are read and errors if there is. A caller must still hand these
+  # arguments over as one document each (see `_handoff_blocking_reviewers`
+  # above for the streaming read that guarantees it); the checks above and
+  # that trailing guard together are what stop one that does not from being
+  # read as an answer.
   [[ -n "$blocking_at" ]] || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$reviews" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
   jq -e 'type == "array"' <<<"$comments" >/dev/null 2>&1 || { printf 'unknown'; return 0; }
