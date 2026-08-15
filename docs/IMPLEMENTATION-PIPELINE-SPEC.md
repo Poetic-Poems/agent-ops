@@ -3452,6 +3452,10 @@ runs unattended.
    `gather-register-hygiene.sh`'s problems merge and final candidate build
    (`test/register-hygiene.test.sh`), and `publish-dashboard.sh`'s
    `github_json` build (`test/publish-dashboard.test.sh`).
+   TD-PPagop-26081506 converted the two sites that item's own Implementor
+   found but left out of scope, both in `publish-dashboard.sh` upstream of
+   the `github_json` build: the per-repo `prs_json` fold and the
+   merge-queue queue-answers merge (`test/publish-dashboard.test.sh`).
 
    **A converted site binds by position, so each argument is one document.**
    `input as $name` reads whichever document comes next; unlike the
@@ -3482,17 +3486,13 @@ runs unattended.
    bytes back into a single argv element and leave the threshold where it
    was. Their tests drive each build with a body past the cap.
 
-   Two sites outside every prior item's enumeration still deliver a
-   fleet-state aggregate in argv, and are filed rather than fixed:
+   One site outside every prior item's enumeration still delivers a
+   fleet-state aggregate in argv, and is filed rather than fixed:
    `agent-cycle.sh`'s own invocation of
    `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
    whole `$violations` argument as a single argv element to the script's own
    `execve`, a cap this requirement's `jq`-specific framing had not considered
-   until TD-PPagop-26081406 found it (TD-PPagop-26081502); and
-   `publish-dashboard.sh`'s own per-repo `prs_json` fold and its
-   queue-answers merge, both upstream of the `github_json` build
-   TD-PPagop-26081503 converted and still carrying the fleet-wide PR index
-   into `jq` as `--argjson` (TD-PPagop-26081506). Those two items are the
+   until TD-PPagop-26081406 found it (TD-PPagop-26081502). That item is the
    outstanding residue; this requirement claims no more than the sites named
    above.
 

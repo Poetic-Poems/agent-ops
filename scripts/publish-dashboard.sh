@@ -1398,12 +1398,18 @@ if (( WITH_GITHUB )); then
       gh_fail_msgs+=("pr list failed for $slug: $(gh_call_err)")
       prs='[]'
     fi
-    prs_json="$(jq -c --arg slug "$slug" --argjson add "$prs" "$PR_JQ"'
-      . + ($add | map({
+    # $prs_json is the running fleet-wide accumulator and $prs is one repo's
+    # whole open-PR-with-label page, both unbounded past this call (requirement
+    # 4g, TD-PPagop-26081506). Both arrive on stdin, one document per line,
+    # bound positionally with `input as $name` in the printed order — never in
+    # argv.
+    prs_json="$(jq -nc --arg slug "$slug" "$PR_JQ"'
+      input as $cur | input as $add |
+      $cur + ($add | map({
         repo: $slug, number, title, url, isDraft, state, mergeable, mergeStateStatus, headRefName, createdAt,
         review_decision: (.reviewDecision // ""),
         checks: (.statusCheckRollup | checks_of)
-      }))' <<<"$prs_json")"
+      }))' <<<"$prs_json"$'\n'"$prs")"
     # The same fetch, indexed. These entries are this tick's freshest answer for
     # every open agent PR, so they always win over anything cached.
     jq -c --arg slug "$slug" --arg at "$now_iso" "$PR_JQ"'
@@ -1625,12 +1631,18 @@ if (( WITH_GITHUB )); then
   done < <(jq -r '.[] | [(.repo + "#" + (.number|tostring)), .repo, (.number|tostring), (.isDraft|tostring)] | @tsv' \
     <<<"$prs_json" 2>/dev/null)
 
-  prs_json="$(jq -Rsc --argjson prs "$prs_json" '
-    (split("\n") | map(select(length > 0) | split("\t")) |
+  # $prs_json is the whole cross-repo PR index, unbounded past this call
+  # (requirement 4g, TD-PPagop-26081506) — it arrives on stdin, bound with
+  # `input as $prs`, rather than as `--argjson`. `$queue_answers` is a
+  # filename, not fleet state, so `--rawfile` (a file jq reads itself, not an
+  # argv element) is unaffected and keeps reading it exactly as `-Rs` did.
+  prs_json="$(jq -nc --rawfile qa "$queue_answers" '
+    input as $prs |
+    ($qa | split("\n") | map(select(length > 0) | split("\t")) |
      map({(.[0]): {queued: (if .[1] == "unknown" then null else (.[1] == "true") end),
                     dequeued: (.[2] == "true")}}) | add // {}) as $q
     | $prs | map(. + ($q[.repo + "#" + (.number|tostring)] // {queued: null, dequeued: false}))' \
-    "$queue_answers" 2>/dev/null)"
+    <<<"$prs_json" 2>/dev/null)"
   [[ -n "$prs_json" ]] || prs_json='[]'
 
   # Rebuilt wholesale from this tick's own open pull requests (fields 4/5
