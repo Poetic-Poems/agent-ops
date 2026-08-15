@@ -63,7 +63,11 @@ export GIT_COMMITTER_EMAIL="test@example.invalid"
 
 item_file() {  # item_file <id> <status> <body-line...> -- extra frontmatter
                # (e.g. "resolved: 2026-08-13") comes via $EXTRA_FRONTMATTER,
-               # one line per array entry.
+               # one line per array entry. Assign it on its own line before
+               # the call, never as a command prefix: bash has no array form
+               # of a prefix assignment, so `EXTRA_FRONTMATTER=(…) item_file`
+               # would quietly hand the function the *string* "(…)" and emit
+               # it verbatim as a bogus frontmatter line.
   local id="$1" status="$2"; shift 2
   {
     echo "---"
@@ -87,7 +91,8 @@ make_rewrite_repo() {
   local dir="$tmp_dir/rewrite-$RANDOM"
   git init -q -b main "$dir"
   mkdir -p "$dir/tech-debt"
-  EXTRA_FRONTMATTER=() item_file TD-PPtest-26080101 open "Original body." \
+  EXTRA_FRONTMATTER=()
+  item_file TD-PPtest-26080101 open "Original body." \
     > "$dir/tech-debt/TD-PPtest-26080101.md"
   git -C "$dir" add -A
   git -C "$dir" commit -q -m base
@@ -102,7 +107,8 @@ run_open_rewrites() {  # run_open_rewrites <dir> <args...>
 # --- flags a body change on an item whose status stays open ------------------------
 dir="$(make_rewrite_repo)"
 git -C "$dir" checkout -q -b overwrite
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080101 open "A completely different body." \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080101 open "A completely different body." \
   > "$dir/tech-debt/TD-PPtest-26080101.md"
 git -C "$dir" commit -q -am overwrite
 out="$(run_open_rewrites "$dir" main overwrite)"
@@ -114,7 +120,8 @@ assert_eq "…naming the file as a BODY REWRITE" "1" \
 # --- allows a strict append to an open item's body ----------------------------------
 dir="$(make_rewrite_repo)"
 git -C "$dir" checkout -q -b append
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080101 open "Original body." "Referenced from: src/foo.js" \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080101 open "Original body." "Referenced from: src/foo.js" \
   > "$dir/tech-debt/TD-PPtest-26080101.md"
 git -C "$dir" commit -q -am append
 out="$(run_open_rewrites "$dir" main append)"
@@ -125,7 +132,8 @@ assert_eq "…and is reported clean" "1" "$(grep -c 'no open-item body rewrites'
 # --- flags a same-length rewrite even though it is not a whole-body swap -----------
 dir="$(make_rewrite_repo)"
 git -C "$dir" checkout -q -b samelength
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080101 open "Original bodz." \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080101 open "Original bodz." \
   > "$dir/tech-debt/TD-PPtest-26080101.md"
 git -C "$dir" commit -q -am samelength
 out="$(run_open_rewrites "$dir" main samelength)"
@@ -137,7 +145,8 @@ assert_eq "…naming the file as a BODY REWRITE" "1" \
 # --- allows a claim (status changes, body unchanged) --------------------------------
 dir="$(make_rewrite_repo)"
 git -C "$dir" checkout -q -b claim
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080101 in-progress "Original body." \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080101 in-progress "Original body." \
   > "$dir/tech-debt/TD-PPtest-26080101.md"
 git -C "$dir" commit -q -am claim
 out="$(run_open_rewrites "$dir" main claim)"
@@ -147,8 +156,8 @@ assert_eq "a claim (status move, body unchanged) is allowed" "0" "$rc"
 # --- allows a resolution (status changes to resolved) --------------------------------
 dir="$(make_rewrite_repo)"
 git -C "$dir" checkout -q -b resolve
-EXTRA_FRONTMATTER=("resolved: 2026-08-13" "ref: #123") \
-  item_file TD-PPtest-26080101 resolved "Original body." \
+EXTRA_FRONTMATTER=("resolved: 2026-08-13" "ref: #123")
+item_file TD-PPtest-26080101 resolved "Original body." \
   > "$dir/tech-debt/TD-PPtest-26080101.md"
 git -C "$dir" commit -q -am resolve
 out="$(run_open_rewrites "$dir" main resolve)"
@@ -158,7 +167,8 @@ assert_eq "a resolution (status move to resolved) is allowed" "0" "$rc"
 # --- ignores newly added items -------------------------------------------------------
 dir="$(make_rewrite_repo)"
 git -C "$dir" checkout -q -b addition
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080102 open "A new item." \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080102 open "A new item." \
   > "$dir/tech-debt/TD-PPtest-26080102.md"
 git -C "$dir" add -A
 git -C "$dir" commit -q -m addition
@@ -180,12 +190,14 @@ assert_eq "a diff with no register changes exits 0" "0" "$rc"
 dir="$tmp_dir/rewrite-empty-$RANDOM"
 git init -q -b main "$dir"
 mkdir -p "$dir/tech-debt"
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080201 open "" \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080201 open "" \
   > "$dir/tech-debt/TD-PPtest-26080201.md"
 git -C "$dir" add -A
 git -C "$dir" commit -q -m base-empty
 git -C "$dir" checkout -q -b append-to-empty
-EXTRA_FRONTMATTER=() item_file TD-PPtest-26080201 open "New body text." \
+EXTRA_FRONTMATTER=()
+item_file TD-PPtest-26080201 open "New body text." \
   > "$dir/tech-debt/TD-PPtest-26080201.md"
 git -C "$dir" commit -q -am append
 out="$(run_open_rewrites "$dir" main append-to-empty)"

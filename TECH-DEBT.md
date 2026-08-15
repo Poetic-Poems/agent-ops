@@ -13,9 +13,15 @@ format, ID grammar and scope-code registry are specified in
 
 `perl scripts/td-check.pl` validates the
 register and runs on every pull request via
-`.github/workflows/tech-debt-register.yml`, alongside two guards: no file
+`.github/workflows/tech-debt-register.yml`, alongside three guards: no file
 in `tech-debt/` may ever be deleted or renamed once on `main` (the
-append-only Ledger guarantee — IDs are never reused), and no old-format
+append-only Ledger guarantee — IDs are never reused), an open item's body is
+append-only — existing text may not change while `status:` stays `open`, new
+text may be appended, and rewriting existing text requires the status to
+move (see "Resolution and history" below — a rewrite of existing text on an
+item that stays `open` is either a stale writer silently overwriting an
+already-merged record or a policy breach, and either way CI should catch it
+rather than let a permanent record change quietly), and no old-format
 `### TD` item sections may reappear in this file.
 
 ## Filing an item
