@@ -392,6 +392,8 @@ out="$(env PATH="$stub_bin:$PATH" \
   bash "$DOCTOR" --config "$ma_config" 2>&1)"
 assert_not_contains "agent-merges-routine with code-owner review off does not fail" \
   "still requires code-owner review" "$out"
+assert_contains "and positively confirms the pairing, naming the repo and level" \
+  "[ ok ] $slug's merge_autonomy is \"agent-merges-routine\" and its default-branch ruleset requires no code-owner review" "$out"
 
 out="$(env PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
@@ -399,6 +401,8 @@ out="$(env PATH="$stub_bin:$PATH" \
   bash "$DOCTOR" --config "$base_config" 2>&1)"
 assert_not_contains "merge_autonomy at the default (human) is unaffected by code-owner review either way" \
   "still requires code-owner review" "$out"
+assert_not_contains "and stays silent below the routine tier rather than narrate an inapplicable pairing" \
+  "requires no code-owner review" "$out"
 
 ma_approves_config="$tmp/ma-approves-config.json"
 jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' "$base_config" > "$ma_approves_config"
@@ -408,6 +412,8 @@ out="$(env PATH="$stub_bin:$PATH" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 assert_not_contains "agent-approves (below the routine tier) is unaffected by code-owner review" \
   "still requires code-owner review" "$out"
+assert_not_contains "and earns no code-owner ok line either" \
+  "requires no code-owner review" "$out"
 
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------

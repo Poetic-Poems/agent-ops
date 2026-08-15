@@ -85,9 +85,13 @@ merge_autonomy_configured_level() {
 # here means merge autonomy runs at its configured level; "disabled" means
 # the switch has forced everything to `human`. Same failure directions as
 # fleet_disabled_state: unreachable falls back to the last-fetched cache and
-# then to "enabled" (safe, since nothing yet arms anything on the strength of
-# this function alone — see the header); present-but-garbage reads as set,
-# not clear, the same as every other flag lib/toggle.sh evaluates.
+# then to "enabled" (safe today because nothing yet arms anything on the
+# strength of this function alone — see the header — but deliberate-with-an-
+# expiry, not permanent: TD-PPagop-26081507 requires the no-cache case to
+# fail closed to `human` with or before WI-5's Approver stage, and the
+# spec's Design decisions entry defends the interim direction);
+# present-but-garbage reads as set, not clear, the same as every other flag
+# lib/toggle.sh evaluates.
 merge_autonomy_kill_state() {
   local raw
   raw="$(fleet_flag_fetch "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"

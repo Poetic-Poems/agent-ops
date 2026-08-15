@@ -624,12 +624,12 @@
       }
     },
     "approver_app_id": {
-      "description": "The Pullwright Approver GitHub App's id for this installation (D18 §5.3) — the non-author identity that holds review and merge rights at every `merge_autonomy` level above `human`. Empty means no Approver identity is configured yet, which caps `merge_autonomy` at `human`: `scripts/doctor.sh` fails a higher level configured with this unset.",
+      "description": "The Pullwright Approver GitHub App's id for this installation (D18 §5.3) — the non-author identity that holds review and merge rights at every `merge_autonomy` level above `human`. Empty means no Approver identity is configured yet, which caps `merge_autonomy` at `human`: `scripts/doctor.sh` fails a higher level configured with this unset. One fleet-wide scalar by design, with no per-repo override: D18's end-state is a single Approver App identity governing the whole installation (§6), and per-repository variation lives in GitHub's own installation layer, discovered from the App id at token-minting time rather than configured here. Typed string, not integer — an App id is an opaque identifier, never arithmetic. WI-3/WI-4 own the key's final surface and may extend it before anything mints a token from it (see the spec's Design decisions).",
       "type": "string",
       "default": "",
       "x-docs": {
-        "readme": "The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise.",
-        "spec": "The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4.",
+        "readme": "The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.",
+        "spec": "The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape.",
         "value": {
           "readme": "*(unset)*",
           "spec": "*(unset)*"

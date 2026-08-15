@@ -636,13 +636,21 @@ if ((gh_ready)); then
     # repository's own *configured* level (top-level key, or its own
     # override) rather than the kill-switch-adjusted effective one: a switch
     # that is merely standing the ladder down today must not hide a
-    # combination that breaks the moment someone clears it.
+    # combination that breaks the moment someone clears it. At or above the
+    # routine tier the pairing reports both ways — the `ok` is the only
+    # positive evidence the ruleset was actually read at the one level where
+    # that matters; below it the check stays silent rather than narrate a
+    # pairing that does not apply to an operator at `human`.
     if ((found_pr_rule)); then
       ma_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
       ma_rank="$(merge_autonomy_rank "$ma_level" 2>/dev/null || printf 0)"
       routine_rank="$(merge_autonomy_rank agent-merges-routine)"
-      if [[ "$ma_rank" =~ ^[0-9]+$ ]] && (( ma_rank >= routine_rank )) && ((require_code_owner)); then
-        fail "$slug's merge_autonomy is \"$ma_level\" but its default-branch ruleset still requires code-owner review — the Approver App cannot satisfy that, and no pull request at this level would ever clear the gate (D18 §5.3)"
+      if [[ "$ma_rank" =~ ^[0-9]+$ ]] && (( ma_rank >= routine_rank )); then
+        if ((require_code_owner)); then
+          fail "$slug's merge_autonomy is \"$ma_level\" but its default-branch ruleset still requires code-owner review — the Approver App cannot satisfy that, and no pull request at this level would ever clear the gate (D18 §5.3)"
+        else
+          ok "$slug's merge_autonomy is \"$ma_level\" and its default-branch ruleset requires no code-owner review — the Approver App can clear the pull_request rule (D18 §5.3)"
+        fi
       fi
     fi
   done < <(cfg '.repos[]?.slug // empty')

@@ -625,7 +625,7 @@ and the schema must carry every one of them.
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
 | `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
-| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. |
+| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -1283,9 +1283,13 @@ runs unattended.
    `_delete`, the same CAS-guarded contents-API mechanism `fleet/disabled.json`
    already uses) under its own flag name, so a peer with an unreachable state
    repo falls back the same way requirement 2.3a's own flag does — to the
-   last-fetched cache, and to "not killed" when there is none, since nothing
-   yet arms an approval or a landing on the strength of this flag alone (see
-   below).
+   last-fetched cache, and to "not killed" when there is none. That
+   fail-open direction is deliberate and carries its own expiry: it is safe
+   only while nothing arms an approval or a landing on the strength of this
+   flag alone (see below), and TD-PPagop-26081507 requires the no-cache case
+   to fail closed to `human` with or before WI-5's Approver stage — the
+   Design decisions entry on this switch defends today's direction against
+   the landing consequence specifically.
 
    Managed by `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
    (requirement 12), on the same terms as `--disable`/`--enable` where they
@@ -8726,7 +8730,12 @@ What exists, and the requirements each part answers to:
     `agent-merges-routine` or above while an active `pull_request` rule on
     the default branch still requires code-owner review is a `fail`
     (D18 §5.3, requirement 2.3b) — an App cannot satisfy that requirement, so
-    no pull request at that level would ever clear the gate. Judged against
+    no pull request at that level would ever clear the gate — and an `ok`
+    naming the repository and level where the pairing holds: at or above the
+    routine tier that line is the only positive evidence the ruleset was
+    actually read, at exactly the level where an operator needs it, while
+    below the tier the check stays silent rather than narrate a pairing that
+    does not apply to an operator at `human`. Judged against
     the *configured* level, not the kill-switch-adjusted effective one, for
     the same reason the pairing check above is: a combination that only
     breaks once the switch is cleared is worth failing on now. The kill
@@ -11821,6 +11830,43 @@ requirements above, which state only what is.
   a cheap model re-flagging an expensive model's specification is two models
   disagreeing, which a third pass settles only by luck; the escalation is not a
   fallback there, it is the correct answer.
+
+- **The merge-autonomy kill switch fails open today, and that direction has
+  a recorded expiry (requirement 2.3b, TD-PPagop-26081507).** The switch
+  reuses `fleet_flag_fetch`, whose contract deliberately hides "unreachable
+  with no cache" from its callers, so a fresh container (empty
+  `fleet-cache/`) that cannot reach the state repo resolves the switch as
+  clear and runs at its *configured* level. That mirrors
+  `fleet/disabled.json`'s own direction, but the two flags' risk profiles
+  invert the moment WI-5/WI-7 arm a landing path: the fleet switch failing
+  open runs a cycle a human still gates, while this flag failing open would
+  keep a node *landing* pull requests at exactly the moment §6's lever
+  exists for — and on exactly the node least likely to be noticed. It was
+  kept anyway at WI-2 because the alternative was forking shared fleet-flag
+  machinery for a flag nothing consumes: `merge_autonomy_effective_level`
+  has no behaviour-affecting caller yet, so today the direction costs
+  nothing. Failing closed outright was rejected too — a state-repo outage
+  would silently halt autonomous landing fleet-wide. The recorded
+  resolution (TD-PPagop-26081507) is the asymmetric one: with or before
+  WI-5, the *no-cache* case flips to `human` while the last-fetched cache
+  remains the transient-outage fallback, confining the fail-closed blast
+  radius to fresh containers during an outage — the population that cannot
+  know whether an operator has pulled the lever. WI-5 must not arm the
+  Approver stage while the no-cache case still reads as enabled.
+- **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
+  end-state is exactly one Approver App identity governing the whole
+  installation (§6 — the same fact that denies the kill switch a
+  `--this-node` form), so a per-repository App id would contradict the
+  design it serves, and the per-repository variation that does exist in
+  GitHub's model lives in the *installation* layer, which WI-4 discovers at
+  token-minting time from the App id and private key rather than from
+  configuration. A string rather than an integer because an App id is an
+  opaque identifier this system never does arithmetic on. The name and
+  shape were chosen at WI-2, before WI-3 creates the App and WI-4 mints
+  tokens from it; those two WIs own the key's final surface and may extend
+  it (the private key's own configuration, for one) — but any rename or
+  reshaping must land with them, while the key is still consumed by
+  `scripts/doctor.sh` alone.
 
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.
