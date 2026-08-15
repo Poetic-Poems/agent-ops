@@ -53,7 +53,11 @@
     {"ts": "@ago:3m", "event": "unblocked", "node": "poetic-2", "repo": "Poetic-Poems/poetic-fiddle",
       "item": "TD-PPfidd-26071902", "by": "enabler", "reason": "the blocking PR merged"},
     {"ts": "@ago:5m", "event": "selection", "repo": "Poetic-Poems/agent-ops",
-      "detail": "", "title": ""}
+      "detail": "", "title": ""},
+    {"ts": "@ago:6m", "event": "disabled", "node": "poetic-2", "reason": "editing lib/",
+      "scope": "node", "by": "poetic-2 pid 4242", "actor": "poetic-2", "kind": "manual"},
+    {"ts": "@ago:7m", "event": "enabled", "node": "poetic-1", "detail": "cleared by hand",
+      "scope": "fleet", "fleet_flag": "failed"}
   ],
   "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
   "max_open_agent_prs": 3,

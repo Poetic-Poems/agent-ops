@@ -494,20 +494,28 @@ fleet_flag_write() {
 }
 
 # fleet_flag_delete STATE_REPO STATE_DIR NAME
-# Clear a flag. Absent (404) already counts as cleared; anything else that
-# stops the delete returns non-zero, because "cleared" reported for a flag
-# that is still set keeps the whole fleet standing down after the operator
-# believes they resumed it. A successful clear also drops the local cache —
-# a stale cached copy must not resurrect a flag the fleet no longer has.
+# Clear a flag. Absent (404, or no state repo at all) already counts as
+# cleared; anything else that stops the delete returns non-zero, because
+# "cleared" reported for a flag that is still set keeps the whole fleet
+# standing down after the operator believes they resumed it. A successful
+# clear also drops the local cache — a stale cached copy must not resurrect a
+# flag the fleet no longer has.
+#
+# Prints one word on success, distinguishing the two ways "succeeded" can
+# happen — `deleted` (a flag was actually removed) or `absent` (there was
+# nothing to remove) — because a caller logging the outcome (issue #426) needs
+# to know which, and a bare 0 return told it only that neither counts as a
+# failure. Prints nothing on a return of 1.
 fleet_flag_delete() {
   local repo="$1" state_dir="$2" name="$3" path errf resp sha
-  [[ -n "$repo" ]] || return 0
+  [[ -n "$repo" ]] || { printf 'absent'; return 0; }
   path="$(fleet_flag_path "$name")"
   errf="$(fleet_cache_file "$state_dir" "$name").err"
   mkdir -p "${errf%/*}" 2>/dev/null || true
   if ! resp="$(_fleet_gh api "repos/$repo/contents/$path?ref=main" 2>"$errf")"; then
     grep -qiE 'HTTP 404|Not Found' "$errf" 2>/dev/null || return 1
     rm -f "$(fleet_cache_file "$state_dir" "$name")"
+    printf 'absent'
     return 0
   fi
   sha="$(jq -r '.sha // empty' <<<"$resp" 2>/dev/null || true)"
@@ -515,7 +523,33 @@ fleet_flag_delete() {
   _fleet_gh api -X DELETE "repos/$repo/contents/$path" \
     -f message="fleet: clear $name" -f branch=main -f sha="$sha" >/dev/null 2>&1 || return 1
   rm -f "$(fleet_cache_file "$state_dir" "$name")"
+  printf 'deleted'
   return 0
+}
+
+# fleet_flag_write_outcome STATE_REPO NAME BODY MESSAGE
+# fleet_flag_write, translated into the `ok`/`failed`/`unconfigured`
+# vocabulary the `disabled`/`enabled` log events carry as `fleet_flag` (issue
+# #426): `unconfigured` when there is no state repo to write to
+# (fleet_flag_write's own quiet no-op), `ok`/`failed` for a real attempt's
+# result. One definition so the write side and the delete side below cannot
+# drift onto different words for the same three outcomes.
+fleet_flag_write_outcome() {
+  [[ -n "$1" ]] || { printf 'unconfigured'; return 0; }
+  if fleet_flag_write "$@"; then printf 'ok'; else printf 'failed'; fi
+}
+
+# fleet_flag_delete_outcome STATE_REPO STATE_DIR NAME
+# fleet_flag_delete, translated the same way: `ok` when a flag was actually
+# removed, `unconfigured` when there was nothing to remove (already absent, or
+# no state repo), `failed` when a flag exists but could not be cleared.
+fleet_flag_delete_outcome() {
+  local word
+  if word="$(fleet_flag_delete "$1" "$2" "$3")"; then
+    [[ "$word" == "deleted" ]] && printf 'ok' || printf 'unconfigured'
+  else
+    printf 'failed'
+  fi
 }
 
 # fleet_disabled_state STATE_REPO STATE_DIR
