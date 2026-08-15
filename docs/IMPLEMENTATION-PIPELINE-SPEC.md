@@ -7718,11 +7718,11 @@ runs unattended.
       same-second dequeue could still slip through — for a repository that
       runs without a merge queue and should say so in config rather than by
       tuning this value near zero; the trade-off is losing the only human
-      signal this pipeline raises for a merge-group failure. The notice is idempotent per
-      removal event — `<!-- agent-ops:merge-queue-dequeued: <dequeued_at>
-      -->` — rather than per pull request, so a second dequeue after an
-      earlier one was already acknowledged gets its own notice rather than
-      being silently suppressed by the first. It does not wait on
+      signal this pipeline raises for a merge-group failure. The notice is
+      idempotent per removal event — `<!-- agent-ops:merge-queue-dequeued:
+      <dequeued_at> -->` — rather than per pull request, so a second dequeue
+      after an earlier one was already acknowledged gets its own notice
+      rather than being silently suppressed by the first. It does not wait on
       `human_nudge_idle_hours`: this is new information a human has not
       seen, not the "forgot to click merge" case that threshold exists for.
       A failed POST is a `warning`, exactly as the ordinary idle nudge's
