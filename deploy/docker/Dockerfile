@@ -60,7 +60,10 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # operator needs when they exec into a node to work out what went wrong.
 # util-linux is already in the base image and carries `flock`, which the
 # dashboard heartbeat relies on. xz-utils unpacks the shellcheck release
-# tarball below; nothing else here needs it.
+# tarball below; nothing else here needs it. openssl is lib/approver-token.sh's
+# (agent-ops#407) — RS256-signing the Pullwright Approver's App JWT — pulled in
+# explicitly rather than trusted to arrive transitively via libssl3, since a
+# missing binary there would only surface as a mint failure at run time.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -70,6 +73,7 @@ RUN apt-get update \
         gnupg \
         jq \
         less \
+        openssl \
         perl \
         python3 \
         rsync \
