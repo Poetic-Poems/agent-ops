@@ -7581,14 +7581,20 @@ runs unattended.
       #393). Requirement 38e's log reduction recognises this warning's own
       family and clears it only off a later `human-dequeue-notice` success
       for the same pull request. `gather-human-visibility-hygiene.sh`'s own
-      live re-check, one step further on, has no dedicated class of its own
-      for it among its three (`could_not_request`/`could_not_post_nudge`/
-      `no_candidate`) — re-verifying that a posted comment actually landed
-      would mean the same kind of read `could_not_post_nudge` already makes
-      for the idle nudge's own marker, not yet done for this one — so it
-      falls into that script's own fail-safe default: kept selectable for as
-      long as the pull request stays open and not a draft, the same as any
-      warning shape its three classes do not recognise. The notice's own
+      live re-check, one step further on, has its own dedicated
+      `dequeue_notice` class (TD-PPagop-26081504) alongside its other three
+      (`could_not_request`/`could_not_post_nudge`/`no_candidate`) — it
+      re-verifies that a posted comment actually landed by reading the pull
+      request's comments for the `agent-ops:merge-queue-dequeued:` marker,
+      the same kind of read `could_not_post_nudge` already makes for the
+      idle nudge's own marker — so a warning stuck on a re-queued pull
+      request, or one whose retry never came before the notice aged out,
+      clears the moment the marker is found rather than only through a
+      later same-family sweep success. An unreadable pull request, or one
+      whose marker genuinely is not there, still falls into that script's
+      own fail-safe default: kept selectable for as long as the pull
+      request stays open and not a draft, the same as any warning shape
+      none of its four classes recognise. The notice's own
       gate is `merge_queue_dequeue_actionable`'s, above, and it is
       deliberately *wider* than requirement 3z's: requirement 3z admits only
       `failed_checks`, an allow-list, because it pushes a fix to the branch;
@@ -10944,6 +10950,10 @@ pull request, run the ones the change touches and any it could regress.
     absent — confirming the classes are told apart, not read off the same
     "has a human reviewed this" check, which would otherwise drop every
     nudge-class violation on sight — and is dropped once the marker appears; a
+    `could not post the merge-queue-dequeued notice` violation
+    (TD-PPagop-26081504) survives while the `agent-ops:merge-queue-dequeued:`
+    marker comment is absent and is dropped once it appears, the same
+    marker-read shape as the nudge class; a
     `no legal review-request candidate` violation
     (tech-debt/TD-PPagop-26081001.md) survives while `author`/`reviews` still
     show no non-author, non-bot, submitted review and no pending (unsubmitted)

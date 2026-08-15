@@ -56,14 +56,16 @@
 # uses (an unread state is never guessed at as clean). Only a *definite* "no
 # longer true" answer drops a violation.
 #
-# ## Three warning classes, told apart
+# ## Four warning classes, told apart
 #
-# `sweep-human-visibility.sh` logs three different per-pull-request warnings —
+# `sweep-human-visibility.sh` logs four different per-pull-request warnings —
 # "could not request review from …" (the review-request POST itself failed),
 # "could not post the idle nudge comment" (the nudge comment POST itself
-# failed), and "no legal review-request candidate" (no POST was even
+# failed), "no legal review-request candidate" (no POST was even
 # attempted — `ensure_human_reviewer`'s `skip\tno-candidate`,
-# tech-debt/TD-PPagop-26081001.md) — and they clear on three different live
+# tech-debt/TD-PPagop-26081001.md), and "could not post the
+# merge-queue-dequeued notice" (the dequeue-notice comment POST itself
+# failed, requirement 38f) — and they clear on four different live
 # facts. A single shared check would get more than one of them wrong: every
 # pull request a nudge warning is logged against is, by the nudge's own gate,
 # already `APPROVED` — so a check that only asks "has a human reviewed this"
@@ -108,6 +110,13 @@
 #                             `<!-- agent-ops:human-nudge -->` marker
 #                             `sweep-human-visibility.sh` itself posts and
 #                             checks for idempotency.
+#   dequeue_notice          — did the dequeue notice land after all: `gh pr
+#                             view --json comments`, searched for the
+#                             `<!-- agent-ops:merge-queue-dequeued:` marker
+#                             `sweep-human-visibility.sh` itself posts and
+#                             checks for idempotency (TD-PPagop-26081504) —
+#                             the same shape as `could_not_post_nudge` above,
+#                             one comment-marker read per family.
 #   no_candidate            — does a candidate exist now: `gh pr view --json
 #                             author,reviews,reviewRequests`, generalising
 #                             `ensure_human_reviewer`'s own candidate rule
