@@ -2302,14 +2302,27 @@ gather_human_visibility_hygiene() {
 # than an errand (see scripts/gather-issues.sh for the incident and the
 # contract).
 #
+# issues_excluded_sidecar_path SLUG — the sibling exclusion-report path
+# `gather_issues` writes and `gather_issues_excluded` reads back for SLUG.
+# Computed once, here, so the two functions cannot drift apart on how `safe`
+# is derived from a slug containing `/` (review decision on agent-ops#452,
+# concern 2) — before this, each computed its own `safe` independently and
+# agreement between them depended on nothing but the two literal expressions
+# staying identical.
+issues_excluded_sidecar_path() {
+  local slug="$1" safe
+  safe="${slug//\//_}"
+  printf '%s' "$cycle_dir/issues-excluded-$safe.json"
+}
+
 # scripts/gather-issues.sh now prints `{candidates, excluded}` rather than a
 # bare array (agent-ops#447): `candidates` is written to `issues-$safe.json`
 # exactly as the whole array always was, so this function still *returns*
 # a bare array and every caller of `gather_issues` is unchanged. `excluded`
 # — the number and reason for every deterministic drop — is written
-# alongside it to `issues-excluded-$safe.json`, read back by the caller
-# (below) to log it and fold it into the Co-Ordinator's own runtime input,
-# because a drop nothing downstream could see was the defect: see
+# alongside it to `issues_excluded_sidecar_path`'s path, read back by the
+# caller (below) to log it and fold it into the Co-Ordinator's own runtime
+# input, because a drop nothing downstream could see was the defect: see
 # `gather_issues_excluded`.
 gather_issues() {
   local slug="$1" out safe raw candidates excl
@@ -2327,7 +2340,7 @@ gather_issues() {
   fi
   out="$candidates"
   printf '%s\n' "$out" > "$cycle_dir/issues-$safe.json"
-  printf '%s\n' "$excl" > "$cycle_dir/issues-excluded-$safe.json"
+  printf '%s\n' "$excl" > "$(issues_excluded_sidecar_path "$slug")"
   printf '%s' "$out"
 }
 
@@ -2338,9 +2351,8 @@ gather_issues() {
 # because a shell function has only the one stdout channel and `gather_issues`
 # already spends it on the candidates array every existing caller depends on.
 gather_issues_excluded() {
-  local slug="$1" safe file
-  safe="${slug//\//_}"
-  file="$cycle_dir/issues-excluded-$safe.json"
+  local slug="$1" file
+  file="$(issues_excluded_sidecar_path "$slug")"
   if [[ -s "$file" ]] && jq -e 'type == "array"' <"$file" >/dev/null 2>&1; then
     jq -c '.' <"$file"
   else
@@ -5019,6 +5031,13 @@ claimed_json="[]"
 # each call site would do.
 first_seen_known_json="$(first_seen_known_items "$union_log")"
 first_seen_bootstrap="$(jq -c '(length == 0)' <<<"$(first_seen_known_items "$log_file")")"
+# Review decision on agent-ops#452 concern 1: the `issues-excluded` event
+# below logs only on change, and this is the "previous state" each repo's
+# freshly gathered set is compared against — read once, here, off the same
+# union log snapshot first_seen_known_json above reads, for the same reason:
+# an event this cycle logs must not make its own repo's later comparison (if
+# the repo were ever visited twice in one cycle) see itself as unchanged.
+latest_issues_excluded_json="$(latest_issues_excluded "$union_log")"
 repo_order_now="$(date +%s)"
 while IFS= read -r slug; do
   # TD-PPagop-26081407: gh api can fail (rate limit, auth, network -- test 1);
@@ -5140,18 +5159,37 @@ while IFS=$'\t' read -r _ slug default_branch; do
     issues="$(exclude_claimed_items "$issues_raw" "$claimed_item_refs_json")"
     # Requirement 16.4's deterministic drops (assigned, `blocked`-labelled,
     # unresolved `Blocked-by:`), reported rather than lost the moment
-    # scripts/gather-issues.sh applies them (agent-ops#447): logged once per
-    # repo, only when there is something to say, so a quiet cycle costs no
-    # line and a repo with drops leaves an `issues-excluded` event any reader
-    # of the shared log — the cycle record, the dashboard's log tail — can
-    # see without re-deriving the filter by hand.
+    # scripts/gather-issues.sh applies them (agent-ops#447): a repo with
+    # drops leaves an `issues-excluded` event any reader of the shared log —
+    # the cycle record, the dashboard's log tail — can see without
+    # re-deriving the filter by hand.
+    #
+    # Logged only when this repo's exclusion set differs from the one most
+    # recently logged for it (review decision on agent-ops#452 concern 1):
+    # an onset and a release are both changes, so "now empty" logs exactly as
+    # "now non-empty" does, and a quiet cycle logs nothing because nothing
+    # changed — not because $issues_excluded happens to be empty this time.
+    # Fail open: if the previous state cannot be read, log unconditionally
+    # rather than risk staying silent — silence is the #447 failure class
+    # this event exists to remove.
     issues_excluded="$(gather_issues_excluded "$slug")"
-    if [[ "$(jq 'length' <<<"$issues_excluded" 2>/dev/null || echo 0)" != "0" ]]; then
+    issues_excluded_changed=1
+    if prev_issues_excluded="$(jq -ce --arg r "$slug" '(.[$r] // [])' \
+          <<<"$latest_issues_excluded_json" 2>/dev/null)"; then
+      if issues_excluded_same="$(jq -nc --argjson prev "$prev_issues_excluded" --argjson cur "$issues_excluded" \
+            '($prev | sort_by(.number, .reason)) == ($cur | sort_by(.number, .reason))' 2>/dev/null)" \
+          && [[ "$issues_excluded_same" == "true" ]]; then
+        issues_excluded_changed=0
+      fi
+    fi
+    if [[ "$issues_excluded_changed" == "1" ]]; then
       log_event "issues-excluded" "$(jq -nc --arg r "$slug" --argjson ex "$issues_excluded" \
         '{repo: $r, count: ($ex | length),
           detail: (($ex | length | tostring) + " issue(s) excluded: "
                    + ([$ex[] | "#\(.number) (\(.reason))"] | join(", "))),
           excluded: $ex}')"
+      latest_issues_excluded_json="$(jq -c --arg r "$slug" --argjson ex "$issues_excluded" \
+        '.[$r] = $ex' <<<"$latest_issues_excluded_json" 2>/dev/null || printf '%s' "$latest_issues_excluded_json")"
     fi
   fi
   tech_debt="[]"

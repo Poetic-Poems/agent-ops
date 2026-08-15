@@ -2298,10 +2298,11 @@ runs unattended.
      their own reasons, could sit permanently unselectable with nobody able
      to tell why short of reading the filter's source. `issues_excluded`
      (above) is that record: the Script logs an `issues-excluded` event
-     (requirement 33) per repo, once per cycle, whenever it is non-empty,
-     carrying the same `{number, reason}` pairs and a `count`, so the cycle
-     log and the dashboard's log tail can both show "N issues excluded, and
-     why" without a reader re-deriving the filter. The Co-Ordinator receives
+     (requirement 33) per repo, when its exclusion set changes from the one
+     most recently logged, carrying the same `{number, reason}` pairs and a
+     `count`, so the cycle log and the dashboard's log tail can both show "N
+     issues excluded, and why" without a reader re-deriving the filter. The
+     Co-Ordinator receives
      the same array as `issues_excluded` on its own runtime input
      (prompts/coordinator.md) — informational only, never a candidate list:
      nothing in it is eligible for selection, a re-check, or a
@@ -4445,9 +4446,10 @@ runs unattended.
       `issues_excluded` (requirement 3j) is the fix, and a *reporting* one
       deliberately, not a *relaxing* one — narrowing the exclusion would only
       let the pipeline pick up exactly the escalation and refinement-tracking
-      issues it exists to keep off the list. An `assigned` reason on a live
-      `issues_excluded` entry, cycle after cycle, is now the signal a human
-      needs to notice a stuck removal and clear it by hand — see also
+      issues it exists to keep off the list. A live `issues_excluded` entry
+      on the Co-Ordinator's own input whose most recent `issues-excluded`
+      event (requirement 33) is old is now the signal a human needs to
+      notice a stuck removal and clear it by hand — see also
       requirement 36b's own duty to say so directly in a refinement's own
       comment, when the item being refined is assigned at the time;
     - a security finding whose only available fix is one a human must choose
@@ -5664,11 +5666,25 @@ runs unattended.
     string ("N issue(s) excluded: #125 (assigned), …") for the dashboard's
     generic log-tail renderer, which shows any event's `detail` verbatim with
     no event-specific rendering of its own. Logged by `gather_issues`'s
-    caller (agent-cycle.sh) once per repo per cycle, and only when the
-    exclusion array is non-empty — an operator scanning a quiet cycle should
-    not have to skip past a row saying nothing was dropped. Unlike
+    caller (agent-cycle.sh) on change only (review decision on
+    agent-ops#452 concern 1): once per repo per cycle when that repo's
+    exclusion set differs from the one carried by the most recent
+    `issues-excluded` event logged for it — `lib/cycle-state.sh`'s
+    `latest_issues_excluded`, read off the union log once per cycle the same
+    way `first_seen_known_items` is, with a repo carrying no prior event read
+    as an empty previous set. The transition to a smaller or empty set logs
+    exactly as the transition to a larger one does, so a release from
+    exclusion is as visible as its onset was — a repo whose exclusion set is
+    unchanged from cycle to cycle, healthy or stuck alike, logs nothing
+    further, so an operator scanning a quiet cycle does not have to skip past
+    a row repeating what an earlier row already said; "how long has this
+    repo's exclusion held" is then the age of its own last `issues-excluded`
+    event, not a count of identical rows. The previous-state read fails open:
+    any error reading it logs the event unconditionally rather than risk
+    staying silent, since silence is exactly the #447 failure class this
+    event exists to remove. Unlike
     `first-seen` and `review-gate-checks-read`, it **stays** in the dashboard's
-    log tail: a drop that just made an issue unselectable is exactly the kind
+    log tail: every row now reports a transition, which is precisely the kind
     of fact an operator can act on, not bookkeeping to hide. A
     `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
