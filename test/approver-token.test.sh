@@ -7,7 +7,8 @@
 # token", never mistakes a mint failure for one either, never sees a PAT
 # fallback anywhere in this file, and never sees a token land anywhere but
 # stdout and (best-effort) a mode-600 tmpfs cache file this test substitutes
-# with a throwaway directory.
+# with a throwaway /dev/shm directory — genuinely tmpfs, because the wrapper
+# now verifies the mount type before writing anything.
 #
 # `curl` is stubbed through APPROVER_TOKEN_CURL; real `openssl` signs a
 # throwaway RSA key generated for this run, so the JWT-building path is
@@ -27,7 +28,17 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 . "$SCRIPT_DIR/lib/approver-token.sh"
 
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+# The cache tests need a directory the wrapper's mount-type check accepts, so
+# they live under /dev/shm — the same tmpfs the runtime default points at.
+# Every platform this suite runs on (both CI legs, the node image, WSL) is
+# Linux, where /dev/shm is guaranteed.
+cache_dir="$(mktemp -d /dev/shm/approver-token-test.XXXXXX)"
+trap 'rm -rf "$tmp_dir" "$cache_dir"' EXIT
+
+# The cache filename the wrapper derives for setup_env's installation id
+# below — keyed by that id, so one installation's token is never served for
+# another's.
+cache_file_name="pullwright-approver-token.153689775.json"
 
 failures=0
 
@@ -64,26 +75,30 @@ key_path="$tmp_dir/app-key.pem"
 openssl genrsa -out "$key_path" 2048 >/dev/null 2>&1
 chmod 600 "$key_path"
 
-cache_dir="$tmp_dir/cache"
-mkdir -p "$cache_dir"
-
 # --- The stub curl -----------------------------------------------------------
 # $tmp_dir/curl_status   HTTP status to answer with (default 201)
 # $tmp_dir/curl_body     response body (default a fresh token + expires_at)
 # $tmp_dir/curl_fail     present -> curl itself fails (network/timeout)
 # $tmp_dir/curl_calls    appended to on every invocation, so tests can assert
 #                        whether a mint actually happened
+# $tmp_dir/curl_argv     every invocation's argv, one word per line, so tests
+#                        can assert what never rides in /proc/<pid>/cmdline
+# $tmp_dir/curl_stdin    everything delivered on stdin (--config -), so tests
+#                        can assert the Authorization header travelled there
 stub_curl() {
   local status="${1:-201}" body="$2"
   printf '%s' "$status" > "$tmp_dir/curl_status"
   printf '%s' "$body" > "$tmp_dir/curl_body"
-  rm -f "$tmp_dir/curl_fail" "$tmp_dir/curl_calls"
+  rm -f "$tmp_dir/curl_fail" "$tmp_dir/curl_calls" \
+    "$tmp_dir/curl_argv" "$tmp_dir/curl_stdin"
 }
 
 cat > "$tmp_dir/curl" <<STUB
 #!/usr/bin/env bash
 d="$tmp_dir"
 printf 'call\n' >> "\$d/curl_calls"
+printf '%s\n' "\$@" >> "\$d/curl_argv"
+cat >> "\$d/curl_stdin" 2>/dev/null
 [[ -f "\$d/curl_fail" ]] && exit 1
 status="\$(cat "\$d/curl_status" 2>/dev/null || echo 201)"
 body="\$(cat "\$d/curl_body" 2>/dev/null || echo '{}')"
@@ -123,11 +138,20 @@ out="$(approver_token_get "$now")"; rc=$?
 assert_eq "success path: exit 0" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_first000" "$out"
 assert_eq "  ... exactly one mint call" "1" "$(call_count)"
-assert_true "  ... the cache file exists" test -f "$cache_dir/pullwright-approver-token.json"
-perm="$(stat -c '%a' "$cache_dir/pullwright-approver-token.json" 2>/dev/null)"
+assert_true "  ... the cache file exists" test -f "$cache_dir/$cache_file_name"
+perm="$(stat -c '%a' "$cache_dir/$cache_file_name" 2>/dev/null)"
 assert_eq "  ... the cache file is mode 600" "600" "$perm"
 assert_eq "  ... the cache never carries the JWT, only the token" "ghs_first000" \
-  "$(jq -r '.token' "$cache_dir/pullwright-approver-token.json")"
+  "$(jq -r '.token' "$cache_dir/$cache_file_name")"
+
+# --- The App JWT never rides in argv ----------------------------------------
+# An argv entry is world-readable in /proc/<pid>/cmdline for the duration of
+# the call, so the Authorization header reaches curl through `--config -` on
+# stdin instead — the same move #433 and #437 made for related payloads.
+assert_eq "  ... the Authorization header is absent from curl's argv" "" \
+  "$(grep -i 'authorization' "$tmp_dir/curl_argv" || true)"
+assert_true "  ... and arrives on stdin via --config instead" \
+  grep -q '^header = "Authorization: Bearer ' "$tmp_dir/curl_stdin"
 
 # --- A second call within the token's lifetime reuses the cache, mints nothing
 out2="$(approver_token_get "$((now + 60))")"; rc=$?
@@ -144,7 +168,7 @@ assert_eq "near-expiry call: exit 0" "0" "$rc"
 assert_eq "  ... a freshly minted token, not the stale cached one" "ghs_second111" "$out3"
 assert_eq "  ... a new mint call was made" "1" "$(call_count)"
 assert_eq "  ... the cache now holds the refreshed token" "ghs_second111" \
-  "$(jq -r '.token' "$cache_dir/pullwright-approver-token.json")"
+  "$(jq -r '.token' "$cache_dir/$cache_file_name")"
 
 # --- Missing credential: distinct exit 2, no output, no mint attempt --------
 setup_env
@@ -191,7 +215,7 @@ stub_curl 401 '{"message":"Bad credentials"}'
 out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
 assert_eq "GitHub refuses the JWT: exit 1" "1" "$rc"
 assert_eq "  ... no output" "" "$out"
-assert_true "  ... nothing was cached" bash -c "[[ ! -s '$cache_dir/pullwright-approver-token.json' ]]"
+assert_true "  ... nothing was cached" bash -c "[[ ! -s '$cache_dir/$cache_file_name' ]]"
 
 # --- curl itself failing (network/timeout) is also exit 1 -------------------
 setup_env
@@ -221,13 +245,13 @@ setup_env
 rm -f "$cache_dir"/*
 printf '{"token":"ghs_PLANTED","expires_at":"2099-01-01T00:00:00Z","exp_epoch":4070908800}' \
   > "$tmp_dir/planted.json"
-ln -s "$tmp_dir/planted.json" "$cache_dir/pullwright-approver-token.json"
+ln -s "$tmp_dir/planted.json" "$cache_dir/$cache_file_name"
 stub_curl 201 '{"token":"ghs_minted999","expires_at":"2026-08-14T20:00:00Z"}'
 out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
 assert_eq "planted cache file: still succeeds" "0" "$rc"
 assert_eq "  ... the planted token is never returned" "ghs_minted999" "$out"
 assert_eq "  ... a real mint happened instead of trusting the cache" "1" "$(call_count)"
-rm -f "$cache_dir/pullwright-approver-token.json" "$tmp_dir/planted.json"
+rm -f "$cache_dir/$cache_file_name" "$tmp_dir/planted.json"
 
 # --- Caching is best-effort: an unusable cache directory never blocks a mint
 setup_env
@@ -237,6 +261,68 @@ stub_curl 201 '{"token":"ghs_nocachedir","expires_at":"2026-08-14T20:00:00Z"}'
 out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
 assert_eq "cache directory absent: still succeeds" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_nocachedir" "$out"
+
+# --- The cache is keyed by installation id ----------------------------------
+# A token minted for one installation must never be served for another: with
+# a single fixed filename, changing PULLWRIGHT_APPROVER_INSTALLATION_ID (or
+# running two installations from one node) would hand the previous
+# installation's token out for up to an hour, in a failure shape that reads
+# as a GitHub problem rather than a stale cache.
+setup_env
+rm -f "$cache_dir"/*
+stub_curl 201 '{"token":"ghs_installA","expires_at":"2026-08-14T14:00:00Z"}'
+out="$(approver_token_get "$now")"; rc=$?
+assert_eq "installation A mints: exit 0" "0" "$rc"
+PULLWRIGHT_APPROVER_INSTALLATION_ID="999000111"
+export PULLWRIGHT_APPROVER_INSTALLATION_ID
+stub_curl 201 '{"token":"ghs_installB","expires_at":"2026-08-14T14:00:00Z"}'
+out="$(approver_token_get "$((now + 60))")"; rc=$?
+assert_eq "a different installation id within A's lifetime: exit 0" "0" "$rc"
+assert_eq "  ... never serves installation A's cached token" "ghs_installB" "$out"
+assert_eq "  ... a real mint happened for the new installation" "1" "$(call_count)"
+assert_true "  ... each installation holds its own cache file" \
+  test -f "$cache_dir/pullwright-approver-token.999000111.json"
+out="$(PULLWRIGHT_APPROVER_INSTALLATION_ID=153689775 approver_token_get "$((now + 120))")"
+assert_eq "  ... switching back serves A's still-valid cache" "ghs_installA" "$out"
+assert_eq "  ... without a further mint" "1" "$(call_count)"
+
+# --- A disk-backed cache directory gets no cache at all ---------------------
+# APPROVER_TOKEN_CACHE_DIR is an ordinary environment variable; #407's
+# guarantee — tokens live only in memory/tmpfs, never persistent storage —
+# must not hinge on nobody ever pointing it at a disk. The wrapper checks the
+# mount type and skips caching entirely rather than writing a token to disk.
+disk_dir="$tmp_dir/disk-cache"
+mkdir -p "$disk_dir"
+if [[ "$(stat -f -c %T "$disk_dir" 2>/dev/null)" == "tmpfs" ]]; then
+  # This box mounts its temp directory on tmpfs, so it cannot host the
+  # negative case; every other environment this suite runs in still does.
+  printf 'ok   - %s\n' "disk-backed cache dir refused (skipped: the temp dir is itself tmpfs here)"
+else
+  setup_env
+  APPROVER_TOKEN_CACHE_DIR="$disk_dir"
+  export APPROVER_TOKEN_CACHE_DIR
+  stub_curl 201 '{"token":"ghs_diskdir","expires_at":"2026-08-14T14:00:00Z"}'
+  out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+  assert_eq "disk-backed cache dir: still succeeds" "0" "$rc"
+  assert_eq "  ... the minted token on stdout" "ghs_diskdir" "$out"
+  assert_eq "  ... but nothing at all was written to the disk-backed directory" "" \
+    "$(ls -A "$disk_dir")"
+  out="$(approver_token_get "$((now + 60))" 2>/dev/null)"
+  assert_eq "  ... and a second call mints fresh rather than caching" "2" "$(call_count)"
+fi
+
+# --- An unparsable expires_at is never guessed at: token returned, not cached
+# GitHub issued the token, so refusing it over a timestamp format would turn
+# a cosmetic API change into an outage — but a cache entry needs an expiry
+# the wrapper can stand behind, so nothing is cached and every call mints
+# fresh until the shape parses again.
+setup_env
+rm -f "$cache_dir"/*
+stub_curl 201 '{"token":"ghs_oddexpiry","expires_at":"not-a-timestamp"}'
+out="$(approver_token_get "$now" 2>/dev/null)"; rc=$?
+assert_eq "unparsable expires_at: still exit 0" "0" "$rc"
+assert_eq "  ... the minted token on stdout" "ghs_oddexpiry" "$out"
+assert_eq "  ... nothing was cached" "" "$(ls -A "$cache_dir")"
 
 clear_env
 

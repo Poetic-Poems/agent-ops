@@ -30,6 +30,15 @@
 # item's job, once something (D18 WI-5, the Approver stage) actually calls
 # this file.
 #
+# The App id, unlike the key, is not a secret — it already exists in
+# config.json as `approver_app_id`, the operator's declaration doctor
+# validates for any merge_autonomy level above `human` (requirement 2.3b).
+# The environment stays what this file reads (it is the wiring compose/.env
+# will carry), but the two are not independent: `scripts/doctor.sh`
+# reconciles them, failing a set `PULLWRIGHT_APPROVER_APP_ID` that differs
+# from a set `approver_app_id`, so the App the operator declared and the App
+# this file mints against cannot drift apart silently.
+#
 # Fail-closed, by design: `approver_token_get` returns a distinct non-zero
 # status (2) when the credential is not configured or not readable, so a
 # caller can tell "there is nothing to check" apart from "GitHub refused the
@@ -43,19 +52,25 @@
 #
 # The minted token is never written to persistent storage and never logged.
 # `approver_token_get` prints it to stdout and nowhere else; every error path
-# below prints a diagnosis, never the token or the JWT that produced it. The
-# one cache this file keeps is best-effort and tmpfs-only — `/dev/shm` by
-# default, mode 600, and read back only when the file is this user's own (see
-# `_approver_token_cache_read`) — so a token can be reused across separate
-# invocations within its lifetime without ever touching a disk-backed path; if that
-# directory is unusable for any reason, caching is simply skipped and every
-# call mints fresh, which is correct, just less efficient.
+# below prints a diagnosis, never the token or the JWT that produced it — and
+# the JWT itself travels to `curl` on stdin, never in argv, where it would
+# sit world-readable in /proc/<pid>/cmdline (see `_approver_token_mint`).
+# The one cache this file keeps is best-effort and tmpfs-only — `/dev/shm`
+# by default, mode 600, keyed by installation id, and read back only when
+# the file is this user's own (see `_approver_token_cache_read`) — so a
+# token can be reused across separate invocations within its lifetime
+# without ever touching a disk-backed path. Tmpfs-only is enforced, not
+# assumed: the directory's filesystem type is checked before anything is
+# written (see `_approver_token_cache_file`), and a directory that fails the
+# check — like one unusable for any other reason — simply gets no cache, so
+# every call mints fresh, which is correct, just less efficient.
 #
 # Sourced, never executed: it sets no shell options, so a caller's own
 # `set -euo pipefail` (agent-cycle.sh) or `set -uo pipefail` decides.
 #
 # Environment overrides, for tests only: APPROVER_TOKEN_CURL, APPROVER_TOKEN_OPENSSL
-# (stub binaries) and APPROVER_TOKEN_CACHE_DIR (stand in for tmpfs).
+# (stub binaries) and APPROVER_TOKEN_CACHE_DIR (an alternative tmpfs — a
+# non-tmpfs directory is refused, so the override cannot re-introduce disk).
 
 # _approver_token_b64
 # Read stdin, print unpadded base64url — the encoding a JWT's header, payload
@@ -92,15 +107,23 @@ _approver_token_jwt() {
 # GitHub API's JSON body ({"token", "expires_at", ...}) on stdout and returns
 # 0 only on a real 201; any other status, an unreachable API, or a body
 # missing either field is a failure — non-zero, nothing on stdout.
+#
+# The Authorization header travels on stdin (`--config -`), never in argv: an
+# argv entry is world-readable in /proc/<pid>/cmdline for the duration of the
+# call. It is only the ~9-minute App JWT that would be exposed — the minted
+# token never goes near argv — but that JWT mints installation tokens, which
+# is the same local-user threat the cache's provenance check exists for (and
+# the same move #433 and #437 made for related payloads). Nothing else
+# competes for stdin here; the request has no body.
 _approver_token_mint() {
   local jwt="$1" installation_id="$2"
   local curl_bin="${APPROVER_TOKEN_CURL:-curl}"
   local response status body
-  response="$("$curl_bin" -sS --max-time 30 -w $'\n%{http_code}' -X POST \
-    -H "Authorization: Bearer $jwt" \
-    -H "Accept: application/vnd.github+json" \
-    "https://api.github.com/app/installations/$installation_id/access_tokens" \
-    2>/dev/null)" || return 1
+  response="$(printf 'header = "Authorization: Bearer %s"\n' "$jwt" \
+    | "$curl_bin" --config - -sS --max-time 30 -w $'\n%{http_code}' -X POST \
+      -H "Accept: application/vnd.github+json" \
+      "https://api.github.com/app/installations/$installation_id/access_tokens" \
+      2>/dev/null)" || return 1
   status="${response##*$'\n'}"
   body="${response%$'\n'*}"
   [[ "$status" == "201" ]] || return 1
@@ -119,14 +142,32 @@ _approver_token_to_epoch() {
   date -u -d "$iso" +%s 2>/dev/null
 }
 
-# _approver_token_cache_file
+# _approver_token_cache_file INSTALLATION_ID
 # Print the tmpfs path this file caches a minted token at, or nothing if the
-# cache directory does not exist — caching is best-effort, never a condition
-# for success.
+# cache directory does not exist or is not tmpfs-backed — caching is
+# best-effort, never a condition for success.
+#
+# The filename carries the installation id, so a token is only ever served to
+# the installation it was minted for: with one fixed name, changing
+# `PULLWRIGHT_APPROVER_INSTALLATION_ID` (or running two installations from
+# one node) would hand the previous installation's token out for up to an
+# hour, failing in a way that looks like a GitHub problem rather than a stale
+# cache. The id is sanitised for the path only — the mint URL gets it as-is.
+#
+# The filesystem-type check is what makes #407's "never touches persistent
+# storage" guarantee enforced rather than assumed: `APPROVER_TOKEN_CACHE_DIR`
+# is an ordinary environment variable, so without the check anything setting
+# it to a disk-backed path would put a live token on disk, silently. A
+# directory that is not tmpfs/ramfs gets no cache at all — every call mints
+# fresh, which is correct, just less efficient.
 _approver_token_cache_file() {
+  local installation_id="$1"
   local dir="${APPROVER_TOKEN_CACHE_DIR:-/dev/shm}"
   [[ -d "$dir" ]] || return 0
-  printf '%s/pullwright-approver-token.json' "$dir"
+  local fs_type
+  fs_type="$(stat -f -c %T "$dir" 2>/dev/null)" || return 0
+  [[ "$fs_type" == "tmpfs" || "$fs_type" == "ramfs" ]] || return 0
+  printf '%s/pullwright-approver-token.%s.json' "$dir" "${installation_id//[^0-9A-Za-z_-]/_}"
 }
 
 # _approver_token_cache_read CACHE_FILE NOW_EPOCH REFRESH_BUFFER_SECONDS
@@ -219,7 +260,7 @@ approver_token_get() {
 
   local refresh_buffer=300
   local cache_file cached
-  cache_file="$(_approver_token_cache_file)"
+  cache_file="$(_approver_token_cache_file "$installation_id")"
   if cached="$(_approver_token_cache_read "$cache_file" "$now" "$refresh_buffer")"; then
     printf '%s' "$cached"
     return 0
@@ -236,9 +277,15 @@ approver_token_get() {
   }
   token="$(jq -r '.token' <<<"$mint_out")"
   expires_at="$(jq -r '.expires_at' <<<"$mint_out")"
-  exp_epoch="$(_approver_token_to_epoch "$expires_at")" || exp_epoch=$(( now + 3300 ))
 
-  _approver_token_cache_write "$cache_file" "$token" "$expires_at" "$exp_epoch"
+  # An `expires_at` that does not parse is never guessed at: the token is
+  # still returned — GitHub issued it, and refusing it over a timestamp
+  # format would turn a cosmetic API change into an outage — but it is not
+  # cached, since a cache entry needs an expiry this file can actually stand
+  # behind. Every call simply mints fresh until the shape parses again.
+  if exp_epoch="$(_approver_token_to_epoch "$expires_at")"; then
+    _approver_token_cache_write "$cache_file" "$token" "$expires_at" "$exp_epoch"
+  fi
 
   printf '%s' "$token"
 }
