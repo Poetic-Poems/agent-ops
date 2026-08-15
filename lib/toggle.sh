@@ -488,7 +488,14 @@ toggle_status_report() {
 # idempotent, so "whoever gets there first" is the whole protocol.
 #
 # Failure directions, chosen deliberately:
-#   404             → the flag is clear. Definitive, not an error.
+#   404 (flag file) → probe the state repo itself (`repos/<repo>`, no
+#     `/contents/`) to tell "the flag file doesn't exist" apart from "the
+#     repo itself is missing or invisible to this token" — the contents API
+#     answers both with the same 404 (TD-PPagop-26081602). Only a probe that
+#     confirms the repo is visible reads as clear, definitively; anything
+#     else — 404, 403, a timed-out probe — falls through to the unreachable
+#     handling below instead, exactly as a transport failure on the flag
+#     fetch itself would.
 #   unreachable     → fall back to the copy cached at the last successful
 #     fetch (stale beats blind), and to *enabled* when there is none. Failing
 #     open here is safe because it is not the last line of defence: a node
@@ -531,15 +538,18 @@ fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 #   status="${combined%%$'\t'*}"
 #   raw="${combined#*$'\t'}"
 # STATUS is one of:
-#   clear        — no state repo configured, or a 404: the flag file does
-#                  not exist — or, indistinguishably at the contents API,
-#                  the repo itself is missing or invisible to this token,
-#                  which therefore still reads as clear (TD-PPagop-26081602)
+#   clear        — no state repo configured, or a 404 on the flag file whose
+#                  follow-up probe of `repos/<repo>` confirms the repo is
+#                  visible: the flag file genuinely does not exist. A 404
+#                  alone is never enough — the contents API answers a
+#                  missing-or-invisible repo with the same 404 as a missing
+#                  flag file, so this status is the probed, definitive case
+#                  (TD-PPagop-26081602)
 #   live         — the fetch against the state repo just succeeded
-#   cached       — the state repo was unreachable; RAW is the last
-#                  successfully fetched copy
-#   unreachable  — the state repo was unreachable and there is no cached
-#                  copy at all
+#   cached       — the state repo — or, on a 404, the repo-existence probe —
+#                  was unreachable; RAW is the last successfully fetched copy
+#   unreachable  — the state repo — or the probe — was unreachable and there
+#                  is no cached copy at all
 # fleet_flag_fetch is a thin wrapper over this that keeps its own RAW-only
 # contract byte-for-byte unchanged for its three existing callers
 # (fleet_disabled_state, fleet_limit_resume_at, fleet_limit_publish), which by
@@ -560,9 +570,20 @@ fleet_flag_fetch_status() {
     return 0
   fi
   if grep -qiE 'HTTP 404|Not Found' "$cache.err" 2>/dev/null; then
-    rm -f "$cache"
-    printf 'clear\t'
-    return 0
+    # The flag file's own 404 is ambiguous at the contents API — it means
+    # either "this file does not exist" or "this repository does not exist,
+    # or is invisible to this token" (deliberately, so a private repo stays
+    # indistinguishable from a missing one). Probe the repo itself to tell
+    # them apart (TD-PPagop-26081602): only a repo the token can actually see
+    # turns this into a genuine "flag file missing" clear. Any probe failure
+    # — 404, 403, a timeout, anything short of success — falls through to the
+    # same cached-or-unreachable handling a transport failure gets below,
+    # rather than being read as clear.
+    if _fleet_gh api "repos/$repo" >/dev/null 2>"$cache.repo-err"; then
+      rm -f "$cache"
+      printf 'clear\t'
+      return 0
+    fi
   fi
   if [[ -f "$cache" ]]; then
     printf 'cached\t'

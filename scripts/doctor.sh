@@ -726,14 +726,24 @@ if ((gh_ready)); then
   # The D18 kill switch (requirement 2.3b) — a fleet flag, so reading it costs
   # a network call and belongs here rather than the offline Configuration
   # section above.
-  ma_kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir")" 2>/dev/null)"
+  ma_kill_json="$(merge_autonomy_kill_state "$state_repo" "$state_dir")"
+  ma_kill_state="$(jq -r '.state' <<<"$ma_kill_json" 2>/dev/null)"
   # `!= enabled`, not `== disabled`: the same test merge_autonomy_effective_level
   # applies, so this report cannot say "not set" about a flag that is in fact
   # forcing every repo to human (an expired record reads as neither word).
-  if [[ "$ma_kill_state" != "enabled" ]]; then
+  #
+  # A real kill and a fail-closed synthesis both read "disabled" here, and an
+  # operator needs to tell them apart (TD-PPagop-26081602): only a genuine
+  # `--kill-merge-autonomy` record carries `kind: "manual"`
+  # (merge_autonomy_kill_set); the synthesised fail-closed record
+  # merge_autonomy_kill_state prints when the state repo — or its
+  # repo-existence probe — is unreachable has no `kind` field at all.
+  if [[ "$ma_kill_state" == "enabled" ]]; then
+    ok "the merge-autonomy kill switch is not set — merge_autonomy governs as configured"
+  elif [[ "$(jq -r '.record.kind // ""' <<<"$ma_kill_json" 2>/dev/null)" == "manual" ]]; then
     warn "the merge-autonomy kill switch is SET — every repo's effective level is forced to human regardless of merge_autonomy; agent-cycle.sh --restore-merge-autonomy clears it"
   else
-    ok "the merge-autonomy kill switch is not set — merge_autonomy governs as configured"
+    warn "the merge-autonomy kill switch could not be confirmed clear — $(jq -r '.record.reason // "state repo unreachable"' <<<"$ma_kill_json" 2>/dev/null) — every repo's effective level is forced to human until a fetch succeeds"
   fi
 
   if [[ -n "$enabler_assignee" ]]; then

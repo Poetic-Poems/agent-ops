@@ -316,6 +316,18 @@ while (( i < ${#args[@]} )); do
   esac
   i=$((i+1))
 done
+if [[ "$path" == repos/*/* && "$path" != */contents/* ]]; then
+  # Repo-existence probe (TD-PPagop-26081602): `repos/<repo>`, no
+  # `/contents/...`. GH_STUB_MODE=repo-404 simulates a repo missing or
+  # invisible to this token — the case a flag file's own 404 alone cannot
+  # tell apart from the flag file genuinely not existing.
+  if [[ "${GH_STUB_MODE:-ok}" == "repo-404" ]]; then
+    echo "gh: Not Found (HTTP 404)" >&2
+    exit 1
+  fi
+  echo '{}'
+  exit 0
+fi
 rel="${path#repos/*/*/contents/}"; rel="${rel%%\?*}"
 file="$backing/$rel"
 sha_of() { sha1sum "$1" | awk '{print $1}'; }
@@ -422,6 +434,52 @@ rm -f "$gh_backing/fleet/disabled.json"
 fleet_flag_fetch "$slug" "$fs_b" disabled >/dev/null
 assert_eq "a 404 clears the cached copy" "0" \
   "$(test -f "$(fleet_cache_file "$fs_b" disabled)" && echo 1 || echo 0)"
+
+# --- TD-PPagop-26081602: a repo-level 404 must not read as a clear flag ---
+#
+# The contents API answers "this repository does not exist, or this token
+# cannot see it" with the same 404 as "the flag file does not exist". A 404
+# alone is never enough: fleet_flag_fetch_status must probe the repo itself
+# before calling either 404 a clear flag — a 2xx there confirms the flag
+# file's own 404 was genuine, and anything else (modelled here by
+# GH_STUB_MODE=repo-404) must not be reported as clear.
+
+status_of() {
+  local combined
+  combined="$(fleet_flag_fetch_status "$@")"
+  printf '%s' "${combined%%$'\t'*}"
+}
+
+fs_probe="$tmp_dir/fleet-state-probe"; mkdir -p "$fs_probe"
+
+# The flag file is absent (deleted above) and the repo is visible: this is
+# the ordinary, definitive clear case, probe included.
+assert_eq "a flag-file 404 against a repo the token can see is clear" "clear" \
+  "$(status_of "$slug" "$fs_probe" disabled)"
+
+# The flag file is still absent, but now the repo probe itself fails too
+# (GH_STUB_MODE=repo-404): with no cached copy at all this must read
+# unreachable, never clear.
+assert_eq "a flag-file 404 against an invisible repo, no cache, reads unreachable" \
+  "unreachable" \
+  "$(GH_STUB_MODE=repo-404 status_of "$slug" "$fs_probe" disabled)"
+
+# Prime a cache while the repo is visible, then repeat the repo-level 404: it
+# must fall back to the cache, exactly as a transport failure would, rather
+# than reporting clear on the strength of a 404 whose ambiguity was never
+# resolved.
+fleet_flag_write "$slug" disabled "$rec" "primed for the repo-404 cache test" "$fs_probe"
+rm -f "$gh_backing/fleet/disabled.json"
+assert_eq "a repo-level 404 with a cached copy falls back to it, not clear" "cached" \
+  "$(GH_STUB_MODE=repo-404 status_of "$slug" "$fs_probe" disabled)"
+
+# transient failures on the probe itself (a timeout, a flaky response) get
+# the same treatment as GH_STUB_MODE=down does for the flag fetch: no crash,
+# just the ordinary cached-or-unreachable fallback — already covered above,
+# since the stub's repo-404 case and a real probe timeout are
+# indistinguishable to fleet_flag_fetch_status (any non-success response).
+
+rm -f "$(fleet_cache_file "$fs_probe" disabled)"
 
 # --- The limit flag only ever extends ---
 

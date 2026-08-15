@@ -1443,11 +1443,20 @@ implements.
    usage-limit flag's fail-open one still is. One 404 is not the flag's own:
    the contents API answers "this repository does not exist, or this token
    cannot see it" with the same `404 Not Found` as "the flag file does not
-   exist", so a misconfigured `state_repo` slug or a token whose scopes lost
-   access still reads as clear, and fails open (TD-PPagop-26081602 — open,
-   to resolve with or before any repository's `merge_autonomy` rises above
-   `human`; until then `scripts/doctor.sh`'s `check_repo_access` reporting
-   the state repo unreachable-or-invisible is the operator-run mitigation).
+   exist", so `fleet_flag_fetch_status` never treats a flag-file 404 as clear
+   on its own — it probes `repos/<state_repo>` first, and only a probe that
+   confirms the repo is visible resolves to clear (TD-PPagop-26081602).
+   Anything else the probe returns — 404, 403, a timed-out call — is treated
+   exactly like a transport failure on the flag fetch itself: the fresh-node,
+   no-cache case fails closed to `human`, and an established node falls back
+   to its last-fetched cache. So a misconfigured `state_repo` slug or a token
+   whose scopes lost access to it fails closed on the same terms as a DNS
+   failure would, not clear. `scripts/doctor.sh`'s kill-switch report
+   distinguishes a genuine `--kill-merge-autonomy` (`record.kind: "manual"`)
+   from this fail-closed synthesis (no `kind` at all), so an operator reading
+   `[warn] the merge-autonomy kill switch is SET` versus `[warn] … could not
+   be confirmed clear` is told which one they are looking at, alongside
+   `check_repo_access`'s own report of `state_repo` unreachable-or-invisible.
 
    Managed by `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
    (requirement 12), on the same terms as `--disable`/`--enable` where they
@@ -9250,9 +9259,11 @@ What exists, and the requirements each part answers to:
     second one; unlike every other fleet-flag reader here it uses
     `fleet_flag_fetch_status` rather than plain `fleet_flag_fetch`, so it can
     tell a clear-flag 404 apart from a transport-unreachable repo with no
-    cached copy and resolve the latter to `disabled` (TD-PPagop-26081507; a
-    repo-level 404 — the state repo missing or invisible to the token —
-    still reads as clear, TD-PPagop-26081602).
+    cached copy and resolve the latter to `disabled` (TD-PPagop-26081507),
+    including a repo-level 404 — the state repo missing or invisible to the
+    token, which `fleet_flag_fetch_status` tells apart from a genuine
+    missing-flag-file 404 by probing `repos/<state_repo>` itself
+    (TD-PPagop-26081602).
     `merge_autonomy_effective_level`
     combines both: `human` whenever the kill switch is set or unreadable,
     the configured level otherwise — the one function every
@@ -12526,22 +12537,29 @@ requirements above, which state only what is.
   during an outage: the one population that cannot know whether an operator
   has pulled the lever. `fleet_flag_fetch` itself, and every other caller of
   it (`fleet/disabled.json`, the usage-limit flag), is unchanged — this
-  asymmetry is this one flag's alone. One residual fail-open case survives,
-  knowingly (found in PR #448's review): "unreachable" above means a
-  transport-level failure, because the contents API answers a repo-level
-  404 — the state repo missing, or invisible to this token — with the same
-  `404 Not Found` as a missing flag file, so a misconfigured `state_repo`
-  slug or a token whose scopes lost access still resolves the switch as
-  clear on exactly the fresh-node population the asymmetry protects.
-  Closing it means probing `repos/<state_repo>` on the 404 path to tell the
-  two apart — cheap against the REST budget, but the 404 path is the
-  switch's steady state and the probe's own failure modes need the same
-  explicit classification as the fetch's, a design decision in its own
-  right and out of TD-PPagop-26081507's scope. It is filed as
-  TD-PPagop-26081602, to resolve with or before any repository's
-  `merge_autonomy` rises above `human`; until then `scripts/doctor.sh`'s
-  `check_repo_access` reporting the state repo unreachable-or-invisible is
-  the operator-run mitigation.
+  asymmetry is this one flag's alone. One residual fail-open case survived,
+  knowingly, at TD-PPagop-26081507's own landing (found in PR #448's
+  review): "unreachable" there meant only a transport-level failure, because
+  the contents API answers a repo-level 404 — the state repo missing, or
+  invisible to this token — with the same `404 Not Found` as a missing flag
+  file, so a misconfigured `state_repo` slug or a token whose scopes lost
+  access still resolved the switch as clear on exactly the fresh-node
+  population the asymmetry protects. That was deliberately left out of
+  TD-PPagop-26081507's own scope — a design decision in its own right, since
+  the 404 path is the switch's steady state and the probe's own failure
+  modes need the same explicit classification as the fetch's — and filed
+  separately as TD-PPagop-26081602. That item closed it by having
+  `fleet_flag_fetch_status` probe `repos/<state_repo>` itself on a flag-file
+  404, cheap against the REST budget: only a probe that confirms the repo is
+  visible resolves to clear, and any probe failure — 404, 403, a timeout —
+  now gets the same cached-or-unreachable handling a transport failure on
+  the flag fetch itself gets, so it fails closed on the same terms rather
+  than being read as clear. `scripts/doctor.sh`'s kill-switch report gained
+  the matching distinction: a genuine `--kill-merge-autonomy`
+  (`record.kind: "manual"`) reads `SET`, this fail-closed synthesis (no
+  `kind` at all) reads `could not be confirmed clear`, so an operator is no
+  longer left reading `check_repo_access`'s state-repo report as the only
+  way to tell the two apart.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
   end-state is exactly one Approver App identity governing the whole
   installation (§6 — the same fact that denies the kill switch a
