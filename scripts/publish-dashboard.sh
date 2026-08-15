@@ -1818,11 +1818,16 @@ if (( WITH_GITHUB )); then
   jq -e 'type == "object"' "$pr_index_file" >/dev/null 2>&1 || printf '{}' > "$pr_index_file"
   cp "$pr_index_file" "$pr_cache" 2>/dev/null || true
 
+  # $prs and $claims are the whole cross-repo PR index and claims cache, both
+  # of which grow with the fleet — unbounded past this call (requirement 4g,
+  # TD-PPagop-26081503). Both arrive on stdin, one document per line, bound
+  # positionally with `input as $name` in the printed order — never in argv.
   github_json="$(jq -n --argjson ok "$gh_ok" --arg err "$gh_err" --arg at "$now_iso" \
-    --argjson prs "$prs_json" --argjson inputs "$inputs_json" --argjson claims "$claims_json" \
+    --argjson inputs "$inputs_json" \
     --slurpfile pri "$pr_index_file" \
-    '{ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs,
-      claims: $claims, pr_index: ($pri[0] // {})}')"
+    'input as $prs | input as $claims |
+     {ok: $ok, error: $err, fetched_at: $at, stale: false, prs: $prs, inputs: $inputs,
+      claims: $claims, pr_index: ($pri[0] // {})}' <<<"$prs_json"$'\n'"$claims_json")"
   # Remember this fetch (ok or failed — it is the latest real attempt) so the
   # next --no-github tick can carry it forward rather than start from nothing.
   printf '%s' "$github_json" > "$gh_cache"
