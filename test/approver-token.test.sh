@@ -324,6 +324,41 @@ assert_eq "unparsable expires_at: still exit 0" "0" "$rc"
 assert_eq "  ... the minted token on stdout" "ghs_oddexpiry" "$out"
 assert_eq "  ... nothing was cached" "" "$(ls -A "$cache_dir")"
 
+# --- approver_token_identity_login (D18 WI-5) ---------------------------------
+# The one call in this file that authenticates as the App itself rather than
+# an installation — lib/approver.sh's refuse-streak counting needs the App's
+# own login to tell its past reviews apart from anyone else's.
+setup_env
+stub_curl 200 '{"slug":"pullwright-approver","id":4593249}'
+out="$(approver_token_identity_login "$now")"; rc=$?
+assert_eq "identity login: exit 0" "0" "$rc"
+assert_eq "  ... the [bot]-suffixed login form reviews actually carry" \
+  "pullwright-approver[bot]" "$out"
+assert_eq "  ... the Authorization header is absent from curl's argv here too" "" \
+  "$(grep -i 'authorization' "$tmp_dir/curl_argv" || true)"
+
+stub_curl 404 '{"message":"Not Found"}'
+out="$(approver_token_identity_login "$now")"; rc=$?
+assert_eq "identity login: a non-200 is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+stub_curl 200 '{"id":4593249}'
+out="$(approver_token_identity_login "$now")"; rc=$?
+assert_eq "identity login: a body with no slug is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+
+setup_env
+touch "$tmp_dir/curl_fail"
+out="$(approver_token_identity_login "$now")"; rc=$?
+assert_eq "identity login: an unreachable API is a failure" "" "$out"
+assert_eq "  ... and exits non-zero" "1" "$rc"
+rm -f "$tmp_dir/curl_fail"
+
+clear_env
+out="$(approver_token_identity_login "$now")"; rc=$?
+assert_eq "identity login: no credential configured is gate-unreadable" "" "$out"
+assert_eq "  ... exit 2, the same code approver_token_get uses for it" "2" "$rc"
+
 clear_env
 
 printf '\n'

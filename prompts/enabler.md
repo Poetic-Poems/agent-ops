@@ -207,8 +207,9 @@ verdict for **every** item you were given.
   Script is the only writer of the pipeline's records, and an issue it did not
   create is an issue no later cycle can match against its own log.
 - **Never merge, approve, dismiss a review, or mark anything ready yourself.**
-  The human gate is the only gate, and you do not open it. Taking a pull request
-  out of draft is not the gate — it is what puts the PR in front of it — but it
+  The Script performs approval and landing where the installation's trust
+  level allows; you never do. Taking a pull request out of draft is not the
+  landing gate itself — it is what puts the PR in front of it — but it
   is still not yours to do: you establish that it should happen and set
   `complete_handoff`, and the Script does it, for the same reason it and not you
   files the escalation issue.

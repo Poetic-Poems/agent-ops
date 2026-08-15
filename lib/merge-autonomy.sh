@@ -17,8 +17,8 @@
 # is landing that should not be" lever WI-5/WI-7's own gates cannot
 # substitute for, since it has to work even if the classifier or the Approver
 # stage itself is what is misbehaving. It reuses `lib/toggle.sh`'s generic
-# fleet-flag machinery outright (`fleet_flag_fetch`/`_write`/`_delete`, the
-# same CAS-guarded contents-API file `fleet/disabled.json` already uses one
+# fleet-flag machinery outright (`fleet_flag_fetch_status`/`_write`/`_delete`,
+# the same CAS-guarded contents-API file `fleet/disabled.json` already uses one
 # level up) under its own flag name, `fleet/merge-autonomy-kill.json`, rather
 # than the pipeline's own `disabled` flag: killing merge autonomy must not
 # stop cycles running, only force every level back to `human`, and the two
@@ -34,11 +34,16 @@
 # (see its own comment): a config that is invalid the moment the switch is
 # cleared is worth failing on now, not only once someone clears it. No
 # behaviour changes until WI-5 (the Approver stage) and WI-7 (the arming
-# step) read `merge_autonomy_effective_level` for real.
+# step) read `merge_autonomy_effective_level` for real. Because that day is
+# coming, the kill switch's own read already fails closed on a fresh node
+# that cannot reach the state repo (TD-PPagop-26081507, see
+# merge_autonomy_kill_state below) — `merge_autonomy_effective_level` must
+# answer `human` from the moment WI-5 starts trusting it, not only once
+# someone remembers to revisit this file.
 
 # shellcheck source=lib/toggle.sh
 # (Sourced by every caller of this file already; the functions below —
-# fleet_flag_fetch, fleet_flag_write_outcome, fleet_flag_delete_outcome,
+# fleet_flag_fetch_status, fleet_flag_write_outcome, fleet_flag_delete_outcome,
 # _toggle_eval, _toggle_iso, toggle_actor — come from it, not from here.)
 
 MERGE_AUTONOMY_LEVELS=(human agent-approves agent-merges-routine agent-merges-all)
@@ -83,19 +88,35 @@ merge_autonomy_configured_level() {
 # The kill switch, in toggle_state's own vocabulary
 # (`{"state":"enabled"}` / `{"state":"disabled","record":{...}}`) — "enabled"
 # here means merge autonomy runs at its configured level; "disabled" means
-# the switch has forced everything to `human`. Same failure directions as
-# fleet_disabled_state: unreachable falls back to the last-fetched cache and
-# then to "enabled" (safe today because nothing yet arms anything on the
-# strength of this function alone — see the header — but deliberate-with-an-
-# expiry, not permanent: TD-PPagop-26081507 requires the no-cache case to
-# fail closed to `human` with or before WI-5's Approver stage, and the
-# spec's Design decisions entry defends the interim direction);
+# the switch has forced everything to `human`. Diverges from
+# fleet_disabled_state in exactly one failure direction (TD-PPagop-26081507):
+# an unreachable state repo falls back to the last-fetched cache same as
+# every other fleet flag, but with no cache at all — a fresh node, or one
+# whose cache never held a copy because the flag has never been set — this
+# resolves to "disabled", not "enabled". That confines the fail-closed blast
+# radius (a state-repo outage silently forcing every repo to `human`) to
+# exactly the population that cannot know whether an operator has pulled the
+# lever, and is the one caller of fleet_flag_fetch_status in this codebase
+# that needs the distinction — see its own comment in lib/toggle.sh for why
+# fleet_disabled_state and the limit flag are unaffected and still fail open.
+# "Unreachable" means a transport-level failure: a repo-level 404 (the state
+# repo missing, or invisible to this token) is indistinguishable from a clear
+# flag at the contents API and still fails open — TD-PPagop-26081602.
 # present-but-garbage reads as set, not clear, the same as every other flag
 # lib/toggle.sh evaluates.
 merge_autonomy_kill_state() {
-  local raw
-  raw="$(fleet_flag_fetch "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"
+  local combined status raw
+  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"
+  # Parameter expansion, not `IFS=$'\t' read` — see fleet_flag_fetch_status's
+  # own comment: RAW is a file from the state repository and may be several
+  # lines, which a `read` would truncate to the first one.
+  status="${combined%%$'\t'*}"
+  raw="${combined#*$'\t'}"
   if [[ -z "$raw" ]]; then
+    if [[ "$status" == "unreachable" ]]; then
+      printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":""}}'
+      return 0
+    fi
     printf '{"state":"enabled"}'
     return 0
   fi
