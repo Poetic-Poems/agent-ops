@@ -756,10 +756,6 @@ if [[ -n "$MANAGE_ACTION" ]]; then
                        "$disable_default_ttl_hours" "$by" "$actor" manual)"; then
         exit 64
       fi
-      log_event "disabled" "$(jq -nc --argjson r "$record" --argjson x "${extends:-null}" \
-        '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by,
-          actor: $r.actor, kind: $r.kind}
-         + (if $x == null then {} else {extends: $x} end)')"
       printf 'agent-cycle: disabled — %s\n' "$(toggle_describe "$record")"
       # The same record goes up as the fleet switch (requirement 2.3a): with
       # several nodes active, "stop the pipelines" has to mean all of them.
@@ -768,16 +764,31 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # --this-node opts out of that: the whole point of the flag is a
       # graceful, single-node stand-down that never reaches the fleet flag,
       # so the rest of the fleet is left running rather than warned about.
+      #
+      # `disable_scope` and `fleet_flag_outcome` are what the operator asked
+      # for and what actually happened to it — logged below, once both are
+      # known, rather than at the top of this block (issue #426): a process
+      # killed mid-fleet-attempt must lose the event rather than log a
+      # `disabled` that never says whether the fleet went down too.
+      disable_scope="fleet"
+      fleet_flag_outcome=""
       if (( THIS_NODE )); then
+        disable_scope="node"
         printf 'agent-cycle: node-scoped disable — only %s stands down; the rest of the fleet keeps running\n' "$actor"
-      elif [[ -n "$state_repo" ]]; then
-        if fleet_flag_write "$state_repo" disabled "$record" \
-             "fleet: disabled by $by — $DISABLE_REASON"; then
-          printf 'agent-cycle: fleet switch set — every node will stand down\n'
-        else
-          printf 'agent-cycle: WARNING — could not set the fleet switch (state repo unreachable?); only this node is disabled\n' >&2
-        fi
+      else
+        fleet_flag_outcome="$(fleet_flag_write_outcome "$state_repo" disabled "$record" \
+          "fleet: disabled by $by — $DISABLE_REASON")"
+        case "$fleet_flag_outcome" in
+          ok) printf 'agent-cycle: fleet switch set — every node will stand down\n' ;;
+          failed) printf 'agent-cycle: WARNING — could not set the fleet switch (state repo unreachable?); only this node is disabled\n' >&2 ;;
+        esac
       fi
+      log_event "disabled" "$(jq -nc --argjson r "$record" --argjson x "${extends:-null}" \
+        --arg scope "$disable_scope" --arg ff "$fleet_flag_outcome" \
+        '{reason: $r.reason, expires_at: $r.expires_at, by: $r.by,
+          actor: $r.actor, kind: $r.kind, scope: $scope}
+         + (if $x == null then {} else {extends: $x} end)
+         + (if $ff == "" then {} else {fleet_flag: $ff} end)')"
       # Say it plainly rather than leaving it to be discovered: an agent that
       # disables the pipeline to edit these files has not stopped the cycle
       # that is already reading them.
@@ -791,8 +802,6 @@ if [[ -n "$MANAGE_ACTION" ]]; then
     enable)
       record="$(toggle_clear "$state_dir")"
       if [[ -n "$record" ]]; then
-        log_event "enabled" "$(jq -nc --argjson r "$record" \
-          '{detail: "cleared by hand", was: $r}')"
         printf 'agent-cycle: enabled — cleared the disable set at %s (%s)\n' \
           "$(jq -r '.disabled_at // "?"' <<<"$record")" "$(jq -r '.reason // "?"' <<<"$record")"
       else
@@ -804,14 +813,30 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # --this-node opts out: it undoes only this node's own --disable
       # --this-node, and must never clear a fleet switch (or another node's
       # own node-scoped one) it did not set.
+      enable_scope="fleet"
+      fleet_flag_outcome=""
       if (( THIS_NODE )); then
+        enable_scope="node"
         printf 'agent-cycle: node-scoped enable — the fleet switch, if any, is untouched\n'
       elif [[ -n "$state_repo" ]]; then
-        if fleet_flag_delete "$state_repo" "$state_dir" disabled; then
-          printf 'agent-cycle: fleet switch clear\n'
-        else
-          printf 'agent-cycle: WARNING — could not clear the fleet switch; every node still stands down. Re-run --enable, or delete fleet/disabled.json in %s by hand.\n' "$state_repo" >&2
-        fi
+        fleet_flag_outcome="$(fleet_flag_delete_outcome "$state_repo" "$state_dir" disabled)"
+        case "$fleet_flag_outcome" in
+          ok|unconfigured) printf 'agent-cycle: fleet switch clear\n' ;;
+          failed) printf 'agent-cycle: WARNING — could not clear the fleet switch; every node still stands down. Re-run --enable, or delete fleet/disabled.json in %s by hand.\n' "$state_repo" >&2 ;;
+        esac
+      else
+        fleet_flag_outcome="unconfigured"
+      fi
+      # Log `enabled` whenever anything was actually cleared — the local
+      # record, the fleet flag, or both — not only when the local record was
+      # set (issue #426): a node with no local record but a live fleet flag
+      # previously left the fleet coming back up absent from the log
+      # entirely.
+      if [[ -n "$record" || "$fleet_flag_outcome" == "ok" ]]; then
+        log_event "enabled" "$(jq -nc --argjson r "${record:-null}" \
+          --arg scope "$enable_scope" --arg ff "$fleet_flag_outcome" \
+          '{detail: "cleared by hand", was: $r, scope: $scope}
+           + (if $ff == "" then {} else {fleet_flag: $ff} end)')"
       fi
       refresh_dashboard
       exit 0
@@ -838,7 +863,11 @@ if [[ -n "$MANAGE_ACTION" ]]; then
       # the one case that legitimately moves it earlier, and delete is the
       # only write that expresses that.
       if [[ -n "$state_repo" ]]; then
-        if fleet_flag_delete "$state_repo" "$state_dir" limit; then
+        # >/dev/null: fleet_flag_delete now prints which of "deleted"/"absent"
+        # it was (issue #426) for callers that log the outcome; this one only
+        # ever reads the return code, and the raw word must not leak to the
+        # operator's terminal.
+        if fleet_flag_delete "$state_repo" "$state_dir" limit >/dev/null; then
           printf 'agent-cycle: fleet usage-limit flag clear\n'
         else
           printf 'agent-cycle: WARNING — could not clear fleet/limit.json; peers reading it live still stand down. Re-run --clear-limit, or delete fleet/limit.json in %s by hand.\n' "$state_repo" >&2
@@ -4152,7 +4181,7 @@ case "$(jq -r '.state' <<<"$switch_state")" in
     expired_record="$(jq -c '.record' <<<"$switch_state")"
     toggle_clear "$state_dir" >/dev/null
     log_event "enabled" "$(jq -nc --argjson r "$expired_record" \
-      '{detail: "disable expired", was: $r}')"
+      '{detail: "disable expired", was: $r, scope: "node"}')"
     ;;
   disabled)
     log_event "stand-down" "$(jq -nc \
@@ -4177,10 +4206,16 @@ esac
 fleet_switch_state="$(fleet_disabled_state "$state_repo" "$state_dir")"
 case "$(jq -r '.state' <<<"$fleet_switch_state")" in
   expired)
-    fleet_flag_delete "$state_repo" "$state_dir" disabled || true
+    # fleet_flag_delete's own outcome used to be discarded (`|| true`) — this
+    # fleet-level expiry could win the delete, lose it to a peer's own race
+    # (fine, requirement 2.5), or fail outright, and the log could not tell
+    # those apart (issue #426). fleet_flag_delete_outcome folds this site into
+    # the same ok/failed/unconfigured vocabulary the `--enable` path uses.
+    fleet_expiry_flag_outcome="$(fleet_flag_delete_outcome "$state_repo" "$state_dir" disabled)"
     log_event "enabled" "$(jq -nc \
       --argjson r "$(jq -c '.record' <<<"$fleet_switch_state")" \
-      '{detail: "fleet disable expired", was: $r}')"
+      --arg ff "$fleet_expiry_flag_outcome" \
+      '{detail: "fleet disable expired", was: $r, scope: "fleet", fleet_flag: $ff}')"
     ;;
   disabled)
     log_event "stand-down" "$(jq -nc \
@@ -4452,7 +4487,10 @@ if (( resume_epoch > now_epoch )); then
           --arg by "auto-probe@$node_name" --arg n "$node_name" \
           '{was: $w, reason: "probe answered: the limit behind this estimated stand-down is gone", by: $by, actor: $n, kind: "auto"}')"
         if [[ -n "$state_repo" ]]; then
-          fleet_flag_delete "$state_repo" "$state_dir" limit || log_event "warning" \
+          # >/dev/null: fleet_flag_delete now prints which of "deleted"/
+          # "absent" it was (issue #426); this site only reads the return
+          # code, and the raw word must not leak into the cycle's own stdout.
+          fleet_flag_delete "$state_repo" "$state_dir" limit >/dev/null || log_event "warning" \
             '{"detail": "could not clear fleet/limit.json after a clear probe — peers reading it live stand down until their own probes answer"}'
         fi
         standing=0

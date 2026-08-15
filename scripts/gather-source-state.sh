@@ -177,11 +177,16 @@ open_prs="$(api_json '[]' \
   '[.[] | {n: .number, u: .updated_at, h: .head.ref, d: .draft}] | sort_by(.n)' \
   "repos/$slug/pulls?state=open&per_page=100")" || ok=false
 
+# $issues, $workflows and $open_prs each grow with the repo, unbounded past
+# this call (requirement 4g, TD-PPagop-26081503) — one repo's whole open-issue
+# list, workflow digest and open-PR list. All three arrive on stdin, one
+# document per line, bound positionally with `input as $name` in the printed
+# order; $slug, $ok and $head_sha stay in argv — bounded, configuration-shaped
+# values.
 jq -nc \
   --arg slug "$slug" \
   --argjson ok "$ok" \
   --argjson head "$head_sha" \
-  --argjson issues "$issues" \
-  --argjson workflows "$workflows" \
-  --argjson open_prs "$open_prs" \
-  '{slug: $slug, ok: $ok, head_sha: $head, issues: $issues, workflows: $workflows, open_prs: $open_prs}'
+  'input as $issues | input as $workflows | input as $open_prs |
+   {slug: $slug, ok: $ok, head_sha: $head, issues: $issues, workflows: $workflows, open_prs: $open_prs}' \
+  <<<"$issues"$'\n'"$workflows"$'\n'"$open_prs"

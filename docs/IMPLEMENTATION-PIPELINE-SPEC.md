@@ -1154,7 +1154,8 @@ runs unattended.
    `--enable [--this-node]`, `--status`. `--until` takes a GNU `date`-compatible
    absolute timestamp, an alternative to `--for`'s relative duration; with both
    given, the later of the two deadlines wins and a warning names which.
-   Transitions are logged (`disabled`, `enabled`).
+   Transitions are logged (`disabled`, `enabled`), carrying the `scope` and
+   `fleet_flag` vocabulary requirement 33 defines.
 
    **`--this-node` (issue #379)** modifies `--disable` or `--enable` to act on
    this node alone, never on the fleet switch of requirement 2.3a: `--disable
@@ -3375,6 +3376,13 @@ runs unattended.
    `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
    whose three arguments are a repo's whole reviews, comments and rerequests
    (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
+   TD-PPagop-26081503 completed the sweep over four further sites found after
+   TD-PPagop-26081406 resolved: `gather-source-state.sh`'s final state build
+   (`test/gather-source-state.test.sh`), `gather-findings.sh`'s
+   combine-and-order build (`test/gather-findings.test.sh`),
+   `gather-register-hygiene.sh`'s problems merge and final candidate build
+   (`test/register-hygiene.test.sh`), and `publish-dashboard.sh`'s
+   `github_json` build (`test/publish-dashboard.test.sh`).
 
    **A converted site binds by position, so each argument is one document.**
    `input as $name` reads whichever document comes next; unlike the
@@ -3394,26 +3402,30 @@ runs unattended.
 
    **The cap is per argv element, not per flag.** `--arg` is bound by
    `MAX_ARG_STRLEN` exactly as `--argjson` is, so a rendered string counts
-   against this requirement wherever it grows with fleet state. Two sites
+   against this requirement wherever it grows with fleet state. Three sites
    carry one: `scripts/gather-review-feedback.sh` assembles every fresh review
-   and inline comment into one body, and
-   `scripts/gather-human-visibility-hygiene.sh` renders its survivor set into
-   a digest. Both keep that value JSON-encoded and hand it to their candidate
-   build on stdin beside the arrays it came from — an `--arg` there would put
-   the same bytes back into a single argv element and leave the threshold
-   where it was. Their tests drive each build with a body past the cap.
+   and inline comment into one body, `scripts/gather-human-visibility-hygiene.sh`
+   renders its survivor set into a digest, and
+   `scripts/gather-register-hygiene.sh` renders `td-check.pl`'s report — plus
+   any VOIDED STATUS section — into its own candidate body. All three keep
+   that value JSON-encoded and hand it to their candidate build on stdin
+   beside the array(s) it came from — an `--arg` there would put the same
+   bytes back into a single argv element and leave the threshold where it
+   was. Their tests drive each build with a body past the cap.
 
-   Two sites outside either item's enumeration still deliver a fleet-state
-   aggregate in argv, and are filed rather than fixed: `agent-cycle.sh`'s own
-   invocation of `scripts/gather-human-visibility-hygiene.sh`, which hands
-   that script's whole `$violations` argument as a single argv element to the
-   script's own `execve`, a cap this requirement's `jq`-specific framing had
-   not considered until TD-PPagop-26081406 found it (TD-PPagop-26081502); and
-   the gatherers and Publisher builds TD-PPagop-26081503 enumerates —
-   `gather-findings.sh`, `gather-source-state.sh`,
-   `gather-register-hygiene.sh` and
-   `publish-dashboard.sh`. Those two items are the outstanding residue; this
-   requirement claims no more than the sites named above.
+   Two sites outside every prior item's enumeration still deliver a
+   fleet-state aggregate in argv, and are filed rather than fixed:
+   `agent-cycle.sh`'s own invocation of
+   `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
+   whole `$violations` argument as a single argv element to the script's own
+   `execve`, a cap this requirement's `jq`-specific framing had not considered
+   until TD-PPagop-26081406 found it (TD-PPagop-26081502); and
+   `publish-dashboard.sh`'s own per-repo `prs_json` fold and its
+   queue-answers merge, both upstream of the `github_json` build
+   TD-PPagop-26081503 converted and still carrying the fleet-wide PR index
+   into `jq` as `--argjson` (TD-PPagop-26081506). Those two items are the
+   outstanding residue; this requirement claims no more than the sites named
+   above.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is
@@ -5557,16 +5569,34 @@ runs unattended.
     the `fingerprint` of requirement 3b; `disabled`/`enabled` carry the switch
     record, so the log can explain both why cycles stopped and why they
     resumed — including when they resumed because a disable expired rather than
-    because anyone chose to re-enable it. A `chained` event (requirement 39) is
-    logged by the parent cycle, from its own cleanup, immediately before it
-    launches its continuation: `depth` is the launching child's own place in
-    the lineage (the parent's plus one) and `max_chained_cycles` is the cap in
-    force, so a lineage's length is reconstructable from the log without
-    inferring it from consecutive `cycle-start` timestamps. `selection`, and any `attempt-failed` or `item-void`
-    raised once an item has been selected, must carry both `repo` and `item` —
-    requirements 34 and 34c key on them, so an event that omits them cannot
-    pin any state on the item it names, and the omission is invisible until you
-    notice the same work being redone.
+    because anyone chose to re-enable it. Both also carry `scope` — `"node"`
+    when the instruction (or, for the two automatic-expiry sites below, the
+    record) touched only `state_dir/disabled.json`, `"fleet"` when it reached
+    for `fleet/disabled.json` too — and, only when `scope` is `"fleet"`,
+    `fleet_flag`: `"ok"` when the fleet flag was actually written or deleted,
+    `"failed"` when a real attempt to reach it did not succeed, `"unconfigured"`
+    when there was nothing to reach (no `state_repo`, or the flag was already
+    absent). Every writer of `disabled`/`enabled` — `--disable`, `--enable`,
+    and the node-scoped and fleet-scoped switch-expiry clearances at cycle
+    start (requirements 2.3 and 2.3a) — shares this vocabulary, so a reader
+    never has to learn a second set of words for the fleet-level case. The
+    event is logged only once the fleet outcome is known, after the write or
+    delete has been attempted, so a process killed mid-fleet-attempt loses the
+    event rather than logging a `disabled` that cannot say whether the fleet
+    followed; `enabled` is logged whenever anything was actually cleared — the
+    local record, the fleet flag, or both — including a `--enable` run on a
+    node with no local record of its own but a live fleet flag, which a
+    `record`-only condition used to leave silently absent from the log. A
+    `chained` event (requirement 39) is logged by the parent cycle, from its
+    own cleanup, immediately before it launches its continuation: `depth` is
+    the launching child's own place in the lineage (the parent's plus one) and
+    `max_chained_cycles` is the cap in force, so a lineage's length is
+    reconstructable from the log without inferring it from consecutive
+    `cycle-start` timestamps. `selection`, and any `attempt-failed` or
+    `item-void` raised once an item has been selected, must carry both `repo`
+    and `item` — requirements 34 and 34c key on them, so an event that omits
+    them cannot pin any state on the item it names, and the omission is
+    invisible until you notice the same work being redone.
 33a. **Metering.** Every `stage-end` event additionally carries the per-stage
     metering record: `model` (the model id passed to the invocation),
     `cost_usd`, `duration_ms`, `num_turns`, `is_error` (pulled from the
@@ -9184,7 +9214,12 @@ pull request, run the ones the change touches and any it could regress.
    state repo falls back to the cached copy, and to enabled with none; a
    404 is clear and clears the cache; a garbage flag is disabled; the limit
    flag only ever extends; a delete never reports cleared for a flag still
-   set; and — end to end, offline — `--disable` on node A publishes
+   set, and reports which of the two ways it can succeed actually happened —
+   `deleted` when a flag was removed, `absent` when there was nothing to
+   remove — which `fleet_flag_write_outcome`/`fleet_flag_delete_outcome`
+   (issue #426) translate, along with a genuine failure, into the
+   `ok`/`failed`/`unconfigured` vocabulary requirement 33 documents; and —
+   end to end, offline — `--disable` on node A publishes
    `fleet/disabled.json` and both real pipelines on node B stand down
    naming the fleet switch, `--enable` on A genuinely removes the flag, and
    a `fleet/limit.json` published by A stands B down until its `resume_at`.
@@ -9207,9 +9242,20 @@ pull request, run the ones the change touches and any it could regress.
    record; a node carrying both a node-scoped disable and a fleet disable
    stands down for the local one first and, once that alone is cleared, for
    the fleet one next; a node-scoped disable clears itself and logs `disable
-   expired` on the same TTL terms as the fleet switch; and `--this-node`
-   given with a command other than `--disable`/`--enable` (`--status` here)
-   exits 64 naming the two it modifies. It covers `--status`'s own
+   expired` carrying `scope: "node"` and no `fleet_flag`, on the same TTL
+   terms as the fleet switch; a fleet-wide disable past its TTL clears itself
+   the same way, logging `fleet disable expired` carrying `scope: "fleet"`
+   and `fleet_flag: "ok"` and actually removing `fleet/disabled.json`
+   (issue #426, defect 3 — the outcome used to be discarded); and
+   `--this-node` given with a command other than `--disable`/`--enable`
+   (`--status` here) exits 64 naming the two it modifies. Every `disabled`/
+   `enabled` event this file's e2e block logs is asserted for `scope` — a
+   plain `--disable`/`--enable` carries `"fleet"`, a `--this-node` one
+   `"node"` and no `fleet_flag` at all — and a fleet-scoped `--enable` for
+   `fleet_flag: "ok"`, including the case where the node clearing a live
+   fleet flag has no local record of its own to report (acceptance 4: the
+   defect that used to leave that resumption silently absent from the log).
+   It covers `--status`'s own
    distinction in all three combinations: with only the local record set it
    reports no fleet switch and names `--enable --this-node` as what clears
    it; with only the fleet flag set it reports that record, its reason, and

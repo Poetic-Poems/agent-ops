@@ -373,16 +373,37 @@ assert_eq "a garbage fleet flag reads as disabled, not enabled" "disabled" \
 
 # --- Delete: absent is cleared, unreachable is NOT ---
 
-fleet_flag_delete "$slug" "$fs_b" disabled
+delete_word="$(fleet_flag_delete "$slug" "$fs_b" disabled)"
 assert_eq "deleting a set flag succeeds" "0" "$?"
+assert_eq "and reports that it actually deleted something (issue #426)" "deleted" "$delete_word"
 assert_eq "the flag is gone from the repo" "0" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
 assert_eq "a successful delete drops the local cache too" "0" \
   "$(test -f "$(fleet_cache_file "$fs_b" disabled)" && echo 1 || echo 0)"
-fleet_flag_delete "$slug" "$fs_b" disabled
+delete_word="$(fleet_flag_delete "$slug" "$fs_b" disabled)"
 assert_eq "deleting an absent flag is already-clear, not an error" "0" "$?"
-GH_STUB_MODE=down fleet_flag_delete "$slug" "$fs_b" disabled
+assert_eq "and reports there was nothing to delete, distinctly from a real delete (issue #426)" \
+  "absent" "$delete_word"
+GH_STUB_MODE=down fleet_flag_delete "$slug" "$fs_b" disabled >/dev/null
 assert_eq "an unreachable repo must NOT report the flag cleared" "1" "$?"
+
+assert_eq "fleet_flag_delete_outcome maps a real delete to ok" "ok" \
+  "$(fleet_flag_write "$slug" disabled "$rec" "set for the outcome test" \
+     && fleet_flag_delete_outcome "$slug" "$fs_b" disabled)"
+assert_eq "and an already-absent flag to unconfigured, not ok" "unconfigured" \
+  "$(fleet_flag_delete_outcome "$slug" "$fs_b" disabled)"
+assert_eq "and an unreachable repo to failed" "failed" \
+  "$(fleet_flag_write "$slug" disabled "$rec" "set for the outcome test" \
+     && GH_STUB_MODE=down fleet_flag_delete_outcome "$slug" "$fs_b" disabled)"
+fleet_flag_delete "$slug" "$fs_b" disabled >/dev/null
+
+assert_eq "fleet_flag_write_outcome maps a real write to ok" "ok" \
+  "$(fleet_flag_write_outcome "$slug" disabled "$rec" "set for the outcome test")"
+fleet_flag_delete "$slug" "$fs_b" disabled >/dev/null
+assert_eq "and no state repo to unconfigured" "unconfigured" \
+  "$(fleet_flag_write_outcome "" disabled "$rec" "set for the outcome test")"
+assert_eq "and an unreachable repo to failed" "failed" \
+  "$(GH_STUB_MODE=down fleet_flag_write_outcome "$slug" disabled "$rec" "set for the outcome test")"
 
 # A 404 on fetch clears a stale cache: the flag was cleared remotely and the
 # cached copy must not keep this node standing down.
@@ -464,6 +485,7 @@ run_node() {  # run_node <home> <script> [args…]
 
 a_home="$(new_home fleet-node-a)"
 b_home="$(new_home fleet-node-b)"
+a_log="$a_home/.local/state/poetic-agents/log.jsonl"
 b_log="$b_home/.local/state/poetic-agents/log.jsonl"
 b_review_log="$b_home/.local/state/poetic-agents/review-log.jsonl"
 
@@ -478,6 +500,14 @@ assert_eq "the fleet switch names the node that set it" "fleet-node-a" \
   "$(jq -r '.actor' "$gh_backing/fleet/disabled.json")"
 assert_eq "and records a manual kind" "manual" \
   "$(jq -r '.kind' "$gh_backing/fleet/disabled.json")"
+# Requirement 33 (issue #426): the `disabled` event records the scope the
+# operator asked for and the outcome of reaching the fleet flag, so a reader
+# can tell a fleet-wide stop from a node-scoped one without cross-referencing
+# fleet/disabled.json.
+assert_contains "and the disabled event carries fleet scope" '"scope":"fleet"' \
+  "$(cat "$a_log" 2>/dev/null)"
+assert_contains "and reports the fleet flag write as ok" '"fleet_flag":"ok"' \
+  "$(cat "$a_log" 2>/dev/null)"
 
 # A second --disable over the live switch is an extension, and the log says
 # so rather than presenting a fresh stop.
@@ -501,11 +531,34 @@ enable_out="$(run_node "$a_home" agent-cycle.sh --enable 2>&1)"
 assert_contains "--enable reports the fleet switch clear" "fleet switch clear" "$enable_out"
 assert_eq "--enable removes fleet/disabled.json" "0" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+assert_contains "and the enabled event carries fleet scope" '"scope":"fleet"' \
+  "$(cat "$a_log" 2>/dev/null)"
+assert_contains "and reports the fleet flag delete as ok" '"fleet_flag":"ok"' \
+  "$(cat "$a_log" 2>/dev/null)"
+
+# Requirement 33 (issue #426, acceptance 4): a node with no local disable of
+# its own must still log `enabled` when a live fleet flag it clears — the
+# defect this closes let the fleet coming back up go unlogged whenever the
+# node running --enable had no local record to report.
+rec_fleet_only="$(jq -nc '{disabled_at: "2026-07-17T09:00:00Z", expires_at: null, by: "operator@laptop pid 1", reason: "another node froze the fleet", actor: "operator@laptop", kind: "manual"}')"
+fleet_flag_write "$slug" disabled "$rec_fleet_only" "fleet freeze set by another node"
+assert_eq "no local record on A going into this scenario" "0" \
+  "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
+rm -f "$a_log"
+no_local_enable_out="$(run_node "$a_home" agent-cycle.sh --enable 2>&1)"
+assert_contains "--enable still reports the fleet switch clear with no local record" \
+  "fleet switch clear" "$no_local_enable_out"
+assert_contains "and logs enabled even though there was nothing local to clear" \
+  '"event":"enabled"' "$(cat "$a_log" 2>/dev/null)"
+assert_contains "naming the fleet scope" '"scope":"fleet"' "$(cat "$a_log" 2>/dev/null)"
+assert_contains "and the fleet flag outcome as ok" '"fleet_flag":"ok"' "$(cat "$a_log" 2>/dev/null)"
 
 # --- --this-node (issue #379): a node-scoped stand-down that never touches
 # the fleet flag -------------------------------------------------------------
 
-a_log="$a_home/.local/state/poetic-agents/log.jsonl"
+# Reset the log so the scope/fleet_flag assertions below read only this
+# block's own event, not the fleet-scoped ones the sections above logged.
+rm -f "$a_log"
 
 # `--disable --this-node` writes only the local record and never publishes
 # the fleet flag.
@@ -518,6 +571,10 @@ assert_eq "--disable --this-node writes the local record" "1" \
   "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
 assert_eq "--disable --this-node writes no fleet flag" "0" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+assert_contains "and the disabled event carries node scope, not fleet" \
+  '"scope":"node"' "$(cat "$a_log" 2>/dev/null)"
+assert_not_contains "and carries no fleet_flag outcome at all" \
+  '"fleet_flag"' "$(cat "$a_log" 2>/dev/null)"
 
 # `--status` has to say which of the two levels is down and which command
 # lifts it (requirement 2.3) — an operator who finds a node stopped learns
@@ -543,6 +600,7 @@ assert_not_contains "and does not stand the peer down" \
 # local record is this node's own decision to undo, the fleet flag is not.
 rec_fleet="$(jq -nc '{disabled_at: "2026-07-17T10:00:00Z", expires_at: null, by: "operator@laptop pid 1", reason: "fleet freeze", actor: "operator@laptop", kind: "manual"}')"
 fleet_flag_write "$slug" disabled "$rec_fleet" "fleet freeze for the test"
+rm -f "$a_log"
 enable_this_out="$(run_node "$a_home" agent-cycle.sh --enable --this-node 2>&1)"
 assert_not_contains "--enable --this-node does not claim the fleet switch cleared" \
   "fleet switch clear" "$enable_this_out"
@@ -550,6 +608,10 @@ assert_eq "--enable --this-node leaves the fleet flag set" "1" \
   "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
 assert_eq "--enable --this-node clears the local record" "0" \
   "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
+assert_contains "and the enabled event carries node scope even with a live fleet flag" \
+  '"scope":"node"' "$(cat "$a_log" 2>/dev/null)"
+assert_not_contains "and never claims a fleet_flag outcome it never touched" \
+  '"fleet_flag"' "$(cat "$a_log" 2>/dev/null)"
 
 # The mirror image of the `--status` case above: the fleet flag alone is set,
 # so what this node needs told is that a plain `--enable` is the one that
@@ -593,7 +655,7 @@ assert_contains "but the node still stands down, now for the fleet switch" \
 
 # Clean up the fleet flag this block set, so the baseline the rest of this
 # file assumes ("nothing set" going into the limit tests below) still holds.
-fleet_flag_delete "$slug" "$fs_a" disabled
+fleet_flag_delete "$slug" "$fs_a" disabled >/dev/null
 
 # A node-scoped disable still expires on its own TTL, exactly like the fleet
 # one — --this-node changes only which levels a write reaches, never how a
@@ -606,6 +668,30 @@ assert_contains "and the expired node-scoped disable is cleared and logged" \
   '"detail":"disable expired"' "$(cat "$a_log" 2>/dev/null)"
 assert_eq "the local record is gone once it has expired" "0" \
   "$(test -f "$a_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
+# Requirement 33 (issue #426): the two automatic-expiry sites fold into the
+# same scope/fleet_flag vocabulary the --disable/--enable command paths use —
+# this one only ever touches the local record, so it is node-scoped and
+# carries no fleet_flag at all.
+assert_contains "and the expiry event carries node scope" \
+  '"scope":"node"' "$(cat "$a_log" 2>/dev/null)"
+assert_not_contains "and no fleet_flag outcome, since only the local record was touched" \
+  '"fleet_flag"' "$(cat "$a_log" 2>/dev/null)"
+
+# The fleet-level counterpart: a fleet-wide disable past its TTL is cleared by
+# whichever node's cycle sees it first, and that clear now reports whether the
+# fleet flag delete actually succeeded (defect 3 in issue #426 — the old code
+# discarded fleet_flag_delete's result with `|| true`).
+rec_fleet_ttl="$(jq -nc '{disabled_at: "2026-07-17T11:00:00Z", expires_at: "2026-07-17T12:00:00Z", by: "operator@laptop pid 1", reason: "fleet TTL test", actor: "operator@laptop", kind: "manual"}')"
+fleet_flag_write "$slug" disabled "$rec_fleet_ttl" "fleet freeze for the expiry test"
+rm -f "$a_log"
+TOGGLE_NOW_EPOCH=$(( 1784289600 + 4 * 3600 )) run_node "$a_home" agent-cycle.sh >/dev/null 2>&1
+assert_eq "a cycle past a fleet-wide disable's TTL exits cleanly" "0" "$?"
+assert_contains "and the expired fleet disable is cleared and logged" \
+  '"detail":"fleet disable expired"' "$(cat "$a_log" 2>/dev/null)"
+assert_contains "carrying fleet scope" '"scope":"fleet"' "$(cat "$a_log" 2>/dev/null)"
+assert_contains "and reporting the delete as ok" '"fleet_flag":"ok"' "$(cat "$a_log" 2>/dev/null)"
+assert_eq "the fleet flag is actually gone, not just locally forgotten" "0" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
 
 # --this-node is a modifier on --disable/--enable only.
 this_status_out="$(run_node "$a_home" agent-cycle.sh --status --this-node 2>&1)"

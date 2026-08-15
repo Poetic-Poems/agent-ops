@@ -1994,6 +1994,16 @@
   // answer, so they get one column each, with a dash for whatever the event
   // does not carry — the Repo cell is the repository whether or not the
   // other two are known.
+  // `disabled`/`enabled` carry `scope` ("node" or "fleet", issue #426) — the
+  // one thing their bare event name cannot say, and the question a reader
+  // scanning the log tail asks first: did this stop one node or the whole
+  // fleet? Folded into the badge itself rather than a new column, since only
+  // these two events carry it.
+  function eventBadgeText(e) {
+    var t = e.event;
+    if ((e.event === "disabled" || e.event === "enabled") && e.scope) t += " · " + e.scope;
+    return t;
+  }
   function logPanel() {
     var evs = D.log_tail || [];
     if (nodeFilter) evs = evs.filter(function (e) { return e.node === nodeFilter; });
@@ -2002,9 +2012,14 @@
       text: nodeFilter ? "No log events from " + nodeFilter + "." : "No log events."}));
     var rows = evs.map(function (e) {
       var extra = e.reason || e.detail || e.cause || e.title || e.pr_url || e.resume_at || "";
+      // A fleet-scoped disable/enable that failed to reach the fleet flag is
+      // exactly the case an operator must not miss — the local switch changed
+      // but the rest of the fleet did not follow, so it earns a place in
+      // Detail rather than staying a fact only the raw log carries.
+      if (e.fleet_flag === "failed") extra = (extra ? extra + " — " : "") + "fleet flag: failed";
       return el("tr", {}, [
         el("td", {class:"muted mono", text: fmtTime(e.ts)}),
-        el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: e.event})),
+        el("td", {}, el("span", {class:"badge " + (EVENT_CLASS[e.event]||"b-grey"), text: eventBadgeText(e)})),
         el("td", {class:"mono muted", text: e.node || "—"}),
         el("td", {class:"mono muted", text: e.repo ? e.repo.split("/")[1] : "—"}),
         el("td", {class:"mono muted", text: eventActor(e) || "—"}),
