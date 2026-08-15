@@ -3390,17 +3390,21 @@ runs unattended.
    bytes back into a single argv element and leave the threshold where it
    was. Their tests drive each build with a body past the cap.
 
-   Two sites outside every prior item's enumeration still deliver a
+   Three sites outside every prior item's enumeration still deliver a
    fleet-state aggregate in argv, and are filed rather than fixed:
    `lib/handoff.sh`'s `handoff_answer_events`, which takes a repo's whole
-   reviews/comments arrays as `--argjson` (TD-PPagop-26081501); and
+   reviews/comments arrays as `--argjson` (TD-PPagop-26081501);
    `agent-cycle.sh`'s own invocation of
    `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
    whole `$violations` argument as a single argv element to the script's own
    `execve`, a cap this requirement's `jq`-specific framing had not considered
-   until TD-PPagop-26081406 found it (TD-PPagop-26081502). Those two items are
-   the outstanding residue; this requirement claims no more than the sites
-   named above.
+   until TD-PPagop-26081406 found it (TD-PPagop-26081502); and
+   `publish-dashboard.sh`'s own per-repo `prs_json` fold and its
+   queue-answers merge, both upstream of the `github_json` build
+   TD-PPagop-26081503 converted and still carrying the fleet-wide PR index
+   into `jq` as `--argjson` (TD-PPagop-26081506). Those three items are the
+   outstanding residue; this requirement claims no more than the sites named
+   above.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is
