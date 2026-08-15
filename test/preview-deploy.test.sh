@@ -192,7 +192,13 @@ fi
 { printf 'HTTP/2 %s\r\n' "$code"
   [[ -n "$location" ]] && printf 'location: %s\r\n' "$location"
   printf '\r\n'; } > "${dump:-/dev/null}"
-[[ -n "$out" ]] && printf 'the application' > "$out"
+if [[ -n "$out" ]]; then
+  if [[ "${STUB_BODY_BINARY:-}" == "1" ]]; then
+    printf '\x00\x01\x02binarydata' > "$out"
+  else
+    printf '%s' "${STUB_BODY:-the application}" > "$out"
+  fi
+fi
 printf '%s' "$code"
 STUB
 chmod +x "$stub_bin/curl"
@@ -299,6 +305,31 @@ run_check STUB_FIRST_CODE=307 STUB_FIRST_LOCATION="$preview_url/poems"
 assert_eq "an application's own redirect is followed, not mistaken for the wall" "0" "$rc"
 assert_contains "and shown" "/poems" "$out"
 
+# --- --fetch: route evidence, without leaking the secret -----------------------
+# This is the tier D19's roadmap entry and issue #460 both call "served": once
+# the readiness check above has confirmed the preview answers past the wall,
+# --fetch prints status, headers and body for whatever routes the diff
+# touched — proof that a preview a human would otherwise have to click through
+# in a browser (poetic-fiddle#319's CSP defect) is readable from here instead.
+
+run_check -- --fetch /poems
+assert_eq "a preview with --fetch still passes the readiness check" "0" "$rc"
+assert_contains "and prints route evidence" "route evidence:" "$out"
+assert_contains "naming the fetched route" "$preview_url/poems" "$out"
+assert_contains "the response status" "status: 200" "$out"
+assert_contains "the response headers" "HTTP/2 200" "$out"
+assert_contains "the response body" "the application" "$out"
+assert_lacks "the bypass secret never appears in the output" "$secret" "$out"
+
+run_check STUB_BODY_BINARY=1 -- --fetch /
+assert_eq "a binary body still passes" "0" "$rc"
+assert_contains "and is noted as binary rather than dumped" "binary" "$out"
+assert_lacks "without the raw bytes" $'\x01\x02' "$out"
+
+run_check STUB_BODY="$(printf 'x%.0s' $(seq 1 9000))" -- --fetch /
+assert_eq "an oversized body still passes" "0" "$rc"
+assert_contains "and is noted as truncated" "truncated" "$out"
+
 # --- Nothing to check is never a pass -----------------------------------------
 
 run_check STUB_DEPLOYMENTS='[]'
@@ -395,6 +426,16 @@ fi
 for prompt in implementor reviewer; do
   assert_contains "prompts/$prompt.md invokes the check through AGENT_OPS_ROOT" \
     "$invocation" "$(cat "$SCRIPT_DIR/prompts/$prompt.md")"
+done
+
+# --fetch (issue #460): both prompts direct a stage to read what a diff-touched
+# route actually served, not just that the preview answered — on the same
+# invocation as the readiness check, so it costs no second network round trip.
+# shellcheck disable=SC2016
+fetch_invocation='"$AGENT_OPS_ROOT/scripts/preview-deploy.sh" --wait 180 --fetch <path> [--fetch <path> ...]'
+for prompt in implementor reviewer; do
+  assert_contains "prompts/$prompt.md invokes --fetch for the diff-touched routes" \
+    "$fetch_invocation" "$(cat "$SCRIPT_DIR/prompts/$prompt.md")"
 done
 
 # --- Arguments ----------------------------------------------------------------
