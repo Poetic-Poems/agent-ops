@@ -5755,7 +5755,13 @@ implements.
     to — and `complete_handoff` is recorded on the resulting
     `enabler-examined` event as `"failed"` rather than a flip word, so a
     reader can tell "the gate refused it" apart from "there was nothing to
-    hand off" and from an actual flip.
+    hand off" and from an actual flip. An unreadable required-check list also
+    runs requirement 31c's own node-health streak (TD-PPagop-26081404) here,
+    through the same `review_gate_escalate_unreadable_streak` helper the
+    Reviewer's own handoff calls (TD-PPagop-26081603): a run of consecutive
+    unreadable-checks failures escalates to one `review-gate-checks-degraded`
+    event whether it lands on this path or that one, rather than only the
+    latter.
 
     Requirement 31b runs on this path too, and it is not decoration here: an
     `already` is exactly what a stalled review round answers, because that PR was
@@ -11069,7 +11075,12 @@ pull request, run the ones the change touches and any it could regress.
    never called at all (agent-ops#440, PR #433); and on an item whose `stage` is
    `"reviewer"` but whose gate is `dirty` or whose required checks are unreadable
    is refused with a `warning` naming the gate's own finding, again with no
-   `pr-ready`.
+   `pr-ready`. For the unreadable-checks case, also drive this node's own
+   streak past `review_gate_unknown_streak_after` (TD-PPagop-26081603) and
+   assert the same escalation requirement 8d pins for the Reviewer's own
+   handoff: one `review-gate-checks-degraded` event naming the count, in
+   place of a second per-item `warning`, with `complete_handoff` still
+   recorded as `"failed"` on the `enabler-examined` event.
 8e-i. **A stage that says nothing still names its pull request (requirement
    9).** `test/handoff.test.sh` passes its `pr_url_for_branch` assertions: an
    open PR on the claimed branch is found and its URL returned; a branch with

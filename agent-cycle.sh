@@ -3354,6 +3354,33 @@ log_reviewer_handback() {
   fi
 }
 
+# review_gate_escalate_unreadable_streak
+# TD-PPagop-26081603: the streak-and-escalate half of TD-PPagop-26081404's
+# node-health bookkeeping, factored out so both call sites that run
+# `handoff_complete_review` and can see `gate.checks_unreadable: true` —
+# the Reviewer's own "ready" handoff below, and the Enabler's
+# `complete_handoff` recovery path in `maybe_run_enabler` — escalate a run
+# of consecutive unreadable-checks failures the same way, rather than only
+# the former. Prints `review_gate_unknown_streak_verdict`'s own verdict JSON
+# (empty below `review_gate_unknown_streak_after` consecutive failures) so a
+# caller that also needs to know whether the threshold was reached — the
+# Reviewer's own site logs a different per-item warning when it was not —
+# does not have to recompute it. Reads `review_gate_unknown_streak_after`,
+# `node_name` and `log_file` as globals, same as every other Script-
+# bookkeeping helper in this file. Logs `review-gate-checks-degraded` (and
+# its stderr echo) at most once per streak — `review_gate_degraded_since` is
+# the dedup.
+review_gate_escalate_unreadable_streak() {
+  local streak_json streak_count
+  streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
+  if [[ -n "$streak_json" ]] && ! review_gate_degraded_since "$(jq -r '.first_ts // ""' <<<"$streak_json")" "$node_name" < "$log_file"; then
+    log_event "review-gate-checks-degraded" "$streak_json"
+    streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
+    echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
+  fi
+  printf '%s' "$streak_json"
+}
+
 # approver_post_or_warn PR_URL EVENT BODY TOKEN
 # `approver_post_review` (lib/approver.sh) returns 0 only on a real 2xx from
 # GitHub, and its own header is explicit that a caller must not read a failure
@@ -4261,9 +4288,11 @@ $(jq . <<<"$input")
               e_review_safe="$(jq -r '.safe // false' <<<"$e_review_json")"
 
               # Same node-health bookkeeping as the Reviewer's own handoff
-              # site — TD-PPagop-26081404's streak, not duplicated here, since
-              # only that site holds a per-item control-flow shape (`exit 0`)
-              # the escalation depends on; this site just names the fault.
+              # site — TD-PPagop-26081404's streak, via the shared
+              # `review_gate_escalate_unreadable_streak` (TD-PPagop-26081603),
+              # so a run of consecutive unreadable-checks failures escalates
+              # the same way here as it does at the Reviewer's own site,
+              # rather than only naming the fault per item.
               e_gate_checks_ok=true
               [[ "$e_gate_checks_unreadable" == "true" ]] && e_gate_checks_ok=false
               log_event "review-gate-checks-read" "$(jq -nc --argjson ok "$e_gate_checks_ok" '{ok: $ok}')"
@@ -4273,6 +4302,7 @@ $(jq . <<<"$input")
                   e_finding="$e_gate_reason"
                 elif [[ "$e_gate_checks_unreadable" == "true" ]]; then
                   e_finding="its required checks could not be confirmed: $e_gate_reason"
+                  review_gate_escalate_unreadable_streak >/dev/null
                 elif [[ "$e_ck_word" == "dirty" ]]; then
                   e_finding="$e_ck_reason"
                 else
@@ -7471,20 +7501,17 @@ if [[ "$rev_status" == "ready" ]]; then
       # on. Once this node's own log shows `review_gate_unknown_streak_after`
       # of these in a row, one louder escalation event replaces the per-item
       # warning instead of piling another one on top of it — once per streak,
-      # not once per item past the threshold: `review_gate_degraded_since` is
-      # the same already-escalated dedup `crash_loop_escalated_since` gives
+      # not once per item past the threshold: `review_gate_degraded_since`,
+      # inside `review_gate_escalate_unreadable_streak` (TD-PPagop-26081603),
+      # is the same already-escalated dedup `crash_loop_escalated_since` gives
       # requirement 2.7's crash loop, keyed on the run's own `first_ts`, so an
       # already-escalated run logs nothing further here (the bookkeeping event
       # above still records the failure, and the handback below still refuses
       # the handoff) until a successful read starts a new streak.
-      streak_json="$(review_gate_unknown_streak_verdict "$review_gate_unknown_streak_after" "$node_name" < "$log_file")"
+      streak_json="$(review_gate_escalate_unreadable_streak)"
       if [[ -z "$streak_json" ]]; then
         log_event "warning" "$(jq -nc --arg u "$impl_pr_url" --arg d "$gate_reason" \
           '{detail: ("this node could not read " + $u + "'\''s required checks, so the handoff was refused rather than trusted on an unread check list: " + $d), pr_url: $u}')"
-      elif ! review_gate_degraded_since "$(jq -r '.first_ts // ""' <<<"$streak_json")" "$node_name" < "$log_file"; then
-        log_event "review-gate-checks-degraded" "$streak_json"
-        streak_count="$(jq -r '.count // "?"' <<<"$streak_json")"
-        echo "agent-cycle: WARNING — node $node_name has failed to read required checks $streak_count times in a row (review-gate); see log.jsonl event review-gate-checks-degraded" >&2
       fi
       log_reviewer_handback \
         "the Reviewer reported ready, but $impl_pr_url's required checks could not be confirmed: $gate_reason" \
