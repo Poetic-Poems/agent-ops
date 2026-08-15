@@ -31,6 +31,8 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=lib/handoff.sh
+. "$SCRIPT_DIR/lib/handoff.sh"
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -345,9 +347,12 @@ assert_eq "an unreadable refinements/policy argument degrades to exempt, not to 
 # a restricted cycle; a gate that also counts the finishing sources makes it
 # reachable, and a fallback reading only the arrays would answer it by
 # starting fresh work through a full human gate — the one thing back-pressure
-# exists to stop.
-bp_repos="$(jq -c 'map(.sources = ["review-feedback","merge-conflicts","abandoned-drafts"]
-                      | .issues = [] | .tech_debt = [])' <<<"$repos_with_security")"
+# exists to stop. The narrowing itself is lib/handoff.sh's
+# handoff_narrow_repos_to_finishing_sources (sourced above, issue #431) —
+# `repos_with_security`'s own `sources` carries no `dequeued`, so that is all
+# the narrowing below leaves behind.
+bp_repos="$(jq -c 'map(.issues = [] | .tech_debt = [])' \
+  <<<"$(handoff_narrow_repos_to_finishing_sources "$repos_with_security")")"
 assert_eq "a band narrowed out of sources is not a band the fallback may pick from" "null" \
   "$(fallback_select_candidate "$bp_repos" "m")"
 assert_eq "…and the same repo with the token restored picks it again" "security" \

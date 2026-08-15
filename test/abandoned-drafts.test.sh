@@ -315,12 +315,14 @@ assert_eq "restriction leaves only the finishing sources present in this fixture
 assert_eq "security and fresh sources are narrowed away — a full gate means finish, don't start" \
   "0" "$(restrict | jq '[.[].sources[] | select(. == "security" or . == "tech-debt" or . == "issues")] | length')"
 
-# The count that decides stand-down vs restrict: all three finishing sources,
-# across all repos.
-assert_eq "finishing candidates count review-feedback, merge-conflicts AND abandoned-drafts across all repos" \
-  "1" "$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
+# The count that decides stand-down vs restrict: all four finishing sources,
+# across all repos. This fixture's own repos carry no `dequeued` entries, so
+# `.dequeued[]?` contributes nothing here — it is exercised in its own test —
+# but the expression itself matches agent-cycle.sh's `finishing_waiting` count.
+assert_eq "finishing candidates count review-feedback, merge-conflicts, dequeued AND abandoned-drafts across all repos" \
+  "1" "$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
 assert_eq "with nothing waiting to finish, the count is 0 and the cycle stands down as before" \
-  "0" "$(jq '[.[] | .review_feedback = [] | .merge_conflicts = [] | .abandoned_drafts = []] | [.[].review_feedback[]?, .[].merge_conflicts[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
+  "0" "$(jq '[.[] | .review_feedback = [] | .merge_conflicts = [] | .dequeued = [] | .abandoned_drafts = []] | [.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered")"
 
 # --- The gatherer itself fails safe ---
 

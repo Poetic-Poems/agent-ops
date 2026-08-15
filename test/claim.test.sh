@@ -176,7 +176,7 @@ assert_eq "a raced file claim has exactly one winner" "0 3" \
 
 # --- PR-level claim excludes two different item refs on the same PR (issue #238) --
 # agent-cycle.sh's claim loop takes this second, PR-keyed file claim alongside
-# the item claim for the three finishing sources — pr-77-review-501 and
+# the item claim for the four finishing sources — pr-77-review-501 and
 # pr-77-conflict-abcdef012345 are exactly the shape of two different item refs
 # (a review round; a conflict scoped to a head SHA) a Co-Ordinator could select
 # for the *same* pull request. Each wins its own item claim — different keys,
