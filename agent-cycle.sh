@@ -3425,6 +3425,31 @@ APPROVER_ESC_BODY
   fi
 }
 
+# approver_stage_complexity PR_URL PRE_REVIEW_COMPLEXITY TRIVIAL
+# Requirement 8b: the Approver's tier is resolved from the complexity as it
+# stands *after* the Reviewer stage has run, not the value requirement 8a
+# resolved before it. The Reviewer may correct a `complexity:*` label it
+# finds plainly wrong for the diff, in either direction (prompts/reviewer.md
+# step 4, requirement 30) — a correction that lands on the pull request after
+# PRE_REVIEW_COMPLEXITY (the caller's `rev_complexity`) was already computed
+# and the Reviewer itself already launched at that grade. This re-reads the
+# label now and folds it through the same raise-never-lower comparison
+# `reviewer_complexity` (lib/cycle-state.sh) already applies at requirement
+# 8a, with PRE_REVIEW_COMPLEXITY standing in for the Implementor's own grade:
+# the Approver's tier can rise on a mid-cycle correction, but never settles
+# below what the round was already reviewed at. Best-effort, the same as
+# requirement 8a's own read: an unreadable label contributes nothing and the
+# result falls back to PRE_REVIEW_COMPLEXITY unchanged.
+approver_stage_complexity() {
+  local pr_url="$1" pre="$2" trivial="${3:-0}"
+  local grades=()
+  if [[ -n "$pr_url" ]]; then
+    mapfile -t grades < <(gh pr view "$pr_url" --json labels \
+      --jq '.labels[].name | select(startswith("complexity:")) | sub("^complexity:"; "")' 2>/dev/null || true)
+  fi
+  reviewer_complexity "$pre" "$trivial" ${grades[@]+"${grades[@]}"}
+}
+
 # run_approver_stage PR_URL COMPLEXITY
 # D18 WI-5 (requirement 8b): the tiered Approver, engaged once per
 # Reviewer-ready round, for every repository whose merge_autonomy is
@@ -7605,7 +7630,14 @@ if [[ "$rev_status" == "ready" ]]; then
   # already-ready pull request, not a reason to withhold the pr-ready log or
   # the claim release, exactly as a human's own CHANGES_REQUESTED never
   # withheld either of those — so this runs after both, never before.
-  run_approver_stage "$impl_pr_url" "$rev_complexity"
+  #
+  # The tier is resolved now, not from `rev_complexity` as computed for the
+  # Reviewer at requirement 8a: the Reviewer stage that just ran may have
+  # corrected the PR's `complexity:*` label (prompts/reviewer.md step 4), and
+  # that correction must reach this same round's Approver, not just the next
+  # one (agent-ops#470).
+  approver_complexity="$(approver_stage_complexity "$impl_pr_url" "$rev_complexity" "$impl_trivial")"
+  run_approver_stage "$impl_pr_url" "$approver_complexity"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —
