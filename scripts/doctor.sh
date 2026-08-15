@@ -188,6 +188,15 @@ fi
 # top-level value is still caught even where every repo happens to override
 # it away today.
 approver_app_id="$(cfg '.approver_app_id // ""')"
+# D18 WI-5 (agent-ops#408): the Approver stage itself reads `approver_model_default`
+# empty as "disabled" and simply skips (no App review, no blocked pull
+# request — see lib/approver.sh's own header) rather than failing anything at
+# runtime, the same graceful-degrade `enabler_model` empty already gets. But a
+# level above `human` configured with no Approver model at all is the same
+# nobody-can-act-on-it configuration `approver_app_id`'s own check exists to
+# catch, so it is checked here too, at startup, where an operator will
+# actually see it — not discovered later as a run of silent warnings.
+approver_model_default_cfg="$(cfg '.approver_model_default // ""')"
 merge_autonomy_sources="$(jq -r '
   [{label: "merge_autonomy", level: (.merge_autonomy // "human")}]
   + [(.repos // [])[] | select(has("merge_autonomy"))
@@ -202,6 +211,8 @@ if [[ -n "$merge_autonomy_sources" ]]; then
     fi
     if [[ "$ma_level" != "human" && -z "$approver_app_id" ]]; then
       fail "$ma_label is \"$ma_level\" with no approver_app_id configured — every level above human needs the Approver identity to hold review and merge rights (D18)"
+    elif [[ "$ma_level" != "human" && -z "$approver_model_default_cfg" ]]; then
+      fail "$ma_label is \"$ma_level\" with no approver_model_default configured — the Approver stage disables itself when it is empty, so no level above human would ever gain an App review (D18 WI-5)"
     else
       ok "$ma_label is \"$ma_level\""
     fi
@@ -217,8 +228,10 @@ fi
 # and "works, minting as the wrong identity" is the outcome D18 exists to
 # prevent. A credential absent from this environment is a warn, and only
 # while some configured level is above human: the wrapper fails closed (exit
-# 2, gate unreadable) and the Approver stage must hand back, so the pipeline
-# still works — but the operator who raised the level is waiting on
+# 2, gate unreadable) and the Approver stage (D18 WI-5, lib/approver.sh)
+# simply skips this pull request's App review rather than blocking it — the
+# human still merges regardless, so the pipeline still works exactly as it
+# did at `human` — but the operator who raised the level is waiting on
 # approvals that will never come, which is exactly the surprise-later shape
 # a warn is for.
 env_app_id="${PULLWRIGHT_APPROVER_APP_ID:-}"
@@ -303,6 +316,9 @@ done < <(jq -r '
     {k: "implementor_model_trivial",  v: .implementor_model_trivial},
     {k: "reviewer_model_default",     v: .reviewer_model_default},
     {k: "reviewer_model_complex",     v: .reviewer_model_complex},
+    {k: "approver_model_default",     v: .approver_model_default},
+    {k: "approver_model_complex",     v: .approver_model_complex},
+    {k: "approver_model_critical",    v: .approver_model_critical},
     {k: "enabler_model",              v: .enabler_model},
     {k: "review.model",               v: .review.model}
   ] | .[] | select((.v // "") != "") | [.k, .v] | @tsv' "$config_file")
@@ -315,7 +331,7 @@ state_dir="$(cfg '.state_dir')"
 [[ "$state_dir" == "~"* ]] && state_dir="$HOME${state_dir:1}"
 
 missing_prompt=0
-for prompt in coordinator implementor reviewer enabler project-reviewer; do
+for prompt in coordinator implementor reviewer approver enabler project-reviewer; do
   if [[ ! -r "$SCRIPT_DIR/prompts/$prompt.md" ]]; then
     fail "prompts/$prompt.md is missing or unreadable"
     missing_prompt=1
