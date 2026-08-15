@@ -501,7 +501,7 @@ toggle_status_report() {
 # `fleet_flag_fetch`'s own default and stays right for `fleet/disabled.json`
 # and the limit flag. A flag whose risk profile inverts once something arms a
 # behaviour-affecting decision on it needs to tell that case apart from a
-# confirmed-clear 404 — `fleet_flag_fetch_status` below is what such a caller
+# clear-flag 404 — `fleet_flag_fetch_status` below is what such a caller
 # reads instead (`merge_autonomy_kill_state`, TD-PPagop-26081507).
 #
 # `TOGGLE_GH` substitutes for `gh` in the tests, like CLAIM_GH/STATE_SYNC_GH.
@@ -531,8 +531,10 @@ fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 #   status="${combined%%$'\t'*}"
 #   raw="${combined#*$'\t'}"
 # STATUS is one of:
-#   clear        — no state repo configured, or a confirmed 404 (the flag
-#                  does not exist)
+#   clear        — no state repo configured, or a 404: the flag file does
+#                  not exist — or, indistinguishably at the contents API,
+#                  the repo itself is missing or invisible to this token,
+#                  which therefore still reads as clear (TD-PPagop-26081602)
 #   live         — the fetch against the state repo just succeeded
 #   cached       — the state repo was unreachable; RAW is the last
 #                  successfully fetched copy

@@ -99,6 +99,9 @@ merge_autonomy_configured_level() {
 # lever, and is the one caller of fleet_flag_fetch_status in this codebase
 # that needs the distinction — see its own comment in lib/toggle.sh for why
 # fleet_disabled_state and the limit flag are unaffected and still fail open.
+# "Unreachable" means a transport-level failure: a repo-level 404 (the state
+# repo missing, or invisible to this token) is indistinguishable from a clear
+# flag at the contents API and still fails open — TD-PPagop-26081602.
 # present-but-garbage reads as set, not clear, the same as every other flag
 # lib/toggle.sh evaluates.
 merge_autonomy_kill_state() {

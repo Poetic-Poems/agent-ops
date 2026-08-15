@@ -1382,14 +1382,22 @@ runs unattended.
    `_delete`, the same CAS-guarded contents-API mechanism `fleet/disabled.json`
    already uses) under its own flag name, so a peer with an unreachable state
    repo falls back the same way requirement 2.3a's own flag does when it has a
-   cached copy — to the last-fetched cache. Unlike requirement 2.3a's flag, an
-   unreachable repo with *no* cached copy at all reads as killed, not clear
+   cached copy — to the last-fetched cache. Unlike requirement 2.3a's flag, a
+   repo unreachable at the transport level (DNS, connection refused, a 5xx)
+   with *no* cached copy at all reads as killed, not clear
    (TD-PPagop-26081507): `fleet_flag_fetch_status` is what lets
-   `merge_autonomy_kill_state` tell that case apart from a confirmed-clear
-   404, which `lib/toggle.sh`'s plain `fleet_flag_fetch` deliberately cannot —
+   `merge_autonomy_kill_state` tell that case apart from a clear-flag 404,
+   which `lib/toggle.sh`'s plain `fleet_flag_fetch` deliberately cannot —
    the Design decisions entry on this switch explains why this one flag's
    fail-closed direction is correct where `fleet/disabled.json`'s and the
-   usage-limit flag's fail-open one still is.
+   usage-limit flag's fail-open one still is. One 404 is not the flag's own:
+   the contents API answers "this repository does not exist, or this token
+   cannot see it" with the same `404 Not Found` as "the flag file does not
+   exist", so a misconfigured `state_repo` slug or a token whose scopes lost
+   access still reads as clear, and fails open (TD-PPagop-26081602 — open,
+   to resolve with or before any repository's `merge_autonomy` rises above
+   `human`; until then `scripts/doctor.sh`'s `check_repo_access` reporting
+   the state repo unreachable-or-invisible is the operator-run mitigation).
 
    Managed by `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
    (requirement 12), on the same terms as `--disable`/`--enable` where they
@@ -9007,8 +9015,10 @@ What exists, and the requirements each part answers to:
     vocabulary (`_toggle_eval`) so a caller already speaking it needs no
     second one; unlike every other fleet-flag reader here it uses
     `fleet_flag_fetch_status` rather than plain `fleet_flag_fetch`, so it can
-    tell a confirmed-clear 404 apart from an unreachable repo with no cached
-    copy and resolve the latter to `disabled` (TD-PPagop-26081507).
+    tell a clear-flag 404 apart from a transport-unreachable repo with no
+    cached copy and resolve the latter to `disabled` (TD-PPagop-26081507; a
+    repo-level 404 — the state repo missing or invisible to the token —
+    still reads as clear, TD-PPagop-26081602).
     `merge_autonomy_effective_level`
     combines both: `human` whenever the kill switch is set or unreadable,
     the configured level otherwise — the one function a future
@@ -12187,14 +12197,29 @@ requirements above, which state only what is.
   as long as the outage lasted. TD-PPagop-26081507 resolved it
   asymmetrically instead: `lib/toggle.sh`'s `fleet_flag_fetch_status` tells
   `merge_autonomy_kill_state` apart the one case `fleet_flag_fetch` itself
-  still can't — a confirmed-clear 404 from an unreachable repo with no cached
+  still can't — a clear-flag 404 from a transport-unreachable repo with no cached
   copy — and only the no-cache case now resolves to `human`. An established
   node with a cached copy keeps using it through a transient outage exactly
   as before, so the fail-closed blast radius is confined to fresh containers
   during an outage: the one population that cannot know whether an operator
   has pulled the lever. `fleet_flag_fetch` itself, and every other caller of
   it (`fleet/disabled.json`, the usage-limit flag), is unchanged — this
-  asymmetry is this one flag's alone.
+  asymmetry is this one flag's alone. One residual fail-open case survives,
+  knowingly (found in PR #448's review): "unreachable" above means a
+  transport-level failure, because the contents API answers a repo-level
+  404 — the state repo missing, or invisible to this token — with the same
+  `404 Not Found` as a missing flag file, so a misconfigured `state_repo`
+  slug or a token whose scopes lost access still resolves the switch as
+  clear on exactly the fresh-node population the asymmetry protects.
+  Closing it means probing `repos/<state_repo>` on the 404 path to tell the
+  two apart — cheap against the REST budget, but the 404 path is the
+  switch's steady state and the probe's own failure modes need the same
+  explicit classification as the fetch's, a design decision in its own
+  right and out of TD-PPagop-26081507's scope. It is filed as
+  TD-PPagop-26081602, to resolve with or before any repository's
+  `merge_autonomy` rises above `human`; until then `scripts/doctor.sh`'s
+  `check_repo_access` reporting the state repo unreachable-or-invisible is
+  the operator-run mitigation.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
   end-state is exactly one Approver App identity governing the whole
   installation (§6 — the same fact that denies the kill switch a
