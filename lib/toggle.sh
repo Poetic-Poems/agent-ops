@@ -436,6 +436,13 @@ toggle_status_report() {
 #   present-but-garbage → disabled, exactly as for the local record: the flag
 #     exists because something meant to stop the fleet.
 #
+# That "fail open, unreachable-with-no-cache included" direction is
+# `fleet_flag_fetch`'s own default and stays right for `fleet/disabled.json`
+# and the limit flag. A flag whose risk profile inverts once something arms a
+# behaviour-affecting decision on it needs to tell that case apart from a
+# confirmed-clear 404 — `fleet_flag_fetch_status` below is what such a caller
+# reads instead (`merge_autonomy_kill_state`, TD-PPagop-26081507).
+#
 # `TOGGLE_GH` substitutes for `gh` in the tests, like CLAIM_GH/STATE_SYNC_GH.
 # An empty state-repo slug turns every function here into a quiet no-op: with
 # no state repository this is a single-node operation and the local switch
@@ -450,28 +457,60 @@ fleet_flag_path() { printf 'fleet/%s.json' "$1"; }
 # Where the last successfully fetched copy of a flag lives locally.
 fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 
-# fleet_flag_fetch STATE_REPO STATE_DIR NAME
-# Print the flag's raw bytes, or nothing when it is clear. Always returns 0;
-# the caller cannot tell "clear" from "unreachable with no cache", which is
-# the point — both read as "nothing stands you down" (see the header for why
-# that is safe).
-fleet_flag_fetch() {
+# fleet_flag_fetch_status STATE_REPO STATE_DIR NAME
+# fleet_flag_fetch's own body, printing STATUS<TAB>RAW instead of RAW alone —
+# STATUS<TAB>RAW travels as one string on stdout, the same compound-return
+# idiom lib/review-gate.sh's own functions use, so a caller reads it with
+# `IFS=$'\t' read -r status raw <<<"$combined"`. STATUS is one of:
+#   clear        — no state repo configured, or a confirmed 404 (the flag
+#                  does not exist)
+#   live         — the fetch against the state repo just succeeded
+#   cached       — the state repo was unreachable; RAW is the last
+#                  successfully fetched copy
+#   unreachable  — the state repo was unreachable and there is no cached
+#                  copy at all
+# fleet_flag_fetch is a thin wrapper over this that keeps its own RAW-only
+# contract byte-for-byte unchanged for its three existing callers
+# (fleet_disabled_state, fleet_limit_resume_at, fleet_limit_publish), which by
+# design cannot tell "clear" from "unreachable" apart — see the header for why
+# that is safe for them. merge_autonomy_kill_state is the one caller that
+# needs the distinction (TD-PPagop-26081507): "clear" and "unreachable" both
+# print an empty RAW, but only "unreachable" must make the kill switch fail
+# closed.
+fleet_flag_fetch_status() {
   local repo="$1" state_dir="$2" name="$3" cache resp raw
-  [[ -n "$repo" ]] || return 0
+  [[ -n "$repo" ]] || { printf 'clear\t'; return 0; }
   cache="$(fleet_cache_file "$state_dir" "$name")"
   mkdir -p "${cache%/*}" 2>/dev/null || true
   if resp="$(_fleet_gh api "repos/$repo/contents/$(fleet_flag_path "$name")?ref=main" 2>"$cache.err")"; then
     raw="$(jq -r '.content // ""' <<<"$resp" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null || true)"
     printf '%s' "$raw" > "$cache"
-    printf '%s' "$raw"
+    printf 'live\t%s' "$raw"
     return 0
   fi
   if grep -qiE 'HTTP 404|Not Found' "$cache.err" 2>/dev/null; then
     rm -f "$cache"
+    printf 'clear\t'
     return 0
   fi
-  [[ -f "$cache" ]] && cat "$cache"
+  if [[ -f "$cache" ]]; then
+    printf 'cached\t%s' "$(cat "$cache")"
+  else
+    printf 'unreachable\t'
+  fi
   return 0
+}
+
+# fleet_flag_fetch STATE_REPO STATE_DIR NAME
+# Print the flag's raw bytes, or nothing when it is clear. Always returns 0;
+# the caller cannot tell "clear" from "unreachable with no cache", which is
+# the point — both read as "nothing stands you down" (see the header for why
+# that is safe). fleet_flag_fetch_status above is the same fetch for the one
+# caller that does need the distinction.
+fleet_flag_fetch() {
+  local combined
+  combined="$(fleet_flag_fetch_status "$1" "$2" "$3")"
+  printf '%s' "${combined#*$'\t'}"
 }
 
 # fleet_flag_write STATE_REPO NAME BODY MESSAGE
