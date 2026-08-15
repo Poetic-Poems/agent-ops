@@ -31,10 +31,15 @@
 #      author, logs a `warning` naming that (tech-debt/TD-PPagop-26081001.md):
 #      nothing else will ever ask this human, so this is the one `skip`
 #      reason worth surfacing rather than passing over in silence.
-#   2. Where something *is* CHANGES_REQUESTED-blocking it, but the round has
-#      already been answered by a marked Implementor reply, repeats
-#      requirement 31b's re-request (`confirm_review_requested`) — the crash
-#      recovery this section explains.
+#   2. Where something *is* CHANGES_REQUESTED-blocking it, the round has
+#      already been answered by a marked Implementor reply, and the pull
+#      request's checks are green, repeats requirement 31b's re-request
+#      (`confirm_review_requested`) — the crash recovery this section
+#      explains. An answered round whose checks are not green is a silent
+#      no-op (agent-ops#338): the Reviewer's own `ready` verdict this call
+#      stands in for carries the same green precondition (requirement 31c),
+#      and re-requesting on its strength alone would ask a human to look at
+#      something whose next actor is still the pipeline.
 #   3. Where the pull request is approved, mergeable and green, and has been
 #      since before `human_nudge_idle_hours` ago, posts one nudge comment
 #      naming `enabler_assignee` — requirement 38c — unless one is there
@@ -217,6 +222,28 @@ _sweep_round_answered() {
   handoff_round_answered "$blocking_at" "$reviews" "$issue_comments"
 }
 
+# _sweep_checks_green PR_JSON
+# True (exit 0) iff PR_JSON's statusCheckRollup is genuinely green — the same
+# test the idle nudge has always applied (requirement 38c), extracted so the
+# self-heal below can share it exactly rather than drift from it (agent-ops#338).
+#
+# Vacuously "green" on an empty rollup is exactly the wrong answer — that is
+# CI not having run at all, not CI having passed — so an empty rollup is
+# excluded explicitly rather than trusted through `all`. A `SKIPPED`
+# `CheckRun` (a job gated off by a `paths:` filter or an `if:`) is not a
+# failure either — every target repository carries at least one on every
+# pull request (agent-ops#384) — so it is accepted alongside `SUCCESS` and
+# `NEUTRAL`. `CheckRun` has no `.state` field, so the `.state == "SUCCESS"`
+# arm is `StatusContext`'s alone; `CheckRun` is judged by `.conclusion` only.
+_sweep_checks_green() {
+  local pr_json="$1"
+  jq -e '(.statusCheckRollup // []) as $c
+         | ($c | length) > 0
+         and ($c | all(.conclusion == "SUCCESS" or .conclusion == "NEUTRAL"
+                       or .conclusion == "SKIPPED" or .state == "SUCCESS"))' \
+    <<<"$pr_json" >/dev/null 2>&1
+}
+
 # Nothing to request or nudge without someone to name — the same guard
 # config_enabler_assignee_ok already enforces at startup when enabler_model is
 # set, and the same silent no-op an Enabler disabled outright already is.
@@ -354,7 +381,17 @@ $mq_marker"
   # between the Implementor's push and that verdict can lose. Unconditional,
   # like `ensure_human_reviewer` above — not gated on `idle_hours`, which
   # governs the nudge alone.
-  if [[ "$review_decision" == "CHANGES_REQUESTED" ]] && [[ -n "$mq_number" ]]; then
+  #
+  # Gated on `_sweep_checks_green` too (agent-ops#338): the self-heal replays
+  # only half of `agent-cycle.sh`'s own `confirm_review_requested` call, whose
+  # ordinary call site is the Reviewer's `ready` verdict — a verdict that
+  # itself carries a hard green precondition (requirement 31c). Re-requesting
+  # a human's review on a round that is answered but red asks them to look at
+  # something whose next actor is still the pipeline, not them; a not-green
+  # pull request is therefore a silent no-op here, exactly as `_sweep_round_answered`
+  # is never even asked in that case.
+  if [[ "$review_decision" == "CHANGES_REQUESTED" ]] && [[ -n "$mq_number" ]] \
+      && _sweep_checks_green "$pr_json"; then
     case "$(_sweep_round_answered "$mq_owner/$mq_repo" "$mq_number")" in
       answered)
         rerequest_state="$(confirm_review_requested "$pr_url")" || true
@@ -421,19 +458,10 @@ $mq_marker"
   # falls through here unchanged, the same fail-open default the rest of
   # this file uses.
   [[ "$mq_queued" != "true" ]] || continue
-  # Vacuously "green" on an empty rollup is exactly the wrong answer — that is
-  # CI not having run at all, not CI having passed — so an empty rollup is
-  # excluded explicitly rather than trusted through `all`. A `SKIPPED`
-  # `CheckRun` (a job gated off by a `paths:` filter or an `if:`) is not a
-  # failure either — every target repository carries at least one on every
-  # pull request (agent-ops#384) — so it is accepted alongside `SUCCESS` and
-  # `NEUTRAL`. `CheckRun` has no `.state` field, so the `.state == "SUCCESS"`
-  # arm is `StatusContext`'s alone; `CheckRun` is judged by `.conclusion` only.
-  jq -e '(.statusCheckRollup // []) as $c
-         | ($c | length) > 0
-         and ($c | all(.conclusion == "SUCCESS" or .conclusion == "NEUTRAL"
-                       or .conclusion == "SKIPPED" or .state == "SUCCESS"))' \
-    <<<"$pr_json" >/dev/null 2>&1 || continue
+  # See `_sweep_checks_green`'s own doc comment above for why an empty rollup
+  # and a `SKIPPED` `CheckRun` are treated as they are — the self-heal above
+  # shares this exact test rather than a copy of it (agent-ops#338).
+  _sweep_checks_green "$pr_json" || continue
   # An unanchored substring test here would fire on any comment merely
   # *discussing* the marker — a Reviewer summarising a change to this very
   # file would quote the gate and thereby disable the nudge on that pull

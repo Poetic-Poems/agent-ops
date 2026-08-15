@@ -394,6 +394,39 @@ idle_view CHANGES_REQUESTED MERGEABLE yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "an unmarked comment does not self-heal" "" "$out"
 
+# --- Self-heal: the green gate (agent-ops#338) --------------------------------
+# The self-heal replays only half of the Reviewer's own `ready` verdict, which
+# never fires without requirement 31c's green precondition — so an answered
+# round on a not-green pull request must stay a silent no-op, never a guessed
+# request, and the gate must short-circuit before `_sweep_round_answered` is
+# even asked (no `/reviews`/`/comments` read, hence no warning either).
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE mixed "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered round on a red (mixed) rollup makes no request" "" "$out"
+assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
+
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE "" "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered round on an empty (not-yet-run) rollup makes no request" "" "$out"
+assert_eq "  ... and posts nothing" "" "$(cat "$tmp_dir/posts")"
+
+# A SKIPPED CheckRun alongside SUCCESS is not a failure for the self-heal
+# either — it shares `_sweep_checks_green` with the idle nudge rather than a
+# stricter copy of it.
+reset_stub
+set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
+set_issue_comments "$(issue_comment "2026-08-03T10:05:00Z" "$implementor_reply")"
+idle_view CHANGES_REQUESTED MERGEABLE skipped "2020-01-01T00:00:00Z" no
+out="$(run_sweep)"
+assert_eq "an answered round on a rollup whose only non-SUCCESS entry is SKIPPED still self-heals" \
+  "human-review-requested" "$(jq -r '.action' <<<"$out")"
+
 # --- Self-heal: an unreadable round is a warning, never a guessed request -------
 reset_stub
 set_reviews "$(review Warwick-Allen CHANGES_REQUESTED)"
