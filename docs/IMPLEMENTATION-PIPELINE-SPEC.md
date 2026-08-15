@@ -5014,10 +5014,10 @@ runs unattended.
     `x-vercel-protection-bypass` header internally so the secret never appears
     in a command line, this output, or the stage transcript. An oversized or
     binary body is truncated with a note saying so rather than dumped whole.
-    Both prompts (component 3, component 4) direct their stage to name every
-    route the diff touches on the same invocation as the readiness check,
-    after any push; `--fetch`'s output is read as review evidence and never
-    changes the check's own exit code.
+    Both prompts (component 4) direct their stage to name every route the
+    diff touches on the same invocation as the readiness check, after any
+    push; `--fetch`'s output is read as review evidence and never changes the
+    check's own exit code.
 
     Both stages reach the script through **`AGENT_OPS_ROOT`**, which
     `agent-cycle.sh` exports as its own directory and every stage inherits. A
