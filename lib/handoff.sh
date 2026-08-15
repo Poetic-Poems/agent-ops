@@ -68,6 +68,19 @@
 # treat as an answer, is requirement 34a applied to a predicate instead of an
 # action.
 #
+# `handoff_complete_review` is the whole pre-flip sequence — requirement 31c's
+# gate, requirement 25a's closing-keyword gate, the draft flip, the re-request,
+# `ensure_human_reviewer` — as the one function both the Reviewer's own handoff
+# and the Enabler's `complete_handoff` recovery path call (agent-ops#440). The
+# two used to run only the flip/re-request/nudge half in common, each with its
+# own inline copy of that sequence in agent-cycle.sh; the gate half was never
+# duplicated, it was simply never called at all on the Enabler's path, so a
+# `complete_handoff` on a pull request whose required checks were red or which
+# carried a fresh security-severity code-scanning alert flipped it to ready
+# regardless. See its own comment for the fix and for what it does not cover
+# (whether a Reviewer verdict is on record at all, which is the caller's job —
+# see agent-cycle.sh's own comment at each call site).
+#
 # Sourced, never executed: it sets no shell options, because agent-cycle.sh
 # runs under `set -euo pipefail` and a library that re-sets options silently
 # changes its caller.
@@ -77,6 +90,9 @@
 #   `handoff_answer_events` and `handoff_round_answered` read
 #   `PIPELINE_COMMENT_MARKER_PREFIX` — source lib/pipeline-marker.sh before
 #   this file, or before calling either.
+#   `handoff_complete_review` calls `review_gate_verdict` (lib/review-gate.sh)
+#   and `closing_keyword_gate` (lib/closing-keyword-gate.sh) — source both
+#   before this file, or before calling it.
 
 # pr_url_for_branch TARGET_SLUG BRANCH
 # Print the URL of the open pull request whose head is BRANCH in TARGET_SLUG,
@@ -649,6 +665,168 @@ ensure_human_reviewer() {
 
   printf 'requested\t%s' "$joined"
   return 0
+}
+
+# handoff_complete_review PR_URL DEFAULT_BRANCH ASSIGNEE
+# The one gate-and-flip implementation requirement 31c and 32b both bind
+# (agent-ops#440): run requirement 31c's review gate and requirement 25a's
+# closing-keyword gate against the pull request's *current* state, and only
+# once both are clean, perform the handoff itself — the draft flip
+# (`confirm_pr_ready`), the re-request of a blocking reviewer's review
+# (`confirm_review_requested`), and the nudge to a first or idle reviewer
+# (`ensure_human_reviewer`, targeted at ASSIGNEE). Every one of those five
+# calls is asked fresh here rather than reused from anything a caller read
+# earlier in its own engagement, for the same reason `lib/review-gate.sh`
+# gives its own two checks: a state read once and trusted twice is exactly
+# what let poetic-fiddle #216's CodeQL alert through a Reviewer's own "CI is
+# green" judgement.
+#
+# Before this function existed, that five-call sequence was two separate
+# copies: the Reviewer's own handoff ran all five, inline, in agent-cycle.sh;
+# the Enabler's `complete_handoff` recovery path ran only the last three,
+# because the first two were never written into it at all. A `complete_
+# handoff` on a pull request whose required checks were red, or which carried
+# a fresh security-severity code-scanning alert, flipped it to ready anyway —
+# the gate requirement 31c exists for was simply absent from that path. One
+# function both paths call is what makes that class of drift structurally
+# impossible rather than merely undesirable (requirement 34a).
+#
+# Prints one JSON object:
+#
+#   {
+#     "safe": true|false,
+#     "gate": {"word": "clean"|"dirty"|"unknown", "reason": "…",
+#               "checks_unreadable": true|false},
+#     "closing_keyword": {"word": "clean"|"dirty"|"unknown", "reason": "…"},
+#     "handoff": "already"|"flipped"|"failed"|"",
+#     "rereview": {"state": "…", "who": "…"},
+#     "human_reviewer": {"state": "…", "who": "…"}
+#   }
+#
+# `safe` is the one field a caller must branch on before doing anything else:
+# `false` means the pull request must not be handed off, full stop, and every
+# field past `closing_keyword` is empty — there is nothing further to report,
+# because nothing further ran. It is false for exactly three reasons, in the
+# order they are checked (a `dirty` review gate outranks everything else, the
+# same "the pull request's own fault always wins" rule
+# `review_gate_verdict` already applies between its own two sub-checks):
+#
+#   - `gate.word` is `dirty` — a required check is red, or a required-check
+#     list came back empty (`lib/review-gate.sh`'s own conflicting-PR-runs-
+#     no-CI trap), or a fresh security-severity code-scanning alert sits on
+#     the branch.
+#   - `gate.checks_unreadable` is `true` — the required-check list itself
+#     could not be read at all (a node fact, `review_gate_verdict`'s exit 2).
+#     This is `unknown` in `gate.word` too, but the caller must branch on
+#     `checks_unreadable`, not the word, for the same reason
+#     `review_gate_verdict`'s own header gives: a dirty alert can win the word
+#     while the required-checks read still failed underneath it, and a caller
+#     that only looked at the word would treat that as "nothing wrong with
+#     the checks" and falsely reset a streak counting how often this node's
+#     `gh` goes dark.
+#   - `closing_keyword.word` is `dirty` — the pull request claims to close an
+#     issue and its body does not, or does not any longer.
+#   - Neither gate found anything, but the flip itself did not take —
+#     `handoff` is `failed`. This is the one `safe: false` shape that still
+#     names a stage: `handoff` carries `"failed"` so a caller can tell "this
+#     pull request has a real, nameable problem" apart from "the gates were
+#     clean and confirm_pr_ready simply could not confirm the flip", which
+#     reads differently to a human.
+#
+# `gate.word`/`closing_keyword.word` being `unknown` does not, on its own,
+# make `safe` false — an alerts read that could not be asked at all, or a
+# closing-keyword read that could not be asked at all, is a node or token
+# fact (see each gate's own header for why), and blocking every handoff on it
+# forever would trade one hazard for a worse one. Only `gate.checks_
+# unreadable` refuses on an `unknown`; the caller is still expected to warn
+# on the other two rather than pass them over in silence — read them off the
+# JSON and log accordingly, the same way agent-cycle.sh's Reviewer and
+# Enabler call sites both do.
+#
+# `rereview` and `human_reviewer` are only ever populated once `safe` is
+# `true` and the flip itself succeeded — the same guard `confirm_review_
+# requested`/`ensure_human_reviewer` are given inline today. `human_reviewer`
+# stays empty (`{"state": "", "who": ""}`) whenever `rereview.state` is not
+# `none`, or ASSIGNEE is empty — precisely `ensure_human_reviewer`'s own
+# existing precondition, applied here rather than by the caller, so a caller
+# cannot forget it.
+#
+# Never returns non-zero: every sub-call already fails closed on its own
+# terms, and the caller reads `safe` and the sub-verdicts rather than an exit
+# status — the same convention `review_gate_verdict` established for its own
+# combined word, extended one level up.
+# _handoff_complete_review_json SAFE GATE_WORD GATE_REASON CHECKS_UNREADABLE
+#                                CK_WORD CK_REASON [HANDOFF RS RW HS HW]
+# Assemble `handoff_complete_review`'s one return shape. Not meant to be
+# called from outside this file — a plain formatter, split out only so the
+# five return points above read as "here is the verdict" rather than
+# repeating the same eleven-argument `jq -nc` each time.
+_handoff_complete_review_json() {
+  local safe="$1" gw="$2" gr="$3" cu="$4" cw="$5" cr="$6"
+  local h="${7:-}" rs="${8:-}" rw="${9:-}" hs="${10:-}" hw="${11:-}"
+  jq -nc --argjson safe "$safe" --arg gw "$gw" --arg gr "$gr" --argjson cu "$cu" \
+    --arg cw "$cw" --arg cr "$cr" --arg h "$h" --arg rs "$rs" --arg rw "$rw" \
+    --arg hs "$hs" --arg hw "$hw" '
+    {safe: $safe,
+     gate: {word: $gw, reason: $gr, checks_unreadable: $cu},
+     closing_keyword: {word: $cw, reason: $cr},
+     handoff: $h,
+     rereview: {state: $rs, who: $rw},
+     human_reviewer: {state: $hs, who: $hw}}'
+}
+
+handoff_complete_review() {
+  local url="${1:-}" default_branch="${2:-main}" assignee="${3:-}"
+  local gate_combined gate_word="" gate_reason="" gate_rc=0 checks_unreadable=false
+  local ck_combined ck_word="" ck_reason=""
+  local handoff_word rereview_result rereview_state="" rereview_who=""
+  local human_result human_state="" human_who=""
+
+  if gate_combined="$(review_gate_verdict "$url" "$default_branch")"; then
+    gate_rc=0
+  else
+    gate_rc=$?
+  fi
+  IFS=$'\t' read -r gate_word gate_reason <<<"$gate_combined"
+  # Exit 2 is `review_gate_verdict`'s required-checks-read-failed signal,
+  # independent of which word won: a dirty alerts verdict can win the word
+  # while the required-checks read still failed underneath it (see that
+  # function's own header), so this is read from the exit status once, ahead
+  # of the word-based branching below, rather than folded into either arm.
+  [[ "$gate_rc" -eq 2 ]] && checks_unreadable=true
+
+  if [[ "$gate_word" == "dirty" ]]; then
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" "$checks_unreadable" "" ""
+    return 0
+  fi
+  if [[ "$gate_word" == "unknown" && "$gate_rc" -ne 0 ]]; then
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" "$checks_unreadable" "" ""
+    return 0
+  fi
+
+  ck_combined="$(closing_keyword_gate "$url")" || true
+  IFS=$'\t' read -r ck_word ck_reason <<<"$ck_combined"
+  if [[ "$ck_word" == "dirty" ]]; then
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason"
+    return 0
+  fi
+
+  handoff_word="$(confirm_pr_ready "$url")" || true
+  if [[ "$handoff_word" != "already" && "$handoff_word" != "flipped" ]]; then
+    _handoff_complete_review_json false "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" failed
+    return 0
+  fi
+
+  rereview_result="$(confirm_review_requested "$url")" || true
+  IFS=$'\t' read -r rereview_state rereview_who <<<"$rereview_result" || true
+
+  if [[ "$rereview_state" == "none" && -n "$assignee" ]]; then
+    human_result="$(ensure_human_reviewer "$url" "$assignee")" || true
+    IFS=$'\t' read -r human_state human_who <<<"$human_result" || true
+  fi
+
+  _handoff_complete_review_json true "$gate_word" "$gate_reason" false "$ck_word" "$ck_reason" \
+    "$handoff_word" "$rereview_state" "$rereview_who" "$human_state" "$human_who"
 }
 
 # handoff_answer_events REVIEWS_JSON COMMENTS_JSON [REREQUESTS_JSON]

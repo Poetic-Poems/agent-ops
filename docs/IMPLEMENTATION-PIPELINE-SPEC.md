@@ -5361,14 +5361,24 @@ runs unattended.
     where it did not the Script does it. One definition, in `lib/handoff.sh`
     (requirement 34a).
 31c. **A `ready` verdict is confirmed against GitHub before it is acted on, not
-    trusted from the Reviewer.** poetic-fiddle #216 reached
+    trusted from the Reviewer — and the same confirmation binds every path
+    that can flip a draft to ready, not the Reviewer's own handoff alone
+    (agent-ops#440).** poetic-fiddle #216 reached
     `reviewDecision: APPROVED` while a CodeQL high-severity alert ("clear-text
     logging of sensitive information") sat open, hidden inside an otherwise
     15/16-green check list — the Reviewer's own instruction to confirm CI is
     green (requirement 30) is a model reading a check list and judging it, and
-    that judgement is exactly what missed this one. So before requirement 31's
-    draft flip ever runs, the Script asks GitHub directly, through
-    `lib/review-gate.sh`'s `review_gate_verdict` (component 20):
+    that judgement is exactly what missed this one. So before any pull
+    request is taken out of draft, the Script asks GitHub directly, through
+    `lib/handoff.sh`'s `handoff_complete_review` — the one gate-and-flip
+    implementation both the Reviewer's own handoff below and the Enabler's
+    `complete_handoff` recovery path (requirement 32b) call, so the gate binds
+    on both by construction rather than by each path remembering to run it.
+    (PR #433: an Enabler `complete_handoff` flipped a pull request to ready
+    whose Implementor had failed and whose Reviewer had therefore never run
+    at all — the gate below simply was not part of that path yet.)
+    `handoff_complete_review` runs `lib/review-gate.sh`'s `review_gate_verdict`
+    (component 20) first:
     - every required status check green at the pull request's *current* head
       commit (`gh pr checks --required`, asked fresh rather than reused from
       anything read earlier in the engagement, so a check still catching up to
@@ -5458,14 +5468,16 @@ runs unattended.
 
     One further check shares this gate: requirement 25a's script-side
     closing-keyword gate (`lib/closing-keyword-gate.sh`, component 17a) is
-    asked here too, after `review_gate_verdict` and before requirement 31's
-    draft flip, and a `dirty` verdict from it is recorded as the same
-    requirement 32a handback; an `unknown` one warns and proceeds, exactly as
-    the non-blocking alerts `unknown` above does — a required-check list
-    unreadable enough to matter already stopped the cycle at
-    `review_gate_verdict`, so by the time this gate runs the node is known
-    able to read GitHub. It is asked again here rather than trusted from the
-    pass it made when the pull request was raised, for the same reason the
+    asked here too, inside `handoff_complete_review`, after `review_gate_verdict`
+    and before either path's draft flip, and a `dirty` verdict from it is
+    recorded as the same requirement 32a handback on the Reviewer's own path
+    (a `warning` naming the finding, on the Enabler's — requirement 32b); an
+    `unknown` one warns and proceeds, exactly as the non-blocking alerts
+    `unknown` above does — a required-check list unreadable enough to matter
+    already refused the handoff at `review_gate_verdict`, so by the time this
+    gate runs the node is known able to read GitHub. It is asked again here
+    rather than trusted from the pass it made when the pull request was
+    raised, for the same reason the
     checks above are read fresh: a body can be edited between the two — and
     because that earlier call only *tells* the Reviewer, so this is the only
     point at which the closing keyword is actually enforced.
@@ -5511,11 +5523,46 @@ runs unattended.
     meaning: this block *is* an unfinished handoff — an open draft this system
     raised, checks green, work done, no unanswered concern — take it out of
     draft. The Enabler establishes it; the **Script** performs it, through
-    requirement 31a's implementation, and logs `pr-ready` with
+    `handoff_complete_review` (requirement 31c) — the same gate-and-flip
+    implementation the Reviewer's own handoff calls, run here in full rather
+    than skipped — and on a clean verdict logs `pr-ready` with
     `handoff: "enabler"`. The division is requirement 36's: the Script is the
     only writer of the pipeline's outward acts, which is why it and not the
     Enabler also files the escalation issue. A `complete_handoff` on an item with
     no `pr_url` is ignored — there is nothing to hand off.
+
+    **The Script refuses `complete_handoff` outright — logging a `warning`
+    naming the reason, never the flip — when the item's most recently recorded
+    failure is at or before the Implementor stage** (agent-ops#440, PR #433):
+    the block a `complete_handoff` recovers must itself be a Reviewer's, or
+    nothing has ever confirmed the pull request is safe to hand off, and every
+    one of the four preconditions above can read as satisfied only because
+    none of them was ever actually asked. This is checked before
+    `handoff_complete_review` runs at all — a Reviewer verdict is a
+    precondition for asking the gate, not a substitute for it — and reads the
+    block's own `stage` field (the same one `handle_stage_failure`/
+    `log_reviewer_handback` stamp on every `attempt-failed`, requirement 35a):
+    `"reviewer"` and the recovery proceeds; anything else (`"implementor"`,
+    `"coordinator"`, `""`, …) and it is refused. On PR #433 the Implementor
+    had failed, the Reviewer block never ran, and a `complete_handoff` still
+    flipped the pull request to ready — the gate did not exist on this path at
+    all yet, so nothing caught it. A refused `complete_handoff` does not undo
+    the item's own `unblocked` verdict, which still stands: the underlying
+    impediment the Enabler diagnosed is still cleared, and the stalled pull
+    request is left for a Reviewer to actually examine, either because the
+    item is re-attempted from its existing branch or because the
+    abandoned-drafts source (requirement 3e) re-detects the same draft on its
+    own.
+
+    Once a Reviewer verdict is on record, `handoff_complete_review`'s own gate
+    still applies exactly as requirement 31c describes it: `dirty` (either
+    sub-check, or the closing-keyword gate) or an unreadable required-check
+    list refuses the flip with a `warning` naming what the gate found — never
+    a Reviewer handback, since there is no Reviewer engagement to hand back
+    to — and `complete_handoff` is recorded on the resulting
+    `enabler-examined` event as `"failed"` rather than a flip word, so a
+    reader can tell "the gate refused it" apart from "there was nothing to
+    hand off" and from an actual flip.
 
     Requirement 31b runs on this path too, and it is not decoration here: an
     `already` is exactly what a stalled review round answers, because that PR was
@@ -7222,7 +7269,7 @@ runs unattended.
 
     | Verdict | The Script does |
     |---|---|
-    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft. On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
+    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`: refused outright with a `warning`, and no gate ever run, when the block's `stage` is not `"reviewer"` (requirement 32b); otherwise runs `handoff_complete_review` (requirement 31c) and, on a clean verdict, logs `pr-ready` with `handoff: "enabler"` — or, on a `dirty`/unreadable verdict or a flip that did not take, a `warning` naming what the gate found instead. Either refusal is also recorded as `complete_handoff` on the `enabler-examined` event (`"refused-no-reviewer"` or `"failed"`, rather than the flip word). On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
     | `void` | corroborated by requirement 34d's shared guard; on success logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e; on refusal logs `attempt-failed` and a `warning` instead, with outcome `void-refused` |
     | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
@@ -10682,9 +10729,16 @@ pull request, run the ones the change touches and any it could regress.
    anything telling a human it is theirs, and that a bare `stage-end` is no
    longer the only record: that shape named no item, pinned no state, and is what
    let a finished draft sit unseen. Then assert requirement 32b's other end: an
-   Enabler `unblocked` verdict carrying `complete_handoff: true` takes the PR out
-   of draft and logs `pr-ready` with `handoff: "enabler"`, while the same verdict
-   on an item with no `pr_url` is ignored without error.
+   Enabler `unblocked` verdict carrying `complete_handoff: true`, on an item whose
+   block `stage` is `"reviewer"` and whose `handoff_complete_review` gate is
+   clean, takes the PR out of draft and logs `pr-ready` with `handoff: "enabler"`;
+   the same verdict on an item with no `pr_url` is ignored without error; on an
+   item whose block `stage` is anything else (`"implementor"`, `"coordinator"`,
+   absent) is refused with a `warning` and no `pr-ready`, `handoff_complete_review`
+   never called at all (agent-ops#440, PR #433); and on an item whose `stage` is
+   `"reviewer"` but whose gate is `dirty` or whose required checks are unreadable
+   is refused with a `warning` naming the gate's own finding, again with no
+   `pr-ready`.
 8e-i. **A stage that says nothing still names its pull request (requirement
    9).** `test/handoff.test.sh` passes its `pr_url_for_branch` assertions: an
    open PR on the claimed branch is found and its URL returned; a branch with
@@ -12218,3 +12272,4 @@ confident, recurring no-op.
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |
 | Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
 | A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |
+| A gate written for one caller silently has no caller on the recovery path | Requirement 31c's gate — required checks green, no new security-severity alert — was written and tested against the Reviewer's own `ready` handoff, and every acceptance check for it drove that one path. The Enabler's `complete_handoff` (requirement 32b) flips the identical draft-to-ready action through a different call site, added later, and nobody re-asked whether the gate bound there too — it did not, by omission rather than by decision. PR #433: the Implementor failed, so the Reviewer block never ran at all, and two hours later an Enabler engagement read `complete_handoff`'s own four preconditions ("checks green", "no unanswered concern") as satisfied — vacuously, since nothing had ever checked or raised a concern to answer — and flipped the pull request to ready with a red check list and no Reviewer having ever read the diff. | An irreversible action reachable from more than one call site needs its gate to live *under* every caller, not beside one of them (requirement 34a) — a second path added later inherits nothing a first path's own inline check protected. Where a caller performs a recovery *of* another stage's work (here: finishing a handoff the Reviewer left undone), ask what the recovery is standing in for, and refuse to stand in for a stage that never actually ran — a precondition can read as satisfied for the sole reason that nothing has asked it yet. |

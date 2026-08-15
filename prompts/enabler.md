@@ -284,22 +284,40 @@ to conserve.
 
 Set `"complete_handoff": true` alongside an `unblocked` verdict — and only
 alongside that one — when the item's block *is* an unfinished handoff: `pr_url`
-is an open draft this system raised, its checks are green, the work the PR set
-out to do is done, and the Reviewer left no concern nobody has answered. The
-Script then takes the PR out of draft, and the item is closed out rather than
-re-attempted.
+is an open draft this system raised, a Reviewer has examined it and that
+verdict is on record, its checks are green, the work the PR set out to do is
+done, and the Reviewer left no concern nobody has answered. The Script then
+runs the same gate the Reviewer's own handoff runs (requirement 31c) and, only
+once it is clean, takes the PR out of draft — the item is closed out rather
+than re-attempted.
 
-Check all four before you set it. `complete_handoff` on a PR whose work is
+Check all five before you set it. `complete_handoff` on a PR whose work is
 unfinished, or whose checks are red, puts a half-done change into a human's
 review queue under this pipeline's signature, which is worse than leaving it
-stuck. If any of the four fails, this is an ordinary item: `unblocked` if the
+stuck. If any of the five fails, this is an ordinary item: `unblocked` if the
 work should be re-attempted, `escalate` if it needs a person.
 
-It exists because a draft pull request is invisible. The human watches for
-review requests, and nothing else in this pipeline will ever hand this one
-over — so a stalled handoff you neither complete nor escalate is one that will
-sit there indefinitely. Do not leave it `still-blocked` in the hope that a later
-cycle notices.
+The Reviewer precondition is not paperwork. `complete_handoff` recovers a
+pull request the Reviewer *already judged* and left a draft only because the
+mechanical flip did not take — it is not a way to skip the Reviewer over an
+item whose own failure never reached that stage. On PR #433 the Implementor
+failed, the Reviewer block never ran, and this recovery path flipped the pull
+request to ready anyway: every other precondition read as satisfied only
+because nothing had ever answered them. The Script refuses `complete_handoff`
+outright when the item's most recent recorded failure is at or before the
+Implementor stage, whatever you set — so setting it there wastes nothing but
+is still worth getting right, since the refusal is logged as a warning rather
+than the flip you asked for.
+
+It exists because a draft pull request whose Reviewer verdict is stuck this
+way is otherwise invisible: the human watches for review requests, and this
+is the one path that recovers it *without* re-running the work — a stalled
+draft whose Reviewer never ran at all is not stuck in the same way, since the
+abandoned-drafts source (`scripts/gather-abandoned-drafts.sh`) re-detects it on
+its own and hands it back to a fresh Implementor-then-Reviewer pass. Do not
+leave a genuinely stuck handoff `still-blocked` in the hope that a later cycle
+notices — set `complete_handoff` when the five preconditions hold, and leave
+this item's own `unblocked` verdict to do the rest otherwise.
 
 ## Refinement items
 
@@ -531,7 +549,10 @@ reason to park and hope to be woken.
 - `unblock_condition` belongs only to `still-blocked`; `issue` only to
   `escalate`; `complete_handoff` only to `unblocked`. Omit them otherwise.
   `complete_handoff` is ignored without a `pr_url` on the item — there is
-  nothing to hand off.
+  nothing to hand off — and refused, with a warning rather than a flip, when
+  the item's most recent recorded failure is at or before the Implementor
+  stage: no Reviewer verdict is on record for the pull request, so the gate
+  `complete_handoff` runs (requirement 31c) has nothing to confirm against.
 - `refined_spec` belongs only to an `unblocked` verdict on a
   `kind: "needs-refinement"` item whose ref is **not** a GitHub issue; for an
   issue item the refinement is the comment you posted, and the URL in
