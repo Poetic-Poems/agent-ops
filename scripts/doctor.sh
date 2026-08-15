@@ -53,6 +53,10 @@ source "$SCRIPT_DIR/lib/fleet.sh"
 source "$SCRIPT_DIR/lib/version.sh"
 # shellcheck source=lib/stage-budget.sh
 source "$SCRIPT_DIR/lib/stage-budget.sh"
+# shellcheck source=lib/toggle.sh
+source "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/merge-autonomy.sh
+source "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -167,6 +171,35 @@ if [[ -n "$missing_plan_path" ]]; then
   fail "repo(s) [$missing_plan_path] list the implementation-plan source with no implementation_plan_path — agent-cycle.sh refuses to start, since that source has no path of its own outside the config"
 else
   ok "every repo listing implementation-plan names its plan document"
+fi
+
+# D18 (docs/reviews/2026-08-14-autonomy-investigation.md §5.3, requirement
+# 2.3b): any merge_autonomy level above `human` needs a non-author identity —
+# the Approver GitHub App — able to hold review and merge rights, since
+# GitHub refuses self-approval and this pipeline authors as its own
+# configured owner. At this stage (WI-2) the App itself does not exist yet
+# (WI-3/WI-4), so the only fact worth failing on now is the pairing: a level
+# configured above human with no approver_app_id recorded is a configuration
+# nobody can act on. Checked against every configured *source* of a level —
+# the top-level key and each repo's own override — not the level each repo
+# is effectively governed by, so an override that quietly inherits an invalid
+# top-level value is still caught even where every repo happens to override
+# it away today.
+approver_app_id="$(cfg '.approver_app_id // ""')"
+merge_autonomy_sources="$(jq -r '
+  [{label: "merge_autonomy", level: (.merge_autonomy // "human")}]
+  + [(.repos // [])[] | select(has("merge_autonomy"))
+     | {label: (.slug + "'"'"'s merge_autonomy override"), level: .merge_autonomy}]
+  | .[] | [.label, .level] | @tsv' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+if [[ -n "$merge_autonomy_sources" ]]; then
+  while IFS=$'\t' read -r ma_label ma_level; do
+    [[ -n "$ma_label" ]] || continue
+    if [[ "$ma_level" != "human" && -z "$approver_app_id" ]]; then
+      fail "$ma_label is \"$ma_level\" with no approver_app_id configured — every level above human needs the Approver identity to hold review and merge rights (D18)"
+    else
+      ok "$ma_label is \"$ma_level\""
+    fi
+  done <<<"$merge_autonomy_sources"
 fi
 
 # `blocked` excludes an issue from the issues source, so projecting it onto an
@@ -546,7 +579,7 @@ if ((gh_ready)); then
       skip "$slug's default-branch ruleset — repos/$slug/rulesets is not reachable with this token"
       continue
     fi
-    required_count="" found_pr_rule=0
+    required_count="" found_pr_rule=0 require_code_owner=0
     while IFS= read -r ruleset_id; do
       [[ -n "$ruleset_id" ]] || continue
       ruleset_detail="$(gh api "repos/$slug/rulesets/$ruleset_id" 2>/dev/null)" || continue
@@ -574,6 +607,17 @@ if ((gh_ready)); then
         required_count="$count"
       fi
       found_pr_rule=1
+      # D18 §5.3: `agent-merges-routine` and above retires code-owner review
+      # (an App cannot satisfy it, and keeping it would re-summon the human
+      # review the level exists to retire) — read in the same pass as the
+      # count above, since it comes off the same `pull_request` rule and a
+      # second walk of the same rulesets would double the API calls for no
+      # new information. Any active rule on the default branch still
+      # requiring it is enough; GitHub enforces the union of active rules,
+      # not just the strictest one on this particular parameter.
+      [[ "$(jq -r '[.rules[]? | select(.type == "pull_request")
+                    | .parameters.require_code_owner_review] | any' \
+                <<<"$ruleset_detail" 2>/dev/null)" == "true" ]] && require_code_owner=1
     done < <(jq -r '.[] | select(.target == "branch" and .enforcement == "active") | .id' \
               <<<"$ruleset_repo_json" 2>/dev/null)
     if ((! found_pr_rule)); then
@@ -582,6 +626,32 @@ if ((gh_ready)); then
       warn "$slug's default-branch ruleset requires 0 approving reviews — reviewDecision never becomes APPROVED here, however many humans approve (agent-ops#391); requirement 38c derives approval from the reviews list instead, so this is informational, not a requirement 38 fault"
     else
       ok "$slug's default-branch ruleset requires $required_count approving review(s) — reviewDecision reaches APPROVED normally"
+    fi
+
+    # D18 §5.3 (requirement 2.3b): at `agent-merges-routine` or above the
+    # Approver App is meant to be the one identity clearing the pull_request
+    # rule — an App cannot satisfy a code-owner requirement, so a ruleset
+    # still demanding one would strand every pull request at that level
+    # regardless of what the App itself does. Judged against this
+    # repository's own *configured* level (top-level key, or its own
+    # override) rather than the kill-switch-adjusted effective one: a switch
+    # that is merely standing the ladder down today must not hide a
+    # combination that breaks the moment someone clears it. At or above the
+    # routine tier the pairing reports both ways — the `ok` is the only
+    # positive evidence the ruleset was actually read at the one level where
+    # that matters; below it the check stays silent rather than narrate a
+    # pairing that does not apply to an operator at `human`.
+    if ((found_pr_rule)); then
+      ma_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$slug")"
+      ma_rank="$(merge_autonomy_rank "$ma_level" 2>/dev/null || printf 0)"
+      routine_rank="$(merge_autonomy_rank agent-merges-routine)"
+      if [[ "$ma_rank" =~ ^[0-9]+$ ]] && (( ma_rank >= routine_rank )); then
+        if ((require_code_owner)); then
+          fail "$slug's merge_autonomy is \"$ma_level\" but its default-branch ruleset still requires code-owner review — the Approver App cannot satisfy that, and no pull request at this level would ever clear the gate (D18 §5.3)"
+        else
+          ok "$slug's merge_autonomy is \"$ma_level\" and its default-branch ruleset requires no code-owner review — the Approver App can clear the pull_request rule (D18 §5.3)"
+        fi
+      fi
     fi
   done < <(cfg '.repos[]?.slug // empty')
 
@@ -600,6 +670,19 @@ if ((gh_ready)); then
       "is readable and writable — the fleet's shared state can replicate" \
       "is readable but not writable with this token — this node could fetch fleet state and never publish its own" \
       "is unreachable with this token — claims, fleet flags and the shared log would not replicate"
+  fi
+
+  # The D18 kill switch (requirement 2.3b) — a fleet flag, so reading it costs
+  # a network call and belongs here rather than the offline Configuration
+  # section above.
+  ma_kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir")" 2>/dev/null)"
+  # `!= enabled`, not `== disabled`: the same test merge_autonomy_effective_level
+  # applies, so this report cannot say "not set" about a flag that is in fact
+  # forcing every repo to human (an expired record reads as neither word).
+  if [[ "$ma_kill_state" != "enabled" ]]; then
+    warn "the merge-autonomy kill switch is SET — every repo's effective level is forced to human regardless of merge_autonomy; agent-cycle.sh --restore-merge-autonomy clears it"
+  else
+    ok "the merge-autonomy kill switch is not set — merge_autonomy governs as configured"
   fi
 
   if [[ -n "$enabler_assignee" ]]; then

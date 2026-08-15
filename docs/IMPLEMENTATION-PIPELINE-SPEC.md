@@ -624,6 +624,8 @@ and the schema must carry every one of them.
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
+| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
+| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -682,6 +684,8 @@ A repo entry may also carry `nice` — an optional integer from `-19` to `19` (a
 
 A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.
 
+A repo entry may also carry `merge_autonomy` — the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
+
 Every optional key sits on the repository's own entry, beside `slug` and `sources`:
 
 ```json
@@ -728,6 +732,10 @@ Per-source refinement policy (requirement 39a): `required`, `preferred` or `exem
 How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day.
 
 Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
+
+### Extended notes: `merge_autonomy`
+
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 <!-- config-table:notes-end -->
 
@@ -1263,6 +1271,67 @@ runs unattended.
    there, and there is no singleton chore (requirement 2.5). The weekly
    review honours the fleet switch but never sets or clears it, mirroring
    its relationship to the local one (`docs/REVIEW-PIPELINE-SPEC.md`, R2a).
+2.3b. **The merge-autonomy kill switch** (D18,
+   `docs/reviews/2026-08-14-autonomy-investigation.md` §6; `lib/merge-autonomy.sh`).
+   A second fleet flag, `fleet/merge-autonomy-kill.json`, independent of the
+   fleet switch above: setting it forces every repository's *effective*
+   `merge_autonomy` level to `human` immediately, fleet-wide, without touching
+   `config.json` or restarting a container, while cycles keep running exactly
+   as they would with the switch clear — killing merge autonomy stops
+   approval and landing decisions, nothing else. It reuses `lib/toggle.sh`'s
+   generic fleet-flag machinery outright (`fleet_flag_fetch`/`_write`/
+   `_delete`, the same CAS-guarded contents-API mechanism `fleet/disabled.json`
+   already uses) under its own flag name, so a peer with an unreachable state
+   repo falls back the same way requirement 2.3a's own flag does — to the
+   last-fetched cache, and to "not killed" when there is none. That
+   fail-open direction is deliberate and carries its own expiry: it is safe
+   only while nothing arms an approval or a landing on the strength of this
+   flag alone (see below), and TD-PPagop-26081507 requires the no-cache case
+   to fail closed to `human` with or before WI-5's Approver stage — the
+   Design decisions entry on this switch defends today's direction against
+   the landing consequence specifically.
+
+   Managed by `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
+   (requirement 12), on the same terms as `--disable`/`--enable` where they
+   apply and deliberately not where they don't: a reason is required on
+   `--kill-merge-autonomy`, the record carries `actor`/`kind` exactly as
+   `toggle_disable`'s own (`kind` always `manual` — nothing automatic writes
+   this flag), and `--status` reports it (`merge_autonomy: KILLED — …` or
+   `not killed`) alongside the switch and the usage-limit stand-down — a
+   report driven by the same "anything but clear reads as killed" test
+   `merge_autonomy_effective_level` applies, so what `--status` and
+   `scripts/doctor.sh` say and what a level resolution does cannot disagree.
+   Each command logs its own event (requirement 33): `merge-autonomy-killed`
+   carrying the record's `reason`/`by`/`actor`/`kind` and the
+   `fleet_flag` outcome word, on the same terms as `disabled`'s; and
+   `merge-autonomy-restored`, logged by outcome rather than by instruction —
+   only where a flag was actually cleared, exactly as `enabled` is. Unlike
+   the fleet switch there is no local record and no `--this-node` form: the
+   kill switch is described as "a permanent operational control, not
+   scaffolding" (§6) precisely because a single Approver App identity governs
+   the whole fleet, so a node-scoped override would contradict what it is
+   overriding. With no `state_repo` configured, `--kill-merge-autonomy` refuses
+   (exit 64) rather than pretend to take effect — a flag this system cannot
+   publish anywhere a future read would see it is not a kill switch, and a
+   single-node install is already fully governed by its own `merge_autonomy`.
+   `--restore-merge-autonomy` is idempotent: with no `state_repo`, or with the
+   flag already clear, it says so and exits 0.
+
+   `merge_autonomy_configured_level` (`CONFIG_JSON`, `SLUG`) resolves the
+   *configured* level alone — a repository's own `repos[]` override when
+   present, else the top-level `merge_autonomy` key, else `human` — on the
+   same precedence `stage_timeouts` uses (requirement 4f). It has no opinion
+   about the kill switch. `merge_autonomy_effective_level` (`CONFIG_JSON`,
+   `SLUG`, `STATE_REPO`, `STATE_DIR`) is the one function that combines both:
+   `human` whenever the kill switch is set (or unreadable — everything
+   ambiguous resolves toward the safe reading here too, mirroring 2.3's own
+   rule), the configured level otherwise. Every future approval or landing
+   path (WI-5, WI-7) must call the effective function, never the configured
+   one directly, or the kill switch would not actually override what it
+   promises to. At this stage nothing does: `scripts/doctor.sh` (component 14)
+   is the only reader, and it validates the *configured* level deliberately,
+   so a pairing that would fail the moment someone clears the switch is
+   caught now rather than only once they do.
 2.4. **The role guard.** The environment variable `AGENT_OPS_ROLE` names the
    one node that runs unattended cycles. Compared case-insensitively and
    ignoring surrounding whitespace against the single value `active`;
@@ -3918,6 +3987,19 @@ runs unattended.
     operator believes they have resumed. The reason is optional, unlike
     `--disable`'s: a stand-down being lifted is self-explanatory in a way one
     being imposed is not.
+
+    `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
+    (requirement 2.3b) manage the D18 kill switch and run no cycle either. Like
+    `--clear-limit` this is deliberately not `--disable`/`--enable`: killing
+    merge autonomy stops nothing else — cycles keep running normally, only
+    approval and landing are forced back to `human` — so folding it into the
+    switch would make an operator editing these files also, incidentally, force
+    every repo's landing decisions onto a human, or vice versa. The reason is
+    required on `--kill-merge-autonomy`, the same terms as `--disable`'s: the
+    next person to wonder why every repo is stuck at `human` is entitled to
+    one. Neither takes `--this-node`: the kill switch has no node-scoped form,
+    since a node-scoped merge-autonomy override would contradict the
+    fleet-wide identity a single Approver App holds.
 13. The Script must pass `shellcheck` and must set its own `PATH` explicitly
     (cron's environment is minimal), covering `claude`, `gh`, `git`, `jq`.
     When provisioning a host, prove that a cron-style invocation can resolve
@@ -5358,7 +5440,8 @@ runs unattended.
     `orphan-branch-recovered`, `orphan-branch-released`,
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
-    `disabled`, `enabled`, `salvage`, `chained`,
+    `disabled`, `enabled`,
+    `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
@@ -8001,8 +8084,8 @@ What exists, and the requirements each part answers to:
 
 1. `config.json` with the values above.
 2. `agent-cycle.sh` implementing requirements 1–13 (including the findings
-   pre-fetch, requirement 3a; the switches, requirements 2.3 and 2.3a; the
-   role guard, requirement 2.4; the no-op short-circuit, requirement 3b; the
+   pre-fetch, requirement 3a; the switches, requirements 2.3, 2.3a and 2.3b;
+   the role guard, requirement 2.4; the no-op short-circuit, requirement 3b; the
    implementation-plan path passthrough and its startup validation,
    requirement 3k; and the Refiner-only pre-fetch and its `refiner_repos_json`
    copy, requirement 3y) and the Enabler's engagement, requirements 35–37:
@@ -8652,7 +8735,13 @@ What exists, and the requirements each part answers to:
     itself cannot state — each holds *between* two keys — shared the same
     way, so `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can
     never drift on either. `doctor.sh` is the operator's command: it runs the
-    schema check, then those two cross-key rules, then the reserved label
+    schema check, then those two cross-key rules, then the D18 merge-autonomy
+    pairing (requirement 2.3b) — every configured *source* of a level (the
+    top-level `merge_autonomy` key, and each repository's own override) is a
+    `fail` where the level is above `human` and `approver_app_id` is empty,
+    `ok` naming the level otherwise; doctor-only, since nothing yet consumes
+    the pairing at cycle start the way the two shared cross-key rules do —
+    then the reserved label
     names — `blocked` on an issue-side label key, `obsolete` on any label key
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
     those names — then the combinations that
@@ -8672,7 +8761,26 @@ What exists, and the requirements each part answers to:
     `.permissions` — present only on an authenticated request, so its
     absence is a fact about the request rather than the token — is `skip`,
     never `fail`; `.archived: true` is `fail` regardless of `.permissions`,
-    since no token can push to an archived repository. Claude credentials are
+    since no token can push to an archived repository. In the same
+    per-repository ruleset pass agent-ops#391's check already makes
+    (requirement 38's dependency, below), a repository whose configured
+    `merge_autonomy` (its own override, or the top-level key) is
+    `agent-merges-routine` or above while an active `pull_request` rule on
+    the default branch still requires code-owner review is a `fail`
+    (D18 §5.3, requirement 2.3b) — an App cannot satisfy that requirement, so
+    no pull request at that level would ever clear the gate — and an `ok`
+    naming the repository and level where the pairing holds: at or above the
+    routine tier that line is the only positive evidence the ruleset was
+    actually read, at exactly the level where an operator needs it, while
+    below the tier the check stays silent rather than narrate a pairing that
+    does not apply to an operator at `human`. Judged against
+    the *configured* level, not the kill-switch-adjusted effective one, for
+    the same reason the pairing check above is: a combination that only
+    breaks once the switch is cleared is worth failing on now. The kill
+    switch's own live state is reported once per run, alongside the
+    `state_repo` access check — `ok` "not set" or `warn` "SET" naming what
+    clears it — since reading a fleet flag costs a network call this
+    document's offline Configuration section cannot spend. Claude credentials are
     `claude auth status --json`, treated as a probe that can answer only
     sometimes: `loggedIn: true` is `ok`, `loggedIn: false` is `fail` —
     distinguished from a parse failure, since `false` is a legitimate answer
@@ -8706,6 +8814,30 @@ What exists, and the requirements each part answers to:
     either (unlike `lib/labels.sh`'s `LABELS_GH`), run without `--offline` so
     the network-gated checks are actually exercised while nothing on `PATH`
     ever reaches a real network. Must pass `shellcheck`.
+14a. `lib/merge-autonomy.sh` implementing requirement 2.3b: the D18 trust
+    ladder's config resolution and its kill switch. `MERGE_AUTONOMY_LEVELS`
+    (the four levels, `human` first) and `merge_autonomy_rank` (a level's
+    ladder position, for comparisons like requirement 2.3b's own
+    `agent-merges-routine`-or-above check) are pure lookups.
+    `merge_autonomy_configured_level` (`CONFIG_JSON`, `SLUG`) resolves a
+    repository's configured level — its own `repos[]` override, else the
+    top-level key, else `human` — with no opinion about the kill switch.
+    `merge_autonomy_kill_state`/`_set`/`_clear` (`STATE_REPO`, `STATE_DIR`,
+    …) manage `fleet/merge-autonomy-kill.json` through
+    `lib/toggle.sh`'s `fleet_flag_fetch`/`_write_outcome`/`_delete_outcome`
+    directly — no record of its own, no local/node-scoped level, `kind`
+    always `manual` — and `merge_autonomy_kill_state` reads in
+    `toggle_state`'s own vocabulary (`_toggle_eval`) so a caller already
+    speaking it needs no second one. `merge_autonomy_effective_level`
+    combines both: `human` whenever the kill switch is set or unreadable,
+    the configured level otherwise — the one function a future
+    approval/landing path (WI-5, WI-7) must call. Sourced by
+    `agent-cycle.sh` (the `--kill-merge-autonomy`/`--restore-merge-autonomy`
+    flags and `--status`) and `scripts/doctor.sh` (the pairing and ruleset
+    checks, requirement 2.3b); depends on `lib/toggle.sh`, sourced first by
+    both. Regression-tested in `test/merge-autonomy.test.sh` against the
+    same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
+    flags it wraps. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -11740,6 +11872,43 @@ requirements above, which state only what is.
   a cheap model re-flagging an expensive model's specification is two models
   disagreeing, which a third pass settles only by luck; the escalation is not a
   fallback there, it is the correct answer.
+
+- **The merge-autonomy kill switch fails open today, and that direction has
+  a recorded expiry (requirement 2.3b, TD-PPagop-26081507).** The switch
+  reuses `fleet_flag_fetch`, whose contract deliberately hides "unreachable
+  with no cache" from its callers, so a fresh container (empty
+  `fleet-cache/`) that cannot reach the state repo resolves the switch as
+  clear and runs at its *configured* level. That mirrors
+  `fleet/disabled.json`'s own direction, but the two flags' risk profiles
+  invert the moment WI-5/WI-7 arm a landing path: the fleet switch failing
+  open runs a cycle a human still gates, while this flag failing open would
+  keep a node *landing* pull requests at exactly the moment §6's lever
+  exists for — and on exactly the node least likely to be noticed. It was
+  kept anyway at WI-2 because the alternative was forking shared fleet-flag
+  machinery for a flag nothing consumes: `merge_autonomy_effective_level`
+  has no behaviour-affecting caller yet, so today the direction costs
+  nothing. Failing closed outright was rejected too — a state-repo outage
+  would silently halt autonomous landing fleet-wide. The recorded
+  resolution (TD-PPagop-26081507) is the asymmetric one: with or before
+  WI-5, the *no-cache* case flips to `human` while the last-fetched cache
+  remains the transient-outage fallback, confining the fail-closed blast
+  radius to fresh containers during an outage — the population that cannot
+  know whether an operator has pulled the lever. WI-5 must not arm the
+  Approver stage while the no-cache case still reads as enabled.
+- **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
+  end-state is exactly one Approver App identity governing the whole
+  installation (§6 — the same fact that denies the kill switch a
+  `--this-node` form), so a per-repository App id would contradict the
+  design it serves, and the per-repository variation that does exist in
+  GitHub's model lives in the *installation* layer, which WI-4 discovers at
+  token-minting time from the App id and private key rather than from
+  configuration. A string rather than an integer because an App id is an
+  opaque identifier this system never does arithmetic on. The name and
+  shape were chosen at WI-2, before WI-3 creates the App and WI-4 mints
+  tokens from it; those two WIs own the key's final surface and may extend
+  it (the private key's own configuration, for one) — but any rename or
+  reshaping must land with them, while the key is still consumed by
+  `scripts/doctor.sh` alone.
 
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.

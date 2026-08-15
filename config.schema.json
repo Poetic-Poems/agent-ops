@@ -119,6 +119,11 @@
                 "minimum": 0
               }
             }
+          },
+          "merge_autonomy": {
+            "description": "Override for the top-level merge_autonomy key, for this repository only. Absent means this repository follows the top-level key.",
+            "type": "string",
+            "enum": ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"]
           }
         }
       },
@@ -144,6 +149,7 @@
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A non-zero `nice` shows as a badge against that repo in the dashboard's work-sources panel, naming the value and the weighting it buys; a repo at `0` or with no key shows nothing there, so a fleet that has set none sees the panel unchanged.",
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
+          "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
           "Every optional key goes on the repo's own entry, beside `slug` and `sources`:",
           {
             "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
@@ -157,6 +163,7 @@
           "A repo entry may also carry `implementation_plan_path` \u2014 the path, relative to that repo's root, of its plan document; required whenever `sources` lists `implementation-plan` (requirement 3k), since that source has no path of its own outside this config. poetic-fiddle's is `docs/IMPLEMENTATION-PLAN.md`.",
           "A repo entry may also carry `nice` \u2014 an optional integer from `-19` to `19` (absent means `0`), after Linux `nice`: each repo's default-branch staleness age is multiplied by `1.25^(-nice)` (each step of `nice` is a 1.25x change in attention), so a negative value buys the repo earlier attention and a positive one later. It biases the walk but never starves a repo \u2014 the global tiers still outrank the walk, and a repo that alone has qualifying work is selected regardless of its `nice`. The Script refuses to start a cycle if `nice` is not an integer in that range.",
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
+          "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
           {
             "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
@@ -602,6 +609,30 @@
         "value": {
           "readme": "`24`",
           "spec": "24 h"
+        }
+      }
+    },
+    "merge_autonomy": {
+      "description": "The D18 merge-autonomy trust ladder — human, agent-approves, agent-merges-routine, agent-merges-all — naming who approves and who lands a pull request this pipeline raises. `human` is today's behaviour, byte-for-byte: a human approves and a human merges. Every level above it needs a non-author Approver identity (`approver_app_id`) able to hold review and merge rights, since GitHub refuses self-approval and this pipeline authors as its own configured owner. A `repos[]` entry's own `merge_autonomy` overrides this key for that repository alone. At this stage the key is load-bearing only in validation: `scripts/doctor.sh` fails a level above `human` with no `approver_app_id` configured, and `agent-merges-routine` or above while the repository's own branch ruleset still requires code-owner review — no approval or landing behaviour changes until the Approver stage and the arming step land.",
+      "type": "string",
+      "enum": ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"],
+      "default": "human",
+      "x-docs": {
+        "readme": "The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver identity reviews; a human still merges), `agent-merges-routine` (the Approver identity reviews and the Script also lands routine pull requests) or `agent-merges-all` (the Script lands everything passing its gates). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level. No approval or landing behaviour changes below `agent-approves` yet — `scripts/doctor.sh` validates the setting; nothing acts on it until the Approver stage lands.",
+        "spec": "The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.",
+        "value": "`human`"
+      }
+    },
+    "approver_app_id": {
+      "description": "The Pullwright Approver GitHub App's id for this installation (D18 §5.3) — the non-author identity that holds review and merge rights at every `merge_autonomy` level above `human`. Empty means no Approver identity is configured yet, which caps `merge_autonomy` at `human`: `scripts/doctor.sh` fails a higher level configured with this unset. One fleet-wide scalar by design, with no per-repo override: D18's end-state is a single Approver App identity governing the whole installation (§6), and per-repository variation lives in GitHub's own installation layer, discovered from the App id at token-minting time rather than configured here. Typed string, not integer — an App id is an opaque identifier, never arithmetic. WI-3/WI-4 own the key's final surface and may extend it before anything mints a token from it (see the spec's Design decisions).",
+      "type": "string",
+      "default": "",
+      "x-docs": {
+        "readme": "The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.",
+        "spec": "The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape.",
+        "value": {
+          "readme": "*(unset)*",
+          "spec": "*(unset)*"
         }
       }
     },
