@@ -213,7 +213,7 @@ log_event() {
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
     local wrapped
-    wrapped="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null)"
+    wrapped="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null)" || true
     [[ -n "$wrapped" ]] || wrapped="$(jq -nc --arg f "$fields" '{fields: $f}')"
     fields="$wrapped"
   fi
