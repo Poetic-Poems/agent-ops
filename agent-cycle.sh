@@ -71,6 +71,10 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/merge-autonomy.sh
 . "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/approver-token.sh
+. "$SCRIPT_DIR/lib/approver-token.sh"
+# shellcheck source=lib/approver.sh
+. "$SCRIPT_DIR/lib/approver.sh"
 # shellcheck source=lib/noop-skip.sh
 . "$SCRIPT_DIR/lib/noop-skip.sh"
 # shellcheck source=lib/fleet.sh
@@ -334,6 +338,18 @@ reviewer_model_default="$(resolve_model_id reviewer_model_default "$(cfg '.revie
 reviewer_model_complex="$(cfg '.reviewer_model_complex')"
 [[ -n "$reviewer_model_complex" ]] || reviewer_model_complex="$reviewer_model_default"
 reviewer_model_complex="$(resolve_model_id reviewer_model_complex "$reviewer_model_complex")"
+# The Approver (requirement 8b, D18 WI-5). Three tiers on the same
+# empty-falls-back-to-the-tier-below chain `reviewer_model_complex` already
+# uses, extended one step further for adjudication — `resolve_model_id`
+# passes an empty value through unchanged, so `approver_model_default` empty
+# stays empty here and disables the whole stage further down (requirement 8b).
+approver_model_default="$(resolve_model_id approver_model_default "$(cfg '.approver_model_default')")"
+approver_model_complex="$(cfg '.approver_model_complex')"
+[[ -n "$approver_model_complex" ]] || approver_model_complex="$approver_model_default"
+approver_model_complex="$(resolve_model_id approver_model_complex "$approver_model_complex")"
+approver_model_critical="$(cfg '.approver_model_critical')"
+[[ -n "$approver_model_critical" ]] || approver_model_critical="$approver_model_complex"
+approver_model_critical="$(resolve_model_id approver_model_critical "$approver_model_critical")"
 # The Enabler (requirements 35–37). Its model is the most expensive this system
 # runs, which is affordable only because the eligibility rule engages it rarely:
 # an empty `enabler_model` disables the stage outright.
@@ -3332,6 +3348,258 @@ log_reviewer_handback() {
   else
     release_claim no-pr
   fi
+}
+
+# approver_escalate PR_URL TIER STREAK REASONS_JSON
+# File (or find already-filed, via create_escalation_issue's own dedup) the
+# escalation issue for a pull request an Approver adjudication engagement
+# could not settle — land it, or refuse it and let a human decide. Unlike
+# crash_loop_escalate and the Enabler's own escalations, there is no model
+# drafting this one: `reasons_json` already carries the adjudication's
+# structured findings (or the Script's own "could not settle" fallback), so
+# the Script composes the issue body directly.
+approver_escalate() {
+  local pr_url="$1" reasons_json="$2"
+  local number item_ref body_file reasons_text created
+  number="${pr_url##*/}"
+  item_ref="pr-${number}-approver-adjudication"
+  body_file="$cycle_dir/approver-escalation-${number}.md"
+  reasons_text="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+  {
+    printf '## What the autonomous pipeline needs from you\n\n'
+    printf 'Review %s and either request further changes yourself or approve and merge it — the Approver could not settle its own disagreement about this pull request.\n\n' "$pr_url"
+    printf '## Why the pipeline is blocked\n\n'
+    printf 'The Approver App refused %s twice in a row. A critical-tier adjudication engagement then read both the pull request and the prior refusals and could not resolve the disagreement on its own.\n\n' "$pr_url"
+    printf '## What has already been tried and established\n\n'
+    printf '%s\n\n' "$reasons_text"
+    cat <<APPROVER_ESC_BODY
+## When you're done: close this issue
+
+Close this issue once you have reviewed the pull request yourself. The
+pipeline takes no further automatic landing action on it — your own GitHub
+review and merge are the next step.
+
+---
+Item: \`$item_ref\` · pull request $pr_url
+Raised by the Approver stage (D18 WI-5) · cycle \`$cycle_id\` · node \`$node_name\`
+APPROVER_ESC_BODY
+  } > "$body_file"
+  if created="$(create_escalation_issue "$selected_repo" "$item_ref" \
+        "$enabler_escalation_label" \
+        "Approver adjudication could not settle $pr_url" \
+        "$body_file")" && [[ -n "$created" ]]; then
+    log_event "approver-escalated" "$(jq -nc --arg u "$pr_url" \
+      --arg n "${created%%$'\t'*}" --arg iu "${created#*$'\t'}" \
+      '{pr_url: $u, issue_number: ($n | tonumber), issue_url: $iu}')"
+  else
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "Approver adjudication could not settle $u, and the escalation issue could not be filed — will retry next cycle" \
+      '{detail: $d, pr_url: $u}')"
+  fi
+}
+
+# run_approver_stage PR_URL COMPLEXITY
+# D18 WI-5 (requirement 8b): the tiered Approver, engaged once per
+# Reviewer-ready round, for every repository whose merge_autonomy is
+# currently above `human` (lib/merge-autonomy.sh's own kill-switch-aware
+# resolution — the fleet-wide kill switch reads as `human` here exactly as
+# everywhere else). Judges the pull request `confirm_pr_ready` has already
+# flipped out of draft, and posts a real GitHub review — `APPROVE` or
+# `REQUEST_CHANGES` — from the Pullwright Approver's own App identity, never
+# from a model-issued `gh` command; the model only ever returns a verdict
+# (prompts/approver.md).
+#
+# Always returns 0, and never touches the PR claim or the draft flag: a
+# stage that cannot run, or a GitHub write that fails, costs a missing App
+# review, never a blocked pull request — by construction, since every path
+# through this function ends in either a best-effort review post or a
+# best-effort escalation, and the caller's own `pr-ready` log and
+# `release_pr_claim` follow unconditionally regardless of what happened here
+# (the human still merges, at every merge_autonomy level this stage's own
+# work item implements — landing is a later work item's job).
+run_approver_stage() {
+  local pr_url="$1" complexity="$2"
+  local level login streak tier model mode="" adjudicating=0
+  local prompt out rc status_json verdict="" reasons_json="[]"
+  local token review_body prior_section adj_bool
+
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$selected_repo" "$state_repo" "$state_dir")"
+  [[ "$level" != "human" ]] || return 0
+
+  if [[ -z "$approver_model_default" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
+      --arg d "merge_autonomy is \"$level\" for $selected_repo but approver_model_default is empty — the Approver stage is disabled, so no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! approver_token_credential_present; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" --arg l "$level" \
+      --arg d "merge_autonomy is \"$level\" for $selected_repo but the Approver's runtime credential is not present on this node — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not read the Approver App's own login — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! streak="$(approver_refuse_streak "$pr_url" "$login")" || [[ ! "$streak" =~ ^[0-9]+$ ]]; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not read $pr_url's own review history to count a refuse streak — no App review was posted this round" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+  if ! token="$(approver_token_get "")"; then
+    log_event "warning" "$(jq -nc --arg u "$pr_url" \
+      --arg d "could not mint the Approver's installation token — no App review was posted on $pr_url" \
+      '{detail: $d, pr_url: $u}')"
+    return 0
+  fi
+
+  tier="$(approver_tier_for "$complexity")"
+
+  if (( streak >= 2 )); then
+    adjudicating=1
+    mode="adjudication"
+    model="$approver_model_critical"
+  elif [[ "$tier" == "trivial" ]]; then
+    # Deterministic: complexity:low already means "docs, comments, or
+    # register entries only; no behaviour change" (requirement 26a) — no
+    # model call, zero tokens, per the design's own framing of this tier
+    # (docs/reviews/2026-08-14-autonomy-investigation.md §5.2).
+    verdict="approve"
+    reasons_json='["complexity:low — deterministic approval, no model engagement (D18 §5.2)"]'
+  else
+    mode="tier"
+    model="$(approver_model_for_tier "$tier" "$approver_model_default" "$approver_model_complex")"
+  fi
+
+  if [[ -n "$mode" ]]; then
+    if [[ -z "$model" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "no Approver model resolved for tier $tier on $pr_url (every configured tier fell back to empty) — no App review was posted this round" \
+        '{detail: $d, pr_url: $u}')"
+      return 0
+    fi
+
+    prior_section=""
+    if (( adjudicating )); then
+      prior_section="
+## Prior refusals
+
+$(approver_prior_refusal_bodies "$pr_url" "$login")
+"
+    fi
+
+    prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver "$prompt_overrides_json")
+
+## Work order
+
+\`\`\`json
+$(jq . <<<"$work_order_json")
+\`\`\`
+
+## Implementor summary
+
+\`\`\`json
+$(jq . <<<"$impl_status_json")
+\`\`\`
+
+## Reviewer summary
+
+\`\`\`json
+$(jq . <<<"$rev_status_json")
+\`\`\`
+
+## Tier
+
+$([[ $adjudicating -eq 1 ]] && printf 'adjudication' || printf '%s' "$tier")
+$prior_section
+## Cycle
+
+$cycle_id
+
+## Node
+
+$node_name
+"
+    out="$cycle_dir/approver.out"
+    stage_budget_apply approver "$selected_repo" "$model" \
+      "$(jq -nc --arg t "$tier" --arg m "$mode" '{complexity: $t, mode: $m}')"
+    if run_claude_stage approver "$(( stage_backstop_min * 60 ))" "$model" "$prompt" "$out" "$clone_dir" "$(( stage_inactivity_min * 60 ))"; then
+      rc=0
+    else
+      rc=$?
+    fi
+    log_event "stage-end" "$(jq -nc --argjson rc "$rc" --arg kr "$stage_kill_reason" --argjson m "$(metering_fields "$model" "$out" "$stage_gaps_json")" \
+      '{stage: "approver", exit_code: $rc} + (if $kr == "" then {} else {kill_reason: $kr} end) + $m')"
+    approver_watchdog_warning="$(stage_watchdog_warning approver || true)"
+    [[ -n "$approver_watchdog_warning" ]] && log_event "warning" "$approver_watchdog_warning"
+    (( ONCE )) && dump_stage_output "$out"
+
+    status_json="$(extract_json_result "$(jq -r '.result // empty' "$out" 2>/dev/null || true)" 2>/dev/null || true)"
+    if (( rc == 0 )) && [[ -z "$status_json" ]]; then
+      status_json="$(stage_salvage_result approver "$out" "$model" "$clone_dir" || true)"
+    fi
+
+    if (( rc != 0 )) || [[ -z "$status_json" ]]; then
+      log_event "warning" "$(jq -nc --arg u "$pr_url" \
+        --arg d "the Approver stage did not return a parseable verdict for $pr_url — no App review was posted this round" \
+        '{detail: $d, pr_url: $u}')"
+      if (( adjudicating )); then
+        approver_escalate "$pr_url" \
+          '["the adjudication engagement did not return a parseable verdict — treated as \"cannot settle\" (D18 §5.2)"]'
+      fi
+      return 0
+    fi
+
+    verdict="$(jq -r '.verdict // empty' <<<"$status_json")"
+    reasons_json="$(jq -c '[.reasons[]? | select(type == "string")]' <<<"$status_json" 2>/dev/null)"
+    [[ "$reasons_json" != "null" && -n "$reasons_json" ]] || reasons_json='[]'
+  fi
+
+  review_body="$(jq -r 'if length == 0 then "(no reasons given)" else map("- " + .) | join("\n") end' <<<"$reasons_json")"
+
+  if (( adjudicating )); then
+    case "$verdict" in
+      land)
+        approver_post_review "$pr_url" APPROVE "$review_body" "$token" || true
+        ;;
+      refuse)
+        approver_post_review "$pr_url" REQUEST_CHANGES "$review_body" "$token" || true
+        approver_escalate "$pr_url" "$reasons_json"
+        ;;
+      escalate)
+        approver_escalate "$pr_url" "$reasons_json"
+        ;;
+      *)
+        approver_escalate "$pr_url" \
+          '["the adjudication engagement returned an unrecognised verdict — treated as \"cannot settle\" (D18 §5.2)"]'
+        ;;
+    esac
+  else
+    case "$verdict" in
+      approve)
+        approver_post_review "$pr_url" APPROVE "$review_body" "$token" || true
+        ;;
+      refuse)
+        approver_post_review "$pr_url" REQUEST_CHANGES "$review_body" "$token" || true
+        ;;
+      *)
+        log_event "warning" "$(jq -nc --arg u "$pr_url" --arg v "${verdict:-empty}" \
+          --arg d "the Approver returned an unrecognised verdict (\"$v\") for $pr_url — no App review was posted this round" \
+          '{detail: $d, pr_url: $u}')"
+        ;;
+    esac
+  fi
+
+  adj_bool="false"
+  (( adjudicating )) && adj_bool="true"
+  log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg t "$tier" \
+    --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
+    '{pr_url: $u, tier: $t, verdict: $v, refuse_streak: $s, adjudication: $adj}')"
+  return 0
 }
 
 # --- The Enabler's state for this cycle (requirements 35, 37) ---
@@ -7242,6 +7510,18 @@ if [[ "$rev_status" == "ready" ]]; then
   # claim pr-raised left standing above is released only now, at the actual
   # handoff, not back when the item-keyed claim was.
   release_pr_claim
+
+  # --- 8b. Approver stage (D18 WI-5) ---
+  # After every existing gate has passed and the handoff itself is complete —
+  # review_gate_verdict, the closing-keyword gate, confirm_pr_ready,
+  # confirm_review_requested, ensure_human_reviewer, the pr-ready log and the
+  # claim release, all above — the tiered Approver gets one independent look,
+  # for every repository whose merge_autonomy is above `human`. Placed last
+  # and gating nothing above it: a refusal is a GitHub review sitting on an
+  # already-ready pull request, not a reason to withhold the pr-ready log or
+  # the claim release, exactly as a human's own CHANGES_REQUESTED never
+  # withheld either of those — so this runs after both, never before.
+  run_approver_stage "$impl_pr_url" "$rev_complexity"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —
