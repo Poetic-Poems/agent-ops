@@ -8,7 +8,7 @@
 # back would stop the implementation cycles for the same window — and the case
 # this exists for is precisely "no reviews until Thursday, but keep working".
 #
-# Five behaviours, and the middle three are the ones that would fail quietly:
+# Six behaviours, and the middle four are the ones that would fail quietly:
 #
 #   in force      a timestamp in the future stands the review down, and says so
 #                 in the log with the date attached, so an operator reading
@@ -28,14 +28,20 @@
 #                 holds it off, the whole cycle stands down before the lock
 #                 too, rather than taking it for a run R4's skip-guard would
 #                 skip every repository of anyway
+#   mixed         and the converse: one repository held on its own override
+#                 while another is free stands *neither* tier down — the cycle
+#                 runs, and R4's per-repository skip-guard turns the held one
+#                 away by name. A `not_before` that only ever ran cycle-wide
+#                 passes every case above and fails this one alone
 #
 # Each case runs the real `review-cycle.sh` against a shim node: a directory of
 # symlinks back into the tree with its own `config.json`, which works because
 # the script takes SCRIPT_DIR from its own path and reads config from there.
 # `project_review.repos` is emptied so a run that is *not* stood down still finishes
-# without reaching for the network — except the tier-two case, which needs real
-# entries to exercise the per-repository resolution, and relies instead on the
-# stand-down itself firing before any repository is touched.
+# without reaching for the network — except the last two cases, which need real
+# entries to exercise the per-repository resolution: the tier-two case relies on
+# the stand-down itself firing before any repository is touched, and the mixed
+# case, which by design gets past it, on the fail-fast shims described below.
 #
 # No network. Run directly: ./test/review-not-before.test.sh — exit 0 iff all
 # passed.
@@ -109,6 +115,33 @@ run_review() {  # run_review <dir> -> prints stdout+stderr, sets RC
   printf '%s' "$out"
 }
 
+# The mixed case below is the one that must survive the stand-down checks and
+# run on into the per-repository skip-guard, so it cannot rely on an empty
+# `project_review.repos` to keep it offline the way every other case here does.
+# Fail-fast shims stand in the way of every reach for the network instead, on
+# the same reasoning test/review-claim.test.sh gives at its own copy: a test
+# that needs a step not to happen must be the thing that stops it, rather than
+# passing on a machine without egress and failing on a CI runner with one. The
+# skip-guard's own `gh` reads degrade to "proceed" when they fail, which is
+# what makes the not_before skip the only reason either repository can be
+# skipped for here.
+fail_bin="$tmp_dir/fail-bin"
+mkdir -p "$fail_bin"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fail_bin/gh"
+printf '#!/usr/bin/env bash\nexit 1\n' > "$fail_bin/claude"
+chmod +x "$fail_bin/gh" "$fail_bin/claude"
+
+run_review_offline() {  # run_review_offline <dir> -> prints stdout+stderr, sets RC
+  local dir="$1" out
+  out="$(env HOME="$dir/home" AGENT_OPS_ROLE=active NODE_NAME="$(basename "$dir")" \
+    PATH="$fail_bin:$PATH" TOGGLE_GH=/bin/false CLAIM_GH=/bin/false \
+    CLONE_GIT=/bin/false \
+    GIT_USER_NAME="Test Node" GIT_USER_EMAIL="test-node@example.invalid" \
+    timeout 180 "$dir/review-cycle.sh" --once 2>&1)"
+  RC=$?
+  printf '%s' "$out"
+}
+
 events_of() {  # events_of <dir> -> the review log, one JSON object per line
   cat "$1/home/.local/state/poetic-agents/review-log.jsonl" 2>/dev/null || true
 }
@@ -174,6 +207,30 @@ assert_contains "every repository held on its own override stands the whole cycl
 assert_contains "naming requirement 342, the resolution rule tier one alone would miss" \
   "every configured repository's own not_before holds it off (requirement 342)" \
   "$(stand_down_reason "$d")"
+assert_eq "and the tick still ends 0" "0" "$RC"
+
+# --- Mixed: one repository held on its own override, one not ---------------------
+# The other half of requirement 342's two-tier rule, and the half with nothing
+# above it to catch a regression: neither tier may stand the *cycle* down here,
+# because one repository is free to be reviewed — the held one has to be turned
+# away by R4's per-repository skip-guard instead, once the cycle is under way.
+# A `not_before` check that only ever ran cycle-wide would pass every assertion
+# in this file except these.
+d="$(make_node mixed-one-held ".project_review.defaults.not_before = \"\" \
+  | .project_review.repos = [ {slug: \"Poetic-Poems/poetic\", not_before: \"2099-01-01T00:00:00Z\"}, \
+                               {slug: \"Poetic-Poems/poetic-fiddle\"} ] \
+  | .state_repo = \"\"")"
+out="$(run_review_offline "$d")"
+assert_lacks "one free repository is enough to keep tier two from firing" \
+  "every configured repository's own not_before" "$out"
+assert_lacks "and tier one has nothing to say either" "standing down until" "$out"
+assert_contains "the held repository is skipped by name, with its own date" \
+  "skip Poetic-Poems/poetic — not_before: no review before 2099-01-01T00:00:00Z" "$out"
+assert_eq "and the skip is recorded against that repository alone" \
+  "Poetic-Poems/poetic" \
+  "$(events_of "$d" | jq -r 'select(.event == "review-skipped" and (.detail | startswith("not_before"))) | .repo' 2>/dev/null)"
+assert_lacks "the repository inheriting the empty default is not held back by it" \
+  "skip Poetic-Poems/poetic-fiddle — not_before" "$out"
 assert_eq "and the tick still ends 0" "0" "$RC"
 
 # --- Unparseable -----------------------------------------------------------------

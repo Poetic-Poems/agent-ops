@@ -808,10 +808,14 @@ a pull request, run the ones the change touches and any it could regress.
    configured repository's own `not_before` override is still in the future,
    the cycle stands down before the lock too, logging one `review-stand-down`
    naming requirement 342. An empty `project_review.repos` is vacuously *not*
-   a stand-down. Tier two is the half that fails quietly: tier one alone reads
-   the installation-wide key, so a fleet held entirely on per-repository
-   overrides would take the lock on every tick for a run R4's skip-guard then
-   skips every repository of.
+   a stand-down. And the converse, which is what proves the two tiers are
+   really two: with one repository held on its own override while another is
+   free, neither tier fires, the cycle runs, and R4's skip-guard turns the
+   held repository away by name with its own date while the free one goes on
+   to be claimed. Check that case specifically — a `not_before` that had
+   quietly stayed cycle-wide passes every other assertion in that file and
+   fails only this one, and the failure it stands for is a repository nobody
+   asked to hold being held by its neighbour's date.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `tech-debt/`
    change but **not** `.claude/skills/project-review/` — confirm the injected
