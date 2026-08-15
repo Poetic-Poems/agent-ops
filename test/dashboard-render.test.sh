@@ -633,36 +633,39 @@ assert_contains "an enqueued-then-dequeued pull request belongs in the attention
   "removed from the merge queue without merging" "$out"
 
 # --- the cost section's column flow and its reading order (issue #330) -----------
-# The four cost blocks share one multi-column container, so the *split* between
+# The five cost blocks share one multi-column container, so the *split* between
 # columns is the browser's to choose by height and is not assertable here — no
 # layout, by design. What is assertable is the thing that choice rests on: a
 # multi-column flow fills each column top-to-bottom in document order, so
-# document order is the visual order, and the four blocks appended out of turn
+# document order is the visual order, and the blocks appended out of turn
 # would reorder the page silently while every existing assertion still passed.
-# The note's depth is checked with them because it is the block that moved: it
-# used to be a paragraph appended after the section, and only counts as the
-# last block of the flow if it is inside the container.
+# The notes' depth is checked with them because they are the blocks that
+# moved: the first used to be a paragraph appended after the section, and
+# only counts as a block of the flow if it is inside the container.
 out="$(render finished.json)" || { printf 'FAIL - finished.json did not render:\n%s\n' "$out"; exit 1; }
 
 assert_contains "the cost blocks share one multi-column container" \
   '<div class="costgrid">' "$out"
 assert_not_contains "and not the fixed two-column grid it replaced" \
   '<div class="two">' "$out"
+assert_contains "a second cost note names the page's fixed currency (issue #438)" \
+  "US dollars (USD)" "$out"
 
-# Each of the four markers occurs once in the page, so their order in the dump
-# is their order in the flow.
+# Bounded by the next section's own heading, since both `p.costnote` markers
+# now occur inside the grid and a range ending at the first would silently
+# drop the second one.
 cost_order="$(printf '%s\n' "$out" \
-  | sed -n '/<div class="costgrid">/,/<p class="costnote">/p' \
+  | sed -n '/<div class="costgrid">/,/Recent log events/p' \
   | grep -oE 'Est\. token cost by (day|model|actor)|class="costnote"' \
   | tr '\n' ' ')"
-assert_eq "the cost blocks flow in reading order — day, model, actor, then the note" \
-  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" ' \
+assert_eq "the cost blocks flow in reading order — day, model, actor, then both notes" \
+  'Est. token cost by day Est. token cost by model Est. token cost by actor class="costnote" class="costnote" ' \
   "$cost_order"
 
 # The serialiser indents two spaces per level, so six spaces is a child of the
 # container (four) inside the section (two) — the depth the three chart blocks
 # sit at, and no longer that of a paragraph appended beside the section.
-assert_contains "the note is a block of that container, not a paragraph after the section" \
+assert_contains "the notes are blocks of that container, not paragraphs after the section" \
   '      <p class="costnote">' "$out"
 
 # --- switch-scope-*.json: which switch a node card is actually claiming ----------
