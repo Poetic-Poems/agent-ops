@@ -733,17 +733,22 @@ if ((gh_ready)); then
   # forcing every repo to human (an expired record reads as neither word).
   #
   # A real kill and a fail-closed synthesis both read "disabled" here, and an
-  # operator needs to tell them apart (TD-PPagop-26081602): only a genuine
-  # `--kill-merge-autonomy` record carries `kind: "manual"`
-  # (merge_autonomy_kill_set); the synthesised fail-closed record
-  # merge_autonomy_kill_state prints when the state repo — or its
-  # repo-existence probe — is unreachable has no `kind` field at all.
+  # operator needs to tell them apart (TD-PPagop-26081602). The synthesis is
+  # what identifies itself — `kind: "fail-closed"`, which
+  # merge_autonomy_kill_state writes and nothing else does — rather than the
+  # real kill being recognised by `kind: "manual"`: a flag file an operator
+  # set by hand through GitHub's web editor, and one that arrived garbled
+  # (which merge_autonomy_kill_state reads as set, deliberately), are both
+  # genuine kills carrying no `kind` at all, and reporting either of those as
+  # "could not be confirmed clear … until a fetch succeeds" would send its
+  # reader hunting a state-repo outage that is not happening — and withhold
+  # the one command that clears the switch they actually have.
   if [[ "$ma_kill_state" == "enabled" ]]; then
     ok "the merge-autonomy kill switch is not set — merge_autonomy governs as configured"
-  elif [[ "$(jq -r '.record.kind // ""' <<<"$ma_kill_json" 2>/dev/null)" == "manual" ]]; then
-    warn "the merge-autonomy kill switch is SET — every repo's effective level is forced to human regardless of merge_autonomy; agent-cycle.sh --restore-merge-autonomy clears it"
-  else
+  elif [[ "$(jq -r '.record.kind // ""' <<<"$ma_kill_json" 2>/dev/null)" == "fail-closed" ]]; then
     warn "the merge-autonomy kill switch could not be confirmed clear — $(jq -r '.record.reason // "state repo unreachable"' <<<"$ma_kill_json" 2>/dev/null) — every repo's effective level is forced to human until a fetch succeeds"
+  else
+    warn "the merge-autonomy kill switch is SET — every repo's effective level is forced to human regardless of merge_autonomy; agent-cycle.sh --restore-merge-autonomy clears it"
   fi
 
   if [[ -n "$enabler_assignee" ]]; then

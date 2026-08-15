@@ -1452,10 +1452,13 @@ implements.
    to its last-fetched cache. So a misconfigured `state_repo` slug or a token
    whose scopes lost access to it fails closed on the same terms as a DNS
    failure would, not clear. `scripts/doctor.sh`'s kill-switch report
-   distinguishes a genuine `--kill-merge-autonomy` (`record.kind: "manual"`)
-   from this fail-closed synthesis (no `kind` at all), so an operator reading
-   `[warn] the merge-autonomy kill switch is SET` versus `[warn] … could not
-   be confirmed clear` is told which one they are looking at, alongside
+   distinguishes this fail-closed synthesis — which names itself
+   `record.kind: "fail-closed"`, a marker `merge_autonomy_kill_state` writes
+   and nothing else does — from every genuine kill, including one set by
+   hand through GitHub's web editor and one that arrived garbled, neither of
+   which carries a `kind` at all. So an operator reading `[warn] the
+   merge-autonomy kill switch is SET` versus `[warn] … could not be confirmed
+   clear` is told which one they are looking at, alongside
    `check_repo_access`'s own report of `state_repo` unreachable-or-invisible.
 
    Managed by `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
@@ -12555,11 +12558,14 @@ requirements above, which state only what is.
   now gets the same cached-or-unreachable handling a transport failure on
   the flag fetch itself gets, so it fails closed on the same terms rather
   than being read as clear. `scripts/doctor.sh`'s kill-switch report gained
-  the matching distinction: a genuine `--kill-merge-autonomy`
-  (`record.kind: "manual"`) reads `SET`, this fail-closed synthesis (no
-  `kind` at all) reads `could not be confirmed clear`, so an operator is no
-  longer left reading `check_repo_access`'s state-repo report as the only
-  way to tell the two apart.
+  the matching distinction, keyed on the synthesis naming itself
+  (`record.kind: "fail-closed"`) rather than on a real kill naming itself
+  `manual`: a hand-written flag file and a garbled one are both genuine
+  kills carrying no `kind` at all, so the report keys on the one record whose
+  shape it controls. A kill reads `SET`, the synthesis reads `could not be
+  confirmed clear`, and an operator is no longer left reading
+  `check_repo_access`'s state-repo report as the only way to tell the two
+  apart.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
   end-state is exactly one Approver App identity governing the whole
   installation (§6 — the same fact that denies the kill switch a

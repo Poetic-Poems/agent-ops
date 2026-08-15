@@ -233,6 +233,9 @@ assert_eq "and merge_autonomy_effective_level answers human regardless of the co
 assert_eq "the synthesised record names why, for a human reading --status/doctor.sh" \
   "state repo unreachable and no cached copy" \
   "$(GH_STUB_MODE=down merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.record.reason' | grep -o 'state repo unreachable and no cached copy')"
+assert_eq "and names itself fail-closed rather than leaving doctor.sh to infer it from a missing kind" \
+  "fail-closed" \
+  "$(GH_STUB_MODE=down merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.record.kind // ""')"
 
 # Once reachable again (or once a cache exists), the same fresh node reads
 # clear exactly as before — the fail-closed direction is confined to the
@@ -254,8 +257,8 @@ assert_eq "a fresh node behind a repo-level 404, no cache, fails the kill switch
   "$(GH_STUB_MODE=repo-404 merge_autonomy_kill_state "$slug" "$fs_repo404" | jq -r '.state')"
 assert_eq "and merge_autonomy_effective_level answers human, same as a transport failure" "human" \
   "$(GH_STUB_MODE=repo-404 merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_repo404")"
-assert_eq "the synthesised record carries no manual kind, so doctor.sh can tell it apart from a real kill" \
-  "" \
+assert_eq "the synthesised record names itself fail-closed, so doctor.sh can tell it apart from a real kill" \
+  "fail-closed" \
   "$(GH_STUB_MODE=repo-404 merge_autonomy_kill_state "$slug" "$fs_repo404" | jq -r '.record.kind // ""')"
 
 # An established node with a cached (set) copy still falls back to it when
@@ -295,6 +298,27 @@ assert_eq "a hand-edited, pretty-printed flag still reads disabled" "disabled" \
 assert_eq "and keeps the operator's own reason rather than truncating to line one" \
   "hand-set through the web editor" \
   "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.reason')"
+
+# The `kind` marker is what scripts/doctor.sh's report keys on, so the two
+# genuine kills that carry no `kind` of their own must not be mistaken for
+# the fail-closed synthesis: a hand-written record (nothing obliges an
+# operator typing into the web editor to include the field toggle_disable
+# would have written) and a garbled one (read as set, deliberately). Either
+# reported as "could not be confirmed clear" would send its reader after a
+# state-repo outage that is not happening.
+cat > "$gh_backing/fleet/merge-autonomy-kill.json" <<'MINIMAL'
+{"reason": "stop everything now", "by": "an operator in a hurry", "expires_at": null}
+MINIMAL
+assert_eq "a hand-written record with no kind is still a real kill, not the synthesis" "disabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.state')"
+assert_eq "and carries no fail-closed marker, so doctor.sh reports it SET" "" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.kind // ""')"
+
+printf 'not json at all\n' > "$gh_backing/fleet/merge-autonomy-kill.json"
+assert_eq "a garbled record reads as set, the same as every other flag lib/toggle.sh evaluates" \
+  "disabled" "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.state')"
+assert_eq "and carries no fail-closed marker either" "" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.kind // ""')"
 rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 
 echo

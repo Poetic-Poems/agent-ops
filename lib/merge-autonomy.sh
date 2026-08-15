@@ -108,6 +108,14 @@ merge_autonomy_configured_level() {
 # scopes lost access now fails closed the same as a DNS failure would.
 # present-but-garbage reads as set, not clear, the same as every other flag
 # lib/toggle.sh evaluates.
+#
+# The synthesised fail-closed record names itself — `kind: "fail-closed"`,
+# written here and nowhere else — so a reader can tell "nobody could read the
+# switch" from "somebody set the switch" without inferring it from the
+# absence of `kind: "manual"`: a flag file set by hand through GitHub's web
+# editor, and the present-but-garbage record above, are both genuine kills
+# and neither carries a `kind` at all (scripts/doctor.sh is the reader that
+# needs this).
 merge_autonomy_kill_state() {
   local combined status raw
   combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"
@@ -118,7 +126,7 @@ merge_autonomy_kill_state() {
   raw="${combined#*$'\t'}"
   if [[ -z "$raw" ]]; then
     if [[ "$status" == "unreachable" ]]; then
-      printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":""}}'
+      printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":"","kind":"fail-closed"}}'
       return 0
     fi
     printf '{"state":"enabled"}'
