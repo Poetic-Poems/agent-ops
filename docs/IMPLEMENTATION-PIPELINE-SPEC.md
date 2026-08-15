@@ -3544,6 +3544,11 @@ runs unattended.
    `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
    whose three arguments are a repo's whole reviews, comments and rerequests
    (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
+   TD-PPagop-26081502 converted the one site TD-PPagop-26081406 found but did
+   not enumerate: `agent-cycle.sh`'s own invocation of
+   `scripts/gather-human-visibility-hygiene.sh`, which handed that script's
+   whole `$violations` argument as a single argv element to the script's own
+   `execve` (`test/gather-human-visibility-hygiene.test.sh`).
    TD-PPagop-26081503 completed the sweep over four further sites found after
    TD-PPagop-26081406 resolved: `gather-source-state.sh`'s final state build
    (`test/gather-source-state.test.sh`), `gather-findings.sh`'s
@@ -3585,15 +3590,32 @@ runs unattended.
    bytes back into a single argv element and leave the threshold where it
    was. Their tests drive each build with a body past the cap.
 
-   One site outside every prior item's enumeration still delivers a
-   fleet-state aggregate in argv, and is filed rather than fixed:
+   No site outside every prior item's enumeration remains outstanding: the
+   two sites this requirement once filed rather than fixed —
    `agent-cycle.sh`'s own invocation of
-   `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
+   `scripts/gather-human-visibility-hygiene.sh`, which handed that script's
    whole `$violations` argument as a single argv element to the script's own
-   `execve`, a cap this requirement's `jq`-specific framing had not considered
-   until TD-PPagop-26081406 found it (TD-PPagop-26081502). That item is the
-   outstanding residue; this requirement claims no more than the sites named
+   `execve` (TD-PPagop-26081502), and `publish-dashboard.sh`'s own per-repo
+   `prs_json` fold and its queue-answers merge, both upstream of the
+   `github_json` build TD-PPagop-26081503 converted and still carrying the
+   fleet-wide PR index into `jq` as `--argjson` (TD-PPagop-26081506) — are
+   both now converted; this requirement claims no more than the sites named
    above.
+
+   **A shell script's own CLI invocation is bound by the same cap.**
+   `MAX_ARG_STRLEN` is a kernel-wide per-argument `execve` limit, not a
+   `jq`-specific one, and it binds a script's own positional arguments
+   exactly as it binds `jq --argjson` — a cap this requirement's
+   `jq`-specific framing had not considered until TD-PPagop-26081406 found
+   it (TD-PPagop-26081502). `agent-cycle.sh` used to hand
+   `scripts/gather-human-visibility-hygiene.sh` the fleet-wide
+   human-visibility violations log as that script's own second positional
+   argument, unbounded past the call; the script now reads it from stdin
+   instead, the same shape its own internal `jq` calls already took, and
+   `agent-cycle.sh` pipes `$violations` in rather than passing it
+   positionally. Regression-pinned in
+   `test/gather-human-visibility-hygiene.test.sh` by driving the real
+   script directly over a violations log genuinely past the cap.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is

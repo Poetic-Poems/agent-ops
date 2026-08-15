@@ -2279,11 +2279,13 @@ gather_register_hygiene() {
 # about, so the two never share a candidate or a ref (see
 # scripts/gather-human-visibility-hygiene.sh). `violations` is the fleet-wide
 # array `human_visibility_violations` produced from the union log; the script
-# itself filters to this repo's slice.
+# itself filters to this repo's slice. Piped on stdin, never argv — it is
+# unbounded past this call and subject to `MAX_ARG_STRLEN` exactly as `jq
+# --argjson` is (requirement 4g; tech-debt/TD-PPagop-26081502.md).
 gather_human_visibility_hygiene() {
   local slug="$1" violations="${2:-[]}" out safe
   safe="${slug//\//_}"
-  out="$("$SCRIPT_DIR/scripts/gather-human-visibility-hygiene.sh" "$slug" "$violations" "$pr_label" \
+  out="$(printf '%s' "$violations" | "$SCRIPT_DIR/scripts/gather-human-visibility-hygiene.sh" "$slug" "$pr_label" \
         2>"$cycle_dir/human-visibility-hygiene-$safe.err" || true)"
   if [[ -n "$out" ]] && jq -e 'type == "array"' <<<"$out" >/dev/null 2>&1; then
     printf '%s\n' "$out" > "$cycle_dir/human-visibility-hygiene-$safe.json"
