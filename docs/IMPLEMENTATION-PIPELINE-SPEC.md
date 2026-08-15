@@ -7564,7 +7564,7 @@ runs unattended.
       draft, then survives its own warning class's own live check: a
       `could not request review from …` warning survives only while no human
       review is currently requested or already given (`gh pr view --json
-      reviewDecision,reviewRequests` — a pending `reviewRequests` entry, once
+      reviewRequests,reviews` — a pending `reviewRequests` entry, once
       filtered of a Bot-typed or `[bot]`-suffixed one the same way
       `ensure_human_reviewer`'s own pending read is (requirement 38a,
       tech-debt/TD-PPagop-26081403.md; here the filter is defensive, keyed
@@ -7572,8 +7572,15 @@ runs unattended.
       `__typename`-keyed `User`/`Team` entries and drops Bot reviewers from
       the array entirely, so a Copilot-only request already arrives as `[]`;
       see Gotchas) — a requested team counts, neither
-      reader's filter can ever drop one — or a `reviewDecision` of `APPROVED`
-      or `CHANGES_REQUESTED`, is the request having worked after all); a
+      reader's filter can ever drop one — or a non-bot review with state
+      `APPROVED` or `CHANGES_REQUESTED` already exists, is the request having
+      worked after all. This is read from the reviews list, never
+      `reviewDecision` (agent-ops#391, TD-PPagop-26081505): that field is
+      computed against the base branch's *required* approving review count,
+      and on this repository's own ruleset, which sets that count to `0`, it
+      can never become `APPROVED` however many humans approve, so a check
+      keyed on it directly could never fire here — the same reasoning
+      requirement 38c's own `_handoff_pr_approved` read already applies); a
       `could not post the idle nudge comment` warning survives only while no
       comment carries both the exact `<!-- agent-ops:human-nudge -->`
       HTML-comment form and `lib/pipeline-marker.sh`'s own
@@ -8217,10 +8224,12 @@ What exists, and the requirements each part answers to:
    repo-level listing failure only if the listing still fails; a pull request
    only if it is still open and not a draft, and its own warning class's own
    live signal still holds: a `could not request review from …` warning only
-   while `gh pr view --json reviewDecision,reviewRequests` shows no live
+   while `gh pr view --json reviewRequests,reviews` shows no live
    request (Bot-typed — `__typename`-keyed on this reader — and
    `[bot]`-suffixed entries excluded, a requested team
-   counted — tech-debt/TD-PPagop-26081403.md) and no review yet given; a
+   counted — tech-debt/TD-PPagop-26081403.md) and no non-bot review with
+   state `APPROVED` or `CHANGES_REQUESTED` yet given — never read from
+   `reviewDecision` (agent-ops#391, TD-PPagop-26081505); a
    `could not post the idle nudge comment` warning only while no comment
    carries both the exact `agent-ops:human-nudge` HTML-comment form and the
    pipeline-marker stamp on the same comment (agent-ops#390, #428); a `no legal
@@ -11141,8 +11150,10 @@ pull request, run the ones the change touches and any it could regress.
     is dropped the moment a fresh listing succeeds; a pull-request violation
     of any class is dropped once it is merged, closed, or back in draft; a
     `could not request review from …` violation is dropped once
-    `reviewRequests` is non-empty, and separately once `reviewDecision` reads
-    `APPROVED` or `CHANGES_REQUESTED`, and otherwise survives; a
+    `reviewRequests` is non-empty, and separately once a non-bot review with
+    state `APPROVED` or `CHANGES_REQUESTED` exists in the reviews list —
+    never `reviewDecision`, agent-ops#391, TD-PPagop-26081505 — and otherwise
+    survives; a
     `reviewRequests` entry typed `Bot` (keyed `__typename`, the
     discriminator `gh pr view`'s exporter actually emits) or naming a
     `[bot]`-suffixed login alone does not drop it, while a
