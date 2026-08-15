@@ -133,13 +133,21 @@ approver_refuse_streak() {
   # inside `--jq` would be computed per page and silently disagree with
   # itself past thirty reviews (the same trap `_handoff_latest_reviews`'s own
   # header documents). The aggregation happens below, over every page at once.
+  #
+  # The login filter runs in the second jq call, not here: `gh api --jq`
+  # takes one query string and nothing else — it has no `--arg` of its own to
+  # parameterise that query with, so a login can only be woven in by string
+  # interpolation (fragile the moment a login carries a character jq's
+  # string-literal syntax cares about) or, as here, left for a real `jq`
+  # invocation downstream that has genuine `--arg` support.
   lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
-            --jq --arg l "$login" \
-            '.[] | select(.submitted_at != null and (.user.login // "") == $l)
-                 | {at: .submitted_at, state: .state}' 2>/dev/null)" || return 1
+            --jq '.[] | select(.submitted_at != null)
+                      | {login: .user.login, at: .submitted_at, state: .state}' \
+            2>/dev/null)" || return 1
 
-  jq -s -r '
-    sort_by(.at) | reverse
+  jq -s -r --arg l "$login" '
+    map(select(.login == $l))
+    | sort_by(.at) | reverse
     | reduce .[] as $r ({stopped: false, count: 0};
         if .stopped then .
         elif $r.state == "CHANGES_REQUESTED" then {stopped: false, count: (.count + 1)}
@@ -188,13 +196,15 @@ approver_prior_refusal_bodies() {
   [[ -n "$url" && -n "$login" ]] || return 0
   parts="$(_approver_pr_parts "$url")" || return 0
   IFS=$'\t' read -r slug number <<<"$parts"
+  # Same split as approver_refuse_streak: `gh api --jq` has no `--arg` of its
+  # own, so the login filter runs in the second, genuine `jq` call below.
   lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
-            --jq --arg l "$login" \
-            '.[] | select(.submitted_at != null and (.user.login // "") == $l
-                          and .state == "CHANGES_REQUESTED")
-                 | {at: .submitted_at, body: (.body // "")}' 2>/dev/null)" || return 0
-  jq -s -r '
-    sort_by(.at)[]
+            --jq '.[] | select(.submitted_at != null and .state == "CHANGES_REQUESTED")
+                      | {login: .user.login, at: .submitted_at, body: (.body // "")}' \
+            2>/dev/null)" || return 0
+  jq -s -r --arg l "$login" '
+    map(select(.login == $l))
+    | sort_by(.at)[]
     | "### " + .at + "\n\n" + .body
   ' <<<"$lines" 2>/dev/null || return 0
 }

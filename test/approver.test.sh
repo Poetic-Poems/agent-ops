@@ -87,18 +87,19 @@ if [[ "$1 $2" == "api -X" ]]; then
   printf 'token=%s\tevent=%s\tbody=%s\n' "${GH_TOKEN:-}" "$event" "$body" >>"$d/posts"
   exit 0
 fi
-# A GET against .../reviews. The two callers ask for different shapes via
-# --jq, distinguished the same way the real filters differ: only
-# approver_prior_refusal_bodies' own filter names CHANGES_REQUESTED and body
-# explicitly.
+# A GET against .../reviews. `gh api --jq` takes one query string with no
+# `--arg` of its own, so — matching the real functions — neither call filters
+# by login here; that happens in the real, un-stubbed second `jq --arg`
+# call each function pipes this output through. The two callers ask for
+# different shapes via --jq, distinguished the same way the real filters
+# differ: only approver_prior_refusal_bodies' own filter names
+# CHANGES_REQUESTED and body explicitly.
 if [[ "$*" == *"CHANGES_REQUESTED"* ]]; then
-  jq -c --arg l "$APPROVER_TEST_LOGIN" \
-    '.[] | select(.submitted_at != null and (.user.login // "") == $l and .state == "CHANGES_REQUESTED")
-         | {at: .submitted_at, body: (.body // "")}' "$d/reviews"
+  jq -c '.[] | select(.submitted_at != null and .state == "CHANGES_REQUESTED")
+             | {login: .user.login, at: .submitted_at, body: (.body // "")}' "$d/reviews"
 else
-  jq -c --arg l "$APPROVER_TEST_LOGIN" \
-    '.[] | select(.submitted_at != null and (.user.login // "") == $l)
-         | {at: .submitted_at, state: .state}' "$d/reviews"
+  jq -c '.[] | select(.submitted_at != null)
+             | {login: .user.login, at: .submitted_at, state: .state}' "$d/reviews"
 fi
 STUB
 chmod +x "$tmp_dir/gh"
@@ -114,7 +115,6 @@ set_reviews() {  # <json review>...
 }
 reset_stub() {
   : >"$tmp_dir/posts"; : >"$tmp_dir/api-fail"
-  export APPROVER_TEST_LOGIN="pullwright-approver[bot]"
 }
 posts() { wc -l <"$tmp_dir/posts" | tr -d ' '; }
 
