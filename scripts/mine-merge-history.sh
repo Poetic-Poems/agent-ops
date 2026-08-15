@@ -196,11 +196,12 @@ mine_repo() {
 # baseline and simpler to reproduce by hand than an interpolated figure.
 # shellcheck disable=SC2016  # jq's own $prs/$count/etc, not the shell's.
 AGGREGATE_JQ='
+def round1: (. * 10 | round) / 10;
 def rank_pick(p):
   sort as $s
   | ($s | length) as $n
   | if $n == 0 then null
-    else $s[ ( ( ($n - 1) * p ) | round ) ]
+    else $s[ ( ( ($n - 1) * p ) | round ) ] | round1
     end;
 
 . as $prs
@@ -223,11 +224,11 @@ def rank_pick(p):
         {number: $pr.number,
          kind: (if ($xref_hit.title // "" | ascii_downcase | startswith("revert")) then "revert" else "follow-up-fix" end),
          reason: "reference", by: $xref_hit.number, by_title: $xref_hit.title,
-         hours_after: (((($xref_hit.merged_at | fromdate) - $m) / 3600) | (. * 10 | round) / 10)}
+         hours_after: (((($xref_hit.merged_at | fromdate) - $m) / 3600) | round1)}
       elif $file_hit != null then
         {number: $pr.number, kind: "follow-up-fix", reason: "file-overlap",
          by: $file_hit.number, by_title: $file_hit.title,
-         hours_after: (((($file_hit.merged_at | fromdate) - $m) / 3600) | (. * 10 | round) / 10)}
+         hours_after: (((($file_hit.merged_at | fromdate) - $m) / 3600) | round1)}
       else null end
   ) | map(select(. != null))) as $outcomes
 | {count: $count,
