@@ -1,0 +1,57 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m",
+    "prs": [
+      {"repo": "Poetic-Poems/agent-ops", "number": 600, "url": "https://github.com/Poetic-Poems/agent-ops/pull/600",
+        "title": "approved, waiting on human", "isDraft": false, "review_decision": "APPROVED",
+        "checks": {"total": 3, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:30m"},
+      {"repo": "Poetic-Poems/agent-ops", "number": 601, "url": "https://github.com/Poetic-Poems/agent-ops/pull/601",
+        "title": "changes requested, the pipeline's turn", "isDraft": false, "review_decision": "CHANGES_REQUESTED",
+        "checks": {"total": 2, "failed": 0, "pending": 0},
+        "mergeable": "MERGEABLE", "mergeStateStatus": "CLEAN", "createdAt": "@ago:20m"},
+      {"repo": "Poetic-Poems/agent-ops", "number": 602, "url": "https://github.com/Poetic-Poems/agent-ops/pull/602",
+        "title": "a draft still in flight", "isDraft": true, "review_decision": "",
+        "checks": {"total": 0, "failed": 0, "pending": 0},
+        "mergeable": "", "mergeStateStatus": "", "createdAt": "@ago:5m"}
+    ],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "fleet": {
+    "claims": [
+      {"node": "poetic-2", "cycle": "20260815T000000Z-poetic-2-1", "repo": "Poetic-Poems/agent-ops",
+        "key": "td/TD-PPagop-26081599", "kind": "file", "branch": "td/TD-PPagop-26081599", "sha": "",
+        "item": "TD-PPagop-26081599", "source": "tech-debt", "ts": "@ago:2m"},
+      {"node": "poetic-3", "cycle": "20260815T000000Z-poetic-3-1", "repo": "Poetic-Poems/agent-ops",
+        "key": "pr-601", "kind": "file", "branch": "", "sha": "", "item": "", "source": "", "ts": "@ago:1m"}
+    ]
+  },
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 3
+}

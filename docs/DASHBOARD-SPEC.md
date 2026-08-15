@@ -686,10 +686,17 @@ the body re-renders, because its cards carry running clocks ("since 18m ago")
 and the body deliberately sits still while the data is unchanged.
 Then metric cards (spend today/total — fleet-wide, one shared account —
 failures, reached-ready, back-pressure gauge vs `max_open_agent_prs`. The
-gauge's own figure is the count the pipeline actually trips its cap on —
-draft PRs and ready PRs still `CHANGES_REQUESTED` — with a line underneath
-naming the raw open-PR total and, when it differs, how many of those are
-sitting only in a human's queue (approved, or awaiting a review nothing is
+gauge's own figure is the same four-part sum `agent-cycle.sh` trips its cap
+on (requirement 2.2) — draft PRs, ready PRs still `CHANGES_REQUESTED`, and
+live claims (registry rows keyed by an item rather than by an existing PR
+number, mirroring `claim.sh count`'s exclusion of `pr-<n>` entries) — rather
+than a figure the page derives from the open-PR listing alone: a live claim
+is work already in flight whose PR does not exist yet, so it cannot appear
+there. The card's `title` tooltip spells out the same split the cycle logs,
+e.g. "1 changes-requested + 0 draft + 1 unraised claim(s) — plus 13 waiting
+on human (14 raw)", with a line underneath naming the raw open-PR total and,
+when it differs, how many of those are sitting only in a human's queue
+(approved, or awaiting a review nothing is
 `CHANGES_REQUESTED`-blocking): a full human queue reads as "waiting on
 human", not as the pipeline sitting idle). The spend-today card's own word
 "today" is a button:

@@ -222,6 +222,29 @@ assert_contains "the back-pressure gauge trips on the adjusted count, not the ra
   "/ 3 max" "$out"
 assert_contains "and names the raw open total and the human-queue count beside it" \
   "3 open, 1 waiting on human" "$out"
+
+# --- backpressure-claims.json: the gauge's own figure includes live claims (#427) ---
+# agent-cycle.sh trips its cap on a four-part sum — pipeline-ready PRs, draft
+# PRs, ready PRs still CHANGES_REQUESTED, and live claims (work claimed but not
+# yet raised as a PR) — and the card must count the same four parts, not just
+# the two it can see in the open-PR listing alone. #601 is CHANGES_REQUESTED
+# (pipeline-ready), #602 is a draft, #600 is approved (waiting on human, not
+# counted); the claims registry holds one unraised item-keyed claim and one
+# `pr-601` exclusion entry that must NOT be double-counted since #601 is
+# already in the PR listing above — so the gauge's own figure is 3 (1 + 1 + 1),
+# tripping the cap at max_open_agent_prs=3.
+bp="$(render backpressure-claims.json)" || { printf 'FAIL - backpressure-claims.json did not render:\n%s\n' "$bp"; exit 1; }
+bpflat="$(tr '\n' ' ' <<<"$bp" | tr -s ' ')"
+assert_contains "the gauge's figure counts the unraised claim, not just the two PR-visible parts" \
+  '3 <small> / 3 max' "$bpflat"
+assert_contains "and trips red at the cap" \
+  "background:var(--red)" "$bp"
+assert_contains "the raw open-PR total and human-queue count are unaffected by claims" \
+  "3 open, 1 waiting on human" "$bp"
+assert_contains "the card's tooltip spells out the same composition the cycle logs" \
+  'title="1 changes-requested + 1 draft + 1 unraised claim(s) — plus 1 waiting on human (4 raw)"' \
+  "$bp"
+
 # Single-quoted: these are literal rendered dollar amounts, not shell
 # expansions, so the SC2016 the pinned linter raises on them is a false
 # positive.

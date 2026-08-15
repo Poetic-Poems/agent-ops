@@ -2231,20 +2231,37 @@
     card("Est. token cost (" + (c.by_day ? c.by_day.length : 0) + "d)", usd(c.spend_total_usd));
     card("Failures", String(c.failures_shown || 0), "of " + (c.cycles_shown||0) + " cycles");
     card("Reached ready", String(c.prs_reached_ready || 0));
-    // back-pressure card — the pipeline itself only trips its cap on draft
-    // PRs and ready PRs still CHANGES_REQUESTED (agent-ops#246); a ready PR
-    // approved or awaiting a human review sits in a queue the pipeline
-    // cannot shrink by waiting, so it is shown as its own figure rather than
-    // folded into "open" as if the pipeline were idle.
+    // back-pressure card — mirrors agent-cycle.sh's own four-part sum
+    // (requirement 2.2) rather than recomputing a different one: the
+    // pipeline trips its cap on draft PRs, ready PRs still
+    // CHANGES_REQUESTED, and live claims — work already claimed whose PR
+    // does not exist yet, so a node cannot see it in `openPrs` at all
+    // (agent-ops#427). A ready PR approved or awaiting a human review sits
+    // in a queue the pipeline cannot shrink by waiting, so it is shown as
+    // its own figure rather than folded into "open" as if the pipeline
+    // were idle.
     var rawN = openPrs.length, maxN = D.max_open_agent_prs || 0;
+    var draftN = openPrs.filter(function (p) { return p.isDraft; }).length;
+    var readyN = rawN - draftN;
     var humanQueueN = openPrs.filter(function (p) {
       return !p.isDraft && p.review_decision !== "CHANGES_REQUESTED";
     }).length;
-    var adjN = rawN - humanQueueN;
+    var pipelineReadyN = readyN - humanQueueN;
+    // A `pr-<n>` entry excludes a peer from a PR that already exists (issue
+    // #238) — it is not work in flight without a PR yet, and that PR is
+    // already counted above, so counting the claim too would double it
+    // (mirrors lib/claim.sh's `do_count`).
+    var claimN = fleetClaims().filter(function (c) {
+      return !/^pr-\d+$/.test(c.key || "");
+    }).length;
+    var adjN = pipelineReadyN + draftN + claimN;
+    var rawOpenN = readyN + draftN + claimN;
+    var composition = pipelineReadyN + " changes-requested + " + draftN + " draft + " + claimN +
+      " unraised claim(s) — plus " + humanQueueN + " waiting on human (" + rawOpenN + " raw)";
     var gauge = el("div", {class:"gauge"}, el("span", {
       style: "width:" + (maxN ? Math.min(100, adjN/maxN*100) : 0) + "%;background:" + (adjN>=maxN && maxN ? "var(--red)" : "var(--accent)")
     }));
-    cards.appendChild(el("div", {class:"card"}, [
+    cards.appendChild(el("div", {class:"card", title: composition}, [
       el("div", {class:"k", text:"Open agent PRs"}),
       el("div", {class:"v"}, [document.createTextNode(adjN + " "), el("small", {text:"/ " + maxN + " max"})]),
       gauge,
