@@ -5732,9 +5732,9 @@ implements.
     nothing stands behind it.** `abandoned-drafts` is a per-repo entry in
     `sources` like any other and requirement 3e runs only for a repository
     that lists it, so the hedge above is load-bearing rather than cautious.
-    Nor does the item find its own way back where the source is absent: the
-    draft's branch *is* the claim the item was taken under, so every later
-    claim on it 422s and the Co-Ordinator's exclusion reads "claimed, skip"
+    Nor does the item ever find its own way back, with the source or without
+    it: the draft's branch *is* the claim the item was taken under, so every
+    later claim on it 422s and the Co-Ordinator's exclusion reads "claimed, skip"
     — requirement 17b's mechanism, in precisely the state that requirement's
     sweep exists to convert *into* this one — and the other three finishing
     sources exclude drafts by construction (requirements 3c, 3g, 3z), because
