@@ -91,7 +91,10 @@ a node updates by pulling a new image rather than by pulling a branch.
   build args, default 1000) with `HOME=/home/agent`, so `config.json`'s
   `~`-relative `state_dir` and `workspace_root` resolve under that home.
 - Toolchain: `bash`, `git`, `jq`, `curl`, `python3`, `perl`, `coreutils`,
-  `flock` and `rsync` (requirement 2.5); `gh` from GitHub's apt repository (the distro package is too old for
+  `flock` and `rsync` (requirement 2.5); `openssl`, which RS256-signs the
+  Approver App's JWT (requirement 14b) and is installed explicitly rather
+  than relied on to arrive transitively, since a missing binary would
+  surface only as a mint failure at run time; `gh` from GitHub's apt repository (the distro package is too old for
   the flags the pipelines use), installed unpinned and therefore guarded at
   build time by a fixed-string `grep -aF` over the installed binary for both
   stderr diagnoses `review_gate_required_checks` keys on (requirement 31c) —
@@ -625,7 +628,7 @@ and the schema must carry every one of them.
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
 | `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
-| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, checked by `scripts/doctor.sh` only at this stage; nothing mints a token from it until WI-4. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
+| `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
 | `timeout_coordinator` | *(unset)* | An override for the wall-clock backstop of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case and the intended one: a configured value wins permanently, so setting it turns the self-tuning off for that actor. |
@@ -8746,7 +8749,14 @@ What exists, and the requirements each part answers to:
     top-level `merge_autonomy` key, and each repository's own override) is a
     `fail` where the level is above `human` and `approver_app_id` is empty,
     `ok` naming the level otherwise; doctor-only, since nothing yet consumes
-    the pairing at cycle start the way the two shared cross-key rules do —
+    the pairing at cycle start the way the two shared cross-key rules do;
+    and the environment half of the same identity, reconciled against the
+    config's (requirement 14b): a set `PULLWRIGHT_APPROVER_APP_ID` differing
+    from a set `approver_app_id` is a `fail` — the token wrapper mints
+    against the environment, and nothing else reports the divergence — an
+    env id with no config declaration is a `warn` (wired but undeclared),
+    and a level above `human` with no readable runtime credential in this
+    environment is a `warn`, the wrapper failing closed either way —
     then the reserved label
     names — `blocked` on an issue-side label key, `obsolete` on any label key
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
@@ -8844,6 +8854,72 @@ What exists, and the requirements each part answers to:
     both. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
     flags it wraps. Must pass `shellcheck`.
+14b. `lib/approver-token.sh` — the Pullwright Approver's installation-token
+    minting wrapper (D18 §5.3; the Approver identity requirement 2.3b's
+    ladder needs above `human`). `gh` cannot mint one: it authenticates as
+    the owner PAT or a user OAuth token, and an owner-PAT review is the
+    self-approval the App exists to retire. So this file does the exchange by
+    hand — sign a ~9-minute RS256 App JWT with `openssl` (the node image's
+    own, component 7), `POST` it to
+    `/app/installations/<id>/access_tokens`, take the ~1 h installation token
+    back. `approver_token_credential_present` is the identity check on its
+    own; `approver_token_get [NOW_EPOCH]` prints a valid token on stdout and
+    nothing else, taking `NOW_EPOCH` only so a test can reach an expiry
+    without waiting for one.
+    **Its exit status is the gate**: `0` a token, `2` no credential
+    configured or an unreadable key, `1` a mint attempted and refused
+    (network, rejected JWT, unparsable body). A caller must treat `1` and `2`
+    alike — *gate unreadable*, hand back — and never as a gate read and
+    passed; they stay distinct codes only so a log can tell "nothing
+    configured" from "something broke".
+    The identity comes from three environment variables, deliberately not
+    from `config.json` (the discipline `GH_TOKEN` already follows):
+    `PULLWRIGHT_APPROVER_APP_ID`, `PULLWRIGHT_APPROVER_INSTALLATION_ID` and
+    `PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH` — a path, not a key body, since an
+    RSA key is multi-line and `openssl`'s `-sign` wants a file. The App id,
+    unlike the key, is no secret and also lives in `config.json` as
+    `approver_app_id` (requirement 2.3b); `scripts/doctor.sh` reconciles the
+    two so they cannot drift apart silently — a set
+    `PULLWRIGHT_APPROVER_APP_ID` differing from a set `approver_app_id` is a
+    doctor `fail`, an env id with no config declaration a `warn`, and a
+    `merge_autonomy` level above `human` with no readable runtime credential
+    in doctor's environment a `warn` (the wrapper fails closed, so the
+    surprise is approvals that never come, never a wrong action).
+    **No fallback exists anywhere in it.** The file references no credential
+    but the App's own, so an absent key can never silently reroute an
+    approve/land call through the owner's token. The minted token reaches
+    stdout and nothing else — never a log, never persistent storage, and
+    never the JWT that produced it, which itself reaches `curl` through
+    `--config -` on stdin, never argv, where it would sit world-readable in
+    `/proc/<pid>/cmdline` for the length of the call. Its one cache is
+    tmpfs-only and best-effort:
+    `/dev/shm/pullwright-approver-token.<installation id>.json` — keyed by
+    installation id, so one installation's token is never served for
+    another's — mode 600, written `mktemp`-then-rename so no reader sees a
+    partial write, and read back only when the file is this user's own, is
+    not a symlink, and is more than 300 s from expiry — `/dev/shm` is
+    world-writable, so a cache file someone else planted at that predictable
+    path is ignored rather than served as a credential. Tmpfs-only is
+    enforced, not assumed: the cache directory's filesystem type is checked
+    before anything is written, so a disk-backed `APPROVER_TOKEN_CACHE_DIR`
+    disables caching rather than putting a live token on disk; and an
+    `expires_at` that does not parse is never guessed at — the token is
+    returned but not cached. Any cache failure at all is skipped silently
+    and the call mints fresh, which is correct and merely slower.
+    Sourced, never executed, and it sets no shell options, so a caller's own
+    `set -euo pipefail` decides. `APPROVER_TOKEN_CURL`,
+    `APPROVER_TOKEN_OPENSSL` and `APPROVER_TOKEN_CACHE_DIR` override the two
+    binaries and the cache directory for tests only — the directory override
+    passes through the same mount-type check, so it cannot re-introduce
+    disk. Nothing sources it yet —
+    WI-5's Approver stage is its first caller. Regression-tested in
+    `test/approver-token.test.sh` against a stubbed `curl` and a throwaway
+    RSA key real `openssl` signs, covering the success path, a cache hit, a
+    near-expiry refresh, each missing-credential shape, a planted cache
+    file, the JWT staying out of `curl`'s argv, the per-installation cache
+    key, a disk-backed cache directory refused, an unparsable `expires_at`
+    left uncached, a refused mint, an unreachable API, a malformed body and
+    an unusable cache directory. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as

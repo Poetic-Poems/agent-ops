@@ -421,6 +421,58 @@ run_doctor
 assert_contains "with no state_repo configured, the kill switch is reported not-set" \
   "[ ok ] the merge-autonomy kill switch is not set" "$out"
 
+# --- The Approver identity's two sources of truth are reconciled ------------
+# The token wrapper (requirement 14b) reads PULLWRIGHT_APPROVER_APP_ID from
+# the environment; approver_app_id is the config declaration doctor already
+# validates. Nothing else compares them, so doctor must: a set pair that
+# differs means the node would mint as an App the configuration never named,
+# with every consumer of the mismatch silent.
+run_doctor PULLWRIGHT_APPROVER_APP_ID=999999
+assert_contains "an env App id with no configured approver_app_id is a warn — wired but undeclared" \
+  "[warn] PULLWRIGHT_APPROVER_APP_ID is set but approver_app_id is empty" "$out"
+assert_eq "and doctor.sh still exits 0" "0" "$rc"
+
+approver_env_config="$tmp/approver-env-config.json"
+jq '.approver_app_id = "123456"' "$base_config" > "$approver_env_config"
+out="$(env PATH="$stub_bin:$PATH" PULLWRIGHT_APPROVER_APP_ID=999999 \
+  bash "$DOCTOR" --config "$approver_env_config" 2>&1)"
+rc=$?
+assert_contains "an env App id differing from the configured one fails, naming both ids" \
+  '[fail] PULLWRIGHT_APPROVER_APP_ID is "999999" but approver_app_id is "123456"' "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" PULLWRIGHT_APPROVER_APP_ID=123456 \
+  bash "$DOCTOR" --config "$approver_env_config" 2>&1)"
+assert_contains "matching env and config App ids earn a positive ok" \
+  "[ ok ] PULLWRIGHT_APPROVER_APP_ID matches approver_app_id" "$out"
+
+run_doctor
+assert_not_contains "with no env App id and none configured, doctor says nothing about the pair" \
+  "PULLWRIGHT_APPROVER_APP_ID" "$out"
+
+# A level above human whose environment carries no runtime credential is a
+# warn, not a fail: the wrapper fails closed (exit 2, gate unreadable) and
+# the Approver stage must hand back, so nothing acts wrongly — but the
+# operator who raised the level is waiting on approvals that never come.
+out="$(env PATH="$stub_bin:$PATH" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_contains "a level above human with no runtime credential in this environment warns" \
+  "[warn] merge_autonomy is above human but the Approver's runtime credential is not present in this environment" "$out"
+
+approver_key="$tmp/approver-key.pem"
+printf 'not-really-a-key\n' > "$approver_key"
+out="$(env PATH="$stub_bin:$PATH" \
+  PULLWRIGHT_APPROVER_APP_ID=123456 \
+  PULLWRIGHT_APPROVER_INSTALLATION_ID=42 \
+  PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH="$approver_key" \
+  bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_contains "a level above human with the full credential present earns the ok" \
+  "[ ok ] the Approver's runtime credential is present and its key is readable" "$out"
+
+run_doctor
+assert_not_contains "at human, doctor stays silent about the runtime credential" \
+  "Approver's runtime credential" "$out"
+
 # --- Claude credentials ----------------------------------------------------
 
 run_doctor STUB_CLAUDE_AUTH_JSON='{"loggedIn":true,"authMethod":"claude.ai","subscriptionType":"max"}'

@@ -57,6 +57,8 @@ source "$SCRIPT_DIR/lib/stage-budget.sh"
 source "$SCRIPT_DIR/lib/toggle.sh"
 # shellcheck source=lib/merge-autonomy.sh
 source "$SCRIPT_DIR/lib/merge-autonomy.sh"
+# shellcheck source=lib/approver-token.sh
+source "$SCRIPT_DIR/lib/approver-token.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -191,15 +193,48 @@ merge_autonomy_sources="$(jq -r '
   + [(.repos // [])[] | select(has("merge_autonomy"))
      | {label: (.slug + "'"'"'s merge_autonomy override"), level: .merge_autonomy}]
   | .[] | [.label, .level] | @tsv' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+ma_above_human=0
 if [[ -n "$merge_autonomy_sources" ]]; then
   while IFS=$'\t' read -r ma_label ma_level; do
     [[ -n "$ma_label" ]] || continue
+    if [[ "$ma_level" != "human" ]]; then
+      ma_above_human=1
+    fi
     if [[ "$ma_level" != "human" && -z "$approver_app_id" ]]; then
       fail "$ma_label is \"$ma_level\" with no approver_app_id configured — every level above human needs the Approver identity to hold review and merge rights (D18)"
     else
       ok "$ma_label is \"$ma_level\""
     fi
   done <<<"$merge_autonomy_sources"
+fi
+
+# The token wrapper (lib/approver-token.sh, requirement 14b) reads
+# PULLWRIGHT_APPROVER_APP_ID from the environment; approver_app_id above is
+# the operator's declaration in config.json. Nothing else reconciles the two,
+# so doctor does. A set env id differing from a set config id is a fail, not
+# a warn: the wrapper would mint against an App the configuration does not
+# name and this run did not bless, every consumer of the mismatch is silent,
+# and "works, minting as the wrong identity" is the outcome D18 exists to
+# prevent. A credential absent from this environment is a warn, and only
+# while some configured level is above human: the wrapper fails closed (exit
+# 2, gate unreadable) and the Approver stage must hand back, so the pipeline
+# still works — but the operator who raised the level is waiting on
+# approvals that will never come, which is exactly the surprise-later shape
+# a warn is for.
+env_app_id="${PULLWRIGHT_APPROVER_APP_ID:-}"
+if [[ -n "$env_app_id" && -n "$approver_app_id" && "$env_app_id" != "$approver_app_id" ]]; then
+  fail "PULLWRIGHT_APPROVER_APP_ID is \"$env_app_id\" but approver_app_id is \"$approver_app_id\" — the token wrapper mints against the environment's App, not the configured one, and nothing else reports the divergence (D18, requirement 14b)"
+elif [[ -n "$env_app_id" && -z "$approver_app_id" ]]; then
+  warn "PULLWRIGHT_APPROVER_APP_ID is set but approver_app_id is empty — the Approver credential is wired into this environment without being declared in config.json, so nothing validates the identity it mints as"
+elif [[ -n "$env_app_id" ]]; then
+  ok "PULLWRIGHT_APPROVER_APP_ID matches approver_app_id"
+fi
+if (( ma_above_human )); then
+  if approver_token_credential_present; then
+    ok "the Approver's runtime credential is present and its key is readable"
+  else
+    warn "merge_autonomy is above human but the Approver's runtime credential is not present in this environment — PULLWRIGHT_APPROVER_APP_ID, PULLWRIGHT_APPROVER_INSTALLATION_ID and PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH (readable) must all be set where the cycle runs, or approver_token_get reports the gate unreadable and no approval is ever minted"
+  fi
 fi
 
 # `blocked` excludes an issue from the issues source, so projecting it onto an
