@@ -261,7 +261,7 @@ while IFS= read -r pr_url; do
   # One read serves both checks below: the self-heal (unconditional) and the
   # idle nudge (gated on `idle_hours`).
   if ! pr_json="$("$GH" pr view "$pr_url" \
-        --json reviewDecision,mergeable,statusCheckRollup,reviews,comments 2>/dev/null)" \
+        --json reviewDecision,mergeable,mergeStateStatus,statusCheckRollup,reviews,comments 2>/dev/null)" \
       || [[ -z "$pr_json" ]]; then
     warn "$pr_url" "could not read the pull request's state — skipping its review-state checks"
     continue
@@ -395,6 +395,26 @@ $mq_marker"
     || { warn "$pr_url" "could not read the pull request's reviews — skipping the idle-nudge check"; continue; }
   [[ "$approved" == "true" ]] || continue
   [[ "$(jq -r '.mergeable // ""' <<<"$pr_json")" == "MERGEABLE" ]] || continue
+  # `mergeable` answers the merge-*conflict* question alone
+  # (`MERGEABLE`/`CONFLICTING`); it says nothing about whether GitHub would
+  # actually let the merge happen. That is `mergeStateStatus`, and `BLOCKED`
+  # is the state that matters here: `_handoff_pr_approved` above reports
+  # "approved" on the *first* standing approval, so on a base branch whose
+  # ruleset requires two or more, the nudge would otherwise tell a human
+  # "this is only waiting on your merge click" while GitHub is in fact still
+  # waiting on a second approval. No configured repository requires more than
+  # one today — this is latent, not live — and it costs nothing where the
+  # required count is `0`: an approved, green, up-to-date pull request there
+  # reads `CLEAN`, as does an unapproved one, while a one-required repository
+  # short of its approval reads `MERGEABLE`/`BLOCKED`, which is exactly the
+  # case being excluded. A required merge queue does not read `BLOCKED`
+  # either — all three target repositories carry a `merge_queue` rule today
+  # and their open pull requests read `CLEAN` — so requirement 38f's own
+  # states stay reachable. Anything other than `BLOCKED`, including an
+  # `UNKNOWN` GitHub has not finished computing, falls through: the same
+  # fail-open default the merge-queue probe above uses, since suppressing a
+  # legitimate nudge is the worse of the two mistakes.
+  [[ "$(jq -r '.mergeStateStatus // ""' <<<"$pr_json")" != "BLOCKED" ]] || continue
   # Currently queued: the human has already clicked merge, and a queued pull
   # request reads APPROVED/MERGEABLE/green exactly like one nobody has acted
   # on yet — see requirement 38f. An unreadable probe (`mq_queued` empty)

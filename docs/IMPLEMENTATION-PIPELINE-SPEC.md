@@ -7101,12 +7101,12 @@ runs unattended.
       already been answered — a marked reply from the Implementor after the
       blocking review, and only that signal (see below) — repeats
       requirement 31b's re-request (`confirm_review_requested`);
-    - where the pull request is approved, `MERGEABLE`, every check
-      genuinely green (an empty `statusCheckRollup` is excluded explicitly —
-      that is CI not having run, not CI having passed — while a `SKIPPED`
-      `CheckRun`, which every target repository carries on every pull
-      request, is accepted alongside `SUCCESS`/`NEUTRAL`), and has been since
-      before `human_nudge_idle_hours` ago, posts one nudge comment naming
+    - where the pull request is approved, `MERGEABLE`, not `BLOCKED`, every
+      check genuinely green (an empty `statusCheckRollup` is excluded
+      explicitly — that is CI not having run, not CI having passed — while a
+      `SKIPPED` `CheckRun`, which every target repository carries on every
+      pull request, is accepted alongside `SUCCESS`/`NEUTRAL`), and has been
+      since before `human_nudge_idle_hours` ago, posts one nudge comment naming
       `enabler_assignee` — unless one is already there, which a comment
       carrying both the exact `<!-- agent-ops:human-nudge -->` marker and
       `lib/pipeline-marker.sh`'s own `PIPELINE_COMMENT_MARKER_PREFIX` stamp
@@ -7129,6 +7129,24 @@ runs unattended.
       directly could never fire here. An unreadable reviews list is a
       `warning`, the same fail-safe default every other read in this script
       gets.
+
+      `MERGEABLE` and not `BLOCKED` are two separate reads, and both are
+      required: `mergeable` answers the merge-*conflict* question alone
+      (`MERGEABLE`/`CONFLICTING`), while whether GitHub would let the merge
+      happen at all is `mergeStateStatus`. Since `_handoff_pr_approved`
+      reports "approved" on the *first* standing approval, a base branch
+      requiring two or more would otherwise be nudged — "only waiting on your
+      merge click" — while GitHub was still waiting on a second approval. No
+      configured repository requires more than one today, so this is
+      correctness in general rather than a live fix, and it costs nothing
+      where the required count is `0`: an approved, green, up-to-date pull
+      request there reads `CLEAN`, exactly as an unapproved one does, and a
+      required merge queue (all three target repositories carry a
+      `merge_queue` rule) does not read `BLOCKED` either, so requirement 38f's
+      own states stay reachable. Every other state — including an `UNKNOWN`
+      GitHub has not finished computing — falls through, the fail-open
+      direction the merge-queue probe already takes, since suppressing a
+      legitimate nudge is the worse of the two mistakes.
 
     This *is* the periodic, deterministic audit of requirement 38's own
     guarantee, made self-healing rather than merely reported: a violation this
@@ -10623,7 +10641,11 @@ pull request, run the ones the change touches and any it could regress.
     request nudged once already is not nudged
     again even when still idle; an unmergeable, not-yet-green, or not-yet-idle
     approved pull request is never nudged, and neither is one with an empty
-    check rollup; a rollup whose only non-`SUCCESS` entries are `SKIPPED` —
+    check rollup; an approved, `MERGEABLE`, green and idle pull request whose
+    `mergeStateStatus` is `BLOCKED` — the base branch requiring a second
+    approval `_handoff_pr_approved` cannot see — is not nudged either, while
+    `CLEAN`, `BEHIND` and an unresolved `UNKNOWN` all still are; a rollup
+    whose only non-`SUCCESS` entries are `SKIPPED` —
     the shape every target repository's pull requests carry, a `CheckRun`
     gated off by a `paths:` filter or an `if:`, distinct from `StatusContext`
     and so read by `.conclusion` alone, never `.state` — is nudged all the
