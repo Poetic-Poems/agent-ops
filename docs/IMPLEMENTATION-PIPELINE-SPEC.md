@@ -5549,10 +5549,29 @@ runs unattended.
     all yet, so nothing caught it. A refused `complete_handoff` does not undo
     the item's own `unblocked` verdict, which still stands: the underlying
     impediment the Enabler diagnosed is still cleared, and the stalled pull
-    request is left for a Reviewer to actually examine, either because the
-    item is re-attempted from its existing branch or because the
-    abandoned-drafts source (requirement 3e) re-detects the same draft on its
-    own.
+    request is left for a Reviewer to actually examine — which, **for a
+    repository whose `sources` include `abandoned-drafts`**, is what that
+    source (requirement 3e) does once the draft goes stale, handing it to a
+    fresh Implementor-then-Reviewer pass.
+
+    **That recovery is a property of the repository's configuration, and
+    nothing stands behind it.** `abandoned-drafts` is a per-repo entry in
+    `sources` like any other and requirement 3e runs only for a repository
+    that lists it, so the hedge above is load-bearing rather than cautious.
+    Nor does the item find its own way back where the source is absent: the
+    draft's branch *is* the claim the item was taken under, so every later
+    claim on it 422s and the Co-Ordinator's exclusion reads "claimed, skip"
+    — requirement 17b's mechanism, in precisely the state that requirement's
+    sweep exists to convert *into* this one — and the other three finishing
+    sources exclude drafts by construction (requirements 3c, 3g, 3z), because
+    a draft is the Implementor's own claim marker rather than work awaiting a
+    human. A repository configured without `abandoned-drafts` therefore leaves
+    this draft for a human, along with every other stalled draft it ever
+    raises, whatever stalled it. That is a gap in what such a configuration
+    recovers — not a reason to soften the refusal, whose alternative is
+    flipping to ready a pull request nothing has reviewed. Whether the source
+    should be optional at all is agent-ops#472's decision, not this
+    requirement's.
 
     Once a Reviewer verdict is on record, `handoff_complete_review`'s own gate
     still applies exactly as requirement 31c describes it: `dirty` (either

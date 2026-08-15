@@ -312,9 +312,14 @@ than the flip you asked for.
 It exists because a draft pull request whose Reviewer verdict is stuck this
 way is otherwise invisible: the human watches for review requests, and this
 is the one path that recovers it *without* re-running the work — a stalled
-draft whose Reviewer never ran at all is not stuck in the same way, since the
-abandoned-drafts source (`scripts/gather-abandoned-drafts.sh`) re-detects it on
-its own and hands it back to a fresh Implementor-then-Reviewer pass. Do not
+draft whose Reviewer never ran at all is not stuck in the same way, provided
+the repository's `sources` include `abandoned-drafts`, which is what re-detects
+it (`scripts/gather-abandoned-drafts.sh`) and hands it back to a fresh
+Implementor-then-Reviewer pass. Where that source is not configured, no other
+one reaches a draft and the item's own branch blocks a re-attempt, so such a
+draft waits for a human however this verdict is written — which is a reason to
+say so plainly in your `reason`, never a reason to reach for `complete_handoff`
+over a pull request no Reviewer has examined. Do not
 leave a genuinely stuck handoff `still-blocked` in the hope that a later cycle
 notices — set `complete_handoff` when the five preconditions hold, and leave
 this item's own `unblocked` verdict to do the rest otherwise.
