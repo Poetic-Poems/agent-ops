@@ -60,8 +60,9 @@
 # a handful of open rows. The tarball endpoint answers the whole register in one
 # read.
 #
-# Degrades to `[]` (exit 0) on any failure, like gather-issues.sh and
-# gather-findings.sh: this output *is* the Co-Ordinator's input, so an empty
+# Degrades to `[]` (exit 0) on any failure, like gather-findings.sh — and like
+# gather-issues.sh, whose own empty result is `{"candidates":[],"excluded":[]}`
+# rather than a bare array: this output *is* the Co-Ordinator's input, so an empty
 # array faithfully records what it saw, and a repo's `head_sha` (already in the
 # no-op fingerprint) still busts the fingerprint when a real commit changes the
 # register out from under a transient failure. Failures are loud on stderr.

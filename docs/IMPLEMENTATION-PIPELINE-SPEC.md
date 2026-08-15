@@ -7250,8 +7250,10 @@ runs unattended.
         no actor here may edit the register. Requirement 3h is its carrier.
 
       **The unselectability note** (agent-ops#447). For an issue item, before
-      posting, the Enabler checks the issue's own live assignees — not merely
-      the runtime input, which carries no assignee field — because requirement
+      posting, the Enabler checks the issue's own live assignees — a `gh` read,
+      since the runtime input's `assignee` names the login this system assigns
+      *to* (requirement 36a) and never who a given item is assigned to —
+      because requirement
       16.4 excludes an assigned issue from the `issues` source regardless of
       how good the refinement just written for it is: the two gatherers apply
       that exclusion on different terms (`scripts/gather-issues.sh` deterministically,
@@ -7261,7 +7263,10 @@ runs unattended.
       nothing about the refinement comment itself saying so. Where the issue
       is currently assigned, the comment states plainly that it is presently
       excluded from selection for that reason and what would release it: if
-      the assignment is this block's own projection (requirement 38b), that it
+      the assignment is this block's own projection (requirement 38b — which
+      the runtime input's `assignee` identifies, since that projection assigns
+      exactly that login, making it the ordinary case for a
+      `kind: "needs-refinement"` issue rather than a finding), that it
       is expected to clear automatically the moment this verdict processes,
       and if it is not — an assignee the Enabler cannot attribute to this
       block, most often a human's own — that a human needs to remove it
@@ -9933,15 +9938,19 @@ pull request, run the ones the change touches and any it could regress.
 2e. **Issues arrive pre-fetched, filtered, whole-thread and fingerprinted.**
    `test/issues-prefetch.test.sh` passes: against a stubbed issues endpoint,
    `scripts/gather-issues.sh` drops an assigned issue, a `Blocked`-labelled
-   issue (whatever the case), and a pull request, while a clean issue arrives
+   issue (whatever the case), and a pull request from `candidates`, while a
+   clean issue arrives
    with `source: "issues"`, its number as `ref`, its `Priority` band (default
-   `Medium`), its body, and its comments verbatim; a failing API degrades to
-   `[]` (exit 0) with the failure on stderr; and the no-op fingerprint
+   `Medium`), its body, and its comments verbatim; the assigned and
+   `Blocked`-labelled drops reappear in `excluded` tagged `assigned` and
+   `blocked-label` while the pull request never does (agent-ops#447); a
+   failing API degrades to `{"candidates":[],"excluded":[]}`
+   (exit 0) with the failure on stderr; and the no-op fingerprint
    (`lib/noop-skip.sh`) differs between two inputs identical except for the
    text of one issue comment — the one transition only the verbatim array
    carries. Against the real API, `scripts/gather-issues.sh
-   Poetic-Poems/poetic-fiddle` prints an array whose entries all carry
-   `comments` and a four-name `priority`.
+   Poetic-Poems/poetic-fiddle` prints a `candidates` array whose entries all
+   carry `comments` and a four-name `priority`.
 2j. **Tech-debt arrives pre-fetched, pre-excluded, and its verdict is
    corroborated (requirement 3t).** `test/gather-tech-debt.test.sh` passes:
    against a stubbed tarball, `scripts/gather-tech-debt.sh` prints one entry
@@ -10730,10 +10739,13 @@ pull request, run the ones the change touches and any it could regress.
    no `Blocked-by:` line, or of a shape other than a bare issue number. Then
    the #196–#199-shaped scenario, end to end against a stubbed `gh`: an issue
    whose body reads `Blocked-by: #195` while #195 is open is absent from
-   `scripts/gather-issues.sh`'s candidates; the same issue, already recorded
+   `scripts/gather-issues.sh`'s candidates and present in its `excluded`
+   report as `blocked-by: #195` (requirement 3j); the same issue, already
+   recorded
    `attempt-failed`, stays in the open blocked set that cycle. Flip #195 to
    closed and run both again — the issue reappears in `gather-issues.sh`'s
-   candidates *and* `dependency_clearances` produces its release — asserting
+   candidates, leaves its `excluded` report,
+   *and* `dependency_clearances` produces its release — asserting
    both halves clear within the one cycle the dependency resolved in, and
    that neither ever spent an Enabler engagement or a Co-Ordinator judgement
    doing it.

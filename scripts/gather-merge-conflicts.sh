@@ -200,7 +200,9 @@ if [[ -z "$slug" ]]; then
 fi
 
 # Say so, then carry on. Deliberately *not* `degrade` as scripts/gather-tech-debt.sh
-# and scripts/gather-issues.sh define it: theirs prints `[]` and exits, which is
+# and scripts/gather-issues.sh define it: theirs prints that script's own empty
+# result (`[]` and `{"candidates":[],"excluded":[]}` respectively) and exits,
+# which is
 # right where the failure is the whole band's (a register listing that would not
 # answer) and wrong here, where it is one candidate's — losing a pull request
 # this gather could not assemble is a far smaller thing than losing every other
