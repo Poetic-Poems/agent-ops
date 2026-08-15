@@ -14,8 +14,9 @@
 #     never `register-hygiene`), with its own `human-visibility-<hash>` ref.
 #   - **The four warning classes are told apart (issue #284's decision 1).** A
 #     `could not request review from …` violation clears only once a human
-#     review is live or already given (`reviewRequests` non-empty, or
-#     `reviewDecision` of `APPROVED`/`CHANGES_REQUESTED`); a
+#     review is live or already given (`reviewRequests` non-empty, or a
+#     non-bot review with state `APPROVED`/`CHANGES_REQUESTED` in the reviews
+#     list — never `reviewDecision`, agent-ops#391, TD-PPagop-26081505); a
 #     `could not post the idle nudge comment` violation — logged only against
 #     an already-`APPROVED` pull request — clears only once a comment carrying
 #     both the exact `<!-- agent-ops:human-nudge -->` HTML-comment form and
@@ -74,11 +75,17 @@ assert_eq() {
 #
 # `$STUB_LIST_RC` steers whether the repo-level listing re-check still fails
 # (nonzero) or now succeeds (0, the default). `$STUB_PR_STATE`/`$STUB_PR_DRAFT`
-# steer a named pull request's live open/draft state; `$STUB_REVIEW_DECISION`
-# and `$STUB_REVIEW_REQUESTS` (nonzero means a pending request exists) steer
-# the request-class check; `$STUB_REVIEW_REQUESTS_JSON`, when set, overrides
-# `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests` array, for fixturing
-# a Bot-typed/`[bot]`-suffixed or team-shaped entry
+# steer a named pull request's live open/draft state; `$STUB_REVIEW_REQUESTS`
+# (nonzero means a pending request exists) and `$STUB_REVIEWS` (a JSON array
+# of `{author:{login},state}`, default `[]`) together steer the
+# request-class check — a non-bot `APPROVED`/`CHANGES_REQUESTED` entry in
+# `$STUB_REVIEWS` clears it the same as a pending request does, read from the
+# reviews list rather than `reviewDecision` (agent-ops#391,
+# TD-PPagop-26081505); `$STUB_REVIEW_DECISION` is still emitted by the stub
+# (mirroring `gh pr view`'s real payload) but the request-class check no
+# longer reads it — tests below set it to confirm that. `$STUB_REVIEW_REQUESTS_JSON`,
+# when set, overrides `$STUB_REVIEW_REQUESTS` with a literal `reviewRequests`
+# array, for fixturing a Bot-typed/`[bot]`-suffixed or team-shaped entry
 # (tech-debt/TD-PPagop-26081403.md); `$STUB_NUDGE_COMMENT` steers which
 # nudge-related comment (if any) is present — `none` (default), `real` (the
 # genuine shape, both the exact `<!-- agent-ops:human-nudge -->` form and the
@@ -89,10 +96,9 @@ assert_eq() {
 # `prefixed-only` (the stamp on an ordinary pipeline comment carrying no
 # nudge marker at all); `$STUB_DEQUEUE_MARKER` (`yes`/`no`) steers whether the
 # merge-queue-dequeued marker comment is present instead; `$STUB_AUTHOR`
-# (default
-# `author`) and `$STUB_REVIEWS` (a JSON array of `{author:{login},state}`,
-# default `[]`) steer the no-candidate-class check; `$STUB_VIEW_RC` set
-# nonzero makes the re-check itself unreadable, the fail-safe case.
+# (default `author`) and `$STUB_REVIEWS` also steer the no-candidate-class
+# check; `$STUB_VIEW_RC` set nonzero makes the re-check itself unreadable,
+# the fail-safe case.
 mkdir -p "$tmp_dir/bin"
 cat > "$tmp_dir/bin/gh" <<'STUB'
 #!/usr/bin/env bash
@@ -177,14 +183,51 @@ out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIE
 assert_eq "a request-class violation with a pending request is dropped" "[]" "$out"
 
 # --- could_not_request: an approval clears it, even with no pending request
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=APPROVED STUB_REVIEW_REQUESTS=0 \
+# and an empty `reviewDecision` — this repository's own shape
+# (`required_approving_review_count: 0`, agent-ops#391): `reviewDecision`
+# can never read `APPROVED` here, so the drop must come from the reviews
+# list alone, never that field (TD-PPagop-26081505).
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"reviewer"},"state":"APPROVED"}]' \
         "$GATHER" "o/a" "$request_level")"
-assert_eq "a request-class violation on an approved pull request is dropped" "[]" "$out"
+assert_eq "a request-class violation with an approving review is dropped despite empty reviewDecision" \
+  "[]" "$out"
 
 # --- could_not_request: changes-requested also proves the request worked ---
-out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUESTED STUB_REVIEW_REQUESTS=0 \
+# Read the same way — from the reviews list, not `reviewDecision`.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"reviewer"},"state":"CHANGES_REQUESTED"}]' \
         "$GATHER" "o/a" "$request_level")"
-assert_eq "a request-class violation on a changes-requested pull request is dropped" "[]" "$out"
+assert_eq "a request-class violation with a changes-requested review is dropped despite empty reviewDecision" \
+  "[]" "$out"
+
+# --- could_not_request: a non-empty reviewDecision changes nothing ---------
+# Another repository's ruleset can compute `reviewDecision` fine, but this
+# re-check no longer reads it either way — confirming the reviews-list path
+# alone drives the verdict on both kinds of repository.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION=CHANGES_REQUESTED STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[]' \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation survives a non-empty reviewDecision with no matching review" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_request: a COMMENTED-only review does not clear it ----------
+# Neither `APPROVED` nor `CHANGES_REQUESTED` — a comment-only review proves
+# nobody has actually approved or requested changes yet.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"reviewer"},"state":"COMMENTED"}]' \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation with only a commented review survives" \
+  "1" "$(jq 'length' <<<"$out")"
+
+# --- could_not_request: a bot's approval does not clear it -----------------
+# The same bot filter the `reviewRequests` half already applies — a Copilot
+# (or any `[bot]`-suffixed) review is never proof a human approved.
+out="$(STUB_PR_STATE=OPEN STUB_PR_DRAFT=false STUB_REVIEW_DECISION="" STUB_REVIEW_REQUESTS=0 \
+        STUB_REVIEWS='[{"author":{"login":"copilot-pull-request-reviewer[bot]"},"state":"APPROVED"}]' \
+        "$GATHER" "o/a" "$request_level")"
+assert_eq "a request-class violation with only a bot's approval survives" \
+  "1" "$(jq 'length' <<<"$out")"
 
 # --- could_not_request: a Bot-typed-only reviewRequests entry does not clear
 # it (tech-debt/TD-PPagop-26081403.md). Defensive: today's `gh pr view` never

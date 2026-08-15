@@ -665,6 +665,39 @@ assert_eq "the cost blocks flow in reading order — day, model, actor, then the
 assert_contains "the note is a block of that container, not a paragraph after the section" \
   '      <p class="costnote">' "$out"
 
+# --- switch-scope-*.json: which switch a node card is actually claiming ----------
+# A fleet-wide --disable writes a local record on the node that issued it as
+# well as the fleet flag (implementation spec 2.3a). Before that record was
+# tagged `scope`, the issuing node alone wore the amber `disabled` badge while
+# its equally-stopped peers wore none — a fleet-wide stand-down rendering as a
+# fault peculiar to one node, on the page whose whole job here is to say which
+# is which.
+out="$(render switch-scope-mirror.json)" || { printf 'FAIL - switch-scope-mirror.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_contains "a set fleet flag raises the fleet banner" \
+  "Fleet switch is set" "$out"
+assert_not_contains "and its local mirror does not raise a second banner beside it" \
+  "Pipeline disabled" "$out"
+assert_not_contains "nor badge the node that issued it as node-scoped" \
+  'node-scoped disable: “resize the VM”' "$out"
+assert_contains "while a peer's genuine --this-node disable still badges" \
+  'node-scoped disable: “editing lib/”' "$out"
+
+# The orphan: --enable on a peer clears the fleet flag but cannot reach this
+# node's file, so this node alone stays down under a decision lifted
+# elsewhere. Nothing else on the page accounts for that, which is exactly why
+# the banner and badge have to.
+out="$(render switch-scope-orphan.json)" || { printf 'FAIL - switch-scope-orphan.json did not render:\n%s\n' "$out"; exit 1; }
+
+assert_not_contains "with the fleet flag cleared there is no fleet banner" \
+  "Fleet switch is set" "$out"
+assert_contains "but the surviving mirror does raise this node's switch banner" \
+  "Pipeline disabled" "$out"
+assert_contains "saying what it is, rather than blaming a decision nobody made" \
+  "left over from a fleet-wide disable that has since been cleared" "$out"
+assert_contains "and the node's own card badges it, naming the command that clears it" \
+  "this node is standing down alone" "$out"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"
