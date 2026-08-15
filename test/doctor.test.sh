@@ -110,7 +110,12 @@ case "$1" in
       repos/*/labels) printf '' ;;
       repos/*/rulesets/*)
         [[ "${STUB_RULESET_DETAIL_FAIL:-0}" != "1" ]] || exit 1
-        detail_json="${STUB_RULESET_DETAIL_JSON:-}"
+        # Per-id detail first (`STUB_RULESET_DETAIL_JSON_<id>`), so a case can
+        # give two rulesets *different* rules — what the strictest-wins check
+        # needs and one shared fixture cannot express — falling back to the
+        # single shared fixture every other case still uses.
+        detail_var="STUB_RULESET_DETAIL_JSON_${endpoint##*/}"
+        detail_json="${!detail_var:-${STUB_RULESET_DETAIL_JSON:-}}"
         [[ -n "$detail_json" ]] || detail_json='{}'
         printf '%s' "$detail_json" | jq -c "$jq_filter" ;;
       repos/*/rulesets)
@@ -286,6 +291,81 @@ else
     STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"closing-keyword","integration_id":15368}]}}]}'
   assert_eq "and a fully-enforced ruleset does not fail doctor.sh" "0" "$rc"
 fi
+
+# --- Requirement 38's ruleset dependency (agent-ops#391) --------------------
+# `reviewDecision` never becomes `APPROVED` on a repository whose branch
+# ruleset requires zero approving reviews, however many humans approve — the
+# gap that cost agent-ops#391 a cross-repo investigation to find. The nudge
+# itself no longer depends on the field (`_handoff_pr_approved`, lib/
+# handoff.sh), but doctor.sh still reports each target repository's own
+# `required_approving_review_count` so the quirk is visible up front instead
+# of rediscovered. Runs over `base_config`'s own `$slug`, unlike the
+# closing-keyword block above, which resolves `self_repo` regardless of
+# config.
+noise_ruleset_38='{"id":1,"target":"tag","enforcement":"active"},{"id":2,"target":"branch","enforcement":"disabled"}'
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'
+assert_contains "a ruleset requiring 1 approving review reports it, ok" \
+  "[ ok ] $slug's default-branch ruleset requires 1 approving review(s) — reviewDecision reaches APPROVED normally" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}'
+assert_contains "a ruleset requiring 0 approving reviews is a warn naming agent-ops#391" \
+  "[warn] $slug's default-branch ruleset requires 0 approving reviews — reviewDecision never becomes APPROVED here" "$out"
+assert_contains "  ... explicitly not treated as a requirement 38 fault" \
+  "so this is informational, not a requirement 38 fault" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"closing-keyword"}]}}]}'
+assert_contains "an active default-branch ruleset with no pull_request rule is a skip" \
+  "[skip] $slug's default branch has no active ruleset requiring approving reviews" "$out"
+
+run_doctor STUB_RULESETS_JSON="[$noise_ruleset_38]"
+assert_contains "no active ruleset targets the default branch at all is the same skip" \
+  "[skip] $slug's default branch has no active ruleset requiring approving reviews" "$out"
+
+run_doctor STUB_RULESETS_FAIL=1
+assert_contains "the rulesets endpoint being unreachable is its own skip" \
+  "[skip] $slug's default-branch ruleset — repos/$slug/rulesets is not reachable with this token" "$out"
+
+# Two active rulesets both targeting the default branch: GitHub enforces the
+# strictest applicable rule, so the reported count must be the maximum across
+# matches and not whichever the API happened to return last. Asserted in both
+# list orders, since a last-wins implementation passes one of them by luck.
+strict_1='{"name":"strict","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1}}]}'
+lax_0='{"name":"lax","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}'
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"},{\"id\":4,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON_3="$strict_1" \
+  STUB_RULESET_DETAIL_JSON_4="$lax_0"
+assert_contains "two default-branch rulesets report the strictest, not the last (1 then 0)" \
+  "[ ok ] $slug's default-branch ruleset requires 1 approving review(s) — reviewDecision reaches APPROVED normally" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"},{\"id\":4,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON_3="$lax_0" \
+  STUB_RULESET_DETAIL_JSON_4="$strict_1"
+assert_contains "  ... and in the other list order (0 then 1)" \
+  "[ ok ] $slug's default-branch ruleset requires 1 approving review(s) — reviewDecision reaches APPROVED normally" "$out"
+
+# A ruleset whose count is not a number is no count at all — passed over like
+# an absent rule, never compared as the `0` that flips the verdict to warn.
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"},{\"id\":4,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON_3='{"name":"odd","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":"all"}}]}' \
+  STUB_RULESET_DETAIL_JSON_4="$strict_1"
+assert_contains "a non-numeric required count is passed over, not read as 0" \
+  "[ ok ] $slug's default-branch ruleset requires 1 approving review(s) — reviewDecision reaches APPROVED normally" "$out"
+
+run_doctor \
+  STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
+  STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":0}}]}'
+assert_eq "and requiring 0 approving reviews is a warn, not a failure" "0" "$rc"
 
 # --- Claude credentials ----------------------------------------------------
 

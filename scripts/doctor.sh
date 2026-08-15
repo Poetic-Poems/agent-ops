@@ -527,6 +527,64 @@ if ((gh_ready)); then
     check_repo_access "$slug"
   done < <(cfg '.repos[]?.slug // empty')
 
+  # requirement 38's ruleset dependency (agent-ops#391): GitHub computes
+  # `reviewDecision` against the base branch's *required* approving review
+  # count, and where a repository's own ruleset sets that to 0, the field
+  # never becomes `APPROVED` however many humans approve — reviewDecision
+  # stayed empty on every agent-ops pull request regardless of approvals,
+  # while poetic and poetic-fiddle (both requiring 1) behaved as expected.
+  # `_handoff_pr_approved` (lib/handoff.sh) derives requirement 38c's own
+  # "approved" verdict from the reviews list instead, so the nudge no longer
+  # depends on this setting — but it cost a cross-repo investigation to find
+  # in the first place, purely because nothing reported it. One read per
+  # repository (plus one per candidate ruleset, the same shape the
+  # closing-keyword check below already uses) turns it into a fact reported
+  # here rather than rediscovered the same way again.
+  while IFS= read -r slug; do
+    [[ -n "$slug" ]] || continue
+    if ! ruleset_repo_json="$(gh api "repos/$slug/rulesets" 2>/dev/null)"; then
+      skip "$slug's default-branch ruleset — repos/$slug/rulesets is not reachable with this token"
+      continue
+    fi
+    required_count="" found_pr_rule=0
+    while IFS= read -r ruleset_id; do
+      [[ -n "$ruleset_id" ]] || continue
+      ruleset_detail="$(gh api "repos/$slug/rulesets/$ruleset_id" 2>/dev/null)" || continue
+      [[ "$(jq -r '(.conditions.ref_name.include // []) | any(. == "~DEFAULT_BRANCH")' <<<"$ruleset_detail" 2>/dev/null)" == "true" ]] \
+        || continue
+      count="$(jq -r '[.rules[]? | select(.type == "pull_request")
+                       | .parameters.required_approving_review_count] | max // empty' \
+                <<<"$ruleset_detail" 2>/dev/null)"
+      # A count this cannot do arithmetic on is no count at all: `max` of an
+      # empty list is `null`, dropped by `// empty` above, and anything else
+      # non-numeric would silently evaluate as `0` in the comparison below —
+      # the one value that changes the verdict.
+      [[ "$count" =~ ^[0-9]+$ ]] || continue
+      # The *strictest* applicable rule wins, not the last one the API
+      # happened to return. Where two active rulesets both target the default
+      # branch and both carry a `pull_request` rule, GitHub enforces the
+      # higher `required_approving_review_count`, so reporting whichever came
+      # last could `warn` "reviewDecision never becomes APPROVED here" about a
+      # repository where a second ruleset requires 1 and it does. Every target
+      # repository has exactly one such ruleset today — agent-ops's second
+      # active branch ruleset (the agent-ops#261 nudge-test vehicle) targets
+      # `refs/heads/nudge-test/base`, not `~DEFAULT_BRANCH`, and is excluded
+      # above — so this is correctness in general rather than a live fix.
+      if [[ -z "$required_count" ]] || (( count > required_count )); then
+        required_count="$count"
+      fi
+      found_pr_rule=1
+    done < <(jq -r '.[] | select(.target == "branch" and .enforcement == "active") | .id' \
+              <<<"$ruleset_repo_json" 2>/dev/null)
+    if ((! found_pr_rule)); then
+      skip "$slug's default branch has no active ruleset requiring approving reviews — cannot report requirement 38's dependency (branch protection set outside a ruleset is not read here)"
+    elif [[ "$required_count" == "0" ]]; then
+      warn "$slug's default-branch ruleset requires 0 approving reviews — reviewDecision never becomes APPROVED here, however many humans approve (agent-ops#391); requirement 38c derives approval from the reviews list instead, so this is informational, not a requirement 38 fault"
+    else
+      ok "$slug's default-branch ruleset requires $required_count approving review(s) — reviewDecision reaches APPROVED normally"
+    fi
+  done < <(cfg '.repos[]?.slug // empty')
+
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
     check_repo_labels "$slug" review \

@@ -48,21 +48,21 @@
 # Script creates that branch fresh, at the default branch's own head, as the
 # claim itself (see agent-cycle.sh's "Branch" step), so comparing it against
 # that same head the moment the claim is won would always read "identical"
-# and void every ordinary claim on its first tick. The three sources whose
+# and void every ordinary claim on its first tick. The four sources whose
 # branch and PR predate the claim — review-feedback, merge-conflicts,
-# abandoned-drafts, the ones whose branch this cycle did not just create — are
-# the only ones an ancestry check can mean anything for, and
+# dequeued, abandoned-drafts, the ones whose branch this cycle did not just
+# create — are the only ones an ancestry check can mean anything for, and
 # `preflight_existing_branch_source` is that gate.
 #
 # Sourced, never executed: this file sets no shell options, because
 # agent-cycle.sh runs under `set -euo pipefail`. `preflight_done_reason`
 # depends on `work_gone_clearances` (lib/work-gone.sh), sourced first.
 
-# The three sources whose branch (and PR) already existed before this cycle's
+# The four sources whose branch (and PR) already existed before this cycle's
 # claim — the Implementor prompt's own "the branch and the PR exist" sources.
 # Space-padded so a plain substring test (below) cannot mistake, say,
 # "merge-conflicts" for a source named "conflicts".
-PREFLIGHT_EXISTING_BRANCH_SOURCES=" review-feedback merge-conflicts abandoned-drafts "
+PREFLIGHT_EXISTING_BRANCH_SOURCES=" review-feedback merge-conflicts dequeued abandoned-drafts "
 
 # preflight_existing_branch_source SOURCE — true iff SOURCE's branch predates
 # the claim, the only shape `preflight_branch_merged_reason` can answer for.

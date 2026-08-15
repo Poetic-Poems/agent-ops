@@ -56,7 +56,7 @@
 #                    all (issue #238): recorded in the registry entry as
 #                    `pr_number` and surfaced by `claims`, so a file claim keyed
 #                    `pr-<number>` — the second claim `agent-cycle.sh` takes
-#                    alongside the item claim for the three finishing sources,
+#                    alongside the item claim for the four finishing sources,
 #                    the one that actually excludes a peer working the same PR
 #                    under a different item ref — carries the number a reader
 #                    can act on. Omitted (not recorded as `""`/`0`) when unset,

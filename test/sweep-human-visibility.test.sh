@@ -209,7 +209,15 @@ comment_count() {
 }
 
 # idle_view REVIEW_DECISION MERGEABLE CI_GREEN APPROVED_AT ALREADY_NUDGED
-#   [ALREADY_DEQUEUE_NOTIFIED_AT]
+#   [ALREADY_DEQUEUE_NOTIFIED_AT] [MERGE_STATE_STATUS]
+#
+# MERGE_STATE_STATUS defaults to `CLEAN` — the state every target repository's
+# approved, green, up-to-date pull request actually reads, including on
+# agent-ops, whose ruleset requires zero approving reviews. `BLOCKED` is the
+# one value the nudge must refuse: `mergeable` alone reports merge-*conflict*
+# state, so a base branch still short of a second required approval is
+# `MERGEABLE` and `BLOCKED` together, and `_handoff_pr_approved` — true on the
+# first standing approval — cannot see the shortfall on its own.
 #
 # ALREADY_NUDGED accepts:
 #   yes             a genuine, pipeline-authored nudge comment (actor=script,
@@ -228,6 +236,7 @@ comment_count() {
 #   no              no nudge-related comment at all
 idle_view() {
   local decision="$1" mergeable="$2" green="$3" at="$4" nudged="$5" dq_at="${6:-}"
+  local merge_state="${7:-CLEAN}"
   local rollup='[]'
   [[ "$green" == "yes" ]] && rollup='[{"conclusion":"SUCCESS"}]'
   [[ "$green" == "mixed" ]] && rollup='[{"conclusion":"SUCCESS"},{"conclusion":"FAILURE"}]'
@@ -264,8 +273,9 @@ idle_view() {
   fi
   (( ${#extra[@]} )) && comments="$(printf '%s\n' "${extra[@]}" | jq -s -c '.')"
   jq -n --arg d "$decision" --arg m "$mergeable" --argjson rollup "$rollup" \
-    --arg at "$at" --argjson comments "$comments" \
-    '{reviewDecision: $d, mergeable: $m, statusCheckRollup: $rollup,
+    --arg at "$at" --argjson comments "$comments" --arg ms "$merge_state" \
+    '{reviewDecision: $d, mergeable: $m, mergeStateStatus: $ms,
+      statusCheckRollup: $rollup,
       reviews: (if $at == "" then [] else [{state: "APPROVED", submittedAt: $at}] end),
       comments: $comments}' > "$tmp_dir/idle-view.json"
 }
@@ -504,6 +514,33 @@ idle_view APPROVED CONFLICTING yes "2020-01-01T00:00:00Z" no
 out="$(run_sweep)"
 assert_eq "a conflicting PR is never nudged" "" "$out"
 
+# --- BLOCKED: mergeable is not the same question as "GitHub would merge it" -----
+# `_handoff_pr_approved` is true on the first standing approval, so on a base
+# branch requiring two or more the nudge would otherwise claim a pull request
+# was only waiting on a merge click while GitHub was waiting on a second
+# approval. `mergeable` cannot see that — it reports merge-conflict state —
+# and `mergeStateStatus` is where GitHub says so.
+reset_stub
+set_reviews "$(review Warwick-Allen APPROVED)"
+printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" no "" BLOCKED
+out="$(run_sweep)"
+assert_eq "an approved, MERGEABLE, green, idle but BLOCKED PR is never nudged" "" "$out"
+
+# Only `BLOCKED` may suppress it. `BEHIND` is a strict-checks branch needing an
+# update — a merge click's own business, and exactly what the nudge exists to
+# prompt — and `UNKNOWN` is GitHub not having finished computing the field,
+# which must fail open like every other unreadable state in this sweep.
+for state in CLEAN BEHIND UNKNOWN; do
+  reset_stub
+  set_reviews "$(review Warwick-Allen APPROVED)"
+  printf 'Warwick-Allen\n' > "$tmp_dir/pending"
+  idle_view APPROVED MERGEABLE yes "2020-01-01T00:00:00Z" no "" "$state"
+  out="$(run_sweep)"
+  assert_eq "a $state merge state is still nudged" \
+    "nudged" "$(jq -r 'select(.action == "nudged") | .action' <<<"$out")"
+done
+
 # --- Checks not all green: an empty or mixed rollup is never "green" ------------
 reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
@@ -685,12 +722,19 @@ assert_eq "idle_hours 0 disables the nudge only" "human-review-requested" \
 write_config warwickallen 24
 
 # --- Failures are warnings, never a silent "nothing to do" ----------------------
+# An unreadable `/reviews` breaks two independent reads on the same pull
+# request — `ensure_human_reviewer`'s candidate check (lib/handoff.sh) and
+# the idle nudge's own approval check (`_handoff_pr_approved`, derived from
+# the same endpoint rather than `reviewDecision`, agent-ops#391) — so both
+# warn, rather than one masking the other.
 reset_stub
 set_reviews "$(review Warwick-Allen APPROVED)"
 printf '/reviews' > "$tmp_dir/api-fail"
 out="$(run_sweep)"
-assert_eq "an unreadable reviews list is a warning" "warning" "$(jq -r '.action' <<<"$out")"
-assert_contains "  ... naming the pull request" "$URL" "$(jq -r '.pr_url' <<<"$out")"
+assert_eq "an unreadable reviews list warns on every check that reads it" \
+  "$(printf 'warning\nwarning')" "$(jq -r '.action' <<<"$out" | sort)"
+assert_eq "  ... both naming the pull request" "$(printf '%s\n%s' "$URL" "$URL")" \
+  "$(jq -r '.pr_url' <<<"$out" | sort)"
 
 reset_stub
 printf x > "$tmp_dir/list-fail"
