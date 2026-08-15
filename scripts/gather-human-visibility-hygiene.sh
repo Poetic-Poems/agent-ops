@@ -75,7 +75,7 @@
 #
 #   could_not_request      — a read-only "is a human review currently
 #                             requested (or already given)" check: `gh pr
-#                             view --json reviewDecision,reviewRequests`.
+#                             view --json reviewRequests,reviews`.
 #                             A `reviewRequests` entry counts only once it
 #                             clears the same *bot* filter `ensure_human_
 #                             reviewer`'s own pending read applies — a
@@ -97,14 +97,22 @@
 #                             The filter is belt-and-braces for the day that
 #                             exporter changes, keyed on `__typename` (what
 #                             this reader would actually see) with `type`
-#                             retained against a REST-shaped payload.
-#                             `reviewDecision` of `APPROVED` or
+#                             retained against a REST-shaped payload. A
+#                             non-bot review with state `APPROVED` or
 #                             `CHANGES_REQUESTED` means a review already
 #                             happened, which only a request already granted
 #                             could have produced — either is the violation
-#                             resolving itself, the same two facts
-#                             `ensure_human_reviewer` (`lib/handoff.sh`)
-#                             itself reasons from, read rather than acted on.
+#                             resolving itself. Read from the reviews list,
+#                             never `reviewDecision` (agent-ops#391,
+#                             TD-PPagop-26081505): that field is computed
+#                             against the base branch's *required* approving
+#                             review count, and on this repository's own
+#                             ruleset, which sets that count to `0`, it can
+#                             never become `APPROVED` however many humans
+#                             approve — the same fact `ensure_human_reviewer`
+#                             (`lib/handoff.sh`) already reasons from the
+#                             reviews list rather than that field, read here
+#                             rather than acted on.
 #   could_not_post_nudge   — did the nudge comment land after all: `gh pr
 #                             view --json comments`, searched for a comment
 #                             carrying both the exact `<!-- agent-ops:human-
@@ -218,12 +226,12 @@ _warning_class() {
 # an unreadable pull request is `keep`, the same fail-safe default the header
 # note describes.
 _pr_violation_survives() {
-  local pr_url="$1" detail="$2" class json state draft decision requests has_marker
+  local pr_url="$1" detail="$2" class json state draft reviewed requests has_marker
   local assignee author_login known_other
   class="$(_warning_class "$detail")"
 
   json="$(gh pr view "$pr_url" \
-            --json state,isDraft,reviewDecision,reviewRequests,comments,author,reviews 2>/dev/null)" || true
+            --json state,isDraft,reviewRequests,comments,author,reviews 2>/dev/null)" || true
   if [[ -z "$json" ]]; then
     printf 'keep'
     return
@@ -238,7 +246,6 @@ _pr_violation_survives() {
 
   case "$class" in
     could_not_request)
-      decision="$(jq -r '.reviewDecision // ""' <<<"$json" 2>/dev/null || true)"
       # A bot-typed or `[bot]`-suffixed entry is dropped before counting, the
       # same filter `ensure_human_reviewer`'s own pending read applies
       # (tech-debt/TD-PPagop-26081403.md); a team entry (no `login`, so the
@@ -252,7 +259,23 @@ _pr_violation_survives() {
                                     or ((.login // "") | endswith("[bot]"))
                                     | not)]
                           | length' <<<"$json" 2>/dev/null || echo 0)"
-      if [[ "$decision" == "APPROVED" || "$decision" == "CHANGES_REQUESTED" || "$requests" != "0" ]]; then
+      # "Already given" is read off the reviews list, never `reviewDecision`
+      # (agent-ops#391, TD-PPagop-26081505): that field is computed against
+      # the base branch's *required* approving review count, and where a
+      # repository's ruleset sets that to `0` — this repository's own — it
+      # never becomes `APPROVED` however many humans approve, so a check
+      # keyed on it directly could never fire here. A non-bot,
+      # non-`COMMENTED` review — `APPROVED` or `CHANGES_REQUESTED` — proves a
+      # review already happened, the same fact `_handoff_pr_approved`/
+      # `_handoff_blocking_reviewers` (`lib/handoff.sh`) derive from the same
+      # list for their own, stricter purpose; existence alone is enough here,
+      # since this is only asking "did a request already work", not "is the
+      # pull request currently approved".
+      reviewed="$(jq -r '[(.reviews // [])[]
+                           | select((.state // "") == "APPROVED" or (.state // "") == "CHANGES_REQUESTED")
+                           | select(((.author.login // "") | endswith("[bot]")) | not)]
+                          | length' <<<"$json" 2>/dev/null || echo 0)"
+      if [[ "$requests" != "0" || "$reviewed" != "0" ]]; then
         printf 'drop'
       else
         printf 'keep'
