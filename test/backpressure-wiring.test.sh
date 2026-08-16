@@ -340,13 +340,18 @@ run_approver_escalate() {
   # and the escalation issue could not be filed either" warning path — the
   # dedup/success path is create_escalation_issue's own test, not this one's.
   create_escalation_issue() { return 1; }
-  # shellcheck disable=SC2034,SC2317  # Read by approver_escalate itself, standing in for the state
-  # a real cycle already has in scope by the time it calls this function.
+  # shellcheck disable=SC2034  # Read by the eval'd approver_escalate body below, standing in for
+  # the state a real cycle already has in scope by the time it calls this function — invisible to
+  # the linter, the same way every other lifted-block variable in this file already is.
   cycle_dir="$tmp_dir/approver-escalate-cycle"
   mkdir -p "$cycle_dir"
+  # shellcheck disable=SC2034
   cycle_id="test-cycle"
+  # shellcheck disable=SC2034
   node_name="test-node"
+  # shellcheck disable=SC2034
   enabler_escalation_label="enabler-escalation"
+  # shellcheck disable=SC2034
   selected_repo="acme/widgets"
   log_calls="$tmp_dir/approver-escalate-log-calls"
   : > "$log_calls"
