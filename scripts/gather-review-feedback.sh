@@ -55,7 +55,7 @@
 #   - it is open and not a draft (a draft is the Implementor's own claim marker,
 #     not something a human has finished reviewing);
 #   - it carries <pr-label> and its head branch starts with <branch-prefix> —
-#     i.e. this system raised it. The Human Gate is explicit that branches
+#     i.e. this system raised it. The Landing Gate is explicit that branches
 #     outside branch_prefix belong to humans, and an agent force-pushing a
 #     colleague's PR because they asked for changes would be a memorable way to
 #     learn that;

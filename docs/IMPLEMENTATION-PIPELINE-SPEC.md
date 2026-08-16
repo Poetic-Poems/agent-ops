@@ -2068,7 +2068,7 @@ implements.
      every other exclusion in this source takes.
    - **Ready PRs are not ours to touch here.** A non-draft PR is finished work
      waiting on the human; answering it is `review-feedback`'s job, and
-     force-pushing it would violate the Human Gate. Only drafts qualify.
+     force-pushing it would violate the Landing Gate. Only drafts qualify.
    - **The ref is scoped to the head SHA** — `pr-<n>-abandoned-<head-sha>`, not
      `pr-<n>-abandoned` — so a block recorded against one abandoned state does not
      swallow a later, possibly-finishable state after fresh commits land, while a

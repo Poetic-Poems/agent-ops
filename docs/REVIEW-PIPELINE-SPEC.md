@@ -214,7 +214,7 @@ Optional. A timestamp before which no review may start (R3.3). Absent or empty m
 
 <!-- config-table:notes-end -->
 
-## The Human Gate and the loop it closes
+## The Landing Gate and the loop it closes
 
 The review pipeline raises **one pull request per repository, ready for
 review** (not draft — the review *is* the deliverable, and there is no second
@@ -222,8 +222,14 @@ review stage to flip it). The PR is labelled with the repository's own
 resolved `project_review` pr_label (its override, or
 `project_review.defaults.pr_label`, requirement 342), titled in
 Conventional Commits form (e.g. `docs(review): weekly project review 2026-07-20`),
-and its body summarises the verdict and links the review index. A human merges
-it — the single point at which a human is required.
+and its body summarises the verdict and links the review index. A human
+approves and merges it, at every `merge_autonomy` level: `review-cycle.sh`
+engages no Approver stage, so the implementation pipeline's trust ladder
+(`docs/IMPLEMENTATION-PIPELINE-SPEC.md` §The Landing Gate) does not yet
+reach review pull requests, however the installation has configured it.
+Review PRs join that ladder when an Approver is wired into this pipeline —
+work no item covers yet, named here so the gap is a stated one rather than
+a silent one.
 
 The point of the pipeline is the *loop*, not the report. When a review PR
 merges, its updated tech-debt register and its `04-improvement-prompts.md`
@@ -235,8 +241,9 @@ land on `main`, where:
 - the human runs the **`project-remediation`** skill (the review's
   counterpart) to work down the recommendations deliberately.
 
-So the review is the *front* of a loop that ends in merged, human-approved
-improvements — never a dead-end document.
+So the review is the *front* of a loop that ends in merged improvements,
+each landed through whatever gate its repository's `merge_autonomy` level
+sets — the human's own, at the default — never a dead-end document.
 
 ## Requirements
 

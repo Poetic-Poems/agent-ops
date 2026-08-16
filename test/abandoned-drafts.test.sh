@@ -152,12 +152,12 @@ assert_eq "only open, draft, ours-by-branch, actually-stale PRs are candidates" 
 
 # Each exclusion, named, so a future edit that drops one fails loudly:
 # - #81 ready: a ready PR is finished work waiting on the human. Finishing it is
-#   review-feedback's job; force-pushing it would breach the Human Gate.
+#   review-feedback's job; force-pushing it would breach the Landing Gate.
 # - #82 a human's comment, after the cutoff: a draft still being worked, or one
 #   a peer node just touched. Stealing it would force-push over live work. This
 #   is the assertion that keeps the feature from cannibalising in-flight cycles.
 # - #83 human branch: only branches under agent/ (or the tech-debt td/ claim
-#   branch) are ours; the Human Gate reserves the rest.
+#   branch) are ours; the Landing Gate reserves the rest.
 # - #87 a human's comment resets the clock even though the last commit is old —
 #   the direct contrast with #86, whose only recent write is marker-stamped.
 # - #88 a review resets the clock too, same as any other real activity.

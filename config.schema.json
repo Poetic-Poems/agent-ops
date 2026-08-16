@@ -551,7 +551,7 @@
       }
     },
     "branch_prefix": {
-      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans \u2014 the Human Gate reads this to tell ours from theirs, so it must not be empty.",
+      "description": "Branch naming for the implementation pipeline: `<branch_prefix><item-slug>`. Branches outside it belong to humans \u2014 the Landing Gate reads this to tell ours from theirs, so it must not be empty.",
       "type": "string",
       "minLength": 1,
       "x-docs": {

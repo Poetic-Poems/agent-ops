@@ -440,7 +440,7 @@ jq -e 'type == "object"' <<<"$refinement_policy_json" >/dev/null 2>&1 || refinem
 pr_label="$(cfg '.pr_label')"
 # Read here (rather than left to the Co-Ordinator, which puts it in the work
 # order's `branch`) because requirement 3c's gatherer needs it: a PR is only
-# ours to push to if its head branch is under this prefix. The Human Gate says
+# ours to push to if its head branch is under this prefix. The Landing Gate says
 # branches outside it belong to humans.
 branch_prefix="$(cfg '.branch_prefix')"
 max_open_agent_prs="$(cfg '.max_open_agent_prs')"
