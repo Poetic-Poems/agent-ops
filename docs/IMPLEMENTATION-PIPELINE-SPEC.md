@@ -1635,16 +1635,20 @@ implements.
    present, else the top-level `merge_autonomy` key, else `human` — on the
    same precedence `stage_timeouts` uses (requirement 4f). It has no opinion
    about the kill switch. `merge_autonomy_effective_level` (`CONFIG_JSON`,
-   `SLUG`, `STATE_REPO`, `STATE_DIR`) is the one function that combines both:
-   `human` whenever the kill switch is set (or unreadable — everything
-   ambiguous resolves toward the safe reading here too, mirroring 2.3's own
-   rule), the configured level otherwise. Every future approval or landing
-   path (WI-5, WI-7) must call the effective function, never the configured
-   one directly, or the kill switch would not actually override what it
-   promises to. At this stage nothing does: `scripts/doctor.sh` (component 14)
-   is the only reader, and it validates the *configured* level deliberately,
-   so a pairing that would fail the moment someone clears the switch is
-   caught now rather than only once they do.
+   `SLUG`, `STATE_REPO`, `STATE_DIR`) is the one function that combines the
+   overrides with it: `human` whenever the kill switch is set (or unreadable
+   — everything ambiguous resolves toward the safe reading here too,
+   mirroring 2.3's own rule); otherwise the configured level, capped at
+   `agent-approves` by that repository's own merge-budget freeze where one is
+   set (requirement 2.3c). Every approval or landing path must call the
+   effective function, never the configured one directly, or neither override
+   would actually override what it promises to — which is also what lets
+   requirement 2.3c's freeze take effect everywhere with no call site of its
+   own. Its readers are the Approver gate (requirement 8b) and requirement
+   2.2's per-repository back-pressure exclusion. `scripts/doctor.sh`
+   (component 14) reads the *configured* level instead, deliberately, so a
+   pairing that would fail the moment someone clears the switch is caught now
+   rather than only once they do.
 2.3c. **The merge budget** (D18 §5.4, `docs/reviews/2026-08-14-autonomy-investigation.md`;
    `lib/merge-budget.sh`). `merge_budget_per_day` is a rolling-24-hour cap,
    per repository, on how many pull requests this pipeline may *land* —
@@ -9802,14 +9806,23 @@ What exists, and the requirements each part answers to:
     probing mode (`probe-404`) this reader alone asks for
     (TD-PPagop-26081602).
     `merge_autonomy_effective_level`
-    combines both: `human` whenever the kill switch is set or unreadable,
-    the configured level otherwise — the one function every
-    approval/landing path must call, `run_approver_stage` (requirement 8b)
-    among them. Sourced by
+    combines all three: `human` whenever the kill switch is set or
+    unreadable; otherwise the configured level capped at `agent-approves`
+    whenever that repository's own merge-budget freeze is set
+    (`merge_budget_freeze_state`, component 14d, requirement 2.3c) and the
+    configured level ranks above it; otherwise the configured level
+    unchanged. The kill switch is read first and wins outright, so a
+    repository already forced to `human` gains nothing from also being
+    frozen. It is the one function every approval/landing path must call,
+    `run_approver_stage` (requirement 8b) among them — which is exactly why
+    the freeze needs no call site of its own. Sourced by
     `agent-cycle.sh` (the `--kill-merge-autonomy`/`--restore-merge-autonomy`
-    flags and `--status`) and `scripts/doctor.sh` (the pairing and ruleset
-    checks, requirement 2.3b); depends on `lib/toggle.sh`, sourced first by
-    both. Regression-tested in `test/merge-autonomy.test.sh` against the
+    flags, `--status`, and requirement 2.2's own per-repository back-pressure
+    read) and `scripts/doctor.sh` (the pairing and ruleset checks,
+    requirement 2.3b); depends on `lib/toggle.sh` and, for the freeze read
+    alone, on `lib/merge-budget.sh` — both sourced ahead of it by both
+    callers, though bash resolves the call at run time rather than at source
+    time, so the textual order is readability and not a constraint. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
     flags it wraps; the same suite lifts `merge_autonomy_status_report` out
     of `agent-cycle.sh` and asserts the `--status` headline split — KILLED
@@ -11365,7 +11378,13 @@ pull request, run the ones the change touches and any it could regress.
    on a human keeps counting; a repo whose listing could not be read names no
    PRs at all, counting every claim, which is the fail-closed reading beside
    its own zeroed counts; and the composition line states the split the
-   operator and the dashboard card both read.
+   operator and the dashboard card both read. The same test covers the
+   exclusion's level-awareness (D18 WI-6, requirement 2.3c): the identical
+   approved, non-`CHANGES_REQUESTED` pull request is excluded for a repo at
+   `human` and counted for one whose `merge_autonomy_effective_level` is
+   `agent-merges-routine`, and in the counted case its claim does not
+   double-count on top of it — so the difference is demonstrably the level
+   and not a change to the underlying rule.
 7f. **The decision site folds in what requirement 2.2's count could not see
    yet (requirement 2.2b, issue #459).** `test/backpressure-decision.test.sh`
    passes, against the fold-in block lifted verbatim from `agent-cycle.sh`: a
