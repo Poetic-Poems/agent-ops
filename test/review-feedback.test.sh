@@ -82,7 +82,7 @@ assert_eq "only open, ready, agent-branch, changes-requested PRs are candidates"
 # - #58 draft: a draft PR is the Implementor's own claim marker, not something a
 #   human has finished reviewing.
 # - #59/#60/#61: nobody has asked for changes.
-# - #62: the Human Gate is explicit that branches outside `branch_prefix` belong
+# - #62: the Landing Gate is explicit that branches outside `branch_prefix` belong
 #   to humans. An agent force-pushing a colleague's PR because they happened to
 #   request changes on it would be a memorable way to discover this rule.
 assert_eq "a draft PR is not a review-feedback candidate" \

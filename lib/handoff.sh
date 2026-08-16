@@ -388,7 +388,7 @@ _handoff_pr_author() {
 # It does not clear the block, and must not appear to. Re-requesting review
 # leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state` at
 # `blocked` — verified against GitHub on #200, before and after — so the human
-# gate holds exactly as "The Human Gate" describes it, and the PR still needs an
+# gate holds exactly as "The Landing Gate" describes it, and the PR still needs an
 # approving review from a code owner that this system cannot give itself. All
 # this does is put the PR back in the queue the human actually reads.
 #

@@ -90,7 +90,7 @@ assert_eq "only open, non-draft, CONFLICTING, ours-by-branch PRs are candidates"
 #   Implementor to rebase a PR that may not conflict. This is the assertion that
 #   keeps the feature from acting on a guess.
 # - #94 human branch: only branches under agent/ (or the tech-debt td/ claim
-#   branch) are ours; the Human Gate reserves the rest — force-pushing a rebase
+#   branch) are ours; the Landing Gate reserves the rest — force-pushing a rebase
 #   onto a human's PR would breach it.
 assert_eq "a draft PR is never a merge-conflicts candidate" \
   "0" "$(jq '[.[] | select(.number == 91) | select(.isDraft | not)] | length' <<<"$prs")"

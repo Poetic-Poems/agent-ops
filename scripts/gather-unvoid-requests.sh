@@ -39,7 +39,7 @@
 # established way to tell this system something from GitHub.
 #
 # This does not weaken requirement 34c. Only a human can apply the label — the
-# Human Gate reserves that, and no stage here labels anything with it — so
+# Landing Gate reserves that, and no stage here labels anything with it — so
 # "only a human may clear a void" holds exactly as before. What changes is
 # where the human has to be standing.
 #

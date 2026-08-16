@@ -83,7 +83,7 @@
 # PR that may not even conflict), and either:
 #   - **ours**: it carries <pr-label> and its head branch starts with
 #     <branch-prefix> (or `td/`, the tech-debt claim branch) — i.e. this
-#     system raised it. The Human Gate reserves every other branch for
+#     system raised it. The Landing Gate reserves every other branch for
 #     humans; force-pushing a rebase onto a human's branch because it had
 #     drifted would be a memorable way to learn that. Or,
 #   - **Dependabot's own**: its author is `app/dependabot`

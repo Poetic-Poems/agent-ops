@@ -54,7 +54,7 @@
 # its head branch starts with <branch-prefix> (or `td/`, the tech-debt claim
 # branch) — i.e. this system raised it, the same "ours" test
 # gather-merge-conflicts.sh applies, since force-pushing a fix onto a
-# human's own branch is exactly what the Human Gate reserves every other
+# human's own branch is exactly what the Landing Gate reserves every other
 # branch against — and:
 #
 #   - its `mergeable` reads exactly `MERGEABLE` (never `CONFLICTING`, which

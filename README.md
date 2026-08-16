@@ -1,6 +1,6 @@
 # Poetic Autonomous Implementation Agent System
 
-A self-hosted, unattended pipeline that automatically selects, implements, and reviews pending work from the [poetic](https://github.com/Poetic-Poems/poetic) and [poetic-fiddle](https://github.com/Poetic-Poems/poetic-fiddle) repositories — and from [agent-ops](https://github.com/Poetic-Poems/agent-ops) itself, the pipeline's own home, so it works down its own backlog and roadmap — raising mergeable pull requests for human review and approval.
+A self-hosted, unattended pipeline that automatically selects, implements, and reviews pending work from the [poetic](https://github.com/Poetic-Poems/poetic) and [poetic-fiddle](https://github.com/Poetic-Poems/poetic-fiddle) repositories — and from [agent-ops](https://github.com/Poetic-Poems/agent-ops) itself, the pipeline's own home, so it works down its own backlog and roadmap — raising mergeable pull requests for human review and approval at the default `merge_autonomy` level (`human`), with an opt-in trust ladder ([The Landing Gate](docs/IMPLEMENTATION-PIPELINE-SPEC.md#the-landing-gate)) an installation may deliberately climb.
 
 ## What it does
 
@@ -56,8 +56,10 @@ Four things to know:
   you (`warwickallen`). So the PR stays `BLOCKED` and un-mergeable until *you*
   re-review — re-requesting your review doesn't change that, and isn't meant
   to; it rings the bell without moving the gate. That's not a bug to route
-  around — it's the human gate, enforced by GitHub rather than by good
-  intentions.
+  around — it's the structural human **veto**, enforced by GitHub rather than
+  by good intentions, and it survives every `merge_autonomy` level: the
+  pipeline never dismisses a human review, so your `CHANGES_REQUESTED` blocks
+  landing even in a repository the Script is otherwise trusted to merge in.
 - **Every comment the pipeline posts says so, up top.** Because it writes as
   you, the author field can't tell your own comments from the pipeline's — so
   every comment it posts opens with a bold label naming which stage wrote it
