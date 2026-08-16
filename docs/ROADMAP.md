@@ -37,7 +37,7 @@ says why.
 | D4 | Model-usage billing | **BYO API key is the primary, first-class path** — Anthropic first (including Claude via Bedrock and Vertex), and likewise for every other supported provider (D12). Claude subscription OAuth is retained as a supported self-hosted configuration, documented with its constraints (interactive login per node; own-use only). Usage resale is deferred until a hosted SaaS exists and has traction, but metering hooks are designed in from Phase 1 so resale needs no re-architecture. |
 | D5 | Licensing | **Source-available** (BSL/FSL-family): code public and auditable, free to self-host for your own use, no competing hosted offering. The exact licence is an open question with a Phase 1 decide-by gate. |
 | D6 | Technology | **Strangler rewrite.** The proven bash cycle engine is retained. All *new* product surface — control plane, config APIs, packaging — is written in a proper language; engine pieces migrate across only when a change touches them anyway. |
-| D7 | Product scope | **The whole suite**: the implementation pipeline, the weekly review pipeline, and the dashboard. They compound — reviews feed the pipeline the work it does, and the dashboard is the product's face. |
+| D7 | Product scope | **The whole suite**: the implementation pipeline, the **repository-review** pipeline, and the dashboard. They compound — reviews feed the pipeline the work it does, and the dashboard is the product's face. The name the review pipeline carries today, *weekly project review*, is wrong twice over, and neither word survives productisation. **Weekly** is configuration, not identity: the cadence is a cron tick plus `project_review.defaults.min_days_between_reviews`, set per installation and overridable per repository, so a nightly or fortnightly installation is as ordinary as Poetic's weekly one — the Phase 1 sweep retires the word from both pipelines. **Project** overstates the scope: a run reviews *one repository*, each entry in `project_review.repos` on its own, with its own clone, branch, report set and pull request; nothing reviews a project — several repositories that deliver one thing — as a single subject. Reviewing one as a single subject is a wanted feature, deliberately deferred (Phase 3). Until then the product's term is **repository review** — and a review is instructed and contextualised per repository (Phase 1), because what a repository is for, which of its oddities are deliberate, and what is out of scope for it are not things a reviewer can reliably infer from the clone alone. |
 | D8 | Repository shape | **Split**: a new product repository in the Pullwright organisation (D13) holds the pipeline; agent-ops shrinks to Poetic's consumer configuration and deployment — the reference installation and customer zero. |
 | D9 | Build mode | **Mixed.** Architectural moves happen in interactive sessions; everything decomposable is authored as agent-workable items that the fleet works down itself. The roadmap doubles as dogfooding evidence. |
 | D10 | Pacing | **Phase-gated, no dates.** Progress is gates passed, not calendar time. |
@@ -71,6 +71,14 @@ chooses:
   at both tiers, Reviewer at both tiers, Enabler) from any supported
   provider — not only the Claude family — plus schedules, work sources,
   prompts, and repo conventions.
+- Reviews scoped and instructed per repository (D7): the review pipeline
+  reviews a repository, at whatever cadence the installation sets — neither
+  "weekly" nor "project" is part of its name — and applies that repository's
+  own review instructions and context, so an adopting repository's standards,
+  deliberate conventions and out-of-scope areas shape its reviews without
+  anyone forking the skill. A project spanning several repositories is
+  reviewed as one subject, with the findings that only exist across a
+  boundary routed to the repository that must act on them.
 - Configured as code (D16): an installation's entire configuration —
   pipeline, orchestration layer, control plane — is versioned declaration
   applied by tooling; nothing is hand-mutated on a running node.
@@ -148,6 +156,36 @@ Pullwright organisation and carries its licence.
       so a per-repo selection prompt needs that invocation split first; the
       Implementor and Reviewer stages already run against a single known repo
       and could take a per-repo override without it. *[fleet]*
+- [ ] Give a review its repository's own instructions and context (D7). A
+      Reviewer-Agent is launched today with five facts — `repo`,
+      `default_branch`, `review_date`, `branch`, `pr_label` — plus the
+      shipped `prompts/project-reviewer.md` and the injected `project-review`
+      skill, identical for every repository; everything else it knows it has
+      to infer from the clone. `prompt_overrides` (requirement 4a) does not
+      help: its enumeration covers the implementation pipeline's five stages,
+      and `review-cycle.sh` never reads it, so the review pipeline has no
+      override facility at all — per-installation or per-repository. An
+      installation that wants one repository reviewed against a standard
+      another does not follow, a deliberate convention left alone rather than
+      re-reported at every review, or a generated or vendored directory held
+      out of scope, has nowhere to say so short of forking the skill. Build
+      the facility: per-repository **instructions** (how to review this
+      repository — what to weigh, what to ignore, which standards apply) and
+      per-repository **context** (what it is for, its domain, its
+      relationships to other repositories, its consumers and deployment),
+      resolved by the Script and appended to the Reviewer-Agent's runtime
+      input, layered installation-wide → per-repository on the same
+      resolution rule as the rest of `project_review` (requirement 342), and
+      recorded in the run's record so a review's inputs are reconstructable.
+      Where the text lives is an open question below, and one caution shapes
+      it: anything read out of the repository under review is content that
+      repository's contributors can edit, so it is trustworthy only as far as
+      a pull request into that repository is — the class of concern D19
+      records about rendered pages — which argues for the installation's own
+      configuration holding whatever changes how strictly a review judges.
+      This is the review pipeline's counterpart to the per-repo prompt-override
+      item above; if one mechanism will serve both, they should land on it.
+      *[fleet]*
 - [x] Config schema with validation and a `doctor` command that checks an
       installation end to end — the skeleton: `config.schema.json` (every key,
       its type, its constraints, and the value the code falls back to),
@@ -168,12 +206,21 @@ Pullwright organisation and carries its licence.
 - [x] Make schedules configuration-driven (per-pipeline cadence in config,
       not a baked crontab) — the `schedule` block, rendered by
       `deploy/docker/render-crontab.sh`. *[fleet]*
-- [ ] Retire the cadence from each pipeline's identity: "hourly" (and
-      "weekly") must disappear from spec titles, documentation, prompts, and
-      code, and every timing derived from the period today (lock staleness,
-      retention counts, stand-down probing) must follow the configured value
-      instead of assuming an hour. The cadence is configurable; the product
-      still calls itself the hourly pipeline. *[fleet]*
+- [ ] Retire the cadence — and the false scope — from each pipeline's
+      identity (D7): "hourly" and "weekly" must disappear from spec titles,
+      documentation, prompts, and code, and every timing derived from the
+      period today (lock staleness, retention counts, stand-down probing)
+      must follow the configured value instead of assuming an hour. The
+      review pipeline sheds "project" in the same sweep — it reviews a
+      repository, so it is the repository-review pipeline — and the
+      identifiers that say otherwise go with it: the `project_review` config
+      block, the `project-review` pull-request label and work source, the
+      vendored skill's own name. Each of those is a breaking change for an
+      existing installation (a config key renamed, a label relabelled on live
+      pull requests), so each travels with its migration note; the prose
+      rename does not wait on them. The cadence is configurable and the scope
+      is a repository; the product still calls itself the hourly pipeline and
+      the weekly project review. *[fleet]*
 - [ ] First-class non-interactive auth: Anthropic API key, Bedrock, and
       Vertex as the primary path; subscription OAuth documented as the
       supported self-hosted alternative (D4). *[interactive]*
@@ -198,8 +245,12 @@ Pullwright organisation and carries its licence.
       or `none`), so an adopting repository declares its own arrangement
       instead of inheriting Poetic's. *[fleet]*
 - [ ] Create the product repository in the Pullwright organisation (the
-      name and org exist — D13); move the pipeline; reduce agent-ops to
-      consumer config + deployment (D8). *[interactive]*
+      name and org exist — D13); move the suite across — both pipelines, the
+      dashboard, and the review skill `.claude/skills/project-review/` that
+      `review-cycle.sh` stages into each clone at runtime, which stops being
+      a pinned copy of a personal authoring repo and becomes product source
+      (D7, D8); reduce agent-ops to consumer config + deployment.
+      *[interactive]*
 - [ ] Adopt the tech-debt management framework into the product (D15): move
       the canonical register tooling out of `Poetic-Poems/poetic` into the
       product repository (the drift-synced copies consumer repositories hold
@@ -462,6 +513,26 @@ dashboard; a feedback channel exists and is producing roadmap items.
 - [ ] Preview adapters beyond Vercel — Netlify, Cloudflare Pages, a plain
       URL template over the forge's deployments API — chosen by
       design-partner demand (D19). *[fleet]*
+- [ ] Project-scoped review (D7), the deferred half of the naming fix: review
+      the several repositories that deliver one product as a single subject,
+      not one at a time. That means one report set for the project, the
+      findings that exist only across a boundary — logic duplicated on both
+      sides of a sync, a contract changed in the provider and not in its
+      consumers, an interface a consumer is still a version behind on — and
+      each recommendation routed to the repository that has to implement it,
+      as a pull request into that repository. Poetic is the motivating case:
+      the framework in `Poetic-Poems/poetic` and the repositories it syncs
+      into are one product reviewed in halves today, and the vendored-tooling
+      drift D20 exists to retire is precisely the class of finding a
+      single-repository review cannot see. Deferred to here rather than
+      Phase 1 because it needs repository review untethered first, and
+      because it is a genuine cost step, priced under D14 before it is built —
+      N repositories in one review multiply the context one agent must hold,
+      and a report that spans repositories has a wider blast radius when it is
+      wrong. The instructions-and-context facility gains a project level above
+      its repository one; project membership is configuration, so a repository
+      may be reviewed on its own, as part of a project, or both.
+      *[interactive]*
 
 ## Phase 4 — Delivery decision and launch
 
@@ -509,6 +580,7 @@ Parked deliberately, each with a decide-by gate:
 | Question | Decide by |
 |---|---|
 | Exact source-available licence (BSL 1.1 / FSL / Elastic 2.0) | Phase 1 exit |
+| Where a repository's review instructions and context live (D7) — a block in the installation's versioned configuration (D16), a file in the repository under review (D20's rule that a repository holds its own data), or both layered with configuration winning; and how far text taken from the repository may be trusted as instruction rather than merely read as evidence | Phase 1, with the item that builds the facility |
 | Control-plane language (Go and TypeScript are the front-runners) | First control-plane commit, Phase 2 |
 | Execution substrate for non-Claude providers — abstraction over agentic CLIs, a provider-neutral runtime, or an API gateway | Interface fixed with the control-plane skeleton, Phase 2; first non-Claude provider lands in Phase 3 |
 | State store beyond git state-sync | Interface fixed in Phase 2; replacement whenever scale or measured resource cost (D14) demands |
