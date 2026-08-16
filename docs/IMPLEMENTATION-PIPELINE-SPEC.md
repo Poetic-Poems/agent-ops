@@ -1228,6 +1228,46 @@ implements.
    after this narrowing, so a back-pressured `selected: false` — which forbade
    the tech-debt source outright and therefore owes no account of it — is never
    scored as contradicting a band it was not allowed to walk.
+2.2b. **The decision site folds in what 2.2's count missed.** 2.2a's own
+   justification for treating a conflicted or dequeued PR as doubly apt —
+   "occupies one the human cannot merge to free until it is fixed" — is only
+   true if that PR is actually counted somewhere. It usually is not: 2.2's
+   count is taken before this cycle's `merge_conflicts` and `dequeued`
+   candidates are gathered (they arrive only once each repo's sources are
+   populated, in step 3, requirements 3g and 3z), and neither gatherer's
+   candidate rule reads `reviewDecision` at all
+   (`scripts/gather-merge-conflicts.sh`, `scripts/gather-dequeued.sh`). So a
+   conflicted or dequeued PR that is not *also* `CHANGES_REQUESTED` passes
+   through 2.2's count exactly like an ordinary PR waiting on a human — ready
+   PRs are excluded from the trip unless `CHANGES_REQUESTED` (2.2's own rule)
+   — and for `dequeued` this is not even a coincidence: a PR only reaches the
+   merge queue after approval, so its `reviewDecision` is `APPROVED` by
+   construction. Left uncorrected, the gate trips later than it should, and
+   does so exactly when a conflicted or dequeued PR is what is filling it —
+   the one state 2.2a's restriction exists to reach.
+
+   So, at the decision site, before 2.2a's stand-down/restriction check: take
+   the distinct PR numbers named across every repo's `merge_conflicts` and
+   `dequeued` candidates (a number named by both counts once), drop whichever
+   ones 2.2's own count already held — that repo's drafts and
+   `CHANGES_REQUESTED`-ready PRs — add what remains to `adjusted_open_count`,
+   and, when anything was added, re-evaluate `adjusted_open_count >=
+   max_open_agent_prs`: a cycle whose plain 2.2 count left it untripped can
+   trip here. State the addition in `open_composition`, in the same
+   composition-line style 2.2 itself logs, so the log line stays the one
+   place a cap-tuning read needs and stays legible against the dashboard
+   card's word-for-word mirror of 2.2's own line (requirement 2.2,
+   `docs/DASHBOARD-SPEC.md`). This runs whether or not 2.2's own count
+   tripped — both gathered arrays exist by this point regardless, from the
+   same per-repo loop that builds `ordered_repos_json` ahead of this check —
+   so a cycle 2.2 alone would have let run can still be correctly narrowed to
+   the four finishing sources.
+
+   The dashboard's own back-pressure card is unaffected: it mirrors
+   requirement 2.2's count alone (`docs/DASHBOARD-SPEC.md`), a continuous,
+   cross-cycle read of live PR state rather than one cycle's stand-down
+   decision, and has no access to the `mergeable`/queue-membership data this
+   fold-in needs.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
@@ -10814,6 +10854,22 @@ pull request, run the ones the change touches and any it could regress.
    PRs at all, counting every claim, which is the fail-closed reading beside
    its own zeroed counts; and the composition line states the split the
    operator and the dashboard card both read.
+7f. **The decision site folds in what requirement 2.2's count could not see
+   yet (requirement 2.2b, issue #459).** `test/backpressure-decision.test.sh`
+   passes, against the fold-in block lifted verbatim from `agent-cycle.sh`: a
+   repo with no `merge_conflicts`/`dequeued` candidates adds nothing and
+   leaves `adjusted_open_count`, `open_composition` and `backpressure_tripped`
+   untouched; a candidate PR already among `counted_prs_json`'s drafts and
+   changes-requested PRs (it happened to also be `CHANGES_REQUESTED`) is not
+   added again; a candidate PR that count did not hold is added exactly once,
+   grows `adjusted_open_count` by it, and is named in `open_composition`; the
+   same PR named by both `merge_conflicts` and `dequeued` is not
+   double-counted; two repos' candidates are both folded in, and a PR number
+   shared by two repos is scoped per repo rather than conflated; a fold-in
+   that reaches `max_open_agent_prs` trips `backpressure_tripped` from `0` to
+   `1` even though requirement 2.2's own count left it untripped; and an
+   already-tripped cycle with nothing left to fold in stays tripped without
+   its composition line changing.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own

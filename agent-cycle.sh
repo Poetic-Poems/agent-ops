@@ -5268,6 +5268,14 @@ human_queue_count=0
 draft_count=0
 claim_count=0
 listing_truncated=0
+# Per-repo set of PR numbers this count already holds — its drafts and its
+# CHANGES_REQUESTED-ready PRs, the same rule `counted_prs` below applies one
+# repo at a time. An object keyed by slug, each value a JSON array of PR
+# numbers. Requirement 2.2a's decision site reads this back to tell which of
+# a repo's merge-conflict/dequeued candidates (gathered later, in step 3, so
+# they cannot be folded in above) this count already counted and which it did
+# not.
+counted_prs_json='{}'
 while IFS= read -r slug; do
   prs_json="$(gh pr list -R "$slug" --state open --label "$pr_label" \
     --limit "$GITHUB_PR_LIST_LIMIT" --json number,isDraft,reviewDecision 2>/dev/null)" || prs_json=''
@@ -5295,8 +5303,12 @@ while IFS= read -r slug; do
   # GITHUB_PR_LIST_LIMIT, so it may ride argv (requirement 4g). An unreadable
   # listing leaves it empty, which counts every claim — the fail-closed
   # reading, matching the zeroed counts above.
-  counted_prs="$(jq -r '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]
-                        | join(",")' <<<"$prs_json" 2>/dev/null)" || counted_prs=''
+  counted_prs_array="$(jq -c '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]' \
+    <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
+  [[ -n "$counted_prs_array" ]] || counted_prs_array='[]'
+  counted_prs="$(jq -r 'join(",")' <<<"$counted_prs_array" 2>/dev/null)" || counted_prs=''
+  counted_prs_json="$(jq -c --arg s "$slug" --argjson ns "$counted_prs_array" \
+    '. + {($s): $ns}' <<<"$counted_prs_json" 2>/dev/null)" || counted_prs_json='{}'
   n="$("$SCRIPT_DIR/lib/claim.sh" count "$slug" "$counted_prs" 2>&1)" \
     || { guard_warn "claim-count:$slug" "$n"; n=0; }
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
@@ -6510,6 +6522,41 @@ refiner_allowed=1
 # reasoned around — a source it cannot see is a source it cannot select.
 # The system still cannot open a new PR while the gate is full; it can only
 # finish what is already in it.
+#
+# "a conflicted or dequeued PR is one the human cannot merge to free a slot
+# until it is fixed" above claims those two already hold a slot requirement
+# 2.2's own count counts — but that count was taken before this cycle's
+# merge-conflict and dequeued candidates were gathered (they arrive only
+# once ordered_repos_json's sources are populated, in step 3), and neither
+# gatherer's candidate rule reads `reviewDecision` at all
+# (scripts/gather-merge-conflicts.sh, scripts/gather-dequeued.sh) — so a
+# conflicted or dequeued PR that is not *also* `CHANGES_REQUESTED` passed
+# through 2.2's count exactly like an ordinary human-queue PR. For `dequeued`
+# it is not even a coincidence: a PR only reaches the merge queue after
+# approval, so its `reviewDecision` is `APPROVED` by construction. Fold in,
+# here, whatever `counted_prs_json` — 2.2's own record of which PRs its count
+# held — does not already hold, so the trip decision made at this site
+# actually reflects every slot that source occupies, not just the ones that
+# happened to also be `CHANGES_REQUESTED`. `ordered_repos_json` already
+# carries this cycle's `merge_conflicts`/`dequeued` candidates (gathered
+# above, in step 3) whether or not back-pressure ends up tripped, so this
+# runs unconditionally rather than only inside the `if` below.
+finishing_extra_prs_json="$(jq -c --argjson counted "$counted_prs_json" '
+    [.[] | . as $repo | (($repo.merge_conflicts // [])[], ($repo.dequeued // [])[]) | {slug: $repo.slug, number}]
+    | unique_by([.slug, .number])
+    | map(select(.number as $n | ($counted[.slug] // []) | index($n) | not))
+  ' <<<"$ordered_repos_json" 2>&1)" \
+  || { guard_warn "backpressure:finishing_extra_prs" "$finishing_extra_prs_json"; finishing_extra_prs_json='[]'; }
+finishing_extra_count="$(jq 'length' <<<"$finishing_extra_prs_json" 2>/dev/null)" || finishing_extra_count=0
+[[ "$finishing_extra_count" =~ ^[0-9]+$ ]] || finishing_extra_count=0
+if (( finishing_extra_count > 0 )); then
+  adjusted_open_count=$(( adjusted_open_count + finishing_extra_count ))
+  open_composition="$open_composition + $finishing_extra_count merge-conflict/dequeued PR(s) occupying a slot the changes-requested count above did not"
+  if (( adjusted_open_count >= max_open_agent_prs )); then
+    backpressure_tripped=1
+  fi
+fi
+
 if (( backpressure_tripped )); then
   finishing_waiting="$(jq '[.[].review_feedback[]?, .[].merge_conflicts[]?, .[].dequeued[]?, .[].abandoned_drafts[]?] | length' <<<"$ordered_repos_json")"
   if (( finishing_waiting == 0 )); then
