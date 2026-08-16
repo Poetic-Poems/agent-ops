@@ -424,11 +424,13 @@ assert_rejected_ref "a cyclic \$ref chain not reached by any config key is still
 # reaches the key. The sweep closes that gap; config_defaults needs no
 # separate fix, but the degraded-default half is asserted here so a change to
 # either cannot let the two drift apart unnoticed again.
-# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+# shellcheck disable=SC2016  # a jq program, not meant to expand
 schema_ref_with_default='.properties.schedule.properties.hours = {"$ref": "#/$defs/nope", "default": "x"}'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
 assert_rejected_ref "a \$ref with a sibling default, on a key the config omits, is a schema fault" \
   "$schema_ref_with_default" 'del(.schedule)' \
   'schema.properties.schedule.properties.hours: $ref #/$defs/nope does not resolve'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
 assert_defaults_ref "config_defaults still finds no default for that same key, degrading rather than failing" \
   "$schema_ref_with_default" 'del(.schedule)' \
   '(.schedule.hours // null) == null'
