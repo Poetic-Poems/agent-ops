@@ -72,8 +72,9 @@ if [[ -z "$slug" ]]; then
 fi
 
 # Per-issue, not whole-band: `degrade` as scripts/gather-tech-debt.sh and
-# scripts/gather-issues.sh define it prints `[]` and exits, which would throw
-# away every other hand-flagged issue to report one. What carries across from
+# scripts/gather-issues.sh define it prints that script's own empty result
+# (`[]` there, `{"candidates":[],"excluded":null}` here) and exits, which would
+# throw away every other hand-flagged issue to report one. What carries across from
 # that idiom is that the failure is loud — a human's own label is a request
 # made by hand (requirement 34g), and one going unanswered is the last thing
 # this script may do quietly.

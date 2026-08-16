@@ -313,6 +313,38 @@ first_seen_known_items() {
   printf '%s' "$out"
 }
 
+# latest_issues_excluded [LOG_FILE]
+# Print, as a JSON object keyed by repo slug, the `excluded` array carried by
+# the most recent `issues-excluded` event logged for that repo (requirement
+# 33, review decision on agent-ops#452 concern 1) — the "previous state" the
+# on-change logging in agent-cycle.sh compares each cycle's freshly gathered
+# set against. Reads LOG_FILE, or stdin if it is omitted or "-", the same
+# read-off-the-union-log convention first_seen_known_items (above) uses,
+# with the same tolerated once-per-cycle-per-node race and first-wins
+# convention for readers.
+#
+# A repo with no `issues-excluded` event yet is simply absent from the
+# result: the caller reads a missing key as an empty previous set, per the
+# review decision's "no previous event ⇒ previous set was empty" rule — the
+# same reading a first occurrence gets from first_seen_known_items.
+latest_issues_excluded() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "issues-excluded" and (.repo // "") != "") ]
+    | group_by(.repo)
+    | map({key: .[0].repo, value: (sort_by(.ts) | last | .excluded // [])})
+    | from_entries'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='{}'
+  printf '%s' "$out"
+}
+
 # subtract_retired_voids VOID_JSON RETIRED_JSON
 # Print VOID_JSON (the shape `void_items` returns) with every entry whose
 # {repo, item} pair a RETIRED_JSON record (`void_retired_items`) covers

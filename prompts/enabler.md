@@ -362,6 +362,43 @@ pitfall you found while reading. Where it lands depends on the item:
   self-contained markdown. The Script records it and hands it to the
   Co-Ordinator, which pastes it into the work order verbatim.
 
+**Before you post an issue's refinement, check who it is assigned to right
+now** (`gh issue view <n> --json assignees` — the runtime input's own
+`assignee` names *who this system assigns things to*, never who a given item
+is assigned to, so the item's own assignees are a live read, not something
+you already have). A
+specification is not the same thing as selectability: an assigned issue is
+excluded from the `issues` source (requirement 16.4) whatever the refinement
+says, and the two gatherers disagree about whether *finding* an item to refine
+also checks that — `scripts/gather-hand-flagged-refinements.sh`, which is how
+a hand-labelled issue reaches you, applies no assignee filter at all, by
+design, so you can be refining an issue the `issues` source will keep
+excluding the moment you are done. Where the issue is currently assigned, say
+so plainly in the comment you are about to post — after the specification,
+not instead of it:
+
+- If you can tell the assignment is this block's own bookkeeping — note that
+  it is expected, and should clear on its own once this verdict is processed.
+  The runtime input's top-level `assignee` is what to compare against: the
+  Script assigns exactly that login to a Co-Ordinator-recorded refinement
+  block's own issue when it records the block (requirement 38b), so for an
+  item you were handed as `kind: "needs-refinement"` an assignee equal to it
+  is the ordinary case, not a finding. The item's
+  `unblock_condition`/context saying a Co-Ordinator report put it there is
+  the same signal by another route.
+- If you cannot attribute it that way — a different login, or no way to tell
+  — say plainly that a human needs to remove the assignment before this issue
+  becomes selectable again, however complete the specification above it now
+  is. Agent-ops#338 is the failure this note exists to prevent: refined
+  cleanly, left silently assigned, unselectable for two days with nothing
+  anywhere saying why.
+
+This is a note appended to the comment, never a reason to change your verdict:
+it does not turn a clean specification into an escalation, and it is not
+itself a decision only a human can make. Skip it entirely for an unassigned
+issue and for every non-issue item type (a tech-debt row, a plan task, a
+review recommendation — none of them have a GitHub assignee to check).
+
 **2. Escalate, if a human must decide, answer, or do something first.** Use the
 ordinary escalation protocol below, unchanged: you compose the issue, the Script
 files it as a **separate** issue, assigned and labelled.
