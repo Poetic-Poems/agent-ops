@@ -41,12 +41,17 @@
 # (lib/refinement.sh), `item_event_fields` (lib/cycle-state.sh) — sourced for
 # real, so this test exercises the genuine guards rather than a paraphrase of
 # them. Everything with a side effect outside the process — `claude` itself,
-# `gh`, the state-repo claim registry — is stubbed. The evidence and verdict
-# text used throughout is deliberately free of `PR #`/`commit <sha>`
-# citations and of `{ref,path,expect,pattern}`-shaped evidence, so
-# `void_guard_reason` never needs to call out to `gh` at all: what is under
-# test is the switch's wiring, not the citation checker (test/void-guard.test.sh
-# already covers that in depth).
+# `gh`, the state-repo claim registry — is stubbed. Most evidence and verdict
+# text used throughout is free of `PR #`/`commit <sha>` citations and of
+# `{ref,path,expect,pattern}`-shaped evidence, since what is under test is the
+# switch's wiring, not the citation checker (test/void-guard.test.sh already
+# covers that in depth). Issue #413 (WI-10) closed `void_guard_reason`'s own
+# fall-through for evidence shaped like that, though, so the two scenarios
+# that need a `void` to actually corroborate now use a finishing-source item
+# id (`pr-<n>-abandoned-…`) instead — corroborated directly against that
+# pull request's own live state (`void_finishing_pr_reason`) via the smallest
+# `gh` stub that can answer it (`closed`, which corroborates outright,
+# whatever the evidence text says).
 #
 # No test framework is used (none exists elsewhere in this repo). Run it
 # directly:
@@ -178,6 +183,34 @@ metering_fields() { printf '{}'; }
 stage_watchdog_warning() { printf ''; }
 fleet_limit_resume_at() { printf ''; }
 release_refinement_label() { record "release-refinement-label $1 $2"; }
+# The machine `obsolete` alternative (issue #413, WI-10) is lib/merge-
+# autonomy.sh/config territory, neither of which this file wires in — an
+# empty ctx simply keeps that alternative unreachable here, exactly as every
+# caller before WI-10 behaved; test/void-guard.test.sh covers the mechanism
+# itself.
+void_obsolete_ctx_json() { printf '{}'; }
+
+# A minimal `gh` stub for `void_guard_reason`'s own live checks (issue #413,
+# WI-10 closed the fall-through that let evidence with no citation pass on
+# presence alone, so a `void` verdict here now needs *something* checkable —
+# see the finishing-source item ids below). Every fixture answers `closed`,
+# which corroborates a finishing-source item outright regardless of shape, so
+# this is the smallest stub that can make one succeed.
+gh_stub="$tmp_dir/gh"
+cat > "$gh_stub" <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == "api" && "$2" == */contents/* ]]; then
+  printf '{"content":"aXJyZWxldmFudA=="}'
+  exit 0
+fi
+if [[ "$1" == "api" && "$2" == */pulls/* && "$2" != */pulls/*/files ]]; then
+  printf '{"state":"closed"}'
+  exit 0
+fi
+exit 1
+STUB
+chmod +x "$gh_stub"
+export VOID_GUARD_GH="$gh_stub"
 
 # create_escalation_issue is overridden per-scenario below (success vs a
 # filing failure), so it is not defined here.
@@ -296,24 +329,31 @@ events_named() {  # events_named LOG NAME -> each matching event's JSON payload,
 }
 
 # ============================================================================
-# void: an evidenced, uncited claim is corroborated and recorded
+# void: a claim citing no PR/commit and no structured evidence, but naming a
+# finishing-source pull request in its own id, is corroborated and recorded
+# (issue #413, WI-10: this shape is what the closed-list evidence rule left
+# reachable without a citation in the text itself — see `gh_stub` above).
+# `eligible` deliberately keeps its ordinary "TD001" shape for every other
+# section below, which reuses it unreassigned — this one call gets its own
+# `eligible_finishing` instead of overwriting the shared variable.
 # ============================================================================
 eligible='[{"repo":"acme/widgets","item":"TD001","blocked_ts":"2026-08-01T00:00:00Z","kind":"","reason":"threshold"}]'
-examined='[{"repo":"acme/widgets","item":"TD001","verdict":"void","reason":"already fixed upstream",
+eligible_finishing='[{"repo":"acme/widgets","item":"pr-1-abandoned-aaaaaaaaaaaa","blocked_ts":"2026-08-01T00:00:00Z","kind":"","reason":"threshold"}]'
+examined='[{"repo":"acme/widgets","item":"pr-1-abandoned-aaaaaaaaaaaa","verdict":"void","reason":"already fixed upstream",
             "evidence":"The failing script was deleted in an earlier change and its only caller removed; nothing here remains to implement."}]'
-calls="$(run_case "void: corroborated" "$eligible" "$examined")"
+calls="$(run_case "void: corroborated" "$eligible_finishing" "$examined")"
 
 assert_eq "void: exactly one item-void event" "1" \
   "$(grep -cE '^event item-void ' <<<"$calls")"
 void_evt="$(events_named "$calls" item-void | head -n1)"
-assert_eq "void: item-void names the item" "TD001" "$(jq -r '.item' <<<"$void_evt")"
+assert_eq "void: item-void names the item" "pr-1-abandoned-aaaaaaaaaaaa" "$(jq -r '.item' <<<"$void_evt")"
 assert_eq "void: item-void carries the model's reason" "already fixed upstream" "$(jq -r '.detail' <<<"$void_evt")"
 xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
 assert_eq "void: enabler-examined outcome is void, not void-refused" "void" "$(jq -r '.outcome' <<<"$xmn_evt")"
 assert_eq "void: no attempt-failed on the corroborated path" "0" \
   "$(grep -cE '^event attempt-failed ' <<<"$calls")"
 assert_contains "void: the label is released on a cleared void" \
-  "release-refinement-label TD001 acme/widgets" "$calls"
+  "release-refinement-label pr-1-abandoned-aaaaaaaaaaaa acme/widgets" "$calls"
 
 # ============================================================================
 # void-refused: no evidence at all — requirement 34d's guard, degrading to
@@ -442,6 +482,52 @@ assert_eq "still-blocked: the refreshed condition travels on the examined event"
   "needs product sign-off" "$(jq -r '.unblock_condition' <<<"$xmn_evt")"
 
 # ============================================================================
+# still-blocked + flag_obsolete: the machine `obsolete` alternative's first
+# touch (design doc §5.5, issue #413, WI-10) — a draft-obsolete-flagged event,
+# never an item-void; flagging is not itself a verdict that closes anything.
+# ============================================================================
+eligible_pr='[{"repo":"acme/widgets","item":"pr-9-abandoned-cccccccccccc",
+               "blocked_ts":"2026-08-01T00:00:00Z","kind":"","reason":"threshold",
+               "pr_url":"https://github.com/acme/widgets/pull/9"}]'
+examined='[{"repo":"acme/widgets","item":"pr-9-abandoned-cccccccccccc","verdict":"still-blocked",
+            "reason":"the draft looks unwanted","unblock_condition":"a human applies obsolete, or a later engagement confirms",
+            "flag_obsolete":true,"evidence":{"ref":"main","path":"X.md","expect":"present"}}]'
+calls="$(run_case "still-blocked + flag_obsolete" "$eligible_pr" "$examined")"
+
+assert_eq "flag_obsolete: exactly one draft-obsolete-flagged event" "1" \
+  "$(grep -cE '^event draft-obsolete-flagged ' <<<"$calls")"
+flag_evt="$(events_named "$calls" draft-obsolete-flagged | head -n1)"
+assert_eq "  ... naming the repo" "acme/widgets" "$(jq -r '.repo' <<<"$flag_evt")"
+assert_eq "  ... naming the item" "pr-9-abandoned-cccccccccccc" "$(jq -r '.item' <<<"$flag_evt")"
+assert_eq "  ... naming the pull request number, read from pr_url" "9" "$(jq -r '.pr' <<<"$flag_evt")"
+assert_eq "  ... carrying the structured evidence through unchanged" \
+  '{"ref":"main","path":"X.md","expect":"present"}' "$(jq -c '.evidence' <<<"$flag_evt")"
+assert_eq "flag_obsolete: never an item-void — flagging is not voiding" "0" \
+  "$(grep -cE '^event item-void ' <<<"$calls")"
+
+# Evidence that is not the structured shape does not get flagged — logged as
+# a warning and otherwise ignored, same as any other malformed model output.
+examined='[{"repo":"acme/widgets","item":"pr-9-abandoned-cccccccccccc","verdict":"still-blocked",
+            "reason":"the draft looks unwanted","unblock_condition":"…",
+            "flag_obsolete":true,"evidence":"just prose, no shape"}]'
+calls="$(run_case "still-blocked + flag_obsolete, unstructured evidence" "$eligible_pr" "$examined")"
+assert_eq "flag_obsolete with prose evidence: no draft-obsolete-flagged event" "0" \
+  "$(grep -cE '^event draft-obsolete-flagged ' <<<"$calls")"
+assert_contains "  ... a warning explains why" \
+  "not the structured" "$calls"
+
+# flag_obsolete on an item with no pr_url carries no weight — there is no
+# pull request to flag.
+examined='[{"repo":"acme/widgets","item":"TD001","verdict":"still-blocked",
+            "reason":"the draft looks unwanted","unblock_condition":"…",
+            "flag_obsolete":true,"evidence":{"ref":"main","path":"X.md","expect":"present"}}]'
+calls="$(run_case "still-blocked + flag_obsolete, no pr_url" "$eligible" "$examined")"
+assert_eq "flag_obsolete with no pr_url: no draft-obsolete-flagged event" "0" \
+  "$(grep -cE '^event draft-obsolete-flagged ' <<<"$calls")"
+assert_contains "  ... a warning explains why" \
+  "carries no pr_url to flag" "$calls"
+
+# ============================================================================
 # escalate: success and a filing failure — the one outcome 36a exempts from
 # ordinary examination accounting
 # ============================================================================
@@ -503,16 +589,16 @@ assert_contains "missing verdict: a warning names the claimed-but-unanswered ite
 # fold now survives it — not a crash, not a silently dropped claim.
 printf 'x%.0s' $(seq 1 150000) > "$tmp_dir/big_reason.txt"
 eligible_big="$(jq -nc --rawfile r "$tmp_dir/big_reason.txt" \
-  '[{"repo":"acme/widgets","item":"TDBIG","blocked_ts":"2026-08-01T00:00:00Z","kind":"","reason":$r}]')"
+  '[{"repo":"acme/widgets","item":"pr-2-abandoned-bbbbbbbbbbbb","blocked_ts":"2026-08-01T00:00:00Z","kind":"","reason":$r}]')"
 assert_eq "the oversized blocked-item fixture really is past MAX_ARG_STRLEN" "1" \
   "$(( $(printf '%s' "$eligible_big" | wc -c) > 131072 ))"
-examined_big='[{"repo":"acme/widgets","item":"TDBIG","verdict":"void","reason":"already fixed upstream",
+examined_big='[{"repo":"acme/widgets","item":"pr-2-abandoned-bbbbbbbbbbbb","verdict":"void","reason":"already fixed upstream",
                 "evidence":"The failing script was deleted in an earlier change and its only caller removed."}]'
 calls="$(run_case "argv cap: oversized blocked-item reason" "$eligible_big" "$examined_big")"
 assert_eq "the oversized claim still reaches the claim fold: exactly one item-void event" "1" \
   "$(grep -cE '^event item-void ' <<<"$calls")"
 void_evt="$(events_named "$calls" item-void | head -n1)"
-assert_eq "  ... naming the oversized item, not dropped or corrupted" "TDBIG" "$(jq -r '.item' <<<"$void_evt")"
+assert_eq "  ... naming the oversized item, not dropped or corrupted" "pr-2-abandoned-bbbbbbbbbbbb" "$(jq -r '.item' <<<"$void_evt")"
 
 # ============================================================================
 # The argv cap (requirement 4g, TD-PPagop-26081401): the unparseable-verdict warning

@@ -313,6 +313,41 @@ first_seen_known_items() {
   printf '%s' "$out"
 }
 
+# draft_obsolete_flags [LOG_FILE]
+# Print, as a JSON array, every `draft-obsolete-flagged` event ever logged —
+# `{repo, item, pr, evidence, cycle, node, ts}`, written by the Script
+# (agent-cycle.sh) when an Enabler verdict flags a draft pull request as
+# unwanted (design doc §5.5, issue #413, WI-10). Reads LOG_FILE, or stdin if
+# it is omitted or "-".
+#
+# A fact, not a state, the same reason `first_seen_known_items` above keeps no
+# clearing event: flagging a draft is not itself a void (that engagement
+# writes no `item-void`), so nothing ever retracts a flag once logged — it
+# either goes on to corroborate a later, independent void
+# (`lib/void-guard.sh`'s `void_draft_obsolete_flag_reason`, which does its own
+# repo/item/age/cycle filtering) or it simply never does. Every occurrence,
+# from this node or a peer's, is handed to the guard unfiltered by repo or
+# item — the guard is what decides which ones are relevant to the void in
+# front of it, the same division of labour `blocked_items`/`open_blocked_
+# items` already keep.
+draft_obsolete_flags() {
+  local src="${1:--}" out=""
+  local jq_prog='
+    [ .[] | select(.event == "draft-obsolete-flagged"
+                   and (.repo // "") != "" and (.item // "") != "")
+      | {repo, item, pr: (.pr // null), evidence: (.evidence // null),
+         cycle: (.cycle // ""), node: (.node // ""), ts: (.ts // "")} ]'
+  if [[ "$src" == "-" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  elif [[ -s "$src" ]]; then
+    out="$(jq -c -R 'fromjson? // empty' "$src" 2>/dev/null \
+      | jq -sc "$jq_prog" 2>/dev/null || true)"
+  fi
+  [[ -n "$out" ]] || out='[]'
+  printf '%s' "$out"
+}
+
 # latest_issues_excluded [LOG_FILE]
 # Print, as a JSON object keyed by repo slug, the `excluded` array carried by
 # the most recent `issues-excluded` event logged for that repo (requirement
