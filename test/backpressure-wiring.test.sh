@@ -270,7 +270,7 @@ assert_eq "at human (the default), the identical approved PR is excluded, and th
 assert_eq "…and its claim is what keeps counting instead" \
   "count|Poetic-Poems/poetic-fiddle|" "$(sed -n '1p' "$calls_file3")"
 
-# --- TD-PPagop-26081606 (PR #499 review follow-up): fleet_flag_fetch_status
+# --- Issue #502 (PR #499 review follow-up): fleet_flag_fetch_status
 #     memoises a live/clear answer per (flag, state_dir) for the life of this
 #     process, so the block's own per-repo loop — which reads the kill switch
 #     once per repository, all inside this one run_block invocation — must

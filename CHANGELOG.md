@@ -59,6 +59,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   independent Enabler engagement's own void, at least 24 hours apart, both
   citing structured evidence. `unvoided` is untouched and gains no machine
   path.
+- Every fleet flag (the fleet switch, the usage-limit flag, the merge-autonomy
+  kill switch and a repository's merge-budget freeze) is now read from GitHub
+  at most once per flag per process, rather than once per reader: a cycle that
+  resolves `merge_autonomy_effective_level` for each repository spends one
+  contents-API read on the kill switch instead of one per repository. A flag
+  set or cleared elsewhere is therefore picked up by the next cycle rather
+  than part-way through the running one; a flag this process itself writes or
+  deletes is picked up immediately.
 - **Breaking:** `config.json`'s `review` block is renamed `project_review` and
   restructured: every tunable now lives under `project_review.defaults`
   (installation-wide) and may be overridden per repository on

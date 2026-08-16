@@ -1519,6 +1519,29 @@ implements.
    what lets `--status` tell an unreachable state repo from a switch someone
    else cleared.
 
+   **A flag's read is memoised for the life of the process** (issue #502),
+   this level's flags and requirements 2.1, 2.3b and 2.3c's alike, since all
+   of them go through the one `fleet_flag_fetch_status`. A `live` or `clear`
+   answer — the two the state repository actually confirmed — is served to
+   every later read of the same flag through the same `state_dir` in that
+   process without a second contents-API call, so a cycle consulting one flag
+   once per repository (requirement 2.2's own per-repository read of
+   `merge_autonomy_effective_level`) spends one read on it rather than one per
+   repository. A `cached` or `unreachable` answer is never memoised: it is
+   already this process's own uncertainty about a fetch that did not complete,
+   so one bad moment must not decide every read for the rest of the run. A
+   write or delete the process itself performs drops its own memo of that
+   flag, so a flag it just set is never shadowed by its own earlier read. And
+   a memo left in `TMPDIR` by a *dead* process is dropped when `lib/toggle.sh`
+   is sourced — the memo is named from the process's PID, which is unique only
+   among the processes running now, so without that a recycled PID would serve
+   one process another process's answer for its whole run, and on the kill
+   switch (requirement 2.3b) that is an operator's `disabled` read as `clear`.
+   What the memo costs is mid-cycle freshness: a flag someone sets while a
+   cycle is running is picked up by the next cycle's process rather than
+   part-way through this one, which is the same staleness the interval between
+   cycles already accepts.
+
    **`--this-node` (requirement 2.3) opts a single node out of this level
    entirely.** `--disable --this-node` writes only the local record and skips
    the fleet publish outright — not a degraded fallback of the unmodified

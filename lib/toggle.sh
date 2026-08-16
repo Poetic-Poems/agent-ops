@@ -519,17 +519,22 @@ toggle_status_report() {
 
 _fleet_gh() { "${TOGGLE_GH:-gh}" "$@"; }
 
+# _fleet_flag_memo_root
+# Where this process's memos live — `$$` rather than any in-shell variable,
+# because every real caller (`merge_autonomy_effective_level` chief among
+# them) reaches `fleet_flag_fetch_status` through `$(...)`, and a plain shell
+# variable set inside that command substitution's subshell dies with it; `$$`
+# is the one thing bash guarantees stays the invoking process's PID through
+# any depth of subshell nesting (the back-pressure loop's own `while` body
+# included), so a file named from it is visible to every later call in this
+# process and no other.
+_fleet_flag_memo_root() {
+  printf '%s/agent-ops-fleet-flag-memo.%s' "${TMPDIR:-/tmp}" "$$"
+}
+
 # _fleet_flag_memo_dir NAME
-# Where this process's memos of NAME live — `$$` rather than any in-shell
-# variable, because every real caller (`merge_autonomy_effective_level`
-# chief among them) reaches `fleet_flag_fetch_status` through `$(...)`, and a
-# plain shell variable set inside that command substitution's subshell dies
-# with it; `$$` is the one thing bash guarantees stays the invoking
-# process's PID through any depth of subshell nesting (the back-pressure
-# loop's own `while` body included), so a file named from it is visible to
-# every later call in this process and no other.
 _fleet_flag_memo_dir() {
-  printf '%s/agent-ops-fleet-flag-memo.%s/%s' "${TMPDIR:-/tmp}" "$$" "$1"
+  printf '%s/%s' "$(_fleet_flag_memo_root)" "$1"
 }
 
 # _fleet_flag_memo_file NAME STATE_DIR
@@ -556,6 +561,28 @@ _fleet_flag_memo_file() {
 _fleet_flag_memo_clear() {
   rm -rf "$(_fleet_flag_memo_dir "$1")" 2>/dev/null || true
 }
+
+# A memo root that already exists when this file is first sourced is not this
+# process's. `$$` is unique among the processes running *now*, but $TMPDIR
+# outlives them all and PIDs are recycled, so a node chaining cycle after
+# cycle (requirement 39) eventually starts one whose PID a long-dead cycle's
+# memos are still filed under — and nothing else ever expires them, since
+# neither this file nor its callers own an exit trap to clean up with.
+# Serving one would hand this process an answer GitHub gave some other
+# process, for the whole of this run: on the kill switch that is an
+# operator's `disabled` served as `clear`, the one direction
+# TD-PPagop-26081507 exists to stop this flag failing in. So drop the root
+# once, here, before anything can read it — which bounds the leak too, since
+# the next process to hold this PID reclaims it rather than adding to it.
+#
+# The guard is a plain, unexported variable, which is exactly the reach
+# wanted: a subshell inherits it and so never purges memos its own parent is
+# still using, while a genuine child process does not, and purges the root
+# its own new PID names, as it should.
+if [[ -z "${_FLEET_FLAG_MEMO_PURGED:-}" ]]; then
+  rm -rf "$(_fleet_flag_memo_root)" 2>/dev/null || true
+  _FLEET_FLAG_MEMO_PURGED=1
+fi
 
 # fleet_flag_path NAME
 fleet_flag_path() { printf 'fleet/%s.json' "$1"; }
@@ -613,7 +640,7 @@ fleet_repo_visible() {
 # and it is the one caller that asks for `probe-404`, because a fail-closed
 # flag mistaken for clear is the exact harm TD-PPagop-26081602 closes.
 #
-# Memoised (TD-PPagop-26081606, PR #499 review follow-up): a `live` or
+# Memoised (issue #502, PR #499 review follow-up): a `live` or
 # `clear` answer — the two GitHub actually confirmed, as opposed to `cached`
 # or `unreachable`, which are this process's own uncertainty about a fetch
 # that did not complete — is written to `_fleet_flag_memo_file` and read

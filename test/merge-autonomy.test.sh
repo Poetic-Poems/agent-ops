@@ -314,7 +314,7 @@ assert_eq "and keeps the operator's own reason rather than truncating to line on
 # Each edit below gets its own fresh state_dir, the same "different node"
 # device the rest of this file already uses: fleet_flag_fetch_status now
 # memoises a live answer per (flag, state_dir) for this process
-# (TD-PPagop-26081606), and these edits go straight at $gh_backing —
+# (issue #502), and these edits go straight at $gh_backing —
 # bypassing fleet_flag_write, exactly as a human editing on github.com would
 # — so a state_dir that already cached the *previous* edit's answer would
 # just replay it rather than seeing the new one. A real process picks up a
