@@ -678,8 +678,9 @@ and the schema must carry every one of them.
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch commands.
 
-Every `*_model` key above (and `review.model` in `docs/REVIEW-PIPELINE-SPEC.md`)
-accepts a bare id (`claude-sonnet-5`) or a provider-qualified one
+Every `*_model` key above (and `project_review.defaults.model`, or a repo's own
+override, in `docs/REVIEW-PIPELINE-SPEC.md`) accepts a bare id
+(`claude-sonnet-5`) or a provider-qualified one
 (`anthropic/claude-sonnet-5`), resolved per requirement 1a. Anthropic is the
 only executable provider (D12, `docs/ROADMAP.md`), so the two forms are the
 same value; no other qualifier is accepted.
@@ -855,15 +856,17 @@ implements.
    the offending key, not a value ever passed to `claude --model`. An empty
    value (the "disable this stage" convention `reviewer_model_complex` and
    `enabler_model` both use) passes through unresolved. `review-cycle.sh`
-   applies the same resolution to `review.model`
-   (`docs/REVIEW-PIPELINE-SPEC.md`). Both scripts share one implementation,
+   applies the same resolution to every repository's own resolved
+   `project_review.defaults.model` (or its own override in
+   `project_review.repos`, requirement 342) (`docs/REVIEW-PIPELINE-SPEC.md`).
+   Both scripts share one implementation,
    `lib/model-id.sh`'s `resolve_model_id`, so the two pipelines can never
    drift on what counts as a supported provider.
 1b. **The configuration has a machine-readable schema, and it is the startup
    gate both pipelines run on.** `config.schema.json` states the shape of
    `config.json` — every key an installation may set, its type, its
    constraints, and the value the code falls back to when it is absent. It
-   covers both pipelines' keys, including the `review` object of
+   covers both pipelines' keys, including the `project_review` object of
    `docs/REVIEW-PIPELINE-SPEC.md`, because there is one configuration file
    and a schema that described half of it would licence the other half to
    drift. Every object in it is closed (`additionalProperties: false`), which
@@ -915,8 +918,8 @@ implements.
    readers that must depend on nothing but bash, `jq` and `config.json` by
    design, so that what they read cannot drift from what is actually
    deployed — `deploy/docker/watchtower-pre-update.sh`, reading three keys
-   (`state_dir`, `lock_stale_after`, `review.lock_stale_after`) that carry no
-   schema `default` to take, and `scripts/check-node-image.sh`'s in-container
+   (`state_dir`, `lock_stale_after`, `project_review.lock_stale_after`) that
+   carry no schema `default` to take, and `scripts/check-node-image.sh`'s in-container
    grace read, which runs inside whatever image the node is currently running
    and so must stay correct against an image that predates `config_defaults`
    entirely — its `image_behind_grace_hours` key does carry a schema
@@ -925,8 +928,9 @@ implements.
    (requirement 4f), which live in `lib/stage-budget.sh`'s
    `STAGE_BUDGET_PRIORS`. The last is the one case where a `default` here would
    be actively wrong rather than merely redundant: the `timeout_*`,
-   `inactivity_*` and `review.timeout_review` / `review.inactivity_review` keys
-   are *overrides*, and a reader distinguishes "configured" from "absent" only
+   `inactivity_*` and `project_review.defaults.timeout_review` /
+   `project_review.defaults.inactivity_review` (and their per-repo overrides)
+   keys are *overrides*, and a reader distinguishes "configured" from "absent" only
    by the key's absence. A `default` on `$defs/inactivityMinutes` or
    `$defs/timeoutMinutes` would be merged in by `config_defaults`, read as an
    explicit override, and win permanently — pinning the cap at the injected
@@ -3897,7 +3901,9 @@ implements.
    `pr-<n>-review-…` draft (requirements 34d, 34k; TD-PPagop-26081308) — a
    repository without either label does not offer the human either control at
    all. `review-cycle.sh` does the same for
-   `review.pr_label` in each repository it is about to review, and
+   each repository's own resolved `project_review` pr_label (its override, or
+   `project_review.defaults.pr_label`, requirement 342) in each repository it
+   is about to review, and
    `create_escalation_issue` for `enabler_escalation_label` in the repository
    an escalation is filed in, which is often one no cycle otherwise touches.
    A label whose configured name is empty is switched off and is not created.
@@ -9438,16 +9444,23 @@ What exists, and the requirements each part answers to:
     1b's merge of a config with the schema's `default`s, which is where every
     reader of `config.json` takes its fallback values; and
     `config_enabler_assignee_ok` and
-    `config_missing_plan_path_repos`, the two cross-key rules the schema
-    itself cannot state — each holds *between* two keys — shared the same
-    way, so `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can
-    never drift on either. `doctor.sh` is the operator's command: it runs the
-    schema check, then those two cross-key rules, then the D18 merge-autonomy
+    `config_missing_plan_path_repos`, two cross-key rules the schema itself
+    cannot state — each holds *between* two keys — shared the same way, so
+    `agent-cycle.sh`'s startup refusal and `doctor.sh`'s `fail` can never
+    drift on either. A third, `config_duplicate_project_review_slugs`, holds
+    between two *entries* of `project_review.repos` rather than between two
+    keys of one object — two entries naming the same repository leave
+    requirement 342's resolution rule (`docs/REVIEW-PIPELINE-SPEC.md`) with no
+    way to say which one's overrides apply — and is shared the same way
+    between `review-cycle.sh`'s own startup refusal and `doctor.sh`'s `fail`
+    (`docs/REVIEW-PIPELINE-SPEC.md` requirement R1b) instead of
+    `agent-cycle.sh`'s. `doctor.sh` is the operator's command: it runs the
+    schema check, then those three cross-key rules, then the D18 merge-autonomy
     pairing (requirement 2.3b) — every configured *source* of a level (the
     top-level `merge_autonomy` key, and each repository's own override) is a
     `fail` where the level is above `human` and `approver_app_id` is empty,
     `ok` naming the level otherwise; doctor-only, since nothing yet consumes
-    the pairing at cycle start the way the two shared cross-key rules do;
+    the pairing at cycle start the way the three shared cross-key rules do;
     and the environment half of the same identity, reconciled against the
     config's (requirement 14b): a set `PULLWRIGHT_APPROVER_APP_ID` differing
     from a set `approver_app_id` is a `fail` — the token wrapper mints
@@ -9460,8 +9473,9 @@ What exists, and the requirements each part answers to:
     at all, each a `fail` for the reasons requirements 16.4 and 34k give
     those names — then the combinations that
     work but would silently surprise an operator later (a `warn`, not a
-    `fail`: the stage timeouts outrunning `lock_stale_after`, `review.pr_label`
-    colliding with `pr_label`, and the rest), then the model ids through
+    `fail`: the stage timeouts outrunning `lock_stale_after`, a repository's own
+    resolved `project_review` pr_label colliding with `pr_label`, and the
+    rest), then the model ids through
     `resolve_model_id`, the shipped and overridden prompts, the toolchain,
     the state and workspace directories, the rendered crontab and the
     `nice` reordering report (both below, and both offline-safe), and —
@@ -9670,7 +9684,11 @@ What exists, and the requirements each part answers to:
     `name`/`colour`/`description`, with the names taken from the config as
     `config_defaults` merges it — so a label name absent from `config.json`
     is the schema's own default rather than a literal repeated here — and an
-    empty name yielding nothing) and `labels_ensure` (create what is absent in
+    empty name yielding nothing) — except role `review`'s own pr_label, which
+    (requirement 342) is resolved per repository rather than read once from
+    the config, so `labels_catalogue` takes it as an explicit optional
+    argument the caller (already holding that repository's own resolved
+    value) passes through — and `labels_ensure` (create what is absent in
     one repository, reporting `created` or `failed` per label and nothing at
     all for those already there, so the steady state is silent). `LABELS_GH`
     overrides the `gh` binary for tests. Sourced by `agent-cycle.sh`,
@@ -9681,10 +9699,13 @@ What exists, and the requirements each part answers to:
     table property: renders the Markdown table body rows of the three prose
     configuration tables (this document's, `docs/REVIEW-PIPELINE-SPEC.md`'s,
     and the two in `README.md`) from `config.schema.json`'s leaf keys, in the
-    schema's own property order — `schedule` and `review` flatten one level
-    into dotted keys (`schedule.review_hour`, `review.model`) in the parent's
-    position; every other object- or array-valued key (`repos`,
-    `prompt_overrides`) renders as a single row. Each key's value cell is,
+    schema's own property order — `schedule` and `project_review` flatten one
+    level into dotted keys (`schedule.review_hour`,
+    `project_review.lock_stale_after`) in the parent's position, and
+    `project_review.defaults` flattens one level further still
+    (`project_review.defaults.model`); every other object- or array-valued key
+    (`repos`, `project_review.repos`, `prompt_overrides`) renders as a single
+    row. Each key's value cell is,
     in order, its `x-docs.value` verbatim — one string for both documents,
     or an object keyed `readme`/`spec` for the keys whose two tables say
     different things there, the spec's `Value` column carrying the unit

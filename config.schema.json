@@ -1125,106 +1125,157 @@
         }
       }
     },
-    "review": {
+    "project_review": {
       "description": "The project-review pipeline's tunables. Absent, the implementation pipeline runs exactly as it does now and review-cycle.sh has nothing to run.",
       "type": "object",
       "additionalProperties": false,
       "required": [
-        "repos",
-        "model",
-        "pr_label",
-        "branch_prefix",
-        "min_days_between_reviews"
+        "defaults",
+        "repos"
       ],
       "properties": {
-        "repos": {
-          "description": "The repositories to review \u2014 a plain list of slugs, since a review has no per-repo work-source structure.",
-          "type": "array",
-          "items": {
-            "type": "string",
-            "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
-          },
-          "x-docs": {
-            "readme": "Repositories to review. A plain list of slugs.",
-            "spec": "The repositories to review. A plain list of slugs \u2014 a review has no per-repo work-source structure. Adding a repo is a config-only change.",
-            "value": "`[\"Poetic-Poems/poetic\", \"Poetic-Poems/poetic-fiddle\"]`"
-          }
-        },
-        "model": {
-          "$ref": "#/$defs/modelId",
-          "description": "The Reviewer-Agent's model \u2014 the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own.",
-          "x-docs": {
-            "readme": "The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id \u2014 see [Configuration](#configuration).",
-            "spec": "The Reviewer-Agent's model \u2014 the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes.",
-            "value": "`claude-sonnet-5`"
-          }
-        },
-        "pr_label": {
-          "$ref": "#/$defs/label",
-          "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`. It must not be empty, nor `obsolete`, for the reasons given there.",
-          "minLength": 1,
-          "x-docs": {
-            "readme": "Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`.",
-            "spec": "Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. It must not be `obsolete`, for the reason given against the implementation `pr_label`.",
-            "value": "`project-review`"
-          }
-        },
-        "branch_prefix": {
-          "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
-          "type": "string",
-          "minLength": 1,
-          "x-docs": {
-            "readme": "Branch name `review/<date>`.",
-            "spec": "Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed.",
-            "value": "`review/`"
-          }
-        },
-        "timeout_review": {
-          "$ref": "#/$defs/timeoutMinutes",
-          "description": "Override for the Reviewer-Agent's wall-clock backstop, in minutes. Omit it: the backstop is derived like every other stage's.",
-          "x-docs": {
-            "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself.",
-            "spec": "An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case.",
-            "value": "*(unset)*"
-          }
-        },
-        "inactivity_review": {
-          "$ref": "#/$defs/inactivityMinutes",
-          "description": "Override for the Reviewer-Agent's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
-          "x-docs": {
-            "readme": "Minutes of total silence before the review stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
-            "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap.",
-            "value": "*(unset)*"
-          }
-        },
         "lock_stale_after": {
-          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop.",
+          "description": "A floor, in hours, under the derived staleness threshold for a held review lock. Omit it: the threshold is derived from the Reviewer-Agent's backstop. Installation-wide only \u2014 the lock covers whichever repositories a run touches, so it is not part of `defaults` and has no per-repo override.",
           "type": "number",
           "exclusiveMinimum": 0,
           "x-docs": {
-            "readme": "Hours, and a floor. Derived from the review backstop, doubled because two repositories can be reviewed back to back inside one lock.",
-            "spec": "A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation doubles the widest Reviewer-Agent backstop, because one lock can span two repositories reviewed back to back, and adds the same slack.",
+            "readme": "Hours, and a floor. Derived from the review backstop, multiplied by how many repositories are configured for review (floored at one), since they can all be reviewed back to back inside one lock.",
+            "spec": "A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation multiplies the widest Reviewer-Agent backstop by the number of repositories configured for review (floored at one, so a single-repository installation is unaffected), because one lock can span all of them reviewed back to back, and adds the same slack.",
             "value": "*(unset)*"
           }
         },
-        "min_days_between_reviews": {
-          "description": "The skip-guard threshold: a repository reviewed within this many days is skipped. Leave a day of slack against the intended cadence, so a review that lands late one week is not pushed a full extra week the next.",
-          "type": "number",
-          "minimum": 0,
-          "x-docs": {
-            "readme": "Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as \"about once a week\" and stay robust to a sleeping machine.",
-            "spec": "The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next.",
-            "value": "`6`"
+        "defaults": {
+          "description": "Installation-wide tunables for the project-review pipeline, applied to every repository in `repos` that does not override the same-named key on its own entry (requirement 342's resolution rule).",
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "model",
+            "pr_label",
+            "branch_prefix",
+            "min_days_between_reviews"
+          ],
+          "properties": {
+            "model": {
+              "$ref": "#/$defs/modelId",
+              "description": "The Reviewer-Agent's model \u2014 the lead that drives the skill, which delegates well-scoped sub-tasks to lower-cost subagents of its own.",
+              "x-docs": {
+                "readme": "The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id \u2014 see [Configuration](#configuration).",
+                "spec": "The Reviewer-Agent's model \u2014 the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes.",
+                "value": "`claude-sonnet-5`"
+              }
+            },
+            "pr_label": {
+              "$ref": "#/$defs/label",
+              "description": "Applied to every review pull request. Keep it distinct from the implementation pipeline's `pr_label`, so review PRs never count against `max_open_agent_prs`. It must not be empty, nor `obsolete`, for the reasons given there.",
+              "minLength": 1,
+              "x-docs": {
+                "readme": "Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`.",
+                "spec": "Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. It must not be `obsolete`, for the reason given against the implementation `pr_label`.",
+                "value": "`project-review`"
+              }
+            },
+            "branch_prefix": {
+              "description": "Branch naming for the review pipeline: `<branch_prefix><date>`. A branch is already scoped to its repository, so no slug is needed.",
+              "type": "string",
+              "minLength": 1,
+              "x-docs": {
+                "readme": "Branch name `review/<date>`.",
+                "spec": "Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed.",
+                "value": "`review/`"
+              }
+            },
+            "timeout_review": {
+              "$ref": "#/$defs/timeoutMinutes",
+              "description": "Override for the Reviewer-Agent's wall-clock backstop, in minutes. Omit it: the backstop is derived like every other stage's.",
+              "x-docs": {
+                "readme": "Minutes, and an override. Leave it out \u2014 the backstop tunes itself.",
+                "spec": "An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case.",
+                "value": "*(unset)*"
+              }
+            },
+            "inactivity_review": {
+              "$ref": "#/$defs/inactivityMinutes",
+              "description": "Override for the Reviewer-Agent's liveness-watchdog threshold, in minutes. Omit it: the threshold is derived from the gaps this stage really leaves.",
+              "x-docs": {
+                "readme": "Minutes of total silence before the review stage is treated as wedged, and an override. Omit it \u2014 the threshold is derived; `0` disables the watchdog.",
+                "spec": "An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap.",
+                "value": "*(unset)*"
+              }
+            },
+            "min_days_between_reviews": {
+              "description": "The skip-guard threshold: a repository reviewed within this many days is skipped. Leave a day of slack against the intended cadence, so a review that lands late one week is not pushed a full extra week the next.",
+              "type": "number",
+              "minimum": 0,
+              "x-docs": {
+                "readme": "Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as \"about once a week\" and stay robust to a sleeping machine.",
+                "spec": "The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next.",
+                "value": "`6`"
+              }
+            },
+            "not_before": {
+              "description": "Optional timestamp before which no review may start. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
+              "type": "string",
+              "default": "",
+              "x-docs": {
+                "readme": "Optional. Hold reviews until this timestamp \u2014 e.g. `2026-07-30T16:00:00Z` \u2014 while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.",
+                "spec": "Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single installation-wide value always has; a repository's own override on `repos[]` is resolved separately, per repository, once the cycle is under way (requirement 3.3).",
+                "value": "*(unset)*"
+              }
+            }
           }
         },
-        "not_before": {
-          "description": "Optional timestamp before which no review may start \u2014 every repository, not one. Absent or empty means no stand-down. It expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
-          "type": "string",
-          "default": "",
+        "repos": {
+          "description": "The repositories to review. Each entry's `slug` is required; every other key, when present and non-null, overrides the same-named key in `defaults` for that repository alone (requirement 342) \u2014 an entry carrying only `slug` inherits every default.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "slug"
+            ],
+            "properties": {
+              "slug": {
+                "description": "The repository, as `owner/name`.",
+                "type": "string",
+                "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+              },
+              "model": {
+                "$ref": "#/$defs/modelId",
+                "description": "Override for `defaults.model`, for this repository alone."
+              },
+              "pr_label": {
+                "$ref": "#/$defs/label",
+                "description": "Override for `defaults.pr_label`, for this repository alone.",
+                "minLength": 1
+              },
+              "branch_prefix": {
+                "description": "Override for `defaults.branch_prefix`, for this repository alone.",
+                "type": "string",
+                "minLength": 1
+              },
+              "timeout_review": {
+                "$ref": "#/$defs/timeoutMinutes",
+                "description": "Override for `defaults.timeout_review`, for this repository alone."
+              },
+              "inactivity_review": {
+                "$ref": "#/$defs/inactivityMinutes",
+                "description": "Override for `defaults.inactivity_review`, for this repository alone."
+              },
+              "min_days_between_reviews": {
+                "description": "Override for `defaults.min_days_between_reviews`, for this repository alone.",
+                "type": "number",
+                "minimum": 0
+              },
+              "not_before": {
+                "description": "Override for `defaults.not_before`, for this repository alone.",
+                "type": "string"
+              }
+            }
+          },
           "x-docs": {
-            "readme": "Optional. Hold **all** reviews until this timestamp \u2014 e.g. `2026-07-30T16:00:00Z` \u2014 while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it.",
-            "spec": "Optional. A timestamp before which no review may start (R3.3) \u2014 every repo, not one. Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks.",
-            "value": "*(unset)*"
+            "readme": "Repositories to review. Each entry is `{\"slug\": \"owner/name\"}`, plus any of `defaults`' own keys to override it for that repository alone.",
+            "spec": "The repositories to review. Each entry's `slug` is required; every other key overrides the same-named key in `defaults` for that repository alone (requirement 342), and an entry carrying only `slug` inherits every default. A review has no per-repo work-source structure beyond these overrides. Adding a repo is a config-only change.",
+            "value": "`[{\"slug\": \"Poetic-Poems/poetic\"}, {\"slug\": \"Poetic-Poems/poetic-fiddle\"}]`"
           }
         }
       }

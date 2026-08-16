@@ -104,9 +104,15 @@ config
 assert_eq "the target role wants every label the pipeline applies" \
   "autonomous-agent enabler-escalation needs-refinement refined unvoided blocked obsolete complexity:low complexity:medium complexity:high" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" target | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
-assert_eq "the review role wants only the review pull request's label" \
+assert_eq "the review role wants only the caller's resolved review pull request label" \
   "project-review" \
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" review "project-review" | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "the review role wants nothing when no label is passed (project_review's pr_label is resolved per repo, not read from config)" \
+  "" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" review | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
+assert_eq "the review role reflects whatever resolved label the caller passes, e.g. a repo's own project_review override" \
+  "custom-review-label" \
+  "$(labels_catalogue "$tmp/config.json" "$SCHEMA" review "custom-review-label" | cut -f1 | tr '\n' ' ' | sed 's/ $//')"
 assert_eq "the escalation role wants only the escalation label" \
   "enabler-escalation" \
   "$(labels_catalogue "$tmp/config.json" "$SCHEMA" escalation | cut -f1 | tr '\n' ' ' | sed 's/ $//')"

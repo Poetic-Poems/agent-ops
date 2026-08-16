@@ -146,6 +146,12 @@ DEFAULTED_CONFIG="$(config_defaults "$config_file" "$schema_file" 2>/dev/null)"
 cfg() { jq -r "$1" <<<"$DEFAULTED_CONFIG"; }
 cfg_json() { jq -c "$1" <<<"$DEFAULTED_CONFIG"; }
 
+# project_review.repos, each resolved against project_review.defaults
+# (requirement 342) — the same lib/config-schema.sh helper review-cycle.sh
+# uses, so the two scripts cannot resolve the same repository two different
+# ways. `[]` when project_review is absent or malformed.
+project_review_repos_json="$(config_project_review_repos "$DEFAULTED_CONFIG")"
+
 schema_errors="$(config_schema_errors "$config_file" "$schema_file")"
 case "$?" in
   0) ok "matches config.schema.json" ;;
@@ -173,6 +179,19 @@ if [[ -n "$missing_plan_path" ]]; then
   fail "repo(s) [$missing_plan_path] list the implementation-plan source with no implementation_plan_path — agent-cycle.sh refuses to start, since that source has no path of its own outside the config"
 else
   ok "every repo listing implementation-plan names its plan document"
+fi
+
+# Requirement 342's resolution rule assumes exactly one project_review.repos
+# entry per repository; two entries for the same slug leave no way to say
+# which one's overrides apply, so review-cycle.sh refuses to start rather
+# than silently letting the later entry win (lib/config-schema.sh's
+# config_duplicate_project_review_slugs, docs/REVIEW-PIPELINE-SPEC.md
+# requirement R1b).
+duplicate_review_slugs="$(config_duplicate_project_review_slugs "$project_review_repos_json")"
+if [[ -n "$duplicate_review_slugs" ]]; then
+  fail "project_review.repos lists [$duplicate_review_slugs] more than once — review-cycle.sh refuses to start, since requirement 342's resolution rule cannot tell which entry's overrides should apply"
+else
+  ok "every project_review.repos entry names a distinct repository"
 fi
 
 # D18 (docs/reviews/2026-08-14-autonomy-investigation.md §5.3, requirement
@@ -265,12 +284,24 @@ done
 # name would have a pipeline stage apply the corroboration itself — pr_label
 # alone is projected onto every draft the Implementor raises. Case-insensitive,
 # as the guard reads labels.
-for key in pr_label review.pr_label enabler_escalation_label needs_refinement_label refined_label unvoid_label; do
+for key in pr_label enabler_escalation_label needs_refinement_label refined_label unvoid_label; do
   label_name="$(cfg ".$key // \"\"")"
   if [[ "${label_name,,}" == "obsolete" ]]; then
     fail "$key is \"$label_name\" — the obsolete label is a human's own corroboration for closing a draft pull request (requirement 34k), and a stage projecting it as a configured label would corroborate the pipeline's own voids"
   fi
 done
+
+# project_review's pr_label is resolved per repository (requirement 342), so
+# every distinct value in force — project_review.defaults.pr_label, plus any
+# repository's own override — is checked here rather than one global key.
+while IFS= read -r review_label; do
+  [[ -n "$review_label" ]] || continue
+  if [[ "${review_label,,}" == "obsolete" ]]; then
+    fail "project_review pr_label is \"$review_label\" — the obsolete label is a human's own corroboration for closing a draft pull request (requirement 34k), and a stage projecting it as a configured label would corroborate the pipeline's own voids"
+  fi
+done < <(jq -r '[(.project_review.defaults.pr_label // ""),
+                 ((.project_review.repos // [])[] | .pr_label // empty)]
+                | unique | .[]' <<<"$DEFAULTED_CONFIG" 2>/dev/null)
 
 excluded_count="$(cfg_json '.schedule.excluded_minutes' \
   | jq 'map(select(type == "number" and . >= 0 and . <= 59)) | unique | length')"
@@ -280,9 +311,15 @@ elif ((excluded_count > 0)); then
   ok "schedule.excluded_minutes leaves $((60 - excluded_count)) minute(s) for this node's cycle"
 fi
 
-if [[ "$(cfg '.review.pr_label // ""')" == "$(cfg '.pr_label // ""')" ]]; then
-  warn "review.pr_label equals pr_label — review pull requests would count against max_open_agent_prs and be indistinguishable from implementation ones"
-fi
+# Checked per configured repository, since project_review's pr_label is
+# resolved per repository (requirement 342) and may no longer be the same
+# value everywhere.
+while IFS=$'\t' read -r review_slug review_label; do
+  [[ -n "$review_slug" ]] || continue
+  if [[ "$review_label" == "$(cfg '.pr_label // ""')" ]]; then
+    warn "$review_slug's project_review pr_label ($review_label) equals pr_label — its review pull requests would count against max_open_agent_prs and be indistinguishable from implementation ones"
+  fi
+done < <(jq -r '.[] | [.slug, (.pr_label // "")] | @tsv' <<<"$project_review_repos_json")
 
 # cycles_retained and state_local_cycles_retained both carry real schema
 # defaults (200, 1000); the `0` here is pure arithmetic safety against a
@@ -320,8 +357,11 @@ done < <(jq -r '
     {k: "approver_model_complex",     v: .approver_model_complex},
     {k: "approver_model_critical",    v: .approver_model_critical},
     {k: "enabler_model",              v: .enabler_model},
-    {k: "review.model",               v: .review.model}
-  ] | .[] | select((.v // "") != "") | [.k, .v] | @tsv' "$config_file")
+    {k: "project_review.defaults.model", v: .project_review.defaults.model}
+  ]
+  + [ (.project_review.repos // [])[] | select(has("model"))
+      | {k: (.slug + "'"'"'s project_review.model override"), v: .model} ]
+  | .[] | select((.v // "") != "") | [.k, .v] | @tsv' "$config_file")
 
 # --- Prompts ---
 
@@ -552,8 +592,12 @@ if ((gh_ready)); then
   # happened yet: on a fresh installation that is simply "no cycle has run
   # here", and on an established one it means the token cannot create labels,
   # which nothing else would tell you.
+  # REVIEW_PR_LABEL (optional) is this repository's own resolved
+  # project_review pr_label (requirement 342) — only ROLE "review" needs it;
+  # see lib/labels.sh's labels_catalogue for why it can no longer be derived
+  # from the config alone.
   check_repo_labels() {
-    local slug="$1" role="$2" repo_labels label
+    local slug="$1" role="$2" review_pr_label="${3:-}" repo_labels label
     if ! repo_labels="$(gh api "repos/$slug/labels" --paginate --jq '.[].name' 2>/dev/null)"; then
       return 1
     fi
@@ -561,7 +605,7 @@ if ((gh_ready)); then
       [[ -n "$label" ]] || continue
       grep -qixF -- "$label" <<<"$repo_labels" \
         || warn "$slug has no \"$label\" label — the next cycle that works this repo creates it (lib/labels.sh); if it is still absent after one has run, this token may not create labels"
-    done < <(labels_catalogue "$config_file" "$schema_file" "$role")
+    done < <(labels_catalogue "$config_file" "$schema_file" "$role" "$review_pr_label")
     return 0
   }
 
@@ -706,12 +750,12 @@ if ((gh_ready)); then
     fi
   done < <(cfg '.repos[]?.slug // empty')
 
-  while IFS= read -r slug; do
+  while IFS=$'\t' read -r slug review_label; do
     [[ -n "$slug" ]] || continue
-    check_repo_labels "$slug" review \
-      || fail "review.repos names $slug, which is unreachable with this token"
+    check_repo_labels "$slug" review "$review_label" \
+      || fail "project_review.repos names $slug, which is unreachable with this token"
     check_repo_access "$slug"
-  done < <(cfg '.review.repos[]? // empty')
+  done < <(jq -r '.[] | [.slug, (.pr_label // "")] | @tsv' <<<"$project_review_repos_json")
 
   state_repo="$(cfg '.state_repo')"
   if [[ -z "$state_repo" ]]; then

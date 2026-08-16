@@ -367,14 +367,15 @@ Keys:
 | `schedule.log_rotation_minute` | `19` | The minute past every hour the containerised node's `rotate-logs.sh` line runs. |
 <!-- config-table:end -->
 
-Every `*_model` key above, plus `review.model` below, also accepts a
+Every `*_model` key above, plus `project_review.defaults.model` (or a repo's
+own override) below, also accepts a
 provider-qualified id — `anthropic/claude-sonnet-5` alongside the bare
 `claude-sonnet-5` — with identical behaviour; the qualifier is optional
 because Anthropic is the only executable provider today. A qualifier naming
 any other provider is rejected at cycle start with an error naming the key,
 not passed to the `claude` CLI. No existing config needs to change.
 
-The `review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
+The `project_review` object configures the separate weekly project-review pipeline — see [Weekly project review](#weekly-project-review).
 
 <!-- config-table:notes id=main — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
 
@@ -1379,23 +1380,28 @@ spend quota at the same moment. The `project-review` skill it runs is vendored
 at `.claude/skills/project-review/` and staged into each ephemeral clone at run
 time (never committed to the repo under review).
 
-### Configuration (`review` block in `config.json`)
+### Configuration (`project_review` block in `config.json`)
 
 <!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Default | Notes |
 |---|---|---|
-| `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | Repositories to review. A plain list of slugs. |
-| `review.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
-| `review.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`. |
-| `review.branch_prefix` | `review/` | Branch name `review/<date>`. |
-| `review.timeout_review` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself. |
-| `review.inactivity_review` | *(unset)* | Minutes of total silence before the review stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
-| `review.lock_stale_after` | *(unset)* | Hours, and a floor. Derived from the review backstop, doubled because two repositories can be reviewed back to back inside one lock. |
-| `review.min_days_between_reviews` | `6` | Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as "about once a week" and stay robust to a sleeping machine. |
-| `review.not_before` | *(unset)* | Optional. Hold **all** reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. |
+| `project_review.lock_stale_after` | *(unset)* | Hours, and a floor. Derived from the review backstop, multiplied by how many repositories are configured for review (floored at one), since they can all be reviewed back to back inside one lock. |
+| `project_review.defaults.model` | `claude-sonnet-5` | The lead model driving the review skill (which delegates to lower-cost subagents itself). Accepts the provider-qualified form (`anthropic/claude-sonnet-5`) as well as the bare id — see [Configuration](#configuration). |
+| `project_review.defaults.pr_label` | `project-review` | Applied to every review PR. Distinct from `autonomous-agent`, so review PRs never count against `max_open_agent_prs`. Do not name it `obsolete`. |
+| `project_review.defaults.branch_prefix` | `review/` | Branch name `review/<date>`. |
+| `project_review.defaults.timeout_review` | *(unset)* | Minutes, and an override. Leave it out — the backstop tunes itself. |
+| `project_review.defaults.inactivity_review` | *(unset)* | Minutes of total silence before the review stage is treated as wedged, and an override. Omit it — the threshold is derived; `0` disables the watchdog. |
+| `project_review.defaults.min_days_between_reviews` | `6` | Skip a repo reviewed within this many days. This is what makes a daily cron tick behave as "about once a week" and stay robust to a sleeping machine. |
+| `project_review.defaults.not_before` | *(unset)* | Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
+| `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | Repositories to review. Each entry is `{"slug": "owner/name"}`, plus any of `defaults`' own keys to override it for that repository alone. |
 <!-- config-table:end -->
 
 <!-- config-table:notes id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
+
+#### Extended notes: `project_review.defaults.not_before`
+
+Optional. Hold reviews until this timestamp — e.g. `2026-07-30T16:00:00Z` — while the hourly pipeline carries on. Use this rather than `agent-cycle.sh --disable`, which is shared and would stop the cycles too, and rather than raising `min_days_between_reviews`, which has to be lowered again afterwards. It expires by itself; leaving the key in place once the date has passed does nothing. An unparseable value stands reviews down rather than running through it. As `defaults.not_before` it holds every configured repository off before the pipeline even takes its lock; a repository's own `not_before` override additionally holds that repository off for longer (or shorter) than the installation-wide value, checked per repository once the cycle is under way.
+
 <!-- config-table:notes-end -->
 
 ### Install

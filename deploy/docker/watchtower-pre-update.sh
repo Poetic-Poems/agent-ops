@@ -117,7 +117,7 @@ expand_home() {
 state_dir="$(expand_home "$(jq -r '.state_dir // "~/.local/state/poetic-agents"' "$CONFIG_FILE")")"
 
 cycle_stale_after="$(jq -r '.lock_stale_after // 4' "$CONFIG_FILE")"
-review_stale_after="$(jq -r '.review.lock_stale_after // 6' "$CONFIG_FILE")"
+review_stale_after="$(jq -r '.project_review.lock_stale_after // 6' "$CONFIG_FILE")"
 [[ "$cycle_stale_after"  =~ ^[0-9]+$ ]] || cycle_stale_after=4
 [[ "$review_stale_after" =~ ^[0-9]+$ ]] || review_stale_after=6
 

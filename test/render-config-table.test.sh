@@ -62,19 +62,19 @@ chmod +x "$tmp/scripts/render-config-table.sh"
 #     render verbatim; an x-docs.value keyed per audience, both with and
 #     without an entry for the audience being rendered; an empty-string
 #     default; a `|` inside prose; one level of nesting under "schedule" (the
-#     "main" region) and under "review" (its own region); and seven notes-cap
-#     cases — a plain note over 500 characters (`mu`), one whose naive
-#     480-character cut point lands inside a single-backtick code span (`nu`)
-#     and inside a link (`xi`), one whose cut point lands inside a link
-#     whose text itself carries a nested `[...]` (`omicron`, #219), one
+#     "main" region) and two levels under "project_review" (its own region,
+#     nested the same way the real schema nests project_review.defaults); and
+#     seven notes-cap cases — a plain note over 500 characters (`mu`), one
+#     whose naive 480-character cut point lands inside a single-backtick code
+#     span (`nu`) and inside a link (`xi`), one whose cut point lands inside a
+#     link whose text itself carries a nested `[...]` (`omicron`, #219), one
 #     whose cut point lands inside a link whose target carries a balanced
 #     `(...)` the way a Wikipedia article URL does (`phi`, #219), one whose
 #     cut point lands inside a double-backtick code span whose content
 #     itself contains a literal backtick (`chi`, #218), and a dotted key
-#     that overflows (`schedule.overflow_key`) — plus one more dotted
-#     overflow in the
-#     "review" region (`review.overflow_sub`) to exercise notes-region
-#     heading derivation there too. Every overflowing note here carries only
+#     that overflows (`schedule.overflow_key`) — plus one more, two levels
+#     deep, in the "project_review" region (`project_review.defaults.overflow_sub`)
+#     to exercise notes-region heading derivation there too. Every overflowing note here carries only
 #     `x-docs.readme`, so the two specs' (audience "spec") regions render
 #     these particular rows short, falling back to `description` — deliberate,
 #     so the specs' own Extended-notes regions stay exercised as the "nothing
@@ -207,15 +207,19 @@ cat > "$tmp/config.schema.json" <<'JSON'
         }
       }
     },
-    "review": {
+    "project_review": {
       "properties": {
-        "sub_key": {
-          "description": "Sub key description.",
-          "x-docs": { "value": "`sub-value`" }
-        },
-        "overflow_sub": {
-          "description": "Overflow sub description.",
-          "x-docs": { "readme": "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem" }
+        "defaults": {
+          "properties": {
+            "sub_key": {
+              "description": "Sub key description.",
+              "x-docs": { "value": "`sub-value`" }
+            },
+            "overflow_sub": {
+              "description": "Overflow sub description.",
+              "x-docs": { "readme": "lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem lorem" }
+            }
+          }
         }
       }
     }
@@ -402,11 +406,11 @@ assert_contains "schedule.nested_key renders dotted, in the main region" "$main_
 
 review_region_readme="$(awk '/<!-- config-table:start id=review -->/{f=1;next} /<!-- config-table:end -->/{f=0} f' "$tmp/README.md")"
 # shellcheck disable=SC2016
-assert_contains "review.sub_key renders dotted, in its own region" "$review_region_readme" '| `review.sub_key` | `sub-value` | Sub key description. |'
-if [[ "$main_region" == *"review.sub_key"* ]]; then
-  fail "review.sub_key does not leak into the main region"
+assert_contains "project_review.defaults.sub_key renders dotted, in its own region" "$review_region_readme" '| `project_review.defaults.sub_key` | `sub-value` | Sub key description. |'
+if [[ "$main_region" == *"project_review.defaults.sub_key"* ]]; then
+  fail "project_review.defaults.sub_key does not leak into the main region"
 else
-  pass "review.sub_key does not leak into the main region"
+  pass "project_review.defaults.sub_key does not leak into the main region"
 fi
 
 # --- The two specs use the "spec" audience, not "readme" ---
@@ -424,7 +428,7 @@ fi
 
 review_spec_content="$(cat "$tmp/docs/REVIEW-PIPELINE-SPEC.md")"
 # shellcheck disable=SC2016
-assert_contains "the review spec renders review.sub_key" "$review_spec_content" '| `review.sub_key` |'
+assert_contains "the review spec renders project_review.defaults.sub_key" "$review_spec_content" '| `project_review.defaults.sub_key` |'
 
 # --- Sentinels outside the markers are untouched ---
 readme_content="$(cat "$tmp/README.md")"
@@ -560,9 +564,9 @@ assert_not_contains "a note that fits (beta) gets no Extended notes subsection" 
 #     emitted as-is. The leading-newline anchor above is what makes the
 #     level-3 assertions already exact; this one is the level-6 analogue. ---
 # shellcheck disable=SC2016
-assert_contains "review.overflow_sub's row carries the continuation link" "$review_region_readme" '...[continued below](#extended-notes-reviewoverflow_sub)'
+assert_contains "project_review.defaults.overflow_sub's row carries the continuation link" "$review_region_readme" '...[continued below](#extended-notes-project_reviewdefaultsoverflow_sub)'
 # shellcheck disable=SC2016
-assert_contains "the review notes heading is clamped to exactly level 6" "$review_notes_region" $'\n###### Extended notes: `review.overflow_sub`'
+assert_contains "the review notes heading is clamped to exactly level 6" "$review_notes_region" $'\n###### Extended notes: `project_review.defaults.overflow_sub`'
 
 # ============================================================================
 # Block notes (#220): x-docs.readme/spec as an array of blocks — a plain

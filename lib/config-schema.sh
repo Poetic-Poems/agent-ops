@@ -19,11 +19,14 @@
 # uniqueItems, properties, required, additionalProperties (false only), items,
 # and local `$ref`s into `#/$defs`.
 #
-# Also holds the two cross-key rules the schema itself cannot state — each
-# holds *between* two keys rather than about one, which is outside what
-# `additionalProperties`/`required`/etc. on a single object can express.
-# `agent-cycle.sh` calls these to refuse to start; `scripts/doctor.sh` calls
-# the same functions so the two can never drift on what counts as a fault.
+# Also holds three cross-key rules the schema itself cannot state — each
+# holds *between* two keys (or two array entries) rather than about one,
+# which is outside what `additionalProperties`/`required`/etc. on a single
+# object can express. `config_enabler_assignee_ok` and
+# `config_missing_plan_path_repos` are `agent-cycle.sh`'s own startup
+# guards; `config_duplicate_project_review_slugs` is `review-cycle.sh`'s.
+# `scripts/doctor.sh` calls all three so no pipeline's refusal can ever drift
+# from what `doctor.sh` reports.
 #
 # Sourced by agent-cycle.sh and scripts/doctor.sh. jq 1.6 compatible: nodes
 # carry 1.7, but a host running doctor.sh before installing anything may well
@@ -157,8 +160,8 @@ config_schema_errors() {
 # own but whose properties do — `schedule` is the case in point — is still
 # synthesised whole when absent, so every leaf under it reads its default too;
 # a key with no schema default anywhere on its path (a required field with
-# nothing to fall back to, `review.model` for instance) passes through
-# unchanged. This performs no validation of its own — a config invalid against
+# nothing to fall back to, `project_review.defaults.model` for instance)
+# passes through unchanged. This performs no validation of its own — a config invalid against
 # the schema is still merged, defaults and all, since a caller that wants the
 # gate calls config_schema_errors first.
 config_defaults() {
@@ -222,4 +225,53 @@ config_missing_plan_path_repos() {
   jq -r '[.[] | select((.sources // []) | any(. == "implementation-plan"))
               | select((.implementation_plan_path // "") == "") | .slug]
          | join(", ")' <<<"$repos_json"
+}
+
+# config_duplicate_project_review_slugs PROJECT_REVIEW_REPOS_JSON
+# Given an array of objects each carrying a `slug` — config.json's
+# `project_review.repos` itself, or config_project_review_repos's resolved
+# output, both shaped alike — prints the comma-joined slugs that name more
+# than one entry. Requirement 342's resolution rule assumes exactly one entry
+# per repository; two entries for the same slug leave no way to say which
+# one's overrides apply, so review-cycle.sh refuses to start rather than
+# silently letting the later entry win. Empty when every slug is unique
+# (including the vacuous case of an empty array).
+config_duplicate_project_review_slugs() {
+  local repos_json="$1"
+  jq -r '[.[].slug] | group_by(.) | map(select(length > 1) | .[0]) | join(", ")' <<<"$repos_json"
+}
+
+# config_project_review_repos DEFAULTED_CONFIG_JSON
+# `project_review.repos`, each entry resolved against `project_review.defaults`
+# per requirement 342's rule: a key present and non-null on the repo's own
+# entry wins, `defaults[key]` otherwise; `slug` is never defaulted. One
+# implementation shared by every reader (review-cycle.sh, scripts/doctor.sh,
+# lib/labels.sh's caller) so they cannot resolve the same repository two
+# different ways. Takes the already-`config_defaults`-merged config, as every
+# caller already has one; prints `[]` (never fails) when `project_review` is
+# absent or malformed, so a caller need not special-case the optional block.
+#
+# Each entry also carries `model_key`: the precise config path `model`'s
+# value was resolved from — `project_review.repos[<i>].model` when this
+# repository overrides it, `project_review.defaults.model` otherwise — so a
+# caller passing `model` to `resolve_model_id` can name that path rather than
+# the generic `project_review.model` in a resolution error.
+config_project_review_repos() {
+  local defaulted_config="$1"
+  jq -c '
+    (.project_review.defaults // {}) as $d |
+    [ range(0; (.project_review.repos // []) | length) as $i |
+      (.project_review.repos[$i]) as $r |
+      { slug: $r.slug,
+        model: ($r.model // $d.model),
+        model_key: (if ($r.model != null)
+                     then "project_review.repos[\($i)].model"
+                     else "project_review.defaults.model" end),
+        pr_label: ($r.pr_label // $d.pr_label),
+        branch_prefix: ($r.branch_prefix // $d.branch_prefix),
+        min_days_between_reviews: ($r.min_days_between_reviews // $d.min_days_between_reviews),
+        not_before: ($r.not_before // $d.not_before // ""),
+        timeout_review: ($r.timeout_review // $d.timeout_review),
+        inactivity_review: ($r.inactivity_review // $d.inactivity_review) } ]
+  ' <<<"$defaulted_config" 2>/dev/null || printf '[]'
 }

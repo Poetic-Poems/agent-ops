@@ -170,7 +170,7 @@ slug="acme-org/target-repo"
 base_config="$tmp/base-config.json"
 jq --arg slug "$slug" '
   .repos = [{slug: $slug, sources: ["security"]}]
-  | .review.repos = []
+  | .project_review.repos = []
   | .state_repo = ""
   | .enabler_model = ""
   | .enabler_assignee = ""
@@ -215,25 +215,25 @@ assert_contains "an archived repo fails even though the token could otherwise pu
   "[fail] $slug is archived" "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
-# review.repos gets the same write-access check as repos[] — the Reviewer
-# stage pushes a branch and opens a PR against them exactly as an Implementor
-# does against a target repo, so a review repo the token can read but not
-# push to loses the review the same way a target repo loses an item.
+# project_review.repos gets the same write-access check as repos[] — the
+# Reviewer stage pushes a branch and opens a PR against them exactly as an
+# Implementor does against a target repo, so a review repo the token can read
+# but not push to loses the review the same way a target repo loses an item.
 review_config="$tmp/review-config.json"
-jq --arg slug "$slug" '.repos = [] | .review.repos = [$slug]' "$base_config" > "$review_config"
+jq --arg slug "$slug" '.repos = [] | .project_review.repos = [{slug: $slug}]' "$base_config" > "$review_config"
 out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"permissions":{"push":false},"archived":false}' \
   bash "$DOCTOR" --config "$review_config" 2>&1)"
 rc=$?
-assert_contains "review.repos names a repo the token cannot push to" \
+assert_contains "project_review.repos names a repo the token cannot push to" \
   "[fail] $slug is readable but not writable with this token" "$out"
 assert_eq "and doctor.sh exits 1" "1" "$rc"
 
-# state_repo shares check_repo_access with repos[] and review.repos — this is
+# state_repo shares check_repo_access with repos[] and project_review.repos — this is
 # what catches the two verdicts drifting apart, the way a hand-rolled
 # state_repo check once folded an absent `.permissions` into `fail` rather
 # than `skip` (it cannot be asked, which is not evidence it cannot push).
 state_repo_config="$tmp/state-repo-config.json"
-jq --arg slug "$slug" '.repos = [] | .review.repos = [] | .state_repo = $slug' "$base_config" > "$state_repo_config"
+jq --arg slug "$slug" '.repos = [] | .project_review.repos = [] | .state_repo = $slug' "$base_config" > "$state_repo_config"
 out="$(env PATH="$stub_bin:$PATH" STUB_REPO_JSON='{"archived":false}' \
   bash "$DOCTOR" --config "$state_repo_config" 2>&1)"
 assert_contains "state_repo with no visible .permissions is a skip, not a fail" \

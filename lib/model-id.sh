@@ -4,7 +4,8 @@
 # docs/IMPLEMENTATION-PIPELINE-SPEC.md requirement 1a).
 #
 # Every model key in config.json (coordinator_model, implementor_model_*,
-# reviewer_model_*, enabler_model, review.model) accepts either a bare model
+# reviewer_model_*, enabler_model, project_review.defaults.model and its
+# per-repo overrides) accepts either a bare model
 # id (`claude-sonnet-5`) or one qualified with a provider prefix
 # (`anthropic/claude-sonnet-5`). Anthropic is the only executable provider
 # today (decision D12 in docs/ROADMAP.md), so the two forms are the same
@@ -28,8 +29,9 @@ resolve_model_id() {
         printf '%s\n' "${value#*/}"
       else
         # Prefixed with the library's own name, not a script's: review-cycle.sh
-        # sources this too, and an error blaming agent-cycle for `review.model`
-        # sends the operator to the wrong script. Matches lib/toggle.sh.
+        # sources this too, and an error blaming agent-cycle for
+        # `project_review.defaults.model` sends the operator to the wrong
+        # script. Matches lib/toggle.sh.
         echo "model-id: $key: provider '$provider' not yet supported (only 'anthropic' is executable today) — got '$value'" >&2
         return 1
       fi

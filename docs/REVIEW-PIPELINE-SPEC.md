@@ -129,10 +129,19 @@ Two decisions are deliberate:
 
 ## Configuration
 
-One `review` object in the existing `config.json` (one config file — never a
-second one) holds every tunable for this pipeline. The values below are the
-confirmed defaults; the README documents each key, and `config.schema.json`
-carries them alongside the implementation pipeline's
+One `project_review` object in the existing `config.json` (one config file —
+never a second one) holds every tunable for this pipeline, in two parts
+(requirement 342): `defaults` — every tunable set once, installation-wide —
+and `repos` — the repositories to review, each a `{"slug": "owner/name"}`
+entry that may additionally carry any of `defaults`' own keys to override it
+for that repository alone. The resolution rule is uniform: for repository *r*
+and key *k*, the effective value is `repos[i][k]` when that key is present and
+non-null on *r*'s own entry, and `defaults[k]` otherwise; an entry carrying
+only `slug` inherits every default. `lock_stale_after` sits outside `defaults`
+— it bounds the shared review lock, which covers whichever repositories a run
+touches, not any one repository, so it has no per-repo override. The values
+below are the confirmed defaults; the README documents each key, and
+`config.schema.json` carries them alongside the implementation pipeline's
 (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1b) — one file, one
 schema, so `scripts/doctor.sh` checks both pipelines' configuration in one
 pass and neither half can drift while the other is checked. The object as a
@@ -140,64 +149,78 @@ whole is optional there: an installation that does not run reviews simply
 leaves it out. `review-cycle.sh` therefore tests for the block against
 `config.json` itself rather than against the merge `config_defaults` returns
 (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1b): that merge
-synthesises a `review` object from the defaults of the leaves under it, so it
-can never report the block absent, and this one check must read absence as
-absence. Every key *within* the block is read from the merge as everywhere
-else.
+synthesises a `project_review` object from the defaults of the leaves under
+it, so it can never report the block absent, and this one check must read
+absence as absence. Every key *within* the block is read from the merge as
+everywhere else.
 
 The body rows of the table below are generated from that schema — each key's
 `x-docs.spec` prose and `x-docs.value` cell — by
 `scripts/render-config-table.sh` (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`
 component 16), between the `config-table` markers, and CI fails a pull
 request that leaves them stale. Edit the schema, not the rows. A Notes cell
-over 500 characters would be capped, with its full text deferred to this
-document's `config-table:notes id=review` region below the table; no
-`review.*` note is long enough for that today, so the region renders empty.
+over 500 characters is capped, with its full text deferred to this document's
+`config-table:notes id=review` region below the table; `not_before`'s note is
+the one long enough for that today.
 
 ```json
-"review": {
-  "repos": ["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"],
-  "model": "claude-sonnet-5",
-  "pr_label": "project-review",
-  "branch_prefix": "review/",
-  "min_days_between_reviews": 6,
-  "not_before": "2026-07-30T16:00:00Z"
+"project_review": {
+  "defaults": {
+    "model": "claude-sonnet-5",
+    "pr_label": "project-review",
+    "branch_prefix": "review/",
+    "min_days_between_reviews": 6,
+    "not_before": "2026-07-30T16:00:00Z"
+  },
+  "repos": [
+    { "slug": "Poetic-Poems/poetic" },
+    { "slug": "Poetic-Poems/poetic-fiddle" }
+  ]
 }
 ```
 
 <!-- config-table:start id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not these rows -->
 | Key | Value | Notes |
 |---|---|---|
-| `review.repos` | `["Poetic-Poems/poetic", "Poetic-Poems/poetic-fiddle"]` | The repositories to review. A plain list of slugs — a review has no per-repo work-source structure. Adding a repo is a config-only change. |
-| `review.model` | `claude-sonnet-5` | The Reviewer-Agent's model — the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes. |
-| `review.pr_label` | `project-review` | Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. It must not be `obsolete`, for the reason given against the implementation `pr_label`. |
-| `review.branch_prefix` | `review/` | Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed. |
-| `review.timeout_review` | *(unset)* | An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case. |
-| `review.inactivity_review` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap. |
-| `review.lock_stale_after` | *(unset)* | A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation doubles the widest Reviewer-Agent backstop, because one lock can span two repositories reviewed back to back, and adds the same slack. |
-| `review.min_days_between_reviews` | `6` | The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next. |
-| `review.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3) — every repo, not one. Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. |
+| `project_review.lock_stale_after` | *(unset)* | A floor under the derived value, on the same terms as the implementation pipeline's `lock_stale_after` (requirement 4f). The derivation multiplies the widest Reviewer-Agent backstop by the number of repositories configured for review (floored at one, so a single-repository installation is unaffected), because one lock can span all of them reviewed back to back, and adds the same slack. |
+| `project_review.defaults.model` | `claude-sonnet-5` | The Reviewer-Agent's model — the lead that drives the skill. The skill itself delegates well-scoped sub-tasks to lower-cost subagents, so this is the only model to pin here. A deeper review can be dialled up to a higher-capability model without other changes. |
+| `project_review.defaults.pr_label` | `project-review` | Applied to every review PR. **Distinct** from the implementation pipeline's `autonomous-agent`, so review PRs never count against `max_open_agent_prs` and are trivially filterable. It must not be `obsolete`, for the reason given against the implementation `pr_label`. |
+| `project_review.defaults.branch_prefix` | `review/` | Branch name `review/<date>`, e.g. `review/2026-07-20`. A branch is already scoped to its repository, so no slug is needed. |
+| `project_review.defaults.timeout_review` | *(unset)* | An override for the Reviewer-Agent's backstop, on the same terms as `timeout_coordinator` and through the same derivation (requirement 4f). Absent is the normal case. |
+| `project_review.defaults.inactivity_review` | *(unset)* | An override for the watchdog threshold of requirement 4e, taking precedence over the derivation of requirement 4f. Absent is the normal case; `0` disables the watchdog and leaves the backstop as the only cap. |
+| `project_review.defaults.min_days_between_reviews` | `6` | The skip-guard threshold (R4). A repo reviewed within this many days is skipped. Six (not seven) leaves a day of slack, so a review that lands late one week is not pushed a full extra week the next. |
+| `project_review.defaults.not_before` | *(unset)* | Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single...[continued below](#extended-notes-project_reviewdefaultsnot_before) |
+| `project_review.repos` | `[{"slug": "Poetic-Poems/poetic"}, {"slug": "Poetic-Poems/poetic-fiddle"}]` | The repositories to review. Each entry's `slug` is required; every other key overrides the same-named key in `defaults` for that repository alone (requirement 342), and an entry carrying only `slug` inherits every default. A review has no per-repo work-source structure beyond these overrides. Adding a repo is a config-only change. |
 <!-- config-table:end -->
 
 Model IDs are pinned in config (one place to update); do not use floating
 aliases in the launch command.
 
-`review.model` accepts a bare id (`claude-sonnet-5`) or a provider-qualified
-one (`anthropic/claude-sonnet-5`), resolved by the same `resolve_model_id`
-(`lib/model-id.sh`) the implementation pipeline uses — see
+`project_review.defaults.model` (or a repository's own override in
+`project_review.repos`, requirement 342) accepts a bare id
+(`claude-sonnet-5`) or a provider-qualified one (`anthropic/claude-sonnet-5`),
+resolved by the same `resolve_model_id` (`lib/model-id.sh`) the implementation
+pipeline uses — see
 `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1a. Anthropic is the only
 executable provider (D12, `docs/ROADMAP.md`); a qualifier naming any other
 provider is a fail-fast config error at cycle start, not a value passed to
 `claude --model`.
 
 <!-- config-table:notes id=review — GENERATED from config.schema.json by scripts/render-config-table.sh; edit the schema, not this section -->
+
+### Extended notes: `project_review.defaults.not_before`
+
+Optional. A timestamp before which no review may start (R3.3). Absent or empty means no stand-down; a value `date -d` cannot read stands the pipeline down rather than running through it. Expires by itself, which is why it exists rather than raising `min_days_between_reviews`: a threshold has to be put back by hand, and a cadence left quietly throttled is not noticed for weeks. As `defaults.not_before` it gates the whole cycle before the lock, exactly as a single installation-wide value always has; a repository's own override on `repos[]` is resolved separately, per repository, once the cycle is under way (requirement 3.3).
+
 <!-- config-table:notes-end -->
 
 ## The Human Gate and the loop it closes
 
 The review pipeline raises **one pull request per repository, ready for
 review** (not draft — the review *is* the deliverable, and there is no second
-review stage to flip it). The PR is labelled `review.pr_label`, titled in
+review stage to flip it). The PR is labelled with the repository's own
+resolved `project_review` pr_label (its override, or
+`project_review.defaults.pr_label`, requirement 342), titled in
 Conventional Commits form (e.g. `docs(review): weekly project review 2026-07-20`),
 and its body summarises the verdict and links the review index. A human merges
 it — the single point at which a human is required.
@@ -224,25 +247,52 @@ R1. **Bootstrap.** Reuse the `PATH` bootstrap and binary checks of
    minimal environment). Source `lib/limit-detect.sh`. The script must pass
    `shellcheck`.
 
-R1a. **Model id resolution (D12 groundwork).** `review.model` is resolved
-   through `lib/model-id.sh`'s `resolve_model_id` immediately after being read
-   from config, before the lock — the same helper and the same rule
-   `agent-cycle.sh` applies to its own model keys
+R1a. **Model id resolution (D12 groundwork).** Every configured repository's
+   own resolved model (`project_review.defaults.model`, or its own override in
+   `project_review.repos`, requirement 342) is resolved through
+   `lib/model-id.sh`'s `resolve_model_id` immediately after `project_review`'s
+   settings are read and resolved, before the lock — the same helper and the
+   same rule `agent-cycle.sh` applies to its own model keys
    (`docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 1a): a bare id means
    `anthropic/`, an `anthropic/`-qualified id has the qualifier stripped, and
-   any other qualifier is a fail-fast config error naming `review.model`, not
-   a value passed to `claude --model`.
+   any other qualifier is a fail-fast config error naming the precise key the
+   value came from — `project_review.repos[i].model` for a repository's own
+   override, `project_review.defaults.model` when it does not have one — never
+   the generic `project_review.model`, so the error points at the exact key to
+   fix (`lib/config-schema.sh`'s `config_project_review_repos` resolves each
+   repository's `model_key` alongside its `model` for this). Every configured
+   repository's model is validated in this one sweep, before any repository is
+   worked, so a bad model on one repository is never discovered only after
+   others have already been reviewed.
+
+R1b. **Duplicate-slug refusal.** Requirement 342's resolution rule assumes
+   exactly one `project_review.repos` entry per repository; two entries naming
+   the same `slug` leave no way to say which one's overrides apply. Checked
+   immediately after `project_review_repos_json` is resolved, before the model
+   sweep above: `lib/config-schema.sh`'s `config_duplicate_project_review_slugs`
+   — a third cross-key rule the schema itself cannot state, alongside
+   `agent-cycle.sh`'s own two (`docs/IMPLEMENTATION-PIPELINE-SPEC.md`
+   requirement 1b) — names every slug appearing more than once, and the Script
+   refuses to start naming them, exactly as `scripts/doctor.sh`'s own `fail`
+   does against the same function, so the two can never drift on what counts
+   as a fault. An empty `project_review.repos` has nothing to duplicate and is
+   not a fault.
 
 R2. **Lock.** Acquire `review-lock.json` in `state_dir` recording PID, start
    time, and the writer's hostname (`host`, as the implementation pipeline's
    requirement 1 records it; its own lock, *not* the implementation
    `lock.json`). Apply the same held/stale/dead logic as requirement 1, using
-   `review.lock_stale_after`: skip cleanly if a live review is younger than the
-   threshold; take over a stale or dead lock — TERM, a polled grace of up to
-   20 seconds so the holder's own signal handler (R7a) can write its record
-   and release its claim, then KILL — logging a `warning`. The lock has a second reader on a containerised node:
+   `project_review.lock_stale_after`: skip cleanly if a live review is younger
+   than the threshold; take over a stale or dead lock — TERM, a polled grace of
+   up to 20 seconds so the holder's own signal handler (R7a) can write its
+   record and release its claim, then KILL — logging a `warning`. Installation-
+   wide only, not per repository — the lock covers whichever repositories a
+   run touches, so its derivation takes the widest `timeout_review` /
+   `inactivity_review` configured across all of them (defaults or any repo's
+   own override), not any one repository's own. The lock has a second reader
+   on a containerised node:
    `deploy/docker/watchtower-pre-update.sh` consults it, on the same
-   `review.lock_stale_after` bound, to defer an image roll that would
+   `project_review.lock_stale_after` bound, to defer an image roll that would
    otherwise kill a review mid-flight — judging liveness only when the lock's
    `host` is its own container, and honouring a lock written elsewhere until
    released or stale, since a pid means nothing outside the PID namespace
@@ -262,20 +312,39 @@ R3. **Stand-down checks.** Each logs its reason and exits 0:
    2. *Implementation pipeline busy* — if `lock.json` is held by a live
       process, stand down and wait for the next tick (defer to it, per
       "Relationship to the existing pipelines").
-   3. *A dated stand-down* — if `review.not_before` is set and now is before
-      it, stand down, logging the timestamp on the event so an operator can
-      tell this apart from a switch. Checked before the lock, like R2a, so a
-      review that must not start never takes a lock a roll would then defer
-      for. This exists because R2a's switch is deliberately **shared** with
-      the implementation pipeline: holding the weekly review off until a date
-      while cycles carry on is a thing the switch cannot say. A value
-      `date -d` cannot parse stands the pipeline down rather than running
-      through it — the operator evidently meant to hold reviews off, and
-      guessing otherwise spends whatever they were protecting. Absent or
-      empty is not a stand-down. Preferred over raising
-      `min_days_between_reviews` because it expires by itself: a threshold
-      has to be put back by hand, and one left raised throttles every repo
-      indefinitely without anyone noticing.
+   3. *A dated stand-down, tier one* — if `project_review.defaults.not_before`
+      is set and now is before it, stand down the whole cycle, logging the
+      timestamp on the event so an operator can tell this apart from a
+      switch. Checked before the lock, like R2a, so a review that must not
+      start never takes a lock a roll would then defer for. This is the
+      installation-wide value only: a repository's own `not_before` override
+      (requirement 342) is resolved separately, per repository, into R4's
+      skip-guard below, once the cycle is under way — an override can hold
+      one repository off *longer* than this value, but cannot escape it
+      while it is in force. This exists because R2a's switch is deliberately
+      **shared** with the implementation pipeline: holding the weekly review
+      off until a date while cycles carry on is a thing the switch cannot
+      say. A value `date -d` cannot parse stands the pipeline down rather
+      than running through it — the operator evidently meant to hold
+      reviews off, and guessing otherwise spends whatever they were
+      protecting. Absent or empty is not a stand-down. Preferred over
+      raising `min_days_between_reviews` because it expires by itself: a
+      threshold has to be put back by hand, and one left raised throttles
+      every repo indefinitely without anyone noticing.
+   4. *A dated stand-down, tier two* — checked immediately after tier one,
+      also before the lock: even where `project_review.defaults.not_before`
+      itself does not trip tier one — absent, or already past — the whole
+      cycle still stands down when *every* configured repository's own
+      resolved `not_before` (its override, or the inherited default,
+      already resolved into `project_review_repos_json`) is future or
+      unparseable. This is the case tier one alone misses: a
+      `project_review.defaults.not_before` left unset while every
+      repository overrides its own, which tier one — reading only the
+      installation-wide key — would let straight through to the lock, for a
+      cycle certain to have R4's skip-guard skip every repository anyway.
+      Vacuously false, not true, on an empty `project_review.repos`: nothing
+      configured means nothing this tier could ever hold back, not that
+      everything is held.
 
 R2a. **The switch.** Before the lock, read the shared switch
    (`state_dir/disabled.json`) through `lib/toggle.sh` and stand down while it
@@ -338,13 +407,19 @@ R2c. **The fleet's memory and state publication.** After the lock and before
    loses the create-ref and skips the repo before cloning anything.
 
 R4. **Per-repo skip-guard (idempotency; this is how "once a week" is
-   enforced).** For each configured repo, skip it *this run* when **either**:
-   - an open pull request labelled `review.pr_label` already exists for it (a
-     review is in-flight or awaiting merge); **or**
+   enforced).** For each configured repo, skip it *this run* when **any** of:
+   - its own resolved `not_before` (its override, or
+     `project_review.defaults.not_before`, requirement 342) is set and now is
+     before it — the same rule R3's cycle-wide check applies, checked again
+     here per repository so a repository's own override can hold it off
+     *longer* than the installation-wide value; **or**
+   - an open pull request labelled with its own resolved `project_review`
+     pr_label already exists for it (a review is in-flight or awaiting
+     merge); **or**
    - its default branch already contains a `reviews/project-review-YYYY-MM-DD/`
-     folder dated within the last `review.min_days_between_reviews` days
-     (read best-effort via `gh`, e.g. the contents of `reviews/` on the
-     default branch).
+     folder dated within the last `min_days_between_reviews` days (its own
+     resolved value) (read best-effort via `gh`, e.g. the contents of
+     `reviews/` on the default branch).
 
    Log `review-skipped` with the reason. This guard is what makes a **daily**
    cron tick safe and preferable to a strict weekly one: the Script only
@@ -382,12 +457,12 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       own lost/error skips, and every stand-down before it, commit nothing and
       are never gated on this.
    0b. *Labels.* At the same point, and for the same reason it is that point —
-      this repo is now certainly going to be worked — ensure `review.pr_label`
-      exists in it, creating it only if absent (`lib/labels.sh`;
-      `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement 6a). `gh pr create
-      --label` on a label that does not exist fails the create outright, and
-      here that would discard a review costing up to `review.timeout_review`
-      minutes. Never fatal: a repository whose labels cannot be listed, or a
+      this repo is now certainly going to be worked — ensure its own resolved
+      `project_review` pr_label exists in it, creating it only if absent
+      (`lib/labels.sh`; `docs/IMPLEMENTATION-PIPELINE-SPEC.md` requirement
+      6a). `gh pr create --label` on a label that does not exist fails the
+      create outright, and here that would discard a review costing up to
+      `timeout_review` minutes. Never fatal: a repository whose labels cannot be listed, or a
       token that may not create them, logs `labels-ensured` with what failed
       and the review proceeds.
    1. *Workspace.* Create `workspace_root/<review-id>-<repo-slug-safe>/` and
@@ -413,9 +488,9 @@ R5. **Per non-skipped repo** (processed **sequentially**, so a failure of one
       (`.git/info/exclude` is per-clone and never part of the tree, so this
       leaves no trace in the PR. The clone already has its own `.claude/`; the
       injection sits alongside its existing skills.)
-   3. *Reviewer-Agent stage.* Launch the Reviewer-Agent headless (model
-      `review.model`, `--dangerously-skip-permissions`,
-      timeout `review.timeout_review`), with the clone as the working
+   3. *Reviewer-Agent stage.* Launch the Reviewer-Agent headless (this
+      repository's own resolved model, `--dangerously-skip-permissions`,
+      timeout from its own resolved `timeout_review`), with the clone as the working
       directory, passing `prompts/project-reviewer.md`. Use `run_claude_stage`
       (R7b) so a timeout kills the whole process group, the invocation
       streams its events to `<stage>.stream.jsonl` as it runs, and its final
@@ -491,8 +566,9 @@ R7b. **One stage launcher, shared.** `run_claude_stage` is sourced from
    event truncated into `<stage>.out` for R5.3's parse. The streams are
    local-only here too — `reviews/` replicates without them, and
    `state_local_streams_retained` bounds what stays on the node.
-   Requirement 4e's liveness watchdog comes with it: `review.inactivity_review`
-   minutes of total silence stops the Reviewer-Agent, `review.timeout_review`
+   Requirement 4e's liveness watchdog comes with it: this repository's own
+   resolved `inactivity_review` minutes of total silence stops the
+   Reviewer-Agent, its own resolved `timeout_review`
    remains the backstop above it, and `review-stage-end` carries the
    `kill_reason` that tells the two apart. Absent, the shipped prior applies;
    `0` disables the watchdog and leaves the backstop as the only cap. This
@@ -506,11 +582,16 @@ R7b. **One stage launcher, shared.** `run_claude_stage` is sourced from
    Both caps are *derived* rather than configured, by requirement 4f and
    through the same `lib/stage-budget.sh` the implementation pipeline uses:
    the Reviewer-Agent is the cell `(project-reviewer, <repo>, <model>)`, and
-   `review.timeout_review` / `review.inactivity_review` are overrides that win
-   when present. `review-stage-start` announces what this run was given and
-   where each number came from. `review.lock_stale_after` becomes a floor
-   under a derived threshold, which doubles the widest Reviewer-Agent backstop
-   because one lock can span two repositories reviewed back to back.
+   a repository's own resolved `timeout_review` / `inactivity_review` (its
+   override, or `project_review.defaults`') are overrides that win when
+   present. `review-stage-start` announces what this run was given and where
+   each number came from. `project_review.lock_stale_after` becomes a floor
+   under a derived threshold, which takes the *widest* `timeout_review` /
+   `inactivity_review` configured across every repository this run might
+   touch — not any one repository's own — and multiplies it by the number of
+   repositories configured for review (floored at one, so a single-repository
+   installation is unaffected), because one lock can span all of them
+   reviewed back to back.
 
 R8. **Flags.** `--dry-run` (evaluate the stand-down and skip-guard checks,
    print which repos *would* be reviewed, launch no agent), `--once` (one
@@ -527,8 +608,8 @@ R9. **One-shot constraint** (requirement 21). A single non-interactive
    with no further tool calls, it exits for good. It must wait synchronously
    for long-running commands (installs, builds, the project's own test suite)
    rather than ending its turn expecting a later notification. A command too
-   slow to finish within `review.timeout_review` is grounds for
-   `"status": "blocked"`, not a hopeful early end of turn.
+   slow to finish within this repository's own resolved `timeout_review` is
+   grounds for `"status": "blocked"`, not a hopeful early end of turn.
 
 R10. **Obey the repo.** Runs inside the clone. First reads the repo's
    `CLAUDE.md` and obeys it throughout (branch workflow, commit format,
@@ -580,10 +661,13 @@ R12a. **Cross-reference every mirrored recommendation.** Where a tech-debt
    mirroring it keeps its remainder in the review channel, where it stays
    visible; claiming it here would silently retire work nobody has done.
 
-R13. **Raise one pull request.** Create the branch `review/<date>` from the
+R13. **Raise one pull request.** Create the branch
+   `<branch_prefix><date>` (`review/<date>` by default; this repository's own
+   resolved `branch_prefix`) from the
    default branch; commit the review folder and the updated tech-debt
    register; open **one** pull request, **ready for review** (not draft),
-   labelled `review.pr_label`, with a Conventional-Commits title
+   labelled with this repository's own resolved `project_review` pr_label,
+   with a Conventional-Commits title
    (`docs(review): weekly project review <date>` — it becomes the squash commit
    on `main`) and a body that summarises the verdict and links the review
    index. Record the PR URL to `.git/agent-ops-review-pr-url` immediately on
@@ -646,9 +730,10 @@ What exists, and the requirements each part answers to:
    stage never depends on context it was not given.
 3. `.claude/skills/project-review/` — the vendored skill (pinned; re-sync
    from upstream deliberately).
-4. `config.json` — the `review` block.
+4. `config.json` — the `project_review` block.
 5. `README.md` — a "Weekly project review" section: what it does and why (the
-   loop it closes), every `review.*` config key, how to install the cron entry,
+   loop it closes), every `project_review.*` config key, how to install the
+   cron entry,
    how to operate it (`--dry-run`, `--once`, `--repo`, reading
    `review-log.jsonl` and the transcripts), how the outputs feed the
    implementation pipeline / `project-remediation`, and how to uninstall.
@@ -698,6 +783,39 @@ a pull request, run the ones the change touches and any it could regress.
    when the clone then fails, `release branch` is invoked for the same key —
    the leak the implementation pipeline fixed in its own workspace path
    (#55) must not be reintroduced here.
+4e. **Per-repository resolution, and duplicate slugs refused (R1b).**
+   `test/config-schema.test.sh` passes: `config_project_review_repos` resolves
+   an entry carrying only `slug` to every one of `project_review.defaults`'
+   values, an entry setting a key to its own value for that key alone, and an
+   explicit `null` back to the default — including the `model_key` each
+   resolution names, which is what an unsupported provider is reported
+   against (R1a). `config_defaults` fabricates none of the overridable keys
+   into a `repos[]` entry: a schema `default` on one would materialise it in
+   every entry, so the entry would always "set" it and `defaults` could never
+   apply — which is why only the properties under `defaults` may carry one.
+   And a config naming the same `slug` twice exits `review-cycle.sh` 1 before
+   the lock, naming the repeated slug, while `scripts/doctor.sh` `fail`s on
+   the same config through the same `lib/config-schema.sh` function. Check the
+   refusal against the *review* script and not by inference from `doctor.sh`:
+   `uniqueItems` cannot express this rule — it compares whole objects, so two
+   entries for one repository carrying different overrides are distinct to it
+   — so nothing else catches it, and the run would otherwise resolve that
+   repository from whichever entry it happened to read last.
+4f. **The dated stand-down is two-tier (R3.3).**
+   `test/review-not-before.test.sh` passes: a future
+   `project_review.defaults.not_before` stands the whole cycle down before the
+   lock, with the date on the event; and with that key empty while *every*
+   configured repository's own `not_before` override is still in the future,
+   the cycle stands down before the lock too, logging one `review-stand-down`
+   naming requirement 342. An empty `project_review.repos` is vacuously *not*
+   a stand-down. And the converse, which is what proves the two tiers are
+   really two: with one repository held on its own override while another is
+   free, neither tier fires, the cycle runs, and R4's skip-guard turns the
+   held repository away by name with its own date while the free one goes on
+   to be claimed. Check that case specifically — a `not_before` that had
+   quietly stayed cycle-wide passes every other assertion in that file and
+   fails only this one, and the failure it stands for is a repository nobody
+   asked to hold being held by its neighbour's date.
 5. **Injected-skill isolation:** after a real `--once --repo poetic` run, the
    review PR's diff contains the new `reviews/...` folder and the `tech-debt/`
    change but **not** `.claude/skills/project-review/` — confirm the injected
@@ -758,7 +876,8 @@ standing the pipeline up on a new machine.
 ## Cost profile
 
 One deep review per repo per week: a Sonnet lead driving the skill, which
-itself delegates to lower-cost subagents. Bounded by `review.timeout_review`.
+itself delegates to lower-cost subagents. Bounded by each repository's own
+resolved `timeout_review`.
 The skip-guard caps it at one review per repo per `min_days_between_reviews`, so
 a daily cron tick does not multiply cost. Deferring to the implementation lock
 keeps the two pipelines from doubling up on quota at the same moment. The Script

@@ -42,10 +42,13 @@
 # single-paragraph-array note renders unchanged.
 #
 # Row order is the schema's own property order (`jq`'s `keys_unsorted`), so
-# reordering a table means reordering the schema. `schedule` and `review` are
-# the two object-valued properties whose own children are rendered instead of
-# themselves, one level deep, as dotted keys (`schedule.review_hour`,
-# `review.model`) in the parent's position — everything else (`repos`,
+# reordering a table means reordering the schema. `schedule` and
+# `project_review` are the two top-level object-valued properties whose own
+# children are rendered instead of themselves, one level deep, as dotted keys
+# (`schedule.review_hour`, `project_review.lock_stale_after`) in the parent's
+# position; `project_review.defaults` nests one level deeper still, so its own
+# children render as `project_review.defaults.model` and so on, on the same
+# principle. Everything else (`repos`, `project_review.repos`,
 # `prompt_overrides`) renders as a single row.
 #
 # Four marked regions hold the whole table — header row, `|---|---|---|`
@@ -216,14 +219,19 @@ def truncated_prefix:
 
 def flatten_region($region):
   if $region == "main" then
-    (.properties | to_entries[] | select(.key != "review")) as $e |
+    (.properties | to_entries[] | select(.key != "project_review")) as $e |
     if $e.key == "schedule" then
       ($e.value.properties | to_entries[] | {key: ("schedule." + .key), node: .value})
     else
       {key: $e.key, node: $e.value}
     end
   else
-    (.properties.review.properties | to_entries[] | {key: ("review." + .key), node: .value})
+    (.properties.project_review.properties | to_entries[] |
+      if .key == "defaults" then
+        (.value.properties | to_entries[] | {key: ("project_review.defaults." + .key), node: .value})
+      else
+        {key: ("project_review." + .key), node: .value}
+      end)
   end;
 
 # A note block flattened to the one line a table cell can hold: a paragraph
