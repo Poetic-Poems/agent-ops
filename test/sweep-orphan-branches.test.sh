@@ -116,8 +116,13 @@ case "$args" in
     exit 1 ;;
   "api repos/x/y/compare/main..."*)
     b="${args##*compare/main...}"; b="${b%% *}"
-    if [[ -f "$S/ahead-$(flat "$b")" ]]; then cat "$S/ahead-$(flat "$b")"; exit 0; fi
+    f="$S/compare-$(flat "$b").json"
+    if [[ -f "$f" ]]; then cat "$f"; exit 0; fi
     exit 1 ;;
+  "api repos/x/y/pulls?state=closed&sort=updated&direction=desc&per_page=100")
+    if [[ -f "$S/fail-rivals" ]]; then exit 1; fi
+    if [[ -f "$S/rivals.json" ]]; then cat "$S/rivals.json"; else echo '[]'; fi
+    exit 0 ;;
   "api -X DELETE repos/x/y/git/refs/heads/"*)
     exit 0 ;;
   "pr create -R x/y --draft --head "*)
@@ -132,6 +137,22 @@ case "$args" in
 esac
 STUB
 chmod +x "$stub"
+
+# compare_fixture DIR BRANCH AHEAD [FIRST-COMMIT-DATE] — writes the compare
+# endpoint's full JSON payload the sweep now reads once for both `ahead_by`
+# and (when about to recover) the branch's first commit date.
+compare_fixture() {
+  local dir="$1" branch="$2" ahead="$3" date="${4:-}"
+  local flat="${branch//\//_}"
+  if [[ -n "$date" ]]; then
+    jq -n --argjson a "$ahead" --arg d "$date" \
+      '{ahead_by: $a, commits: [{commit: {committer: {date: $d}}}]}' \
+      > "$dir/compare-$flat.json"
+  else
+    jq -n --argjson a "$ahead" '{ahead_by: $a, commits: []}' \
+      > "$dir/compare-$flat.json"
+  fi
+}
 
 stale=2020-01-01T00:00:00Z
 fresh="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
@@ -151,8 +172,8 @@ touch "$c/registry-td__claimed"
 touch "$c/registry-500-td__reg-err"
 for s in sha1 sha2 sha3 sha5 sha6; do echo "$stale" > "$c/date-$s"; done
 echo "$fresh" > "$c/date-sha4"
-echo 2 > "$c/ahead-agent_moved"
-echo 0 > "$c/ahead-agent_empty"
+compare_fixture "$c" agent/moved 2 "$stale"
+compare_fixture "$c" agent/empty 0
 
 out="$(run_sweep "$c")"
 calls="$(cat "$c/calls.log")"
@@ -189,7 +210,7 @@ c="$tmp_dir/cap"; mkdir -p "$c"
 for i in 1 2 3 4 5; do
   printf 'agent/orphan-%s\tsha-%s\n' "$i" "$i" >> "$c/refs-agent_tsv"
   echo "$stale" > "$c/date-sha-$i"
-  echo 1 > "$c/ahead-agent_orphan-$i"
+  compare_fixture "$c" "agent/orphan-$i" 1 "$stale"
 done
 
 out="$(run_sweep "$c")"
@@ -204,7 +225,7 @@ c="$tmp_dir/label"; mkdir -p "$c"
 : > "$c/refs-td_tsv"
 printf 'agent/unlabelled\tsha-u\n' > "$c/refs-agent_tsv"
 echo "$stale" > "$c/date-sha-u"
-echo 1 > "$c/ahead-agent_unlabelled"
+compare_fixture "$c" agent/unlabelled 1 "$stale"
 touch "$c/fail-labelled-create"
 
 out="$(run_sweep "$c")"
@@ -223,7 +244,7 @@ c="$tmp_dir/merged-leftover"; mkdir -p "$c"
 : > "$c/refs-td_tsv"
 printf 'agent/landed\tsha-landed\n' > "$c/refs-agent_tsv"
 echo "$stale" > "$c/date-sha-landed"
-echo 4 > "$c/ahead-agent_landed"
+compare_fixture "$c" agent/landed 4
 echo 1 > "$c/prs-merged-agent_landed"
 
 out="$(run_sweep "$c")"
@@ -241,13 +262,138 @@ c="$tmp_dir/merged-check-fails"; mkdir -p "$c"
 : > "$c/refs-td_tsv"
 printf 'agent/unknown\tsha-unknown\n' > "$c/refs-agent_tsv"
 echo "$stale" > "$c/date-sha-unknown"
-echo 3 > "$c/ahead-agent_unknown"
+compare_fixture "$c" agent/unknown 3
 touch "$c/fail-merged-pr-list-agent_unknown"
 
 out="$(run_sweep "$c")"
 assert_eq "a merged-PR check that errors warns rather than guessing" \
   '{"action":"warning","branch":"agent/unknown","detail":"could not check for a merged PR — leaving it alone"}' \
   "$(jq -c 'select(.branch == "agent/unknown")' <<<"$out")"
+
+# --- Case 6: superseded by a rival branch that landed the same work (issue #500) --
+# The exact PR #370 shape: this orphan lost a race to a rival that merged
+# after the orphan's first commit — its work is not unrecovered, it is
+# already on the default branch under a different head.
+c="$tmp_dir/superseded"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/human-visibility-16d187652d3f\tsha-loser\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-loser"
+compare_fixture "$c" agent/human-visibility-16d187652d3f 2 2026-08-13T21:39:00Z
+jq -n '[{head: {ref: "agent/human-visibility-1a87f76d0cd3"},
+         merged_at: "2026-08-13T21:47:49Z",
+         html_url: "https://github.com/x/y/pull/358"}]' > "$c/rivals.json"
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "a branch superseded by a rival is released, not recovered" \
+  '{"action":"released","branch":"agent/human-visibility-16d187652d3f","reason":"superseded","superseded_by":"https://github.com/x/y/pull/358"}' \
+  "$(jq -c 'select(.branch == "agent/human-visibility-16d187652d3f")' <<<"$out")"
+assert_contains "by deleting the ref" \
+  "api -X DELETE repos/x/y/git/refs/heads/agent/human-visibility-16d187652d3f" "$calls"
+assert_not_contains "and no recovery draft is ever opened for it" \
+  "pr create" "$(grep 'human-visibility-16d187652d3f' "$c/calls.log" || true)"
+
+# --- Case 7: superseded, tech-debt id stems ---------------------------------------
+# A `td/` claim branch reduces to its bare ID whether or not a random suffix
+# is present — the algorithm strips the prefix and the suffix independently,
+# so a loser carrying a suffix must still match a winner that never had one.
+c="$tmp_dir/superseded-td-stem"; mkdir -p "$c"
+printf 'td/TD26051201-1a87f76d0cd3\tsha-td-loser\n' > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-td-loser"
+compare_fixture "$c" td/TD26051201-1a87f76d0cd3 1 2026-08-10T00:00:00Z
+jq -n '[{head: {ref: "td/TD26051201"},
+         merged_at: "2026-08-11T00:00:00Z",
+         html_url: "https://github.com/x/y/pull/400"}]' > "$c/rivals.json"
+
+out="$(run_sweep "$c")"
+assert_eq "a td/ loser is matched to a suffix-less td/ winner by bare ID" \
+  '{"action":"released","branch":"td/TD26051201-1a87f76d0cd3","reason":"superseded","superseded_by":"https://github.com/x/y/pull/400"}' \
+  "$(jq -c 'select(.branch == "td/TD26051201-1a87f76d0cd3")' <<<"$out")"
+
+# --- Case 8: a same-stem rival that merged before this branch even started -------
+# Coincidence, not a race: a same-named rival that merged before this
+# branch's own first commit cannot be what superseded it, so this is still
+# unrecovered work and gets the ordinary recovery draft.
+c="$tmp_dir/rival-too-old"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/foo-aaaaaaaaaaaa\tsha-foo\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-foo"
+compare_fixture "$c" agent/foo-aaaaaaaaaaaa 1 2026-08-13T22:00:00Z
+jq -n '[{head: {ref: "agent/foo-bbbbbbbbbbbb"},
+         merged_at: "2026-08-13T20:00:00Z",
+         html_url: "https://github.com/x/y/pull/500"}]' > "$c/rivals.json"
+
+out="$(run_sweep "$c")"
+assert_eq "a rival that merged before this branch started does not supersede it" \
+  "agent/foo-aaaaaaaaaaaa" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+
+# --- Case 9: the rival lookup itself fails ----------------------------------------
+# Unlike every guard above this one does not leave the ref untouched on an
+# unanswered question — it changes nothing about *today's* behaviour, so the
+# recovery draft still gets filed — but a lookup that actually failed still
+# warns, naming the branch, distinct from a clean "no rival found" which
+# stays silent (case 1's "agent/moved" and case 3's "agent/unlabelled" both
+# exercise that silent path already).
+c="$tmp_dir/rivals-fetch-fails"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/bar-cccccccccccc\tsha-bar\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-bar"
+compare_fixture "$c" agent/bar-cccccccccccc 1 "$stale"
+touch "$c/fail-rivals"
+
+out="$(run_sweep "$c")"
+assert_eq "an unreadable rival lookup still files the recovery draft" \
+  "agent/bar-cccccccccccc" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+assert_contains "and warns, naming the branch, rather than staying silent" \
+  "could not check for a rival branch" \
+  "$(jq -r 'select(.action == "warning" and .branch == "agent/bar-cccccccccccc") | .detail' <<<"$out")"
+
+# --- Case 10: the tech-debt id stem bound is exact, not a lower bound ------------
+# `TD-PPagop-26081403`'s own trailing `-26081403` is eight hex-legal
+# characters. If the suffix strip were relaxed from exactly twelve to `{8,}`,
+# this would wrongly reduce to the stem `TD-PPagop` and collide with any
+# other tech-debt item under the same scope prefix — deleting a branch that
+# carries real, unrelated, unlanded work.
+c="$tmp_dir/td-stem-bound"; mkdir -p "$c"
+printf 'td/TD-PPagop-26081403\tsha-td-real\n' > "$c/refs-td_tsv"
+: > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-td-real"
+compare_fixture "$c" td/TD-PPagop-26081403 1 2026-08-10T00:00:00Z
+jq -n '[{head: {ref: "td/TD-PPagop-99999999"},
+         merged_at: "2026-08-11T00:00:00Z",
+         html_url: "https://github.com/x/y/pull/600"}]' > "$c/rivals.json"
+
+out="$(run_sweep "$c")"
+assert_eq "an unrelated same-scope tech-debt id is not read as a rival" \
+  "td/TD-PPagop-26081403" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+
+# --- Case 11: the compare payload itself carries no readable first-commit date ---
+# Distinct from case 9 (the rivals list fetch failing): here the compare
+# call the sweep already made for `ahead_by` comes back without a commit
+# date to anchor the rival search on at all, so the rivals lookup is never
+# even attempted — but this is still a failure to get an answer, not a
+# clean "no rival found", so it must warn exactly as case 9 does rather
+# than fall silent.
+c="$tmp_dir/no-first-commit-date"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/baz-dddddddddddd\tsha-baz\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-baz"
+compare_fixture "$c" agent/baz-dddddddddddd 1
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "an unreadable first-commit date still files the recovery draft" \
+  "agent/baz-dddddddddddd" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+assert_contains "and warns, naming the branch, rather than staying silent" \
+  "could not check for a rival branch" \
+  "$(jq -r 'select(.action == "warning" and .branch == "agent/baz-dddddddddddd") | .detail' <<<"$out")"
+assert_not_contains "without ever asking GitHub for rivals at all" \
+  "pulls?state=closed" "$calls"
 
 printf '\n'
 if (( failures )); then
