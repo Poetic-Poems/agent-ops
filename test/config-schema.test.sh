@@ -565,6 +565,14 @@ assert_valid "every merge_autonomy level, top-level and per-repo, is accepted" \
   '.merge_autonomy = "agent-merges-all" | .repos[0].merge_autonomy = "agent-approves"'
 assert_valid "a repo with no merge_autonomy override is accepted (inherits the top-level key)" \
   '.merge_autonomy = "agent-approves"'
+assert_rejected "a negative merge_budget_per_day is rejected" \
+  '.merge_budget_per_day = -1' 'config.merge_budget_per_day: -1 is below the minimum 0'
+assert_rejected "a negative per-repo merge_budget_per_day override is rejected" \
+  '.repos[0].merge_budget_per_day = -1' 'config.repos[0].merge_budget_per_day: -1 is below the minimum 0'
+assert_valid "merge_budget_per_day 0 (unlimited), top-level and per-repo, is accepted" \
+  '.merge_budget_per_day = 0 | .repos[0].merge_budget_per_day = 3'
+assert_valid "a repo with no merge_budget_per_day override is accepted (inherits the top-level key)" \
+  '.merge_budget_per_day = 5'
 
 # --- config_project_review_repos: the resolution rule (issue #342/requirement
 #     342) — a repo's own override wins when present and non-null, defaults[key]
@@ -706,6 +714,46 @@ assert_doctor "doctor passes a merge_autonomy level above human once approver_ap
   'merge_autonomy is "agent-approves"'
 assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id or approver_model_default" \
   '.merge_autonomy = "human"' 0 'merge_autonomy is "human"'
+
+# --- D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per
+#     configured source, and a warn (never a fail — nothing arms automatic
+#     landing yet) for a repo trusted at agent-merges-routine or above with
+#     an unlimited (0) budget. ---
+assert_doctor "doctor reports the top-level merge_budget_per_day" \
+  '.merge_budget_per_day = 3' 0 'merge_budget_per_day is 3'
+assert_doctor "doctor reports a per-repo merge_budget_per_day override, naming the repo" \
+  '.repos[0].merge_budget_per_day = 0' 0 \
+  "Poetic-Poems/poetic's merge_budget_per_day override is 0 (unlimited)"
+assert_doctor "doctor warns on an unlimited budget at agent-merges-routine or above, naming the repo and level" \
+  '.repos[0].merge_autonomy = "agent-merges-routine" | .repos[0].merge_budget_per_day = 0
+   | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
+  'merge_budget_per_day unlimited (0) — no cap will bound its landing rate'
+assert_doctor "…but a warn, never a fail — nothing arms automatic landing yet" \
+  '.repos[0].merge_autonomy = "agent-merges-routine" | .repos[0].merge_budget_per_day = 0
+   | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
+  'No failures'
+
+# A bounded budget at agent-merges-routine, and an unlimited one below it,
+# must NOT earn the pairing warning — assert_doctor only checks a substring
+# is present, so these two run doctor.sh directly and check its absence.
+jq '.repos[0].merge_autonomy = "agent-merges-routine" | .repos[0].merge_budget_per_day = 3
+    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+no_warn_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
+if [[ "$no_warn_out" != *"no cap will bound its landing rate"* ]]; then
+  pass "a bounded budget at agent-merges-routine earns no unlimited-budget warning"
+else
+  printf 'FAIL - a bounded budget at agent-merges-routine earns no unlimited-budget warning\n     actual: %s\n' "$no_warn_out"
+  failures=$(( failures + 1 ))
+fi
+jq '.repos[0].merge_autonomy = "agent-approves" | .repos[0].merge_budget_per_day = 0
+    | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$CONFIG" > "$tmp/c.json"
+no_warn_out="$(bash "$SCRIPT_DIR/scripts/doctor.sh" --offline --config "$tmp/c.json" 2>&1)"
+if [[ "$no_warn_out" != *"no cap will bound its landing rate"* ]]; then
+  pass "an unlimited budget below agent-merges-routine earns no warning either"
+else
+  printf 'FAIL - an unlimited budget below agent-merges-routine earns no warning either\n     actual: %s\n' "$no_warn_out"
+  failures=$(( failures + 1 ))
+fi
 
 # --- The gate is a startup refusal in the real entry points, not merely in
 #     the library function above (requirement 1b): agent-cycle.sh and

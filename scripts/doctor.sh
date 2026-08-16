@@ -55,6 +55,8 @@ source "$SCRIPT_DIR/lib/version.sh"
 source "$SCRIPT_DIR/lib/stage-budget.sh"
 # shellcheck source=lib/toggle.sh
 source "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/merge-budget.sh
+source "$SCRIPT_DIR/lib/merge-budget.sh"
 # shellcheck source=lib/merge-autonomy.sh
 source "$SCRIPT_DIR/lib/merge-autonomy.sh"
 # shellcheck source=lib/approver-token.sh
@@ -268,6 +270,39 @@ if (( ma_above_human )); then
     warn "merge_autonomy is above human but the Approver's runtime credential is not present in this environment — PULLWRIGHT_APPROVER_APP_ID, PULLWRIGHT_APPROVER_INSTALLATION_ID and PULLWRIGHT_APPROVER_PRIVATE_KEY_PATH (readable) must all be set where the cycle runs, or approver_token_get reports the gate unreadable and no approval is ever minted"
   fi
 fi
+
+# D18 §5.4 (requirement 2.3c): merge_budget_per_day, reported per configured
+# source the same way merge_autonomy is above — the top-level key and each
+# repo's own override — since the schema alone cannot say whether a value
+# looks sane relative to a repository's own trust level.
+merge_budget_sources="$(jq -r '
+  [{label: "merge_budget_per_day", cap: (.merge_budget_per_day // 8)}]
+  + [(.repos // [])[] | select(has("merge_budget_per_day"))
+     | {label: (.slug + "'"'"'s merge_budget_per_day override"), cap: .merge_budget_per_day}]
+  | .[] | [.label, (.cap | tostring)] | @tsv' <<<"$DEFAULTED_CONFIG" 2>/dev/null || true)"
+if [[ -n "$merge_budget_sources" ]]; then
+  while IFS=$'\t' read -r mb_label mb_cap; do
+    [[ -n "$mb_label" ]] || continue
+    ok "$mb_label is $mb_cap$([[ "$mb_cap" == "0" ]] && printf ' (unlimited)')"
+  done <<<"$merge_budget_sources"
+fi
+# A repository whose effective landing rate would be unbounded (cap 0) while
+# also trusted at agent-merges-routine or above is not wrong today — nothing
+# arms automatic landing yet (requirement 2.3c) — but it is worth surfacing
+# now: the pairing only starts to matter once a later work item arms it, and
+# an operator is better told before that day than on it. Judged against the
+# *configured* level, not the kill-switch/freeze-adjusted effective one, for
+# the same reason the merge_autonomy pairing check above is.
+while IFS= read -r mb_slug; do
+  [[ -n "$mb_slug" ]] || continue
+  mb_level="$(merge_autonomy_configured_level "$DEFAULTED_CONFIG" "$mb_slug")"
+  mb_rank="$(merge_autonomy_rank "$mb_level" 2>/dev/null || printf 0)"
+  mb_routine_rank="$(merge_autonomy_rank agent-merges-routine)"
+  mb_cap="$(merge_budget_effective_cap "$DEFAULTED_CONFIG" "$mb_slug")"
+  if (( mb_rank >= mb_routine_rank )) && [[ "$mb_cap" == "0" ]]; then
+    warn "$mb_slug's merge_autonomy is \"$mb_level\" with merge_budget_per_day unlimited (0) — no cap will bound its landing rate once a later work item arms automatic landing"
+  fi
+done < <(cfg '.repos[]?.slug // empty')
 
 # `blocked` excludes an issue from the issues source, so projecting it onto an
 # item would leave that item permanently unselectable — a value no issue-side
