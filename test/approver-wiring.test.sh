@@ -30,6 +30,11 @@
 #   - **Every failure costs a missing review, never a stranded pull request**:
 #     the stage disabled, a verdict that would not parse, or a review GitHub
 #     refused, each log a `warning` and return 0.
+#   - **The Approver's prompt takes no overrides** — the harness's
+#     `prompt_overrides_json` deliberately carries an `approver` key, and
+#     `run_approver_stage` must hand `stage_prompt_text` an empty overrides
+#     object anyway (requirement 4a, agent-ops#469): the adversarial prompt
+#     is the trust gate, and no installation may extend or replace it.
 #   - **The tier is resolved after the Reviewer, not before it**
 #     (`approver_stage_complexity`, requirement 8b, agent-ops#470): a
 #     mid-round `complexity:medium` → `complexity:high` label correction the
@@ -135,7 +140,11 @@ state_repo="Poetic-Poems/agent-ops"
 state_dir="$T/state"
 DEFAULTED_CONFIG='{}'
 PROMPTS_DIR="$SCRIPT_DIR/prompts"
-prompt_overrides_json='{}'
+# Poisoned on purpose: requirement 4a locks the Approver's prompt, so
+# run_approver_stage must hand stage_prompt_text an empty overrides object
+# no matter what the installation configured (agent-ops#469). The
+# stage_prompt_text stub records the overrides argument it was given.
+prompt_overrides_json='{"approver":{"replace":"/nonexistent/poison.md"}}'
 cycle_dir="$T/cycle"
 clone_dir="$T/clone"
 cycle_id="20260816T000000Z-test-1"
@@ -160,7 +169,7 @@ approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 approver_refuse_streak() { printf '%s' "$STREAK"; }
 approver_token_get() { printf 'a-minted-token'; }
 approver_prior_refusal_bodies() { printf '### earlier\n\nthe first refusal'; }
-stage_prompt_text() { printf 'THE APPROVER PROMPT'; }
+stage_prompt_text() { printf '%s\n' "${4-}" >>"$T/prompt_override_args"; printf 'THE APPROVER PROMPT'; }
 stage_budget_apply() { :; }
 stage_watchdog_warning() { printf ''; }
 metering_fields() { printf '{}'; }
@@ -230,7 +239,7 @@ run_case() {
   shift 4
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
   : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
-  : >"$tmp_dir/resolved_complexity"
+  : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" \
@@ -276,6 +285,8 @@ run_case agent-approves medium 0 '{"verdict":"approve","reasons":["read it, foun
 assert_eq "complexity:medium launches approver_model_default" "model-default" "$(launches)"
 assert_contains "  ... and posts an APPROVE" "event=APPROVE" "$(posts)"
 assert_eq "  ... logged as the standard tier" '"standard"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+assert_eq "  ... its prompt assembled with no overrides despite the poisoned config (requirement 4a)" \
+  "{}" "$(cat "$tmp_dir/prompt_override_args")"
 
 run_case agent-approves high 0 '{"verdict":"approve","reasons":["read it, found nothing"]}' >/dev/null
 assert_eq "complexity:high launches approver_model_complex" "model-complex" "$(launches)"

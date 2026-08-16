@@ -632,7 +632,7 @@ and the schema must carry every one of them.
 | `refinement_policy` | `{"issues":"preferred"}` | Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label a human applies on GitHub to ask for a void to be reopened (requirement 34f). No stage here ever applies it, so requirement 34c's "only a human may clear a void" is unchanged; what it adds is a way to say so from the issue itself. It must not be `blocked`, for the reason given against `enabler_escalation_label`. Nor `obsolete`: the label a human applied to ask for a voided pull request to be reopened would itself corroborate requirement 34k closing it. |
 | `void_retire_after_days` | 30 d | How old a fully-actioned void must be, in days, before requirement 34n drops it from the extract. `0` disables retirement, which is also the safe fallback for an unparseable value — never retiring costs bytes, wrongly retiring costs nothing observable, so the failure mode this guards is silent growth, not a wrongly-reopened item. |
-| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. |
+| `prompt_overrides` | `{}` | Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's...[continued below](#extended-notes-prompt_overrides) |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. It must not be `obsolete`: the pipeline would then project requirement 34k's human-only corroboration onto every draft it raises, and the void guard would close live drafts on the pipeline's own say-so — `scripts/doctor.sh` fails the config. |
 | `branch_prefix` | `agent/` | Branch name `agent/<item-slug>`, e.g. `agent/td26051201-fix-xyz`. |
 | `max_open_agent_prs` | `8` | Back-pressure: draft PRs, ready PRs still `CHANGES_REQUESTED`, and live claim-registry entries, carrying `pr_label` across all repos — excludes ready PRs whose next action is human-side (requirement 2.2). |
@@ -745,6 +745,10 @@ It must not be `blocked` nor `obsolete`, for the reasons given against `enabler_
 ### Extended notes: `refinement_policy`
 
 Per-source refinement policy (requirement 39a): `required`, `preferred` or `exempt`, read by the Co-Ordinator alongside `refinements` (requirement 3h) to decide whether an unrefined item may be ranked at all. A source absent from this object is `exempt`. Bounded by what requirement 39's candidate gathering reads — the `findings`, `review_feedback`, `abandoned_drafts`, `merge_conflicts`, `dequeued`, `register_hygiene`, `issues` and `tech_debt` arrays every repo's `ordered_repos_json` entry carries, plus `project_review` and `implementation_plan`, read only into the Refiner-only copy of the repos array (`refiner_repos_json`, requirement 3y) and only where `refiner_model` is set — with no Refiner to launch, neither is read at all — and the repo's own `sources` lists the source and its policy for it is not itself `exempt`. `failed-runs` is the one source with no array at all, so a policy set for it shapes selection only.
+
+### Extended notes: `prompt_overrides`
+
+Per-installation prompt extension/replacement (requirement 4a): an object keyed `coordinator`/`implementor`/`reviewer`/`enabler`/`refiner`, each holding `extend` (an array of file paths, appended in order) and/or `replace` (a file path substituted for that stage's shipped `prompts/<stage>.md`). A relative path resolves against `state_dir`. Empty or a stage absent from it changes nothing for that stage. `approver` is deliberately absent from the enumeration: the Approver's adversarial prompt is the gate the D18 trust ladder rests on, and no installation may extend or replace it (requirement 4a, #469).
 
 ### Extended notes: `abandoned_draft_after_hours`
 
@@ -3321,11 +3325,19 @@ implements.
    (requirement 4d) and parse the work order from it.
 4a. **Per-installation prompt overrides.** Every stage prompt this Script
    assembles — the Co-Ordinator's here, the Implementor's (requirement 7), the
-   Reviewer's (requirement 8), and the Enabler's (requirement 35) — is built by
+   Reviewer's (requirement 8), the Enabler's (requirement 35), and the
+   Refiner's (requirement 39) — is built by
    `lib/prompt-overrides.sh`'s `stage_prompt_text`, not a bare
    `cat prompts/<stage>.md`, so a consumer can add or replace a stage's operating
    prompt from `config.json`'s `prompt_overrides` without forking `prompts/`
-   (issue #79). For stage `<s>`, `prompt_overrides.<s>.extend` names zero or
+   (issue #79). The Approver (requirement 8b) is the one deliberate
+   exception: `run_approver_stage` assembles its prompt with an empty
+   overrides object (`'{}'`), never the configured `prompt_overrides`, and
+   the schema's enumeration omits `approver` to match. Its adversarial
+   prompt is the gate the D18 trust ladder rests on
+   (`docs/reviews/2026-08-14-autonomy-investigation.md` §5.2), and an
+   installation able to extend or replace it could soften the one check
+   every autonomous landing depends on (#469). For stage `<s>`, `prompt_overrides.<s>.extend` names zero or
    more files whose content is appended, in order, after the base prompt, each
    under a heading naming the entry's *configured* path — the string written
    in `config.json`, never the node-resolved location, so the assembled text
@@ -3353,7 +3365,7 @@ implements.
    order and no instructions would spend a model to no purpose.
    That tolerance is for *runtime* faults only.
    `config.json`'s `prompt_overrides` itself must be structurally valid to
-   full depth — an object (possibly `{}`) keyed only by the four stage names,
+   full depth — an object (possibly `{}`) keyed only by the five stage names,
    each stage an object holding only `extend` (an array of file-path strings)
    and/or `replace` (a file-path string); any other shape — an unknown stage
    key, a non-object stage value, an unknown key within a stage, a wrong
@@ -12310,7 +12322,10 @@ pull request, run the ones the change touches and any it could regress.
     launches no model and logs nothing at all; at `agent-approves` a
     `complexity:low` pull request gets a deterministic `APPROVE` with no
     model launched, `medium` and `high` launch `approver_model_default` and
-    `approver_model_complex` respectively, a refusal's `reasons` become the
+    `approver_model_complex` respectively — the launched prompt assembled
+    with an empty overrides object even when the harness's
+    `prompt_overrides` carries a poisoned `approver` key (requirement 4a's
+    lock) — a refusal's `reasons` become the
     `REQUEST_CHANGES` body, and a synthetic refuse streak of two routes the
     next round to `approver_model_critical` — for a `complexity:low` pull
     request too, which the grade alone would have approved without a model at

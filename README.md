@@ -320,7 +320,7 @@ Keys:
 | `refinement_policy` | `{"issues":"preferred"}` | Per source: `required` (never select unrefined), `preferred` (rank refined items first, but an unrefined one may still be picked), or `exempt` (no refinement dimension — the default for every source not listed). See [Refined items and the Refiner](#refined-items-and-the-refiner). Every source the Refiner's own candidate gathering reads — `issues`, `security`, `code-quality`, `review-feedback`, `abandoned-drafts`, `merge-conflicts`, `dequeued`, `register-hygiene`, `tech-debt`...[continued below](#extended-notes-refinement_policy) |
 | `unvoid_label` | `unvoided` | The label you apply on GitHub to ask for a voided item to be reopened — see [Blocked and void items](#blocked-and-void-items). No stage ever applies it, so "only a human may clear a void" still holds; this is just a way to say so from the issue itself. The pipeline creates it in each target repo it works, so there is nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet. Do not set it to `blocked` or `obsolete`. |
 | `void_retire_after_days` | `30` days | Days a voided item sits fully actioned — its issue or pull request closed, or its tech-debt register row flipped to `resolved`/`not-debt` — before the pipeline stops carrying it in the void extract. This does not touch whether the item is void (still forever, still only a human's `unvoided` label undoes it, see [Blocked and void items](#blocked-and-void-items)); it only stops an old, settled verdict from being handed to the Co-Ordinator and the dashboard's data forever. `0` disables retirement. |
-| `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. See [Prompt overrides](#prompt-overrides). |
+| `prompt_overrides` | `{}` | Add house rules to a stage's operating prompt, or replace it outright, without forking `prompts/`. The Approver's prompt takes no override — it is the trust gate the merge-autonomy ladder rests on. See [Prompt overrides](#prompt-overrides). |
 | `pr_label` | `autonomous-agent` | Applied to every PR this system raises. Do not name it `obsolete`, which is reserved for a human to mark one of these PRs as unwanted. |
 | `branch_prefix` | `agent/` | Branch naming: `agent/<item-slug>`. |
 | `max_open_agent_prs` | `8` | Back-pressure limit: draft PRs, changes-requested PRs and claims across both repos — not PRs waiting on a human review. |
@@ -482,8 +482,8 @@ instead of needing to be re-applied after every one.
 }
 ```
 
-Keys are stage names — `coordinator`, `implementor`, `reviewer`, `enabler`
-— each holding:
+Keys are stage names — `coordinator`, `implementor`, `reviewer`, `enabler`,
+`refiner` — each holding:
 
 - **`extend`** — an array of file paths, appended to the stage's prompt in
   the order listed, after everything `prompts/<stage>.md` already says. This
@@ -501,6 +501,12 @@ Keys are stage names — `coordinator`, `implementor`, `reviewer`, `enabler`
   rule needs; reach for `replace` only when a stage's approach itself, not
   just its guidance, needs to differ.
 
+There is deliberately no `approver` key. The Approver's adversarial prompt
+is the gate the merge-autonomy trust ladder rests on: letting an
+installation extend or replace it would soften the one check every
+autonomous landing depends on, so its prompt is this product's own content
+at every trust level.
+
 A relative path in either key resolves against `state_dir` (the default
 `~/.local/state/poetic-agents`), not the agent-ops working tree — the one
 location this repository guarantees survives an image roll on a container
@@ -513,7 +519,7 @@ absent — a typo in a *path* does not fail a cycle. A typo in the
 `extend`'s array is meant, or a misspelled `extend`/`replace` would each be
 silently ignored if tolerated — you would get today's exact shipped prompt
 with no indication why — so `agent-cycle.sh` refuses to start until
-`prompt_overrides` is an object keyed only by the four stage names, each
+`prompt_overrides` is an object keyed only by the five stage names, each
 holding only `extend` (an array of strings) and/or `replace` (a string).
 For the `coordinator` and `enabler`
 stages, that is still visible: a configured file going missing (or a new one

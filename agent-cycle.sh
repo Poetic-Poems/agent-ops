@@ -3630,7 +3630,12 @@ $(approver_prior_refusal_bodies "$pr_url" "$login")
 "
     fi
 
-    prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver "$prompt_overrides_json")
+    # '{}', never "$prompt_overrides_json": the Approver's adversarial prompt
+    # is the gate the D18 trust ladder rests on, so no installation may extend
+    # or replace it — the schema's prompt_overrides enumeration omits
+    # `approver`, and this call site matches it deliberately (requirement 4a,
+    # agent-ops#469).
+    prompt="$(stage_prompt_text "$PROMPTS_DIR" "$state_dir" approver '{}')
 
 ## Work order
 
