@@ -21,7 +21,7 @@
 #                 requirement 26a) already forces anything touching
 #                 concurrency, security, CI/workflow machinery or shared
 #                 library code to grade `high`, never `low` — so the
-#                 protected-paths classifier a later work item (WI-7) adds is
+#                 protected-paths classifier `lib/landing.sh` adds (WI-7) is
 #                 a second fence around ground the complexity label already
 #                 fences off, not this tier's only guard.
 #   standard      complexity:medium — one engagement on `approver_model_default`.
@@ -39,11 +39,13 @@
 # itself holds the pull request at `CHANGES_REQUESTED` and the existing
 # `review-feedback` source picks it up next cycle exactly as it already picks
 # up a human's own `CHANGES_REQUESTED` — no new work source, no new gate. An
-# approval is the ordinary `APPROVE` review on the same pull request; the
-# Script never merges either way (D18's cardinal rule: the model never holds
-# merge rights, and neither does this file — see agent-cycle.sh's own callers
-# for why `agent-merges-routine`/`agent-merges-all` land no differently from
-# `agent-approves` until a later work item's arming step exists).
+# approval is the ordinary `APPROVE` review on the same pull request; this
+# file itself never merges anything, at any level (D18's cardinal rule: the
+# model never holds merge rights, and neither does the code in this file) —
+# landing, where `agent-merges-routine`/`agent-merges-all` actually differ
+# from `agent-approves`, is `lib/landing.sh`'s own separate arming step (WI-7,
+# requirement 8d), called only after this file's `run_approver_stage` has
+# already returned.
 #
 # The refuse streak is derived from the reviews list itself, read fresh at
 # the moment of the decision, the same "ask GitHub, don't keep a private

@@ -28,18 +28,18 @@
 # must call it, never `merge_autonomy_configured_level` directly, so the kill
 # switch actually overrides what it promises to.
 #
-# At this stage (WI-2) nothing calls `merge_autonomy_effective_level` from a
-# behaviour-affecting path — `scripts/doctor.sh` is the only reader, and it
-# validates the *configured* level, deliberately ignoring the kill switch
-# (see its own comment): a config that is invalid the moment the switch is
-# cleared is worth failing on now, not only once someone clears it. No
-# behaviour changes until WI-5 (the Approver stage) and WI-7 (the arming
-# step) read `merge_autonomy_effective_level` for real. Because that day is
-# coming, the kill switch's own read already fails closed on a fresh node
-# that cannot reach the state repo (TD-PPagop-26081507, see
-# merge_autonomy_kill_state below) — `merge_autonomy_effective_level` must
-# answer `human` from the moment WI-5 starts trusting it, not only once
-# someone remembers to revisit this file.
+# `run_approver_stage` (WI-5, the Approver stage) and `run_landing_stage`
+# (WI-7, the arming step, requirement 8d) are this file's two
+# behaviour-affecting callers of `merge_autonomy_effective_level` —
+# `scripts/doctor.sh` is a third, but it validates the *configured* level,
+# deliberately ignoring the kill switch (see its own comment): a config that
+# is invalid the moment the switch is cleared is worth failing on now, not
+# only once someone clears it. The kill switch's own read fails closed on a
+# fresh node that cannot reach the state repo (TD-PPagop-26081507, see
+# merge_autonomy_kill_state below) — a defence written at WI-2, before either
+# real caller existed, on the reasoning that the day they would was already
+# certain and a node answering the wrong thing on that day is the one this
+# switch exists to prevent.
 #
 # WI-6 (D18 §5.4, `docs/reviews/2026-08-14-autonomy-investigation.md`,
 # `lib/merge-budget.sh`) adds a second, narrower override alongside the kill
