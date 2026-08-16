@@ -124,12 +124,16 @@ issue_priority_options_complete() {
 }
 
 # issue_priority_current SLUG NUMBER
-# Print `{"node_id": "…", "priority": "Urgent"|null}` for issue NUMBER in
-# SLUG, read live — the pre-write re-read the ratchet needs so a band changed
-# since this cycle's pre-fetch is never clobbered. `priority` mirrors
-# gather-issues.sh's own parse exactly (same field, same four names), so this
-# and the pre-fetched `entry.priority` can never disagree about what "already
-# banded" means. Prints nothing and returns 1 on any read failure.
+# Print `{"node_id": "…", "priority": "<raw option name>"|null}` for issue
+# NUMBER in SLUG, read live — the pre-write re-read the ratchet needs so a
+# band changed since this cycle's pre-fetch is never clobbered. `priority` is
+# the raw option name, whatever it is — unlike gather-issues.sh's own parse,
+# which collapses anything outside the four recognised names to its Medium
+# default, this read must see an org-added fifth option too, since
+# `issue_priority_apply` needs to tell "no band" (safe to write) from "a band
+# this ratchet cannot rank" (must not overwrite) apart; `issue_priority_rank`
+# already treats any unrecognised name as rank 0, so only the raw value needs
+# to travel through here. Prints nothing and returns 1 on any read failure.
 issue_priority_current() {
   local slug="$1" number="$2" gh_bin="${ISSUE_PRIORITY_GH:-gh}"
   [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || return 1
@@ -137,9 +141,7 @@ issue_priority_current() {
   "$gh_bin" api "repos/$slug/issues/$number" \
     --jq '{node_id: .node_id,
            priority: (([.issue_field_values[]? | select(.issue_field_name == "Priority")
-                                               | .single_select_option.name
-                                               | select(. == "Urgent" or . == "High"
-                                                        or . == "Medium" or . == "Low")] | first) // null)}' \
+                                               | .single_select_option.name] | first) // null)}' \
     2>/dev/null
 }
 
@@ -151,15 +153,23 @@ issue_priority_current() {
 #
 #   {"applied": true,  "priority": "High", "previous": "Low"|null}
 #   {"applied": false, "reason": "skipped-lower-or-equal", "priority": "…", "previous": "…"}
+#   {"applied": false, "reason": "skipped-unrankable", "priority": "…", "previous": "…"}
 #   {"applied": false, "reason": "bad-slug"|"bad-number"|"bad-band"
 #                               |"field-unresolvable"|"issue-unreadable"|"mutation-failed"}
 #
+# "skipped-unrankable" is the band an org admin can add to the field at any
+# time (issue #509, requirement 39g's own promise never to overwrite a band a
+# human set): the issue's current option is present but is not one of the
+# four names this ratchet can rank, so `issue_priority_rank` reads it as 0 and
+# a naive `cur_rank >= new_rank` comparison would never block the write — the
+# defect this case exists to close. `previous` carries the raw, unranked name.
+#
 # Returns 0 when the ratchet's own decision (apply, or skip because BAND does
-# not outrank the current band) completed without error — a skip is not a
-# failure, it is the ratchet working. Returns 1 for every "reason" above that
-# names an actual failure to read or write, which callers must treat as "the
-# band may or may not be what it was" and log as a warning, never retry
-# silently in a loop.
+# not outrank the current band, or skip because the current band cannot be
+# ranked at all) completed without error — a skip is not a failure, it is the
+# ratchet working. Returns 1 for every "reason" above that names an actual
+# failure to read or write, which callers must treat as "the band may or may
+# not be what it was" and log as a warning, never retry silently in a loop.
 issue_priority_apply() {
   local slug="$1" number="$2" band="$3" gh_bin="${ISSUE_PRIORITY_GH:-gh}"
   local field_json field_id opt_id cur_json issue_node cur_band cur_rank new_rank
@@ -187,6 +197,11 @@ issue_priority_apply() {
 
   cur_rank="$(issue_priority_rank "$cur_band")"
   new_rank="$(issue_priority_rank "$band")"
+  if [[ -n "$cur_band" ]] && (( cur_rank == 0 )); then
+    jq -nc --arg p "$band" --arg prev "$cur_band" \
+      '{applied: false, reason: "skipped-unrankable", priority: $p, previous: $prev}'
+    return 0
+  fi
   if [[ -n "$cur_band" ]] && (( cur_rank >= new_rank )); then
     jq -nc --arg p "$band" --arg prev "$cur_band" \
       '{applied: false, reason: "skipped-lower-or-equal", priority: $p, previous: $prev}'

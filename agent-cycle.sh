@@ -4907,7 +4907,7 @@ $(jq . <<<"$input")
         log_event "issue-prioritised" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
           --argjson x "$priority_result" \
           '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}')"
-      elif [[ "$priority_reason" == "skipped-lower-or-equal" ]]; then
+      elif [[ "$priority_reason" == "skipped-lower-or-equal" || "$priority_reason" == "skipped-unrankable" ]]; then
         log_event "issue-prioritised-skipped" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
           --argjson x "$priority_result" \
           '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}')"

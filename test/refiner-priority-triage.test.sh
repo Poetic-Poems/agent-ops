@@ -13,8 +13,9 @@
 #       (no `priority_set` key at all) slip through;
 #   (B) the ratchet itself (`lib/issue-priority.sh`) resolves the field live,
 #       re-reads the issue's current band immediately before writing, applies
-#       only when unset or strictly outranked, and never mistakes "cannot
-#       read the field" for "nothing to band";
+#       only when unset or strictly outranked, skips rather than overwrites a
+#       band outside the four names it can rank (agent-ops#509), and never
+#       mistakes "cannot read the field" for "nothing to band";
 #   (C) `maybe_run_refiner` (agent-cycle.sh) wires a verdict's `priority`
 #       field to that ratchet independently of the refined/needs-refinement
 #       outcome, honours `triage_only` (no corroboration required, no
@@ -289,6 +290,28 @@ current_response "I_node_13" "Urgent"
 result="$(issue_priority_apply "o/case-apply-4" 13 Low)"
 assert_eq "a strictly lower band is skipped, not applied" "false" "$(jq -r '.applied' <<<"$result")"
 assert_eq "  ... reason is skipped-lower-or-equal" "skipped-lower-or-equal" "$(jq -r '.reason' <<<"$result")"
+assert_eq "  ... and no mutation reaches gh" "0" \
+  "$([[ -f "$tmp_dir/gh-b/mutation-calls" ]] && wc -l < "$tmp_dir/gh-b/mutation-calls" || echo 0)"
+
+# A band outside the four recognised names — an org admin can add one at any
+# time (agent-ops#509, requirement 39g's own promise) — must never be
+# overwritten, however clearly the offered verdict would otherwise outrank
+# it. `issue_priority_current` reads the raw option name unfiltered
+# (asserted first, directly), and the ratchet must treat rank-0 as "cannot
+# rank", not as "unset and safe to write".
+reset_b
+current_response "I_node_13b" "Critical"
+current_json="$(issue_priority_current "o/case-apply-4b" 13)"
+assert_eq "issue_priority_current reads the raw name, not just the four it can rank" \
+  "Critical" "$(jq -r '.priority' <<<"$current_json")"
+
+reset_b
+current_response "I_node_13c" "Critical"
+result="$(issue_priority_apply "o/case-apply-4c" 13 Urgent)"
+assert_eq "a band outside the four names is never overwritten, even by Urgent" "false" \
+  "$(jq -r '.applied' <<<"$result")"
+assert_eq "  ... reason is skipped-unrankable" "skipped-unrankable" "$(jq -r '.reason' <<<"$result")"
+assert_eq "  ... previous names the raw, unranked band" "Critical" "$(jq -r '.previous' <<<"$result")"
 assert_eq "  ... and no mutation reaches gh" "0" \
   "$([[ -f "$tmp_dir/gh-b/mutation-calls" ]] && wc -l < "$tmp_dir/gh-b/mutation-calls" || echo 0)"
 
@@ -610,6 +633,29 @@ assert_eq "skipped: ...and the current, higher band" "High" "$(jq -r '.previous'
 assert_eq "skipped: no issue-prioritised (the write kind) at all" "0" \
   "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
 assert_eq "skipped: no mutation reached gh" "0" \
+  "$([[ -f "$gh_c/mutation-calls" ]] && wc -l < "$gh_c/mutation-calls" || echo 0)"
+
+# ----------------------------------------------------------------------------
+# (iiib) a band outside the four names: skipped as unrankable, logged, no
+# mutation, and never mistaken for a warning-worthy failure (agent-ops#509)
+# ----------------------------------------------------------------------------
+jq -nc '{node_id: "I_c55", issue_field_values: [{issue_field_name:"Priority", single_select_option:{name:"Critical"}}]}' \
+  > "$gh_c/current-response.json"
+verdicts='[{"repo":"o/r","item":"55","verdict":"refined","reason":"already specified",
+            "comments_posted":["https://github.com/o/r/issues/55#issuecomment-2b"],
+            "priority":"Urgent"}]'
+calls="$(run_case_c "priority outside the four names: skipped as unrankable" "$issue_candidates_c" "$verdicts")"
+
+assert_eq "unrankable: item-refined is still recorded regardless" "1" \
+  "$(grep -cE '^event item-refined ' <<<"$calls")"
+skip_evt="$(events_named "$calls" issue-prioritised-skipped | head -n1)"
+assert_eq "unrankable: issue-prioritised-skipped names the offered band" "Urgent" "$(jq -r '.priority' <<<"$skip_evt")"
+assert_eq "unrankable: ...and the current, unranked band, not clobbered" "Critical" "$(jq -r '.previous' <<<"$skip_evt")"
+assert_eq "unrankable: no issue-prioritised (the write kind) at all" "0" \
+  "$(grep -cE '^event issue-prioritised ' <<<"$calls")"
+assert_eq "unrankable: no warning either — this is the ratchet working, not failing" "0" \
+  "$(grep -c 'could not set Priority' <<<"$calls")"
+assert_eq "unrankable: no mutation reached gh" "0" \
   "$([[ -f "$gh_c/mutation-calls" ]] && wc -l < "$gh_c/mutation-calls" || echo 0)"
 
 # ----------------------------------------------------------------------------
