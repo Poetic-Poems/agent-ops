@@ -206,6 +206,12 @@ that a human never has to do it by hand.
   `refined` with no `comments_posted`/`refined_spec` at all: the Script
   reads `priority` alone as this item's whole verdict when `triage_only` is
   `true`, and skips the corroboration it would otherwise require.
+  `needs-refinement` is not a verdict you may return for one: the item
+  already carries a specification, so declining it would block an item
+  nobody asked you to re-examine and put a human on it. The Script refuses
+  such a decline outright — it records a warning and no block — so a
+  `triage_only` item you cannot band is one you return `refined` for with
+  no `priority` at all, saying so in `reason`.
 - **An ordinary (non-`triage_only`) item may carry both.** If you are
   writing a specification for an unbanded issue anyway, set `priority`
   alongside `comments_posted` in the same verdict — one engagement, one

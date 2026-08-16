@@ -685,10 +685,15 @@ if ((gh_ready)); then
   # requirement 39g: the Refiner's Priority triage duty (issue #414) depends
   # on a `Priority` `IssueFieldSingleSelect` this token can read, carrying
   # all four band names — nothing else here would tell an operator that duty
-  # is silently doing nothing in a repository. Checked only where `issues` is
-  # actually a configured source, the same gate `refiner_repos_json`'s own
-  # gathering uses, since a repository that never gathers issues has nothing
-  # for the duty to act on either way.
+  # is silently doing nothing in a repository. Checked only where the issues
+  # source is actually configured, the same gate the cycle's own gather uses
+  # (`startswith("issues")`, agent-cycle.sh), since a repository that never
+  # gathers issues has nothing for the duty to act on either way. That gate
+  # has to be the prefix and not `== "issues"`: the source is one source at
+  # four ranks and the schema's `sources` enum offers only the four banded
+  # tokens (`issues:urgent` … `issues:low`), so an equality test against the
+  # bare name matches no valid configuration at all and this check would
+  # never run.
   check_priority_field() {
     local slug="$1" field_json
     if field_json="$(issue_priority_field_ids "$slug" 2>/dev/null)"; then
@@ -711,7 +716,7 @@ if ((gh_ready)); then
     fi
     check_repo_access "$slug"
     if jq -e --arg s "$slug" \
-         '(.repos[] | select(.slug == $s) | .sources // []) | any(. == "issues")' \
+         '(.repos[] | select(.slug == $s) | .sources // []) | any(startswith("issues"))' \
          <<<"$DEFAULTED_CONFIG" >/dev/null 2>&1; then
       check_priority_field "$slug"
     fi

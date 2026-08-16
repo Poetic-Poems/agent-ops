@@ -4784,18 +4784,32 @@ $(jq . <<<"$input")
         fi
         ;;
       needs-refinement)
-        e_synthetic="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
-          --arg reason "$e_reason" \
-          --arg missing "$(jq -r '.missing // ""' <<<"$ex")" \
-          --arg evidence "$(jq -r '.evidence // ""' <<<"$ex")" \
-          '{repo: $r, item: $i, source: $s, reason: $reason, missing: $missing, evidence: $evidence}')"
-        if record_needs_refinement_block "$e_synthetic" "refiner"; then
-          e_block_ok=1
+        # requirement 39g: never from a `triage_only` item. That item is
+        # already refined — it reached the Refiner solely for its missing
+        # band, and recording a block here would label an item that already
+        # carries a specification `needs_refinement`, assign a human to it,
+        # and hold it out of selection until someone clears a block nobody
+        # asked for. The decline is refused rather than obeyed, on the same
+        # terms as the ratchet itself: the Script is what enforces the shape
+        # of this duty, never the prompt alone. The band below still applies.
+        if [[ "$e_triage_only" == "true" ]]; then
+          outcome="triage-only-refused"
+          log_event "warning" "$(jq -nc --arg d "refiner: needs-refinement for $e_repo $e_item, an already-refined item offered only for its Priority band — not recorded as a block" \
+            '{detail: $d}')"
         else
-          e_block_ok=0
-          outcome="needs-refinement-refused"
+          e_synthetic="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
+            --arg reason "$e_reason" \
+            --arg missing "$(jq -r '.missing // ""' <<<"$ex")" \
+            --arg evidence "$(jq -r '.evidence // ""' <<<"$ex")" \
+            '{repo: $r, item: $i, source: $s, reason: $reason, missing: $missing, evidence: $evidence}')"
+          if record_needs_refinement_block "$e_synthetic" "refiner"; then
+            e_block_ok=1
+          else
+            e_block_ok=0
+            outcome="needs-refinement-refused"
+          fi
+          extra="$(jq -nc --argjson ok "$e_block_ok" '{recorded: $ok}')"
         fi
-        extra="$(jq -nc --argjson ok "$e_block_ok" '{recorded: $ok}')"
         ;;
       *)
         outcome="unknown-verdict"

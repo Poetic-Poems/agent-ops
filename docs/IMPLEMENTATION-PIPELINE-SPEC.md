@@ -6381,7 +6381,10 @@ implements.
     `detail`; a `refiner-examined` carries the same shape plus `source`
     (requirement 39c) — `outcome` is `refined`, `refined-uncorroborated` (a
     `refined` verdict naming neither a comment nor a `spec`, so nothing was
-    recorded), `needs-refinement`, `needs-refinement-refused`, or
+    recorded), `needs-refinement`, `needs-refinement-refused`, `triage-only`
+    (a `triage_only` item's band-only verdict, requirement 39g),
+    `triage-only-refused` (a `needs-refinement` decline of a `triage_only`
+    item, which is not a block the Script will record), or
     `unknown-verdict`. An `own-label-action` carries `repo`, `item`, `label`
     and `action` (`"add"` or `"remove"`) — the Script's own memory of a label
     it applied or removed, read back only by the hand-flag mechanism of
@@ -8979,6 +8982,15 @@ implements.
     retracts an `item-refined` or `attempt-failed` already recorded, and the
     reverse.
 
+    A `needs-refinement` verdict on a `triage_only` item is refused rather
+    than recorded: outcome `triage-only-refused` and a `warning`, no block,
+    no `needs_refinement` label, no assignment. The item is already refined
+    and reached the Refiner only for its band, so a block here would hold an
+    item that already carries a specification out of selection until a human
+    cleared a block nobody asked for — the one way this requirement's own
+    candidate rule could cost the pipeline work rather than save it. The band
+    side of such a verdict still applies, on the independence stated above.
+
     The write and its ratchet live in `lib/issue-priority.sh`, never in the
     prompt — a prompt rule is a request, and the Script is the only writer of
     the pipeline's records (the same reasoning `prompts/refiner.md` itself
@@ -9013,11 +9025,15 @@ implements.
     the ratchet working as designed rather than a failure.
 
     `scripts/doctor.sh` warns, for every configured repository whose
-    `sources` lists `issues`, when its `Priority` field cannot be resolved
-    at all, or resolves without one of the four expected option names — the
-    one thing that would otherwise tell an operator this duty is silently
-    doing nothing in that repository (the same shape as the existing
-    per-repository label warnings).
+    `sources` lists any of the four `issues:<band>` tokens, when its
+    `Priority` field cannot be resolved at all, or resolves without one of
+    the four expected option names — the one thing that would otherwise tell
+    an operator this duty is silently doing nothing in that repository (the
+    same shape as the existing per-repository label warnings). The gate is
+    the same `startswith("issues")` prefix test the cycle's own gather uses
+    (requirement 15e): the issues source is one source at four ranks and
+    `sources` never carries the bare name, so an equality test against it
+    would match no valid configuration and the check would never run.
 
 ### The Approver
 
@@ -12213,11 +12229,17 @@ pull request, run the ones the change touches and any it could regress.
     `issue-prioritised`; a `triage_only` item's `priority`-only verdict
     records neither `item-refined` nor a label, with outcome `triage-only`
     and no uncorroborated-comment warning; a `needs-refinement` verdict
-    carrying `priority` still applies the band despite the decline; a
+    carrying `priority` still applies the band despite the decline; the same
+    verdict on a `triage_only` item records no block, no
+    `needs_refinement` label and no assignment, with outcome
+    `triage-only-refused` and a `warning`, while its band still applies; a
     failed band write is a `warning` that leaves the refinement or block
     already recorded untouched; and `DRY_RUN` reaches no `gh` call and
     writes no event at all — `maybe_run_refiner`'s own first guard already
-    returns before any candidate is claimed.
+    returns before any candidate is claimed. `scripts/doctor.sh`'s own gate
+    is asserted against the four banded `sources` tokens a valid
+    configuration actually carries, so the check cannot regress to one that
+    never runs.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the

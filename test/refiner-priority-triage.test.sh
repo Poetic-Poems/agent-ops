@@ -18,7 +18,10 @@
 #   (C) `maybe_run_refiner` (agent-cycle.sh) wires a verdict's `priority`
 #       field to that ratchet independently of the refined/needs-refinement
 #       outcome, honours `triage_only` (no corroboration required, no
-#       item-refined, no label), and never mutates anything under DRY_RUN.
+#       item-refined, no label, and no block a decline could put on an
+#       already-refined item), and never mutates anything under DRY_RUN;
+#   (D) `scripts/doctor.sh`'s warning is gated on a test that a valid
+#       configuration actually satisfies, rather than one that can never fire.
 #
 # No test framework is used (none exists elsewhere in this repo). Run it
 # directly:
@@ -30,6 +33,10 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# Section (C) below rebinds SCRIPT_DIR to its fake root — the lifted
+# `maybe_run_refiner` reads it — so anything that still needs the real
+# repository after that point reads this instead.
+repo_root="$SCRIPT_DIR"
 
 # shellcheck source=lib/void-guard.sh
 . "$SCRIPT_DIR/lib/void-guard.sh"
@@ -638,6 +645,33 @@ ip_evt="$(events_named "$calls" issue-prioritised | head -n1)"
 assert_eq "decline+priority: the band is applied despite the decline" "Urgent" "$(jq -r '.priority' <<<"$ip_evt")"
 
 # ----------------------------------------------------------------------------
+# (va) the same decline on a triage_only item: refused, never recorded
+# ----------------------------------------------------------------------------
+# The one way this requirement's candidate rule could cost the pipeline work
+# rather than save it: an item that is already refined reaches the Refiner
+# solely for its band, the Refiner declines it, and a block lands on an item
+# that already carries a specification — labelled, assigned to a human, and
+# out of selection until someone clears it. The Script refuses the decline
+# instead, and the band still applies.
+jq -nc '{node_id: "I_c56", issue_field_values: []}' > "$gh_c/current-response.json"
+verdicts='[{"repo":"o/r","item":"56","verdict":"needs-refinement","reason":"I would want more detail",
+            "missing":"a scope bound","evidence":"issue 56, read in full","priority":"High"}]'
+calls="$(run_case_c "needs-refinement on a triage_only item" "$triage_candidates_c" "$verdicts")"
+
+assert_eq "triage-only decline: no block is recorded" "0" \
+  "$(grep -cE '^event attempt-failed ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" refiner-examined | head -n1)"
+assert_eq "triage-only decline: outcome is triage-only-refused" "triage-only-refused" \
+  "$(jq -r '.outcome' <<<"$xmn_evt")"
+assert_contains "triage-only decline: a warning says why nothing was recorded" \
+  "offered only for its Priority band" "$calls"
+assert_eq "triage-only decline: no needs_refinement label" "0" \
+  "$(grep -cE '^event own-label-action ' <<<"$calls")"
+assert_not_contains "triage-only decline: gh saw no label or assignee write" "gh-label" "$calls"
+ip_evt="$(events_named "$calls" issue-prioritised | head -n1)"
+assert_eq "triage-only decline: the band still applies" "High" "$(jq -r '.priority' <<<"$ip_evt")"
+
+# ----------------------------------------------------------------------------
 # (vi) DRY_RUN: no mutation, no gh call, no events at all
 # ----------------------------------------------------------------------------
 jq -nc '{node_id: "I_c55", issue_field_values: []}' > "$gh_c/current-response.json"
@@ -653,6 +687,33 @@ assert_eq "DRY_RUN: no mutation reached gh" "0" \
   "$([[ -f "$gh_c/mutation-calls" ]] && wc -l < "$gh_c/mutation-calls" || echo 0)"
 
 unset REFINEMENT_GH ISSUE_PRIORITY_GH
+
+# ============================================================================
+# (D) The doctor's own gate — scripts/doctor.sh, requirement 39g
+# ============================================================================
+# The warning is only worth having if it ever runs, and its gate is the one
+# line in this whole duty that a plausible-looking equality test silently
+# disables: `sources` never carries a bare `issues`, because the issues
+# source is one source at four ranks and the schema's enum offers only
+# `issues:urgent` … `issues:low` (requirement 15e). So the gate is lifted
+# verbatim out of doctor.sh and run against the shape a valid configuration
+# actually has, rather than re-typed here where it could agree with a copy
+# doctor.sh no longer holds.
+doctor_gate="$(sed -n "s/^ *'\(.*sources.*any(.*\)' *\\\\\$/\1/p" "$repo_root/scripts/doctor.sh")"
+assert_contains "the doctor's Priority gate was found in doctor.sh" "any(" "$doctor_gate"
+
+banded_config='{"repos":[{"slug":"o/r","sources":["security","issues:high","tech-debt"]}]}'
+unbanded_config='{"repos":[{"slug":"o/r","sources":["security","tech-debt"]}]}'
+assert_eq "the gate fires on a repo configured with a banded issues token" "0" \
+  "$(jq -e --arg s "o/r" "$doctor_gate" <<<"$banded_config" >/dev/null 2>&1; printf '%s' $?)"
+assert_eq "  ... and on every one of the four bands" "0000" \
+  "$(for b in urgent high medium low; do
+       jq -e --arg s "o/r" "$doctor_gate" \
+         <<<"{\"repos\":[{\"slug\":\"o/r\",\"sources\":[\"issues:$b\"]}]}" >/dev/null 2>&1
+       printf '%s' $?
+     done)"
+assert_eq "the gate stays silent on a repo with the issues source off" "1" \
+  "$(jq -e --arg s "o/r" "$doctor_gate" <<<"$unbanded_config" >/dev/null 2>&1; printf '%s' $?)"
 
 printf '\n'
 if (( failures > 0 )); then
