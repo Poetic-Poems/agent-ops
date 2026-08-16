@@ -533,6 +533,44 @@ assert_eq "probe-404: a repo-level 404 with a cached copy falls back to it, not 
 
 rm -f "$(fleet_cache_file "$fs_probe" disabled)"
 
+# --- issue #513 (PR #506 review follow-up): the memo is keyed by MODE too,
+#     not just (NAME, STATE_DIR) — the default mode and `probe-404`
+#     deliberately disagree about one and the same contents-API 404 (clear
+#     vs a possible unreachable), so a default-mode `clear` memoised first
+#     must never be served to a later `probe-404` read of the same flag. ---
+fs_mode="$tmp_dir/fleet-state-mode-keying"; mkdir -p "$fs_mode"
+rm -f "$gh_backing/fleet/disabled.json"
+assert_eq "mode-keying: a default-mode read of an absent flag memoises clear" "clear" \
+  "$(status_of "$slug" "$fs_mode" disabled)"
+# Same (name, state_dir), now in probe-404 mode, with the repo itself made
+# invisible to the probe and no cache to fall back to. Before mode-keying
+# this would have replayed the default mode's own memoised "clear" without
+# ever asking the stub again; keyed by mode, it has no memo of its own yet
+# and must genuinely probe — reading unreachable, never the leaked clear.
+assert_eq "mode-keying: a probe-404 read of the same flag is not served the default mode's own memo" \
+  "unreachable" \
+  "$(GH_STUB_MODE=repo-404 status_of "$slug" "$fs_mode" disabled probe-404)"
+
+# --- issue #513 (PR #506 review follow-up): a torn or vanished memo file
+#     falls through to a live fetch rather than being served as an
+#     (incorrectly) confirmed answer — `[[ -f "$memo" ]] && { cat "$memo"; ...
+#     }` would have returned success with empty output for either case,
+#     which `merge_autonomy_kill_state` resolves to `{"state":"enabled"}`,
+#     not killed — the same fail-open direction the recycled-PID bug 97539b7
+#     fixed. ---
+fs_torn="$tmp_dir/fleet-state-torn-memo"; mkdir -p "$fs_torn"
+fleet_flag_write "$slug" disabled "$rec" "primed for the torn-memo test" "$fs_torn"
+fleet_flag_fetch "$slug" "$fs_torn" disabled >/dev/null # primes the memo the ordinary way
+memo_torn="$(_fleet_flag_memo_file disabled "$fs_torn")"
+: > "$memo_torn" # simulate an interrupted write: present, but empty
+assert_eq "an empty memo file falls through to a live fetch rather than being served" \
+  "$rec" "$(fleet_flag_fetch "$slug" "$fs_torn" disabled)"
+fleet_flag_fetch "$slug" "$fs_torn" disabled >/dev/null # re-primes the memo
+rm -f "$memo_torn" # simulate the file vanishing between the -f test and the read
+assert_eq "a vanished memo file falls through to a live fetch too" \
+  "$rec" "$(fleet_flag_fetch "$slug" "$fs_torn" disabled)"
+fleet_flag_delete "$slug" "$fs_torn" disabled >/dev/null
+
 # --- TD-PPagop-26081604: the clear side of the same ambiguity ---
 #
 # fleet_flag_delete's own read-for-sha hits the identical ambiguous 404 the
