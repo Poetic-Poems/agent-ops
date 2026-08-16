@@ -324,10 +324,10 @@
     },
     "approver_model_critical": {
       "$ref": "#/$defs/modelIdOrEmpty",
-      "description": "The Approver's model for adjudication — the one engagement after two consecutive refusals on the same pull request (D18 §5.2). Empty falls back to `approver_model_complex` (itself falling back to `approver_model_default` when that is also empty).",
+      "description": "The Approver's model for adjudication — re-entered every round while a two-refusal streak holds on the same pull request, until an approval resets it (D18 §5.2). Empty falls back to `approver_model_complex` (itself falling back to `approver_model_default` when that is also empty).",
       "default": "",
       "x-docs": {
-        "readme": "The Approver's model for adjudicating a pull request the Approver has refused twice in a row — the rarest and most expensive tier, run once per disagreement rather than per pull request. Leave it empty to fall back to `approver_model_complex`.",
+        "readme": "The Approver's model for adjudicating a pull request the Approver has refused twice in a row — the rarest and most expensive tier, re-entered every round while that two-refusal streak holds, until an approval resets it; the escalation issue a refusal raises stays deduplicated to one per pull request rather than one per round. Leave it empty to fall back to `approver_model_complex`.",
         "spec": "Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`.",
         "value": "`claude-fable-5`"
       }

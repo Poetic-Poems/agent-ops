@@ -255,13 +255,16 @@ holds; `approver_model_critical` unset falls back to `_complex`:
 the PR at `CHANGES_REQUESTED` and the existing `review-feedback` source picks
 it up next cycle, exactly as it picks up human feedback today. No
 retry-until-yes: a refusal pins the PR out of auto-landing until a new head
-commit exists. After two refuse cycles on the same PR, one critical-tier
-adjudication engagement reads both sides and returns `land | refuse |
-escalate`; only if it refuses or cannot settle does the Script raise an
-escalation via `create_escalation_issue` — persistent agent disagreement is a
-decision being litigated, which is the human's category. Quorum-on-every-PR
-was considered and rejected on cost: the merge queue already supplies an
-independent deterministic vote on every candidate.
+commit exists. Once the same PR carries two refusals in a row, every
+following round re-enters a critical-tier adjudication engagement — not once
+per disagreement, but every round while that streak holds, until an approval
+resets it — reading both sides and returning `land | refuse | escalate`; only
+if it refuses or cannot settle does the Script raise an escalation via
+`create_escalation_issue`, deduplicated to one issue per pull request so a
+persisting disagreement does not raise one per round — persistent agent
+disagreement is a decision being litigated, which is the human's category.
+Quorum-on-every-PR was considered and rejected on cost: the merge queue
+already supplies an independent deterministic vote on every candidate.
 
 ### 5.3 Identity
 
