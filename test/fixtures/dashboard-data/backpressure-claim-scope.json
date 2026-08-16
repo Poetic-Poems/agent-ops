@@ -1,0 +1,100 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "repos": [{"slug": "Poetic-Poems/agent-ops"}, {"slug": "Poetic-Poems/poetic"}],
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "coordinator_model": "claude-haiku-4-5-20251001"
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false, "lock": null, "current": null, "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 0, "spend_total_usd": 0,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [], "by_model": [], "by_actor": []
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true,
+    "fetched_at": "@ago:1m",
+    "prs": [
+      {
+        "repo": "Poetic-Poems/agent-ops", "number": 700,
+        "url": "https://github.com/Poetic-Poems/agent-ops/pull/700",
+        "title": "an abandoned draft the fleet has claimed",
+        "isDraft": true, "review_decision": "",
+        "checks": {"total": 0, "failed": 0, "pending": 0},
+        "mergeable": "", "mergeStateStatus": "", "createdAt": "@ago:9h"
+      },
+      {
+        "repo": "Poetic-Poems/agent-ops", "number": 701,
+        "url": "https://github.com/Poetic-Poems/agent-ops/pull/701",
+        "title": "approved but conflicted — in the human's queue, not the sum",
+        "isDraft": false, "review_decision": "APPROVED",
+        "checks": {"total": 3, "failed": 0, "pending": 0},
+        "mergeable": "CONFLICTING", "mergeStateStatus": "DIRTY", "createdAt": "@ago:31h"
+      }
+    ],
+    "pr_index": {},
+    "inputs": {}
+  },
+  "fleet": {
+    "claims": [
+      {
+        "node": "ockham-container", "cycle": "20260815T000000Z-ockham-container-1",
+        "repo": "enabler", "key": "Poetic-Poems-agent-ops/342/1786772746",
+        "kind": "file", "branch": "", "sha": "",
+        "item": "342", "source": "enabler", "ts": "@ago:4h"
+      },
+      {
+        "node": "ockham-container", "cycle": "20260815T000000Z-ockham-container-1",
+        "repo": "refiner", "key": "Poetic-Poems-agent-ops/issues/431",
+        "kind": "file", "branch": "", "sha": "",
+        "item": "431", "source": "refiner", "ts": "@ago:3h"
+      },
+      {
+        "node": "poetic-2", "cycle": "20260815T000000Z-poetic-2-1",
+        "repo": "Poetic-Poems/agent-ops", "key": "pr-700-abandoned-53fcaaa6e855",
+        "kind": "file", "branch": "", "sha": "",
+        "item": "pr-700-abandoned-53fcaaa6e855", "source": "abandoned-drafts",
+        "pr_number": 700, "ts": "@ago:8m"
+      },
+      {
+        "node": "poetic-2", "cycle": "20260815T000000Z-poetic-2-1",
+        "repo": "Poetic-Poems/agent-ops", "key": "pr-700",
+        "kind": "file", "branch": "", "sha": "",
+        "item": "pr-700-abandoned-53fcaaa6e855", "source": "abandoned-drafts",
+        "pr_number": 700, "ts": "@ago:8m"
+      },
+      {
+        "node": "poetic-3", "cycle": "20260815T000000Z-poetic-3-1",
+        "repo": "Poetic-Poems/agent-ops", "key": "pr-701-conflict-abcdef012345",
+        "kind": "file", "branch": "", "sha": "",
+        "item": "pr-701-conflict-abcdef012345", "source": "merge-conflicts",
+        "pr_number": 701, "ts": "@ago:6m"
+      },
+      {
+        "node": "ockham-2", "cycle": "20260815T000000Z-ockham-2-1",
+        "repo": "Poetic-Poems/agent-ops", "key": "agent/342",
+        "kind": "branch", "branch": "agent/342", "sha": "e11b38aa0a1d",
+        "item": "342", "source": "issues", "ts": "@ago:20m"
+      },
+      {
+        "node": "poetic-1", "cycle": "20260815T000000Z-poetic-1-1",
+        "repo": "Poetic-Poems/poetic", "key": "td/TD-PPpoet-26081501",
+        "kind": "branch", "branch": "td/TD-PPpoet-26081501", "sha": "",
+        "item": "TD-PPpoet-26081501", "source": "tech-debt", "ts": "@ago:11m"
+      }
+    ]
+  },
+  "log_tail": [],
+  "cron_tail": [],
+  "max_open_agent_prs": 8
+}

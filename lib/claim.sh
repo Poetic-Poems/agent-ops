@@ -31,7 +31,8 @@
 #   claim.sh release  branch <target-slug> <branch>   # ref iff unmoved+PR-less, then registry
 #   claim.sh release  file   <target-slug> <key>      # registry only
 #   claim.sh expire   <target-slug> <key>             # backdate ts; gc retires it next sweep
-#   claim.sh count    <target-slug>                   # live registry entries, excluding pr-<n> exclusion claims
+#   claim.sh count    <target-slug> [<counted-prs>]   # live registry entries, excluding any that name
+#                                                      # a pull request <counted-prs> already counted
 #   claim.sh claims   <target-slug>                   # registry entries younger than claim_ttl_hours,
 #                                                      # as {item, kind, age_hours, pr_number?} (both shapes)
 #   claim.sh branches <target-slug>                   # live td/*, <branch_prefix>* branch names
@@ -72,7 +73,11 @@
 # target repo's can collide with them. Two properties of the code below are what
 # make that safe, and both are worth not breaking. `count` reads only the slugs
 # `config.json` configures, so an Enabler claim can never inflate back-pressure
-# (requirement 2.2) with work that raises no PR. And `gc` sweeps whatever
+# (requirement 2.2) with work that raises no PR — an invariant of *this* entry
+# point, not of the registry, so a reader that walks the whole of `claims/`
+# instead of asking here per repo has to re-impose it (the dashboard's
+# back-pressure card did not, and read four tombstones as four open PRs). And
+# `gc` sweeps whatever
 # directories it finds, which is the *only* thing that retires those claims:
 # they are deliberately never released, so a tombstone ageing out at
 # `claim_ttl_hours` — or `expire`'s backdated `ts`, when the engagement that
@@ -108,7 +113,7 @@ branch_prefix="$(cfg '.branch_prefix')"
 
 say() { printf 'claim: %s\n' "$*"; }
 
-usage() { sed -n '3,47p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '3,48p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
 
 san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
@@ -271,17 +276,50 @@ do_expire() {  # <target-slug> <key>
   return 0
 }
 
-do_count() {  # <target-slug> -> number of live registry entries counted for back-pressure
+do_count() {  # <target-slug> [<counted-prs>] -> number of live registry entries counted for back-pressure
+  local out
   [[ -n "$state_repo" ]] || { echo 0; return 0; }
-  # A `pr-<n>.json` entry (issue #238) excludes a peer from the same PR; it is
-  # not "work in flight that has not yet surfaced as a PR" (agent-cycle.sh's
-  # back-pressure comment) — the PR it targets already exists, and is already
-  # counted through `gh pr list`. Since it now outlives the PR being raised,
-  # held until this cycle's own end rather than dropped the moment the PR
-  # exists (issue #360), counting it here too would double-count that PR for
-  # as long as the cycle's Reviewer stage runs.
-  "$GH" api "repos/$state_repo/contents/claims/$(san "$1")" \
-    --jq '[.[] | select(.type == "file") | select(.name | test("^pr-[0-9]+\\.json$") | not)] | length' 2>/dev/null || echo 0
+  # Two exclusions, and both are the same rule: an entry naming a pull request
+  # the caller has already counted is that PR a second time, not "work in
+  # flight that has not yet surfaced as a PR" (agent-cycle.sh's back-pressure
+  # comment).
+  #
+  # A `pr-<n>.json` entry (issue #238) excludes a peer from the same PR, and is
+  # dropped unconditionally: it is only ever written for a PR that exists.
+  # Since it now outlives the PR being raised, held until this cycle's own end
+  # rather than dropped the moment the PR exists (issue #360), counting it here
+  # too would double-count that PR for as long as the cycle's Reviewer stage
+  # runs.
+  #
+  # The item claim written beside it is keyed on the work item, and for the
+  # four finishing sources that item is a `pr-<n>-<kind>-<scope>` ref naming
+  # the same PR — the shape `pr_number_for_candidate` parses in agent-cycle.sh,
+  # and the only PR reference a directory listing can see without reading every
+  # entry. It is the *other* half of the same double-count, and until now it
+  # was counted: a claimed abandoned draft was its own draft PR plus its own
+  # claim, two against a cap it only occupies once.
+  #
+  # It is dropped only for the PR numbers the caller passes — a comma-separated
+  # list, bounded by GITHUB_PR_LIST_LIMIT, of the PRs already inside the
+  # caller's own sum. That distinction matters: a conflicted or dequeued PR
+  # sits in the human's queue and is deliberately *not* in that sum
+  # (agent-ops#246), so its claim is the only record that the work is in
+  # flight and must keep counting. Passing nothing keeps every item claim,
+  # which is both the old behaviour and the fail-closed reading.
+  out="$("$GH" api "repos/$state_repo/contents/claims/$(san "$1")" 2>/dev/null \
+    | jq --arg counted "${2:-}" '
+        ($counted | split(",") | map(select(. != ""))) as $seen
+        | [ .[]
+            | select(.type == "file")
+            | (.name | sub("\\.json$"; "")) as $key
+            | select(($key | test("^pr-[0-9]+$")) | not)
+            | select(if ($key | test("^pr-[0-9]+-"))
+                     then ($seen | index($key | split("-")[1])) == null
+                     else true
+                     end)
+          ] | length' 2>/dev/null)" || out=''
+  [[ "$out" =~ ^[0-9]+$ ]] || out=0
+  printf '%s\n' "$out"
 }
 
 do_claims() {  # <target-slug> -> JSON array of {item, kind, age_hours, pr_number?} younger than claim_ttl_hours
@@ -376,7 +414,7 @@ case "$MODE" in
     [[ ( "$KIND" == "branch" || "$KIND" == "file" ) && $# -eq 2 ]] || { usage >&2; exit 64; }
     do_release "$KIND" "$@"; exit $? ;;
   expire)   [[ $# -eq 2 ]] || { usage >&2; exit 64; }; do_expire "$@";   exit $? ;;
-  count)    [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_count "$@";    exit $? ;;
+  count)    [[ $# -eq 1 || $# -eq 2 ]] || { usage >&2; exit 64; }; do_count "$@"; exit $? ;;
   claims)   [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_claims "$@";   exit $? ;;
   branches) [[ $# -eq 1 ]] || { usage >&2; exit 64; }; do_branches "$@"; exit $? ;;
   gc)       [[ $# -eq 0 ]] || { usage >&2; exit 64; }; do_gc;            exit $? ;;

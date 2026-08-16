@@ -376,7 +376,7 @@ assert_eq "and requiring 0 approving reviews is a warn, not a failure" "0" "$rc"
 # $base_config itself.
 ma_config="$tmp/ma-config.json"
 
-jq '.merge_autonomy = "agent-merges-routine" | .approver_app_id = "123456"' "$base_config" > "$ma_config"
+jq '.merge_autonomy = "agent-merges-routine" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$base_config" > "$ma_config"
 out="$(env PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
@@ -405,7 +405,7 @@ assert_not_contains "and stays silent below the routine tier rather than narrate
   "requires no code-owner review" "$out"
 
 ma_approves_config="$tmp/ma-approves-config.json"
-jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' "$base_config" > "$ma_approves_config"
+jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' "$base_config" > "$ma_approves_config"
 out="$(env PATH="$stub_bin:$PATH" \
   STUB_RULESETS_JSON="[$noise_ruleset_38,{\"id\":3,\"target\":\"branch\",\"enforcement\":\"active\"}]" \
   STUB_RULESET_DETAIL_JSON='{"name":"default","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"pull_request","parameters":{"required_approving_review_count":1,"require_code_owner_review":true}}]}' \
@@ -414,6 +414,29 @@ assert_not_contains "agent-approves (below the routine tier) is unaffected by co
   "still requires code-owner review" "$out"
 assert_not_contains "and earns no code-owner ok line either" \
   "requires no code-owner review" "$out"
+
+# --- D18 WI-5 (requirement 8b): merge_autonomy above human needs
+#     approver_model_default too, the same pairing approver_app_id already
+#     gets — the Approver stage reads it empty as "disabled", so a level
+#     above human configured with it empty would silently gain no App review
+#     at all, and doctor is where an operator can still see that. -----------
+ma_no_model_config="$tmp/ma-no-model-config.json"
+jq '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' "$base_config" > "$ma_no_model_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ma_no_model_config" 2>&1)"
+rc=$?
+assert_contains "agent-approves with no approver_model_default fails, naming the level" \
+  '[fail] merge_autonomy is "agent-approves" with no approver_model_default configured' "$out"
+assert_eq "and doctor.sh exits 1" "1" "$rc"
+
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
+assert_not_contains "agent-approves with approver_model_default set does not fail on this pairing" \
+  "no approver_model_default configured" "$out"
+assert_contains "  ... and positively confirms the level, same as it did before this pairing existed" \
+  '[ ok ] merge_autonomy is "agent-approves"' "$out"
+
+run_doctor
+assert_not_contains "merge_autonomy at the default (human) needs no approver_model_default" \
+  "no approver_model_default configured" "$out"
 
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------
@@ -452,8 +475,9 @@ assert_not_contains "with no env App id and none configured, doctor says nothing
 
 # A level above human whose environment carries no runtime credential is a
 # warn, not a fail: the wrapper fails closed (exit 2, gate unreadable) and
-# the Approver stage must hand back, so nothing acts wrongly — but the
-# operator who raised the level is waiting on approvals that never come.
+# the Approver stage simply skips this pull request's App review rather than
+# blocking it — but the operator who raised the level is waiting on
+# approvals that never come.
 out="$(env PATH="$stub_bin:$PATH" \
   bash "$DOCTOR" --config "$ma_approves_config" 2>&1)"
 assert_contains "a level above human with no runtime credential in this environment warns" \

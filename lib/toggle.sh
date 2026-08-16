@@ -25,7 +25,8 @@
 #     "by":          "wallen@host pid 4242",
 #     "reason":      "editing lib/toggle.sh",
 #     "actor":       "wallen@host",            // toggle_actor — never "unknown"
-#     "kind":        "manual"                  // manual | auto (requirement 2.3)
+#     "kind":        "manual",                 // manual | auto (requirement 2.3)
+#     "scope":       "node"                    // node | fleet (requirement 2.3)
 #   }
 #
 # `actor` and `kind` exist because a reader of a stand-down flag must be able
@@ -33,6 +34,24 @@
 # may clear an automatic stand-down early, and must never clear a manual one
 # (#244 — the 2026-08-05 operator stand-down whose actor read as a bare
 # container id was initially misread as a runaway automatic freeze).
+#
+# `scope` answers the neighbouring question — *which* decision is this record.
+# A fleet-wide `--disable` writes this file too (requirement 2.3a: local
+# first, because that always works), so without it the node that issued a
+# fleet stand-down is indistinguishable from one an operator deliberately
+# stood down alone with `--disable --this-node`. That node wore the
+# dashboard's node-scoped `disabled` badge and `--status` announced a
+# node-scoped disable nobody had asked for; worse, `--enable` run from
+# *another* node clears the fleet flag but cannot reach this file, leaving one
+# node down on its own, indefinitely under `--for forever`, blamed on a
+# decision that was never made. `scope: "fleet"` marks the record as a
+# *mirror* of the fleet switch rather than a stand-down in its own right, and
+# every reader of it says so.
+#
+# A record with no `scope` reads as `node`: that is what every record written
+# before this field existed effectively was, and — as everywhere else here —
+# it is the reading that keeps a node down rather than one that talks itself
+# out of a stand-down.
 #
 # It lives in `state_dir`, not in the repo, for two reasons: the repo is the
 # thing being edited (a switch tracked in git would arrive and depart with
@@ -266,29 +285,68 @@ _toggle_eval() {
   jq -nc --argjson r "$rec" '{state: "disabled", record: $r}'
 }
 
-# toggle_disable STATE_DIR REASON TTL_SPEC DEFAULT_HOURS BY [ACTOR] [KIND]
+# toggle_disable STATE_DIR REASON TTL_SPEC DEFAULT_HOURS BY [ACTOR] [KIND] [SCOPE]
 # Set the switch and print the record written. Returns 64 if TTL_SPEC does not
 # parse (nothing is written in that case — a half-set switch is worse than
 # none, since the operator believes the pipeline is down and it is not).
 # ACTOR defaults through toggle_actor and KIND to `manual` — the only kind a
 # switch set by this entry point can be; `auto` is reserved for a detector
-# that writes its own evidence-bearing record.
+# that writes its own evidence-bearing record. SCOPE defaults to `node`; the
+# caller passes `fleet` only when this record is the local half of a
+# fleet-wide stand-down (see the header, and toggle_mark_scope below for what
+# happens when the fleet half then fails).
 toggle_disable() {
   local state_dir="$1" reason="$2" spec="$3" default_hours="$4" by="$5"
-  local actor="${6:-}" kind="${7:-manual}" f exp rc
+  local actor="${6:-}" kind="${7:-manual}" scope="${8:-node}" f exp rc
   [[ -n "$actor" ]] || actor="$(toggle_actor)"
   exp="$(toggle_parse_ttl "$spec" "$default_hours")" || { rc=$?; return "$rc"; }
   mkdir -p "$state_dir"
   f="$(toggle_file "$state_dir")"
   jq -n --arg at "$(_toggle_iso)" --arg exp "$exp" --arg by "$by" --arg r "$reason" \
-    --arg actor "$actor" --arg kind "$kind" \
+    --arg actor "$actor" --arg kind "$kind" --arg scope "$scope" \
     '{disabled_at: $at,
       expires_at: (if $exp == "" then null else $exp end),
       by: $by,
       reason: $r,
       actor: $actor,
-      kind: $kind}' > "$f"
+      kind: $kind,
+      scope: $scope}' > "$f"
   jq -c '.' "$f"
+}
+
+# toggle_scope RECORD
+# The scope a record claims, defaulting to `node` for one written before the
+# field existed. One reader, because "did anyone tag this?" is a question three
+# call sites would otherwise each answer their own way.
+toggle_scope() {
+  jq -r '.scope // "node"' <<<"${1:-{\}}" 2>/dev/null || printf 'node'
+}
+
+# toggle_mark_scope STATE_DIR SCOPE
+# Retag an existing record in place, leaving every other field — `disabled_at`
+# above all — exactly as written.
+#
+# This exists for one caller: a fleet-wide `--disable` whose fleet publish then
+# fails. The local record is written first and optimistically tagged `fleet`,
+# because it must be on disk before anything talks to GitHub; when the fleet
+# write does not land, that node really is standing down alone and the record
+# has to say `node` or it describes a fleet switch that was never set. Rewriting
+# through toggle_disable would move `disabled_at` to now and lose the very
+# instant the operator stopped the pipeline, so this edits the one field.
+#
+# Always succeeds: a missing or unreadable record leaves nothing to retag, and
+# the caller is already warning loudly about a worse problem than a stale tag.
+toggle_mark_scope() {
+  local state_dir="$1" scope="$2" f tmp
+  f="$(toggle_file "$state_dir")"
+  [[ -f "$f" ]] || return 0
+  tmp="$f.tmp.$$"
+  if jq -c --arg s "$scope" '.scope = $s' "$f" > "$tmp" 2>/dev/null; then
+    mv -f "$tmp" "$f"
+  else
+    rm -f "$tmp"
+  fi
+  return 0
 }
 
 # toggle_clear STATE_DIR
@@ -320,7 +378,9 @@ toggle_describe() {
 # scripts/publish-dashboard.sh (`status.switch`) and scripts/state-sync.sh's
 # heartbeat (`switch`, issue #379) render from — one definition so a peer's
 # card and this node's own banner cannot disagree about what the switch says
-# (requirement 34a).
+# (requirement 34a). `scope` travels with the rest: a peer's card has to be
+# able to tell that node's own stand-down from its mirror of the fleet's, and
+# only the node holding the record knows which it is.
 toggle_switch_summary() {
   local s
   s="$(toggle_state "$1")"
@@ -330,6 +390,7 @@ toggle_switch_summary() {
       by: ($s.record.by // ""),
       actor: ($s.record.actor // ""),
       kind: ($s.record.kind // "manual"),
+      scope: ($s.record.scope // "node"),
       since: ($s.record.disabled_at // ""),
       expires_at: ($s.record.expires_at // null)}'
 }
@@ -436,6 +497,13 @@ toggle_status_report() {
 #   present-but-garbage → disabled, exactly as for the local record: the flag
 #     exists because something meant to stop the fleet.
 #
+# That "fail open, unreachable-with-no-cache included" direction is
+# `fleet_flag_fetch`'s own default and stays right for `fleet/disabled.json`
+# and the limit flag. A flag whose risk profile inverts once something arms a
+# behaviour-affecting decision on it needs to tell that case apart from a
+# clear-flag 404 — `fleet_flag_fetch_status` below is what such a caller
+# reads instead (`merge_autonomy_kill_state`, TD-PPagop-26081507).
+#
 # `TOGGLE_GH` substitutes for `gh` in the tests, like CLAIM_GH/STATE_SYNC_GH.
 # An empty state-repo slug turns every function here into a quiet no-op: with
 # no state repository this is a single-node operation and the local switch
@@ -450,47 +518,105 @@ fleet_flag_path() { printf 'fleet/%s.json' "$1"; }
 # Where the last successfully fetched copy of a flag lives locally.
 fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 
-# fleet_flag_fetch STATE_REPO STATE_DIR NAME
-# Print the flag's raw bytes, or nothing when it is clear. Always returns 0;
-# the caller cannot tell "clear" from "unreachable with no cache", which is
-# the point — both read as "nothing stands you down" (see the header for why
-# that is safe).
-fleet_flag_fetch() {
+# fleet_flag_fetch_status STATE_REPO STATE_DIR NAME
+# fleet_flag_fetch's own body, printing STATUS<TAB>RAW instead of RAW alone —
+# STATUS<TAB>RAW travels as one string on stdout, the same compound-return
+# idiom lib/review-gate.sh's own functions use. Split it with parameter
+# expansion, never `IFS=$'\t' read`, which review-gate.sh can use only because
+# both of its fields are single-line: RAW here is a file fetched from the state
+# repository, so it holds whatever bytes that file holds, and a `read` would
+# silently truncate a pretty-printed record to its first line — leaving the
+# caller to read a valid flag as unparseable and lose the operator's own reason
+# from `--status` and scripts/doctor.sh. So:
+#   status="${combined%%$'\t'*}"
+#   raw="${combined#*$'\t'}"
+# STATUS is one of:
+#   clear        — no state repo configured, or a 404: the flag file does
+#                  not exist — or, indistinguishably at the contents API,
+#                  the repo itself is missing or invisible to this token,
+#                  which therefore still reads as clear (TD-PPagop-26081602)
+#   live         — the fetch against the state repo just succeeded
+#   cached       — the state repo was unreachable; RAW is the last
+#                  successfully fetched copy
+#   unreachable  — the state repo was unreachable and there is no cached
+#                  copy at all
+# fleet_flag_fetch is a thin wrapper over this that keeps its own RAW-only
+# contract byte-for-byte unchanged for its three existing callers
+# (fleet_disabled_state, fleet_limit_resume_at, fleet_limit_publish), which by
+# design cannot tell "clear" from "unreachable" apart — see the header for why
+# that is safe for them. merge_autonomy_kill_state is the one caller that
+# needs the distinction (TD-PPagop-26081507): "clear" and "unreachable" both
+# print an empty RAW, but only "unreachable" must make the kill switch fail
+# closed.
+fleet_flag_fetch_status() {
   local repo="$1" state_dir="$2" name="$3" cache resp raw
-  [[ -n "$repo" ]] || return 0
+  [[ -n "$repo" ]] || { printf 'clear\t'; return 0; }
   cache="$(fleet_cache_file "$state_dir" "$name")"
   mkdir -p "${cache%/*}" 2>/dev/null || true
   if resp="$(_fleet_gh api "repos/$repo/contents/$(fleet_flag_path "$name")?ref=main" 2>"$cache.err")"; then
     raw="$(jq -r '.content // ""' <<<"$resp" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null || true)"
     printf '%s' "$raw" > "$cache"
-    printf '%s' "$raw"
+    printf 'live\t%s' "$raw"
     return 0
   fi
   if grep -qiE 'HTTP 404|Not Found' "$cache.err" 2>/dev/null; then
     rm -f "$cache"
+    printf 'clear\t'
     return 0
   fi
-  [[ -f "$cache" ]] && cat "$cache"
+  if [[ -f "$cache" ]]; then
+    printf 'cached\t'
+    cat "$cache"
+  else
+    printf 'unreachable\t'
+  fi
   return 0
+}
+
+# fleet_flag_fetch STATE_REPO STATE_DIR NAME
+# Print the flag's raw bytes, or nothing when it is clear. Always returns 0;
+# the caller cannot tell "clear" from "unreachable with no cache", which is
+# the point — both read as "nothing stands you down" (see the header for why
+# that is safe). fleet_flag_fetch_status above is the same fetch for the one
+# caller that does need the distinction.
+fleet_flag_fetch() {
+  local combined
+  combined="$(fleet_flag_fetch_status "$1" "$2" "$3")"
+  printf '%s' "${combined#*$'\t'}"
 }
 
 # fleet_flag_write STATE_REPO NAME BODY MESSAGE
 # One CAS attempt: read the current sha, PUT against it. Returns non-zero on
 # a lost race or an unreachable repo — the caller decides whether to re-read
 # and retry (the limit publisher does) or to warn (the disable path does).
+#
+# STATE_DIR is optional and does one thing: on a successful write, drop the
+# body into the local cache, the way a successful fetch does. Without it the
+# writer is the one node in the fleet with *no* local copy of a flag it just
+# set — so if the state repo goes down in the next minute, its own reads fall
+# through to "nothing stands you down" (this level fails open) while every
+# peer that has fetched once reads the flag from cache and stops. The
+# symmetry is already half there: fleet_flag_delete drops the cache on
+# success, and this is the other half.
 fleet_flag_write() {
-  local repo="$1" name="$2" body="$3" msg="$4" path payload sha
+  local repo="$1" name="$2" body="$3" msg="$4" state_dir="${5:-}" path payload sha cache
   [[ -n "$repo" ]] || return 0
   path="$(fleet_flag_path "$name")"
   payload="$(printf '%s\n' "$body" | base64 -w0)"
   sha="$(_fleet_gh api "repos/$repo/contents/$path?ref=main" --jq '.sha' 2>/dev/null || true)"
   if [[ -n "$sha" ]]; then
     _fleet_gh api -X PUT "repos/$repo/contents/$path" -f message="$msg" \
-      -f content="$payload" -f branch=main -f sha="$sha" >/dev/null 2>&1
+      -f content="$payload" -f branch=main -f sha="$sha" >/dev/null 2>&1 || return 1
   else
     _fleet_gh api -X PUT "repos/$repo/contents/$path" -f message="$msg" \
-      -f content="$payload" -f branch=main >/dev/null 2>&1
+      -f content="$payload" -f branch=main >/dev/null 2>&1 || return 1
   fi
+  if [[ -n "$state_dir" ]]; then
+    cache="$(fleet_cache_file "$state_dir" "$name")"
+    mkdir -p "${cache%/*}" 2>/dev/null || true
+    printf '%s\n' "$body" > "$cache" 2>/dev/null || true
+  fi
+  return 0
 }
 
 # fleet_flag_delete STATE_REPO STATE_DIR NAME
@@ -527,13 +653,16 @@ fleet_flag_delete() {
   return 0
 }
 
-# fleet_flag_write_outcome STATE_REPO NAME BODY MESSAGE
+# fleet_flag_write_outcome STATE_REPO NAME BODY MESSAGE [STATE_DIR]
 # fleet_flag_write, translated into the `ok`/`failed`/`unconfigured`
 # vocabulary the `disabled`/`enabled` log events carry as `fleet_flag` (issue
 # #426): `unconfigured` when there is no state repo to write to
 # (fleet_flag_write's own quiet no-op), `ok`/`failed` for a real attempt's
 # result. One definition so the write side and the delete side below cannot
-# drift onto different words for the same three outcomes.
+# drift onto different words for the same three outcomes. Every argument is
+# passed through, STATE_DIR included, so a caller that wants the write to
+# prime the local cache gets that here too rather than having to choose
+# between the outcome word and the cache.
 fleet_flag_write_outcome() {
   [[ -n "$1" ]] || { printf 'unconfigured'; return 0; }
   if fleet_flag_write "$@"; then printf 'ok'; else printf 'failed'; fi
@@ -622,7 +751,7 @@ fleet_limit_publish() {
       fi
     fi
     fleet_flag_write "$repo" limit "$body" \
-      "fleet: usage limit hit on $node — stand down until $resume_at" && return 0
+      "fleet: usage limit hit on $node — stand down until $resume_at" "$state_dir" && return 0
   done
   return 1
 }

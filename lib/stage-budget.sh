@@ -59,6 +59,7 @@ STAGE_BUDGET_PRIORS='{
   "coordinator":      {"backstop": 20,  "inactivity": 10},
   "implementor":      {"backstop": 150, "inactivity": 10},
   "reviewer":         {"backstop": 90,  "inactivity": 10},
+  "approver":         {"backstop": 30,  "inactivity": 10},
   "enabler":          {"backstop": 30,  "inactivity": 10},
   "refiner":          {"backstop": 30,  "inactivity": 10},
   "project-reviewer": {"backstop": 150, "inactivity": 10}

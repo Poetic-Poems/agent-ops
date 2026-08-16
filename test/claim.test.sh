@@ -253,6 +253,28 @@ assert_eq "count still counts the item-keyed entry it just won" "2" "$count_with
 run_claim node-a release file Poetic-Poems/poetic pr-90-review-1
 count_pr_key_only="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 2>/dev/null)"
 assert_eq "…but not a pr-<n> entry surviving on its own" "1" "$count_pr_key_only"
+
+# --- count excludes an item claim whose PR the caller has already counted ----------
+# The other half of the same double-count. A finishing source keys its item on
+# `pr-<n>-<kind>-<scope>`, so the item claim names a PR too — and when that PR is
+# one of the drafts or changes-requested PRs the caller has already put in its own
+# sum, counting the claim as well charges a single unit of work twice against the
+# cap. The caller says which PRs those are; anything it does not name keeps
+# counting, because a conflicted or dequeued PR sitting in the human's queue is
+# excluded from that sum and its claim is the only record of the work in flight.
+CLAIM_ITEM_OVERRIDE="pr-90-review-1" CLAIM_SOURCE_OVERRIDE="review-feedback" \
+  CLAIM_PR_NUMBER_OVERRIDE="90" run_claim node-a claim file Poetic-Poems/poetic pr-90-review-1
+count_pr_counted="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 90 2>/dev/null)"
+assert_eq "count drops an item claim naming a PR the caller already counted" "1" "$count_pr_counted"
+count_pr_uncounted="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 91,92 2>/dev/null)"
+assert_eq "…and keeps it when the caller's sum does not hold that PR" "2" "$count_pr_uncounted"
+count_pr_prefix="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 9 2>/dev/null)"
+assert_eq "…matching whole numbers, so PR 9 does not drop a claim on PR 90" "2" "$count_pr_prefix"
+count_no_arg="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic 2>/dev/null)"
+assert_eq "…and counts every item claim when told of no PRs at all (fail-closed)" "2" "$count_no_arg"
+count_empty_arg="$(env CLAIM_GH="$stub_bin/gh" "$CLAIM" count Poetic-Poems/poetic "" 2>/dev/null)"
+assert_eq "…an empty list reading the same as no list" "2" "$count_empty_arg"
+run_claim node-a release file Poetic-Poems/poetic pr-90-review-1
 run_claim node-a release file Poetic-Poems/poetic pr-90
 
 # --- gc sweeps only what is old, and never pushed work ------------------------------

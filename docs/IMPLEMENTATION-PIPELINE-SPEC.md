@@ -46,9 +46,17 @@ cron (hourly)
    the work order and raises a draft pull request.
 5. The **Reviewer** — a headless Claude Code invocation that checks and
    corrects the Implementor's branch, then marks the pull request ready.
-6. The **Human Reviewer** — gives final approval and performs the merge on
-   every pull request, through the ordinary GitHub process. Not launched by
-   any part of this system.
+5a. The **Approver** — a headless Claude Code invocation, engaged only where
+   `merge_autonomy` is above `human` (D18, "## The Landing Gate"), that
+   independently judges a pull request the Reviewer has already marked ready
+   and returns a verdict. It writes no code and pushes nothing; the Script
+   turns its verdict into a real GitHub review — `APPROVE` or
+   `REQUEST_CHANGES` — posted under a non-author GitHub App identity
+   ("Pullwright Approver"), never under this system's own authoring account.
+6. The **Human Reviewer** — gives final approval (at `human`) or an
+   additional one alongside the Approver's own (above `human`), and performs
+   the merge on every pull request regardless of level, through the ordinary
+   GitHub process. Not launched by any part of this system.
 7. The **Enabler** — a headless Claude Code invocation, engaged rarely and at
    the end of a cycle, that re-examines items recorded as blocked which the
    pipeline has not cleared by itself. It unblocks, voids, or leaves them
@@ -603,6 +611,9 @@ and the schema must carry every one of them.
 | `implementor_model_trivial` | `claude-haiku-4-5-20251001` | Docs-, comment-, or register-only items. The Co-Ordinator classifies each item and records its reasoning in the work order. |
 | `reviewer_model_default` | `claude-sonnet-5` | Reviews of `low`- and `medium`-complexity work (requirement 8a). |
 | `reviewer_model_complex` | `claude-opus-5` | Reviews of `high`-complexity work (requirement 8a). Empty falls back to `reviewer_model_default`, which switches the escalation off. |
+| `approver_model_default` | `claude-sonnet-5` | Standard-tier Approver engagements: work graded `complexity:medium` (requirement 8b). Empty disables the Approver stage. |
+| `approver_model_complex` | `claude-opus-5` | High-tier Approver engagements: work graded `complexity:high` (requirement 8b). Empty falls back to `approver_model_default`, which switches the escalation off. |
+| `approver_model_critical` | `claude-fable-5` | Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`. |
 | `enabler_model` | `claude-opus-5` | The Enabler (requirement 35). The highest-tier model this system runs, affordable only because the eligibility rule of 35a engages it rarely and the claims of 35c stop it being engaged twice. Empty disables the stage. |
 | `enabler_assignee` | `warwickallen` | GitHub login assigned to every escalation issue the Enabler raises (requirement 36a). Required whenever `enabler_model` is set: the Script exits with an error at startup rather than run with it unset, since an unassigned escalation would not be excluded by requirement 16.4 and could be selected as work by the pipeline itself. |
 | `enabler_after_coordinator_cycles` | `3` | How many distinct cycles that ran a Co-Ordinator to completion must follow a block before the item becomes Enabler-eligible (requirement 35a). Counted in cycles rather than hours because a fleet stood down on a usage limit or a switch has not "had a chance" at anything. |
@@ -626,8 +637,8 @@ and the schema must carry every one of them.
 | `claim_ttl_hours` | `6` | Age beyond which `lib/claim.sh gc` sweeps a claim-registry entry — far beyond a whole cycle (120 min Implementor + 60 min Reviewer), so only a dead node's claim ever expires. The branch itself is deleted only if untouched and PR-less. |
 | `abandoned_draft_after_hours` | 4 h | How long a draft PR this system raised may sit without real activity (requirement 3e's clock, not GitHub's raw `updatedAt`) before it counts as abandoned and finishing it becomes selectable work (`abandoned-drafts` source, requirement 3e). Comfortably beyond a whole cycle, so a draft merely being worked never qualifies; short enough that a genuinely stalled draft is picked up the same day. Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case...[continued below](#extended-notes-abandoned_draft_after_hours) |
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
-| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. |
-| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the...[continued below](#extended-notes-merge_autonomy) |
+| `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
+| `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review...[continued below](#extended-notes-merge_autonomy) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
@@ -737,18 +748,55 @@ How long a draft PR this system raised may sit without real activity (requiremen
 
 Raised 3 h → 4 h alongside the interim timeout raises of #203, which took a worst-case Implementor-plus-Reviewer cycle to 180 minutes and would otherwise have left this threshold no margin at all.
 
+### Extended notes: `merge_queue_dequeue_notice_max_age_hours`
+
+Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express that in config rather than by tuning this value near zero.
+
 ### Extended notes: `merge_autonomy`
 
-The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
+The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; the human still lands every pull request until a later work item arms automatic landing. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
 <!-- config-table:notes-end -->
 
-## The Human Gate
+## The Landing Gate
 
 The only branch this system protects is each repository's default branch.
-No agent may push to it, or approve or merge a pull request targeting it —
-GitHub's branch protection enforces this anyway. A human does both, on every
-PR this system raises.
+**No model ever pushes to it, approves a pull request targeting it, or merges
+one** — GitHub's branch protection enforces this anyway, and it holds at
+every `merge_autonomy` level (D18, `docs/reviews/2026-08-14-autonomy-investigation.md`
+§5.1) this document's requirements implement: the model's own prohibition is
+unconditional, never something a trust level relaxes.
+
+Who else may approve or land a pull request this system raises is what
+`merge_autonomy` names, per repository (config, requirement 2.3b's own
+resolution, `lib/merge-autonomy.sh`):
+
+- **`human`** — today's behaviour, byte-for-byte, and the product default: a
+  human approves and a human merges, on every pull request. Nothing below
+  this section changes.
+- **`agent-approves`** — the Approver stage (requirements 8b/8c, `### The
+  Approver`) gives an independent second read, under a non-author GitHub App
+  identity ("Pullwright Approver"), and posts a real `APPROVE` or
+  `REQUEST_CHANGES` review. **A human still merges.** The App's review is
+  additional, not a replacement for the human's own — a `CHANGES_REQUESTED`
+  from either blocks the same way, and the App can never dismiss or approve
+  around a human's own `CHANGES_REQUESTED` any more than the pipeline's own
+  authoring identity could.
+- **`agent-merges-routine`**, **`agent-merges-all`** — accepted and validated
+  (requirement 2.3b: a level here with no `approver_app_id`, or with the
+  repository's own ruleset still requiring code-owner review, is a
+  `scripts/doctor.sh` failure) and reviewed identically to
+  `agent-approves` (requirement 8c), but land no differently: **a human
+  still merges every pull request at these levels too**, because no
+  requirement in this document arms an automatic merge or enqueue yet — that
+  is a later work item's job (the design's own WI-7). Configuring either
+  level today buys the same App review `agent-approves` does and nothing
+  more.
+
+The fleet-wide kill switch (requirement 2.3b) forces every repository's
+*effective* level to `human` regardless of what is configured, independent
+of this section — `merge_autonomy_effective_level` is what every approval
+path (`run_approver_stage`) reads, never the raw configured value.
 
 Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
@@ -762,9 +810,15 @@ humans, and the target repos' own rule (force-pushing requires explicit
 instruction) applies.
 
 The Reviewer's purpose is to spend cheap model time so that the Human
-Reviewer's time is spent on work that is already close to mergeable. The
-human gate is the only point at which a human is required; everything else
-runs unattended.
+Reviewer's time is spent on work that is already close to mergeable; the
+Approver's purpose, where configured, is to spend a second, independent
+slice of cheap model time so that a human's own approval — never withdrawn by
+any level above `human` — meets a pull request that has already survived one
+more adversarial read. At `human`, the landing gate is the only point at
+which a human is required and it is a single, undivided act (approve and
+merge together); above it, the human's residual act narrows to the merge
+itself, but never disappears within what this document currently
+implements.
 
 ## Requirements
 
@@ -1069,16 +1123,35 @@ runs unattended.
       claim-registry entries for those repos** (requirement 17a — work a
       node has claimed but not yet surfaced as a PR; an item-keyed entry is
       dropped the moment its PR exists), is ≥ `max_open_agent_prs`, stand
-      down. `lib/claim.sh count` excludes the PR-keyed `pr-<n>` exclusion
-      entries (requirement 17a, issue #238) from this figure: unlike an
-      item-keyed entry, a PR-keyed one is held past its PR's own raising —
-      until the claiming cycle ends (issue #360) — and the PR it targets is
-      already counted above through `gh pr list`, so counting the claim too
-      would double-count it for as long as that cycle's Reviewer stage runs.
-      This is the primary throttle on both spend and on the human gate silting
-      up. The count is approximate by design: N nodes can pass it
+      down. This is the primary throttle on both spend and on the human gate
+      silting up. The count is approximate by design: N nodes can pass it
       simultaneously, so the stated bound is `max_open_agent_prs +
       (nodes − 1)`, transient.
+
+      `lib/claim.sh count` drops every registry entry that names a pull
+      request the PR listing above has already counted, because such an entry
+      is that PR a second time rather than work in flight without one. Two
+      shapes name a PR. A PR-keyed `pr-<n>` entry (requirement 17a, issue
+      #238) is dropped unconditionally — it is only ever written for a PR that
+      exists, and unlike an item-keyed entry it is held past its PR's own
+      raising, until the claiming cycle ends (issue #360), so counting it
+      would double-count that PR for as long as that cycle's Reviewer stage
+      runs. An item-keyed entry whose ref is `pr-<n>-<kind>-<scope>` — the
+      shape the four finishing sources (requirements 3c, 3e, 3g and 3z; see
+      requirement 3p) key their items on — is dropped only when that PR is
+      among the drafts and
+      changes-requested PRs actually counted, which is why the caller passes
+      those numbers in per repo. A ready PR sitting in the human's queue is
+      *not* among them (see below), so a conflicted or dequeued PR the
+      pipeline is working keeps counting through its claim, which is then the
+      only record that the work is in flight.
+
+      The registry is wider than the configured repos: the Enabler and the
+      Refiner claim engagement tombstones under the pseudo-slugs `enabler` and
+      `refiner` (requirement 35c). Those never reach this count, because it is
+      taken one configured repo at a time — an invariant `lib/claim.sh` states
+      in its own header, and one any other reader of the registry (the
+      dashboard's back-pressure card among them) has to re-impose for itself.
 
       A ready PR whose `reviewDecision` is **not** `CHANGES_REQUESTED` —
       approved, or awaiting a first or re-review with nothing currently
@@ -1159,6 +1232,46 @@ runs unattended.
    after this narrowing, so a back-pressured `selected: false` — which forbade
    the tech-debt source outright and therefore owes no account of it — is never
    scored as contradicting a band it was not allowed to walk.
+2.2b. **The decision site folds in what 2.2's count missed.** 2.2a's own
+   justification for treating a conflicted or dequeued PR as doubly apt —
+   "occupies one the human cannot merge to free until it is fixed" — is only
+   true if that PR is actually counted somewhere. It usually is not: 2.2's
+   count is taken before this cycle's `merge_conflicts` and `dequeued`
+   candidates are gathered (they arrive only once each repo's sources are
+   populated, in step 3, requirements 3g and 3z), and neither gatherer's
+   candidate rule reads `reviewDecision` at all
+   (`scripts/gather-merge-conflicts.sh`, `scripts/gather-dequeued.sh`). So a
+   conflicted or dequeued PR that is not *also* `CHANGES_REQUESTED` passes
+   through 2.2's count exactly like an ordinary PR waiting on a human — ready
+   PRs are excluded from the trip unless `CHANGES_REQUESTED` (2.2's own rule)
+   — and for `dequeued` this is not even a coincidence: a PR only reaches the
+   merge queue after approval, so its `reviewDecision` is `APPROVED` by
+   construction. Left uncorrected, the gate trips later than it should, and
+   does so exactly when a conflicted or dequeued PR is what is filling it —
+   the one state 2.2a's restriction exists to reach.
+
+   So, at the decision site, before 2.2a's stand-down/restriction check: take
+   the distinct PR numbers named across every repo's `merge_conflicts` and
+   `dequeued` candidates (a number named by both counts once), drop whichever
+   ones 2.2's own count already held — that repo's drafts and
+   `CHANGES_REQUESTED`-ready PRs — add what remains to `adjusted_open_count`,
+   and, when anything was added, re-evaluate `adjusted_open_count >=
+   max_open_agent_prs`: a cycle whose plain 2.2 count left it untripped can
+   trip here. State the addition in `open_composition`, in the same
+   composition-line style 2.2 itself logs, so the log line stays the one
+   place a cap-tuning read needs and stays legible against the dashboard
+   card's word-for-word mirror of 2.2's own line (requirement 2.2,
+   `docs/DASHBOARD-SPEC.md`). This runs whether or not 2.2's own count
+   tripped — both gathered arrays exist by this point regardless, from the
+   same per-repo loop that builds `ordered_repos_json` ahead of this check —
+   so a cycle 2.2 alone would have let run can still be correctly narrowed to
+   the four finishing sources.
+
+   The dashboard's own back-pressure card is unaffected: it mirrors
+   requirement 2.2's count alone (`docs/DASHBOARD-SPEC.md`), a continuous,
+   cross-cycle read of live PR state rather than one cycle's stand-down
+   decision, and has no access to the `mergeable`/queue-membership data this
+   fold-in needs.
 2.3. **The switch.** A file, `state_dir/disabled.json`, whose presence stops
    cycles starting. Checked *before* the lock and before any `gh` call — a
    disabled pipeline should cost nothing — and honoured by both this Script and
@@ -1188,6 +1301,53 @@ runs unattended.
    `--disable` or `--enable` is a usage error (exit 64); the role guard's
    bypass list (requirement 2.4) is unchanged, since a switch command must
    stay usable on every node regardless of `--this-node`.
+
+   **`scope` says which of those two a record is.** Because an unmodified
+   `--disable` writes both levels, the node that issues a fleet-wide
+   stand-down ends up holding a local record that is byte-identical to a
+   `--this-node` one — so every reader announced a node-scoped disable nobody
+   had asked for, and that node alone wore the dashboard's amber **disabled**
+   badge while its peers, equally down, wore none. The record therefore
+   carries `scope`: `"node"` for a stand-down of this node's own (a
+   `--this-node` disable, or an unmodified one on a single-node operation with
+   no `state_repo` configured), `"fleet"` for the local mirror of a fleet-wide
+   one. A record with no `scope` reads as `"node"` — what every record written
+   before the field existed effectively was, and the reading that keeps a node
+   down rather than one that talks itself out of a stand-down.
+
+   **This is not the same `scope` the `disabled` event carries** (issue #426,
+   requirement 33), and the two part company in exactly one case, so they are
+   computed separately rather than shared. The event records the operator's
+   *instruction*, which is why a `--disable` on an installation with no
+   `state_repo` still logs `scope: "fleet"` with `fleet_flag: "unconfigured"`
+   saying why nothing was published. The record answers a different question —
+   *is there a fleet flag for this to mirror?* — and with no state repo there
+   is none, so it is `"node"`. Tagging it `"fleet"` there would have `--status`
+   claim a mirror of a switch that cannot exist, and `--enable --this-node`
+   refuse to clear the only record holding that node down. Everywhere else,
+   including under `--this-node`, the two agree.
+
+   The local write still happens first and is tagged with the *intent*, since
+   it must be on disk before anything talks to GitHub; when the fleet publish
+   then fails, the record is retagged `"node"` in place — leaving
+   `disabled_at` and every other field untouched, because that node really is
+   standing down alone and a record still claiming `"fleet"` would describe a
+   switch that was never set. `--status` and the dashboard name a mirror as a
+   mirror rather than as a second decision (requirement 2.3's `--status`
+   bullet, `docs/DASHBOARD-SPEC.md`), and **`--enable --this-node` refuses a
+   `"fleet"` record outright** (exit 64, naming plain `--enable` as the
+   command that undoes a fleet-wide disable). That refusal is not tidiness:
+   the mirror is this node's fail-*closed* hold on itself for exactly the
+   window in which the fleet flag cannot be read — that flag fails *open*
+   (2.3a) — so clearing it while the fleet switch stands is how a node resumes
+   the work the fleet was stood down to prevent.
+
+   The mirror also closes a failure that had no signal at all. `--enable` run
+   on a *peer* clears `fleet/disabled.json` but cannot reach this node's file,
+   so the node stays down alone, indefinitely under `--for forever`, on a
+   decision that was lifted elsewhere. Tagged, that state is nameable: both
+   `--status` and the node's dashboard card report a record left over from a
+   cleared fleet-wide disable and name `--enable` on that node as the fix.
 
    The record carries `actor` and `kind` alongside `by` and `reason` (#244).
    `actor` is `toggle_actor` (`lib/toggle.sh`): `NODE_NAME` when set, else
@@ -1234,13 +1394,20 @@ runs unattended.
    - **`--status` distinguishes a node-scoped disable from a fleet-wide one, and
      says what clearing each leaves.** With neither set it reports the switch
      enabled; with only the fleet flag set it names that record and says a plain
-     `--enable` clears it fleet-wide; with only the local record set (a
-     `--this-node` disable) it says `--enable --this-node` clears it; with both
-     set it reports both records and spells out the asymmetry — `--enable`
-     clears both, `--enable --this-node` clears only the local record and
-     leaves the node down under the still-set fleet switch. An operator who
-     finds a node down for more than one reason is entitled to know which
-     command undoes which.
+     `--enable` clears it fleet-wide; with only a `scope: "node"` local record
+     set (a `--this-node` disable) it says `--enable --this-node` clears it;
+     with both set it reports both records and spells out the asymmetry —
+     `--enable` clears both, `--enable --this-node` clears only the local
+     record and leaves the node down under the still-set fleet switch. An
+     operator who finds a node down for more than one reason is entitled to
+     know which command undoes which.
+
+     A `scope: "fleet"` local record is not a second reason, and is never
+     reported as one. With the fleet flag still set, `--status` says the local
+     record mirrors it and that `--enable` clears both levels; with the fleet
+     flag clear it reports the orphan plainly — a mirror of a fleet switch
+     since cleared, probably by `--enable` on another node, leaving this node
+     standing down alone until `--enable` is run on it.
 
    Deliberately *not* bypassed by `--once` or `--dry-run`: "these files are
    being edited, do not run them" is no less true when a human runs them.
@@ -1256,16 +1423,35 @@ runs unattended.
    check it at cycle start, after the local switch and still before the
    lock; it costs one contents-API read.
 
+   The local half of that pair is a *mirror*, tagged `scope: "fleet"`
+   (requirement 2.3), and it is load-bearing rather than incidental: the fleet
+   flag fails open when the state repo is unreachable, so the mirror is what
+   holds the issuing node closed in that window. It is retagged `"node"` if
+   the fleet write fails, and no reader may present it as a stand-down of that
+   node's own while the fleet flag stands.
+
+   A successful flag *write* also primes the local cache, exactly as a
+   successful fetch does — otherwise the node that set a flag is the only one
+   in the fleet holding no local copy of it, and an outage in the next minute
+   drops it through this level's fail-open while every peer that had fetched
+   once reads the flag from cache and stops. `fleet_flag_delete` already drops
+   the cache on success; this is the other half of that symmetry, and it is
+   what lets `--status` tell an unreachable state repo from a switch someone
+   else cleared.
+
    **`--this-node` (requirement 2.3) opts a single node out of this level
    entirely.** `--disable --this-node` writes only the local record and skips
    the fleet publish outright — not a degraded fallback of the unmodified
    path, but the deliberate point of the flag: the rest of the fleet must keep
    running. `--enable --this-node` clears only the local record and never
    calls the fleet delete, so a fleet-wide disable (or a peer's own
-   node-scoped one) survives it untouched. Every other property of this
-   requirement — record shape, failure directions, expiry — is unchanged;
-   `--this-node` decides only which levels a write reaches, never how a
-   record already written is read or evaluated.
+   node-scoped one) survives it untouched — and it refuses outright when the
+   local record is a `scope: "fleet"` mirror, since clearing that one would
+   drop the issuing node's fail-closed hold on itself while the fleet switch
+   is still set. Every other property of this requirement — record shape,
+   failure directions, expiry — is unchanged; `--this-node` decides only which
+   levels a write reaches, never how a record already written is read or
+   evaluated.
 
    Failure directions, deliberately: a 404 is *clear*, definitively; an
    unreachable state repo falls back to the copy cached at the last
@@ -1286,17 +1472,26 @@ runs unattended.
    `config.json` or restarting a container, while cycles keep running exactly
    as they would with the switch clear — killing merge autonomy stops
    approval and landing decisions, nothing else. It reuses `lib/toggle.sh`'s
-   generic fleet-flag machinery outright (`fleet_flag_fetch`/`_write`/
+   generic fleet-flag machinery outright (`fleet_flag_fetch_status`/`_write`/
    `_delete`, the same CAS-guarded contents-API mechanism `fleet/disabled.json`
    already uses) under its own flag name, so a peer with an unreachable state
-   repo falls back the same way requirement 2.3a's own flag does — to the
-   last-fetched cache, and to "not killed" when there is none. That
-   fail-open direction is deliberate and carries its own expiry: it is safe
-   only while nothing arms an approval or a landing on the strength of this
-   flag alone (see below), and TD-PPagop-26081507 requires the no-cache case
-   to fail closed to `human` with or before WI-5's Approver stage — the
-   Design decisions entry on this switch defends today's direction against
-   the landing consequence specifically.
+   repo falls back the same way requirement 2.3a's own flag does when it has a
+   cached copy — to the last-fetched cache. Unlike requirement 2.3a's flag, a
+   repo unreachable at the transport level (DNS, connection refused, a 5xx)
+   with *no* cached copy at all reads as killed, not clear
+   (TD-PPagop-26081507): `fleet_flag_fetch_status` is what lets
+   `merge_autonomy_kill_state` tell that case apart from a clear-flag 404,
+   which `lib/toggle.sh`'s plain `fleet_flag_fetch` deliberately cannot —
+   the Design decisions entry on this switch explains why this one flag's
+   fail-closed direction is correct where `fleet/disabled.json`'s and the
+   usage-limit flag's fail-open one still is. One 404 is not the flag's own:
+   the contents API answers "this repository does not exist, or this token
+   cannot see it" with the same `404 Not Found` as "the flag file does not
+   exist", so a misconfigured `state_repo` slug or a token whose scopes lost
+   access still reads as clear, and fails open (TD-PPagop-26081602 — open,
+   to resolve with or before any repository's `merge_autonomy` rises above
+   `human`; until then `scripts/doctor.sh`'s `check_repo_access` reporting
+   the state repo unreachable-or-invisible is the operator-run mitigation).
 
    Managed by `--kill-merge-autonomy [<reason>]` and `--restore-merge-autonomy`
    (requirement 12), on the same terms as `--disable`/`--enable` where they
@@ -1678,7 +1873,7 @@ runs unattended.
      Implementor once failed on would still be blocked when the human posted
      fresh guidance, and that guidance would land on a dead item. Per-round refs
      expire by irrelevance, like the review-dated `review-<date>-R-NN` refs.
-   - **Only branches under `branch_prefix`.** The Human Gate reserves every
+   - **Only branches under `branch_prefix`.** The Landing Gate reserves every
      other branch for humans; "they asked for changes" is not licence to push to
      a colleague's PR.
    - **The answered-from-events extraction and decision are `lib/handoff.sh`'s
@@ -3452,6 +3647,11 @@ runs unattended.
    `scripts/sweep-human-visibility.sh`'s through `handoff_round_answered`,
    whose three arguments are a repo's whole reviews, comments and rerequests
    (`test/handoff.test.sh`, `test/review-feedback.test.sh`).
+   TD-PPagop-26081502 converted the one site TD-PPagop-26081406 found but did
+   not enumerate: `agent-cycle.sh`'s own invocation of
+   `scripts/gather-human-visibility-hygiene.sh`, which handed that script's
+   whole `$violations` argument as a single argv element to the script's own
+   `execve` (`test/gather-human-visibility-hygiene.test.sh`).
    TD-PPagop-26081503 completed the sweep over four further sites found after
    TD-PPagop-26081406 resolved: `gather-source-state.sh`'s final state build
    (`test/gather-source-state.test.sh`), `gather-findings.sh`'s
@@ -3493,15 +3693,32 @@ runs unattended.
    bytes back into a single argv element and leave the threshold where it
    was. Their tests drive each build with a body past the cap.
 
-   One site outside every prior item's enumeration still delivers a
-   fleet-state aggregate in argv, and is filed rather than fixed:
+   No site outside every prior item's enumeration remains outstanding: the
+   two sites this requirement once filed rather than fixed —
    `agent-cycle.sh`'s own invocation of
-   `scripts/gather-human-visibility-hygiene.sh`, which hands that script's
+   `scripts/gather-human-visibility-hygiene.sh`, which handed that script's
    whole `$violations` argument as a single argv element to the script's own
-   `execve`, a cap this requirement's `jq`-specific framing had not considered
-   until TD-PPagop-26081406 found it (TD-PPagop-26081502). That item is the
-   outstanding residue; this requirement claims no more than the sites named
+   `execve` (TD-PPagop-26081502), and `publish-dashboard.sh`'s own per-repo
+   `prs_json` fold and its queue-answers merge, both upstream of the
+   `github_json` build TD-PPagop-26081503 converted and still carrying the
+   fleet-wide PR index into `jq` as `--argjson` (TD-PPagop-26081506) — are
+   both now converted; this requirement claims no more than the sites named
    above.
+
+   **A shell script's own CLI invocation is bound by the same cap.**
+   `MAX_ARG_STRLEN` is a kernel-wide per-argument `execve` limit, not a
+   `jq`-specific one, and it binds a script's own positional arguments
+   exactly as it binds `jq --argjson` — a cap this requirement's
+   `jq`-specific framing had not considered until TD-PPagop-26081406 found
+   it (TD-PPagop-26081502). `agent-cycle.sh` used to hand
+   `scripts/gather-human-visibility-hygiene.sh` the fleet-wide
+   human-visibility violations log as that script's own second positional
+   argument, unbounded past the call; the script now reads it from stdin
+   instead, the same shape its own internal `jq` calls already took, and
+   `agent-cycle.sh` pipes `$violations` in rather than passing it
+   positionally. Regression-pinned in
+   `test/gather-human-visibility-hygiene.test.sh` by driving the real
+   script directly over a violations log genuinely past the cap.
 
    **The rule is the Publisher's too.** It was first written for the Script,
    because that is where the 2026-08-12 outage happened, and that scoping is
@@ -3712,6 +3929,99 @@ runs unattended.
    event carries the resolved `complexity` and the chosen `model`
    (requirement 33), which is what lets the distribution of self-assessments
    be audited for drift.
+8b. **Approver stage (D18 WI-5, `docs/reviews/2026-08-14-autonomy-investigation.md`
+   §5.2).** Once the Reviewer's `ready` verdict has cleared every existing
+   gate — `review_gate_verdict`, the closing-keyword gate, the draft flip
+   (requirement 31a), the re-request (requirement 31b), `ensure_human_reviewer`
+   (requirement 38) — and only then, the Script resolves this repository's
+   effective `merge_autonomy` level (`merge_autonomy_effective_level`,
+   `lib/merge-autonomy.sh`, requirement 2.3b). At `human` nothing further
+   happens: the cycle logs `pr-ready` and releases the claim exactly as it
+   always has, with no Approver engagement of any kind. At any level above
+   `human`, the Script logs `pr-ready` and releases the claim exactly as it
+   always has, and only then runs the Approver stage (`### The Approver`) —
+   deliberately after, not before: a refusal is a GitHub review sitting on an
+   already-ready pull request, not a reason to keep it from the human, exactly
+   as a human's own `CHANGES_REQUESTED` never has, so nothing about the
+   handoff itself waits on this stage or can be affected by how it ends.
+
+   The tier follows the same resolved `complexity` requirement 8a already
+   computed for the Reviewer (raise-never-lower, requirement 26a): `low` maps
+   to **Trivial** — no model call, the Script itself posts an `APPROVE`
+   review — `medium` to **Standard** (`approver_model_default`) and `high` to
+   **High** (`approver_model_complex`, empty falling back to
+   `approver_model_default`, the same escalation-off convention requirement
+   8a's own `reviewer_model_complex` uses). A **Critical** fourth tier
+   (`approver_model_critical`, falling back to `approver_model_complex`) is
+   never chosen by complexity — see requirement 8c for what does choose it.
+
+   `approver_model_default` empty disables the whole stage (the same
+   convention `enabler_model` empty already uses for the Enabler) — every
+   level above `human` then behaves exactly as `human` does, logged as a
+   `warning` rather than acted on silently. `scripts/doctor.sh` fails a
+   configured level above `human` with `approver_model_default` unset, the
+   same fail-fast pairing it already applies to `approver_app_id`
+   (requirement 2.3b) — this is a defence a *correctly* configured
+   installation should never exercise at runtime, kept only for the same
+   reason `lib/approver-token.sh`'s own credential-absent path is a `warning`
+   and not a blocked pull request: an Approver that cannot run must cost a
+   missing review, never a stranded PR.
+8c. **Refuse-wins, and the adjudication path (D18 WI-5, same design §5.2).**
+   A refusal is posted as a real `REQUEST_CHANGES` review from the Approver's
+   own GitHub App identity (`lib/approver-token.sh`, requirement 14b), so
+   GitHub itself holds the pull request at `CHANGES_REQUESTED` and the
+   existing `review-feedback` source (requirement 3c) picks it up next cycle
+   — no new work source, no new gate, the same mechanism a human's own
+   `CHANGES_REQUESTED` already drives. Before choosing a tier, the Script
+   counts the Approver identity's own current refuse streak — the number of
+   `CHANGES_REQUESTED` reviews it has most recently posted on this pull
+   request in a row, read fresh from the reviews list and stopping at its own
+   most recent `APPROVE` (`approver_refuse_streak`, `lib/approver.sh`), never
+   a count kept independently of GitHub's own record. A streak of two or more
+   replaces the ordinary tiered engagement with one **adjudication**
+   engagement on `approver_model_critical`, regardless of what the complexity
+   grade alone would have chosen — the disagreement, not the diff, is what
+   this tier is for.
+
+   The adjudication prompt carries the pull request's prior refusal review
+   bodies, oldest first (`approver_prior_refusal_bodies`), so the engagement
+   judges whether those reasons were actually answered, not the diff cold a
+   third time. Its verdict is `land`, `refuse` or `escalate`: `land` posts an
+   `APPROVE` review; `refuse` posts a fresh `REQUEST_CHANGES` review *and*
+   raises an escalation issue (`approver_escalate`, reusing
+   `create_escalation_issue`, requirement 34a's shared identity for that
+   function, with the same `enabler_escalation_label` and `enabler_assignee`
+   every other escalation this pipeline raises uses); `escalate` raises the
+   same escalation issue without a fresh review, since the pull request
+   already sits at `CHANGES_REQUESTED` from the two refusals that triggered
+   this engagement. A stage failure or an unparseable verdict is treated the
+   same as an explicit `escalate` — "cannot settle" is not read as "nothing
+   wrong". The escalation issue's body states what a human should do (review
+   and merge the pull request themselves), why the pipeline stopped (two
+   Approver refusals an adjudication could not resolve), and the adjudication
+   engagement's own `reasons`; its footer names the pull request as
+   `pr-<n>-approver-adjudication`, which is what `create_escalation_issue`'s
+   own open-issue dedup matches on across repeated rounds, so a persisting
+   disagreement raises one issue, not one per cycle.
+
+   No stage merges, at any tier, at any `merge_autonomy` level this work item
+   implements. `agent-merges-routine` and `agent-merges-all` are accepted and
+   validated (requirement 2.3b) and run the identical Approver review this
+   requirement and 8b describe, but land no differently from
+   `agent-approves`: the human still merges every pull request, because no
+   landing/arming step exists yet (that is a later work item's job — see
+   "## The Landing Gate"). The cardinal rule survives regardless of level:
+   the model never holds approve or merge rights; every GitHub write this
+   stage makes is a Script-issued `gh api` call under the Approver's own
+   minted token (`approver_post_review`), never a prompt-issued `gh pr
+   review` or `gh pr merge` — `prompts/approver.md` is explicitly forbidden
+   both, and the model's only output is a JSON verdict. A review GitHub
+   itself refused — an expired token, an installation that lost review
+   rights, an API outage — is logged as a `warning` naming the pull request
+   and the event (`approver_post_or_warn`, requirement 33) and changes
+   nothing else: the pull request stays exactly as the human already had it,
+   which is 8b's "a missing review, never a stranded PR" at the one point
+   where the failure is the write itself rather than the decision.
 9. **Failure handling.** If any stage times out, exits non-zero, or returns
    an unparseable summary: kill that stage's process group, log
    `attempt-failed` with enough detail for a future cycle to know the item
@@ -4912,6 +5222,23 @@ runs unattended.
     cycle exactly as it did before this check existed, and neither stage may
     report `blocked` for the want of it.
 
+    **A passing check says only that the preview answers, not what it
+    answers.** `--path` (a single route, judged for pass/fail) and `--fetch`
+    (any number of routes, repeatable, judged for nothing) both exist because
+    of this gap: poetic-fiddle#319's `frame-src` CSP defect sat in a response
+    header throughout its pull request and was caught only when a human later
+    opened the deployed preview in a browser. `--fetch <path>` runs once the
+    readiness check above has confirmed the preview answers past the wall, and
+    prints that route's response status, headers — a served
+    `Content-Security-Policy` among them — and body, sending the same
+    `x-vercel-protection-bypass` header internally so the secret never appears
+    in a command line, this output, or the stage transcript. An oversized or
+    binary body is truncated with a note saying so rather than dumped whole.
+    Both prompts (component 4) direct their stage to name every route the
+    diff touches on the same invocation as the readiness check, after any
+    push; `--fetch`'s output is read as review evidence and never changes the
+    check's own exit code.
+
     Both stages reach the script through **`AGENT_OPS_ROOT`**, which
     `agent-cycle.sh` exports as its own directory and every stage inherits. A
     stage's working directory is its ephemeral clone, so a prompt naming a tool
@@ -5127,7 +5454,7 @@ runs unattended.
     directly on the branch — committing, rebasing onto the current default
     branch, or force-pushing as it judges best, always with
     `--force-with-lease` (permitted only on `branch_prefix` branches, per
-    "The Human Gate"). Where it cannot fix
+    "The Landing Gate"). Where it cannot fix
     with confidence, it leaves a PR review comment describing the problem
     for the Human Reviewer. A `complexity:*` label (requirement 26a) plainly
     wrong for the diff counts as such a problem: having just read the whole
@@ -5255,7 +5582,7 @@ runs unattended.
     **This does not clear the block, and must not appear to.** Re-requesting
     review leaves `reviewDecision` at `CHANGES_REQUESTED` and `mergeable_state`
     at `blocked` — verified against GitHub on poetic-fiddle #200, before and
-    after — so "The Human Gate" holds unchanged: the PR still needs an approving
+    after — so "The Landing Gate" holds unchanged: the PR still needs an approving
     review from a code owner that this system cannot give itself. All the
     re-request does is return the PR to the queue the human actually reads.
 
@@ -5271,14 +5598,24 @@ runs unattended.
     where it did not the Script does it. One definition, in `lib/handoff.sh`
     (requirement 34a).
 31c. **A `ready` verdict is confirmed against GitHub before it is acted on, not
-    trusted from the Reviewer.** poetic-fiddle #216 reached
+    trusted from the Reviewer — and the same confirmation binds every path
+    that can flip a draft to ready, not the Reviewer's own handoff alone
+    (agent-ops#440).** poetic-fiddle #216 reached
     `reviewDecision: APPROVED` while a CodeQL high-severity alert ("clear-text
     logging of sensitive information") sat open, hidden inside an otherwise
     15/16-green check list — the Reviewer's own instruction to confirm CI is
     green (requirement 30) is a model reading a check list and judging it, and
-    that judgement is exactly what missed this one. So before requirement 31's
-    draft flip ever runs, the Script asks GitHub directly, through
-    `lib/review-gate.sh`'s `review_gate_verdict` (component 20):
+    that judgement is exactly what missed this one. So before any pull
+    request is taken out of draft, the Script asks GitHub directly, through
+    `lib/handoff.sh`'s `handoff_complete_review` — the one gate-and-flip
+    implementation both the Reviewer's own handoff below and the Enabler's
+    `complete_handoff` recovery path (requirement 32b) call, so the gate binds
+    on both by construction rather than by each path remembering to run it.
+    (PR #433: an Enabler `complete_handoff` flipped a pull request to ready
+    whose Implementor had failed and whose Reviewer had therefore never run
+    at all — the gate below simply was not part of that path yet.)
+    `handoff_complete_review` runs `lib/review-gate.sh`'s `review_gate_verdict`
+    (component 20) first:
     - every required status check green at the pull request's *current* head
       commit (`gh pr checks --required`, asked fresh rather than reused from
       anything read earlier in the engagement, so a check still catching up to
@@ -5368,14 +5705,16 @@ runs unattended.
 
     One further check shares this gate: requirement 25a's script-side
     closing-keyword gate (`lib/closing-keyword-gate.sh`, component 17a) is
-    asked here too, after `review_gate_verdict` and before requirement 31's
-    draft flip, and a `dirty` verdict from it is recorded as the same
-    requirement 32a handback; an `unknown` one warns and proceeds, exactly as
-    the non-blocking alerts `unknown` above does — a required-check list
-    unreadable enough to matter already stopped the cycle at
-    `review_gate_verdict`, so by the time this gate runs the node is known
-    able to read GitHub. It is asked again here rather than trusted from the
-    pass it made when the pull request was raised, for the same reason the
+    asked here too, inside `handoff_complete_review`, after `review_gate_verdict`
+    and before either path's draft flip, and a `dirty` verdict from it is
+    recorded as the same requirement 32a handback on the Reviewer's own path
+    (a `warning` naming the finding, on the Enabler's — requirement 32b); an
+    `unknown` one warns and proceeds, exactly as the non-blocking alerts
+    `unknown` above does — a required-check list unreadable enough to matter
+    already refused the handoff at `review_gate_verdict`, so by the time this
+    gate runs the node is known able to read GitHub. It is asked again here
+    rather than trusted from the pass it made when the pull request was
+    raised, for the same reason the
     checks above are read fresh: a body can be edited between the two — and
     because that earlier call only *tells* the Reviewer, so this is the only
     point at which the closing keyword is actually enforced.
@@ -5421,11 +5760,71 @@ runs unattended.
     meaning: this block *is* an unfinished handoff — an open draft this system
     raised, checks green, work done, no unanswered concern — take it out of
     draft. The Enabler establishes it; the **Script** performs it, through
-    requirement 31a's implementation, and logs `pr-ready` with
+    `handoff_complete_review` (requirement 31c) — the same gate-and-flip
+    implementation the Reviewer's own handoff calls, run here in full rather
+    than skipped — and on a clean verdict logs `pr-ready` with
     `handoff: "enabler"`. The division is requirement 36's: the Script is the
     only writer of the pipeline's outward acts, which is why it and not the
     Enabler also files the escalation issue. A `complete_handoff` on an item with
     no `pr_url` is ignored — there is nothing to hand off.
+
+    **The Script refuses `complete_handoff` outright — logging a `warning`
+    naming the reason, never the flip — when the item's most recently recorded
+    failure is at or before the Implementor stage** (agent-ops#440, PR #433):
+    the block a `complete_handoff` recovers must itself be a Reviewer's, or
+    nothing has ever confirmed the pull request is safe to hand off, and every
+    one of the four preconditions above can read as satisfied only because
+    none of them was ever actually asked. This is checked before
+    `handoff_complete_review` runs at all — a Reviewer verdict is a
+    precondition for asking the gate, not a substitute for it — and reads the
+    block's own `stage` field (the same one `handle_stage_failure`/
+    `log_reviewer_handback` stamp on every `attempt-failed`, requirement 35a):
+    `"reviewer"` and the recovery proceeds; anything else (`"implementor"`,
+    `"coordinator"`, `""`, …) and it is refused. On PR #433 the Implementor
+    had failed, the Reviewer block never ran, and a `complete_handoff` still
+    flipped the pull request to ready — the gate did not exist on this path at
+    all yet, so nothing caught it. A refused `complete_handoff` does not undo
+    the item's own `unblocked` verdict, which still stands: the underlying
+    impediment the Enabler diagnosed is still cleared, and the stalled pull
+    request is left for a Reviewer to actually examine — which, **for a
+    repository whose `sources` include `abandoned-drafts`**, is what that
+    source (requirement 3e) does once the draft goes stale, handing it to a
+    fresh Implementor-then-Reviewer pass.
+
+    **That recovery is a property of the repository's configuration, and
+    nothing stands behind it.** `abandoned-drafts` is a per-repo entry in
+    `sources` like any other and requirement 3e runs only for a repository
+    that lists it, so the hedge above is load-bearing rather than cautious.
+    Nor does the item ever find its own way back, with the source or without
+    it: the draft's branch *is* the claim the item was taken under, so every
+    later claim on it 422s and the Co-Ordinator's exclusion reads "claimed, skip"
+    — requirement 17b's mechanism, in precisely the state that requirement's
+    sweep exists to convert *into* this one — and the other three finishing
+    sources exclude drafts by construction (requirements 3c, 3g, 3z), because
+    a draft is the Implementor's own claim marker rather than work awaiting a
+    human. A repository configured without `abandoned-drafts` therefore leaves
+    this draft for a human, along with every other stalled draft it ever
+    raises, whatever stalled it. That is a gap in what such a configuration
+    recovers — not a reason to soften the refusal, whose alternative is
+    flipping to ready a pull request nothing has reviewed. Whether the source
+    should be optional at all is agent-ops#472's decision, not this
+    requirement's.
+
+    Once a Reviewer verdict is on record, `handoff_complete_review`'s own gate
+    still applies exactly as requirement 31c describes it: `dirty` (either
+    sub-check, or the closing-keyword gate) or an unreadable required-check
+    list refuses the flip with a `warning` naming what the gate found — never
+    a Reviewer handback, since there is no Reviewer engagement to hand back
+    to — and `complete_handoff` is recorded on the resulting
+    `enabler-examined` event as `"failed"` rather than a flip word, so a
+    reader can tell "the gate refused it" apart from "there was nothing to
+    hand off" and from an actual flip. An unreadable required-check list also
+    runs requirement 31c's own node-health streak (TD-PPagop-26081404) here,
+    through the same `review_gate_escalate_unreadable_streak` helper the
+    Reviewer's own handoff calls (TD-PPagop-26081603): a run of consecutive
+    unreadable-checks failures escalates to one `review-gate-checks-degraded`
+    event whether it lands on this path or that one, rather than only the
+    latter.
 
     Requirement 31b runs on this path too, and it is not decoration here: an
     `already` is exactly what a stalled review round answers, because that PR was
@@ -5451,6 +5850,7 @@ runs unattended.
     `dependabot-rebase-requested`,
     `disabled`, `enabled`,
     `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
+    `approver-verdict`, `approver-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
@@ -5540,7 +5940,20 @@ runs unattended.
     since a run of failed salvages with no `recovered` among them is itself
     the evidence that a shape `extract_json_result` still cannot reach has
     recurred; a failed run with no session to resume at all writes no
-    `salvage` event, because no attempt was made. A
+    `salvage` event, because no attempt was made. An `approver-verdict`
+    (requirements 8b/8c) is written once per Approver engagement that reached
+    a verdict, carrying the `pr_url`, the `tier` it was judged at, the
+    `verdict` itself, the `refuse_streak` that tier was chosen against, and
+    `adjudication` — `true` where the streak, not the complexity grade, chose
+    the tier. It records what the Approver decided, never that GitHub accepted
+    the review: a review the API refused is a `warning` naming the pull
+    request and the event (`approver_post_or_warn`), so an operator finding an
+    `approver-verdict` with no review on the pull request has the write's own
+    failure logged beside it rather than having to infer it. An
+    `approver-escalated` (requirement 8c) carries the same `pr_url` plus the
+    `issue_number` and `issue_url` of the escalation an unsettled adjudication
+    raised; a filing that failed is a `warning` instead, since
+    `create_escalation_issue`'s own dedup makes the retry next cycle free. A
     `stage-start` carries the two caps that stage
     was given and where each came from — `backstop_min`, `inactivity_min`,
     `source` and `basis` (requirement 4f) — because a self-tuning number that
@@ -7132,7 +7545,7 @@ runs unattended.
 
     | Verdict | The Script does |
     |---|---|
-    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`, also completes the handoff through requirement 31a and logs `pr-ready` with `handoff: "enabler"` (requirement 32b), or a `warning` if the PR is still a draft. On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
+    | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`: refused outright with a `warning`, and no gate ever run, when the block's `stage` is not `"reviewer"` (requirement 32b); otherwise runs `handoff_complete_review` (requirement 31c) and, on a clean verdict, logs `pr-ready` with `handoff: "enabler"` — or, on a `dirty`/unreadable verdict or a flip that did not take, a `warning` naming what the gate found instead. Either refusal is also recorded as `complete_handoff` on the `enabler-examined` event (`"refused-no-reviewer"` or `"failed"`, rather than the flip word). On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
     | `void` | corroborated by requirement 34d's shared guard; on success logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e; on refusal logs `attempt-failed` and a `warning` instead, with outcome `void-refused` |
     | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
@@ -7729,15 +8142,21 @@ runs unattended.
       including one this never learned to recognise, stays actionable, the
       same "unknown must not suppress" direction `merge_queue_probe`'s own
       contract takes. And the event's own age is bounded by
-      `merge_queue_dequeue_notice_max_age_hours` (default 24 h): a removal
-      older than that gets no notice even the first time a sweep reads it,
-      so a repository's queue adoption (or this requirement's own rollout)
-      does not retroactively read every already-old removal on every open,
-      labelled pull request as fresh news. The notice is idempotent per
-      removal event — `<!-- agent-ops:merge-queue-dequeued: <dequeued_at>
-      -->` — rather than per pull request, so a second dequeue after an
-      earlier one was already acknowledged gets its own notice rather than
-      being silently suppressed by the first. It does not wait on
+      `merge_queue_dequeue_notice_max_age_hours` (default 24 h; `minimum: 0`,
+      agent-ops#429): a removal older than that gets no notice even the first
+      time a sweep reads it, so a repository's queue adoption (or this
+      requirement's own rollout) does not retroactively read every
+      already-old removal on every open, labelled pull request as fresh
+      news. `0` disables the notice outright — an explicit `awk`-computed
+      guard around `mq_recent`, not merely a zero-width threshold a
+      same-second dequeue could still slip through — for a repository that
+      runs without a merge queue and should say so in config rather than by
+      tuning this value near zero; the trade-off is losing the only human
+      signal this pipeline raises for a merge-group failure. The notice is
+      idempotent per removal event — `<!-- agent-ops:merge-queue-dequeued:
+      <dequeued_at> -->` — rather than per pull request, so a second dequeue
+      after an earlier one was already acknowledged gets its own notice
+      rather than being silently suppressed by the first. It does not wait on
       `human_nudge_idle_hours`: this is new information a human has not
       seen, not the "forgot to click merge" case that threshold exists for.
       A failed POST is a `warning`, exactly as the ordinary idle nudge's
@@ -8125,6 +8544,78 @@ runs unattended.
     left over from an earlier failed removal is cleared on the next cycle that
     finds it with its block gone, rather than sitting on the issue meaning
     nothing until a human removes it by hand.
+
+### The Approver
+
+D18 WI-5 (agent-ops#408; design `docs/reviews/2026-08-14-autonomy-investigation.md`
+§5.2/§5.3). Requirements 8b and 8c above state when and why the Script
+engages this stage; these state what the stage itself does once engaged.
+Physically placed here, after the Refiner, rather than immediately after
+"### The Reviewer" it follows in the pipeline's own running order — inserting
+it there would have meant renumbering every requirement from "### Logging and
+state" onward, and every one of their cross-references throughout this
+document, for a stage whose numbers do not otherwise need to be contiguous
+with the Reviewer's own.
+
+40. **One engagement, judge only, never fix.** The Approver runs in the same
+    ephemeral clone the Implementor and Reviewer already used, with the pull
+    request's branch checked out, and reads: the diff, the work order, the
+    Implementor's summary, the Reviewer's summary, and — on an adjudication
+    engagement only — the Approver's own prior `REQUEST_CHANGES` review
+    bodies on this pull request (requirement 8c). It may edit, commit, or
+    push nothing; unlike the Reviewer, which repairs a pull request and then
+    certifies its own repair, the Approver exists to be an independent second
+    read of the same diff, and repairing what it is reviewing would collapse
+    exactly the independence it exists to restore. `prompts/approver.md`
+    states this as the stage's own operating rule, not only as a convention
+    this requirement documents.
+41. **Posture follows tier.** Standard (`complexity:medium`): find a reason
+    to refuse; approve only if none is found. High (`complexity:high`):
+    the same posture, refuse-by-default — this tier exists because the diff
+    already earned `complexity:high` under requirement 26a's own rubric
+    (concurrency, security, state replication, CI/workflow machinery, or
+    shared library code), so the base rate of a genuine defect is higher and
+    the prompt is told to read expecting one. Adjudication: not a third
+    ordinary review — a ruling on whether the disagreement the two prior
+    refusals raised is real and unresolved (`refuse`), has since been
+    answered (`land`), or is a genuine judgement call neither side can settle
+    alone (`escalate`, favoured over a third guess).
+42. **Never writes to GitHub.** The Approver's prompt is explicitly
+    forbidden `gh pr review`, `gh pr comment`, `gh api .../reviews`,
+    `gh pr merge`, `gh pr ready`, or any other GitHub write — its entire
+    contribution is the verdict in its final JSON message. Every actual
+    GitHub write (`APPROVE`/`REQUEST_CHANGES`, the escalation issue on an
+    unresolved adjudication) is a Script-issued call under the Approver's own
+    minted App token (`approver_post_review`, `lib/approver.sh`;
+    `approver_token_get`, `lib/approver-token.sh`, requirement 14b) —
+    requirement 8c's own restatement of D18's cardinal rule, that the model
+    never holds approve or merge rights, applied at this stage specifically.
+43. **Ends with a single JSON object:**
+    `{"verdict": "approve" | "refuse", "reasons": […]}` on a Standard or High
+    engagement, `{"verdict": "land" | "refuse" | "escalate", "reasons": […]}`
+    on adjudication. `reasons` is a list of short, specific findings — it
+    becomes the body of the GitHub review the Script posts on a refusal, and
+    the evidence an escalation issue carries on adjudication, so it is
+    written for a reader with no other context, never merely "looks risky."
+    An unrecognised or missing `verdict`, or a stage that failed to launch or
+    produced no parseable JSON at all, is never read as either verdict: the
+    Script logs a `warning` and posts no review this round (requirement 8b)
+    — on adjudication specifically, it is treated the same as an explicit
+    `escalate` (requirement 8c), since "cannot settle" is not "nothing
+    wrong."
+44. **One-shot, no resumption, same foreground-wait discipline every other
+    stage in this pipeline follows.** The Approver is launched exactly once
+    per Reviewer-`ready` round via `run_claude_stage` (component 4d, the same
+    shared launcher every stage in this document uses), on
+    `approver_model_default`/`approver_model_complex`/`approver_model_critical`
+    per requirements 8b/8c, under the `approver` stage-budget key
+    (`lib/stage-budget.sh`'s `STAGE_BUDGET_PRIORS`, falling back to the
+    Implementor's own prior — requirement 4e's derivation — for any
+    installation with no history for this stage yet). A stage timeout, a
+    non-zero exit, or an unparseable final message ends the engagement with
+    no review posted (requirement 43) — never a blocked pull request, since
+    nothing about the human's own path to merging depends on this stage
+    having run at all.
 
 ## Components
 
@@ -8642,6 +9133,11 @@ What exists, and the requirements each part answers to:
    carries the escalation issue's template, since the quality of that issue is
    the whole of requirement 36a's ask of a human; the Refiner's carries no
    such template, since it has no escalation power of its own.
+4e. `prompts/approver.md` implementing requirements 40–44 (D18 WI-5): judge
+   only, never fix, posture keyed to the tier it is told (Standard, High or
+   adjudication), no GitHub-write instruction of any kind, ends with a
+   verdict-only JSON object. Sourced by `agent-cycle.sh`'s `run_approver_stage`
+   only.
 4a. `lib/prompt-overrides.sh` implementing requirement 4a: `stage_prompt_text`
    (the assembled prompt for a stage, honouring `config.json`'s
    `prompt_overrides.<stage>.extend`/`.replace`) and `stage_prompt_sha` (the
@@ -8763,7 +9259,13 @@ What exists, and the requirements each part answers to:
     not check — which is what a protected, absent or still-building preview
     gets, so a login page is never reported as a healthy deployment.
     `VERCEL_TOKEN`, when set, adds the tail of the build log to a failure;
-    without it a failure names the deployment's inspector URL instead. Its
+    without it a failure names the deployment's inspector URL instead.
+    `--fetch <path>` (repeatable) prints the response status, headers and body
+    for each named route once the readiness check has confirmed the preview
+    answers past the wall — read as evidence, not judged for pass/fail, and
+    never affecting the exit code; a binary or oversized body is truncated
+    with a note rather than dumped whole, and the bypass secret it sends
+    internally never appears in the output. Its
     verdicts are regression-tested against a stubbed `gh` and `curl`
     (`test/preview-deploy.test.sh`); must pass `shellcheck`.
 14. `config.schema.json`, `lib/config-schema.sh` and `scripts/doctor.sh`
@@ -8889,15 +9391,22 @@ What exists, and the requirements each part answers to:
     repository's configured level — its own `repos[]` override, else the
     top-level key, else `human` — with no opinion about the kill switch.
     `merge_autonomy_kill_state`/`_set`/`_clear` (`STATE_REPO`, `STATE_DIR`,
-    …) manage `fleet/merge-autonomy-kill.json` through
-    `lib/toggle.sh`'s `fleet_flag_fetch`/`_write_outcome`/`_delete_outcome`
-    directly — no record of its own, no local/node-scoped level, `kind`
-    always `manual` — and `merge_autonomy_kill_state` reads in
-    `toggle_state`'s own vocabulary (`_toggle_eval`) so a caller already
-    speaking it needs no second one. `merge_autonomy_effective_level`
+    …) manage `fleet/merge-autonomy-kill.json` through `lib/toggle.sh`'s
+    `fleet_flag_fetch_status`/`_write_outcome`/`_delete_outcome` directly —
+    no record of its own, no local/node-scoped level, `kind` always
+    `manual` — and `merge_autonomy_kill_state` reads in `toggle_state`'s own
+    vocabulary (`_toggle_eval`) so a caller already speaking it needs no
+    second one; unlike every other fleet-flag reader here it uses
+    `fleet_flag_fetch_status` rather than plain `fleet_flag_fetch`, so it can
+    tell a clear-flag 404 apart from a transport-unreachable repo with no
+    cached copy and resolve the latter to `disabled` (TD-PPagop-26081507; a
+    repo-level 404 — the state repo missing or invisible to the token —
+    still reads as clear, TD-PPagop-26081602).
+    `merge_autonomy_effective_level`
     combines both: `human` whenever the kill switch is set or unreadable,
-    the configured level otherwise — the one function a future
-    approval/landing path (WI-5, WI-7) must call. Sourced by
+    the configured level otherwise — the one function every
+    approval/landing path must call, `run_approver_stage` (requirement 8b)
+    among them. Sourced by
     `agent-cycle.sh` (the `--kill-merge-autonomy`/`--restore-merge-autonomy`
     flags and `--status`) and `scripts/doctor.sh` (the pairing and ruleset
     checks, requirement 2.3b); depends on `lib/toggle.sh`, sourced first by
@@ -8956,20 +9465,60 @@ What exists, and the requirements each part answers to:
     `expires_at` that does not parse is never guessed at — the token is
     returned but not cached. Any cache failure at all is skipped silently
     and the call mints fresh, which is correct and merely slower.
+
+    `approver_token_identity_login [NOW_EPOCH]` prints the App's own login
+    (`<slug>[bot]`, the form every review it submits carries as
+    `user.login`) — the one call in this file that authenticates as the App
+    itself (`GET /app`, JWT-signed) rather than as an installation, since an
+    installation token can post as the App but cannot ask GitHub what its own
+    slug is. `lib/approver.sh` needs it to tell the Approver's own past
+    reviews on a pull request apart from a human's or another bot's when it
+    counts a refuse streak (requirement 8c). Not cached — asked rarely
+    enough, and changes essentially never, that a second cache file buys
+    nothing a fresh call does not already give for free.
+
     Sourced, never executed, and it sets no shell options, so a caller's own
     `set -euo pipefail` decides. `APPROVER_TOKEN_CURL`,
     `APPROVER_TOKEN_OPENSSL` and `APPROVER_TOKEN_CACHE_DIR` override the two
     binaries and the cache directory for tests only — the directory override
     passes through the same mount-type check, so it cannot re-introduce
-    disk. Nothing sources it yet —
-    WI-5's Approver stage is its first caller. Regression-tested in
+    disk. Sourced by `agent-cycle.sh`; `run_approver_stage`
+    (requirements 8b/8c) is its first caller. Regression-tested in
     `test/approver-token.test.sh` against a stubbed `curl` and a throwaway
     RSA key real `openssl` signs, covering the success path, a cache hit, a
     near-expiry refresh, each missing-credential shape, a planted cache
     file, the JWT staying out of `curl`'s argv, the per-installation cache
     key, a disk-backed cache directory refused, an unparsable `expires_at`
-    left uncached, a refused mint, an unreachable API, a malformed body and
-    an unusable cache directory. Must pass `shellcheck`.
+    left uncached, a refused mint, an unreachable API, a malformed body,
+    an unusable cache directory, and the identity-login lookup's own success
+    and failure paths. Must pass `shellcheck`.
+14c. `lib/approver.sh` implementing requirements 8b, 8c and 40–43: the
+    Approver stage's own decision primitives. `approver_tier_for COMPLEXITY`
+    and `approver_model_for_tier TIER MODEL_DEFAULT MODEL_COMPLEX` are pure
+    lookups (requirement 8b). `approver_refuse_streak PR_URL LOGIN` reads the
+    pull request's reviews list fresh — one JSON object per page-safe line,
+    aggregated with `jq -s` across every page the same way
+    `lib/handoff.sh`'s `_handoff_latest_reviews` already does, never an
+    aggregate computed inside `gh api --paginate`'s own `--jq`, which would
+    silently disagree with itself past thirty reviews — and counts LOGIN's
+    own `CHANGES_REQUESTED` reviews back from the newest, stopping at its own
+    most recent `APPROVED` (requirement 8c). `approver_prior_refusal_bodies
+    PR_URL LOGIN` prints the same login's `REQUEST_CHANGES` review bodies,
+    oldest first, for the adjudication prompt. `approver_post_review PR_URL
+    EVENT BODY TOKEN` POSTs the actual `APPROVE`/`REQUEST_CHANGES` review,
+    `GH_TOKEN` set for that one invocation only, never exported — the one
+    GitHub write this whole stage performs, and the only place in this
+    codebase that mints a review under a non-owner identity. `agent-cycle.sh`'s
+    `run_approver_stage`, `approver_post_or_warn` and `approver_escalate` are
+    the sole callers,
+    composing these primitives with `merge_autonomy_effective_level`
+    (`lib/merge-autonomy.sh`), `create_escalation_issue` (component 2) and
+    the ordinary `run_claude_stage` launch every other stage uses. Sourced,
+    never executed. Regression-tested in `test/approver.test.sh` against a
+    stubbed `gh`, and the wiring those primitives hang off in
+    `test/approver-wiring.test.sh`, which lifts `run_approver_stage` and
+    `approver_post_or_warn` verbatim out of `agent-cycle.sh` rather than
+    restating their logic (acceptance check 8s). Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -9539,6 +10088,20 @@ pull request, run the ones the change touches and any it could regress.
    that this node adds no node-scoped disable of its own; with both set it
    reports both and spells out that `--enable` clears both while `--enable
    --this-node` leaves the node down under the fleet switch.
+
+   The same file covers the record's `scope` (requirement 2.3): an unmodified
+   `--disable` tags its local record `fleet` while still publishing the flag,
+   and `--status` names that record as the fleet switch's mirror rather than
+   as a second, node-scoped disable; `--enable --this-node` refuses a mirror
+   with exit 64, naming plain `--enable`, and leaves the record in place; a
+   mirror that survives a peer's `--enable` is reported as a leftover of a
+   cleared fleet switch and cleared by `--enable` on its own node; a
+   `--disable` whose fleet publish fails is retagged `node` with its
+   `disabled_at` unmoved and no flag published, and `--enable --this-node`
+   then clears it; `--disable --this-node` tags `node`, and that scope
+   reaches peers through `toggle_switch_summary`; and a record written
+   without the field reads as `node` through both `toggle_scope` and the
+   summary.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
@@ -10054,7 +10617,15 @@ pull request, run the ones the change touches and any it could regress.
    uses to find the current branch's PR — and an explicit `--repo` with no
    `--pr` resolves the number first through `gh pr list --head <branch>`
    rather than combining the two; that refusal is pinned directly against the
-   installed `gh` binary, not assumed by the stub. Against the real API and a
+   installed `gh` binary, not assumed by the stub. `--fetch <path>` against a
+   preview behind the same stubbed wall still returns that route's status,
+   headers and body — proving the bypass secret it sends internally reaches a
+   protected preview's own content — while the secret's value never appears
+   anywhere in the command's output; a binary body is noted rather than
+   dumped, and an oversized one is truncated with a note naming the size.
+   `prompts/implementor.md` and `prompts/reviewer.md` are asserted to invoke
+   the check with `--fetch` in the same literal form, so the two cannot drift
+   (requirement 34a). Against the real API and a
    real protected preview, `scripts/preview-deploy.sh --repo
    Poetic-Poems/poetic-fiddle --pr <n>` from a shell with no bypass secret set
    reports that the deployment built and that the page could not be checked.
@@ -10324,7 +10895,39 @@ pull request, run the ones the change touches and any it could regress.
    the EXIT trap's backstop, proven by running the real `cleanup` under
    `set -e`. `test/claim.test.sh` covers the back-pressure half: `count`
    counts the item-keyed entry a cycle just won and does not count a
-   `pr-<n>` entry surviving on its own.
+   `pr-<n>` entry surviving on its own; and, given the pull requests the
+   caller has already counted, it drops an item claim naming one of them
+   while keeping a claim on a PR the caller's sum does not hold — matching
+   whole numbers, so a claim on PR 90 survives a caller that counted PR 9.
+7e. **The back-pressure block hands its parts to each other correctly
+   (requirement 2.2).** The counting seam, not the parts: issue #427 and the
+   over-correction in PR #434 were both defects of this wiring, and both
+   shipped past a suite that tested `lib/claim.sh count` thoroughly and its
+   caller not at all. `test/backpressure-wiring.test.sh` passes, against the
+   block lifted verbatim from `agent-cycle.sh` with a `gh` stub replaying a
+   listing per repo and a `lib/claim.sh` stub recording its argv: each repo's
+   claim count is asked for against that repo's own drafts and
+   changes-requested PRs and no others, so a claim on an approved PR waiting
+   on a human keeps counting; a repo whose listing could not be read names no
+   PRs at all, counting every claim, which is the fail-closed reading beside
+   its own zeroed counts; and the composition line states the split the
+   operator and the dashboard card both read.
+7f. **The decision site folds in what requirement 2.2's count could not see
+   yet (requirement 2.2b, issue #459).** `test/backpressure-decision.test.sh`
+   passes, against the fold-in block lifted verbatim from `agent-cycle.sh`: a
+   repo with no `merge_conflicts`/`dequeued` candidates adds nothing and
+   leaves `adjusted_open_count`, `open_composition` and `backpressure_tripped`
+   untouched; a candidate PR already among `counted_prs_json`'s drafts and
+   changes-requested PRs (it happened to also be `CHANGES_REQUESTED`) is not
+   added again; a candidate PR that count did not hold is added exactly once,
+   grows `adjusted_open_count` by it, and is named in `open_composition`; the
+   same PR named by both `merge_conflicts` and `dequeued` is not
+   double-counted; two repos' candidates are both folded in, and a PR number
+   shared by two repos is scoped per repo rather than conflated; a fold-in
+   that reaches `max_open_agent_prs` trips `backpressure_tripped` from `0` to
+   `1` even though requirement 2.2's own count left it untripped; and an
+   already-tripped cycle with nothing left to fold in stays tripped without
+   its composition line changing.
 8. **A no-op Implementor is recorded.** Drive one cycle in which the
    Implementor reports `blocked` without opening a PR: the cycle must exit 0
    having logged an `attempt-failed` carrying that item and the stage's own
@@ -10571,9 +11174,21 @@ pull request, run the ones the change touches and any it could regress.
    anything telling a human it is theirs, and that a bare `stage-end` is no
    longer the only record: that shape named no item, pinned no state, and is what
    let a finished draft sit unseen. Then assert requirement 32b's other end: an
-   Enabler `unblocked` verdict carrying `complete_handoff: true` takes the PR out
-   of draft and logs `pr-ready` with `handoff: "enabler"`, while the same verdict
-   on an item with no `pr_url` is ignored without error.
+   Enabler `unblocked` verdict carrying `complete_handoff: true`, on an item whose
+   block `stage` is `"reviewer"` and whose `handoff_complete_review` gate is
+   clean, takes the PR out of draft and logs `pr-ready` with `handoff: "enabler"`;
+   the same verdict on an item with no `pr_url` is ignored without error; on an
+   item whose block `stage` is anything else (`"implementor"`, `"coordinator"`,
+   absent) is refused with a `warning` and no `pr-ready`, `handoff_complete_review`
+   never called at all (agent-ops#440, PR #433); and on an item whose `stage` is
+   `"reviewer"` but whose gate is `dirty` or whose required checks are unreadable
+   is refused with a `warning` naming the gate's own finding, again with no
+   `pr-ready`. For the unreadable-checks case, also drive this node's own
+   streak past `review_gate_unknown_streak_after` (TD-PPagop-26081603) and
+   assert the same escalation requirement 8d pins for the Reviewer's own
+   handoff: one `review-gate-checks-degraded` event naming the count, in
+   place of a second per-item `warning`, with `complete_handoff` still
+   recorded as `"failed"` on the `enabler-examined` event.
 8e-i. **A stage that says nothing still names its pull request (requirement
    9).** `test/handoff.test.sh` passes its `pr_url_for_branch` assertions: an
    open PR on the claimed branch is found and its URL returned; a branch with
@@ -11362,10 +11977,13 @@ pull request, run the ones the change touches and any it could regress.
     `nudged`) behaving exactly as it did before this requirement existed; a
     failed dequeue-notice POST is a `warning`, never silence; a `"manual"`
     dequeue gets no notice even though it is otherwise fresh and
-    unacknowledged (agent-ops#394); and a dequeue older than
+    unacknowledged (agent-ops#394); a dequeue older than
     `merge_queue_dequeue_notice_max_age_hours` gets no notice even though it
     carries an actionable reason and no marker is on the pull request yet
-    (agent-ops#394).
+    (agent-ops#394); and `merge_queue_dequeue_notice_max_age_hours: 0`
+    disables the notice outright, even for a same-second dequeue whose age
+    (`0`) does not exceed the zero-width threshold arithmetic alone would
+    apply (agent-ops#429).
 38g. **Requirement 38c's ruleset dependency is reported, not silent
     (agent-ops#391).** `test/doctor.test.sh` passes, over the same
     single-target-repo fixture and `gh`/`rulesets` stub requirement 25a's own
@@ -11428,6 +12046,41 @@ pull request, run the ones the change touches and any it could regress.
     malformed trailing line is skipped rather than aborting the read; and
     `--since` bounds the window reported. `scripts/pickup-metrics.sh` passes
     `shellcheck`.
+8s. **The Approver runs only above `human`, picks its tier correctly, and
+    refuse-wins (requirements 8b, 8c).** `test/approver.test.sh` passes
+    against a stubbed `gh`: `approver_tier_for` maps `low`/`medium`/`high` to
+    `trivial`/`standard`/`high` and anything else to `standard`;
+    `approver_model_for_tier` picks `MODEL_COMPLEX` only for `high`;
+    `approver_refuse_streak` counts a login's own trailing
+    `CHANGES_REQUESTED` reviews correctly over the line-per-review shape
+    `--paginate --jq` emits — the aggregation runs once over every page's
+    lines at once, so no page boundary is observable to it — stopping at that
+    login's own most recent `APPROVED`, ignoring `COMMENTED` and `DISMISSED`,
+    ignoring another account's reviews entirely, reading `0` for a login that
+    never reviewed — and returns non-zero, printing nothing, when the list
+    itself could not be read; `approver_post_review` posts with `GH_TOKEN` set
+    for that one invocation only, never leaking into a later call under the
+    stub's own default identity; `approver_prior_refusal_bodies` returns the
+    same login's `REQUEST_CHANGES` bodies oldest-first and nothing on an
+    unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`
+    and `approver_post_or_warn` verbatim out of `agent-cycle.sh` and drives
+    them with every GitHub call, model launch and log write stubbed: at
+    `merge_autonomy: human` the stage posts no review, launches no model and
+    logs nothing at all; at `agent-approves` a `complexity:low` pull request
+    gets a deterministic `APPROVE` with no model launched, `medium` and
+    `high` launch `approver_model_default` and `approver_model_complex`
+    respectively, a refusal's `reasons` become the `REQUEST_CHANGES` body,
+    and a synthetic refuse streak of two routes the next round to
+    `approver_model_critical` — for a `complexity:low` pull request too,
+    which the grade alone would have approved without a model at all. Each
+    failure path returns 0 having posted nothing and logged a `warning`: the
+    stage disabled (`approver_model_default` empty), the credential absent, a
+    verdict that would not parse, a verdict the Script does not recognise, and
+    a review GitHub refused; only an adjudication escalates.
+    `scripts/doctor.sh` fails a `merge_autonomy`
+    above `human` configured with `approver_model_default` empty, the same
+    shape its existing `approver_app_id` pairing check already fails on
+    (`test/doctor.test.sh`).
 
 ## Host provisioning (human steps)
 
@@ -11495,6 +12148,18 @@ nothing, and the first answered probe (a fraction of a cent of
 one probe per stand-down is ever paid for. Because back-pressure caps open agent PRs
 at `max_open_agent_prs`, sustained spend is bounded by the rate at which the
 human merges — the system cannot run ahead of its only consumer.
+
+The Approver (requirements 8b/8c) costs nothing at the product default
+(`merge_autonomy: human`): the stage is never engaged. Where an installation
+has raised the level, its own worst case mirrors the Reviewer's — Sonnet by
+default, Opus only for `complexity:high` — plus one deterministic,
+zero-token `APPROVE` for every `complexity:low` pull request, which the
+grading rubric (requirement 26a) already routes the majority of trivial work
+through. The Critical tier (`approver_model_critical`, the design's own
+Fable/Opus-class default) fires only on a refuse streak of two — a genuine,
+persistent disagreement — not per pull request, so its cost is bounded by how
+often the Standard/High tiers actually refuse something twice running, which
+the design accepts as noise (§5.2).
 
 The floor matters as much as the ceiling, because it is paid on every quiet
 day and nothing about it looks like waste. Before requirement 3b, an idle
@@ -12026,28 +12691,49 @@ requirements above, which state only what is.
   disagreeing, which a third pass settles only by luck; the escalation is not a
   fallback there, it is the correct answer.
 
-- **The merge-autonomy kill switch fails open today, and that direction has
-  a recorded expiry (requirement 2.3b, TD-PPagop-26081507).** The switch
-  reuses `fleet_flag_fetch`, whose contract deliberately hides "unreachable
-  with no cache" from its callers, so a fresh container (empty
-  `fleet-cache/`) that cannot reach the state repo resolves the switch as
-  clear and runs at its *configured* level. That mirrors
-  `fleet/disabled.json`'s own direction, but the two flags' risk profiles
-  invert the moment WI-5/WI-7 arm a landing path: the fleet switch failing
-  open runs a cycle a human still gates, while this flag failing open would
-  keep a node *landing* pull requests at exactly the moment §6's lever
-  exists for — and on exactly the node least likely to be noticed. It was
-  kept anyway at WI-2 because the alternative was forking shared fleet-flag
-  machinery for a flag nothing consumes: `merge_autonomy_effective_level`
-  has no behaviour-affecting caller yet, so today the direction costs
-  nothing. Failing closed outright was rejected too — a state-repo outage
-  would silently halt autonomous landing fleet-wide. The recorded
-  resolution (TD-PPagop-26081507) is the asymmetric one: with or before
-  WI-5, the *no-cache* case flips to `human` while the last-fetched cache
-  remains the transient-outage fallback, confining the fail-closed blast
-  radius to fresh containers during an outage — the population that cannot
-  know whether an operator has pulled the lever. WI-5 must not arm the
-  Approver stage while the no-cache case still reads as enabled.
+- **The merge-autonomy kill switch fails closed only on a fresh, cache-empty
+  node — everywhere else it still fails open (requirement 2.3b,
+  TD-PPagop-26081507).** At WI-2 the switch simply reused `fleet_flag_fetch`,
+  whose contract deliberately hides "unreachable with no cache" from its
+  callers, so a fresh container (empty `fleet-cache/`) that could not reach
+  the state repo resolved the switch as clear and ran at its *configured*
+  level — mirroring `fleet/disabled.json`'s own direction. That was kept
+  deliberately at WI-2, because the alternative was forking shared
+  fleet-flag machinery for a flag nothing consumed yet:
+  `merge_autonomy_effective_level` had no behaviour-affecting caller, so the
+  direction cost nothing at the time. It could not stay, though: the two
+  flags' risk profiles invert the moment WI-5/WI-7 arm a landing path — the
+  fleet switch failing open runs a cycle a human still gates, while this flag
+  failing open would keep a node *landing* pull requests at exactly the
+  moment §6's lever exists for, and on exactly the node least likely to be
+  noticed. Failing closed outright was rejected too — a state-repo outage
+  would then silently halt autonomous landing fleet-wide, on every node, for
+  as long as the outage lasted. TD-PPagop-26081507 resolved it
+  asymmetrically instead: `lib/toggle.sh`'s `fleet_flag_fetch_status` tells
+  `merge_autonomy_kill_state` apart the one case `fleet_flag_fetch` itself
+  still can't — a clear-flag 404 from a transport-unreachable repo with no cached
+  copy — and only the no-cache case now resolves to `human`. An established
+  node with a cached copy keeps using it through a transient outage exactly
+  as before, so the fail-closed blast radius is confined to fresh containers
+  during an outage: the one population that cannot know whether an operator
+  has pulled the lever. `fleet_flag_fetch` itself, and every other caller of
+  it (`fleet/disabled.json`, the usage-limit flag), is unchanged — this
+  asymmetry is this one flag's alone. One residual fail-open case survives,
+  knowingly (found in PR #448's review): "unreachable" above means a
+  transport-level failure, because the contents API answers a repo-level
+  404 — the state repo missing, or invisible to this token — with the same
+  `404 Not Found` as a missing flag file, so a misconfigured `state_repo`
+  slug or a token whose scopes lost access still resolves the switch as
+  clear on exactly the fresh-node population the asymmetry protects.
+  Closing it means probing `repos/<state_repo>` on the 404 path to tell the
+  two apart — cheap against the REST budget, but the 404 path is the
+  switch's steady state and the probe's own failure modes need the same
+  explicit classification as the fetch's, a design decision in its own
+  right and out of TD-PPagop-26081507's scope. It is filed as
+  TD-PPagop-26081602, to resolve with or before any repository's
+  `merge_autonomy` rises above `human`; until then `scripts/doctor.sh`'s
+  `check_repo_access` reporting the state repo unreachable-or-invisible is
+  the operator-run mitigation.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
   end-state is exactly one Approver App identity governing the whole
   installation (§6 — the same fact that denies the kill switch a
@@ -12062,6 +12748,58 @@ requirements above, which state only what is.
   it (the private key's own configuration, for one) — but any rename or
   reshaping must land with them, while the key is still consumed by
   `scripts/doctor.sh` alone.
+- **A refuse streak is counted from the reviews list, not kept as private
+  state (D18 WI-5, requirement 8c).** `approver_refuse_streak` reads GitHub
+  fresh, every time, rather than incrementing a counter this pipeline stores
+  itself — the same discipline `lib/handoff.sh` and `lib/review-gate.sh`
+  already apply to every other fact this document gates a decision on, and
+  the same move agent-ops#449 made for `could_not_request`. A private counter
+  would need its own reconciliation the moment a cycle dies mid-write, or two
+  nodes touch the same pull request in the same hour; the reviews list
+  already cannot disagree with itself, and it is the one record GitHub itself
+  keeps that a `REQUEST_CHANGES` review actually posted, as opposed to one
+  this pipeline merely believes it posted.
+- **An Approver that cannot run costs a missing review, never a blocked pull
+  request (requirement 8b).** Every failure path in `run_approver_stage` —
+  the stage disabled, the credential absent, the identity login or the
+  refuse streak unreadable, the token unmintable, the engagement itself
+  timing out or returning nothing parseable — ends in a `warning` log event
+  and nothing else: the pull request still reaches `pr-ready` exactly as it
+  would at `merge_autonomy: human`. The alternative — hand the pull request
+  back, the same fail-closed instinct `review_gate_verdict` and
+  `confirm_pr_ready` apply to a fact about the *pull request* — was
+  considered and rejected here specifically, because none of these failures
+  are a fact about the pull request; they are facts about this node or this
+  installation's configuration, and the human's own path to merging depends
+  on none of them. `scripts/doctor.sh`'s own startup check (requirement 2.3b)
+  is what should catch a genuinely broken configuration, at a moment an
+  operator is looking, rather than a pull request being silently starved of
+  human review while it waits for a stage to hand back.
+- **The Trivial tier's zero-token approval leans on the grading rubric that
+  already exists, rather than duplicating it (requirement 8b).** The design
+  (§5.2) frames this tier as "`complexity:low`, no protected paths,
+  size-capped diff" — a protected-paths classifier and a size cap are a later
+  work item's job (WI-7), not built here. Nothing here waits for either:
+  requirement 26a's own rubric already forces anything touching
+  concurrency, security, state replication, CI/workflow machinery or shared
+  library code to grade `high`, never `low` — the same rubric that already
+  picks the Reviewer's own tier (requirement 8a). A second, independent
+  fence around the same ground would duplicate a judgement the Implementor
+  and Reviewer have already made twice; WI-7's classifier is a genuine
+  addition for the tiers this work item does not implement landing for
+  (`agent-merges-routine`/`agent-merges-all`), not a prerequisite for this
+  one's own deterministic approval.
+- **"### The Approver" sits after "### The Refiner", not after "### The
+  Reviewer" it logically follows.** Every section from "### Logging and
+  state" onward already occupies the integer range (33–39d) that would
+  otherwise have gone to a stage inserted at that point in the document, and
+  renumbering all of them — and every cross-reference to each, scattered
+  throughout this file — for one new section was judged far riskier than one
+  section whose own number range (40–44) does not physically follow its
+  place in the pipeline's running order. Requirements 8b/8c, in "### The
+  Script" where the Reviewer's own launch requirements already live, are
+  what a reader tracing the pipeline's actual sequence finds first, and they
+  point at "### The Approver" by name.
 
 The choices above (platform, models, permissions, system location) were
 confirmed by the repo owner on 2026-07-13; no open questions remain.
@@ -12104,3 +12842,5 @@ confident, recurring no-op.
 | A verdict cemented by the very mechanism built to stop paying for it | Requirement 3b's no-op fingerprint exists to skip a Co-Ordinator run that could only repeat its last answer — a claim about *what changed*, deliberately never about whether the answer was *right*. The tech-debt band was still the Co-Ordinator's own live read (issue #310): between 2026-08-10 and 2026-08-12, with ~30 eligible items sitting in the register, it returned `none-selected` with reasons that misdescribed the band ("requires per-item evaluation…", "heavily voided or blocked" — 29 of 30 were neither). Nothing about that answer being *wrong* stopped the fingerprint from matching it: the rule only ever asked "would the inputs look the same," and they did, so the fleet replayed the wrong verdict for free across all of 08-11 — 240 stand-downs, not one Co-Ordinator invocation. | A cost-control skip that trusts a verdict's *fingerprint* has no opinion on the verdict's *content*, and was never designed to — so give the parts of the system that can hold an opinion (the Script, which now pre-filters the band deterministically per requirement 3t) a way to say "this one doesn't count." A `none-selected` whose own stated reason contradicts data the Script itself already computed must not be allowed to arm the short-circuit — omit the fingerprint from that event, the same way an empty one already is, so the very next cycle asks again rather than replaying the wrong answer until the forced recheck. Same family as "a cost-control feature that makes cost the *only* thing it protects" above, sharpened: that row is about a skip condition computed wrong; this one is about a skip condition computed *correctly* over a verdict that was itself wrong, which no fingerprint hygiene alone can catch — it needs a second, independent check of the verdict's content. |
 | Detecting a wrong verdict is not the same as recovering from one | Requirement 3t's corroboration gate (above) stops a rejected verdict from arming the fingerprint, so the *next* cycle is never frozen on a stale wrong answer again. But detection alone left the *rejected* cycle itself still standing down empty-handed — and issue #310's own incident showed the same wrong verdict recurring across cycles and nodes, not as a one-off. A gate that only ever un-arms the fingerprint degrades, under a persistent confabulation, into a warning-per-cycle loop with zero selections: visible on the log, but liveness still depending entirely on the model eventually reasoning its way to a different answer. | Give the failure a second, cheaper try before treating it as a stalled cycle (requirement 3v's one retry, quoting the Script's own contradiction back at the model — a pointed correction, not a generic "try again"), and then a recourse that does not depend on the model at all (mechanical fallback selection, scoped to bands the Script can already enumerate without live judgement). The general shape: a machine check that can *detect* a wrong answer is only half the fix if the only recovery it can trigger is "ask the same question again next cycle" — pair detection with an escalating, boundedly-costed retry path, so the system's liveness stops being hostage to the one component it cannot make more reliable by construction. |
 | A machine check proved on one band is not a machine check | Requirement 3t's corroboration gate closed issue #310's freeze by counting one band — tech-debt — and the fix read as complete because that was the band the incident happened in. It was not: a `none-selected` over a non-empty `issues`, `findings`, `review_feedback`, `merge_conflicts`, `abandoned_drafts`, `human_visibility` or `register_hygiene` array passed the gate untouched, so the identical confabulation one band over would have frozen the fleet the identical way, with nothing in the log even able to detect it. The pre-fetch fixed "the model declines to read the source"; the corroboration fixed "the model misdescribes what it was handed" — but only where somebody had already been burned. | State the invariant, not the instance: **every load-bearing negative the model asserts must be corroborated against the Script's own count of what it handed over** (requirement 3x), and then build it as one band-parameterised mechanism rather than one check per band, so adding a band cannot silently add a hole. Expect the generalisation to surface what the single-band version could ignore — here, that `issues` was the one band whose decline routes were *not* exhaustive (a question-or-discussion issue could be skipped silently and requirement 16a explicitly forbade reporting it), which is a real gap the narrow check had simply never had to look at. A check that cannot be generalised without changing a policy is usually telling you the policy is the defect. |
+| A safety justification written as "harmless until X lands," read after X has landed | TD-PPagop-26081507 recorded that the merge-autonomy kill switch's fail-open no-cache case was "harmless: nothing arms an approval or a landing on the flag" — explicitly, deliberately, "until WI-5 lands." WI-5 (this document's own Approver stage, requirements 8b/8c) is the first behaviour-affecting caller of `merge_autonomy_effective_level`, and it landed with that tech-debt item still `open` and its own fix (agent-ops#448) still unmerged: the justification expired the moment this stage started reading the kill switch for a real decision, and nothing forced the two facts to be checked against each other. | A deferred item whose own body names the change that revokes its justification is a dependency, not a footnote — treat "must not arm until X" the same as a numbered `Blocked-by:`, checked at the moment X is about to land, not left to a reader noticing the tech-debt file in passing. Landed here anyway, deliberately, because the exposure is layered — `merge_autonomy`'s product default is `human` fleet-wide, every level above it needs an explicit per-installation opt-in, and the live installation had not yet raised it past Stage 0 — but the register entry stays `open` and this row exists so the next reader does not have to rediscover the ordering risk from source. |
+| A gate written for one caller silently has no caller on the recovery path | Requirement 31c's gate — required checks green, no new security-severity alert — was written and tested against the Reviewer's own `ready` handoff, and every acceptance check for it drove that one path. The Enabler's `complete_handoff` (requirement 32b) flips the identical draft-to-ready action through a different call site, added later, and nobody re-asked whether the gate bound there too — it did not, by omission rather than by decision. PR #433: the Implementor failed, so the Reviewer block never ran at all, and two hours later an Enabler engagement read `complete_handoff`'s own four preconditions ("checks green", "no unanswered concern") as satisfied — vacuously, since nothing had ever checked or raised a concern to answer — and flipped the pull request to ready with a red check list and no Reviewer having ever read the diff. | An irreversible action reachable from more than one call site needs its gate to live *under* every caller, not beside one of them (requirement 34a) — a second path added later inherits nothing a first path's own inline check protected. Where a caller performs a recovery *of* another stage's work (here: finishing a handoff the Reviewer left undone), ask what the recovery is standing in for, and refuse to stand in for a stage that never actually ran — a precondition can read as satisfied for the sole reason that nothing has asked it yet. |

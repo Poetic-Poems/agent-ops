@@ -422,6 +422,12 @@ assert_rejected "a required model id cannot be empty" \
   '.reviewer_model_default = ""' 'config.reviewer_model_default: must not be empty'
 assert_valid "an optional model id may be empty (it switches its stage off)" \
   '.enabler_model = "" | .reviewer_model_complex = ""'
+assert_valid "the Approver's three tiers may all be empty (it switches the whole stage off, D18 WI-5)" \
+  '.approver_model_default = "" | .approver_model_complex = "" | .approver_model_critical = ""'
+assert_valid "a provider-qualified Approver model id is accepted" \
+  '.approver_model_default = "anthropic/claude-sonnet-5"'
+assert_rejected "an Approver model id qualified with an unsupported provider is rejected" \
+  '.approver_model_critical = "openai/gpt-5"' 'config.approver_model_critical: "openai/gpt-5" does not match'
 
 # --- doctor.sh's cross-key rules: what the schema cannot say. ---
 assert_doctor "doctor fails an enabled Enabler with no assignee, as agent-cycle.sh would" \
@@ -491,10 +497,13 @@ assert_doctor "doctor fails a merge_autonomy level above human with no approver_
 assert_doctor "doctor fails a per-repo merge_autonomy override above human with no approver_app_id, naming the repo" \
   '.repos[0].merge_autonomy = "agent-merges-all"' 1 \
   "Poetic-Poems/poetic's merge_autonomy override is \"agent-merges-all\" with no approver_app_id configured"
-assert_doctor "doctor passes a merge_autonomy level above human once approver_app_id is set" \
-  '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' 0 \
+assert_doctor "doctor fails a merge_autonomy level above human with approver_app_id set but no approver_model_default (D18 WI-5, requirement 8b)" \
+  '.merge_autonomy = "agent-approves" | .approver_app_id = "123456"' 1 \
+  'merge_autonomy is "agent-approves" with no approver_model_default configured'
+assert_doctor "doctor passes a merge_autonomy level above human once approver_app_id and approver_model_default are both set" \
+  '.merge_autonomy = "agent-approves" | .approver_app_id = "123456" | .approver_model_default = "claude-sonnet-5"' 0 \
   'merge_autonomy is "agent-approves"'
-assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id" \
+assert_doctor "doctor passes human explicitly, same as the default, with no approver_app_id or approver_model_default" \
   '.merge_autonomy = "human"' 0 'merge_autonomy is "human"'
 
 # --- The gate is a startup refusal in the real entry points, not merely in

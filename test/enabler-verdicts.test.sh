@@ -14,12 +14,23 @@
 #     the Enabler's own `void` (PR #258, issue #243).
 #   - `refinement-refused` — requirement 36b's thrash guard refusing a second
 #     refinement of an item already refined once since the last human touch.
+#   - `complete_handoff` (requirements 31c/32b, agent-ops#440) — refused when
+#     this item's recorded failure never reached the Reviewer stage (PR #433:
+#     the Implementor failed, the Reviewer block never ran, and this recovery
+#     path flipped the pull request to ready anyway) or when `handoff_
+#     complete_review`'s (lib/handoff.sh) own gate finds a real fault — the
+#     same gate the Reviewer's own handoff runs, genuinely shared rather than
+#     skipped on this path. test/handoff.test.sh covers `handoff_complete_
+#     review` itself; what this file proves is that `maybe_run_enabler` calls
+#     it at all, and reacts to `safe: false` by refusing the flip rather than
+#     performing it anyway.
 #
-# Both exist to keep a wrong *permanent* verdict from being recorded, and
-# their whole value is in what they write instead of the verdict the model
-# asked for. A silent regression here would put an item back where the guard
-# exists to keep it out of, while every event in the log still read like an
-# ordinary examination.
+# All three exist to keep a wrong *permanent* verdict — or a wrong *act*, for
+# `complete_handoff` — from being recorded, and their whole value is in what
+# they write (or refuse to do) instead of the verdict the model asked for. A
+# silent regression here would put an item back where the guard exists to
+# keep it out of, while every event in the log still read like an ordinary
+# examination.
 #
 # The harness, not the assertions, is the work (per the tech-debt item's own
 # suggested fix): `maybe_run_enabler` is lifted whole out of agent-cycle.sh
@@ -109,6 +120,13 @@ extract_fn() {
 maybe_run_enabler_fn="$(extract_fn 'maybe_run_enabler() {' "$SCRIPT_DIR/agent-cycle.sh")"
 enabler_claim_key_fn="$(extract_fn 'enabler_claim_key() {' "$SCRIPT_DIR/agent-cycle.sh")"
 extract_json_result_fn="$(extract_fn 'extract_json_result() {' "$SCRIPT_DIR/agent-cycle.sh")"
+# TD-PPagop-26081603: `maybe_run_enabler`'s `complete_handoff` block calls
+# `review_gate_escalate_unreadable_streak` on an unreadable-checks verdict,
+# shared with the Reviewer's own handoff (test/review-gate-wiring.test.sh
+# lifts it the same way). Lifted for real rather than stubbed outright, so
+# the "checks-unreadable" scenario below exercises the genuine escalation
+# logic; only its own two callees are stubbed.
+review_gate_escalate_unreadable_streak_fn="$(extract_fn 'review_gate_escalate_unreadable_streak() {' "$SCRIPT_DIR/agent-cycle.sh")"
 
 if [[ "$maybe_run_enabler_fn" != *"enabler-examined"* ]]; then
   printf 'FAIL - maybe_run_enabler could not be found in agent-cycle.sh (renamed or moved?)\n'
@@ -122,9 +140,14 @@ if [[ "$extract_json_result_fn" != *"awk"* ]]; then
   printf 'FAIL - extract_json_result could not be found in agent-cycle.sh (renamed or moved?)\n'
   exit 1
 fi
+if [[ "$review_gate_escalate_unreadable_streak_fn" != *"streak_json"* ]]; then
+  printf 'FAIL - review_gate_escalate_unreadable_streak could not be found in agent-cycle.sh (renamed or moved?)\n'
+  exit 1
+fi
 
 eval "$extract_json_result_fn"
 eval "$enabler_claim_key_fn"
+eval "$review_gate_escalate_unreadable_streak_fn"
 eval "$maybe_run_enabler_fn"
 
 # --- A claim.sh stub that always wins, so the claim step needs no network ---
@@ -217,8 +240,39 @@ ONCE=0
 enabler_escalation_label="enabler-escalation"
 # shellcheck disable=SC2034
 enabler_assignee="tester"
+# shellcheck disable=SC2034
+ordered_repos_json='[{"slug":"acme/widgets","default_branch":"main"}]'
 SCRIPT_DIR="$fake_root"
 mkdir -p "$state_dir"
+# TD-PPagop-26081603: globals `review_gate_escalate_unreadable_streak` reads
+# directly, the same way agent-cycle.sh's own top level defines them for the
+# Reviewer's own handoff site.
+# shellcheck disable=SC2034
+log_file="$state_dir/log.jsonl"
+: > "$log_file"
+# shellcheck disable=SC2034
+review_gate_unknown_streak_after=3
+
+# `review_gate_unknown_streak_verdict`/`review_gate_degraded_since` are the
+# streak helper's own two callees (each covered by its own test in
+# test/review-gate.test.sh); the defaults answer "no streak yet, nothing
+# escalated", exactly what a fresh log gives the real functions, and are
+# overridden only by the checks-unreadable scenario below that needs
+# something else.
+# shellcheck disable=SC2317  # invoked only by the eval'd review_gate_escalate_unreadable_streak
+review_gate_unknown_streak_verdict() { cat >/dev/null; printf ''; }
+# shellcheck disable=SC2317
+review_gate_degraded_since() { cat >/dev/null; return 1; }
+
+# handoff_complete_review is overridden per-scenario below (agent-ops#440's
+# complete_handoff gate); a default that fails loudly means a scenario that
+# forgets to define it is caught rather than silently exercising whatever the
+# previous scenario left behind.
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  echo "FAIL - handoff_complete_review was called but no scenario stub was set" >&2
+  exit 98
+}
 
 # run_case DESC ELIGIBLE_JSON EXAMINED_JSON [CYCLE_RC]
 # One isolated engagement: a fresh cycle_dir and calls.log, the given eligible
@@ -483,6 +537,164 @@ assert_eq "the warning still carries every one of the 50 claimed items" \
   "50" "$(jq '.items | length' <<<"$warn_evt")"
 assert_eq "  ... and no enabler-examined/item-void/unblocked/attempt-failed at all" "0" \
   "$(grep -cE '^event (enabler-examined|item-void|unblocked|attempt-failed) ' <<<"$calls")"
+
+# ============================================================================
+# complete_handoff (requirements 31c/32b, agent-ops#440): refused when this
+# item's recorded failure never reached the Reviewer stage — no Reviewer
+# verdict is on record for the pull request at all, so nothing has confirmed
+# it is even safe to hand off, let alone that CI is green (PR #433: the
+# Implementor failed, the Reviewer block never ran, and complete_handoff
+# flipped it to ready anyway on four preconditions that were all vacuously
+# true for want of a Reviewer having ever examined it).
+# ============================================================================
+pr_eligible_no_reviewer='[{"repo":"acme/widgets","item":"PR433","blocked_ts":"2026-08-01T00:00:00Z","kind":"",
+                           "reason":"threshold","stage":"implementor","pr_url":"https://github.com/acme/widgets/pull/433"}]'
+examined='[{"repo":"acme/widgets","item":"PR433","verdict":"unblocked","reason":"the Implementor bug is fixed now",
+            "complete_handoff":true}]'
+calls="$(run_case "complete_handoff: stage never reached Reviewer" "$pr_eligible_no_reviewer" "$examined")"
+
+assert_eq "no-reviewer: the unblock itself still stands" "1" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "no-reviewer: no pr-ready — nothing was flipped" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+assert_eq "no-reviewer: exactly one warning" "1" \
+  "$(grep -cE '^event warning ' <<<"$calls")"
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_contains "no-reviewer: the warning names the pull request" \
+  "https://github.com/acme/widgets/pull/433" "$(jq -r '.pr_url' <<<"$warn_evt")"
+assert_contains "no-reviewer: ...and says which stage the failure actually reached" \
+  "never reached the Reviewer stage (stage: implementor)" "$(jq -r '.detail' <<<"$warn_evt")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "no-reviewer: enabler-examined records the refusal, not a flip word" \
+  "refused-no-reviewer" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# A block with no `stage` at all (an escalation, or a legacy record) reads
+# exactly the same as any other non-Reviewer stage — never "reviewer" by
+# accident.
+pr_eligible_blank_stage='[{"repo":"acme/widgets","item":"PR434","blocked_ts":"2026-08-01T00:00:00Z","kind":"",
+                           "reason":"threshold","pr_url":"https://github.com/acme/widgets/pull/434"}]'
+examined='[{"repo":"acme/widgets","item":"PR434","verdict":"unblocked","reason":"cleared",
+            "complete_handoff":true}]'
+calls="$(run_case "complete_handoff: no stage recorded at all" "$pr_eligible_blank_stage" "$examined")"
+assert_eq "blank stage: still refused, not treated as reviewer" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_contains "blank stage: the warning names it as none" \
+  "stage: none" "$(jq -r '.detail' <<<"$warn_evt")"
+
+# ============================================================================
+# complete_handoff: the item's failure did reach the Reviewer, but
+# handoff_complete_review's own gate refuses the flip — the same gate the
+# Reviewer's own handoff runs, genuinely shared rather than skipped on this
+# recovery path.
+# ============================================================================
+pr_eligible_reviewer='[{"repo":"acme/widgets","item":"PR435","blocked_ts":"2026-08-01T00:00:00Z","kind":"",
+                        "reason":"threshold","stage":"reviewer","pr_url":"https://github.com/acme/widgets/pull/435"}]'
+examined='[{"repo":"acme/widgets","item":"PR435","verdict":"unblocked","reason":"the Reviewer stall is cleared",
+            "complete_handoff":true}]'
+
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  jq -nc '{safe: false,
+           gate: {word: "dirty", reason: "required check(s) not green: CI", checks_unreadable: false},
+           closing_keyword: {word: "", reason: ""}, handoff: "",
+           rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+}
+calls="$(run_case "complete_handoff: gate refuses the flip" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "gate-refused: the unblock itself still stands" "1" \
+  "$(grep -cE '^event unblocked ' <<<"$calls")"
+assert_eq "gate-refused: no pr-ready — the gate found a real fault" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+assert_eq "gate-refused: exactly one review-gate-checks-read bookkeeping event" "1" \
+  "$(grep -cE '^event review-gate-checks-read ' <<<"$calls")"
+assert_eq "  ... recording a successful required-checks read" \
+  "true" "$(jq -r '.ok' <<<"$(events_named "$calls" review-gate-checks-read | head -n1)")"
+warn_evt="$(grep -E '^event warning ' <<<"$calls" | tail -n1 | sed -E 's/^event warning //')"
+assert_contains "gate-refused: the warning names the gate's own finding" \
+  "required check(s) not green: CI" "$(jq -r '.detail' <<<"$warn_evt")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "gate-refused: enabler-examined records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# ============================================================================
+# complete_handoff: the gate cannot read required checks at all — a node
+# fact, not a pull-request fact. TD-PPagop-26081603: this branch shares
+# `review_gate_escalate_unreadable_streak` with the Reviewer's own handoff
+# (test/review-gate-wiring.test.sh), so a run of consecutive
+# unreadable-checks failures escalates the same way here too, rather than
+# only naming the fault per item as it did before that fix.
+# ============================================================================
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  jq -nc '{safe: false,
+           gate: {word: "unknown", reason: "could not read required checks", checks_unreadable: true},
+           closing_keyword: {word: "", reason: ""}, handoff: "",
+           rereview: {state: "", who: ""}, human_reviewer: {state: "", who: ""}}'
+}
+calls="$(run_case "complete_handoff: checks unreadable, below streak threshold" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "checks-unreadable: no pr-ready — an unread check list is refused like a real fault" "0" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+assert_eq "  ... exactly one review-gate-checks-read bookkeeping event" "1" \
+  "$(grep -cE '^event review-gate-checks-read ' <<<"$calls")"
+assert_eq "  ... recording the failed read" \
+  "false" "$(jq -r '.ok' <<<"$(events_named "$calls" review-gate-checks-read | head -n1)")"
+assert_eq "  ... exactly one warning" "1" "$(grep -cE '^event warning ' <<<"$calls")"
+warn_evt="$(events_named "$calls" warning | head -n1)"
+assert_contains "  ... the warning names the unreadable checks" \
+  "its required checks could not be confirmed" "$(jq -r '.detail' <<<"$warn_evt")"
+assert_eq "  ... below the streak threshold, no escalation event" "0" \
+  "$(grep -cE '^event review-gate-checks-degraded ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "  ... enabler-examined records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# --- The same gate, but this node's own streak has crossed the threshold ---
+# shellcheck disable=SC2317  # invoked only by the eval'd review_gate_escalate_unreadable_streak
+review_gate_unknown_streak_verdict() {
+  cat >/dev/null
+  jq -nc '{node:"test-node",gate:"required-checks",count:3,
+           first_ts:"2026-08-14T10:00:00Z",last_ts:"2026-08-14T10:30:00Z"}'
+}
+# shellcheck disable=SC2317
+review_gate_degraded_since() { cat >/dev/null; return 1; }
+calls="$(run_case "complete_handoff: checks unreadable, streak escalated" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "checks-unreadable, escalated: one review-gate-checks-degraded event" "1" \
+  "$(grep -cE '^event review-gate-checks-degraded ' <<<"$calls")"
+deg_evt="$(events_named "$calls" review-gate-checks-degraded | head -n1)"
+assert_eq "  ... naming the streak's own count" "3" "$(jq -r '.count' <<<"$deg_evt")"
+assert_eq "  ... still no pr-ready" "0" "$(grep -cE '^event pr-ready ' <<<"$calls")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "  ... enabler-examined still records the flip as failed" \
+  "failed" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
+
+# --- Reset the streak stubs to their "nothing escalated" defaults ---
+# shellcheck disable=SC2317
+review_gate_unknown_streak_verdict() { cat >/dev/null; printf ''; }
+# shellcheck disable=SC2317
+review_gate_degraded_since() { cat >/dev/null; return 1; }
+
+# --- The clean path: a Reviewer verdict is on record, and the gate is clean ---
+# shellcheck disable=SC2317  # invoked only by the eval'd maybe_run_enabler
+handoff_complete_review() {
+  jq -nc '{safe: true,
+           gate: {word: "clean", reason: "", checks_unreadable: false},
+           closing_keyword: {word: "clean", reason: ""}, handoff: "flipped",
+           rereview: {state: "none", who: ""}, human_reviewer: {state: "skip", who: ""}}'
+}
+calls="$(run_case "complete_handoff: gate clean, flip completes" "$pr_eligible_reviewer" "$examined")"
+
+assert_eq "gate-clean: exactly one pr-ready" "1" \
+  "$(grep -cE '^event pr-ready ' <<<"$calls")"
+pr_evt="$(events_named "$calls" pr-ready | head -n1)"
+assert_eq "  ... naming the pull request" "https://github.com/acme/widgets/pull/435" "$(jq -r '.pr_url' <<<"$pr_evt")"
+assert_eq "  ... crediting the handoff to the enabler" "enabler" "$(jq -r '.handoff' <<<"$pr_evt")"
+assert_eq "  ... carrying the flip's own state" "flipped" "$(jq -r '.state' <<<"$pr_evt")"
+xmn_evt="$(events_named "$calls" enabler-examined | head -n1)"
+assert_eq "gate-clean: enabler-examined records the flip word" \
+  "flipped" "$(jq -r '.complete_handoff' <<<"$xmn_evt")"
 
 printf '\n'
 if (( failures > 0 )); then

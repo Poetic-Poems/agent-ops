@@ -302,6 +302,36 @@
         "value": "`claude-opus-5`"
       }
     },
+    "approver_model_default": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Approver's model for work graded `complexity:medium` (D18 §5.2). Empty disables the Approver stage entirely, the same convention `enabler_model` uses — `merge_autonomy` above `human` then gains no App review at all, whatever level is configured.",
+      "default": "",
+      "x-docs": {
+        "readme": "The Approver's model for work graded `complexity:medium`, active once `merge_autonomy` (see below) is above `human`. Leave it empty to switch the whole stage off — no App review is ever posted, at any level.",
+        "spec": "Standard-tier Approver engagements: work graded `complexity:medium` (requirement 8b). Empty disables the Approver stage.",
+        "value": "`claude-sonnet-5`"
+      }
+    },
+    "approver_model_complex": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Approver's model for work graded `complexity:high` (D18 §5.2). Empty falls back to `approver_model_default`, which switches the escalation off.",
+      "default": "",
+      "x-docs": {
+        "readme": "The same gate for work graded `complexity:high`, refuse-by-default. Leave it empty to run every Approver engagement on `approver_model_default`.",
+        "spec": "High-tier Approver engagements: work graded `complexity:high` (requirement 8b). Empty falls back to `approver_model_default`, which switches the escalation off.",
+        "value": "`claude-opus-5`"
+      }
+    },
+    "approver_model_critical": {
+      "$ref": "#/$defs/modelIdOrEmpty",
+      "description": "The Approver's model for adjudication — the one engagement after two consecutive refusals on the same pull request (D18 §5.2). Empty falls back to `approver_model_complex` (itself falling back to `approver_model_default` when that is also empty).",
+      "default": "",
+      "x-docs": {
+        "readme": "The Approver's model for adjudicating a pull request the Approver has refused twice in a row — the rarest and most expensive tier, run once per disagreement rather than per pull request. Leave it empty to fall back to `approver_model_complex`.",
+        "spec": "Adjudication engagements, triggered by a refuse streak of two rather than by complexity (requirement 8c). Empty falls back to `approver_model_complex`.",
+        "value": "`claude-fable-5`"
+      }
+    },
     "enabler_model": {
       "$ref": "#/$defs/modelIdOrEmpty",
       "description": "The Enabler's model \u2014 the highest tier this system runs, affordable only because the eligibility rule engages it rarely. Empty disables the stage.",
@@ -599,13 +629,13 @@
       }
     },
     "merge_queue_dequeue_notice_max_age_hours": {
-      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time.",
+      "description": "Hours a merge-queue-dequeue notice comment (requirement 38f) may still fire for after the removal event's own dequeued_at. Bounds the notice to genuinely new information, so a removal event that predates this feature is not read as fresh merely because a sweep is only now seeing it for the first time. 0 disables the notice entirely — a repository running without a merge queue loses the only human signal for a merge-group failure and should say so explicitly rather than via a near-zero value.",
       "type": "number",
-      "exclusiveMinimum": 0,
+      "minimum": 0,
       "default": 24,
       "x-docs": {
-        "readme": "Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time.",
-        "spec": "Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md.",
+        "readme": "Hours a merge-queue-dequeue notice comment (`scripts/sweep-human-visibility.sh`, requirement 38f) may still fire for after the removal event's own time — bounds the notice to genuinely new information rather than an event a sweep is only now seeing for the first time. `0` disables the notice entirely, at the cost of losing the only human signal this pipeline raises for a merge-group failure.",
+        "spec": "Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express that in config rather than by tuning this value near zero.",
         "value": {
           "readme": "`24`",
           "spec": "24 h"
@@ -613,22 +643,22 @@
       }
     },
     "merge_autonomy": {
-      "description": "The D18 merge-autonomy trust ladder — human, agent-approves, agent-merges-routine, agent-merges-all — naming who approves and who lands a pull request this pipeline raises. `human` is today's behaviour, byte-for-byte: a human approves and a human merges. Every level above it needs a non-author Approver identity (`approver_app_id`) able to hold review and merge rights, since GitHub refuses self-approval and this pipeline authors as its own configured owner. A `repos[]` entry's own `merge_autonomy` overrides this key for that repository alone. At this stage the key is load-bearing only in validation: `scripts/doctor.sh` fails a level above `human` with no `approver_app_id` configured, and `agent-merges-routine` or above while the repository's own branch ruleset still requires code-owner review — no approval or landing behaviour changes until the Approver stage and the arming step land.",
+      "description": "The D18 merge-autonomy trust ladder — human, agent-approves, agent-merges-routine, agent-merges-all — naming who approves and who lands a pull request this pipeline raises. `human` is today's behaviour, byte-for-byte: a human approves and a human merges. Every level above it needs a non-author Approver identity (`approver_app_id`) able to hold review rights, since GitHub refuses self-approval and this pipeline authors as its own configured owner. A `repos[]` entry's own `merge_autonomy` overrides this key for that repository alone. `scripts/doctor.sh` fails a level above `human` with no `approver_app_id` or no `approver_model_default` configured, and `agent-merges-routine` or above while the repository's own branch ruleset still requires code-owner review. At `agent-approves` and above, the Approver stage reviews every eligible pull request and posts a real GitHub review; a human still merges at every level, since no requirement yet arms an automatic landing (a later work item's job) — `agent-merges-routine`/`agent-merges-all` are validated identically but land no differently from `agent-approves` today.",
       "type": "string",
       "enum": ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"],
       "default": "human",
       "x-docs": {
-        "readme": "The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver identity reviews; a human still merges), `agent-merges-routine` (the Approver identity reviews and the Script also lands routine pull requests) or `agent-merges-all` (the Script lands everything passing its gates). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level. No approval or landing behaviour changes below `agent-approves` yet — `scripts/doctor.sh` validates the setting; nothing acts on it until the Approver stage lands.",
-        "spec": "The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). Load-bearing only in validation until WI-5 (the Approver stage) and WI-7 (the arming step) land: `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.",
+        "readme": "The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver App reviews; a human still merges), `agent-merges-routine`/`agent-merges-all` (accepted and reviewed the same way, but land no differently from `agent-approves` yet — no requirement arms an automatic merge today). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` and `approver_model_default` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level.",
+        "spec": "The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, \"### The Approver\") reviews and posts a real GitHub review; the human still lands every pull request until a later work item arms automatic landing. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.",
         "value": "`human`"
       }
     },
     "approver_app_id": {
-      "description": "The Pullwright Approver GitHub App's id for this installation (D18 §5.3) — the non-author identity that holds review and merge rights at every `merge_autonomy` level above `human`. Empty means no Approver identity is configured yet, which caps `merge_autonomy` at `human`: `scripts/doctor.sh` fails a higher level configured with this unset. One fleet-wide scalar by design, with no per-repo override: D18's end-state is a single Approver App identity governing the whole installation (§6), and per-repository variation lives in GitHub's own installation layer, discovered from the App id at token-minting time rather than configured here. Typed string, not integer — an App id is an opaque identifier, never arithmetic. WI-3/WI-4 own the key's final surface and may extend it before anything mints a token from it (see the spec's Design decisions).",
+      "description": "The Pullwright Approver GitHub App's id for this installation (D18 §5.3) — the non-author identity that holds review rights at every `merge_autonomy` level above `human`. Empty means no Approver identity is configured yet, which caps `merge_autonomy` at `human`: `scripts/doctor.sh` fails a higher level configured with this unset. One fleet-wide scalar by design, with no per-repo override: D18's end-state is a single Approver App identity governing the whole installation (§6), and per-repository variation lives in GitHub's own installation layer, discovered from the App id at token-minting time rather than configured here. Typed string, not integer — an App id is an opaque identifier, never arithmetic.",
       "type": "string",
       "default": "",
       "x-docs": {
-        "readme": "The Pullwright Approver GitHub App's id, once WI-3 creates it. Leave it empty until then — every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.",
+        "readme": "The Pullwright Approver GitHub App's id. Every `merge_autonomy` level above `human` needs it set, and `scripts/doctor.sh` fails the config otherwise. `doctor.sh` also cross-checks it against the node's `PULLWRIGHT_APPROVER_APP_ID` environment, so the id the token wrapper mints against can never silently differ from the one recorded here. One id for the whole installation: the Approver is a single App identity, and its per-repository reach comes from where the App is installed, not from configuration.",
         "spec": "The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape.",
         "value": {
           "readme": "*(unset)*",

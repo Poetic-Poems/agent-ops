@@ -110,9 +110,11 @@ fields, and `branch` names the existing branch.
 - **You cannot clear the block, by design.** GitHub does not let a PR's author
   dismiss or approve a review on their own PR, and this system raises PRs as
   the same account it runs as. The `CHANGES_REQUESTED` decision therefore stays
-  set until the human re-reviews, and that is the human gate working, not a
-  fault. Do not try to route around it — no `gh pr review --approve`, no
-  dismissing the review, no merging. Push the fix, reply, and stop.
+  set until the human re-reviews, and that is the landing gate working, not a
+  fault — the Script performs approval and landing where the installation's
+  trust level allows; you never do. Do not try to route around it — no
+  `gh pr review --approve`, no dismissing the review, no merging. Push the
+  fix, reply, and stop.
 - **Leave the PR ready, not draft.** It was already ready for review; putting it
   back to draft would read to the human as "not for you yet".
 - The `status: "complete"` you report means *the feedback is answered and
@@ -581,16 +583,27 @@ see "Dependabot takeover" above.)*
    says a word about whether that preview built: Vercel reports through
    GitHub's *deployments* API rather than as a check run, so a pull request can
    be entirely green over a preview that failed. From your clone, after you have
-   pushed:
+   pushed, name every route the diff touches — a changed page, a changed API
+   route, a changed layout every page renders through — as a repeatable
+   `--fetch <path>`:
 
    ```
-   "$AGENT_OPS_ROOT/scripts/preview-deploy.sh" --wait 180
+   "$AGENT_OPS_ROOT/scripts/preview-deploy.sh" --wait 180 --fetch <path> [--fetch <path> ...]
    ```
 
-   With no arguments it works out the repository and the pull request from where
-   you are standing; `--wait` is how long to keep polling while Vercel is still
-   building. Read the exit code, because the three outcomes are not the same
-   kind of thing:
+   With no `--repo`/`--pr`/`--sha` it works out the repository and the pull
+   request from where you are standing; `--wait` is how long to keep polling
+   while Vercel is still building. `--fetch` prints the response status,
+   headers and body for each named route once the preview is reachable — read
+   these as review evidence: a changed `Content-Security-Policy` or other
+   header, the served HTML, an error page's actual text. This is how
+   poetic-fiddle#319's CSP defect — a header wrong from the moment it deployed,
+   caught only when a human later clicked the preview in a browser — gets
+   caught here instead. `--fetch` never changes the exit code below, and the
+   secret behind Vercel Authentication never appears in its output — send it
+   whenever the diff touches a route, even one you expect to fail, since a
+   defect's own response is the evidence for fixing it. Read the exit code,
+   because the three outcomes are not the same kind of thing:
 
    - **0** — it deployed and the page answers. Nothing to do.
    - **1** — the build failed, or the deployed page serves an error. **This is

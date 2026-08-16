@@ -244,8 +244,10 @@ log_event() {
   local ts
   ts="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   if ! jq -e 'type == "object"' <<<"$fields" >/dev/null 2>&1; then
-    fields="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null \
-      || jq -nc --arg f "$fields" '{fields: $f}')"
+    local wrapped
+    wrapped="$(jq -c '{fields: .}' <<<"$fields" 2>/dev/null)" || true
+    [[ -n "$wrapped" ]] || wrapped="$(jq -nc --arg f "$fields" '{fields: $f}')"
+    fields="$wrapped"
   fi
   jq -nc --arg ts "$ts" --arg review "$review_id" --arg node "$node_name" --arg event "$event" --argjson fields "$fields" \
     '{ts: $ts, review: $review, node: $node, event: $event} + $fields' >> "$review_log_file" || true

@@ -8,11 +8,22 @@
 # every node in the fleet crash-looped pre-selection the first time its
 # guard fired.
 #
+# Also regression tests for issue #458: the non-object wrap's own fallback —
+# `jq -c '{fields: .}' <<<"$fields" 2>/dev/null || jq -nc --arg f "$fields"
+# '{fields: $f}'` — only ran when the first jq call *failed*. A
+# whitespace-only (or otherwise empty-under-jq) FIELDS payload made that call
+# exit 0 with empty stdout instead, so the `--arg` fallback never fired,
+# `fields` was left as the empty string, and the envelope jq's own
+# `--argjson fields ""` then errored and — under the append's `|| true` —
+# dropped the event with no trace, exactly the vanishing #361 was raised to
+# prevent.
+#
 # The contract pinned here is the logger's, not the call sites': whatever a
 # caller passes,
 #
 #   - a JSON object merges into the envelope exactly as before;
-#   - anything else — an array, a bare string, text that is not JSON at all —
+#   - anything else — an array, a bare string, text that is not JSON at all,
+#     or text that is empty or reduces to empty under jq's identity filter —
 #     is recorded wrapped under `fields` rather than dying or vanishing;
 #   - log_event returns 0 in every one of those cases, because a caller
 #     running under `set -e` must never lose a cycle to an event record.
@@ -127,6 +138,23 @@ assert_eq "no payload: log_event returns 0" "0" "$rc"
 assert_eq "no payload: the bare envelope is the event" "cycle-end" \
   "$(jq -r '.event' <<<"$last")"
 
+# --- Issue #458: a payload that reduces to empty under jq's identity filter ----
+# `${2:-{\}}` only rescues a shell-empty/unset $2 (the "no payload" case just
+# above), never a non-empty string jq's identity filter reduces to nothing on
+# — a single space is the simplest such string, and it is what the repro used.
+IFS=$'\t' read -r rc n last <<<"$(run_log_event cycle "warning" ' ')"
+assert_eq "whitespace-only payload: log_event returns 0 under set -e (issue #458)" "0" "$rc"
+assert_eq "whitespace-only payload: the event still lands" "1" "$n"
+assert_eq "whitespace-only payload: recorded wrapped under .fields" " " \
+  "$(jq -r '.fields' <<<"$last")"
+
+# --- A JSON null payload: not the empty-output failure mode, so already correct --
+IFS=$'\t' read -r rc n last <<<"$(run_log_event cycle "warning" 'null')"
+assert_eq "null payload: log_event returns 0" "0" "$rc"
+assert_eq "null payload: the event still lands" "1" "$n"
+assert_eq "null payload: recorded wrapped under .fields" "null" \
+  "$(jq -c '.fields' <<<"$last")"
+
 # --- review-cycle.sh's copy holds the same contract ----------------------------
 IFS=$'\t' read -r rc n last <<<"$(run_log_event review "review-end" "$stale")"
 assert_eq "review copy, array payload: returns 0 under set -e" "0" "$rc"
@@ -134,6 +162,12 @@ assert_eq "review copy, array payload: recorded wrapped under .fields" "1" \
   "$(jq -r '.fields | length' <<<"$last")"
 assert_eq "review copy: the envelope is the review one" "test-review" \
   "$(jq -r '.review' <<<"$last")"
+
+IFS=$'\t' read -r rc n last <<<"$(run_log_event review "warning" ' ')"
+assert_eq "review copy, whitespace-only payload: returns 0 (issue #458)" "0" "$rc"
+assert_eq "review copy, whitespace-only payload: the event still lands" "1" "$n"
+assert_eq "review copy, whitespace-only payload: recorded wrapped under .fields" " " \
+  "$(jq -r '.fields' <<<"$last")"
 
 printf '\n%s\n' "----------------------------------------"
 if (( failures == 0 )); then
