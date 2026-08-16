@@ -660,12 +660,25 @@ fleet_flag_write() {
 }
 
 # fleet_flag_delete STATE_REPO STATE_DIR NAME
-# Clear a flag. Absent (404, or no state repo at all) already counts as
-# cleared; anything else that stops the delete returns non-zero, because
-# "cleared" reported for a flag that is still set keeps the whole fleet
-# standing down after the operator believes they resumed it. A successful
-# clear also drops the local cache — a stale cached copy must not resurrect a
-# flag the fleet no longer has.
+# Clear a flag. Absent (no state repo at all, or a flag-file 404 confirmed by
+# `fleet_repo_visible` — TD-PPagop-26081604) already counts as cleared;
+# anything else that stops the delete returns non-zero, because "cleared"
+# reported for a flag that is still set keeps the whole fleet standing down
+# after the operator believes they resumed it. A successful clear also drops
+# the local cache — a stale cached copy must not resurrect a flag the fleet no
+# longer has.
+#
+# The read-for-sha's own 404 is the same ambiguous contents-API 404
+# `fleet_flag_fetch_status`'s `probe-404` mode resolves for the fetch side
+# (TD-PPagop-26081602): it means either "the flag file does not exist" or
+# "this repository does not exist, or is invisible to this token". The fetch
+# side gets to accept that collapse for its fail-open flags; the delete side
+# never can, because "absent" here is a claim that the flag has been cleared,
+# not merely that nothing stands the fleet down — so every 404 is probed with
+# `fleet_repo_visible`, unconditionally, and only a confirmed-visible repo
+# resolves to `absent`. Unlike the fetch side there is no cached copy to fall
+# back to on an unresolved 404 or any other failure — the delete simply
+# failed, and the caller is told so via a return of 1.
 #
 # Prints one word on success, distinguishing the two ways "succeeded" can
 # happen — `deleted` (a flag was actually removed) or `absent` (there was
@@ -679,10 +692,12 @@ fleet_flag_delete() {
   errf="$(fleet_cache_file "$state_dir" "$name").err"
   mkdir -p "${errf%/*}" 2>/dev/null || true
   if ! resp="$(_fleet_gh api "repos/$repo/contents/$path?ref=main" 2>"$errf")"; then
-    grep -qiE 'HTTP 404|Not Found' "$errf" 2>/dev/null || return 1
-    rm -f "$(fleet_cache_file "$state_dir" "$name")"
-    printf 'absent'
-    return 0
+    if grep -qiE 'HTTP 404|Not Found' "$errf" 2>/dev/null && fleet_repo_visible "$repo" "$errf.repo-err"; then
+      rm -f "$(fleet_cache_file "$state_dir" "$name")"
+      printf 'absent'
+      return 0
+    fi
+    return 1
   fi
   sha="$(jq -r '.sha // empty' <<<"$resp" 2>/dev/null || true)"
   [[ -n "$sha" ]] || return 1

@@ -502,6 +502,33 @@ assert_eq "probe-404: a repo-level 404 with a cached copy falls back to it, not 
 
 rm -f "$(fleet_cache_file "$fs_probe" disabled)"
 
+# --- TD-PPagop-26081604: the clear side of the same ambiguity ---
+#
+# fleet_flag_delete's own read-for-sha hits the identical ambiguous 404 the
+# block above resolves for fetches, but it can never accept the fail-open
+# collapse: "absent" here is a claim that the flag has been cleared, so every
+# 404 is probed, unconditionally — there is no default mode to opt out of it.
+# Both probe outcomes:
+
+assert_eq "the flag file is genuinely absent before either probe case" "0" \
+  "$(test -f "$gh_backing/fleet/disabled.json" && echo 1 || echo 0)"
+
+# Probe succeeds (repo visible, the stub's default mode): the 404 is the flag
+# file's own, genuinely absent. This exercises the same repo-visible probe
+# path the "deleting an absent flag" case above now spends too, just against
+# fs_probe rather than fs_b, so it is asserted explicitly here.
+delete_word="$(fleet_flag_delete "$slug" "$fs_probe" disabled)"
+assert_eq "probe confirms the repo is visible: the 404 resolves to absent" "0" "$?"
+assert_eq "and reports absent, not a false deleted" "absent" "$delete_word"
+
+# Probe fails (repo invisible, or unreachable): the 404 must NOT resolve to
+# absent — reporting a flag cleared that is still set is exactly the harm
+# this item closes.
+GH_STUB_MODE=repo-404 fleet_flag_delete "$slug" "$fs_probe" disabled >/dev/null
+assert_eq "an unconfirmed 404 (repo invisible) must NOT report the flag cleared" "1" "$?"
+assert_eq "fleet_flag_delete_outcome reports it as failed, not unconfigured" "failed" \
+  "$(GH_STUB_MODE=repo-404 fleet_flag_delete_outcome "$slug" "$fs_probe" disabled)"
+
 # --- The limit flag only ever extends ---
 
 fleet_limit_publish "$slug" "$fs_a" "2026-07-17T15:00:00Z" "monthly-spend" true node-a
@@ -624,6 +651,23 @@ assert_contains "and the enabled event carries fleet scope" '"scope":"fleet"' \
   "$(cat "$a_log" 2>/dev/null)"
 assert_contains "and reports the fleet flag delete as ok" '"fleet_flag":"ok"' \
   "$(cat "$a_log" 2>/dev/null)"
+
+# TD-PPagop-26081604 (e2e): a repo-level 404 on the fleet flag's own delete
+# must not read through the real --enable command as a clear fleet switch.
+# The local record still clears (that write never touched the state repo),
+# but the fleet flag's own state is unconfirmed, and the operator must be
+# warned rather than told the fleet switch is clear.
+c_home="$(new_home fleet-node-c)"
+run_node "$c_home" agent-cycle.sh --disable "e2e unconfirmed-clear setup" --for forever >/dev/null 2>&1
+rm -f "$gh_backing/fleet/disabled.json"
+unconfirmed_enable_out="$(GH_STUB_MODE=repo-404 run_node "$c_home" agent-cycle.sh --enable 2>&1)"
+assert_eq "--enable still exits cleanly when the fleet flag could not be confirmed cleared" "0" "$?"
+assert_contains "and warns rather than claiming the fleet switch is clear" \
+  "could not clear the fleet switch" "$unconfirmed_enable_out"
+assert_contains "naming the manual fallback" \
+  "delete fleet/disabled.json in" "$unconfirmed_enable_out"
+assert_eq "the local record still cleared, since that write never reaches the state repo" "0" \
+  "$(test -f "$c_home/.local/state/poetic-agents/disabled.json" && echo 1 || echo 0)"
 
 # Requirement 33 (issue #426, acceptance 4): a node with no local disable of
 # its own must still log `enabled` when a live fleet flag it clears — the
