@@ -10233,15 +10233,18 @@ pull request, run the ones the change touches and any it could regress.
    state repo falls back to the cached copy, and to enabled with none; a
    404 is clear and clears the cache; a garbage flag is disabled; the limit
    flag only ever extends; a delete never reports cleared for a flag still
-   set, and reports which of the two ways it can succeed actually happened —
-   `deleted` when a flag was removed, `absent` when there was nothing to
-   remove — which `fleet_flag_write_outcome`/`fleet_flag_delete_outcome`
-   (issue #426) translate, along with a genuine failure, into the
-   `ok`/`failed`/`unconfigured` vocabulary requirement 33 documents; and —
-   end to end, offline — `--disable` on node A publishes
-   `fleet/disabled.json` and both real pipelines on node B stand down
-   naming the fleet switch, `--enable` on A genuinely removes the flag, and
-   a `fleet/limit.json` published by A stands B down until its `resume_at`.
+   set — including on a repo-level 404 from its read-for-sha, which it
+   probes with `fleet_repo_visible` unconditionally rather than accepting as
+   clear (TD-PPagop-26081604) — and reports which of the two ways it can
+   succeed actually happened — `deleted` when a flag was removed, `absent`
+   when there was nothing to remove — which
+   `fleet_flag_write_outcome`/`fleet_flag_delete_outcome` (issue #426)
+   translate, along with a genuine failure, into the `ok`/`failed`/
+   `unconfigured` vocabulary requirement 33 documents; and — end to end,
+   offline — `--disable` on node A publishes `fleet/disabled.json` and both
+   real pipelines on node B stand down naming the fleet switch, `--enable`
+   on A genuinely removes the flag, and a `fleet/limit.json` published by A
+   stands B down until its `resume_at`.
    The same file covers requirement 2.3's actor/kind fields and requirement
    2's kind gates (#244): a disable record carries `kind: manual` and a
    non-empty `actor` that is never `unknown` (`NODE_NAME` when set, the
@@ -12968,6 +12971,38 @@ requirements above, which state only what is.
   confirmed clear`, and an operator is no longer left reading
   `check_repo_access`'s state-repo report as the only way to tell the two
   apart.
+- **`fleet_flag_delete` probes every 404 unconditionally — there is no
+  fail-open mode to opt into (requirement 2.3a, TD-PPagop-26081604).**
+  TD-PPagop-26081602 taught the *read* side of the fleet-flag machinery to
+  tell the contents API's two 404s apart — "the flag file does not exist"
+  and "this repository does not exist, or is invisible to this token" — but
+  only for the one caller that asked for it (`probe-404` mode); every other
+  reader kept accepting the collapse, because their flags are fail-open by
+  design and the ambiguity only adds one more way of doing so. `fleet_flag_
+  delete` reused the same 404 branch and inherited the same collapse, but
+  a delete is not a fail-open flag: `absent` is the word `fleet_flag_delete_
+  outcome` and its callers (`--enable`, `--clear-limit`, `--restore-merge-
+  autonomy`, the fleet-disable-expiry sweep) report as `unconfigured`, and
+  an operator reading that word believes the flag is gone. On a
+  misconfigured `state_repo` slug or a token whose scopes lost access, it
+  was not — the flag stayed set for every peer whose token could still see
+  it, and the issuing node's own cache (dropped on the strength of the
+  false clear) stopped confirming the disagreement locally too. The
+  asymmetry argument that justifies the read side's fail-open 404 does not
+  carry over: there, the cost of getting it wrong is a node running a cycle
+  a human still gates, recoverable at the next fetch; here the report is
+  simply false, in the one direction this switch exists never to be. So the
+  fix does not add a mode — it removes the unconditional branch outright.
+  `fleet_flag_delete` reuses `fleet_repo_visible` (extracted for exactly
+  this reuse, per its own header) directly, unconditionally, on every 404
+  its read-for-sha meets: only a probe that confirms the repo is visible
+  resolves to `absent`. Anything else — 404, 403, a timeout — returns 1,
+  which `fleet_flag_delete_outcome` already translates to `failed`; the
+  vocabulary and its callers' warning branches (issue #426) needed no
+  change; only the delete's own 404 branch did. Unlike the fetch side,
+  there is deliberately no cached-or-unreachable fallback here — a delete
+  has no cached copy of "the flag is gone" to fall back to, only the honest
+  failure.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
   end-state is exactly one Approver App identity governing the whole
   installation (§6 — the same fact that denies the kill switch a
