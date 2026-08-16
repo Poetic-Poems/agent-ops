@@ -342,6 +342,12 @@ record_needs_refinement_block() { refinement_entry_problem "$1" >/dev/null; }
 log_event() { :; }
 item_event_fields() { printf '{}'; }
 release_refinement_label() { :; }
+# The machine `obsolete` alternative's ctx (issue #413, WI-10) is lib/merge-
+# autonomy.sh/config territory, neither of which this file wires in; the
+# stubbed void_guard_reason below ignores it regardless, so an empty ctx is
+# enough — this just keeps the call from failing loudly with "command not
+# found" for a function log_voided_items now calls unconditionally.
+void_obsolete_ctx_json() { printf '{}'; }
 # The guard refuses TD-REFUSED and passes everything else, standing in for a
 # live-evidence rejection (the reviewer's point: not a shape test, so the
 # projection could never have pre-applied it).
