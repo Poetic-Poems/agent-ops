@@ -40,11 +40,24 @@
 # merge_autonomy_kill_state below) — `merge_autonomy_effective_level` must
 # answer `human` from the moment WI-5 starts trusting it, not only once
 # someone remembers to revisit this file.
+#
+# WI-6 (D18 §5.4, `docs/reviews/2026-08-14-autonomy-investigation.md`,
+# `lib/merge-budget.sh`) adds a second, narrower override alongside the kill
+# switch: a per-repo merge-budget freeze caps `merge_autonomy_effective_level`
+# at `agent-approves` — never all the way to `human` — for the one repo the
+# freeze names, when a counting anomaly shows more pull requests landed in a
+# rolling 24h window than `merge_budget_per_day` ever permitted. The kill
+# switch is checked first and still wins outright: a repo already forced to
+# `human` gains nothing from also being frozen. See lib/merge-budget.sh's own
+# header for the freeze's flag shape and why its own reachability, unlike the
+# kill switch's, fails open.
 
 # shellcheck source=lib/toggle.sh
+# shellcheck source=lib/merge-budget.sh
 # (Sourced by every caller of this file already; the functions below —
 # fleet_flag_fetch_status, fleet_flag_write_outcome, fleet_flag_delete_outcome,
-# _toggle_eval, _toggle_iso, toggle_actor — come from it, not from here.)
+# _toggle_eval, _toggle_iso, toggle_actor — come from lib/toggle.sh, and
+# merge_budget_freeze_state comes from lib/merge-budget.sh, not from here.)
 
 MERGE_AUTONOMY_LEVELS=(human agent-approves agent-merges-routine agent-merges-all)
 MERGE_AUTONOMY_KILL_FLAG="merge-autonomy-kill"
@@ -164,14 +177,32 @@ merge_autonomy_kill_clear() {
 # merge_autonomy_effective_level CONFIG_JSON SLUG STATE_REPO STATE_DIR
 # What SLUG is actually governed by right now: `human` whenever the kill
 # switch is set (or its own state cannot be read as clear — see
-# merge_autonomy_kill_state), else merge_autonomy_configured_level. This is
-# the function every future arming/approval path must call.
+# merge_autonomy_kill_state); else, capped at `agent-approves` whenever
+# SLUG's own merge-budget freeze is set (D18 WI-6,
+# `merge_budget_freeze_state`, lib/merge-budget.sh — sourced by every caller
+# of this file already, see that file's own header) and the configured
+# level ranks above it; else merge_autonomy_configured_level unchanged. This
+# is the function every future arming/approval path must call — the kill
+# switch and the per-repo freeze both only actually override anything
+# because every such path reads this function and never
+# merge_autonomy_configured_level directly.
 merge_autonomy_effective_level() {
-  local config_json="$1" slug="$2" state_repo="$3" state_dir="$4" kill_state
+  local config_json="$1" slug="$2" state_repo="$3" state_dir="$4"
+  local kill_state configured freeze_state configured_rank cap_rank
   kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir")" 2>/dev/null)"
   if [[ "$kill_state" != "enabled" ]]; then
     printf 'human'
     return 0
   fi
-  merge_autonomy_configured_level "$config_json" "$slug"
+  configured="$(merge_autonomy_configured_level "$config_json" "$slug")"
+  freeze_state="$(jq -r '.state' <<<"$(merge_budget_freeze_state "$state_repo" "$state_dir" "$slug")" 2>/dev/null)"
+  if [[ "$freeze_state" != "enabled" ]]; then
+    configured_rank="$(merge_autonomy_rank "$configured" 2>/dev/null)" || configured_rank=0
+    cap_rank="$(merge_autonomy_rank agent-approves)"
+    if (( configured_rank > cap_rank )); then
+      printf 'agent-approves'
+      return 0
+    fi
+  fi
+  printf '%s' "$configured"
 }

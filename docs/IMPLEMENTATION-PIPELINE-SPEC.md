@@ -643,6 +643,7 @@ and the schema must carry every one of them.
 | `human_nudge_idle_hours` | 24 h | Hours an approved, mergeable, CI-green pull request this system raised may sit idle before `scripts/sweep-human-visibility.sh` posts a one-time nudge comment naming `enabler_assignee` (requirement 38c). `0` disables the nudge only — the sweep's self-healing review request (requirement 38a) is unconditional. poetic-fiddle #170 sat approved and green for 6.8 days with nothing asking anyone to look; this is the backstop for whatever the live review request itself does not catch. |
 | `merge_queue_dequeue_notice_max_age_hours` | 24 h | Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `dequeued_at`, so a removal event that predates this feature (or this repository's queue adoption) is not read as fresh news merely because a sweep is only now seeing it. agent-ops#394, tech-debt/TD-PPagop-26081409.md. `0` disables the notice outright (agent-ops#429), guarded explicitly rather than left to the arithmetic threshold this bounds, since a repository with no merge queue should express...[continued below](#extended-notes-merge_queue_dequeue_notice_max_age_hours) |
 | `merge_autonomy` | `human` | The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review...[continued below](#extended-notes-merge_autonomy) |
+| `merge_budget_per_day` | `8` | D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling-24-hour cap on pull requests this pipeline may land in one repository, fleet-wide default; a `repos[]` entry's own `merge_budget_per_day` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). `0` means unlimited and skips the count entirely. `merge_budget_decide` answers `arm` (under cap), `hold` (cap reached — approved but not armed, the backlog visible) or...[continued below](#extended-notes-merge_budget_per_day) |
 | `approver_app_id` | *(unset)* | The Approver GitHub App's id for this installation (§5.3) — required for any `merge_autonomy` level above `human`, and reconciled by `scripts/doctor.sh` against the `PULLWRIGHT_APPROVER_APP_ID` environment the token wrapper (requirement 14b) mints from: a set pair that differs is a doctor `fail`. Deliberately one fleet-wide scalar string with no per-repo override — see the Design decisions entry on this key's shape. |
 | `crash_loop_after` | `4` | Consecutive fleet-wide failures, with no intervening recovery, before the Script escalates the crash loop as an issue (requirement 2.7) — either same-detail Co-Ordinator failures, or same-exit-code cycles that died before any stage started. At four nodes an hourly deterministic failure crosses this within about an hour. `0` (or absent) disables both checks. |
 | `crash_loop_repo` | `Poetic-Poems/agent-ops` | Where requirement 2.7's escalation issues are filed — the pipeline's own repository, because a cycle that cannot run belongs to no target repo's backlog. Empty disables both checks. |
@@ -705,6 +706,8 @@ A repo entry may also carry `stage_timeouts` and `stage_inactivity` — per-acto
 
 A repo entry may also carry `merge_autonomy` — the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
 
+A repo entry may also carry `merge_budget_per_day` — the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.
+
 Every optional key sits on the repository's own entry, beside `slug` and `sources`:
 
 ```json
@@ -764,6 +767,10 @@ Hours a merge-queue-dequeue notice (requirement 38f) may still fire for after `d
 
 The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, "### The Approver") reviews and posts a real GitHub review; the human still lands every pull request until a later work item arms automatic landing. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.
 
+### Extended notes: `merge_budget_per_day`
+
+D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling-24-hour cap on pull requests this pipeline may land in one repository, fleet-wide default; a `repos[]` entry's own `merge_budget_per_day` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). `0` means unlimited and skips the count entirely. `merge_budget_decide` answers `arm` (under cap), `hold` (cap reached — approved but not armed, the backlog visible) or `refuse` (the count could not be established, failing closed). Landing past the cap — a counting anomaly a correct governor should never observe — freezes the repository to `agent-approves` (`merge_budget_freeze_set`) and escalates to that repository, never `crash_loop_repo`. `merge_budget_apply_decision` is the write side (requirement 33's `merge-budget-hold`/`merge-budget-frozen`/`merge-budget-freeze-escalated` events); a later work item is what calls either function from the arming step itself.
+
 <!-- config-table:notes-end -->
 
 ## The Landing Gate
@@ -805,6 +812,19 @@ The fleet-wide kill switch (requirement 2.3b) forces every repository's
 *effective* level to `human` regardless of what is configured, independent
 of this section — `merge_autonomy_effective_level` is what every approval
 path (`run_approver_stage`) reads, never the raw configured value.
+
+Above `human`, until a later work item arms automatic landing, the only
+thing bounding how fast pull requests actually merge is a human's own click
+— this document arms no rate of its own. `merge_budget_per_day`
+(requirement 2.3c, `lib/merge-budget.sh`) is what replaces that bound once
+landing is armed: a rolling-24-hour cap on pull requests this pipeline may
+land in one repository, enforced at the arming step itself rather than left
+to however often a human happens to click merge. It is already partly live
+today, ahead of that work item, through the same function every level here
+is read from: a counting anomaly — more pull requests landed in a window
+than the cap ever permitted, which a correct governor should never observe
+— freezes a repository's `merge_autonomy_effective_level` at `agent-approves`
+until a human clears it, independent of whatever level is configured.
 
 Every other branch **created by this system** (i.e. under `branch_prefix`)
 is entirely at the agents' disposal: the Reviewer may amend, add to, rebase,
@@ -1208,6 +1228,19 @@ implements.
       candidate filter uses (`scripts/gather-review-feedback.sh`), read here
       rather than re-derived, so the two definitions cannot disagree.
 
+      This exclusion is level-aware (D18 WI-6): for a repository whose
+      `merge_autonomy_effective_level` (requirement 2.3b) ranks
+      `agent-merges-routine` or above, every ready pull request counts,
+      `CHANGES_REQUESTED` or not. Above that level there is no human queue
+      for an otherwise-eligible ready pull request to be parked in — the
+      Approver App, not a human, is next in line — so the exclusion's own
+      premise ("its next action belongs to a human") no longer holds for
+      that repository. Judged per repository, inside the same per-repository
+      loop the count is already taken in, against the effective level (not
+      the configured one), so a fleet-wide kill switch or a merge-budget
+      freeze (requirement 2.3c) affecting the effective level immediately
+      un-excludes those pull requests again, the same cycle it takes effect.
+
       The logged reason — of the stand-down here and of the restriction
       warning in 2.2a — states the count's full composition:
       `(N changes-requested + N draft + N unraised claim(s) — plus N waiting
@@ -1602,16 +1635,109 @@ implements.
    present, else the top-level `merge_autonomy` key, else `human` — on the
    same precedence `stage_timeouts` uses (requirement 4f). It has no opinion
    about the kill switch. `merge_autonomy_effective_level` (`CONFIG_JSON`,
-   `SLUG`, `STATE_REPO`, `STATE_DIR`) is the one function that combines both:
-   `human` whenever the kill switch is set (or unreadable — everything
-   ambiguous resolves toward the safe reading here too, mirroring 2.3's own
-   rule), the configured level otherwise. Every future approval or landing
-   path (WI-5, WI-7) must call the effective function, never the configured
-   one directly, or the kill switch would not actually override what it
-   promises to. At this stage nothing does: `scripts/doctor.sh` (component 14)
-   is the only reader, and it validates the *configured* level deliberately,
-   so a pairing that would fail the moment someone clears the switch is
-   caught now rather than only once they do.
+   `SLUG`, `STATE_REPO`, `STATE_DIR`) is the one function that combines the
+   overrides with it: `human` whenever the kill switch is set (or unreadable
+   — everything ambiguous resolves toward the safe reading here too,
+   mirroring 2.3's own rule); otherwise the configured level, capped at
+   `agent-approves` by that repository's own merge-budget freeze where one is
+   set (requirement 2.3c). Every approval or landing path must call the
+   effective function, never the configured one directly, or neither override
+   would actually override what it promises to — which is also what lets
+   requirement 2.3c's freeze take effect everywhere with no call site of its
+   own. Its readers are the Approver gate (requirement 8b) and requirement
+   2.2's per-repository back-pressure exclusion. `scripts/doctor.sh`
+   (component 14) reads the *configured* level instead, deliberately, so a
+   pairing that would fail the moment someone clears the switch is caught now
+   rather than only once they do.
+2.3c. **The merge budget** (D18 §5.4, `docs/reviews/2026-08-14-autonomy-investigation.md`;
+   `lib/merge-budget.sh`). `merge_budget_per_day` is a rolling-24-hour cap,
+   per repository, on how many pull requests this pipeline may *land* —
+   fleet-wide default with a `repos[]` override, on the same precedence
+   `merge_autonomy` and `stage_timeouts` use (requirement 4f). `0` means
+   unlimited and skips the count entirely, on the same terms
+   `stage_inactivity`'s per-actor `0` already carries.
+
+   `merge_budget_window_status` (`SLUG`, `PR_LABEL`, `MERGED_LOGIN`,
+   `[NOW_ISO]`) counts SLUG's merged pull requests carrying `PR_LABEL`,
+   merged by `MERGED_LOGIN` (the Approver App identity's own login —
+   passed in, never looked up by this file, so it stays independent of
+   `lib/approver-token.sh`), with `mergedAt` inside the trailing 24 hours of
+   `NOW_ISO` — counted from GitHub's own record, never a private counter a
+   restart or a second node would not share. The listing is *scoped* to the
+   window by GitHub's own `merged:>=<cutoff>` search qualifier, not merely
+   filtered to it afterwards: `gh pr list` orders by creation, so an unscoped
+   `--state merged` listing enumerates the label's whole lifetime history,
+   which every repository this fleet governs passes within weeks and never
+   comes back under — leaving the listing truncated on every call and `arm`,
+   `hold` and the anomaly freeze all permanently unreachable. The `jq` filter
+   still decides the count on an exact `mergedAt >= cutoff` comparison, so
+   the qualifier need only be a superset of the window. A listing that comes
+   back at `GITHUB_PR_LIST_LIMIT` (requirement 2.2's own truncation cap)
+   reads `truncated`, the same fail-closed direction as an
+   outright-unreadable listing: an undercount here is the dangerous one for a
+   governor.
+   `merge_budget_decide` (`CONFIG_JSON`, `SLUG`, `PR_LABEL`, `MERGED_LOGIN`,
+   `[NOW_ISO]`) turns the count into one of three outcomes: `arm` (under
+   cap), `hold` (at or over cap — the pull request is still approved
+   through the ordinary review path, but its landing does not arm; the
+   backlog queues visibly rather than merging past the cap) or `refuse`
+   (the count could not be established). A `hold` at cap 0 is impossible by
+   construction — the count is never attempted — and a `hold` otherwise
+   carries `waiting_backlog`, the oldest open, non-draft, `PR_LABEL`-carrying
+   pull request for SLUG (`merge_budget_oldest_waiting`), best-effort: its
+   own failure never turns a `hold` into a `refuse`.
+
+   Landing *more* than the cap in a window — `count > cap`, a counting
+   anomaly a correct governor should never observe, flagged as `anomaly:
+   true` alongside the `hold` — freezes SLUG to `agent-approves`, never all
+   the way to `human`: the Approver App still reviews, only automatic
+   landing stops, and every other configured repository is unaffected. The
+   freeze is a fleet flag, `fleet/merge-budget-freeze-<slug>.json` (slug
+   slashes replaced with `-`), reusing `lib/toggle.sh`'s generic CAS-guarded
+   contents-API machinery exactly as the merge-autonomy kill switch
+   (requirement 2.3b) does, under its own per-repo flag name —
+   `merge_budget_freeze_state`/`_set`/`_clear`. Unlike the kill switch, an
+   unreachable state repo with no cached copy reads this flag as *not*
+   frozen: the kill switch fails closed because an operator's own lever
+   must hold even from a node that cannot currently confirm it, but a
+   freeze exists only because a live, reachable count just observed the
+   anomaly, so a node that cannot reach the state repo a moment later has
+   no anomaly of its own to act on.
+
+   `merge_autonomy_effective_level` (requirement 2.3b) reads the freeze
+   directly — capping the configured level at `agent-approves` whenever
+   SLUG's freeze is set and the configured level ranks above it — so every
+   caller of that one function (the kill switch's own contract: never call
+   `merge_autonomy_configured_level` directly) already honours a merge-
+   budget freeze too, with no call site of its own to add or forget. The
+   kill switch is checked first and still wins outright: a repository
+   already forced to `human` gains nothing from also being frozen.
+
+   `merge_budget_apply_decision` (`DECISION_JSON`, `SLUG`, `STATE_REPO`,
+   `ESCALATION_LABEL`, `ASSIGNEE`) is the write side `merge_budget_decide`
+   itself deliberately is not: a `refuse` logs a `warning`
+   (requirement 33); a `hold` logs `merge-budget-hold` carrying `repo`,
+   `cap`, `count` and `waiting_backlog`; an anomaly additionally freezes
+   SLUG (logging `merge-budget-frozen`) and files an escalation issue
+   against SLUG itself — never `crash_loop_repo`, because unlike a crash
+   loop or a usage-limit freeze this anomaly is a fact about one
+   repository, not the fleet, the same reasoning `approver_escalate`
+   (requirement 8c) already applies — deduplicated the same way every
+   other escalation is (an open issue in SLUG already naming this item's
+   ref), logging `merge-budget-freeze-escalated` only on an issue actually
+   filed.
+
+   Nothing in this pipeline calls `merge_budget_decide` or
+   `merge_budget_apply_decision` from a behaviour-affecting path yet — no
+   requirement anywhere arms an automatic landing today ("## The Landing
+   Gate"), so there is no call site for a budget to gate. This requirement
+   delivers the mechanism and its doctrine; the work item that arms
+   automatic landing is what calls both functions for real, the same
+   sequencing requirement 2.3b's own "at this stage nothing does" already
+   established for the kill switch. `merge_autonomy` at `human` is
+   unaffected by any of this: a freeze only ever lowers a level already
+   above `agent-approves`, and a repository configured at or below it stays
+   exactly as configured, frozen or not.
 2.4. **The role guard.** The environment variable `AGENT_OPS_ROLE` names the
    one node that runs unattended cycles. Compared case-insensitively and
    ignoring surrounding whitespace against the single value `active`;
@@ -6031,11 +6157,21 @@ implements.
     `issue-closed-post-merge`, `void-object-closed`, `void-retired`,
     `dependabot-rebase-requested`,
     `disabled`, `enabled`,
-    `merge-autonomy-killed`, `merge-autonomy-restored`, `salvage`, `chained`,
+    `merge-autonomy-killed`, `merge-autonomy-restored`,
+    `merge-budget-hold`, `merge-budget-frozen`, `merge-budget-freeze-escalated`,
+    `salvage`, `chained`,
     `approver-verdict`, `approver-escalated`,
     `review-gate-checks-read`, `review-gate-checks-degraded`, `first-seen`,
     `issues-excluded`,
-    `warning`, `cycle-end`. `review-gate-checks-read` (requirement 31c,
+    `warning`, `cycle-end`. `merge-budget-hold`, `merge-budget-frozen` and
+    `merge-budget-freeze-escalated` (requirement 2.3c,
+    `merge_budget_apply_decision`) are logged only once something calls it —
+    nothing does yet — carrying `repo`, `cap` and `count` throughout, plus
+    `waiting_backlog` on `merge-budget-hold`, `fleet_flag` (the write
+    outcome) on `merge-budget-frozen`, and `issue_number`/`issue_url` on
+    `merge-budget-freeze-escalated`, on the same terms
+    `crash-loop-escalated`/`approver-escalated` already carry theirs.
+    `review-gate-checks-read` (requirement 31c,
     TD-PPagop-26081404) is bookkeeping, one per ready-gate evaluation, carrying
     `ok: true|false` — machine-read by the streak verdict, and kept out of
     the dashboard's log tail (`scripts/publish-dashboard.sh`,
@@ -9670,14 +9806,23 @@ What exists, and the requirements each part answers to:
     probing mode (`probe-404`) this reader alone asks for
     (TD-PPagop-26081602).
     `merge_autonomy_effective_level`
-    combines both: `human` whenever the kill switch is set or unreadable,
-    the configured level otherwise — the one function every
-    approval/landing path must call, `run_approver_stage` (requirement 8b)
-    among them. Sourced by
+    combines all three: `human` whenever the kill switch is set or
+    unreadable; otherwise the configured level capped at `agent-approves`
+    whenever that repository's own merge-budget freeze is set
+    (`merge_budget_freeze_state`, component 14d, requirement 2.3c) and the
+    configured level ranks above it; otherwise the configured level
+    unchanged. The kill switch is read first and wins outright, so a
+    repository already forced to `human` gains nothing from also being
+    frozen. It is the one function every approval/landing path must call,
+    `run_approver_stage` (requirement 8b) among them — which is exactly why
+    the freeze needs no call site of its own. Sourced by
     `agent-cycle.sh` (the `--kill-merge-autonomy`/`--restore-merge-autonomy`
-    flags and `--status`) and `scripts/doctor.sh` (the pairing and ruleset
-    checks, requirement 2.3b); depends on `lib/toggle.sh`, sourced first by
-    both. Regression-tested in `test/merge-autonomy.test.sh` against the
+    flags, `--status`, and requirement 2.2's own per-repository back-pressure
+    read) and `scripts/doctor.sh` (the pairing and ruleset checks,
+    requirement 2.3b); depends on `lib/toggle.sh` and, for the freeze read
+    alone, on `lib/merge-budget.sh` — both sourced ahead of it by both
+    callers, though bash resolves the call at run time rather than at source
+    time, so the textual order is readability and not a constraint. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
     flags it wraps; the same suite lifts `merge_autonomy_status_report` out
     of `agent-cycle.sh` and asserts the `--status` headline split — KILLED
@@ -9791,6 +9936,49 @@ What exists, and the requirements each part answers to:
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `agent-cycle.sh` rather than restating their logic (acceptance check 8s).
     Must pass `shellcheck`.
+14d. `lib/merge-budget.sh` implementing requirement 2.3c: the
+    `merge_budget_per_day` spend governor. `merge_budget_effective_cap
+    CONFIG_JSON SLUG` resolves the cap on the same precedence
+    `merge_autonomy_configured_level` uses. `merge_budget_window_status SLUG
+    PR_LABEL MERGED_LOGIN [NOW_ISO]` prints `STATUS<TAB>COUNT`
+    (`fleet_flag_fetch_status`'s own compound-return idiom) — `ok`,
+    `unreadable` or `truncated` (at `GITHUB_PR_LIST_LIMIT`,
+    `lib/github-limit.sh`'s `github_pr_list_truncated`) — from one `gh pr
+    list --state merged --search "merged:>=<cutoff>"` read, scoped to the
+    window by that qualifier (requirement 2.3c) and filtered in `jq` on
+    `mergedAt`, `mergedBy.login` and `labels`.
+    `merge_budget_oldest_waiting SLUG PR_LABEL` is a second,
+    best-effort read of SLUG's open pull requests for a `hold` decision's
+    backlog. `merge_budget_decide` composes both into one JSON object —
+    `{decision, cap, count, anomaly, waiting_backlog}` — with no log events
+    and no writes: `merge_budget_apply_decision DECISION_JSON SLUG
+    STATE_REPO ESCALATION_LABEL ASSIGNEE` is the write side, calling
+    `log_event` directly (assumed already defined by its one real caller,
+    `agent-cycle.sh`, the same "sourced by every caller already" convention
+    this file's own `fleet_flag_*`/`_toggle_eval` dependency on
+    `lib/toggle.sh` uses) and, on an anomaly, `merge_budget_freeze_set` plus
+    an inlined dedup-then-`gh issue create` against SLUG itself — this file
+    cannot call `agent-cycle.sh`'s own `create_escalation_issue`, which is
+    a function of the Script, not a sourced library. `merge_budget_freeze_
+    state`/`_set`/`_clear` manage `fleet/merge-budget-freeze-<slug>.json`
+    through `lib/toggle.sh`'s generic machinery, exactly as
+    `lib/merge-autonomy.sh`'s kill-switch functions manage their own flag,
+    but fail *open* on an unreachable state repo with no cache — see this
+    file's own header for why, unlike the kill switch, that direction is
+    correct here. `lib/merge-autonomy.sh`'s `merge_autonomy_effective_level`
+    calls `merge_budget_freeze_state` directly (that file's own shellcheck
+    source note), so this file must be sourced before any caller of that
+    function runs, though not necessarily textually before
+    `lib/merge-autonomy.sh` itself — bash resolves the call at run time, not
+    at source time. Sourced by `agent-cycle.sh` and `scripts/doctor.sh`,
+    after `lib/toggle.sh` and `lib/github-limit.sh`. Nothing calls
+    `merge_budget_decide` or `merge_budget_apply_decision` from a behaviour-
+    affecting path yet (requirement 2.3c) — regression-tested directly, in
+    `test/merge-budget.test.sh`, against a stubbed `gh` covering the
+    contents API, `pr list` and `issue list`/`create`; the freeze's
+    integration with `merge_autonomy_effective_level` is
+    `test/merge-autonomy.test.sh`'s own coverage instead, so the two files'
+    tests do not restate each other. Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -11190,7 +11378,13 @@ pull request, run the ones the change touches and any it could regress.
    on a human keeps counting; a repo whose listing could not be read names no
    PRs at all, counting every claim, which is the fail-closed reading beside
    its own zeroed counts; and the composition line states the split the
-   operator and the dashboard card both read.
+   operator and the dashboard card both read. The same test covers the
+   exclusion's level-awareness (D18 WI-6, requirement 2.3c): the identical
+   approved, non-`CHANGES_REQUESTED` pull request is excluded for a repo at
+   `human` and counted for one whose `merge_autonomy_effective_level` is
+   `agent-merges-routine`, and in the counted case its claim does not
+   double-count on top of it — so the difference is demonstrably the level
+   and not a change to the underlying rule.
 7f. **The decision site folds in what requirement 2.2's count could not see
    yet (requirement 2.2b, issue #459).** `test/backpressure-decision.test.sh`
    passes, against the fold-in block lifted verbatim from `agent-cycle.sh`: a
@@ -13053,6 +13247,70 @@ requirements above, which state only what is.
   confirmed clear`, and an operator is no longer left reading
   `check_repo_access`'s state-repo report as the only way to tell the two
   apart.
+- **The merge-budget freeze's own reachability fails open, the opposite of
+  the kill switch it sits beside (requirement 2.3c).** Both are fleet flags
+  managed through the same `lib/toggle.sh` machinery, and both cap
+  `merge_autonomy_effective_level`, but the direction that made the kill
+  switch fail closed (TD-PPagop-26081507, above) does not transfer: the kill
+  switch protects an operator's own lever, which must hold even from a node
+  that cannot currently confirm it, so an unreachable state repo with no
+  cache has to assume the worst. A merge-budget freeze exists only because a
+  live, reachable count on some node just observed a genuine counting
+  anomaly; a *different* node's inability to reach the state repo a moment
+  later is a fact about that node's network, not a second anomaly, and
+  treating it as one would let a state-repo blip alone cap every repository
+  fleet-wide at `agent-approves` with no anomaly behind it. Failing open
+  costs nothing a fail-closed reading would have caught for free: the
+  anomaly that set the flag is still sitting in `fleet/merge-budget-freeze-
+  <slug>.json` for the next reachable read to find, and `scripts/doctor.sh`
+  reports the flag's own reachability alongside it either way.
+- **A merge-budget anomaly freezes to `agent-approves`, never `human`, and
+  escalates to the repository itself, never `crash_loop_repo` (requirement
+  2.3c).** Both choices follow from the same fact: the anomaly is a
+  statement about one repository's landed-PR count, not about the fleet or
+  about whether the Approver App can be trusted to review. Dropping all the
+  way to `human` would additionally suspend the App's independent read on
+  every future pull request in that repository — a strictly *bigger* change
+  than a governor that miscounted has any evidence to justify — and filing
+  the escalation fleet-wide, in the pipeline's own repository alongside
+  crash-loop and usage-limit escalations, would put a single-repository fact
+  in front of whoever triages the fleet's own SOS queue rather than whoever
+  already owns that repository's backlog, exactly the reasoning
+  `approver_escalate` (requirement 8c) already settled for a single pull
+  request's adjudication failure.
+- **`merge_budget_per_day` defaults to 8, the same number `max_open_agent_prs`
+  already defaults to (requirement 2.3c).** Not a coincidence: both are, in
+  their own way, an installation's first guess at how much unattended change
+  it is comfortable absorbing per day, and shipping two different numbers for
+  the same intuition would read as if one had been tuned and the other
+  merely inherited. `0` means unlimited rather than the cap being omitted
+  entirely, on the same "an explicit sentinel over an absent key" convention
+  `stage_inactivity`'s own per-actor `0` already carries — an installation
+  that wants no budget at all says so, rather than the absence of a key
+  reading ambiguously as "unlimited" or "not yet configured".
+- **The 24-hour count is scoped by a search qualifier, accepting the search
+  index's lag, rather than filtered out of an unscoped listing (requirement
+  2.3c).** The obvious implementation — list merged pull requests carrying
+  `pr_label` and keep the ones inside the window — is not merely wasteful,
+  it does not work: `gh pr list` orders by creation, so the listing is the
+  label's whole lifetime history, and `GITHUB_PR_LIST_LIMIT` is 60. Every
+  repository this fleet governs crosses 60 merged labelled pull requests
+  within weeks and never comes back under it, so the listing truncates on
+  every call, and a governor that reads a truncated listing as unreadable —
+  correctly, since an undercount is its dangerous direction — can then only
+  ever answer `refuse`. `arm`, `hold` and the anomaly freeze would all be
+  unreachable in production while every fixture-sized test still passed. The
+  qualifier bounds the *window* instead, so reaching the page cap once again
+  means something real. Its cost is that GitHub's search index is eventually
+  consistent, so a merge from the last few seconds may be missing and the
+  count may be low by one — the dangerous direction, accepted knowingly:
+  undercounting by one on a rolling 24-hour window is strictly better than
+  never establishing a count at all, and the cycle's 15-minute tick confines
+  the exposure to a merge landing inside the same tick that reads it. The
+  exact alternative is a GraphQL walk of `pullRequests(states: MERGED,
+  orderBy: {field: UPDATED_AT, direction: DESC})` with an early exit once
+  `updatedAt` falls below the cutoff — no index, no lag — and it is what to
+  reach for if the lag is ever shown to matter.
 - **`fleet_flag_delete` probes every 404 unconditionally — there is no
   fail-open mode to opt into (requirement 2.3a, TD-PPagop-26081604).**
   TD-PPagop-26081602 taught the *read* side of the fleet-flag machinery to

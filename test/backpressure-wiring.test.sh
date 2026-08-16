@@ -136,6 +136,12 @@ printf '1' > "$counts_dir/Poetic-Poems__poetic"
 run_block() {
   # shellcheck source=lib/github-limit.sh
   . "$SCRIPT_DIR/lib/github-limit.sh"
+  # shellcheck source=lib/toggle.sh
+  . "$SCRIPT_DIR/lib/toggle.sh"
+  # shellcheck source=lib/merge-budget.sh
+  . "$SCRIPT_DIR/lib/merge-budget.sh"
+  # shellcheck source=lib/merge-autonomy.sh
+  . "$SCRIPT_DIR/lib/merge-autonomy.sh"
   # shellcheck disable=SC2317  # Called from the lifted block, on its truncation and guard paths.
   log_event() { :; }
   # shellcheck disable=SC2317  # Likewise — the lifted block's guard_warn on a claim-count failure.
@@ -144,7 +150,14 @@ run_block() {
   # shellcheck disable=SC2034  # Read by the lifted block: the label it lists PRs by...
   pr_label="autonomous-agent"
   # shellcheck disable=SC2034  # ...and the repo list it walks.
-  all_repos_json='[{"slug":"Poetic-Poems/agent-ops"},{"slug":"Poetic-Poems/poetic"}]'
+  all_repos_json="$REPOS_JSON"
+  # shellcheck disable=SC2034  # Read by merge_autonomy_effective_level, once per repo, inside the block.
+  DEFAULTED_CONFIG="$CFG_JSON"
+  # shellcheck disable=SC2034  # Likewise — empty means "no fleet flags", so the level resolves from
+  # DEFAULTED_CONFIG alone with no gh call at all (fleet_flag_fetch_status's own no-repo short circuit).
+  state_repo=""
+  # shellcheck disable=SC2034
+  state_dir="$tmp_dir/state"
   eval "$counting_block"
   # shellcheck disable=SC2154  # All three are assigned by the lifted block — they are what it is for.
   printf '%s\n%s\n%s\n' "$open_composition" "$adjusted_open_count" "$raw_open_count"
@@ -154,6 +167,8 @@ calls_file="$tmp_dir/claim-calls"
 : > "$calls_file"
 out="$(PATH="$stub_bin:$PATH" \
        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file" CLAIM_COUNTS="$counts_dir" \
+       REPOS_JSON='[{"slug":"Poetic-Poems/agent-ops"},{"slug":"Poetic-Poems/poetic"}]' \
+       CFG_JSON='{}' \
        run_block 2>/dev/null)"
 composition="$(sed -n '1p' <<<"$out")"
 adjusted="$(sed -n '2p' <<<"$out")"
@@ -183,6 +198,49 @@ assert_eq "the composition states the split the operator and the dashboard both 
   "$composition"
 assert_eq "the trip figure excludes the human-queue PR" "6" "$adjusted"
 assert_eq "…while the raw total includes it" "7" "$raw"
+
+# --- D18 WI-6: the exclusion is level-aware. A second, standalone repo,
+#     configured at agent-merges-routine, with one approved (not
+#     CHANGES_REQUESTED) ready PR that the plain rule above would exclude —
+#     above this level there is no human queue for it to be parked in, so it
+#     must count, and its claim must not double-count on top of it. ---
+
+cat > "$listings/Poetic-Poems__poetic-fiddle.json" <<'JSON'
+[{"number":900,"isDraft":false,"reviewDecision":"APPROVED"}]
+JSON
+printf '0' > "$counts_dir/Poetic-Poems__poetic-fiddle"
+
+calls_file2="$tmp_dir/claim-calls-2"
+: > "$calls_file2"
+out2="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file2" CLAIM_COUNTS="$counts_dir" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{"repos":[{"slug":"Poetic-Poems/poetic-fiddle","merge_autonomy":"agent-merges-routine"}]}' \
+        run_block 2>/dev/null)"
+composition2="$(sed -n '1p' <<<"$out2")"
+adjusted2="$(sed -n '2p' <<<"$out2")"
+
+assert_eq "at agent-merges-routine, an approved ready PR counts toward the cap — no human queue to exclude it from" \
+  "1 changes-requested + 0 draft + 0 unraised claim(s) — plus 0 waiting on human (1 raw)" \
+  "$composition2"
+assert_eq "…so the trip figure includes it" "1" "$adjusted2"
+assert_eq "…and its claim does not double-count on top of it — the PR itself is already in counted_prs" \
+  "count|Poetic-Poems/poetic-fiddle|900" "$(sed -n '1p' "$calls_file2")"
+
+# The same repo at the default level (human) excludes the identical PR, so
+# the difference above is the level, not a change to the underlying rule.
+calls_file3="$tmp_dir/claim-calls-3"
+: > "$calls_file3"
+out3="$(PATH="$stub_bin:$PATH" \
+        GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$calls_file3" CLAIM_COUNTS="$counts_dir" \
+        REPOS_JSON='[{"slug":"Poetic-Poems/poetic-fiddle"}]' \
+        CFG_JSON='{}' \
+        run_block 2>/dev/null)"
+adjusted3="$(sed -n '2p' <<<"$out3")"
+assert_eq "at human (the default), the identical approved PR is excluded, and the trip figure is 0" \
+  "0" "$adjusted3"
+assert_eq "…and its claim is what keeps counting instead" \
+  "count|Poetic-Poems/poetic-fiddle|" "$(sed -n '1p' "$calls_file3")"
 
 # --- Report -------------------------------------------------------------------
 

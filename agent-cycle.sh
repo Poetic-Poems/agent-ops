@@ -69,6 +69,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/cycle-state.sh"
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/merge-budget.sh
+. "$SCRIPT_DIR/lib/merge-budget.sh"
 # shellcheck source=lib/merge-autonomy.sh
 . "$SCRIPT_DIR/lib/merge-autonomy.sh"
 # shellcheck source=lib/approver-token.sh
@@ -5408,7 +5410,22 @@ listing_truncated=0
 # they cannot be folded in above) this count already counted and which it did
 # not.
 counted_prs_json='{}'
+# The rank a repo's effective merge_autonomy level must reach for this loop
+# to stop excluding its ready, non-CHANGES_REQUESTED pull requests (D18 WI-6,
+# requirement 2.2's own level-aware paragraph) — loop-invariant, so it is
+# resolved once rather than once per repo.
+backpressure_autonomous_rank="$(merge_autonomy_rank agent-merges-routine)"
 while IFS= read -r slug; do
+  # D18 WI-6 (requirement 2.2's own level-aware paragraph): above
+  # agent-merges-routine there is no human queue for a ready, non-
+  # CHANGES_REQUESTED pull request to sit in, so nothing is excluded from
+  # this repo's count below. Read once per repo, against the effective level
+  # (never the configured one — merge_autonomy_effective_level is the one
+  # function every reader of this key must go through), so a fleet-wide kill
+  # switch or a merge-budget freeze (requirement 2.3c) un-excludes those
+  # pull requests again the moment either takes effect.
+  slug_level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir")"
+  slug_level_rank="$(merge_autonomy_rank "$slug_level" 2>/dev/null)" || slug_level_rank=0
   prs_json="$(gh pr list -R "$slug" --state open --label "$pr_label" \
     --limit "$GITHUB_PR_LIST_LIMIT" --json number,isDraft,reviewDecision 2>/dev/null)" || prs_json=''
   [[ -n "$prs_json" ]] || prs_json='[]'
@@ -5421,6 +5438,9 @@ while IFS= read -r slug; do
   [[ "$n_human" =~ ^[0-9]+$ ]] || n_human=0
   [[ "$n_draft" =~ ^[0-9]+$ ]] || n_draft=0
   [[ "$n_total" =~ ^[0-9]+$ ]] || n_total=0
+  if (( slug_level_rank >= backpressure_autonomous_rank )); then
+    n_human=0
+  fi
   if github_pr_list_truncated "$n_total"; then
     listing_truncated=1
     log_event "warning" "$(jq -nc --arg r "$slug" --arg l "$GITHUB_PR_LIST_LIMIT" --arg d \
@@ -5431,12 +5451,17 @@ while IFS= read -r slug; do
   human_queue_count=$(( human_queue_count + n_human ))
   draft_count=$(( draft_count + n_draft ))
   # The pull requests this repo just contributed to the trip: its drafts, and
-  # its ready ones the pipeline still owes a change. Bounded by
-  # GITHUB_PR_LIST_LIMIT, so it may ride argv (requirement 4g). An unreadable
-  # listing leaves it empty, which counts every claim — the fail-closed
-  # reading, matching the zeroed counts above.
-  counted_prs_array="$(jq -c '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]' \
-    <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
+  # its ready ones the pipeline still owes a change — every ready one, at
+  # agent-merges-routine or above, where n_human was just zeroed above for
+  # the same reason. Bounded by GITHUB_PR_LIST_LIMIT, so it may ride argv
+  # (requirement 4g). An unreadable listing leaves it empty, which counts
+  # every claim — the fail-closed reading, matching the zeroed counts above.
+  if (( slug_level_rank >= backpressure_autonomous_rank )); then
+    counted_prs_array="$(jq -c '[.[].number]' <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
+  else
+    counted_prs_array="$(jq -c '[.[] | select(.isDraft or .reviewDecision == "CHANGES_REQUESTED") | .number]' \
+      <<<"$prs_json" 2>/dev/null)" || counted_prs_array='[]'
+  fi
   [[ -n "$counted_prs_array" ]] || counted_prs_array='[]'
   counted_prs="$(jq -r 'join(",")' <<<"$counted_prs_array" 2>/dev/null)" || counted_prs=''
   counted_prs_json="$(jq -c --arg s "$slug" --argjson ns "$counted_prs_array" \

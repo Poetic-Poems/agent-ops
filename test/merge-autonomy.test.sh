@@ -26,6 +26,10 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 # shellcheck source=lib/toggle.sh
 . "$SCRIPT_DIR/lib/toggle.sh"
+# shellcheck source=lib/github-limit.sh
+. "$SCRIPT_DIR/lib/github-limit.sh"
+# shellcheck source=lib/merge-budget.sh
+. "$SCRIPT_DIR/lib/merge-budget.sh"
 # shellcheck source=lib/merge-autonomy.sh
 . "$SCRIPT_DIR/lib/merge-autonomy.sh"
 
@@ -382,6 +386,45 @@ else
   out="$(merge_autonomy_status_report)"
   assert_eq "a clear switch reports not killed" "not" "$(headline "$out")"
 fi
+
+# --- The per-repo merge-budget freeze (D18 WI-6, lib/merge-budget.sh) caps
+#     merge_autonomy_effective_level at agent-approves, never all the way to
+#     human — the one place merge_autonomy_effective_level's own behaviour
+#     changed for this item. Fresh state dir: the kill-switch assertions
+#     above leave the flag clear again, but a fresh cache avoids any doubt. ---
+fs_budget="$tmp_dir/fleet-state-budget"
+mkdir -p "$fs_budget"
+
+assert_eq "with no freeze set, effective level is unaffected — still the repo's own override" \
+  "agent-merges-all" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_budget")"
+
+freeze_outcome="$(merge_budget_freeze_set "$slug" "acme/widgets" 8 10)"
+assert_eq "freezing acme/widgets reports ok" "ok" "$freeze_outcome"
+assert_eq "and merge_autonomy_effective_level caps it at agent-approves, not human" \
+  "agent-approves" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_budget")"
+assert_eq "a different repo's own level is unaffected — the freeze is per-repo" \
+  "agent-approves" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/gizmos" "$slug" "$fs_budget")"
+
+human_cfg='{"merge_autonomy": "human"}'
+assert_eq "a frozen repo already configured at human (or agent-approves) is unaffected — the cap only ever lowers" \
+  "human" \
+  "$(merge_autonomy_effective_level "$human_cfg" "acme/widgets" "$slug" "$fs_budget")"
+
+kill_during_freeze="$(merge_autonomy_kill_set "$slug" "kill wins over a freeze too" "test-operator pid 4")"
+assert_eq "setting the kill switch while frozen still reports ok" "ok" "$kill_during_freeze"
+assert_eq "the kill switch outranks the freeze — human, not agent-approves" \
+  "human" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_budget")"
+merge_autonomy_kill_clear "$slug" "$fs_budget" >/dev/null
+
+freeze_clear_outcome="$(merge_budget_freeze_clear "$slug" "$fs_budget" "acme/widgets")"
+assert_eq "clearing the freeze reports ok" "ok" "$freeze_clear_outcome"
+assert_eq "and the repo reverts to its own configured level" \
+  "agent-merges-all" \
+  "$(merge_autonomy_effective_level "$override_cfg" "acme/widgets" "$slug" "$fs_budget")"
 
 echo
 if (( failures == 0 )); then
