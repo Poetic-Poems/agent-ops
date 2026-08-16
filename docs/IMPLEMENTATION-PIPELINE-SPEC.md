@@ -1526,13 +1526,25 @@ implements.
    this level's flags and requirements 2.1, 2.3b and 2.3c's alike, since all
    of them go through the one `fleet_flag_fetch_status`. A `live` or `clear`
    answer — the two the state repository actually confirmed — is served to
-   every later read of the same flag through the same `state_dir` in that
-   process without a second contents-API call, so a cycle consulting one flag
+   every later read of the same flag through the same `state_dir` and the
+   same 404 mode in that process without a second contents-API call, so a
+   cycle consulting one flag
    once per repository (requirement 2.2's own per-repository read of
    `merge_autonomy_effective_level`) spends one read on it rather than one per
-   repository. A `cached` or `unreachable` answer is never memoised: it is
+   repository. The mode is part of that key because the default mode and
+   `probe-404` deliberately resolve one and the same contents-API 404
+   differently (requirement 2.3b), so a `clear` memoised by a default-mode
+   read must never be served to a `probe-404` read of the same flag, which
+   would silently disarm a fail-closed flag for the rest of the process. A
+   `cached` or `unreachable` answer is never memoised: it is
    already this process's own uncertainty about a fetch that did not complete,
    so one bad moment must not decide every read for the rest of the run. A
+   memoised answer is served only when it is present *and* non-empty — the
+   entry is read in one step rather than tested for existence and then read,
+   so a memo file that has vanished, or that an interrupted write left empty,
+   falls through to a live fetch instead of being served as an empty answer
+   (which on the kill switch reads as `enabled`, the one direction it must
+   not fail in). A
    write or delete the process itself performs drops its own memo of that
    flag, so a flag it just set is never shadowed by its own earlier read. And
    a memo left in `TMPDIR` by a *dead* process is dropped when `lib/toggle.sh`
@@ -1547,7 +1559,8 @@ implements.
    back-pressure count and `void_obsolete_ctx_json` — pay exactly this cost,
    same as any other flag. A caller that is about to take an outward action
    under the level rather than merely compute with it — `run_approver_stage`
-   is the one such site today, D18 WI-7's arming step (issue #513) the next —
+   is the one such site today, D18 WI-7's arming step (not yet landed) the
+   next —
    asks `merge_autonomy_effective_level` for a fresh read instead: a non-empty
    FRESH argument skips this one call's memo hit and always asks GitHub, so a
    kill set from outside the process is seen at the stage boundary rather than
@@ -10142,11 +10155,17 @@ What exists, and the requirements each part answers to:
     `mergedAt`, `mergedBy.login` and `labels`.
     `merge_budget_oldest_waiting SLUG PR_LABEL` is a second,
     best-effort read of SLUG's open pull requests for a `hold` decision's
-    backlog, from `gh pr list --state open --search "sort:created-asc"`: the
-    search qualifier asks GitHub to order the listing itself, so the first
-    non-draft entry is the true oldest regardless of `--limit`'s page cap —
-    without it, past `GITHUB_PR_LIST_LIMIT` open labelled pull requests the
-    unsorted page's own oldest is not necessarily the oldest waiting overall.
+    backlog, from `gh pr list --state open --search "sort:created-asc
+    draft:false"`: the search qualifiers ask GitHub to order the listing
+    itself and to drop drafts from it before `--limit` cuts the page, so the
+    first entry is the true oldest non-draft regardless of that page cap.
+    Without the sort, past `GITHUB_PR_LIST_LIMIT` open labelled pull requests
+    the unsorted page's own oldest is not necessarily the oldest waiting
+    overall; without `draft:false`, a page whose oldest `GITHUB_PR_LIST_LIMIT`
+    entries are all drafts leaves the local non-draft filter nothing to find
+    and reports no backlog at all, even though an older non-draft is waiting
+    just past the page. The local non-draft filter stays regardless, against
+    the search index's own eventual consistency.
     `merge_budget_decide` composes both into one JSON object —
     `{decision, cap, count, anomaly, waiting_backlog}` — with no log events
     and no writes: `merge_budget_apply_decision DECISION_JSON SLUG
@@ -10763,6 +10782,13 @@ pull request, run the ones the change touches and any it could regress.
    reaches peers through `toggle_switch_summary`; and a record written
    without the field reads as `node` through both `toggle_scope` and the
    summary.
+
+   The same file covers the per-process memo's own key and its hit
+   (requirement 2.3a): a `clear` memoised by a default-mode read is not
+   served to a `probe-404` read of the same flag and the same `state_dir`,
+   which probes for itself and reads `unreachable`; and a memo entry that is
+   empty, or that has vanished since it was written, falls through to a live
+   fetch rather than being served as a confirmed answer.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
@@ -12808,7 +12834,9 @@ pull request, run the ones the change touches and any it could regress.
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `agent-cycle.sh` and drives them with every GitHub call, model launch and
     log write stubbed: at `merge_autonomy: human` the stage posts no review,
-    launches no model and logs nothing at all; at `agent-approves` a
+    launches no model and logs nothing at all, having asked
+    `merge_autonomy_effective_level` for a *fresh* read of the level rather
+    than the process-lifetime memo (requirement 2.3a); at `agent-approves` a
     `complexity:low` pull request gets a deterministic `APPROVE` with no
     model launched, `medium` and `high` launch `approver_model_default` and
     `approver_model_complex` respectively — the launched prompt assembled
