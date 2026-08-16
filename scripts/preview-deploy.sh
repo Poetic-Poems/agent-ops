@@ -19,6 +19,14 @@
 # rather than as either a pass or a deployment failure: a preview nobody can
 # reach is a statement about this node's configuration, not about the branch.
 #
+# --fetch <path> (repeatable) goes one step further: once the checks above
+# confirm the preview is reachable, it prints the response status, headers,
+# and body for each given route — the served CSP header, an error page's
+# actual text, whatever the diff needs read back. It sends the same
+# x-vercel-protection-bypass header the readiness check does, so the secret
+# never has to appear in a command line or a stage transcript to read a
+# protected preview's own content.
+#
 # What it reads from the environment:
 #   GH_TOKEN                         the deployment and its status. Already set
 #                                    on every node.
@@ -46,6 +54,7 @@ usage() {
   cat >&2 <<'USAGE'
 usage: preview-deploy.sh [--repo <owner/name>] [--pr <n> | --sha <sha>]
                          [--path <path>] [--wait <seconds>]
+                         [--fetch <path> ...]
 
 Report the state of the Vercel preview deployment for a pull request, and
 whether the deployed page actually answers.
@@ -60,6 +69,10 @@ workspace clone.
   --path   the path to request (default: /) — e.g. /api/health
   --wait   seconds to keep polling while the deployment is still building
            (default: 0, answer immediately)
+  --fetch  a route to print status, headers and body for, once the preview is
+           reachable — repeatable, e.g. --fetch / --fetch /api/health. Read
+           evidence, not a pass/fail check: it does not affect the exit code.
+           Oversized or binary bodies are truncated with a note saying so.
 
 Needs GH_TOKEN, and VERCEL_AUTOMATION_BYPASS_SECRET to get past Vercel
 Authentication. VERCEL_TOKEN is optional and buys the build log on a failure.
@@ -74,15 +87,17 @@ sha=""
 path="/"
 wait_seconds=0
 repo_explicit=0
+fetch_paths=()
 
 while (( $# > 0 )); do
   case "$1" in
     -h|--help) usage; exit 0 ;;
-    --repo) slug="${2:-}"; repo_explicit=1; shift 2 ;;
-    --pr)   pr="${2:-}";   shift 2 ;;
-    --sha)  sha="${2:-}";  shift 2 ;;
-    --path) path="${2:-}"; shift 2 ;;
-    --wait) wait_seconds="${2:-}"; shift 2 ;;
+    --repo)  slug="${2:-}"; repo_explicit=1; shift 2 ;;
+    --pr)    pr="${2:-}";   shift 2 ;;
+    --sha)   sha="${2:-}";  shift 2 ;;
+    --path)  path="${2:-}"; shift 2 ;;
+    --wait)  wait_seconds="${2:-}"; shift 2 ;;
+    --fetch) fetch_paths+=( "${2:-}" ); shift 2 ;;
     *) echo "preview-deploy: unknown argument: $1" >&2; usage; exit 2 ;;
   esac
 done
@@ -92,6 +107,12 @@ if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]]; then
   exit 2
 fi
 [[ "$path" == /* ]] || path="/$path"
+normalized_fetch_paths=()
+for route in "${fetch_paths[@]}"; do
+  [[ "$route" == /* ]] || route="/$route"
+  normalized_fetch_paths+=( "$route" )
+done
+fetch_paths=( "${normalized_fetch_paths[@]}" )
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -292,6 +313,65 @@ is_wall() {
   grep -qi '_vercel_sso_nonce\|Authentication Required' "$body_file" 2>/dev/null
 }
 
+# --- Route evidence, for --fetch -----------------------------------------------
+# Runs only once the loop below has confirmed the preview answers past the
+# wall, so it never needs to re-derive whether the bypass secret works — it
+# just reuses it. Judged for nothing: it prints what came back and leaves the
+# exit code to the readiness check above.
+fetch_body_limit=8192
+
+dump_body() {
+  local body_file="$1" size
+  size="$(wc -c < "$body_file")"
+  if (( size == 0 )); then
+    printf 'body: <empty>\n'
+  elif ! LC_ALL=C grep -Iq . "$body_file" 2>/dev/null; then
+    printf 'body: <binary, %d bytes, not shown>\n' "$size"
+  elif (( size > fetch_body_limit )); then
+    printf 'body (truncated to %d of %d bytes):\n' "$fetch_body_limit" "$size"
+    head -c "$fetch_body_limit" "$body_file" | sed 's/^/  /'
+    printf '\n  ...truncated\n'
+  else
+    printf 'body:\n'
+    sed 's/^/  /' "$body_file"
+  fi
+}
+
+fetch_route() {
+  local route="$1"
+  local target="$url$route" hops=0 code="" location=""
+  local body_file="$tmp_dir/fetch-body" headers_file="$tmp_dir/fetch-headers"
+  while (( hops < 4 )); do
+    curl_args=( -sS -o "$body_file" -D "$headers_file" -w '%{http_code}'
+                --max-time 30 )
+    [[ -n "$bypass" ]] && curl_args+=( -H "x-vercel-protection-bypass: $bypass" )
+    if ! code="$(curl "${curl_args[@]}" "$target" 2>"$tmp_dir/err")"; then
+      bad "$route could not be fetched: $(cat "$tmp_dir/err")"
+      return 1
+    fi
+
+    location="$(grep -i '^location:' "$headers_file" | tail -n 1 \
+      | tr -d '\r' | cut -d: -f2- | sed 's/^[[:space:]]*//')"
+
+    case "$code" in
+      3??)
+        [[ -n "$location" ]] || break
+        [[ "$location" == /* ]] && location="$url$location"
+        target="$location"
+        hops=$(( hops + 1 ))
+        continue
+        ;;
+    esac
+    break
+  done
+
+  printf '\n--- %s ---\n' "$target"
+  printf 'status: %s\n' "$code"
+  printf 'headers:\n'
+  sed -e 's/\r$//' -e 's/^/  /' "$headers_file"
+  dump_body "$body_file"
+}
+
 target="$url$path"
 hops=0
 final_code=""
@@ -339,6 +419,13 @@ done
 if [[ -z "$final_code" ]]; then
   bad "$target redirected more times than this check follows"
   exit 1
+fi
+
+if (( ${#fetch_paths[@]} > 0 )); then
+  printf '\nroute evidence:\n'
+  for route in "${fetch_paths[@]}"; do
+    fetch_route "$route"
+  done
 fi
 
 case "$final_code" in

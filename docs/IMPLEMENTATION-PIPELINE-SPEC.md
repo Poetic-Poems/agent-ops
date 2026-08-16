@@ -5216,6 +5216,23 @@ implements.
     cycle exactly as it did before this check existed, and neither stage may
     report `blocked` for the want of it.
 
+    **A passing check says only that the preview answers, not what it
+    answers.** `--path` (a single route, judged for pass/fail) and `--fetch`
+    (any number of routes, repeatable, judged for nothing) both exist because
+    of this gap: poetic-fiddle#319's `frame-src` CSP defect sat in a response
+    header throughout its pull request and was caught only when a human later
+    opened the deployed preview in a browser. `--fetch <path>` runs once the
+    readiness check above has confirmed the preview answers past the wall, and
+    prints that route's response status, headers — a served
+    `Content-Security-Policy` among them — and body, sending the same
+    `x-vercel-protection-bypass` header internally so the secret never appears
+    in a command line, this output, or the stage transcript. An oversized or
+    binary body is truncated with a note saying so rather than dumped whole.
+    Both prompts (component 4) direct their stage to name every route the
+    diff touches on the same invocation as the readiness check, after any
+    push; `--fetch`'s output is read as review evidence and never changes the
+    check's own exit code.
+
     Both stages reach the script through **`AGENT_OPS_ROOT`**, which
     `agent-cycle.sh` exports as its own directory and every stage inherits. A
     stage's working directory is its ephemeral clone, so a prompt naming a tool
@@ -9230,7 +9247,13 @@ What exists, and the requirements each part answers to:
     not check — which is what a protected, absent or still-building preview
     gets, so a login page is never reported as a healthy deployment.
     `VERCEL_TOKEN`, when set, adds the tail of the build log to a failure;
-    without it a failure names the deployment's inspector URL instead. Its
+    without it a failure names the deployment's inspector URL instead.
+    `--fetch <path>` (repeatable) prints the response status, headers and body
+    for each named route once the readiness check has confirmed the preview
+    answers past the wall — read as evidence, not judged for pass/fail, and
+    never affecting the exit code; a binary or oversized body is truncated
+    with a note rather than dumped whole, and the bypass secret it sends
+    internally never appears in the output. Its
     verdicts are regression-tested against a stubbed `gh` and `curl`
     (`test/preview-deploy.test.sh`); must pass `shellcheck`.
 14. `config.schema.json`, `lib/config-schema.sh` and `scripts/doctor.sh`
@@ -10567,7 +10590,15 @@ pull request, run the ones the change touches and any it could regress.
    uses to find the current branch's PR — and an explicit `--repo` with no
    `--pr` resolves the number first through `gh pr list --head <branch>`
    rather than combining the two; that refusal is pinned directly against the
-   installed `gh` binary, not assumed by the stub. Against the real API and a
+   installed `gh` binary, not assumed by the stub. `--fetch <path>` against a
+   preview behind the same stubbed wall still returns that route's status,
+   headers and body — proving the bypass secret it sends internally reaches a
+   protected preview's own content — while the secret's value never appears
+   anywhere in the command's output; a binary body is noted rather than
+   dumped, and an oversized one is truncated with a note naming the size.
+   `prompts/implementor.md` and `prompts/reviewer.md` are asserted to invoke
+   the check with `--fetch` in the same literal form, so the two cannot drift
+   (requirement 34a). Against the real API and a
    real protected preview, `scripts/preview-deploy.sh --repo
    Poetic-Poems/poetic-fiddle --pr <n>` from a shell with no bypass secret set
    reports that the deployment built and that the page could not be checked.
