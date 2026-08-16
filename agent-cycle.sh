@@ -3928,12 +3928,23 @@ run_landing_stage() {
     return 0
   fi
 
-  local gate_combined gate_word gate_reason
-  gate_combined="$(review_gate_verdict "$pr_url" "$gate_default_branch" 2>/dev/null)"
+  # `review_gate_verdict` speaks in its exit status as well as its word: 1 for
+  # `dirty`, 2 when the required-check list itself could not be read (see its
+  # own header, which tells every caller to capture that status rather than
+  # discard it — `lib/handoff.sh`'s `if gate_combined="$(…)"` is the other
+  # site). Captured with `|| gate_rc=$?` rather than a bare assignment because
+  # this file runs under `errexit`, where a bare assignment does not merely
+  # discard the status: it aborts the whole cycle mid-stage, on the two
+  # verdicts — a red required check, an unreadable check list — this gate
+  # exists to refuse. A refusal here must cost one `landing-refused` event and
+  # nothing else, exactly like every other gate in this function.
+  local gate_combined gate_word gate_reason gate_rc=0
+  gate_combined="$(review_gate_verdict "$pr_url" "$gate_default_branch" 2>/dev/null)" || gate_rc=$?
   gate_word="${gate_combined%%$'\t'*}"
   gate_reason="${gate_combined#*$'\t'}"
-  if [[ "$gate_word" != "clean" ]]; then
-    _landing_refuse "$pr_url" "$slug" "review gate: ${gate_reason:-$gate_word}"
+  if [[ "$gate_word" != "clean" || "$gate_rc" != "0" ]]; then
+    _landing_refuse "$pr_url" "$slug" \
+      "review gate: ${gate_reason:-${gate_word:-unreadable (review_gate_verdict exited $gate_rc)}}"
     return 0
   fi
 

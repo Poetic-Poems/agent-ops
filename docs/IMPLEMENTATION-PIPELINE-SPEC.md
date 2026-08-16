@@ -13084,7 +13084,15 @@ pull request, run the ones the change touches and any it could regress.
     (`test/approver-wiring.test.sh` continuing to pass confirms
     `run_approver_stage` still reports `approver_stage_verdict`/
     `approver_stage_adjudicating` correctly for `run_landing_stage`'s own
-    precondition): a protected-path pull request is never armed at
+    precondition), with `test/landing-wiring.test.sh` lifting
+    `run_landing_stage` and `_landing_refuse` verbatim out of
+    `agent-cycle.sh` and exercising every gate under `set -euo pipefail`,
+    the options that file itself runs under rather than the `set -uo
+    pipefail` a library test uses — a refusal a gate helper reports in its
+    *exit status* (`review_gate_verdict` exits 1 for `dirty`, 2 for an
+    unreadable required-check list) must log `landing-refused` and return,
+    never abort the cycle mid-stage, and only the production options can
+    tell the two apart: a protected-path pull request is never armed at
     `agent-merges-routine` **or** `agent-merges-all`, whatever the Approver's
     verdict, complexity or source; an Approver refusal, an adjudication (its
     own `land` included), an unparseable verdict, or a stage that did not
