@@ -792,7 +792,16 @@ own, since it runs to sixty rows against five each for the other two, with a
 as covering the model and actor charts specifically, offering 1/7/30/90 days
 and the unlabelled lifetime default — that re-aggregates `counts.cost_rows`
 client-side on change rather than re-fetching, so both charts redraw from the
-same choice with no round trip; recent log; `cron.log` tail.
+same choice with no round trip; recent log; `cron.log` tail. An option is
+disabled whenever its span exceeds how far back `cost_rows` actually reaches
+— capped both by the Publisher's own `COST_SCAN_DAYS` truncation and, on a
+younger fleet, by how long the pipeline has been running — since selecting it
+would otherwise silently show the same figures as a narrower window (or as
+Lifetime) without saying so; the Lifetime option itself is never disabled. A
+persisted choice the control has since disabled this way (grown stale as
+`cost_rows` moved) renders, and aggregates, as Lifetime instead — keeping the
+selected `<option>` and the chart it drives in agreement — and reverts to the
+persisted choice on its own once the window it names is available again.
 
 The **Co-Ordinator verdict quality** panel renders
 `counts.coordinator_verdicts` (issue #319). Implementation spec 3t

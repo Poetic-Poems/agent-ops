@@ -725,6 +725,23 @@ assert_contains "with no persisted choice it defaults to the lifetime option" \
 assert_contains "and the model chart sums every row, including the 40-day-old one" \
   '$11.00 · 2' "$out"
 
+# The fixture's oldest row is 40 days back, so `cost_rows` spans 41 days —
+# past the 30-day option but short of 90. A reader picking "90 days" here
+# would silently get whatever's inside those 41 days rather than the 90 they
+# asked for (the same trap PR #467's review flagged: the option's label
+# promises a span the data can't back), so it's disabled; every option the
+# 41-day span genuinely covers stays selectable.
+assert_contains "an option promising more history than cost_rows actually spans is disabled" \
+  '<option value="90" disabled="">' "$out"
+assert_not_contains "while an option within that span is not — no bare 'disabled=\"\"' on 30 days" \
+  '<option value="30" disabled="">' "$out"
+assert_not_contains "nor on 7 days" \
+  '<option value="7" disabled="">' "$out"
+assert_not_contains "nor on 1 day" \
+  '<option value="1" disabled="">' "$out"
+assert_not_contains "and never on Lifetime, which has no span to exceed" \
+  '<option value="all" disabled="">' "$out"
+
 out_1d="$(render cost-window.json '{"dashboard.costWindow":"1"}')" || \
   { printf 'FAIL - cost-window.json (1-day window) did not render:\n%s\n' "$out_1d"; exit 1; }
 assert_contains "a persisted '1' choice marks that option selected" \
@@ -744,6 +761,21 @@ assert_contains "a 7-day window includes the 3-day-old row alongside today's" \
 # shellcheck disable=SC2016
 assert_not_contains "but still excludes the 40-day-old row" \
   '$9.00' "$out_7d"
+
+# A persisted choice the control has since disabled (the fixture spans 41
+# days, short of "90 days") falls back to Lifetime for both the selected
+# `<option>` and the chart totals, rather than rendering a `<select>` whose
+# marked-selected option is simultaneously `disabled` — a state the control
+# itself would never let a reader reach by clicking.
+out_90d="$(render cost-window.json '{"dashboard.costWindow":"90"}')" || \
+  { printf 'FAIL - cost-window.json (90-day window) did not render:\n%s\n' "$out_90d"; exit 1; }
+assert_contains "a disabled persisted choice falls back to Lifetime as the selected option" \
+  '<option value="all" selected="">' "$out_90d"
+assert_not_contains "not to the disabled '90 days' option itself" \
+  '<option value="90" selected="">' "$out_90d"
+# shellcheck disable=SC2016
+assert_contains "and the model chart falls back to the same lifetime total the default render shows" \
+  '$11.00 · 2' "$out_90d"
 
 # --- switch-scope-*.json: which switch a node card is actually claiming ----------
 # A fleet-wide --disable writes a local record on the node that issued it as

@@ -773,13 +773,49 @@
     return order.map(function (k) { return {key: k, usd: sums[k], n: counts[k]}; })
       .sort(function (a, b) { return b.usd - a.usd; });
   }
+  // How many days of real history `cost_rows` actually spans, counted back
+  // from today inclusive (so a fleet whose oldest row is today itself spans
+  // 1 day, matching `costWindowCutoff`'s own "N days including today"
+  // semantics). This is capped by both the Publisher's own COST_SCAN_DAYS
+  // truncation and, on a younger fleet, by how long the pipeline has actually
+  // been running — either way, it is the true span behind `cost_rows`, so an
+  // option promising more than this would show identically to a narrower one
+  // (or to "Lifetime") without saying so.
+  function costWindowAvailableDays() {
+    var rows = (D.counts && D.counts.cost_rows) || [];
+    var oldest = rows.reduce(function (min, r) {
+      return (r.day && (min == null || r.day < min)) ? r.day : min;
+    }, null);
+    if (oldest == null) return 0;
+    var now = new Date();
+    var today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    var oldestDate = Date.UTC(Number(oldest.slice(0, 4)), Number(oldest.slice(4, 6)) - 1, Number(oldest.slice(6, 8)));
+    return Math.round((today - oldestDate) / 86400000) + 1;
+  }
+  // The window actually used to render: a persisted choice whose `days`
+  // exceeds what `cost_rows` actually spans would be indistinguishable from a
+  // no-op filter (or worse, look like a real 90-day view that's secretly
+  // capped at 60) — falling back to "Lifetime" for it here keeps the control
+  // and the chart it drives in agreement, and reverts to the persisted choice
+  // on its own once enough history accumulates.
+  function effectiveCostWindow(availableDays) {
+    if (costWindow === "all") return "all";
+    var w = COST_WINDOWS.filter(function (w) { return w.key === costWindow; })[0];
+    if (!w || w.days == null || w.days > availableDays) return "all";
+    return costWindow;
+  }
   function costWindowControl() {
+    var availableDays = costWindowAvailableDays();
+    var effective = effectiveCostWindow(availableDays);
     var select = el("select", {class: "costwindow", onchange: function (e) {
       costWindow = e.target.value;
       saveCostWindow(costWindow);
       renderBody();
     }}, COST_WINDOWS.map(function (w) {
-      return el("option", {value: w.key, text: w.label, selected: w.key === costWindow ? "" : null});
+      var disabled = w.days != null && w.days > availableDays;
+      return el("option", {value: w.key, text: w.label,
+        selected: w.key === effective ? "" : null,
+        disabled: disabled ? "" : null});
     }));
     return el("div", {class: "costwindow-bar"}, [
       el("label", {class: "muted", text: "Time frame (model & actor charts): "}),
@@ -2003,10 +2039,14 @@
   // client-recomputed lookalike (the same "cheap path when untouched"
   // reasoning `spendMode` already follows). Older `data.js` payloads with no
   // `cost_rows` fall back the same way, so a narrower window is simply
-  // unavailable rather than blanking the chart.
+  // unavailable rather than blanking the chart. Uses `effectiveCostWindow`,
+  // not the raw persisted choice, so a selection the control has since
+  // disabled (its `days` now exceeds what `cost_rows` spans) renders as
+  // "Lifetime" here too, in agreement with what the disabled `<option>` shows.
   function windowedCostBreakdown(keyFn) {
-    if (costWindow === "all" || !(D.counts && D.counts.cost_rows)) return null;
-    return aggregateCostRows(costRowsForWindow(costWindow), keyFn);
+    var effective = effectiveCostWindow(costWindowAvailableDays());
+    if (effective === "all" || !(D.counts && D.counts.cost_rows)) return null;
+    return aggregateCostRows(costRowsForWindow(effective), keyFn);
   }
   function spendByModel() {
     var agg = windowedCostBreakdown(function (r) { return r.model || "unknown"; });
