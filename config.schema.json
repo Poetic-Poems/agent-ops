@@ -44,25 +44,7 @@
               "const": "abandoned-drafts"
             },
             "items": {
-              "type": "string",
-              "enum": [
-                "security",
-                "issues:urgent",
-                "review-feedback",
-                "merge-conflicts",
-                "dequeued",
-                "human-visibility",
-                "abandoned-drafts",
-                "failed-runs",
-                "issues:high",
-                "tech-debt",
-                "issues:medium",
-                "implementation-plan",
-                "project-review",
-                "issues:low",
-                "code-quality",
-                "register-hygiene"
-              ]
+              "$ref": "#/$defs/sourceToken"
             }
           },
           "implementation_plan_path": {
@@ -132,6 +114,14 @@
             "description": "Override for the top-level merge_budget_per_day key, for this repository only. Absent means this repository follows the top-level key.",
             "type": "integer",
             "minimum": 0
+          },
+          "merge_autonomy_routine_sources": {
+            "description": "Override for the top-level merge_autonomy_routine_sources key, for this repository only. Absent means this repository follows the top-level key.",
+            "type": "array",
+            "uniqueItems": true,
+            "items": {
+              "$ref": "#/$defs/sourceToken"
+            }
           }
         }
       },
@@ -159,6 +149,7 @@
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` — the per-repo form of the `timeout_<actor>` and `inactivity_<actor>` keys below, each an object in minutes keyed `coordinator`, `implementor`, `reviewer` and `enabler`, any subset of them. The Refiner spans repos, so it has no per-repo form and takes `timeout_refiner` / `inactivity_refiner` only. A repo's entry is the most specific level of the precedence — this entry, then the fleet-wide key, then the derived value — so set one only to insist on a number for one repo; omit them and both the backstop and the watchdog tune themselves. `scripts/doctor.sh`'s pinned-cap warning covers every level, naming the repo for a per-repo override.",
           "A repo entry may also carry `merge_autonomy` — the per-repo override of the top-level key of the same name, on the same precedence: this entry wins when present, the top-level key otherwise. Omit it and the repository follows the fleet-wide default.",
           "A repo entry may also carry `merge_budget_per_day` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
+          "A repo entry may also carry `merge_autonomy_routine_sources` — the per-repo override of the top-level key of the same name, on the same precedence. Omit it and the repository follows the fleet-wide default.",
           "Every optional key goes on the repo's own entry, beside `slug` and `sources`:",
           {
             "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
@@ -174,6 +165,7 @@
           "A repo entry may also carry `stage_timeouts` and `stage_inactivity` \u2014 per-actor overrides in minutes, keyed `coordinator`, `implementor`, `reviewer` and `enabler`, for that repository alone. They are the most specific level of requirement 4f's precedence, ahead of the plain `timeout_<actor>` / `inactivity_<actor>` key and ahead of the derivation; the Refiner, spanning repositories, has no per-repository form. Configuration is read, never written: requirement 4f's derivation never writes back to `config.json`.",
           "A repo entry may also carry `merge_autonomy` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3b), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "A repo entry may also carry `merge_budget_per_day` \u2014 the per-repository override of the top-level key of the same name (D18, requirement 2.3c), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
+          "A repo entry may also carry `merge_autonomy_routine_sources` \u2014 the per-repository override of the top-level key of the same name (D18 WI-7, requirement 8d), on the same precedence as `stage_timeouts`: this entry wins when present, the top-level key otherwise.",
           "Every optional key sits on the repository's own entry, beside `slug` and `sources`:",
           {
             "code": "\"repos\": [\n  {\n    \"slug\": \"Poetic-Poems/poetic\",\n    \"sources\": [\"security\", \"issues:urgent\", \"tech-debt\", \"issues:low\"]\n  },\n  {\n    \"slug\": \"Poetic-Poems/poetic-fiddle\",\n    \"sources\": [\"security\", \"issues:urgent\", \"implementation-plan\", \"issues:low\"],\n    \"implementation_plan_path\": \"docs/IMPLEMENTATION-PLAN.md\",\n    \"nice\": -5,\n    \"stage_timeouts\": { \"implementor\": 90 },\n    \"stage_inactivity\": { \"implementor\": 20 }\n  }\n]",
@@ -653,25 +645,39 @@
       }
     },
     "merge_autonomy": {
-      "description": "The D18 merge-autonomy trust ladder — human, agent-approves, agent-merges-routine, agent-merges-all — naming who approves and who lands a pull request this pipeline raises. `human` is today's behaviour, byte-for-byte: a human approves and a human merges. Every level above it needs a non-author Approver identity (`approver_app_id`) able to hold review rights, since GitHub refuses self-approval and this pipeline authors as its own configured owner. A `repos[]` entry's own `merge_autonomy` overrides this key for that repository alone. `scripts/doctor.sh` fails a level above `human` with no `approver_app_id` or no `approver_model_default` configured, and `agent-merges-routine` or above while the repository's own branch ruleset still requires code-owner review. At `agent-approves` and above, the Approver stage reviews every eligible pull request and posts a real GitHub review; a human still merges at every level, since no requirement yet arms an automatic landing (a later work item's job) — `agent-merges-routine`/`agent-merges-all` are validated identically but land no differently from `agent-approves` today.",
+      "description": "The D18 merge-autonomy trust ladder — human, agent-approves, agent-merges-routine, agent-merges-all — naming who approves and who lands a pull request this pipeline raises. `human` is today's behaviour, byte-for-byte: a human approves and a human merges. Every level above it needs a non-author Approver identity (`approver_app_id`) able to hold review rights, since GitHub refuses self-approval and this pipeline authors as its own configured owner. A `repos[]` entry's own `merge_autonomy` overrides this key for that repository alone. `scripts/doctor.sh` fails a level above `human` with no `approver_app_id` or no `approver_model_default` configured, and `agent-merges-routine` or above while the repository's own branch ruleset still requires code-owner review. At `agent-approves` and above, the Approver stage reviews every eligible pull request and posts a real GitHub review; a human still merges at `agent-approves`. At `agent-merges-routine`/`agent-merges-all`, the Script itself lands an eligible pull request (requirement 8d) — `complexity:low`/`medium`, a source in `merge_autonomy_routine_sources`, no protected path touched, every gate re-read clean at the moment of decision — and a human's residual act narrows to whatever the classifier refused.",
       "type": "string",
       "enum": ["human", "agent-approves", "agent-merges-routine", "agent-merges-all"],
       "default": "human",
       "x-docs": {
-        "readme": "The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver App reviews; a human still merges), `agent-merges-routine`/`agent-merges-all` (accepted and reviewed the same way, but land no differently from `agent-approves` yet — no requirement arms an automatic merge today). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` and `approver_model_default` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level.",
-        "spec": "The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, \"### The Approver\") reviews and posts a real GitHub review; the human still lands every pull request until a later work item arms automatic landing. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.",
+        "readme": "The D18 merge-autonomy trust ladder: `human` (today's behaviour — a human approves and merges), `agent-approves` (the Approver App reviews; a human still merges), `agent-merges-routine`/`agent-merges-all` (the Script itself lands an eligible pull request — see `merge_autonomy_routine_sources` — and a human's residual act narrows to whatever the classifier refused). A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Every level above `human` needs `approver_app_id` and `approver_model_default` set, and a human `CHANGES_REQUESTED` blocks landing regardless of level.",
+        "spec": "The D18 trust ladder (docs/reviews/2026-08-14-autonomy-investigation.md §5.1), fleet-wide default; a `repos[]` entry's own `merge_autonomy` overrides it for that repository, the same precedence `stage_timeouts` uses (requirement 4f). `scripts/doctor.sh` fails a configured level above `human` with no `approver_app_id` or no `approver_model_default`, and a level of `agent-merges-routine` or above while the repository's own default-branch ruleset still requires code-owner review (§5.3). At `agent-approves` and above the Approver stage (requirements 8b/8c, \"### The Approver\") reviews and posts a real GitHub review; a human still lands every pull request at `agent-approves`. At `agent-merges-routine`/`agent-merges-all` the arming step (requirement 8d, `lib/landing.sh`) lands an eligible pull request itself. The fleet-wide kill switch (requirement 2.3b) forces the effective level to `human` everywhere independent of this key.",
         "value": "`human`"
       }
     },
     "merge_budget_per_day": {
-      "description": "D18's spend governor (§5.4): a rolling-24-hour cap on pull requests this pipeline may land in one repository, counted from GitHub's own merged-PR record (never a private counter). A `repos[]` entry's own `merge_budget_per_day` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. `0` means unlimited and skips the count entirely. Reaching the cap approves a pull request through the ordinary review path but does not arm its landing — the backlog queues visibly rather than merging past the cap; landing more than the cap in a window is a counting anomaly that freezes the repository to `agent-approves` (never all the way to `human`) and escalates to a human. Enforced at the arming step a later work item adds (`lib/merge-budget.sh`'s `merge_budget_decide`/`merge_budget_apply_decision`) — nothing calls them from a behaviour-affecting path yet, except `merge_autonomy_effective_level`'s own read of the freeze.",
+      "description": "D18's spend governor (§5.4): a rolling-24-hour cap on pull requests this pipeline may land in one repository, counted from GitHub's own merged-PR record (never a private counter). A `repos[]` entry's own `merge_budget_per_day` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. `0` means unlimited and skips the count entirely. Reaching the cap approves a pull request through the ordinary review path but does not arm its landing — the backlog queues visibly rather than merging past the cap; landing more than the cap in a window is a counting anomaly that freezes the repository to `agent-approves` (never all the way to `human`) and escalates to a human. Enforced at the arming step (requirement 8d, `lib/merge-budget.sh`'s `merge_budget_decide`/`merge_budget_apply_decision`).",
       "type": "integer",
       "minimum": 0,
       "default": 8,
       "x-docs": {
-        "readme": "D18's spend governor: a rolling-24-hour cap on pull requests this pipeline may land in one repository, counted from GitHub's own merged-PR record. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). `0` means unlimited. Reaching the cap approves a pull request but does not merge it — the backlog queues visibly; landing more than the cap is a counting anomaly that freezes the repository to `agent-approves` and escalates to a human. Enforced once a later work item arms automatic landing; today it only caps a repository whose freeze is already set.",
-        "spec": "D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling-24-hour cap on pull requests this pipeline may land in one repository, fleet-wide default; a `repos[]` entry's own `merge_budget_per_day` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). `0` means unlimited and skips the count entirely. `merge_budget_decide` answers `arm` (under cap), `hold` (cap reached — approved but not armed, the backlog visible) or `refuse` (the count could not be established, failing closed). Landing past the cap — a counting anomaly a correct governor should never observe — freezes the repository to `agent-approves` (`merge_budget_freeze_set`) and escalates to that repository, never `crash_loop_repo`. `merge_budget_apply_decision` is the write side (requirement 33's `merge-budget-hold`/`merge-budget-frozen`/`merge-budget-freeze-escalated` events); a later work item is what calls either function from the arming step itself.",
+        "readme": "D18's spend governor: a rolling-24-hour cap on pull requests this pipeline may land in one repository, counted from GitHub's own merged-PR record. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). `0` means unlimited. Reaching the cap approves a pull request but does not merge it — the backlog queues visibly; landing more than the cap is a counting anomaly that freezes the repository to `agent-approves` and escalates to a human.",
+        "spec": "D18's spend governor (§5.4, `lib/merge-budget.sh`, requirement 2.3c): a rolling-24-hour cap on pull requests this pipeline may land in one repository, fleet-wide default; a `repos[]` entry's own `merge_budget_per_day` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). `0` means unlimited and skips the count entirely. `merge_budget_decide` answers `arm` (under cap), `hold` (cap reached — approved but not armed, the backlog visible) or `refuse` (the count could not be established, failing closed). Landing past the cap — a counting anomaly a correct governor should never observe — freezes the repository to `agent-approves` (`merge_budget_freeze_set`) and escalates to that repository, never `crash_loop_repo`. `merge_budget_apply_decision` is the write side (requirement 33's `merge-budget-hold`/`merge-budget-frozen`/`merge-budget-freeze-escalated` events); the arming step (requirement 8d) is what calls either function.",
         "value": "`8`"
+      }
+    },
+    "merge_autonomy_routine_sources": {
+      "description": "D18 WI-7 (requirement 8d): which work sources may be armed automatically at `agent-merges-routine` and above — an eligible pull request also needs `complexity:low`/`medium` and to touch no protected path (`lib/landing.sh`'s `landing_eligible`). A `repos[]` entry's own `merge_autonomy_routine_sources` overrides this key for that repository alone, on the same precedence `merge_autonomy` uses. Compared against a pull request's own `source` field by exact string equality — the four `issues:<band>` tokens this array may hold are a config-time rank; every work order's own `source` collapses all four to the plain word `issues` before this comparison ever runs (`scripts/gather-issues.sh`), so listing an `issues:<band>` token here only ever matches a pull request whose `source` is literally that string, which none currently are. `scripts/doctor.sh` warns when an entry names a source the repository's own `sources` list never gathers.",
+      "type": "array",
+      "uniqueItems": true,
+      "default": ["register-hygiene", "tech-debt"],
+      "items": {
+        "$ref": "#/$defs/sourceToken"
+      },
+      "x-docs": {
+        "readme": "D18 WI-7: which work sources may be armed automatically at `agent-merges-routine` and above — a pull request also needs `complexity:low`/`medium` and to touch no protected path. A `repos[]` entry may override this per repository — see [Extended notes: `repos`](#extended-notes-repos). Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` is the plain word `issues`, so an `issues:<band>` entry here never matches one.",
+        "spec": "D18 WI-7 (requirement 8d, `lib/landing.sh`'s `landing_eligible`): which work sources may be armed automatically at `agent-merges-routine` and above, fleet-wide default; a `repos[]` entry's own `merge_autonomy_routine_sources` overrides it for that repository, the same precedence `merge_autonomy` uses (requirement 4f). An eligible pull request also needs `complexity:low`/`medium` and `landing_protected_paths_hit` to report no protected path touched. Matched against a pull request's own `source` by exact string equality: every `issues:<band>` work order's own `source` collapses to the plain word `issues` (`scripts/gather-issues.sh`), so an `issues:<band>` entry here never matches one — a known, disclosed limitation (`lib/landing.sh`'s own header). `scripts/doctor.sh` warns when a repository's own effective list names a source that repository's `sources` never gathers.",
+        "value": "`[\"register-hygiene\", \"tech-debt\"]`"
       }
     },
     "approver_app_id": {
@@ -1361,6 +1367,28 @@
     "notBefore": {
       "description": "An optional timestamp string before which something may not start. Absent or empty means no stand-down; deliberately carries no `default` of its own, so the two sites that `$ref` it choose independently whether to fabricate one.",
       "type": "string"
+    },
+    "sourceToken": {
+      "description": "One work-source token: an ordinary source name, or one of the four `issues:<band>` ranks (the same `issues` source at four ranks, requirement 15e). Shared between `repos[].sources` and `merge_autonomy_routine_sources` (top-level and per-repo) so the two enumerations cannot drift apart.",
+      "type": "string",
+      "enum": [
+        "security",
+        "issues:urgent",
+        "review-feedback",
+        "merge-conflicts",
+        "dequeued",
+        "human-visibility",
+        "abandoned-drafts",
+        "failed-runs",
+        "issues:high",
+        "tech-debt",
+        "issues:medium",
+        "implementation-plan",
+        "project-review",
+        "issues:low",
+        "code-quality",
+        "register-hygiene"
+      ]
     }
   }
 }
