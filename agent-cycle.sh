@@ -648,6 +648,31 @@ log_event() {
     '{ts: $ts, cycle: $cycle, node: $node, event: $event} + $fields' >> "$log_file" || true
 }
 
+# void_obsolete_ctx_json REPO_SLUG
+# What every `void_guard_reason` call site (the Co-Ordinator, the Enabler, the
+# Implementor) hands it as CTX_JSON, so the machine `obsolete` alternative
+# (design doc §5.5, issue #413, WI-10) has what it needs without lib/void-
+# guard.sh ever touching config, the kill switch, or the log itself — that
+# file stays self-contained and stubbable with `gh` alone, exactly as its own
+# tests rely on.
+#
+# `${union_log:-$log_file}` rather than `$union_log` outright: this is called
+# from functions the Script may invoke before the fleet-wide union log is
+# built partway through a cycle (`union_log="$cycle_dir/.fleet-log.jsonl"`,
+# set once, well after this function is first defined) — falling back to this
+# node's own local log costs only *this node's* peers' flags being briefly
+# invisible to a void decided that early, never a crash under `set -u`. A
+# `draft-obsolete-flagged` event is a fact, never retracted (lib/cycle-
+# state.sh's `draft_obsolete_flags`), so a flag missed this way is not lost —
+# it is simply not yet in whichever log this call happened to read.
+void_obsolete_ctx_json() {
+  local slug="$1" level flags_json
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir" 2>/dev/null || true)"
+  flags_json="$(draft_obsolete_flags "${union_log:-$log_file}")"
+  jq -nc --arg lvl "$level" --arg cycle "$cycle_id" --argjson now "$(date -u +%s)" --argjson flags "$flags_json" \
+    '{merge_autonomy_level: $lvl, cycle: $cycle, now_epoch: $now, flags: $flags}'
+}
+
 # TD-PPagop-26081407: a guarded call site (`cmd 2>&1) || { guard_warn ...;
 # var=fallback; }`) that falls back to a literal on failure without saying so
 # is indistinguishable from a genuinely empty/zero answer downstream — the
@@ -1972,7 +1997,7 @@ log_voided_items() {
     coord_recorded_voided_json="$(jq -nc 'input as $arr | input as $e | $arr + [$e]' \
       <<<"$coord_recorded_voided_json"$'\n'"$entry")"
 
-    if refusal="$(void_guard_reason "$entry" "$repos")"; then
+    if refusal="$(void_guard_reason "$entry" "$repos" "$(void_obsolete_ctx_json "$repo")")"; then
       log_event "item-void" "$(item_event_fields "coordinator" "$reason" "$repo" "$item" \
         "$(jq -nc --arg e "$(void_entry_evidence "$entry")" '{evidence: $e}')")"
       # An item with no work needs no refinement either: the label goes, on the
@@ -4104,6 +4129,7 @@ maybe_run_enabler() {
   local ex e_repo e_item verdict e_reason claimed_entry blocked_ts outcome extra e_evidence_field
   local e_void_entry e_void_refusal
   local e_pr_url e_handoff e_refusal e_refined
+  local e_flag_evidence_field e_flag_resolvable e_flag_resolve_reason e_flag_pr_num
   local e_block_stage e_default_branch e_review_json e_gate_word e_gate_reason
   local e_gate_checks_unreadable e_ck_word e_ck_reason e_review_safe e_gate_checks_ok e_finding
   local e_rereview_state e_rereview_who e_human_reviewer_state e_human_reviewer_who
@@ -4476,7 +4502,7 @@ $(jq . <<<"$input")
         # nothing to test against; the citation check needs nothing from it.
         e_void_entry="$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg reason "$e_reason" \
           --argjson x "$ex" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
-        if e_void_refusal="$(void_guard_reason "$e_void_entry" '[]')"; then
+        if e_void_refusal="$(void_guard_reason "$e_void_entry" '[]' "$(void_obsolete_ctx_json "$e_repo")")"; then
           # TD-PPagop-26081407: $ex is an agent stage's own parsed verdict
           # (test 1 -- external, can be malformed) and {} reads exactly like
           # "no evidence given" (test 2).
@@ -4505,6 +4531,45 @@ $(jq . <<<"$input")
         # condition given" (test 2).
         extra="$(jq -c '{unblock_condition: (.unblock_condition // "")}' <<<"$ex" 2>&1)" \
           || { guard_warn "enabler:still-blocked-extra" "$extra"; extra='{}'; }
+
+        # The machine `obsolete` alternative's first touch (design doc §5.5,
+        # issue #413, WI-10): an Enabler that judges a stalled draft unwanted
+        # flags it here rather than voiding it — flagging is not itself a
+        # verdict that closes anything, so this never writes `item-void`; a
+        # *later*, independent engagement's own void is what a corroborated
+        # flag can eventually support, via lib/void-guard.sh's
+        # `void_draft_obsolete_flag_reason`. `e_pr_url` is the item's own
+        # `pr_url` (from `claimed_entry`, the same field the `unblocked`/
+        # `complete_handoff` path above reads); the flag carries no weight
+        # without one, since there is then no pull request to flag.
+        if [[ "$(jq -r '.flag_obsolete // false' <<<"$ex" 2>/dev/null || true)" == "true" ]]; then
+          e_pr_url="$(jq -r '.pr_url // ""' <<<"$claimed_entry" 2>/dev/null || true)"
+          e_flag_evidence_field="$(jq -c '{evidence: (.evidence // null)}' <<<"$ex" 2>&1)" \
+            || { guard_warn "enabler:flag-obsolete-evidence" "$e_flag_evidence_field"; e_flag_evidence_field='{}'; }
+          e_flag_resolvable="$(void_entry_resolvable_evidence "$e_flag_evidence_field")"
+          e_flag_pr_num="${e_pr_url##*/}"
+          if [[ -z "$e_pr_url" ]]; then
+            log_event "warning" "$(jq -nc \
+              --arg d "enabler set flag_obsolete for ${e_repo:-<no repo>} $e_item, but the item carries no pr_url to flag — ignored" \
+              '{detail: $d}')"
+          elif ! [[ "$e_flag_pr_num" =~ ^[0-9]+$ ]]; then
+            log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
+              --arg d "enabler set flag_obsolete for $e_pr_url, but no pull request number could be read from it — ignored" \
+              '{detail: $d, pr_url: $u}')"
+          elif [[ -z "$e_flag_resolvable" ]]; then
+            log_event "warning" "$(jq -nc --arg u "$e_pr_url" \
+              --arg d "enabler set flag_obsolete for $e_pr_url, but its evidence is not the structured {ref,path,expect,pattern} shape — ignored" \
+              '{detail: $d, pr_url: $u}')"
+          elif ! e_flag_resolve_reason="$(void_evidence_resolves "$e_flag_resolvable" "$e_repo")"; then
+            log_event "warning" "$(jq -nc --arg u "$e_pr_url" --arg r "$e_flag_resolve_reason" \
+              --arg d "enabler set flag_obsolete for $e_pr_url, but its evidence did not resolve: " \
+              '{detail: ($d + $r), pr_url: $u}')"
+          else
+            log_event "draft-obsolete-flagged" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" \
+              --argjson pr "$e_flag_pr_num" --argjson ev "$(jq -c '.evidence' <<<"$e_flag_evidence_field")" \
+              '{repo: $r, item: $i, pr: $pr, evidence: $ev}')"
+          fi
+        fi
         ;;
       escalate)
         issue_title="$(jq -r '.issue.title // ""' <<<"$ex" 2>/dev/null || true)"
@@ -7466,7 +7531,7 @@ if (( impl_rc == 0 )) && [[ "$impl_status" == "void" ]]; then
   impl_void_entry="$(jq -nc --arg r "$selected_repo" --arg i "$selected_item" \
     --arg reason "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
     --argjson x "$impl_status_json" '{repo: $r, item: $i, reason: $reason, evidence: ($x.evidence // "")}')"
-  if impl_void_refusal="$(void_guard_reason "$impl_void_entry" '[]')"; then
+  if impl_void_refusal="$(void_guard_reason "$impl_void_entry" '[]' "$(void_obsolete_ctx_json "$selected_repo")")"; then
     log_item_void "implementor" \
       "$(jq -r '.reason // "no reason given"' <<<"$impl_status_json")" \
       "$(jq -c '{evidence: (.evidence // "")}' <<<"$impl_status_json")"

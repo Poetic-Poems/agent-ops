@@ -1092,6 +1092,42 @@ assert_eq "  ... o/a's own entry" '[{"number":1,"reason":"assigned"}]' \
 assert_eq "  ... o/b's own entry" '[{"number":2,"reason":"blocked-label"}]' \
   "$(latest_issues_excluded "$issues_excluded_log" | jq -c '.["o/b"]')"
 
+# --- draft_obsolete_flags (issue #413, WI-10) -----------------------------
+flags_log="$tmp_dir/draft-obsolete-flags-log.jsonl"
+
+assert_eq "missing log yields no flags" "[]" "$(draft_obsolete_flags "$tmp_dir/nonexistent.jsonl")"
+: > "$flags_log"
+assert_eq "empty log yields no flags" "[]" "$(draft_obsolete_flags "$flags_log")"
+
+printf '{"ts":"2026-08-14T06:00:00Z","cycle":"c1","node":"node-2","event":"draft-obsolete-flagged","repo":"o/r","item":"pr-92-abandoned-abc123","pr":92,"evidence":{"ref":"main","path":"X.md","expect":"present"}}\n' \
+  >> "$flags_log"
+assert_eq "a well-formed flag is carried through in full" \
+  '{"repo":"o/r","item":"pr-92-abandoned-abc123","pr":92,"evidence":{"ref":"main","path":"X.md","expect":"present"},"cycle":"c1","node":"node-2","ts":"2026-08-14T06:00:00Z"}' \
+  "$(draft_obsolete_flags "$flags_log" | jq -c '.[0]')"
+
+# A flag is a fact, not a state — every occurrence is kept, unlike
+# blocked_items/void_items' latest-wins pairing, since nothing ever retracts
+# one (see the function's own comment).
+printf '{"ts":"2026-08-15T09:00:00Z","cycle":"c2","node":"node-1","event":"draft-obsolete-flagged","repo":"o/r","item":"pr-92-abandoned-abc123","pr":92,"evidence":{"ref":"main","path":"X.md","expect":"present"}}\n' \
+  >> "$flags_log"
+assert_eq "a second flag for the same item is kept alongside the first, not overwriting it" \
+  "2" "$(draft_obsolete_flags "$flags_log" | jq 'length')"
+
+# An event missing repo or item is dropped, same discipline as
+# first_seen_known_items above.
+: > "$flags_log"
+printf '{"ts":"2026-08-14T06:00:00Z","event":"draft-obsolete-flagged","item":"pr-92-abandoned-abc123"}\n' \
+  >> "$flags_log"
+printf '{"ts":"2026-08-14T06:00:00Z","event":"draft-obsolete-flagged","repo":"o/r"}\n' \
+  >> "$flags_log"
+assert_eq "an event with no repo or no item is dropped" "0" "$(draft_obsolete_flags "$flags_log" | jq 'length')"
+
+# An event of any other type is not mistaken for a flag.
+: > "$flags_log"
+printf '{"ts":"2026-08-14T06:00:00Z","event":"item-void","repo":"o/r","item":"pr-92-abandoned-abc123"}\n' \
+  >> "$flags_log"
+assert_eq "an unrelated event type is ignored" "0" "$(draft_obsolete_flags "$flags_log" | jq 'length')"
+
 printf '\n'
 if (( failures > 0 )); then
   printf '%d assertion(s) failed\n' "$failures"

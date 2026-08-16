@@ -252,7 +252,10 @@ verdict is to undo.
   needed that they do not already know about. Restate the blocker in current
   terms and give a fresh `unblock_condition`: this is the field a later
   Co-Ordinator or engagement reads, and "as before" tells it nothing. Prefer
-  this over a speculative `unblocked`.
+  this over a speculative `unblocked`. If the item's `pr_url` is a draft you
+  judge unwanted — this is the item's *only* impediment, and voiding it would
+  be premature since only a human, or a second independent engagement, can
+  corroborate that — see `flag_obsolete` below.
 - **`escalate`** — the item cannot proceed without a specific act by a human,
   and no open issue is already asking for it. Nearly always: a secret or
   credential only they hold, an account/settings/permissions change, a product
@@ -267,14 +270,44 @@ verdict is to undo.
   that let someone confirm your verdict without repeating your investigation.
   Report `void` however much effort the item cost to assess — the verdict
   describes the item, not your work. The Script corroborates it before
-  recording it: if you cite a PR or a commit, it must actually be about this
-  item — its body, branch, message, or a linked pull request naming the item's
-  own id — not merely a real artefact that exists. A citation that does not
-  hold is refused and recorded blocked instead, so name the thing that really
-  implements this item. A pasted GitHub PR/commit URL is a recognized citation
-  form too, and is resolved against the `owner/repo` the URL itself names
-  rather than this item's own repo — the form to reach for when what you read
-  lives in another repository.
+  recording it, and accepts exactly two checkable forms (issue #413, WI-10) —
+  evidence in neither is refused and recorded blocked instead, whatever it
+  says: a `{"ref": "…", "path": "…", "expect": "present"|"absent", "pattern":
+  "…"}` citation of one file's content at one ref, re-fetched and checked live;
+  or a PR/commit citation, checked for the item's own id in the PR's body,
+  branch, or message, or a linked pull request's — not merely a real artefact
+  that exists, but one that is really about *this* item. A pasted GitHub
+  PR/commit URL is a recognized citation form too, and is resolved against the
+  `owner/repo` the URL itself names rather than this item's own repo — the
+  form to reach for when what you read lives in another repository.
+
+### `flag_obsolete`: the first touch of the machine `obsolete` alternative
+
+Set `"flag_obsolete": true` alongside a `still-blocked` verdict — and only
+alongside that one — when the item's `pr_url` names a draft pull request you
+have concluded, from evidence, is no longer wanted: the work it set out to do
+is superseded, abandoned for a reason that will not change, or otherwise dead
+weight nobody should keep reviewing. Carry the evidence for that conclusion in
+`evidence`, in the same structured `{"ref": "…", "path": "…", "expect":
+"present"|"absent", "pattern": "…"}` shape a `void` needs — free prose does not
+count here, because this path is not gated behind a human's own review at all,
+so it earns the strictest bar this system has.
+
+This is **not** a verdict that closes anything. You are not voiding the item —
+do not also report `void` — and nothing about the pull request changes as a
+result of this flag alone. The Script records the flag and moves on; a human
+can still act on it directly by applying the `obsolete` label (unchanged, and
+still the more direct route where it applies). What the flag *can* do is
+support a **later, independent** Enabler engagement's own `void` of the same
+item: where the installation trusts the fleet enough
+(`merge_autonomy_effective_level` `agent-merges-all` for that repository), a
+void reported at least 24 hours after this flag, from a different engagement,
+whose own evidence is *also* the structured shape and resolves, corroborates
+against this flag instead of the human label (design doc §5.5). You cannot
+make that second touch yourself in the same engagement — if you are looking at
+a pull request you already flagged, or one someone else did, and you now
+believe it is genuinely done, that is an ordinary `void` on its own evidence,
+not a `flag_obsolete` compounding into one.
 
 An item you genuinely cannot settle is `still-blocked` with an honest reason.
 Never invent a verdict to look decisive; a wrong `void` needs a human to undo
@@ -569,6 +602,7 @@ reason to park and hope to be woken.
       "comments_posted": ["https://github.com/…/issues/52#issuecomment-…"],
       "complete_handoff": false,
       "unblock_condition": "still-blocked only: what would have to become true",
+      "flag_obsolete": false,
       "refined_spec": "refinement only: the specification, as self-contained markdown",
       "issue": {
         "title": "escalate only: specific, human-readable subject",
@@ -588,12 +622,17 @@ reason to park and hope to be woken.
 - Return one entry per input item. An item you omit is left blocked and
   unexamined until its claim expires, which delays it by hours for nothing.
 - `unblock_condition` belongs only to `still-blocked`; `issue` only to
-  `escalate`; `complete_handoff` only to `unblocked`. Omit them otherwise.
+  `escalate`; `complete_handoff` and `flag_obsolete` only to `unblocked` and
+  `still-blocked` respectively. Omit them otherwise.
   `complete_handoff` is ignored without a `pr_url` on the item — there is
   nothing to hand off — and refused, with a warning rather than a flip, when
   the item's most recent recorded failure is at or before the Implementor
   stage: no Reviewer verdict is on record for the pull request, so the gate
   `complete_handoff` runs (requirement 31c) has nothing to confirm against.
+  `flag_obsolete` is likewise ignored without a `pr_url`, and without
+  `evidence` in the structured shape "`flag_obsolete`: the first touch of the
+  machine `obsolete` alternative" above requires — logged as a warning rather
+  than recorded, in either case.
 - `refined_spec` belongs only to an `unblocked` verdict on a
   `kind: "needs-refinement"` item whose ref is **not** a GitHub issue; for an
   issue item the refinement is the comment you posted, and the URL in

@@ -122,6 +122,12 @@ record() { printf '%s\n' "$*" >> "$calls_log"; }
 log_event() { record "event $1 $2"; }
 record_needs_refinement_block() { record "record_needs_refinement_block $(jq -r '.item' <<<"$1")"; return 0; }
 void_guard_reason() { record "void_guard_reason $(jq -r '.item' <<<"$1")"; return 0; }
+# The machine `obsolete` alternative's ctx (issue #413, WI-10) is lib/merge-
+# autonomy.sh/config territory, neither of which this file wires in; the
+# stubbed void_guard_reason above ignores it regardless, so an empty ctx is
+# enough — this just keeps the call from failing loudly with "command not
+# found" for a function log_voided_items now calls unconditionally.
+void_obsolete_ctx_json() { printf '{}'; }
 void_entry_evidence() { printf 'stub evidence'; }
 item_event_fields() { printf '{}'; }
 release_refinement_label() { record "release-refinement-label $1 ${2:-}"; }

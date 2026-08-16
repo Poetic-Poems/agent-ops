@@ -1135,10 +1135,27 @@ nothing to set up; `scripts/doctor.sh` warns while a repo has not got it yet.
 The next time the pipeline records this item as void — typically the Enabler,
 re-examining the escalation this draft raised — the label corroborates the
 void despite the diff, and the pull request is closed with a comment naming
-the label as why. **Only you can do this: no stage in the pipeline ever
-applies this label itself**, exactly like `unvoided` above — a stage that
-could apply it would be corroborating its own judgement, which is what the
-guard exists to stop.
+the label as why. **Only you can apply this label: no stage in the pipeline
+ever applies it itself**, exactly like `unvoided` above — a stage that could
+apply it would be corroborating its own judgement, which is what the guard
+exists to stop.
+
+**A machine-checkable alternative exists too**, but only once a repository has
+climbed to `merge_autonomy` level `agent-merges-all` (issue #413, WI-10;
+`docs/reviews/2026-08-14-autonomy-investigation.md` §5.5): a two-touch
+confirmation across two *independent* Enabler engagements, at least 24 hours
+apart, each citing structured `{ref, path, expect, pattern}` evidence that
+resolves live against the repository — the same evidentiary bar a `void`
+itself needs, applied twice rather than once. The first Enabler to judge a
+draft unwanted records a `draft-obsolete-flagged` event rather than voiding it
+outright; a second, later engagement's own void of the same item then
+corroborates against that flag exactly as it would against your label. This
+is not a second way for the pipeline to label anything — it never writes
+`obsolete`, and one engagement flagging a draft can never also be the void
+that closes it — it is a second, independent Enabler pass standing in for
+your label at the trust level where the installation has decided that is
+enough. Below `agent-merges-all`, or for any pull request nobody has flagged,
+the label remains the only way to tell the pipeline a draft is unwanted.
 
 ### Blocked items and the Enabler
 

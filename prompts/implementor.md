@@ -796,7 +796,11 @@ as void despite its diff (requirement 34d) — a stage that could apply it
 itself would be corroborating its own judgement, exactly what requirement
 34d's guard exists to stop. If a pull request of yours is genuinely no longer
 wanted, say so as `void` (with evidence) or `blocked` per "Ending" below, and
-leave the label for a human to apply.
+leave the label for a human to apply. The Enabler has a machine-checkable
+alternative to the label at `agent-merges-all` (issue #413, WI-10, design doc
+§5.5) — a two-touch confirmation across two independent engagements — but it
+is the Enabler's own path, not yours: you carry no `flag_obsolete` field and
+gain no way to write one.
 
 ## Ending
 
@@ -918,18 +922,37 @@ pays to rediscover exactly what you just discovered.
 Report `void` regardless of how much you have already done to find out — the
 verdict describes the item, not your effort.
 
-The Script corroborates your `void` before recording it: if `evidence` cites a
-PR or a commit, it must actually be about this item — its body, branch,
-message, or a linked pull request naming the item's own id — not merely a real
-artefact that happens to exist. A citation that does not hold is refused and
-recorded `blocked` instead of `void`, which the next Enabler engagement will
-re-examine; so name the thing that genuinely implements this item, not a PR or
-commit that is merely thematically related. A pasted GitHub PR/commit URL
-(`https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>` — the form
-`gh pr view`/`gh pr create` print) is a recognized citation form too, resolved
-against the `owner/repo` the URL itself names rather than this item's own
-repo, so it is the safer form to cite when the artefact you read lives in a
-different repository.
+The Script corroborates your `void` before recording it, and accepts exactly
+two checkable forms of `evidence` (issue #413, WI-10) — anything else is
+refused and recorded `blocked` instead of `void`, which the next Enabler
+engagement will re-examine, whatever it says:
+
+- **A citation of a PR or a commit** — it must actually be about this item:
+  its body, branch, message, or a linked pull request naming the item's own
+  id, not merely a real artefact that happens to exist. Name the thing that
+  genuinely implements this item, not a PR or commit that is merely
+  thematically related. A pasted GitHub PR/commit URL
+  (`https://github.com/<owner>/<repo>/pull/<n>` or `.../commit/<sha>` — the
+  form `gh pr view`/`gh pr create` print) is a recognized citation form too,
+  resolved against the `owner/repo` the URL itself names rather than this
+  item's own repo, so it is the safer form to cite when the artefact you read
+  lives in a different repository.
+- **A structured `{"ref": "…", "path": "…", "expect": "present"|"absent",
+  "pattern": "…"}` claim about one file's content at one ref** — the Script
+  re-fetches that path and tests it live, `pattern` (optional) matched against
+  the decoded content. Reach for this over prose whenever the claim really is
+  "this file at this ref does (or does not) look like X" — a Ledger row
+  reading `resolved`, a workaround no longer present on `main` — since it is
+  checked, not merely read.
+
+A void whose `evidence` is prose naming neither — "it's done, I checked" with
+no PR, commit, or file citation — is refused outright: non-empty evidence
+alone is no longer enough. If the item is `pr-<n>-abandoned-…`/`pr-<n>-review-
+…`/`pr-<n>-conflict-…`/`pr-<n>-superseded-…`/`pr-<n>-dequeued-…` — one of the
+finishing sources, whose id already names the pull request it exists to
+finish — that pull request's own live state corroborates the void directly,
+even without a citation in your `evidence` text; this does not apply to any
+other item shape.
 
 Leave whatever you've already pushed (draft PR, branch, status flip) exactly as
 it is when you report `blocked` — don't unwind your own claim. The Script and,

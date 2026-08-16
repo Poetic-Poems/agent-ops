@@ -1232,9 +1232,11 @@ repos/<slug>/contents/<path>?ref=<ref>` fetch you already made (see "Read-only"
 above). The Script re-runs that same fetch and tests it — a citation shaped
 this way is *checked*, not just read. `pattern` is optional and, when given, is
 matched against the file's content (e.g. `status: *resolved` against the
-item's `tech-debt/<id>.md`). A citation
-that doesn't fit this shape is still accepted, exactly as before, but only on
-the presence test — nothing then confirms it against the repository.
+item's `tech-debt/<id>.md`). Evidence that fits neither this shape nor a
+PR/commit citation (below) is refused outright, whatever it says — non-empty
+prose alone is no longer enough (issue #413, WI-10): name a fetch that shape
+above, or a PR/commit that names this item, or nothing you assert here will be
+recorded.
 
 Nor is one this cycle's own candidates contradict. If the item still has an open
 pull request whose diff against its base is non-empty, the work is by definition
@@ -1529,11 +1531,13 @@ logging it as a selection defect rather than a race.
 - `voided` lists any item identifiers you established describe no work at all,
   each as `{"item": "…", "repo": "owner/name", "reason": "one line", "evidence":
   …}`. Omit or leave empty if none. `evidence` is required: an entry without it
-  is recorded blocked, not void. Give it as `{"ref": "…", "path": "…", "expect":
-  "present"|"absent", "pattern": "…"}` when the claim is about one file's
-  content at one ref — the Script re-fetches and checks it — or as free text
-  (the PR number, register row, or command you actually read) otherwise; see
-  "Voiding an item yourself" above. This is terminal and only a human can
+  is recorded blocked, not void. Give it in one of two checkable forms — the
+  Script accepts nothing else (issue #413, WI-10): `{"ref": "…", "path": "…",
+  "expect": "present"|"absent", "pattern": "…"}` when the claim is about one
+  file's content at one ref — the Script re-fetches and checks it — or a
+  PR/commit citation (a PR number, a GitHub PR/commit URL, or a commit SHA) that
+  names this item, in prose, when the claim is about a pull request or commit;
+  see "Voiding an item yourself" above. This is terminal and only a human can
   reverse it, so only list an item you are certain about.
 - `needs_refinement` lists the items you skipped **solely** because they are
   too under-specified to rank or because they wait on a human decision, each as

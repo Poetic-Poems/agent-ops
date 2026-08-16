@@ -247,8 +247,17 @@ assert_eq "an empty array is not" "" "$(void_entry_evidence '{"evidence": []}')"
 # --- void_candidate_prs: which PRs can speak to this item ---------------------
 printf '3' >"$tmp_dir/files-92"
 printf '0' >"$tmp_dir/files-77"
+# `entry_92`/`entry_77`'s own evidence cites their PR by number — a citation
+# the closed-list gate (issue #413, WI-10) demands before `void_guard_reason`
+# ever reaches the candidate-diff check below, which is what these two entries
+# actually exist to exercise. `pr-92.json`/`pr-77.json` let that citation
+# corroborate (each PR's own branch names its item), so the candidate-diff
+# check is what decides the verdict, exactly as before the gate existed.
+printf '{"body": "", "head": {"ref": "td/TD26072114"}}' >"$tmp_dir/pr-92.json"
+printf '{"body": "", "head": {"ref": "td/TD26070101"}}' >"$tmp_dir/pr-77.json"
 
-entry_92='{"item": "TD26072114", "repo": "Poetic-Poems/poetic", "reason": "done", "evidence": "read main"}'
+entry_92='{"item": "TD26072114", "repo": "Poetic-Poems/poetic", "reason": "done",
+  "evidence": "PR #92 finishes this item"}'
 assert_eq "the item's own PR is found" \
   "Poetic-Poems/poetic#92" "$(void_candidate_prs "$entry_92" "$REPOS")"
 
@@ -379,18 +388,22 @@ assert_contains "  ... and the count" "3 file(s)" "$out"
 # The honest case: the PR really has nothing left in it, so the work really is
 # on the base. Nothing here should make a correct void harder to record.
 entry_77='{"item": "TD26070101", "repo": "Poetic-Poems/poetic-fiddle",
-  "reason": "landed via #70", "evidence": "pulls/77/files is empty"}'
+  "reason": "landed via #70", "evidence": "PR #77'"'"'s own diff against its base is empty"}'
 out="$(void_guard_reason "$entry_77" "$REPOS")"; rc=$?
 assert_eq "an evidenced void with an empty PR diff is allowed" "0" "$rc"
 assert_eq "  ... silently" "" "$out"
 
 # Items with no PR at all — most tech-debt and every review recommendation —
-# are governed by the evidence rule alone. The guard must not become a rule that
-# only PR-backed voids can ever be recorded.
+# are governed by the evidence rule alone, but that rule is now a closed list
+# (issue #413, WI-10): prose naming neither a structured citation nor a
+# PR/commit is refused rather than accepted on being merely non-empty — the
+# exact fall-through TD26072601 once carved out and the shipped defect at the
+# top of this file walked straight through.
 out="$(void_guard_reason '{"item": "review-2026-07-21-R-04", "repo": "Poetic-Poems/poetic",
   "reason": "the licence file exists", "evidence": "main:LICENCE present at 9d45df4"}' "$REPOS")"
 rc=$?
-assert_eq "an evidenced void with no PR to check is allowed" "0" "$rc"
+assert_eq "an evidenced void with prose evidence and no PR is refused" "1" "$rc"
+assert_contains "  ... naming what was missing" "no checkable citation" "$out"
 
 # TD26072601: exactly the case above is what the resolvable shape exists to
 # strengthen — an item with no PR candidate, corroborated by fetching the file
@@ -445,16 +458,22 @@ printf '3' >"$tmp_dir/files-92"
 # agent-cycle.sh calls this as `if refusal="$(void_guard_reason …)"; then` under
 # `set -euo pipefail`. A malformed repos array, or none at all, must degrade to
 # "evidence rule only" rather than aborting the cycle that is trying to record
-# state.
+# state. Reached with the working stub, and checkable evidence (issue #413,
+# WI-10 closed the fall-through, so bare unchecked prose no longer reaches the
+# candidate-diff loop this is actually testing) — `EXISTS.md` is the fixture
+# `void_evidence_resolves` already set up above.
 (
   set -euo pipefail
   . "$SCRIPT_DIR/lib/void-guard.sh"
-  VOID_GUARD_GH="/nonexistent/gh"
-  if r="$(void_guard_reason '{"item": "X", "evidence": "cited"}' 'not json')"; then
+  VOID_GUARD_GH="$tmp_dir/gh"
+  if r="$(void_guard_reason '{"item": "X", "repo": "Poetic-Poems/poetic",
+      "evidence": {"ref": "main", "path": "EXISTS.md", "expect": "present"}}' 'not json')"; then
     [[ -z "$r" ]] || exit 9
   else
     exit 8
   fi
+
+  VOID_GUARD_GH="/nonexistent/gh"
   if r="$(void_guard_reason '{"item": "X"}')"; then exit 7; fi
   [[ "$r" == *"no evidence"* ]] || exit 6
   # A resolvable citation reads `$?` straight after a command substitution, so
@@ -1204,6 +1223,163 @@ printf '[]' >"$tmp_dir/prlist-Poetic-Poems_poetic-fiddle.json"
 out="$(void_guard_reason "$entry_superseded" '[]')"; rc=$?
 assert_eq "  ... but not once the newer bump is no longer open" "1" "$rc"
 assert_contains "  ... naming the missing bump" "has none open now" "$out"
+
+# --- The closed list itself (issue #413, WI-10) --------------------------------
+# A finishing-source item is corroborated directly against its own pull
+# request's live state — case (c) — even when its evidence carries no citation
+# text at all and is not the structured shape either. This is what makes case
+# (c) a genuine third alternative rather than a restatement of the citation
+# shortcut: nothing here mentions "PR #240".
+printf '{"state": "open"}' >"$tmp_dir/pr-240.json"
+printf '0' >"$tmp_dir/files-240"
+entry_240_prose='{"item": "pr-240-abandoned-abcdef123456", "repo": "Poetic-Poems/poetic",
+  "reason": "the draft is finished", "evidence": "nothing remains in this draft"}'
+assert_eq "a finishing-source item with uncited prose evidence still corroborates via its own PR's live state" \
+  "0" "$(void_guard_reason "$entry_240_prose" '[]'; echo $?)"
+assert_eq "  ... silently" "" "$(void_guard_reason "$entry_240_prose" '[]')"
+
+printf '{"state": "open"}' >"$tmp_dir/pr-241.json"
+printf '2' >"$tmp_dir/files-241"
+entry_241_prose='{"item": "pr-241-abandoned-abcdef123456", "repo": "Poetic-Poems/poetic",
+  "reason": "the draft is finished", "evidence": "nothing remains in this draft"}'
+out="$(void_guard_reason "$entry_241_prose" '[]')"; rc=$?
+assert_eq "  ... and is refused the same way once that PR still carries a diff" "1" "$rc"
+assert_contains "  ... naming the count still outstanding" "still changes 2 file(s)" "$out"
+
+# An ordinary (non-finishing-source) item with prose evidence naming neither a
+# citation nor the structured shape has no checkable form at all, and is
+# refused rather than accepted on presence alone — the exact repeal this WI is
+# about, restated as a direct unit test of `void_guard_reason` rather than the
+# end-to-end one above.
+out="$(void_guard_reason '{"item": "TD26099901", "repo": "Poetic-Poems/poetic",
+  "reason": "already done", "evidence": "it is done, trust me"}' '[]')"
+rc=$?
+assert_eq "an ordinary item with uncheckable prose evidence is refused" "1" "$rc"
+assert_contains "  ... naming what was missing" "no checkable citation" "$out"
+assert_contains "  ... naming the item" "TD26099901" "$out"
+
+# --- Requirement pin: `unvoided` gains no machine path (issue #413, WI-10) -----
+# D18 retires the human backstop that justified the residual void-trust gap
+# this file closes, but `unvoided` itself is untouched by design (design doc
+# §5.5): reversing a void is a judgement about intent, and the argument this
+# file's own header makes for why no agent may weigh a void applies just as
+# hard to clearing one. This module is the only place `item-void` is decided,
+# so a machine path to `unvoided` would have to appear here first.
+assert_eq "lib/void-guard.sh defines no unvoid-adjacent function" \
+  "" "$(grep -oE '^[a-zA-Z_][a-zA-Z0-9_]*\(\)' "$SCRIPT_DIR/lib/void-guard.sh" | grep -i unvoid || true)"
+
+# --- The machine `obsolete` alternative (issue #413, WI-10, design doc §5.5) ---
+# `void_draft_obsolete_flag_reason` corroborates a `draft-obsolete-flagged`
+# event only where the installation trusts the fleet enough to act on it
+# without the human label: `merge_autonomy_effective_level` `agent-merges-all`
+# for this repo, a two-touch confirmation at least 24h apart from a different
+# cycle, and structured evidence resolving live on *both* touches — the flag's
+# own and the current void's. `NOW_EPOCH` is fixed so "24h old" is a
+# deterministic boundary rather than a race against the wall clock.
+NOW_EPOCH=1700000000
+ts_before() {  # <seconds before NOW_EPOCH>
+  date -u -d "@$(( NOW_EPOCH - $1 ))" +%Y-%m-%dT%H:%M:%SZ
+}
+CYCLE_NOW="20260815T090000Z-node-1-999"
+CYCLE_OLD="20260814T060000Z-node-2-111"
+
+printf '{"content":"%s"}' "$(printf 'irrelevant' | base64)" >"$tmp_dir/contents-main-FLAG-EXISTS.md"
+
+ctx_agent_merges_all() {  # <flags-json>
+  jq -nc --argjson now "$NOW_EPOCH" --arg cycle "$CYCLE_NOW" --argjson flags "$1" \
+    '{merge_autonomy_level: "agent-merges-all", cycle: $cycle, now_epoch: $now, flags: $flags}'
+}
+
+flag_valid="$(jq -nc --arg ts "$(ts_before 90000)" \
+  '{repo: "Poetic-Poems/poetic", item: "pr-250-abandoned-fedcba654321", pr: 250,
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"},
+    cycle: "'"$CYCLE_OLD"'", node: "node-2", ts: $ts}')"
+
+printf '{"state": "open"}' >"$tmp_dir/pr-250.json"
+printf '3' >"$tmp_dir/files-250"
+entry_250="$(jq -nc \
+  '{item: "pr-250-abandoned-fedcba654321", repo: "Poetic-Poems/poetic",
+    reason: "an independent, later Enabler engagement confirms this draft is unwanted",
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"}}')"
+assert_eq "a draft void corroborates on a valid draft-obsolete-flagged event at agent-merges-all" \
+  "0" "$(void_guard_reason "$entry_250" '[]' "$(ctx_agent_merges_all "[$flag_valid]")"; echo $?)"
+assert_eq "  ... silently" "" "$(void_guard_reason "$entry_250" '[]' "$(ctx_agent_merges_all "[$flag_valid]")")"
+
+# Below `agent-merges-all`, the identical flag corroborates nothing — only the
+# human `obsolete` label does — so the same entry is refused on the ordinary
+# diff test, unmoved by the flag.
+ctx_below="$(jq -nc --argjson now "$NOW_EPOCH" --arg cycle "$CYCLE_NOW" --argjson flags "[$flag_valid]" \
+  '{merge_autonomy_level: "agent-merges-routine", cycle: $cycle, now_epoch: $now, flags: $flags}')"
+out="$(void_guard_reason "$entry_250" '[]' "$ctx_below")"; rc=$?
+assert_eq "the same flag corroborates nothing below agent-merges-all" "1" "$rc"
+assert_contains "  ... refused on the ordinary diff test" "still changes 3 file(s)" "$out"
+
+# A flag younger than 24h does not corroborate, whatever else about it holds.
+flag_too_young="$(jq -nc --arg ts "$(ts_before 3600)" \
+  '{repo: "Poetic-Poems/poetic", item: "pr-250-abandoned-fedcba654321", pr: 250,
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"},
+    cycle: "'"$CYCLE_OLD"'", node: "node-2", ts: $ts}')"
+out="$(void_guard_reason "$entry_250" '[]' "$(ctx_agent_merges_all "[$flag_too_young]")")"; rc=$?
+assert_eq "a flag younger than 24h does not corroborate" "1" "$rc"
+assert_contains "  ... refused on the ordinary diff test" "still changes 3 file(s)" "$out"
+
+# A flag from the very same cycle as the current void does not corroborate —
+# it would be the same engagement corroborating its own judgement, not a
+# second, independent look.
+flag_same_cycle="$(jq -nc --arg ts "$(ts_before 90000)" \
+  '{repo: "Poetic-Poems/poetic", item: "pr-250-abandoned-fedcba654321", pr: 250,
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"},
+    cycle: "'"$CYCLE_NOW"'", node: "node-1", ts: $ts}')"
+out="$(void_guard_reason "$entry_250" '[]' "$(ctx_agent_merges_all "[$flag_same_cycle]")")"; rc=$?
+assert_eq "a flag from the same cycle as the current void does not corroborate" "1" "$rc"
+assert_contains "  ... refused on the ordinary diff test" "still changes 3 file(s)" "$out"
+
+# A flag whose own evidence is prose, not the structured shape, does not
+# corroborate — both touches must clear the strictest bar this guard has.
+flag_prose_evidence="$(jq -nc --arg ts "$(ts_before 90000)" \
+  '{repo: "Poetic-Poems/poetic", item: "pr-250-abandoned-fedcba654321", pr: 250,
+    evidence: "the draft is redundant now", cycle: "'"$CYCLE_OLD"'", node: "node-2", ts: $ts}')"
+out="$(void_guard_reason "$entry_250" '[]' "$(ctx_agent_merges_all "[$flag_prose_evidence]")")"; rc=$?
+assert_eq "a flag whose own evidence is prose does not corroborate" "1" "$rc"
+assert_contains "  ... refused on the ordinary diff test" "still changes 3 file(s)" "$out"
+
+# The current void's own evidence must also be the structured shape and
+# resolve live — a citation-shaped current void does not reach the flag path
+# even when a perfectly valid flag exists, because the precondition is about
+# the current touch, not only the earlier one.
+entry_250_citation="$(jq -nc \
+  '{item: "pr-250-abandoned-fedcba654321", repo: "Poetic-Poems/poetic",
+    reason: "an independent, later Enabler engagement confirms this draft is unwanted",
+    evidence: "PR #250 is confirmed unwanted by a later Enabler pass"}')"
+printf '{"body": "", "head": {"ref": "agent/250"}}' >"$tmp_dir/pr-250.json"
+out="$(void_guard_reason "$entry_250_citation" '[]' "$(ctx_agent_merges_all "[$flag_valid]")")"; rc=$?
+assert_eq "a current void with citation-shaped (not structured) evidence does not reach the flag path" "1" "$rc"
+assert_contains "  ... refused on the ordinary diff test" "still changes 3 file(s)" "$out"
+printf '{"state": "open"}' >"$tmp_dir/pr-250.json"
+
+# A flag naming a different item does not corroborate this one, even with
+# every other condition met.
+flag_wrong_item="$(jq -nc --arg ts "$(ts_before 90000)" \
+  '{repo: "Poetic-Poems/poetic", item: "pr-251-abandoned-fedcba654321", pr: 251,
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"},
+    cycle: "'"$CYCLE_OLD"'", node: "node-2", ts: $ts}')"
+out="$(void_guard_reason "$entry_250" '[]' "$(ctx_agent_merges_all "[$flag_wrong_item]")")"; rc=$?
+assert_eq "a flag naming a different item does not corroborate" "1" "$rc"
+assert_contains "  ... refused on the ordinary diff test" "still changes 3 file(s)" "$out"
+
+# The `-review-` shape is read exactly the same way as `-abandoned-`.
+flag_valid_review="$(jq -nc --arg ts "$(ts_before 90000)" \
+  '{repo: "Poetic-Poems/poetic", item: "pr-252-review-1234567890", pr: 252,
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"},
+    cycle: "'"$CYCLE_OLD"'", node: "node-2", ts: $ts}')"
+printf '{"state": "open"}' >"$tmp_dir/pr-252.json"
+printf '1' >"$tmp_dir/files-252"
+entry_252="$(jq -nc \
+  '{item: "pr-252-review-1234567890", repo: "Poetic-Poems/poetic",
+    reason: "an independent, later Enabler engagement confirms this draft is unwanted",
+    evidence: {ref: "main", path: "FLAG-EXISTS.md", expect: "present"}}')"
+assert_eq "the review-feedback shape corroborates on a valid flag exactly the same way" \
+  "0" "$(void_guard_reason "$entry_252" '[]' "$(ctx_agent_merges_all "[$flag_valid_review]")"; echo $?)"
 
 printf '\n'
 if (( failures == 0 )); then

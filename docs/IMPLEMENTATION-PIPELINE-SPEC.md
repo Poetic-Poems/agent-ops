@@ -6592,7 +6592,7 @@ implements.
     and so has nothing for the guard to corroborate it with. Its event
     carries `stage: preflight` all the same, so a reader auditing the log for
     guarded voids should not mistake it for a fourth stage evading this
-    requirement. Four tests, all on the Script's side of the boundary:
+    requirement. Five tests, all on the Script's side of the boundary:
     - **Evidence must be present.** Requirement 34c's `evidence` field is
       required on every void, and `null`, `""`, whitespace, `{}` and `[]` are
       all absence. An entry without it is not a verdict, it is an opinion.
@@ -6606,13 +6606,12 @@ implements.
       establishes absence: a fetch that fails any other way — rate limited,
       unauthenticated, no network, a `ref` GitHub cannot resolve — has
       established nothing, and reads as the unreadable pull request below
-      does, not as the absence it was asked about. A citation that does not
-      fit the shape at all is free text, and is accepted on the presence test
-      alone, as it always was — the guard tests what it can test, not a shape
-      every claim must take. A citation that does fit the shape but does not
-      resolve — the fetch fails, the presence/absence/pattern does not hold,
-      or the entry names no repo to resolve it against — is refused the same
-      way an unrefuted PR diff is below.
+      does, not as the absence it was asked about. A citation that does fit
+      the shape but does not resolve — the fetch fails, the
+      presence/absence/pattern does not hold, or the entry names no repo to
+      resolve it against — is refused the same way an unrefuted PR diff is
+      below. A citation that does not fit the shape at all is free text,
+      tested by the next check rather than this one.
     - **A cited PR or commit must actually be about this item.** Evidence
       naming "PR #N" or "pull request #N" (bare form, resolved against the
       entry's own `repo`) or the URL `https://github.com/<owner>/<repo>/pull/<n>`
@@ -6654,25 +6653,40 @@ implements.
 
       - `pr-<n>-abandoned-…` and `pr-<n>-review-…` — a corroborated void of
         these makes 34k *close pull request `<n>`*, with a comment. So an
-        `open` reading is accepted in either of two cases: an **empty diff
+        `open` reading is accepted in any of three cases: an **empty diff
         against its base** — whatever the item was to finish is already on
-        the base, and closing the PR discards nothing — or the pull request
+        the base, and closing the PR discards nothing — the pull request
         already carrying the human-applied **`obsolete` label**, checked live
         off the same fetch that read `state`, before the `/files` diff count
-        is ever read (TD-PPagop-26081308). That label is the deliberate,
-        corroborable "no longer wanted" signal a diff can never be — restoring
-        the capability an empty-diff-only reading could not reach, a draft
-        that still changes files but is simply unwanted — and no pipeline
-        stage may ever apply it itself (`lib/labels.sh`'s catalogue comment,
-        `prompts/implementor.md`'s explicit prohibition): a stage that could
-        would be corroborating its own judgement, exactly what this
-        requirement exists to stop. An open pull request with neither an
-        empty diff nor the label is refused, naming the file count still
-        outstanding — that claim is a judgement no API call can corroborate on
-        its own say-so, and closing a live branch on an unexamined one is
-        exactly how pull request #264 was lost (TD-PPagop-26080901). Such a
-        void is escalated instead of recorded, to a human who can either
-        resolve the item honestly or apply the label.
+        is ever read (TD-PPagop-26081308) — or a **machine-checkable
+        alternative to that label** (issue #413, WI-10, design doc §5.5),
+        available only where `merge_autonomy_effective_level` is
+        `agent-merges-all` for this repository: a `draft-obsolete-flagged`
+        event an earlier, independent Enabler engagement logged for this
+        pull request (36a's `flag_obsolete`, never a void itself), read at
+        least 24 hours old, from a different cycle than the void's own, whose
+        evidence — like the void's own — is the structured `{ref, path,
+        expect, pattern}` shape and resolves live. The label is the
+        deliberate, corroborable "no longer wanted" signal a diff can never
+        be — restoring the capability an empty-diff-only reading could not
+        reach, a draft that still changes files but is simply unwanted — and
+        no pipeline stage may ever apply it itself (`lib/labels.sh`'s
+        catalogue comment, `prompts/implementor.md`'s explicit prohibition):
+        a stage that could would be corroborating its own judgement, exactly
+        what this requirement exists to stop. The flag is not that stage's
+        own judgement doing the same thing under a different name: an
+        Enabler that flags a draft records no verdict that closes anything,
+        and only a *second*, independent engagement's own void — on its own
+        evidence, corroborated the ordinary way requirement 34d always
+        required — can ever act on it, which is what the differing-cycle and
+        24-hour conditions exist to guarantee. An open pull request with none
+        of an empty diff, the label, or a corroborating flag is refused,
+        naming the file count still outstanding — that claim is a judgement
+        no API call can corroborate on its own say-so, and closing a live
+        branch on an unexamined one is exactly how pull request #264 was lost
+        (TD-PPagop-26080901). Such a void is escalated instead of recorded,
+        to a human who can either resolve the item honestly or apply the
+        label.
       - `pr-<n>-conflict-…` — a corroborated void of this shape closes
         **nothing** (34k excludes it, for the same #264 reason: the void says
         the *conflict* resolved, not the pull request, which stays a live PR
@@ -6742,11 +6756,28 @@ implements.
       `item` — the gatherers put it in `ref` and leave `item` as whatever
       register id the branch or body named, or `null` — so the Co-Ordinator's
       extra test is as silent on this shape as the Enabler's and the
-      Implementor's `repos: []` calls are. Evidence citing neither a PR
-      nor a commit is untouched by this test — the two tests above are what
-      govern free prose. This is what a citation that merely *exists* was
-      missing: the shipped defect that motivated it (below) cited a PR that
-      was real, open, and entirely unrelated to the item being voided.
+      Implementor's `repos: []` calls are. Evidence citing neither a PR nor a
+      commit is untouched by this test — the next one is what governs free
+      prose that cites nothing. This is what a citation that merely *exists*
+      was missing: the shipped defect that motivated it (below) cited a PR
+      that was real, open, and entirely unrelated to the item being voided.
+    - **Evidence that fits none of the checkable shapes is refused, not
+      accepted on presence alone** (issue #413, WI-10). The three checks
+      above are independent and additive — the structured shape when present,
+      a citation when the evidence text carries one, a finishing-source
+      item's own live state when its id names one — and any one of them
+      failing refuses the void outright, even when another already succeeded:
+      each is its own corroboration, not an alternative skipped once one has
+      passed. An entry for which *none* applies — prose naming neither a
+      citation nor the structured shape, on an item whose id names no pull
+      request to finish — is refused with a reason naming what was missing.
+      Before this, such evidence passed on being merely non-empty
+      (TD26072601's own deliberate carve-out, "accepted on the presence test
+      alone rather than demanding every void fit one mould") — exactly the
+      hole `TD26072114`'s void (below) walked through, and the residual gap
+      issue #243 left open on the reasoning that a human backstop
+      (`unvoided`) covered it. D18 retires that backstop, so the residual is
+      closed here.
     - **This cycle's own candidates must not refute it (Co-Ordinator only).**
       Where the voided repo+item matches a gathered candidate carrying a
       `pr_number`, the guard reads that PR's changed files: a non-empty diff
@@ -7935,7 +7966,7 @@ implements.
     |---|---|
     | `unblocked` | logs `unblocked` with `repo`, `by: "enabler"` and the reason; the item is selectable again next cycle. With `complete_handoff: true` and a `pr_url`: refused outright with a `warning`, and no gate ever run, when the block's `stage` is not `"reviewer"` (requirement 32b); otherwise runs `handoff_complete_review` (requirement 31c) and, on a clean verdict, logs `pr-ready` with `handoff: "enabler"` — or, on a `dirty`/unreadable verdict or a flip that did not take, a `warning` naming what the gate found instead. Either refusal is also recorded as `complete_handoff` on the `enabler-examined` event (`"refused-no-reviewer"` or `"failed"`, rather than the flip word). On a refinement item, also records `item-refined` and removes the projected label (requirement 36b) |
     | `void` | corroborated by requirement 34d's shared guard; on success logs `item-void` through requirement 33's shared field shape, carrying the model's reason and evidence, and removes the projected label of requirement 34e; on refusal logs `attempt-failed` and a `warning` instead, with outcome `void-refused` |
-    | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition` |
+    | `still-blocked` | nothing beyond the examined event, which carries the refreshed `unblock_condition`. With `flag_obsolete: true` and a `pr_url`: when `evidence` is the structured `{ref, path, expect, pattern}` shape and resolves live, logs `draft-obsolete-flagged` (`repo`, `item`, `pr` read from `pr_url`, `evidence`) — the machine `obsolete` alternative's first touch (requirement 34d, design doc §5.5); this is never itself a void. Without a `pr_url`, or with evidence that is not that shape or does not resolve, logs a `warning` naming which and records nothing |
     | `escalate` | files the issue (below) and logs `escalated`; on failure logs a `warning` and records the outcome `escalation-failed` |
     | any | logs `enabler-examined` with `repo`, `item`, `blocked_ts`, `outcome` and `detail` |
 
@@ -11468,12 +11499,21 @@ pull request, run the ones the change touches and any it could regress.
    `[]` all count as none — is refused before any API call; an entry whose
    `evidence` is shaped `{ref, path, expect, pattern}` is fetched and tested —
    refused when the fetch fails, or the presence/absence or pattern does not
-   hold, or the entry names no repo to resolve against — while a citation that
-   does not fit that shape is accepted on the presence test alone. Assert that
+   hold, or the entry names no repo to resolve against. Assert that
    an `absent` claim rests on `404 Not Found` and on nothing else: stub a rate
    limit and an unresolvable `ref`, both of which fail the fetch exactly as a
    real absence does, and both must be refused. That is the difference between
-   a checked citation and a fetch nobody looked at the answer of. An entry
+   a checked citation and a fetch nobody looked at the answer of. Assert the
+   closed-list rule itself (issue #413, WI-10): an entry whose `evidence` is
+   prose fitting neither the structured shape nor a PR/commit citation, on an
+   item whose id names no pull request to finish, is refused naming what was
+   missing — not accepted on being merely non-empty, the fall-through
+   TD26072114's void (below) walked through and issue #243 left open. Assert
+   every one of the three checkable forms remains independently sufficient
+   where it applies — the structured shape resolving, a citation
+   corroborating, a finishing-source item's own live state — and that any one
+   of them present-and-failing still refuses the void outright even when
+   another form was not attempted. An entry
    whose repo+item matches a gathered candidate whose PR still changes files is
    refused naming that PR; a PR the API will not answer for is refused as
    uncorroborated; and an evidenced entry with an empty PR diff, or with no PR
@@ -11508,7 +11548,17 @@ pull request, run the ones the change touches and any it could regress.
    assert this for both `-abandoned-` and `-review-`, that an id of no
    recognised shape gets no such reading (the strict diff test only), and that
    a labelled `-conflict-`/`-superseded-` PR is unaffected — the label
-   corroborates only the two shapes 34k closes on the diff claim. For
+   corroborates only the two shapes 34k closes on the diff claim. Assert the
+   machine alternative to that label (issue #413, WI-10, design doc §5.5): at
+   `merge_autonomy_level` `agent-merges-all`, with the current void's own
+   evidence the structured shape and resolving, a `draft-obsolete-flagged`
+   event naming this repo and item, at least 24 hours old and from a
+   different cycle, whose own evidence is *also* the structured shape and
+   resolves, corroborates in place of the label — and is refused if any one
+   of those conditions fails: below `agent-merges-all`; the current void's own
+   evidence not structured; the flag younger than 24 hours; the flag from the
+   same cycle; the flag's own evidence not structured or not resolving; or the
+   flag naming a different repo or item. For
    `-conflict-`, an open PR is allowed whatever its
    diff unless `mergeable` is `false`, so assert all three readings of that
    field: `true` allowed, `null` allowed (not yet computed is not
@@ -11559,7 +11609,13 @@ pull request, run the ones the change touches and any it could regress.
    `maybe_run_enabler` itself with an unevidenced `void` verdict produces the
    same `attempt-failed`, plus an `enabler-examined` event whose `outcome` is
    `void-refused` — the Enabler's own guarded path, not only the
-   Co-Ordinator's.
+   Co-Ordinator's. Assert `flag_obsolete` too: a `still-blocked` verdict
+   carrying it, a `pr_url` and structured, resolving `evidence` produces
+   exactly one `draft-obsolete-flagged` event naming the repo, item and the
+   pull request number read out of `pr_url`, and never an `item-void`; the
+   same verdict with prose evidence, or with no `pr_url` on the item, produces
+   no `draft-obsolete-flagged` event and a `warning` naming which precondition
+   failed.
 8d. **A `pr-ready` event means the pull request is not a draft (requirement
    31a).** `test/handoff.test.sh` passes: a non-draft PR reports `already`
    without calling `gh pr ready`; a draft is flipped and reports `flipped`; a

@@ -30,10 +30,16 @@
 # second, independent test resolves what it can: an `evidence` value shaped
 # `{ref, path, expect, pattern}` names a specific file at a specific ref and a
 # specific claim about it, which is exactly as checkable as a PR diff — fetch
-# it and see. A citation that does not take that shape is unstructured prose,
-# accepted on the presence test alone as before; one that does take the shape
-# but does not hold when fetched is refused, on the same "uncorroborated is
-# not innocent" reasoning as an unreadable PR.
+# it and see. A citation that does not take that shape but names a PR or a
+# commit is checked live against the item instead (`void_citation_reason`,
+# below). One that takes neither shape — unstructured prose with no PR/commit
+# citation, and not a finishing-source item whose own id names the pull
+# request to finish — is refused outright (issue #413, WI-10): accepting it on
+# the strength of merely being non-empty was TD26072601's own deliberate
+# carve-out, and it is exactly the fall-through the shipped defect below
+# walked through. A citation that does take a checkable shape but does not
+# hold when fetched is refused too, on the same "uncorroborated is not
+# innocent" reasoning as an unreadable PR.
 #
 # It happened. A Co-Ordinator voided a tech-debt item with
 # "PR #92 work is finished: workflow timeout, fetch timeouts, retry-on-rejection
@@ -93,6 +99,23 @@
 #      before #243: a citation that merely *exists* is not corroboration, and
 #      it is checked the same way for every stage, since it needs nothing but
 #      the API and the citation itself.
+#   4. **Evidence that fits none of the checkable shapes is refused, not
+#      waved through** (issue #413, WI-10). Checks 1-3 above only ever
+#      *strengthened* what a non-empty `evidence` field could pass with; until
+#      now, prose carrying neither the structured shape nor a PR/commit
+#      citation still passed on presence alone — the exact hole
+#      `void_entry_resolvable_evidence`'s own comment named as a deliberate
+#      carve-out (TD26072601), because closing it seemed to demand every void
+#      fit one mould. It does not: `void_guard_reason` now accepts evidence in
+#      exactly three checkable shapes — the structured shape (must resolve), a
+#      PR/commit citation (must corroborate), or a finishing-source item whose
+#      own id names the pull request to finish, corroborated the same way
+#      `void_finishing_pr_reason` already corroborates one cited by the id
+#      shortcut in check 3 — and refuses anything else outright, naming what
+#      was missing. Prior art #243 closed the citation gap and left this one
+#      open, on the reasoning that a human backstop (the `unvoided` label)
+#      covered the residual; D18 retires that backstop, so the residual is
+#      closed here instead.
 #
 # ## What a refused void becomes
 #
@@ -185,9 +208,11 @@ void_entry_evidence() {
 # when it is shaped for the Script to dereference — `ref` and `path` non-empty
 # strings, `expect` one of `"present"`/`"absent"`, `pattern` optional. Print
 # nothing when the evidence is anything else: a string, a differently-shaped
-# object, or absent. That "anything else" bucket is deliberately wide — it is
-# where free-text citations live, and TD26072601 keeps them accepted on the
-# presence test alone rather than demanding every void fit one mould.
+# object, or absent. That "anything else" bucket is where free-text citations
+# live (TD26072601) — `void_guard_reason` checks those separately, via
+# `void_citation_reason`, and refuses evidence that is neither shape (issue
+# #413, WI-10; this function's own job is only to recognise the structured
+# shape, not to decide what happens when evidence takes neither).
 void_entry_resolvable_evidence() {
   jq -c '
     (.evidence // null) as $e
@@ -457,10 +482,110 @@ void_finishing_item_shape() {
   printf '%s' "${shape,,}"
 }
 
-# void_finishing_pr_reason SLUG NUM ITEM
+# void_draft_obsolete_flag_reason SLUG ITEM CTX_JSON
+# The machine-checkable alternative to the human `obsolete` label (issue
+# #413, WI-10; design doc §5.5): a two-touch confirmation that a draft pull
+# request is unwanted, usable only where the installation trusts the fleet
+# enough to act on it without a human's label — `merge_autonomy_effective_
+# level` `agent-merges-all` for this repo, which the Script resolves once
+# and hands down as CTX_JSON's `merge_autonomy_level`, never re-derived
+# here (this file has no access to config or the kill switch, by design —
+# see lib/merge-autonomy.sh).
+#
+# Prints nothing and returns 0 the moment one `draft-obsolete-flagged` event
+# in CTX_JSON's `flags` array — `{repo, item, pr, evidence, cycle, node,
+# ts}`, written by agent-cycle.sh when an earlier, independent Enabler
+# verdict flagged this same draft as unwanted (a flag is never itself a
+# void, so this can never be an engagement corroborating its own judgement)
+# — corroborates, on **all** of:
+#
+#   - the flag names this SLUG (case-insensitive) and this ITEM;
+#   - the flag's `cycle` differs from CTX_JSON's own `cycle` — a second,
+#     independent look, never the same engagement re-asserting itself;
+#   - the flag's `ts` is at least 24 hours before CTX_JSON's `now_epoch` —
+#     time for anything that would unflag it (a push, a comment) to have
+#     happened; a flag younger than that has not had that time and does not
+#     corroborate yet, however the other three conditions read;
+#   - the flag's own `evidence`, exactly like the current void's own
+#     (CTX_JSON's `current_structured_resolved`, computed by
+#     `void_guard_reason` and never trusted from the flag's own say-so),
+#     is the structured `{ref, path, expect, pattern}` shape and resolves
+#     live against SLUG. Free prose does not corroborate here even though it
+#     can corroborate an ordinary void (`void_citation_reason`) — this path
+#     is not gated behind a human's review at all, so both touches earn the
+#     strictest evidence bar this guard has.
+#
+# Prints a one-line reason and returns 1 when CTX_JSON's own level is not
+# `agent-merges-all`, when the current void's evidence is not itself
+# structured-and-resolving, or when no flag satisfies every condition above
+# — the caller (`void_finishing_pr_reason`) treats this the same as an
+# absent `obsolete` label: silently falls through to the diff test, since
+# this is one alternative among several, not a claim about the PR's state
+# on its own.
+void_draft_obsolete_flag_reason() {
+  local slug="$1" item="$2" ctx="${3:-{\}}"
+  local level structured_ok cycle now_epoch flags_json n i flag
+  local f_repo f_item f_cycle f_ts f_ts_epoch f_resolvable
+
+  level="$(jq -r '.merge_autonomy_level // ""' <<<"$ctx" 2>/dev/null || true)"
+  if [[ "$level" != "agent-merges-all" ]]; then
+    printf 'merge autonomy for %s is not agent-merges-all' "$slug"
+    return 1
+  fi
+
+  structured_ok="$(jq -r '.current_structured_resolved // false' <<<"$ctx" 2>/dev/null || true)"
+  if [[ "$structured_ok" != "true" ]]; then
+    printf 'this void'"'"'s own evidence is not the structured shape, resolved live'
+    return 1
+  fi
+
+  cycle="$(jq -r '.cycle // ""' <<<"$ctx" 2>/dev/null || true)"
+  now_epoch="$(jq -r '.now_epoch // empty' <<<"$ctx" 2>/dev/null || true)"
+  [[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch="$(date -u +%s)"
+  flags_json="$(jq -c '.flags // []' <<<"$ctx" 2>/dev/null || true)"
+  jq -e 'type == "array"' <<<"$flags_json" >/dev/null 2>&1 || flags_json='[]'
+
+  n="$(jq 'length' <<<"$flags_json" 2>/dev/null || true)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  for (( i = 0; i < n; i++ )); do
+    flag="$(jq -c --argjson i "$i" '.[$i]' <<<"$flags_json" 2>/dev/null || true)"
+    [[ -n "$flag" ]] || continue
+    f_repo="$(jq -r '.repo // ""' <<<"$flag" 2>/dev/null || true)"
+    f_item="$(jq -r '.item // ""' <<<"$flag" 2>/dev/null || true)"
+    f_cycle="$(jq -r '.cycle // ""' <<<"$flag" 2>/dev/null || true)"
+    f_ts="$(jq -r '.ts // ""' <<<"$flag" 2>/dev/null || true)"
+
+    [[ "${f_repo,,}" == "${slug,,}" ]] || continue
+    [[ "${f_item,,}" == "${item,,}" ]] || continue
+    [[ -n "$f_cycle" && "$f_cycle" != "$cycle" ]] || continue
+
+    f_ts_epoch="$(date -u -d "$f_ts" +%s 2>/dev/null || true)"
+    [[ "$f_ts_epoch" =~ ^[0-9]+$ ]] || continue
+    (( f_ts_epoch <= now_epoch - 86400 )) || continue
+
+    f_resolvable="$(void_entry_resolvable_evidence "$(jq -c '{evidence: (.evidence // null)}' <<<"$flag" 2>/dev/null)")"
+    [[ -n "$f_resolvable" ]] || continue
+    void_evidence_resolves "$f_resolvable" "$slug" >/dev/null 2>&1 || continue
+
+    return 0
+  done
+
+  printf 'no draft-obsolete-flagged event for %s corroborates (agent-merges-all, but none is ≥24h old, from a different cycle, with structured evidence resolving on both touches)' \
+    "$item"
+  return 1
+}
+
+# void_finishing_pr_reason SLUG NUM ITEM [CTX_JSON]
 # Decide whether NUM, the pull request a finishing-source ITEM was minted
 # from, corroborates a void of that item. Prints nothing and returns 0 when
 # it does; prints a one-line reason and returns 1 otherwise.
+#
+# CTX_JSON (default `{}`) carries what the machine `obsolete` alternative
+# below needs and nothing else — `merge_autonomy_level`, `current_
+# structured_resolved`, `cycle`, `now_epoch`, `flags` — all optional; any
+# field it omits simply keeps that alternative unreachable rather than
+# failing. Every existing caller keeps working with none of this: three
+# positional arguments is still a complete, valid call.
 #
 # A finishing-source item exists only to finish one specific, named pull
 # request, so the void is decided against that PR's own live state, fetched
@@ -492,10 +617,21 @@ void_finishing_item_shape() {
 #     longer wanted" signal a diff can never be: no pipeline stage may ever
 #     apply it (lib/labels.sh's catalogue comment, prompts/implementor.md's
 #     prohibition) — a stage that could would be corroborating its own
-#     judgement. An open pull request with neither an empty diff nor the
-#     label is refused and escalated: that claim is a judgement no API call
-#     can corroborate on its own, and a human is the right one to make it,
-#     either by resolving the item honestly or by applying the label.
+#     judgement. **A machine-checkable alternative to the label** (issue
+#     #413, WI-10, design doc §5.5) corroborates too, but only at
+#     `merge_autonomy_effective_level` `agent-merges-all` for this repo
+#     (CTX_JSON's `merge_autonomy_level`): a two-touch confirmation — a
+#     `draft-obsolete-flagged` log event an earlier, independent Enabler
+#     verdict left (see `void_draft_obsolete_flag_reason` below) — an
+#     Enabler flagging a draft is not itself a void, so this is never the
+#     same engagement corroborating its own judgement — read at least 24
+#     hours old, from a different cycle than this void's own, with both
+#     touches' evidence in the structured `{ref, path, expect, pattern}`
+#     shape and resolving live. An open pull request with none of an empty
+#     diff, the label, or a corroborating flag is refused and escalated:
+#     that claim is a judgement no API call can corroborate on its own, and
+#     a human is the right one to make it, either by resolving the item
+#     honestly or by applying the label.
 #   - `pr-<n>-conflict-…` — a corroborated void of this shape closes *nothing*
 #     (requirement 34k excludes it, TD-PPagop-26080901: the void says the
 #     **conflict** resolved, not the pull request, which stays a live PR of
@@ -543,7 +679,7 @@ void_finishing_item_shape() {
 #     ("superseded") now has its own shape to be corroborated against, rather
 #     than riding on a shape whose own test it can never honestly pass.
 void_finishing_pr_reason() {
-  local slug="$1" num="$2" item="$3" gh_bin="${VOID_GUARD_GH:-gh}"
+  local slug="$1" num="$2" item="$3" ctx="${4:-{\}}" gh_bin="${VOID_GUARD_GH:-gh}"
   local pr_json state shape login files head_ref dependabot_open
   local item_sha head_sha mq_probe
 
@@ -636,10 +772,14 @@ void_finishing_pr_reason() {
   # never pays for a diff nobody needs read. No pipeline stage may ever apply
   # this label (lib/labels.sh, prompts/implementor.md), so its presence here
   # is always a human's own judgement, never the guard corroborating itself.
-  if [[ "$shape" == "abandoned" || "$shape" == "review" ]] \
-    && jq -e '[(.labels // [])[].name // "" | ascii_downcase] | index("obsolete") != null' \
+  if [[ "$shape" == "abandoned" || "$shape" == "review" ]]; then
+    if jq -e '[(.labels // [])[].name // "" | ascii_downcase] | index("obsolete") != null' \
          <<<"$pr_json" >/dev/null 2>&1; then
-    return 0
+      return 0
+    fi
+    if void_draft_obsolete_flag_reason "$slug" "$item" "$ctx" >/dev/null 2>&1; then
+      return 0
+    fi
   fi
 
   files="$("$gh_bin" api "repos/$slug/pulls/$num/files" --jq 'length' 2>/dev/null)" || files=""
@@ -657,7 +797,7 @@ void_finishing_pr_reason() {
   return 0
 }
 
-# void_pr_matches_item SLUG NUM ITEM ENTRY_REPO
+# void_pr_matches_item SLUG NUM ITEM ENTRY_REPO [CTX_JSON]
 # Test one cited PR against the item it is supposed to corroborate: fetched
 # live from the API — never from a gathered candidate list, so this works
 # identically for a stage that has no such list (the Enabler, the
@@ -703,12 +843,12 @@ void_finishing_pr_reason() {
 # minted nothing; both fall through to the body/branch test below, which can
 # still corroborate them the ordinary way (issue #290).
 void_pr_matches_item() {
-  local slug="$1" num="$2" item="$3" entry_repo="${4-}"
+  local slug="$1" num="$2" item="$3" entry_repo="${4-}" ctx="${5:-{\}}"
   local gh_bin="${VOID_GUARD_GH:-gh}" pr_json body head_ref reason
 
   if [[ -n "$entry_repo" && "${slug,,}" == "${entry_repo,,}" ]] \
     && [[ "$(void_finishing_item_pr "$item")" == "$num" ]]; then
-    if reason="$(void_finishing_pr_reason "$slug" "$num" "$item")"; then
+    if reason="$(void_finishing_pr_reason "$slug" "$num" "$item" "$ctx")"; then
       return 0
     fi
     printf '%s' "$reason"
@@ -731,7 +871,7 @@ $head_ref" "$item"; then
   return 1
 }
 
-# void_commit_matches_item SLUG SHA ITEM ENTRY_REPO
+# void_commit_matches_item SLUG SHA ITEM ENTRY_REPO [CTX_JSON]
 # Test one cited commit against the item it is supposed to corroborate. Two
 # facts must both hold:
 #
@@ -753,7 +893,7 @@ $head_ref" "$item"; then
 # Prints nothing and returns 0 when both hold; prints a one-line reason and
 # returns 1 otherwise.
 void_commit_matches_item() {
-  local slug="$1" sha="$2" item="$3" entry_repo="${4-}" gh_bin="${VOID_GUARD_GH:-gh}"
+  local slug="$1" sha="$2" item="$3" entry_repo="${4-}" ctx="${5:-{\}}" gh_bin="${VOID_GUARD_GH:-gh}"
   local default_branch cmp_json status commit_json message num
 
   default_branch="$("$gh_bin" api "repos/$slug" --jq '.default_branch' 2>/dev/null)"
@@ -780,7 +920,7 @@ void_commit_matches_item() {
 
   while IFS= read -r num; do
     [[ -n "$num" ]] || continue
-    if void_pr_matches_item "$slug" "$num" "$item" "$entry_repo" >/dev/null; then
+    if void_pr_matches_item "$slug" "$num" "$item" "$entry_repo" "$ctx" >/dev/null; then
       return 0
     fi
   done < <("$gh_bin" api "repos/$slug/commits/$sha/pulls" --jq '.[].number' 2>/dev/null || true)
@@ -790,7 +930,7 @@ void_commit_matches_item() {
   return 1
 }
 
-# void_citation_reason ENTRY_JSON REPO_SLUG
+# void_citation_reason ENTRY_JSON REPO_SLUG [CTX_JSON]
 # The corroboration requirement 34d's window exposed: evidence existing, and
 # even resolving, is not the same as evidence *connecting to this item*. The
 # Co-Ordinator once voided an item citing "PR #232 implemented all five
@@ -821,7 +961,7 @@ void_commit_matches_item() {
 # Prints a one-line reason and returns 1 the moment one citation does not —
 # a partly-fabricated citation is a fabricated citation.
 void_citation_reason() {
-  local entry="$1" repo="$2" item evidence_text pair slug num sha reason
+  local entry="$1" repo="$2" ctx="${3:-{\}}" item evidence_text pair slug num sha reason
 
   item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
   evidence_text="$(void_entry_evidence "$entry")"
@@ -835,7 +975,7 @@ void_citation_reason() {
       printf 'evidence cites PR #%s to corroborate against, but the entry names no repo' "$num"
       return 1
     fi
-    if ! reason="$(void_pr_matches_item "$slug" "$num" "$item" "$repo")"; then
+    if ! reason="$(void_pr_matches_item "$slug" "$num" "$item" "$repo" "$ctx")"; then
       printf '%s' "$reason"
       return 1
     fi
@@ -849,7 +989,7 @@ void_citation_reason() {
       printf 'evidence cites commit %s to corroborate against, but the entry names no repo' "$sha"
       return 1
     fi
-    if ! reason="$(void_commit_matches_item "$slug" "$sha" "$item" "$repo")"; then
+    if ! reason="$(void_commit_matches_item "$slug" "$sha" "$item" "$repo" "$ctx")"; then
       printf '%s' "$reason"
       return 1
     fi
@@ -858,14 +998,25 @@ void_citation_reason() {
   return 0
 }
 
-# void_guard_reason ENTRY_JSON REPOS_JSON
+# void_guard_reason ENTRY_JSON REPOS_JSON [CTX_JSON]
 # Decide whether a void may be recorded as terminal. Shared by all three
 # stages that write `item-void` (requirement 34d, extended by issue #243 from
 # "the Co-Ordinator" to "every stage"): the Co-Ordinator passes REPOS_JSON, its
 # gathered candidates, so `void_candidate_prs` below can also weigh in;
 # the Enabler and the Implementor have no such list and call this with `[]`,
-# which simply skips that one extra check — `void_citation_reason` above needs
-# nothing from it, since it resolves every citation live.
+# which simply skips that one extra check — the checks below need nothing
+# from it, since every one resolves live.
+#
+# CTX_JSON (default `{}`) carries what the machine `obsolete` alternative
+# needs — `merge_autonomy_level`, `cycle`, `now_epoch`, `flags` (issue #413,
+# WI-10; see `void_draft_obsolete_flag_reason`) — computed once by the Script
+# and handed down unchanged; every field is optional, and omitting all of
+# them (every caller before WI-10, and both `void_guard_reason` calls in this
+# file's own tests unless a test says otherwise) simply keeps that
+# alternative unreachable. This function adds its own `current_structured_
+# resolved` to what it forwards to `void_citation_reason` and the direct
+# finishing-item check below — never trusted from the caller, always derived
+# from whether the structured-shape check just below actually passed.
 #
 # Prints nothing and returns 0 when it may. Prints a one-line reason and
 # returns 1 when it may not — the line is written to be readable in a log event
@@ -874,9 +1025,31 @@ void_citation_reason() {
 # Every failure mode returns 1, including the ones that are nobody's fault (an
 # API that would not answer). Refusing costs a blocked item that the Enabler
 # will look at; accepting costs an item nothing will ever look at again.
+#
+# Accepted evidence is a closed list (issue #413, WI-10 — before this, prose
+# with neither shape below passed on being merely non-empty, which is exactly
+# how the shipped defect at the top of this file was recorded): (a) the
+# structured `{ref, path, expect, pattern}` shape, checked here, which must
+# resolve; (b) free text carrying at least one PR/commit citation, checked via
+# `void_citation_reason`, every one of which must corroborate; (c) a
+# finishing-source item — one whose own id names the pull request it exists to
+# finish — corroborated directly against that pull request's own live state
+# via `void_finishing_pr_reason`, independently of whatever the entry's
+# `evidence` field says, since these items were always decided against the
+# named pull request rather than against the prose. All three are checked
+# whenever they apply — a finishing-source item cited by number in the
+# evidence text gets both (b) and (c), which is redundant but never
+# contradictory, since both resolve to the same live fetch — and any one of
+# them failing refuses the void outright, even when another already
+# succeeded: each is independent corroboration, not an alternative to be
+# skipped once one has passed. An entry for which none applies is refused
+# with a reason naming what was missing, rather than accepted on presence
+# alone.
 void_guard_reason() {
-  local entry="$1" repos="${2:-[]}" gh_bin="${VOID_GUARD_GH:-gh}"
+  local entry="$1" repos="${2:-[]}" ctx="${3:-{\}}" gh_bin="${VOID_GUARD_GH:-gh}"
   local ref slug num files resolvable repo_slug resolve_reason citation_refusal
+  local item finishing_num finishing_reason checked structured_resolved inner_ctx
+  local has_citation
 
   if [[ -z "$(void_entry_evidence "$entry")" ]]; then
     printf 'no evidence recorded, and requirement 34c makes evidence what a terminal verdict is'
@@ -884,6 +1057,9 @@ void_guard_reason() {
   fi
 
   repo_slug="$(jq -r '.repo // ""' <<<"$entry" 2>/dev/null || true)"
+  item="$(jq -r '.item // ""' <<<"$entry" 2>/dev/null || true)"
+  checked=0
+  structured_resolved=false
 
   resolvable="$(void_entry_resolvable_evidence "$entry")"
   if [[ -n "$resolvable" ]]; then
@@ -896,10 +1072,42 @@ void_guard_reason() {
       printf 'unresolved: %s' "$resolve_reason"
       return 1
     fi
+    structured_resolved=true
+    checked=1
   fi
 
-  if ! citation_refusal="$(void_citation_reason "$entry" "$repo_slug")"; then
-    printf 'not corroborated: %s' "$citation_refusal"
+  inner_ctx="$(jq -c --argjson r "$structured_resolved" '. + {current_structured_resolved: $r}' <<<"$ctx" 2>/dev/null)"
+  [[ -n "$inner_ctx" ]] || inner_ctx="$(jq -nc --argjson r "$structured_resolved" '{current_structured_resolved: $r}')"
+
+  has_citation=0
+  if [[ -n "$(void_evidence_cited_pr_numbers "$(void_entry_evidence "$entry")" "$repo_slug")" ]] \
+    || [[ -n "$(void_evidence_cited_commit_shas "$(void_entry_evidence "$entry")" "$repo_slug")" ]]; then
+    has_citation=1
+  fi
+  if (( has_citation )); then
+    if ! citation_refusal="$(void_citation_reason "$entry" "$repo_slug" "$inner_ctx")"; then
+      printf 'not corroborated: %s' "$citation_refusal"
+      return 1
+    fi
+    checked=1
+  fi
+
+  finishing_num="$(void_finishing_item_pr "$item" 2>/dev/null || true)"
+  if [[ -n "$finishing_num" ]]; then
+    if [[ -z "$repo_slug" ]]; then
+      printf 'item %s names a pull request to finish, but the entry names no repo' "$item"
+      return 1
+    fi
+    if ! finishing_reason="$(void_finishing_pr_reason "$repo_slug" "$finishing_num" "$item" "$inner_ctx")"; then
+      printf 'not corroborated: %s' "$finishing_reason"
+      return 1
+    fi
+    checked=1
+  fi
+
+  if (( ! checked )); then
+    printf 'no checkable citation: evidence is prose with no PR/commit citation and no {ref,path,expect,pattern} shape, and item %s names no pull request to finish' \
+      "${item:-<no item>}"
     return 1
   fi
 
