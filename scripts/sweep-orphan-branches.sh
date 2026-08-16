@@ -20,7 +20,9 @@
 # `abandoned_draft_after_hours`** (the same judgement that makes a draft
 # abandoned) — does the one thing that makes the state self-healing:
 #
-#   commits ahead, never merged           open a DRAFT pull request from the
+#   commits ahead, never merged,
+#   no rival branch landed the
+#   same work                             open a DRAFT pull request from the
 #                                         ref, labelled `pr_label`, so the
 #                                         existing abandoned-drafts machinery
 #                                         recovers the work exactly as it
@@ -32,10 +34,21 @@
 #                                         commits never leave `ahead_by`
 #                                         positive and the ref is just a
 #                                         leftover the claim gc didn't clean up
+#   ahead, never merged, but a rival
+#   branch sharing the same item ref
+#   merged after this branch's first
+#   commit                                delete the ref: this branch lost a
+#                                         race and its work already landed
+#                                         under a different head, so a
+#                                         recovery draft would resurrect
+#                                         superseded — sometimes regressed —
+#                                         code (issue #500)
 #
 # Fail-closed everywhere: any answer this script cannot get (a PR list that
 # errors, a registry read that fails with anything but 404, an undatable tip)
-# skips that branch with a `warning` action rather than touching it. Two nodes
+# skips that branch with a `warning` action rather than touching it, and the
+# rival-branch check specifically falls back to filing the recovery draft, as
+# if the check had never run, on any unreadable or ambiguous answer. Two nodes
 # sweeping at once is safe by the same shape claim.sh relies on: GitHub
 # rejects a second open PR for the same head, and a second ref delete is a
 # no-op.
@@ -43,6 +56,7 @@
 # Output: one JSON object per action on stdout —
 #   {"action":"recovered","branch":…,"pr_url":…,"ahead_by":…}
 #   {"action":"released","branch":…}
+#   {"action":"released","branch":…,"reason":"superseded","superseded_by":…}
 #   {"action":"deferred","remaining":N}     (the per-run cap, so a pathological
 #                                            backlog surfaces over several
 #                                            cycles instead of as a PR flood)
@@ -97,6 +111,22 @@ max_actions=3
 
 san() { local s="$1"; printf '%s' "${s//\//__}"; }
 
+# stem BRANCH — reduce a claim branch to its item ref, for comparing two
+# branches that might carry the same work: strip the leading `td/` or
+# `$branch_prefix`, then drop a trailing 12-hex-digit random suffix if one is
+# present (exactly twelve, no more and no fewer — claim.sh's own width).
+stem() {
+  local b="$1" p
+  for p in "td/" "$branch_prefix"; do
+    if [[ -n "$p" && "$b" == "$p"* ]]; then
+      b="${b#"$p"}"
+      break
+    fi
+  done
+  [[ "$b" =~ ^(.+)-[0-9a-f]{12}$ ]] && b="${BASH_REMATCH[1]}"
+  printf '%s' "$b"
+}
+
 
 
 warn() {  # warn BRANCH DETAIL
@@ -115,7 +145,10 @@ deferred=0
 
 sweep_branch() {  # <branch> <tip-sha>
   local branch="$1" sha="$2"
-  local prs merged registry_err tip_date tip_epoch ahead pr_out pr_url body_file
+  local prs merged registry_err tip_date tip_epoch compare_json ahead
+  local pr_out pr_url body_file
+  local my_stem first_commit_date first_commit_epoch rivals rival_lookup_failed
+  local rival_ref rival_merged_at rival_url rival_merged_epoch superseded_by
   local -a label_args=()
 
   [[ "$branch" == "$default_branch" ]] && return 0
@@ -160,8 +193,12 @@ sweep_branch() {  # <branch> <tip-sha>
     return 0
   fi
 
-  ahead="$("$GH" api "repos/$slug/compare/$default_branch...$branch" \
-    --jq '.ahead_by' 2>/dev/null)" || ahead=""
+  # The full payload, not just `.ahead_by`: the superseded-branch check below
+  # reuses this same call for the branch's first commit date rather than
+  # asking GitHub twice.
+  compare_json="$("$GH" api "repos/$slug/compare/$default_branch...$branch" \
+    2>/dev/null)" || compare_json=""
+  ahead="$(jq -r '.ahead_by // empty' <<<"$compare_json" 2>/dev/null)"
   if ! [[ "$ahead" =~ ^[0-9]+$ ]]; then
     warn "$branch" "could not compare against $default_branch — leaving it alone"
     return 0
@@ -199,6 +236,57 @@ sweep_branch() {  # <branch> <tip-sha>
       warn "$branch" "could not delete the already-merged leftover ref"
     fi
     return 0
+  fi
+
+  # This branch's own head never merged (just ruled out above), but the
+  # *work* it carries may have landed anyway, on a rival branch that raced it
+  # and won (issue #500, PR #370): a cycle that loses a race dies with commits
+  # on a dead branch, and resurrecting that branch as a recovery draft would
+  # reintroduce code a rival PR already superseded — sometimes with a
+  # regression, since the rival kept moving after the loser stopped. Look for
+  # a different branch sharing this one's item-ref stem that merged after
+  # this branch's first commit. Unlike every guard above, an unanswered
+  # question here does not leave the ref untouched: it changes nothing about
+  # today's behaviour, so the recovery draft still gets filed — a clean "no
+  # rival found" says nothing at all, but a lookup that actually failed still
+  # warns, naming the branch, so the gap is visible without being noise on
+  # every ordinary recovery.
+  my_stem="$(stem "$branch")"
+  first_commit_date="$(jq -r '.commits[0].commit.committer.date // empty' \
+    <<<"$compare_json" 2>/dev/null)"
+  first_commit_epoch="$(date -d "$first_commit_date" +%s 2>/dev/null || echo 0)"
+  superseded_by=""
+  rival_lookup_failed=0
+  if (( first_commit_epoch > 0 )); then
+    if rivals="$("$GH" api \
+        "repos/$slug/pulls?state=closed&sort=updated&direction=desc&per_page=100" \
+        2>/dev/null)" && jq -e 'type == "array"' <<<"$rivals" >/dev/null 2>&1; then
+      while IFS=$'\t' read -r rival_ref rival_merged_at rival_url; do
+        [[ -n "$rival_ref" && "$rival_ref" != "$branch" ]] || continue
+        [[ "$(stem "$rival_ref")" == "$my_stem" ]] || continue
+        rival_merged_epoch="$(date -d "$rival_merged_at" +%s 2>/dev/null || echo 0)"
+        (( rival_merged_epoch > first_commit_epoch )) || continue
+        superseded_by="$rival_url"
+        break
+      done < <(jq -r '.[] | select(.merged_at != null)
+                          | [.head.ref, .merged_at, .html_url] | @tsv' \
+               <<<"$rivals" 2>/dev/null)
+    else
+      rival_lookup_failed=1
+    fi
+  fi
+  if [[ -n "$superseded_by" ]]; then
+    if "$GH" api -X DELETE "repos/$slug/git/refs/heads/$branch" >/dev/null 2>&1; then
+      jq -nc --arg b "$branch" --arg u "$superseded_by" \
+        '{action: "released", branch: $b, reason: "superseded", superseded_by: $u}'
+      actions=$(( actions + 1 ))
+    else
+      warn "$branch" "could not delete the superseded ref"
+    fi
+    return 0
+  fi
+  if (( rival_lookup_failed )); then
+    warn "$branch" "could not check for a rival branch that already merged this work — filing the recovery draft anyway"
   fi
 
   body_file="$(mktemp)"

@@ -5202,11 +5202,33 @@ implements.
     `ahead_by` stays positive forever even though the work already landed —
     without this check that permanently-ahead, already-merged-but-undeleted
     ref would read as a fresh orphan on every sweep and mint an endless
-    stream of redundant recovery drafts (issue #302). A ref with nothing
-    ahead, or with a merged PR against its head, is **deleted** — it was
-    only ever the claim, and the claim is dead (or already honoured). A
-    failure to determine the merge state fails the same way as the other
-    guards: skip the ref, warn, touch nothing. Actions are capped per run
+    stream of redundant recovery drafts (issue #302) — **or unless the
+    branch's own *work*, not its own head, already landed via a rival
+    branch**, which the sweep checks by reducing both branches to a stem —
+    the `td/`/`branch_prefix` claim prefix stripped from the front and a
+    trailing, **exactly** twelve-hex-character random suffix stripped from
+    the back, if present (a lower bound would misfire: a tech-debt id like
+    `TD-PPagop-26081403`'s own trailing `-26081403` is eight hex-legal
+    digits, and treating that as the suffix would collapse every item under
+    the `TD-PPagop` scope to one stem) — and searching the repository's
+    recently closed pull requests for a different branch sharing that stem
+    whose merge postdates this branch's own first commit: two cycles can
+    claim the same item concurrently and race to a PR, and the loser's dead
+    branch carries commits a rival already superseded (sometimes with a
+    fix the loser never saw), so resurrecting it as a recovery draft would
+    reintroduce that superseded — sometimes regressed — code (issue #500,
+    PR #370). A ref with nothing ahead, with a merged PR against its own
+    head, or superseded by a rival branch's merge, is **deleted** — it was
+    only ever the claim, and the claim is dead, already honoured, or
+    honoured elsewhere. A failure to determine the merge state fails the
+    same way as the other guards: skip the ref, warn, touch nothing. The
+    rival-branch search is the one guard that does not: it cannot make the
+    ref *safer* to delete, only safer to leave as unrecovered work, so on no
+    match, or on any failure to get an answer, nothing about today's
+    behaviour changes and the ordinary recovery draft still gets filed —
+    quietly on a clean "no rival found", but with a `warning` naming the
+    branch when the lookup itself failed, so that gap stays visible without
+    adding noise to every ordinary recovery. Actions are capped per run
     (three per repo per cycle, the overflow reported, never silent), logged
     as `orphan-branch-recovered` / `orphan-branch-released` events, and
     every node may sweep concurrently: GitHub rejects a second open PR for
@@ -11332,9 +11354,20 @@ pull request, run the ones the change touches and any it could regress.
    loudly; a stale ref with commits ahead but a merged PR against its head
    yields a ref delete and a `released` action rather than another recovery
    draft, and a failure to determine the merge state leaves the ref alone
-   and says so; and a backlog past the per-run cap acts on the cap's worth
-   and reports the remainder (`deferred`) rather than flooding or staying
-   silent.
+   and says so; a stale ref with commits ahead, no merged PR of its own, but
+   a rival branch sharing its stem merged after its first commit — including
+   where the stem match crosses a `td/` claim's trailing random suffix —
+   yields a ref delete and a `released` action carrying `reason: superseded`
+   and the rival's URL, with **no** `pr create` call ever made; a same-stem
+   rival that merged before this branch's own first commit does not count,
+   and a tech-debt id's own eight-hex-digit numeric suffix (`TD-PPagop-
+   26081403`) is never mistaken for the twelve-character random one, so
+   neither collapses two unrelated same-scope items to one stem — both still
+   yield the ordinary recovery draft, silently; and a failed or unparseable
+   rival lookup also still yields the ordinary recovery draft, but with a
+   `warning` naming the branch, distinct from the silent no-match case; and
+   a backlog past the per-run cap acts on the cap's worth and reports the
+   remainder (`deferred`) rather than flooding or staying silent.
 7c. **Claim visibility is deterministic, both shapes and both directions
    (requirement 3o, issue #175).** `test/claim.test.sh`'s `claims`/`branches`
    section passes: a fresh branch claim's registry entry appears in `claims`'
