@@ -431,6 +431,15 @@ assert_eq "and an unreachable repo to failed" "failed" \
 fleet_flag_write "$slug" disabled "$rec" "set again"
 fleet_flag_fetch "$slug" "$fs_b" disabled >/dev/null
 rm -f "$gh_backing/fleet/disabled.json"
+# fleet_flag_fetch_status now memoises a live answer per process
+# (TD-PPagop-26081606), so the second fetch below — same flag, same
+# state_dir — would otherwise just replay the first one's memo rather than
+# notice the file is gone. _fleet_flag_memo_clear is what a real write/delete
+# already calls; using it here stands in for "the next cycle's process",
+# which is genuinely who would notice this 404 in production (the flag was
+# not cleared through this process's own fleet_flag_write/_delete, so nothing
+# else would have invalidated the memo for it).
+_fleet_flag_memo_clear disabled
 fleet_flag_fetch "$slug" "$fs_b" disabled >/dev/null
 assert_eq "a 404 clears the cached copy" "0" \
   "$(test -f "$(fleet_cache_file "$fs_b" disabled)" && echo 1 || echo 0)"
@@ -480,7 +489,11 @@ assert_eq "probe-404: a flag-file 404 against a repo the token can see is clear"
 
 # The flag file is still absent, but now the repo probe itself fails too
 # (GH_STUB_MODE=repo-404): with no cached copy at all this must read
-# unreachable, never clear.
+# unreachable, never clear. Nothing about the flag has actually changed since
+# the previous assertion — only the simulated reachability has — so without
+# clearing the memo first this would just replay the "clear" answer memoised
+# above rather than exercise the probe at all (TD-PPagop-26081606).
+_fleet_flag_memo_clear disabled
 assert_eq "probe-404: a flag-file 404 against an invisible repo, no cache, reads unreachable" \
   "unreachable" \
   "$(GH_STUB_MODE=repo-404 status_of "$slug" "$fs_probe" disabled probe-404)"

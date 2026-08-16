@@ -310,19 +310,33 @@ assert_eq "and keeps the operator's own reason rather than truncating to line on
 # would have written) and a garbled one (read as set, deliberately). Either
 # reported as "could not be confirmed clear" would send its reader after a
 # state-repo outage that is not happening.
+#
+# Each edit below gets its own fresh state_dir, the same "different node"
+# device the rest of this file already uses: fleet_flag_fetch_status now
+# memoises a live answer per (flag, state_dir) for this process
+# (TD-PPagop-26081606), and these edits go straight at $gh_backing —
+# bypassing fleet_flag_write, exactly as a human editing on github.com would
+# — so a state_dir that already cached the *previous* edit's answer would
+# just replay it rather than seeing the new one. A real process picks up a
+# hand-edit like this on its next fetch (a fresh process, i.e. next cycle);
+# a fresh state_dir here is that same "next reader" for the test.
 cat > "$gh_backing/fleet/merge-autonomy-kill.json" <<'MINIMAL'
 {"reason": "stop everything now", "by": "an operator in a hurry", "expires_at": null}
 MINIMAL
+fs_minimal="$tmp_dir/fleet-state-minimal"
+mkdir -p "$fs_minimal"
 assert_eq "a hand-written record with no kind is still a real kill, not the synthesis" "disabled" \
-  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.state')"
+  "$(merge_autonomy_kill_state "$slug" "$fs_minimal" | jq -r '.state')"
 assert_eq "and carries no fail-closed marker, so doctor.sh reports it SET" "" \
-  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.kind // ""')"
+  "$(merge_autonomy_kill_state "$slug" "$fs_minimal" | jq -r '.record.kind // ""')"
 
 printf 'not json at all\n' > "$gh_backing/fleet/merge-autonomy-kill.json"
+fs_garbled="$tmp_dir/fleet-state-garbled"
+mkdir -p "$fs_garbled"
 assert_eq "a garbled record reads as set, the same as every other flag lib/toggle.sh evaluates" \
-  "disabled" "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.state')"
+  "disabled" "$(merge_autonomy_kill_state "$slug" "$fs_garbled" | jq -r '.state')"
 assert_eq "and carries no fail-closed marker either" "" \
-  "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.kind // ""')"
+  "$(merge_autonomy_kill_state "$slug" "$fs_garbled" | jq -r '.record.kind // ""')"
 rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 
 # --- merge_autonomy_status_report (#454): the --status headline tells "an

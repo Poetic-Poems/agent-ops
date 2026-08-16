@@ -3548,7 +3548,7 @@ APPROVER_ESC_BODY
       '{pr_url: $u, issue_number: ($n | tonumber), issue_url: $iu}')"
   else
     log_event "warning" "$(jq -nc --arg u "$pr_url" \
-      --arg d "Approver adjudication could not settle $u, and the escalation issue could not be filed — will retry next cycle" \
+      --arg d "Approver adjudication could not settle $pr_url, and the escalation issue could not be filed — will retry next cycle" \
       '{detail: $d, pr_url: $u}')"
   fi
 }

@@ -519,6 +519,44 @@ toggle_status_report() {
 
 _fleet_gh() { "${TOGGLE_GH:-gh}" "$@"; }
 
+# _fleet_flag_memo_dir NAME
+# Where this process's memos of NAME live — `$$` rather than any in-shell
+# variable, because every real caller (`merge_autonomy_effective_level`
+# chief among them) reaches `fleet_flag_fetch_status` through `$(...)`, and a
+# plain shell variable set inside that command substitution's subshell dies
+# with it; `$$` is the one thing bash guarantees stays the invoking
+# process's PID through any depth of subshell nesting (the back-pressure
+# loop's own `while` body included), so a file named from it is visible to
+# every later call in this process and no other.
+_fleet_flag_memo_dir() {
+  printf '%s/agent-ops-fleet-flag-memo.%s/%s' "${TMPDIR:-/tmp}" "$$" "$1"
+}
+
+# _fleet_flag_memo_file NAME STATE_DIR
+# One flag's memo, further keyed by STATE_DIR: two callers in the same
+# process reading the same NAME through two different local caches are two
+# different readers (the fail-closed-vs-established-node distinction
+# TD-PPagop-26081507 depends on), so a live answer fetched on behalf of one
+# must never be handed to the other. The state repo itself is fixed for a
+# process's whole run (the header's own words) and the freeze flags already
+# vary their NAME per slug, so this is the one further split memoisation
+# actually needs.
+_fleet_flag_memo_file() {
+  printf '%s/%s' "$(_fleet_flag_memo_dir "$1")" "${2//\//_}"
+}
+
+# _fleet_flag_memo_clear NAME
+# Drop every state_dir's memo of NAME at once. Called by fleet_flag_write and
+# fleet_flag_delete: a write or delete this process performs is a genuine
+# change to NAME's answer for every reader in this process, not only the one
+# state_dir the write happened to be told about (fleet_flag_write's own
+# STATE_DIR is optional and most callers, merge_autonomy_kill_set among them,
+# never pass one) — so invalidation drops the whole per-NAME directory rather
+# than trying to guess which single entry to drop.
+_fleet_flag_memo_clear() {
+  rm -rf "$(_fleet_flag_memo_dir "$1")" 2>/dev/null || true
+}
+
 # fleet_flag_path NAME
 fleet_flag_path() { printf 'fleet/%s.json' "$1"; }
 
@@ -574,14 +612,34 @@ fleet_repo_visible() {
 # empty RAW, but only "unreachable" must make the kill switch fail closed —
 # and it is the one caller that asks for `probe-404`, because a fail-closed
 # flag mistaken for clear is the exact harm TD-PPagop-26081602 closes.
+#
+# Memoised (TD-PPagop-26081606, PR #499 review follow-up): a `live` or
+# `clear` answer — the two GitHub actually confirmed, as opposed to `cached`
+# or `unreachable`, which are this process's own uncertainty about a fetch
+# that did not complete — is written to `_fleet_flag_memo_file` and read
+# back before any network call on every later call for the same (NAME,
+# STATE_DIR) in this process. `cached`/`unreachable` are deliberately never
+# memoised: they are already a degraded answer, so trying the fetch again
+# next call costs nothing extra and might do better, whereas memoising a
+# guess would let one bad moment (a transient DNS blip) decide every read
+# for the rest of the process instead of just the one call that hit it. A
+# flag this process itself writes or deletes drops every state_dir's memo of
+# it too (fleet_flag_write, fleet_flag_delete), so a set/clear this same
+# process performs is never shadowed by its own earlier read. At most one
+# cycle of staleness follows from that — a human toggling the flag from
+# elsewhere is picked up fresh next cycle's process, never mid-cycle — which
+# is the same staleness this flag's own polling interval already accepts.
 fleet_flag_fetch_status() {
-  local repo="$1" state_dir="$2" name="$3" mode="${4:-}" cache resp raw
+  local repo="$1" state_dir="$2" name="$3" mode="${4:-}" cache resp raw memo
   [[ -n "$repo" ]] || { printf 'clear\t'; return 0; }
+  memo="$(_fleet_flag_memo_file "$name" "$state_dir")"
+  [[ -f "$memo" ]] && { cat "$memo"; return 0; }
   cache="$(fleet_cache_file "$state_dir" "$name")"
   mkdir -p "${cache%/*}" 2>/dev/null || true
   if resp="$(_fleet_gh api "repos/$repo/contents/$(fleet_flag_path "$name")?ref=main" 2>"$cache.err")"; then
     raw="$(jq -r '.content // ""' <<<"$resp" 2>/dev/null | tr -d '\n' | base64 -d 2>/dev/null || true)"
     printf '%s' "$raw" > "$cache"
+    mkdir -p "${memo%/*}" 2>/dev/null && printf 'live\t%s' "$raw" > "$memo" 2>/dev/null
     printf 'live\t%s' "$raw"
     return 0
   fi
@@ -600,6 +658,7 @@ fleet_flag_fetch_status() {
     # transport failure gets below, rather than being read as clear.
     if [[ "$mode" != "probe-404" ]] || fleet_repo_visible "$repo" "$cache.repo-err"; then
       rm -f "$cache"
+      mkdir -p "${memo%/*}" 2>/dev/null && printf 'clear\t' > "$memo" 2>/dev/null
       printf 'clear\t'
       return 0
     fi
@@ -656,6 +715,7 @@ fleet_flag_write() {
     mkdir -p "${cache%/*}" 2>/dev/null || true
     printf '%s\n' "$body" > "$cache" 2>/dev/null || true
   fi
+  _fleet_flag_memo_clear "$name"
   return 0
 }
 
@@ -694,6 +754,7 @@ fleet_flag_delete() {
   if ! resp="$(_fleet_gh api "repos/$repo/contents/$path?ref=main" 2>"$errf")"; then
     if grep -qiE 'HTTP 404|Not Found' "$errf" 2>/dev/null && fleet_repo_visible "$repo" "$errf.repo-err"; then
       rm -f "$(fleet_cache_file "$state_dir" "$name")"
+      _fleet_flag_memo_clear "$name"
       printf 'absent'
       return 0
     fi
@@ -704,6 +765,7 @@ fleet_flag_delete() {
   _fleet_gh api -X DELETE "repos/$repo/contents/$path" \
     -f message="fleet: clear $name" -f branch=main -f sha="$sha" >/dev/null 2>&1 || return 1
   rm -f "$(fleet_cache_file "$state_dir" "$name")"
+  _fleet_flag_memo_clear "$name"
   printf 'deleted'
   return 0
 }

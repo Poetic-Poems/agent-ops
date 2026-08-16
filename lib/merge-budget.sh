@@ -184,9 +184,20 @@ merge_budget_window_status() {
 # so a failure here never turns a `hold` into a `refuse`). This is the
 # backlog a `hold` decision names, not an arming-eligibility filter — the
 # work item that arms landing may apply a tighter one of its own on top.
+#
+# `--search "sort:created-asc"` (PR #499 review follow-up) asks GitHub to
+# order the listing itself, so `first` after `sort_by` names the true oldest
+# regardless of the `--limit` page cap: unscoped, `gh pr list` returns the
+# newest-created page, and past `GITHUB_PR_LIST_LIMIT` open labelled pull
+# requests the local `sort_by(.createdAt) | first` above would silently name
+# the oldest of that newest page — not the oldest waiting, the one thing this
+# function exists to name — with nothing to say it had missed the real one.
+# The search index's own eventual consistency is immaterial here: a
+# pull request too fresh to appear yet is never the oldest.
 merge_budget_oldest_waiting() {
   local slug="$1" pr_label="$2" raw
   raw="$(gh pr list -R "$slug" --state open --label "$pr_label" \
+    --search "sort:created-asc" \
     --limit "$GITHUB_PR_LIST_LIMIT" --json number,url,createdAt,isDraft 2>/dev/null)" || raw=''
   [[ -n "$raw" ]] || raw='[]'
   jq -c '[.[] | select(.isDraft | not)] | sort_by(.createdAt) | first

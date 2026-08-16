@@ -10098,7 +10098,12 @@ What exists, and the requirements each part answers to:
     `mergedAt`, `mergedBy.login` and `labels`.
     `merge_budget_oldest_waiting SLUG PR_LABEL` is a second,
     best-effort read of SLUG's open pull requests for a `hold` decision's
-    backlog. `merge_budget_decide` composes both into one JSON object —
+    backlog, from `gh pr list --state open --search "sort:created-asc"`: the
+    search qualifier asks GitHub to order the listing itself, so the first
+    non-draft entry is the true oldest regardless of `--limit`'s page cap —
+    without it, past `GITHUB_PR_LIST_LIMIT` open labelled pull requests the
+    unsorted page's own oldest is not necessarily the oldest waiting overall.
+    `merge_budget_decide` composes both into one JSON object —
     `{decision, cap, count, anomaly, waiting_backlog}` — with no log events
     and no writes: `merge_budget_apply_decision DECISION_JSON SLUG
     STATE_REPO ESCALATION_LABEL ASSIGNEE` is the write side, calling

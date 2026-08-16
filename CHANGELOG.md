@@ -33,6 +33,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mechanism and its doctrine only — nothing yet calls it from a behaviour-
   affecting path, since no requirement arms an automatic landing today.
 
+### Fixed
+
+- `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
+  `merge-budget-hold` event names as the one waiting longest) now sorts
+  GitHub's own listing oldest-first before paging, so a repository with more
+  than `GITHUB_PR_LIST_LIMIT` open, labelled pull requests names the true
+  oldest rather than the oldest of whatever page happened to come back.
+- `approver_escalate`'s "could not settle, and the escalation issue could not
+  be filed" warning event now carries `pr_url` and a `detail` naming it — a
+  pre-existing bug (a bash string interpolation, not the intended jq `--arg`)
+  silently emptied both fields under `set -u`.
+
 ### Changed
 
 - Every `item-void` a Co-Ordinator, Enabler or Implementor

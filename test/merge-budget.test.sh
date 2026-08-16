@@ -145,21 +145,38 @@ fi
 # merged listing was scoped to the window at all (without it the listing
 # enumerates the label's whole lifetime history and truncates permanently —
 # see lib/merge-budget.sh's own note on merge_budget_window_status).
+#
+# acme/paginated is the one exception: its fixture is larger than
+# GITHUB_PR_LIST_LIMIT, and the stub actually pages it — `.[0:limit]`, sorted
+# by createdAt first when `--search` asks for `sort:created-asc` — so the
+# merge_budget_oldest_waiting assertions below can tell "named the true
+# oldest" from "named the oldest of whatever page came back" (PR #499 review
+# follow-up). Every other slug keeps the old "the fixture already is the
+# answer, --limit is a no-op" behaviour untouched.
 if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "list" ]]; then
-  slug="" state="" search=""
+  slug="" state="" search="" limit=""
   i=2
   while (( i < ${#args[@]} )); do
     case "${args[$i]}" in
       -R)       i=$((i+1)); slug="${args[$i]}" ;;
       --state)  i=$((i+1)); state="${args[$i]}" ;;
       --search) i=$((i+1)); search="${args[$i]}" ;;
+      --limit)  i=$((i+1)); limit="${args[$i]}" ;;
     esac
     i=$((i+1))
   done
   printf '%s\t%s\t%s\n' "$state" "$slug" "$search" >> "$PR_LIST_CALLS"
   f="$GH_FIXTURES/$state/${slug//\//__}.json"
   [[ -f "$f" ]] || exit 1
-  cat "$f"
+  if [[ "$state" == "open" && "$slug" == "acme/paginated" ]]; then
+    if [[ "$search" == *"sort:created-asc"* ]]; then
+      jq -c --argjson n "${limit:-60}" 'sort_by(.createdAt) | .[0:$n]' "$f"
+    else
+      jq -c --argjson n "${limit:-60}" '.[0:$n]' "$f"
+    fi
+  else
+    cat "$f"
+  fi
   exit 0
 fi
 
@@ -277,6 +294,29 @@ assert_eq "the oldest waiting PR is the earliest-created non-draft, not the draf
 echo '[]' > "$fixtures/open/acme__none.json"
 assert_eq "no open PRs at all: waiting is null" "null" \
   "$(merge_budget_oldest_waiting "acme/none" "$label")"
+
+# 61 open pull requests — one past GITHUB_PR_LIST_LIMIT (60) — file-ordered
+# newest first, so the true oldest (#160, 60 days back) sits past the page
+# cap and only survives a listing actually sorted oldest-first before it is
+# paged (PR #499 review follow-up).
+{
+  i=0
+  while (( i <= 60 )); do
+    d="$(date -u -d "2026-08-16 - $i days" +%Y-%m-%dT%H:%M:%SZ)"
+    n=$(( 100 + i ))
+    jq -nc --argjson n "$n" --arg d "$d" --arg u "https://github.com/acme/paginated/pull/$n" \
+      '{number: $n, url: $u, createdAt: $d, isDraft: false}'
+    i=$(( i + 1 ))
+  done
+} | jq -sc '.' > "$fixtures/open/acme__paginated.json"
+
+: > "$pr_list_calls"
+assert_eq "the true oldest survives past GITHUB_PR_LIST_LIMIT, not just the oldest of the newest page" \
+  '{"number":160,"url":"https://github.com/acme/paginated/pull/160","created_at":"2026-06-17T00:00:00Z"}' \
+  "$(merge_budget_oldest_waiting "acme/paginated" "$label")"
+assert_eq "…because the listing actually asked GitHub to sort oldest-first" \
+  "open	acme/paginated	sort:created-asc" \
+  "$(cat "$pr_list_calls")"
 
 # --- merge_budget_decide ---
 
