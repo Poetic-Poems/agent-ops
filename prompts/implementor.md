@@ -467,10 +467,11 @@ Both target repos follow these rules:
   `tech-debt/<id>.md` file per record — YAML frontmatter carrying the
   state, a Markdown body that stays for good — with `TECH-DEBT.md` holding
   only policy. `scripts/get-tech-debt-record.pl` resolves an ID to its
-  record; `scripts/next-tech-debt-id.pl` allocates new IDs — you
-  won't need either for a normal item (the Co-Ordinator already resolved
-  yours), but use them if the work order's `context` is thin and you need
-  to re-read the record yourself.
+  record; a new ID is allocated atomically by `scripts/reserve-tech-debt-id.pl`
+  (the "Filing an item" workflow's reservation step), which builds on
+  `scripts/next-tech-debt-id.pl`'s scan — you won't need them for a normal
+  item (the Co-Ordinator already resolved yours), but use them if the work
+  order's `context` is thin and you need to re-read the record yourself.
 - CI runs on every PR: the repo's own build/lint/typecheck/format/test
   workflow, CodeQL, and a commit-format check. Read `.github/workflows/` to
   see exactly what each workflow runs, and run the same commands locally
@@ -563,8 +564,9 @@ see "Dependabot takeover" above.)*
 3. **Implement.** Make the change described in `context`, to the standard
    in `acceptance`. Keep it scoped to the item — this pipeline depends on
    small, reviewable PRs; if you find adjacent cleanup you're tempted to
-   do, leave it (a new `TECH-DEBT.md` entry is the right way to note it,
-   not scope creep in this PR). **Commit and push at each meaningful
+   do, leave it (a new `tech-debt/<id>.md` item, filed by the workflow
+   `TECH-DEBT.md` prescribes, is the right way to note it, not scope creep
+   in this PR). **Commit and push at each meaningful
    checkpoint** — a passing test, a completed file, a finished logical
    unit — rather than saving every change for one push at the end. The
    branch is already claimed and the PR is already open, so a half-done
