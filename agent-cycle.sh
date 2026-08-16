@@ -77,6 +77,12 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 . "$SCRIPT_DIR/lib/approver-token.sh"
 # shellcheck source=lib/approver.sh
 . "$SCRIPT_DIR/lib/approver.sh"
+# shellcheck source=lib/merge-queue.sh
+. "$SCRIPT_DIR/lib/merge-queue.sh"
+# shellcheck source=lib/landing.sh
+# Sourced after merge-queue.sh (landing_arm's own queue-detection read) and
+# github-limit.sh (github_pr_list_truncated, sourced above already).
+. "$SCRIPT_DIR/lib/landing.sh"
 # shellcheck source=lib/noop-skip.sh
 . "$SCRIPT_DIR/lib/noop-skip.sh"
 # shellcheck source=lib/fleet.sh
@@ -3615,13 +3621,32 @@ approver_stage_complexity() {
 # review, never a blocked pull request — by construction, since every path
 # through this function ends in either a best-effort review post or a
 # best-effort escalation, and the caller's own `pr-ready` log and
-# `release_pr_claim` follow unconditionally regardless of what happened here
-# (the human still merges, at every merge_autonomy level this stage's own
-# work item implements — landing is a later work item's job).
+# `release_pr_claim` follow unconditionally regardless of what happened here.
+#
+# Reports its own outcome through two globals, reset here on every call
+# rather than left to whatever a previous pull request's round left behind
+# — `approver_stage_verdict` (this round's `verdict`, or empty when the
+# stage did not reach one) and `approver_stage_adjudicating` (`1` iff the
+# refuse streak, not the complexity grade, chose the tier). `run_landing_stage`
+# (D18 WI-7, requirement 8d), called immediately after this function
+# returns, is the one reader: it arms nothing at all unless this round's
+# own engagement reached an explicit, non-adjudicating `approve` — an
+# adjudication's own `land` does not count, because a disagreement settled
+# this round is not the same fact as an engagement that agreed the first
+# time. A return value rather than a global would say the same thing, but
+# every existing caller of this function already reads nothing from it
+# (`run_approver_stage "$impl_pr_url" "$approver_complexity"`, no
+# assignment) and a second, unrelated caller could plausibly want the
+# verdict without wanting to restructure that call — the same reasoning
+# `stage_kill_reason` (set by `run_claude_stage`, read by its own callers)
+# already applies to a stage outcome this file needs to carry past its own
+# return.
 run_approver_stage() {
   local pr_url="$1" complexity="$2"
   local level login streak tier model mode="" adjudicating=0
   local prompt out rc status_json verdict="" reasons_json="[]"
+  approver_stage_verdict=""
+  approver_stage_adjudicating=0
   local token review_body prior_section adj_bool
 
   # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
@@ -3809,7 +3834,152 @@ $node_name
   log_event "approver-verdict" "$(jq -nc --arg u "$pr_url" --arg t "$tier" \
     --arg v "${verdict:-none}" --argjson s "$streak" --argjson adj "$adj_bool" \
     '{pr_url: $u, tier: $t, verdict: $v, refuse_streak: $s, adjudication: $adj}')"
+  approver_stage_verdict="$verdict"
+  approver_stage_adjudicating="$adjudicating"
   return 0
+}
+
+# _landing_refuse PR_URL REPO REASON
+# Log `landing-refused` (requirement 8d, requirement 33). The one write
+# every refusal path in `run_landing_stage` makes — never a blocked pull
+# request, never a withheld claim, exactly as an Approver refusal (8b/8c)
+# costs a missing review and nothing else.
+_landing_refuse() {
+  log_event "landing-refused" "$(jq -nc --arg u "$1" --arg r "$2" --arg reason "$3" \
+    '{pr_url: $u, repo: $r, reason: $reason}')"
+}
+
+# run_landing_stage PR_URL COMPLEXITY
+# The arming step (D18 WI-7, docs/reviews/2026-08-14-autonomy-investigation.md
+# §5.1, §6, §7; requirement 8d). Called immediately after `run_approver_stage`
+# — deliberately after, not folded into it: `run_approver_stage` is the
+# review, and every failure mode this function has of its own (a budget
+# hold, a protected path, a queue race) must never be confused for "the
+# Approver refused to review", which requirement 8c's own `approver-verdict`
+# event already speaks for.
+#
+# Arms nothing at all unless this very round's Approver engagement reached
+# an explicit, non-adjudicating `approve` — read from `approver_stage_verdict`/
+# `approver_stage_adjudicating`, the globals `run_approver_stage` set
+# immediately before returning (never reused beyond this one read).
+# Everything else below is re-read fresh from GitHub, the discipline
+# `lib/review-gate.sh` established, because nothing this stage arms may
+# trust state more than one function call old:
+#
+#   1. `merge_autonomy_effective_level` — must still be `agent-merges-routine`
+#      or `agent-merges-all` (the kill switch or a budget freeze may have
+#      moved since the Approver ran).
+#   2. `landing_eligible` (lib/landing.sh) — complexity, source and the
+#      protected-paths classifier.
+#   3. `review_gate_verdict` — must read `clean`; `dirty` and `unknown`
+#      both refuse (stricter than the ordinary ready-gate handoff, which
+#      tolerates an alerts-only `unknown` as a warning — arming an
+#      automatic merge does not).
+#   4. No human `CHANGES_REQUESTED` stands (`_handoff_blocking_reviewers`,
+#      lib/handoff.sh) — a fresh read, since a push or a review submitted
+#      after the Approver posted is exactly the fact this must catch. The
+#      Approver's own standing approval is step 1 above, already
+#      established for this round; a bot's own review is invisible to
+#      `_handoff_blocking_reviewers` by construction (it excludes bots), so
+#      re-deriving that half here would answer nothing this round's verdict
+#      does not already answer.
+#   5. `merge_budget_decide`/`merge_budget_apply_decision`
+#      (lib/merge-budget.sh) — only `arm` proceeds; `hold` and `refuse` are
+#      applied and stop here.
+#   6. `merge_queue_probe` — the pull request must not already be queued;
+#      "could not read" is "possibly queued", so it refuses too.
+#
+# Any read above that cannot be answered is a refusal (`_landing_refuse`,
+# `landing-refused`), never a pass. A successful arm logs `landing-armed`
+# exactly once, naming the method (`enqueued`/`auto-merge`) `landing_arm`
+# actually used, and never withholds anything requirement 8b already did —
+# this stage runs strictly after the `pr-ready` log and the claim release,
+# and nothing here can affect either.
+run_landing_stage() {
+  local pr_url="$1" complexity="$2"
+  local slug="$selected_repo" number level
+
+  [[ "$approver_stage_verdict" == "approve" && "$approver_stage_adjudicating" != "1" ]] || return 0
+
+  if [[ "$pr_url" =~ /pull/([0-9]+)$ ]]; then
+    number="${BASH_REMATCH[1]}"
+  else
+    _landing_refuse "$pr_url" "$slug" "could not parse a pull request number from $pr_url"
+    return 0
+  fi
+
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir")"
+  case "$level" in
+    agent-merges-routine|agent-merges-all) ;;
+    *)
+      _landing_refuse "$pr_url" "$slug" "merge_autonomy effective level is $level, not agent-merges-routine or agent-merges-all"
+      return 0
+      ;;
+  esac
+
+  local elig
+  elig="$(landing_eligible "$DEFAULTED_CONFIG" "$slug" "$number" "$complexity" "$selected_source" "$level")"
+  if [[ "$elig" != "eligible" ]]; then
+    _landing_refuse "$pr_url" "$slug" "$elig"
+    return 0
+  fi
+
+  local gate_combined gate_word gate_reason
+  gate_combined="$(review_gate_verdict "$pr_url" "$gate_default_branch" 2>/dev/null)"
+  gate_word="${gate_combined%%$'\t'*}"
+  gate_reason="${gate_combined#*$'\t'}"
+  if [[ "$gate_word" != "clean" ]]; then
+    _landing_refuse "$pr_url" "$slug" "review gate: ${gate_reason:-$gate_word}"
+    return 0
+  fi
+
+  local blocking
+  if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands"
+    return 0
+  fi
+  if [[ -n "$blocking" ]]; then
+    _landing_refuse "$pr_url" "$slug" "a human CHANGES_REQUESTED stands ($(paste -sd, - <<<"$blocking"))"
+    return 0
+  fi
+
+  local budget_login
+  if ! budget_login="$(approver_token_identity_login "")" || [[ -z "$budget_login" ]]; then
+    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login to evaluate the merge budget"
+    return 0
+  fi
+  local budget_json budget_decision
+  budget_json="$(merge_budget_decide "$DEFAULTED_CONFIG" "$slug" "$pr_label" "$budget_login")"
+  budget_decision="$(jq -r '.decision' <<<"$budget_json" 2>/dev/null)"
+  if [[ "$budget_decision" != "arm" ]]; then
+    merge_budget_apply_decision "$budget_json" "$slug" "$state_repo" "$enabler_escalation_label" "$enabler_assignee"
+    return 0
+  fi
+
+  local queue_json queued
+  if ! queue_json="$(merge_queue_probe "$slug" "$number")"; then
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's merge-queue status"
+    return 0
+  fi
+  queued="$(jq -r '.queued' <<<"$queue_json" 2>/dev/null)"
+  if [[ "$queued" != "false" ]]; then
+    _landing_refuse "$pr_url" "$slug" "already in the merge queue"
+    return 0
+  fi
+
+  local token method
+  if ! token="$(approver_token_get "")"; then
+    _landing_refuse "$pr_url" "$slug" "could not mint the Approver's installation token"
+    return 0
+  fi
+  if ! method="$(landing_arm "$slug" "$number" "$token")" || [[ -z "$method" ]]; then
+    _landing_refuse "$pr_url" "$slug" "landing_arm could not enqueue or auto-merge $pr_url"
+    return 0
+  fi
+
+  log_event "landing-armed" "$(jq -nc --arg u "$pr_url" --arg r "$slug" --arg src "$selected_source" \
+    --arg c "$complexity" --arg m "$method" \
+    '{pr_url: $u, repo: $r, source: $src, complexity: $c, method: $m}')"
 }
 
 # --- The Enabler's state for this cycle (requirements 35, 37) ---
@@ -8031,6 +8201,14 @@ if [[ "$rev_status" == "ready" ]]; then
   # one (agent-ops#470).
   approver_complexity="$(approver_stage_complexity "$impl_pr_url" "$rev_complexity" "$impl_trivial")"
   run_approver_stage "$impl_pr_url" "$approver_complexity"
+
+  # --- 8d. Landing arming step (D18 WI-7) ---
+  # Immediately after the Approver, and gating nothing above it for the same
+  # reason 8b gates nothing above it: an arm or a refusal is a fact about
+  # this pull request's landing, never a reason to withhold the pr-ready log,
+  # the claim release, or the Approver's own review. See run_landing_stage's
+  # own header for the six gates it re-reads fresh before arming anything.
+  run_landing_stage "$impl_pr_url" "$approver_complexity"
 else
   # Requirement 32a: a Reviewer that cannot hand off hands *back*, not out. The
   # verdict names a real impediment on a real PR, which is a blocked item —
