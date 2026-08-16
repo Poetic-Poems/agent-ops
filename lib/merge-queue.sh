@@ -93,6 +93,54 @@ merge_queue_probe() {
   printf '%s' "$out"
 }
 
+# merge_queue_for_branch SLUG BRANCH
+# Print the `mergeQueue(branch:)` GraphQL object for BRANCH in SLUG — the
+# literal string `null` when that branch carries no active merge queue,
+# or a compact JSON object (`{id, mergeMethod, mergingStrategy}`) when it
+# does. Returns non-zero, printing nothing, when the read fails for any
+# reason (bad arguments, `gh` erroring, an unparsable response) — the same
+# "prints nothing on failure" contract `merge_queue_probe` follows, so a
+# caller can tell "definitely no queue" (the string `null`) apart from
+# "could not find out" (empty output, non-zero exit) without a second
+# check.
+#
+# This is D18 WI-7's own queue-detection read (`lib/landing.sh`'s
+# `landing_arm`, agent-ops#410, docs/reviews/2026-08-14-autonomy-investigation.md
+# §5.1): whether to enqueue a pull request or fall back to
+# `gh pr merge --auto --squash` depends on the *base branch's* own queue,
+# not the pull request's queued state (`merge_queue_probe` answers that
+# different question). Verified live, 2026-08-16, against
+# `Poetic-Poems/agent-ops`'s own `main`: `mergeQueue(branch:"main")` →
+# `{id: "MQ_kwDOTWpCsc4AA8Qo", mergeMethod: "SQUASH", mergingStrategy:
+# "ALLGREEN"}`, confirming the field resolves for a real installation and
+# the shape below is what it actually returns. Kept in this file rather
+# than in `lib/landing.sh` — "one file owns every merge-queue GraphQL
+# read" is this file's own header, and a second query here would be the
+# same detector drift TD26071401 recorded for `lib/limit-detect.sh`.
+merge_queue_for_branch() {
+  local slug="$1" branch="${2:-}" gh_bin="${MERGE_QUEUE_GH:-gh}"
+  local out
+  [[ "$slug" =~ ^[^/]+/[^/]+$ ]] || return 1
+  local owner="${slug%%/*}" repo="${slug#*/}"
+  [[ -n "$branch" ]] || return 1
+
+  # shellcheck disable=SC2016  # GraphQL's own $owner/$repo/$branch variables, not the shell's.
+  out="$("$gh_bin" api graphql \
+    -f query='query($owner:String!,$repo:String!,$branch:String!){
+      repository(owner:$owner,name:$repo){
+        mergeQueue(branch:$branch){ id mergeMethod mergingStrategy }
+      }
+    }' \
+    -f owner="$owner" -f repo="$repo" -f branch="$branch" \
+    --jq '.data.repository.mergeQueue' \
+    2>/dev/null)" || return 1
+  # Belt and braces, matching `merge_queue_probe`'s own type check: only
+  # ever hand a caller a document that actually parses as the shape this
+  # promises — `null` (no queue) or an object carrying `id`.
+  jq -e 'type == "null" or (type == "object" and has("id"))' <<<"$out" >/dev/null 2>&1 || return 1
+  printf '%s' "$out"
+}
+
 # merge_queue_dequeue_actionable REASON
 # True (exit 0) if a removal carrying `dequeue_reason` REASON is one the
 # pipeline should surface to a human — a merge-group checks failure, or any
