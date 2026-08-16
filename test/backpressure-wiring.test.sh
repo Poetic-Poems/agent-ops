@@ -94,8 +94,34 @@ mkdir -p "$stub_bin" "$fake_root" "$listings" "$counts_dir"
 # `gh pr list -R <slug>` replays a checked-in listing per repo, and exits 1 for
 # a repo with no file — the unreachable-GitHub path the block guards with
 # `|| prs_json=''`.
+#
+# `gh api repos/<repo>/contents/fleet/<name>.json?ref=main` is
+# fleet_flag_fetch_status's own read (the kill switch, and a per-repo merge-
+# budget freeze) — every flag reads as absent (a 404), which is the ordinary
+# "nothing stands this repo down" case the back-pressure loop runs under on
+# every cycle, and each such call is logged to GH_API_CALLS (one line per
+# call, when the variable is set) so a test can count how many the block
+# actually made. `repos/<repo>` with no `/contents/` is the repo-visibility
+# probe `probe-404` mode spends resolving the kill flag's own 404 — answered
+# successfully so that 404 resolves to a genuine "clear" rather than
+# "unreachable".
 cat > "$stub_bin/gh" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == "api" ]]; then
+  path="${2:-}"
+  case "$path" in
+    repos/*/contents/*)
+      [[ -z "${GH_API_CALLS:-}" ]] || printf '%s\n' "$path" >> "$GH_API_CALLS"
+      echo "gh: Not Found (HTTP 404)" >&2
+      exit 1
+      ;;
+    repos/*)
+      echo '{}'
+      exit 0
+      ;;
+  esac
+  exit 1
+fi
 slug=""; prev=""
 for a in "$@"; do
   [[ "$prev" == "-R" ]] && slug="$a"
@@ -153,11 +179,13 @@ run_block() {
   all_repos_json="$REPOS_JSON"
   # shellcheck disable=SC2034  # Read by merge_autonomy_effective_level, once per repo, inside the block.
   DEFAULTED_CONFIG="$CFG_JSON"
-  # shellcheck disable=SC2034  # Likewise — empty means "no fleet flags", so the level resolves from
+  # shellcheck disable=SC2034  # Empty (the default) means "no fleet flags", so the level resolves from
   # DEFAULTED_CONFIG alone with no gh call at all (fleet_flag_fetch_status's own no-repo short circuit).
-  state_repo=""
+  # STATE_REPO overrides this for the memoisation assertions below, which need
+  # a real fleet flag fetch to count calls against.
+  state_repo="${STATE_REPO:-}"
   # shellcheck disable=SC2034
-  state_dir="$tmp_dir/state"
+  state_dir="${STATE_DIR:-$tmp_dir/state}"
   eval "$counting_block"
   # shellcheck disable=SC2154  # All three are assigned by the lifted block — they are what it is for.
   printf '%s\n%s\n%s\n' "$open_composition" "$adjusted_open_count" "$raw_open_count"
@@ -241,6 +269,111 @@ assert_eq "at human (the default), the identical approved PR is excluded, and th
   "0" "$adjusted3"
 assert_eq "…and its claim is what keeps counting instead" \
   "count|Poetic-Poems/poetic-fiddle|" "$(sed -n '1p' "$calls_file3")"
+
+# --- Issue #502 (PR #499 review follow-up): fleet_flag_fetch_status
+#     memoises a live/clear answer per (flag, state_dir) for the life of this
+#     process, so the block's own per-repo loop — which reads the kill switch
+#     once per repository, all inside this one run_block invocation — must
+#     hit the network for it at most once regardless of repository count. And
+#     the reordered merge_autonomy_effective_level (same PR) must never even
+#     ask for a repo's freeze flag when its configured level already ranks at
+#     or below agent-approves, where the freeze's own answer would go
+#     unread. GH_API_CALLS records every `gh api repos/*/contents/*` call the
+#     stub above serves — one line per call — so both are countable. ---
+
+fleet_calls="$tmp_dir/fleet-calls"
+for repo_file in acme__repo-a acme__repo-b acme__repo-c; do
+  printf '[]\n' > "$listings/$repo_file.json"
+  printf '0' > "$counts_dir/$repo_file"
+done
+
+: > "$fleet_calls"
+PATH="$stub_bin:$PATH" \
+  GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$tmp_dir/claim-calls-4" CLAIM_COUNTS="$counts_dir" \
+  GH_API_CALLS="$fleet_calls" \
+  STATE_REPO="acme/fleet-state" STATE_DIR="$tmp_dir/state-memo" \
+  REPOS_JSON='[{"slug":"acme/repo-a"},{"slug":"acme/repo-b"},{"slug":"acme/repo-c"}]' \
+  CFG_JSON='{}' \
+  run_block >/dev/null 2>/dev/null
+
+assert_eq "one kill-switch fetch per cycle regardless of repository count" "1" \
+  "$(grep -c 'merge-autonomy-kill\.json' "$fleet_calls")"
+assert_eq "no freeze-flag fetch for a repository whose configured level ranks at or below agent-approves" "0" \
+  "$(grep -c 'merge-budget-freeze-' "$fleet_calls")"
+
+# A single repo configured *above* agent-approves does need the freeze's own
+# answer — confirming the zero above is about the level, not the freeze fetch
+# having been removed altogether.
+: > "$fleet_calls"
+PATH="$stub_bin:$PATH" \
+  GH_STUB_LISTINGS="$listings" CLAIM_CALLS="$tmp_dir/claim-calls-5" CLAIM_COUNTS="$counts_dir" \
+  GH_API_CALLS="$fleet_calls" \
+  STATE_REPO="acme/fleet-state" STATE_DIR="$tmp_dir/state-memo-2" \
+  REPOS_JSON='[{"slug":"acme/repo-a"}]' \
+  CFG_JSON='{"repos":[{"slug":"acme/repo-a","merge_autonomy":"agent-merges-routine"}]}' \
+  run_block >/dev/null 2>/dev/null
+
+assert_eq "…while a repo ranked above agent-approves does fetch its freeze flag" "1" \
+  "$(grep -c 'merge-budget-freeze-acme-repo-a\.json' "$fleet_calls")"
+
+# --- approver_escalate's warning path (PR #499 review follow-up) ---
+#
+# The pre-existing SC2154 #499's PR body flagged: `--arg d "…could not settle
+# $u…"` interpolated a bash variable `u` that is never assigned in this
+# file — `$u` is jq's own `--arg u`, not a shell variable — so under `set -u`
+# (which agent-cycle.sh runs under) the expansion aborted that command
+# substitution and `log_event "warning" ""` logged an event with no fields at
+# all: no detail, and — on the one line where a human most needs it — no
+# pr_url either. Lifted verbatim out of agent-cycle.sh, the same way the
+# counting block above is, so this is testing the shipped function, not a
+# copy of it.
+approver_escalate_fn="$(awk -v fn='^approver_escalate\\(\\) \\{' \
+  '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' "$AGENT_CYCLE")"
+if [[ -z "$approver_escalate_fn" ]]; then
+  echo "FAIL - could not extract approver_escalate from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
+
+run_approver_escalate() {
+  eval "$approver_escalate_fn"
+  # shellcheck disable=SC2317  # Stubbed: this covers only the "adjudication could not settle,
+  # and the escalation issue could not be filed either" warning path — the
+  # dedup/success path is create_escalation_issue's own test, not this one's.
+  create_escalation_issue() { return 1; }
+  # shellcheck disable=SC2034  # Read by the eval'd approver_escalate body below, standing in for
+  # the state a real cycle already has in scope by the time it calls this function — invisible to
+  # the linter, the same way every other lifted-block variable in this file already is.
+  cycle_dir="$tmp_dir/approver-escalate-cycle"
+  mkdir -p "$cycle_dir"
+  # shellcheck disable=SC2034
+  cycle_id="test-cycle"
+  # shellcheck disable=SC2034
+  node_name="test-node"
+  # shellcheck disable=SC2034
+  enabler_escalation_label="enabler-escalation"
+  # shellcheck disable=SC2034
+  selected_repo="acme/widgets"
+  log_calls="$tmp_dir/approver-escalate-log-calls"
+  : > "$log_calls"
+  # shellcheck disable=SC2317
+  log_event() { printf '%s\t%s\n' "$1" "$2" >> "$log_calls"; }
+  approver_escalate "https://github.com/acme/widgets/pull/42" '["reason one","reason two"]'
+  cat "$log_calls"
+}
+escalate_out="$(run_approver_escalate 2>/dev/null)"
+escalate_event="$(cut -f1 <<<"$escalate_out")"
+escalate_json="$(cut -f2- <<<"$escalate_out")"
+
+assert_eq "exactly one event is logged" "1" "$(wc -l < <(printf '%s\n' "$escalate_out") | tr -d ' ')"
+assert_eq "…as a warning" "warning" "$escalate_event"
+assert_eq "…carrying pr_url, not silently dropped by the \$u bug" \
+  "https://github.com/acme/widgets/pull/42" "$(jq -r '.pr_url' <<<"$escalate_json")"
+assert_eq "…and carrying a non-empty detail naming the same pull request" "true" \
+  "$(jq --arg u "https://github.com/acme/widgets/pull/42" \
+     '(.detail // "") != "" and ((.detail // "") | contains($u))' <<<"$escalate_json")"
+
+shellcheck_out="$(shellcheck --severity=warning "$AGENT_CYCLE" 2>&1 | grep -A2 'SC2154' || true)"
+assert_eq "shellcheck --severity=warning reports no SC2154 in agent-cycle.sh" "" "$shellcheck_out"
 
 # --- Report -------------------------------------------------------------------
 

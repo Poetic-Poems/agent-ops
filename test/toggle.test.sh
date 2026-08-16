@@ -431,9 +431,36 @@ assert_eq "and an unreachable repo to failed" "failed" \
 fleet_flag_write "$slug" disabled "$rec" "set again"
 fleet_flag_fetch "$slug" "$fs_b" disabled >/dev/null
 rm -f "$gh_backing/fleet/disabled.json"
+# fleet_flag_fetch_status now memoises a live answer per process
+# (issue #502), so the second fetch below — same flag, same
+# state_dir — would otherwise just replay the first one's memo rather than
+# notice the file is gone. _fleet_flag_memo_clear is what a real write/delete
+# already calls; using it here stands in for "the next cycle's process",
+# which is genuinely who would notice this 404 in production (the flag was
+# not cleared through this process's own fleet_flag_write/_delete, so nothing
+# else would have invalidated the memo for it).
+_fleet_flag_memo_clear disabled
 fleet_flag_fetch "$slug" "$fs_b" disabled >/dev/null
 assert_eq "a 404 clears the cached copy" "0" \
   "$(test -f "$(fleet_cache_file "$fs_b" disabled)" && echo 1 || echo 0)"
+
+# The memo root is named from `$$`, which is unique only among the processes
+# running now: $TMPDIR outlives them and PIDs are recycled, so a node chaining
+# cycle after cycle eventually starts one whose PID a dead cycle's memos are
+# still filed under. Nothing else expires them, so sourcing this file must —
+# or a recycled PID would serve this process another process's answer for its
+# whole run, which on the kill switch means an operator's `disabled` read as
+# `clear`. Asserted in a child shell, because the purge happens at source time
+# and this process is long past its own.
+memo_purge_out="$(TMPDIR="$tmp_dir/memo-tmp" bash -c '
+  root="$TMPDIR/agent-ops-fleet-flag-memo.$$"
+  mkdir -p "$root/merge-autonomy-kill"
+  printf "clear\t" > "$root/merge-autonomy-kill/_a_state_dir"
+  . "'"$SCRIPT_DIR"'/lib/toggle.sh"
+  test -e "$root" && echo survived || echo purged
+')"
+assert_eq "a memo root left behind by a dead process with this PID is purged at source time" \
+  "purged" "$memo_purge_out"
 
 # --- TD-PPagop-26081602: a repo-level 404 must not read the kill switch as
 #     clear — and must keep reading the fail-open flags exactly as before ---
@@ -480,7 +507,11 @@ assert_eq "probe-404: a flag-file 404 against a repo the token can see is clear"
 
 # The flag file is still absent, but now the repo probe itself fails too
 # (GH_STUB_MODE=repo-404): with no cached copy at all this must read
-# unreachable, never clear.
+# unreachable, never clear. Nothing about the flag has actually changed since
+# the previous assertion — only the simulated reachability has — so without
+# clearing the memo first this would just replay the "clear" answer memoised
+# above rather than exercise the probe at all (issue #502).
+_fleet_flag_memo_clear disabled
 assert_eq "probe-404: a flag-file 404 against an invisible repo, no cache, reads unreachable" \
   "unreachable" \
   "$(GH_STUB_MODE=repo-404 status_of "$slug" "$fs_probe" disabled probe-404)"

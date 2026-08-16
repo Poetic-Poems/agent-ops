@@ -33,6 +33,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   mechanism and its doctrine only — nothing yet calls it from a behaviour-
   affecting path, since no requirement arms an automatic landing today.
 
+### Fixed
+
+- `merge_budget_oldest_waiting`'s `waiting_backlog` (the pull request a
+  `merge-budget-hold` event names as the one waiting longest) now sorts
+  GitHub's own listing oldest-first before paging, so a repository with more
+  than `GITHUB_PR_LIST_LIMIT` open, labelled pull requests names the true
+  oldest rather than the oldest of whatever page happened to come back.
+- `approver_escalate`'s "could not settle, and the escalation issue could not
+  be filed" warning event now carries `pr_url` and a `detail` naming it — a
+  pre-existing bug (a bash string interpolation, not the intended jq `--arg`)
+  silently emptied both fields under `set -u`.
+
 ### Changed
 
 - Every `item-void` a Co-Ordinator, Enabler or Implementor
@@ -47,6 +59,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   independent Enabler engagement's own void, at least 24 hours apart, both
   citing structured evidence. `unvoided` is untouched and gains no machine
   path.
+- Every fleet flag (the fleet switch, the usage-limit flag, the merge-autonomy
+  kill switch and a repository's merge-budget freeze) is now read from GitHub
+  at most once per flag per process, rather than once per reader: a cycle that
+  resolves `merge_autonomy_effective_level` for each repository spends one
+  contents-API read on the kill switch instead of one per repository. A flag
+  set or cleared elsewhere is therefore picked up by the next cycle rather
+  than part-way through the running one; a flag this process itself writes or
+  deletes is picked up immediately.
 - **Breaking:** `config.json`'s `review` block is renamed `project_review` and
   restructured: every tunable now lives under `project_review.defaults`
   (installation-wide) and may be overridden per repository on

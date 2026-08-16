@@ -186,20 +186,28 @@ merge_autonomy_kill_clear() {
 # switch and the per-repo freeze both only actually override anything
 # because every such path reads this function and never
 # merge_autonomy_configured_level directly.
+#
+# The rank is checked before the freeze flag is ever fetched (PR #499 review
+# follow-up): the freeze can only lower a level that ranks above
+# agent-approves, so a repository configured at agent-approves or below never
+# needs the freeze's own answer — its value would go unread either way. A
+# repository governed at `human` (requirement 2's own default, and every
+# repository's until an operator opts one up) is the common case this skips
+# a fetch for on every single read.
 merge_autonomy_effective_level() {
   local config_json="$1" slug="$2" state_repo="$3" state_dir="$4"
-  local kill_state configured freeze_state configured_rank cap_rank
+  local kill_state configured configured_rank cap_rank freeze_state
   kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir")" 2>/dev/null)"
   if [[ "$kill_state" != "enabled" ]]; then
     printf 'human'
     return 0
   fi
   configured="$(merge_autonomy_configured_level "$config_json" "$slug")"
-  freeze_state="$(jq -r '.state' <<<"$(merge_budget_freeze_state "$state_repo" "$state_dir" "$slug")" 2>/dev/null)"
-  if [[ "$freeze_state" != "enabled" ]]; then
-    configured_rank="$(merge_autonomy_rank "$configured" 2>/dev/null)" || configured_rank=0
-    cap_rank="$(merge_autonomy_rank agent-approves)"
-    if (( configured_rank > cap_rank )); then
+  configured_rank="$(merge_autonomy_rank "$configured" 2>/dev/null)" || configured_rank=0
+  cap_rank="$(merge_autonomy_rank agent-approves)"
+  if (( configured_rank > cap_rank )); then
+    freeze_state="$(jq -r '.state' <<<"$(merge_budget_freeze_state "$state_repo" "$state_dir" "$slug")" 2>/dev/null)"
+    if [[ "$freeze_state" != "enabled" ]]; then
       printf 'agent-approves'
       return 0
     fi
