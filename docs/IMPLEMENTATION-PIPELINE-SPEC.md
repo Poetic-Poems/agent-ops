@@ -3978,15 +3978,26 @@ implements.
    as a human's own `CHANGES_REQUESTED` never has, so nothing about the
    handoff itself waits on this stage or can be affected by how it ends.
 
-   The tier follows the same resolved `complexity` requirement 8a already
-   computed for the Reviewer (raise-never-lower, requirement 26a): `low` maps
-   to **Trivial** — no model call, the Script itself posts an `APPROVE`
-   review — `medium` to **Standard** (`approver_model_default`) and `high` to
-   **High** (`approver_model_complex`, empty falling back to
-   `approver_model_default`, the same escalation-off convention requirement
-   8a's own `reviewer_model_complex` uses). A **Critical** fourth tier
-   (`approver_model_critical`, falling back to `approver_model_complex`) is
-   never chosen by complexity — see requirement 8c for what does choose it.
+   The tier is resolved *after* the Reviewer stage has run, not from the
+   `complexity` requirement 8a computed to choose the Reviewer's own model:
+   the Reviewer may correct a `complexity:*` label it finds plainly wrong for
+   the diff (requirement 30), in either direction, and that correction must
+   reach this same round's Approver rather than only the next one
+   (agent-ops#470). The Script re-reads the PR's `complexity:*` label once
+   the Reviewer stage completes and folds it through `reviewer_complexity`
+   (`lib/cycle-state.sh`) a second time — the same function requirement 8a
+   already uses — with requirement 8a's own resolved `complexity` standing in
+   for the Implementor's summary grade. This keeps the raise-never-lower rule
+   (requirement 26a) in force at the Approver's decision point too: the tier
+   can rise on a mid-cycle correction, but never settles below what the round
+   was already reviewed at. `low` maps to **Trivial** — no model call, the
+   Script itself posts an `APPROVE` review — `medium` to **Standard**
+   (`approver_model_default`) and `high` to **High** (`approver_model_complex`,
+   empty falling back to `approver_model_default`, the same escalation-off
+   convention requirement 8a's own `reviewer_model_complex` uses). A
+   **Critical** fourth tier (`approver_model_critical`, falling back to
+   `approver_model_complex`) is never chosen by complexity — see requirement
+   8c for what does choose it.
 
    `approver_model_default` empty disables the whole stage (the same
    convention `enabler_model` empty already uses for the Enabler) — every
@@ -9676,9 +9687,10 @@ What exists, and the requirements each part answers to:
     the ordinary `run_claude_stage` launch every other stage uses. Sourced,
     never executed. Regression-tested in `test/approver.test.sh` against a
     stubbed `gh`, and the wiring those primitives hang off in
-    `test/approver-wiring.test.sh`, which lifts `run_approver_stage` and
-    `approver_post_or_warn` verbatim out of `agent-cycle.sh` rather than
-    restating their logic (acceptance check 8s). Must pass `shellcheck`.
+    `test/approver-wiring.test.sh`, which lifts `run_approver_stage`,
+    `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
+    `agent-cycle.sh` rather than restating their logic (acceptance check 8s).
+    Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
@@ -12229,21 +12241,29 @@ pull request, run the ones the change touches and any it could regress.
     for that one invocation only, never leaking into a later call under the
     stub's own default identity; `approver_prior_refusal_bodies` returns the
     same login's `REQUEST_CHANGES` bodies oldest-first and nothing on an
-    unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`
-    and `approver_post_or_warn` verbatim out of `agent-cycle.sh` and drives
-    them with every GitHub call, model launch and log write stubbed: at
-    `merge_autonomy: human` the stage posts no review, launches no model and
-    logs nothing at all; at `agent-approves` a `complexity:low` pull request
-    gets a deterministic `APPROVE` with no model launched, `medium` and
-    `high` launch `approver_model_default` and `approver_model_complex`
-    respectively, a refusal's `reasons` become the `REQUEST_CHANGES` body,
-    and a synthetic refuse streak of two routes the next round to
-    `approver_model_critical` — for a `complexity:low` pull request too,
-    which the grade alone would have approved without a model at all. Each
-    failure path returns 0 having posted nothing and logged a `warning`: the
-    stage disabled (`approver_model_default` empty), the credential absent, a
-    verdict that would not parse, a verdict the Script does not recognise, and
-    a review GitHub refused; only an adjudication escalates.
+    unreadable list. `test/approver-wiring.test.sh` lifts `run_approver_stage`,
+    `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
+    `agent-cycle.sh` and drives them with every GitHub call, model launch and
+    log write stubbed: at `merge_autonomy: human` the stage posts no review,
+    launches no model and logs nothing at all; at `agent-approves` a
+    `complexity:low` pull request gets a deterministic `APPROVE` with no
+    model launched, `medium` and `high` launch `approver_model_default` and
+    `approver_model_complex` respectively, a refusal's `reasons` become the
+    `REQUEST_CHANGES` body, and a synthetic refuse streak of two routes the
+    next round to `approver_model_critical` — for a `complexity:low` pull
+    request too, which the grade alone would have approved without a model at
+    all. Each failure path returns 0 having posted nothing and logged a
+    `warning`: the stage disabled (`approver_model_default` empty), the
+    credential absent, a verdict that would not parse, a verdict the Script
+    does not recognise, and a review GitHub refused; only an adjudication
+    escalates. `approver_stage_complexity` (requirement 8b) is exercised
+    separately: given a pre-Reviewer `rev_complexity` of `medium` and a
+    stubbed `gh pr view` reporting the PR now carries `complexity:high` — the
+    Reviewer's own mid-round correction — it resolves `high`, and that `high`
+    reaches `run_approver_stage`'s own tier choice (`approver_model_complex`
+    launched, logged as the high tier), confirming the raise reaches the same
+    round's Approver rather than only the next one; a `gh pr view` reporting
+    no change, or an unreadable label, leaves `rev_complexity` unchanged.
     `scripts/doctor.sh` fails a `merge_autonomy`
     above `human` configured with `approver_model_default` empty, the same
     shape its existing `approver_app_id` pairing check already fails on

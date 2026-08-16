@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 #
-# test/approver-wiring.test.sh — regression test for `run_approver_stage`, the
-# block in agent-cycle.sh that turns the Approver's tier, refuse streak and
-# verdict into the one GitHub review this stage posts (requirements 8b/8c,
-# acceptance check 8s; D18 WI-5, agent-ops#408).
+# test/approver-wiring.test.sh — regression test for `run_approver_stage` and
+# `approver_stage_complexity`, the code in agent-cycle.sh that turns the
+# Approver's tier, refuse streak and verdict into the one GitHub review this
+# stage posts (requirements 8b/8c, acceptance check 8s; D18 WI-5,
+# agent-ops#408, agent-ops#470).
 #
 # `test/approver.test.sh` covers lib/approver.sh's own primitives — the tier
 # and model lookups, the refuse-streak derivation, the review post. None of
@@ -29,12 +30,20 @@
 #   - **Every failure costs a missing review, never a stranded pull request**:
 #     the stage disabled, a verdict that would not parse, or a review GitHub
 #     refused, each log a `warning` and return 0.
+#   - **The tier is resolved after the Reviewer, not before it**
+#     (`approver_stage_complexity`, requirement 8b, agent-ops#470): a
+#     mid-round `complexity:medium` → `complexity:high` label correction the
+#     Reviewer itself made reaches the same round's Approver, raise-never-
+#     lower against the pre-Reviewer grade, with an unreadable label leaving
+#     the pre-Reviewer grade untouched.
 #
-# The function is lifted verbatim out of agent-cycle.sh, the same way
-# test/human-reviewer-handoff-wiring.test.sh and
-# test/closing-keyword-wiring.test.sh lift their own blocks, so the assertions
-# are about the shipped code rather than a copy of its logic. lib/approver.sh's
-# pure lookups are sourced for real; everything that talks to GitHub, launches
+# `run_approver_stage` and `approver_stage_complexity` are lifted verbatim out
+# of agent-cycle.sh, the same way test/human-reviewer-handoff-wiring.test.sh
+# and test/closing-keyword-wiring.test.sh lift their own blocks, so the
+# assertions are about the shipped code rather than a copy of its logic.
+# lib/approver.sh's pure lookups and lib/cycle-state.sh's `reviewer_complexity`
+# (which `approver_stage_complexity` calls to apply the raise-never-lower
+# comparison) are sourced for real; everything that talks to GitHub, launches
 # a model or writes the log is stubbed and recorded.
 #
 # No test framework is used (none exists elsewhere in this repo). Run directly:
@@ -86,6 +95,7 @@ extract() {  # <function name>
 
 block="$(extract run_approver_stage)"
 post_block="$(extract approver_post_or_warn)"
+complexity_block="$(extract approver_stage_complexity)"
 if [[ -z "$block" || "$block" != *"approver_post_or_warn"* ]]; then
   echo "FAIL - could not extract run_approver_stage from agent-cycle.sh — has it moved?" >&2
   exit 1
@@ -94,21 +104,30 @@ if [[ -z "$post_block" || "$post_block" != *"approver_post_review"* ]]; then
   echo "FAIL - could not extract approver_post_or_warn from agent-cycle.sh — has it moved?" >&2
   exit 1
 fi
+if [[ -z "$complexity_block" || "$complexity_block" != *"reviewer_complexity"* ]]; then
+  echo "FAIL - could not extract approver_stage_complexity from agent-cycle.sh — has it moved?" >&2
+  exit 1
+fi
 
 # --- Assembly -----------------------------------------------------------------
-# The harness sources lib/approver.sh for the real tier/model lookups, then
-# overrides every function that reaches outside the process. Each stub records
-# what it was asked to do under $tmp_dir, so an assertion can read the calls
-# rather than the function's (deliberately always-zero) exit status.
+# The harness sources lib/approver.sh for the real tier/model lookups and
+# lib/cycle-state.sh for the real `reviewer_complexity` (the raise-never-lower
+# comparison `approver_stage_complexity` calls), then overrides every function
+# that reaches outside the process. Each stub records what it was asked to do
+# under $tmp_dir, so an assertion can read the calls rather than the
+# function's (deliberately always-zero) exit status.
 #
 # Case inputs arrive as environment variables, so one harness serves every
 # case: LEVEL, STREAK, VERDICT (the model's final JSON, or empty for "no
-# parseable verdict"), POST_RC, and the three model tier values.
+# parseable verdict"), POST_RC, the three model tier values, and
+# POST_REVIEW_LABEL/GH_LABEL_RC for the post-Reviewer label read
+# `approver_stage_complexity` makes.
 
 cat >"$tmp_dir/harness.sh" <<'HARNESS'
 set -euo pipefail
 
 . "$SCRIPT_DIR/lib/approver.sh"
+. "$SCRIPT_DIR/lib/cycle-state.sh"
 
 # --- Cycle globals the block reads -------------------------------------------
 selected_repo="Poetic-Poems/agent-ops"
@@ -149,6 +168,19 @@ dump_stage_output() { :; }
 stage_salvage_result() { return 1; }
 extract_json_result() { [[ -n "${1// /}" ]] || return 1; jq -c . <<<"$1"; }
 
+# The only `gh` call `approver_stage_complexity` makes: reading the PR's
+# post-Reviewer `complexity:*` label. GH_LABEL_RC nonzero simulates an
+# unreadable label list (the best-effort read contributes nothing);
+# POST_REVIEW_LABEL, when set, stands in for the one grade word the real
+# `--jq` filter would have printed per matching label.
+gh() {
+  if [[ "${GH_LABEL_RC:-0}" != "0" ]]; then
+    return "$GH_LABEL_RC"
+  fi
+  [[ -n "${POST_REVIEW_LABEL:-}" ]] && printf '%s\n' "$POST_REVIEW_LABEL"
+  return 0
+}
+
 log_event() { printf '%s\t%s\n' "$1" "$2" >>"$T/events"; }
 
 approver_post_review() {
@@ -177,20 +209,28 @@ HARNESS
 
 {
   printf '%s\n' "$post_block"
+  printf '%s\n' "$complexity_block"
   printf '%s\n' "$block"
-  printf 'run_approver_stage "$PR_URL" "$COMPLEXITY"\n'
+  printf 'resolved="$(approver_stage_complexity "$PR_URL" "$COMPLEXITY" 0)"\n'
+  printf '%s\n' 'printf '"'"'%s'"'"' "$resolved" >"$T/resolved_complexity"'
+  printf 'run_approver_stage "$PR_URL" "$resolved"\n'
 } >>"$tmp_dir/harness.sh"
 
 URL="https://github.com/Poetic-Poems/agent-ops/pull/463"
 
 # run_case LEVEL COMPLEXITY STREAK VERDICT [KEY=VALUE ...]
-# Runs the block once and leaves $tmp_dir/{events,posts,escalations,launches}
-# holding what it did. Prints the block's own exit status.
+# Runs the block once and leaves
+# $tmp_dir/{events,posts,escalations,launches,resolved_complexity} holding
+# what it did. Prints the block's own exit status. COMPLEXITY is the
+# pre-Reviewer grade (requirement 8a's own `rev_complexity`); each case leaves
+# POST_REVIEW_LABEL and GH_LABEL_RC unset unless it needs to simulate the
+# Reviewer's own post-review label correction.
 run_case() {
   local level="$1" complexity="$2" streak="$3" verdict="$4"
   shift 4
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
   : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
+  : >"$tmp_dir/resolved_complexity"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" \
@@ -205,6 +245,7 @@ run_case() {
 posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
+resolved_complexity() { cat "$tmp_dir/resolved_complexity"; }
 count() { local f="$tmp_dir/$1"; [[ -s "$f" ]] && wc -l <"$f" | tr -d ' ' || printf '0'; }
 verdict_event() { grep -m1 $'^approver-verdict\t' "$tmp_dir/events" | cut -f2-; }
 warnings() { grep $'^warning\t' "$tmp_dir/events" | cut -f2- || true; }
@@ -309,6 +350,32 @@ rc="$(run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}
 assert_eq "a review GitHub refused still returns 0" "0" "$rc"
 assert_contains "  ... and is logged as a warning rather than passing silently" \
   "could not be posted" "$(warnings)"
+
+# --- The tier is resolved after the Reviewer, not before it (requirement 8b, --
+# --- agent-ops#470) ------------------------------------------------------------
+
+run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}' \
+  POST_REVIEW_LABEL=high >/dev/null
+assert_eq "a mid-round medium -> high label correction resolves to high" \
+  "high" "$(resolved_complexity)"
+assert_eq "  ... and reaches the Approver's own tier choice" \
+  "model-complex" "$(launches)"
+assert_eq "  ... logged as the high tier, not the pre-Reviewer medium" \
+  '"high"' "$(jq -c '.tier' <<<"$(verdict_event)")"
+
+run_case agent-approves high 0 '{"verdict":"approve","reasons":["fine"]}' \
+  POST_REVIEW_LABEL=low >/dev/null
+assert_eq "raise-never-lower: a high pre-Reviewer grade survives a lower label" \
+  "high" "$(resolved_complexity)"
+assert_eq "  ... and still launches approver_model_complex" \
+  "model-complex" "$(launches)"
+
+run_case agent-approves medium 0 '{"verdict":"approve","reasons":["fine"]}' \
+  GH_LABEL_RC=1 >/dev/null
+assert_eq "an unreadable post-review label leaves the pre-Reviewer grade untouched" \
+  "medium" "$(resolved_complexity)"
+assert_eq "  ... and still launches approver_model_default" \
+  "model-default" "$(launches)"
 
 echo
 if (( failures == 0 )); then
