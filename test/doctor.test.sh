@@ -452,6 +452,38 @@ run_doctor
 assert_not_contains "merge_autonomy at the default (human) needs no approver_model_default" \
   "no approver_model_default configured" "$out"
 
+# --- D18 WI-7 (requirement 8d): merge_autonomy_routine_sources naming a
+#     source this repository's own sources list never gathers ---------------
+# $base_config's own repo lists only ["security", "abandoned-drafts"], and
+# neither is in the shipped default ["register-hygiene", "tech-debt"], so the
+# default itself already exercises the warning with no override needed.
+run_doctor
+assert_contains "the shipped default merge_autonomy_routine_sources warns when this repo gathers neither" \
+  "[warn] $slug's merge_autonomy_routine_sources names [register-hygiene,tech-debt], which its own sources list never gathers" \
+  "$out"
+
+rs_ok_config="$tmp/rs-ok-config.json"
+jq --arg slug "$slug" \
+  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "tech-debt", "register-hygiene"]}]' \
+  "$base_config" > "$rs_ok_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_ok_config" 2>&1)"
+assert_not_contains "a repo whose sources cover the default routine list gets no warning" \
+  "merge_autonomy_routine_sources names" "$out"
+assert_contains "  ... and a positive ok instead" \
+  "[ ok ] $slug's merge_autonomy_routine_sources are all sources it actually gathers" "$out"
+
+rs_override_config="$tmp/rs-override-config.json"
+jq --arg slug "$slug" \
+  '.repos = [{slug: $slug, sources: ["security", "abandoned-drafts", "code-quality"],
+              merge_autonomy_routine_sources: ["code-quality", "tech-debt"]}]' \
+  "$base_config" > "$rs_override_config"
+out="$(env PATH="$stub_bin:$PATH" bash "$DOCTOR" --config "$rs_override_config" 2>&1)"
+assert_contains "a repo-level override is checked against that repo's own sources, naming only the missing entry" \
+  "[warn] $slug's merge_autonomy_routine_sources names [tech-debt], which its own sources list never gathers" \
+  "$out"
+assert_not_contains "  ... code-quality is not named — the repo does gather it" \
+  "names [tech-debt,code-quality]" "$out"
+
 # --- The kill switch's own live state (requirement 2.3b), reported once per
 #     run alongside state_repo's own access check ---------------------------
 run_doctor
