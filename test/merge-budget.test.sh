@@ -148,10 +148,14 @@ fi
 #
 # acme/paginated is the one exception: its fixture is larger than
 # GITHUB_PR_LIST_LIMIT, and the stub actually pages it — `.[0:limit]`, sorted
-# by createdAt first when `--search` asks for `sort:created-asc` — so the
+# by createdAt first when `--search` asks for `sort:created-asc`, and with
+# drafts dropped *before* that sort/page when `--search` also carries
+# `draft:false` (issue #513, PR #506 review follow-up) — the same order
+# GitHub's own search applies server-side, draft exclusion first — so the
 # merge_budget_oldest_waiting assertions below can tell "named the true
-# oldest" from "named the oldest of whatever page came back" (PR #499 review
-# follow-up). Every other slug keeps the old "the fixture already is the
+# oldest" from "named the oldest of whatever page came back", and "named the
+# true oldest non-draft" from "found nothing because the page was all
+# drafts". Every other slug keeps the old "the fixture already is the
 # answer, --limit is a no-op" behaviour untouched.
 if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "list" ]]; then
   slug="" state="" search="" limit=""
@@ -168,11 +172,13 @@ if [[ "${args[0]:-}" == "pr" && "${args[1]:-}" == "list" ]]; then
   printf '%s\t%s\t%s\n' "$state" "$slug" "$search" >> "$PR_LIST_CALLS"
   f="$GH_FIXTURES/$state/${slug//\//__}.json"
   [[ -f "$f" ]] || exit 1
-  if [[ "$state" == "open" && "$slug" == "acme/paginated" ]]; then
+  if [[ "$state" == "open" && "$slug" == acme/paginated* ]]; then
+    filter='.'
+    [[ "$search" == *"draft:false"* ]] && filter='[.[] | select(.isDraft | not)]'
     if [[ "$search" == *"sort:created-asc"* ]]; then
-      jq -c --argjson n "${limit:-60}" 'sort_by(.createdAt) | .[0:$n]' "$f"
+      jq -c --argjson n "${limit:-60}" "$filter | sort_by(.createdAt) | .[0:\$n]" "$f"
     else
-      jq -c --argjson n "${limit:-60}" '.[0:$n]' "$f"
+      jq -c --argjson n "${limit:-60}" "$filter | .[0:\$n]" "$f"
     fi
   else
     cat "$f"
@@ -314,9 +320,32 @@ assert_eq "no open PRs at all: waiting is null" "null" \
 assert_eq "the true oldest survives past GITHUB_PR_LIST_LIMIT, not just the oldest of the newest page" \
   '{"number":160,"url":"https://github.com/acme/paginated/pull/160","created_at":"2026-06-17T00:00:00Z"}' \
   "$(merge_budget_oldest_waiting "acme/paginated" "$label")"
-assert_eq "…because the listing actually asked GitHub to sort oldest-first" \
-  "open	acme/paginated	sort:created-asc" \
+assert_eq "…because the listing actually asked GitHub to sort oldest-first and exclude drafts" \
+  "open	acme/paginated	sort:created-asc draft:false" \
   "$(cat "$pr_list_calls")"
+
+# 60 drafts (GITHUB_PR_LIST_LIMIT), each older than the one genuine non-draft
+# waiting behind them: without draft:false honoured server-side, the oldest
+# GITHUB_PR_LIST_LIMIT page sorted ascending is all drafts, and the local
+# `select(.isDraft | not) | first` below finds nothing — a false "no backlog"
+# for a repository that genuinely has one waiting (issue #513, PR #506 review
+# follow-up).
+{
+  i=1
+  while (( i <= GITHUB_PR_LIST_LIMIT )); do
+    d="$(date -u -d "2026-08-16 - $(( i + 100 )) days" +%Y-%m-%dT%H:%M:%SZ)"
+    n=$(( 200 + i ))
+    jq -nc --argjson n "$n" --arg d "$d" --arg u "https://github.com/acme/paginated-drafts/pull/$n" \
+      '{number: $n, url: $u, createdAt: $d, isDraft: true}'
+    i=$(( i + 1 ))
+  done
+  jq -nc --arg d "2026-08-01T00:00:00Z" \
+    '{number: 999, url: "https://github.com/acme/paginated-drafts/pull/999", createdAt: $d, isDraft: false}'
+} | jq -sc '.' > "$fixtures/open/acme__paginated-drafts.json"
+
+assert_eq "a page that would otherwise be all drafts still names the true oldest non-draft" \
+  '{"number":999,"url":"https://github.com/acme/paginated-drafts/pull/999","created_at":"2026-08-01T00:00:00Z"}' \
+  "$(merge_budget_oldest_waiting "acme/paginated-drafts" "$label")"
 
 # --- merge_budget_decide ---
 

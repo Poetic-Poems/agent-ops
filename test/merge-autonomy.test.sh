@@ -195,6 +195,50 @@ assert_eq "restored: the repo with its own override reverts to agent-merges-all"
 clear_again="$(merge_autonomy_kill_clear "$slug" "$fs")"
 assert_eq "clearing an already-clear switch reports unconfigured, not failed" "unconfigured" "$clear_again"
 
+# --- issue #513 (PR #506 review follow-up): FRESH bypasses this process's
+#     own memo of the kill switch, for a caller that is about to act on the
+#     level rather than merely compute with it (run_approver_stage,
+#     test/approver-wiring.test.sh's own coverage of the wiring). Simulated
+#     here as a hand-edit straight at the backing store — the same device
+#     this file already uses for "a human editing through GitHub's web
+#     editor" — which bypasses fleet_flag_write/_delete and so leaves this
+#     process's own memo of the switch untouched, exactly as a genuinely
+#     external kill would. ---
+fs_fresh="$tmp_dir/fleet-state-fresh-arg"
+mkdir -p "$fs_fresh"
+merge_autonomy_kill_state "$slug" "$fs_fresh" >/dev/null # primes the memo: enabled
+cat > "$gh_backing/fleet/merge-autonomy-kill.json" <<'EXTERNAL'
+{"reason": "an operator kills it from outside this process", "by": "another node", "expires_at": null}
+EXTERNAL
+assert_eq "an ordinary (non-fresh) read still replays the memoised enabled" "enabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.state')"
+assert_eq "a FRESH read sees the externally-set kill immediately, without waiting for a new process" \
+  "disabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_fresh" fresh | jq -r '.state')"
+assert_eq "and the fresh answer is written back: a later ordinary read benefits from it too" \
+  "disabled" \
+  "$(merge_autonomy_kill_state "$slug" "$fs_fresh" | jq -r '.state')"
+rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
+_fleet_flag_memo_clear "$MERGE_AUTONOMY_KILL_FLAG"
+
+# The same FRESH argument, threaded through merge_autonomy_effective_level —
+# a separate state_dir, so the memo it primes cannot be shadowed by the
+# assertions just above.
+fs_fresh_level="$tmp_dir/fleet-state-fresh-level"
+mkdir -p "$fs_fresh_level"
+merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "$slug" "$fs_fresh_level" >/dev/null # primes: agent-approves
+cat > "$gh_backing/fleet/merge-autonomy-kill.json" <<'EXTERNAL2'
+{"reason": "an operator kills it from outside this process", "by": "another node", "expires_at": null}
+EXTERNAL2
+assert_eq "without FRESH, merge_autonomy_effective_level still trusts the process memo" \
+  "agent-approves" \
+  "$(merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "$slug" "$fs_fresh_level")"
+assert_eq "with FRESH, it answers human, seeing the externally-set kill immediately" \
+  "human" \
+  "$(merge_autonomy_effective_level "$top_level_cfg" "acme/widgets" "$slug" "$fs_fresh_level" fresh)"
+rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
+_fleet_flag_memo_clear "$MERGE_AUTONOMY_KILL_FLAG"
+
 # --- No state repo: a single-node install is a quiet no-op, same as every
 #     other fleet flag lib/toggle.sh defines. ---
 assert_eq "with no state_repo the switch reads enabled" "enabled" \

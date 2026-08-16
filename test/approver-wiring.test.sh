@@ -163,7 +163,12 @@ approver_model_critical="$MODEL_CRITICAL"
 mkdir -p "$cycle_dir" "$clone_dir" "$state_dir"
 
 # --- Stubs: everything that reaches outside this process ----------------------
-merge_autonomy_effective_level() { printf '%s' "$LEVEL"; }
+# Records its own argv (issue #513, PR #506 review follow-up) so a test can
+# confirm run_approver_stage asks for a FRESH read of the level rather than
+# the process-lifetime memo every advisory reader uses — this stage posts a
+# real GitHub review under the answer, so a kill set mid-cycle must stop it
+# at this stage boundary, not wait for the next cycle's process.
+merge_autonomy_effective_level() { printf '%s\n' "$*" >>"$T/mal_calls"; printf '%s' "$LEVEL"; }
 approver_token_credential_present() { [[ "${CREDENTIAL:-1}" == "1" ]]; }
 approver_token_identity_login() { printf 'pullwright-approver[bot]'; }
 approver_refuse_streak() { printf '%s' "$STREAK"; }
@@ -240,6 +245,7 @@ run_case() {
   : >"$tmp_dir/events"; : >"$tmp_dir/posts"
   : >"$tmp_dir/escalations"; : >"$tmp_dir/launches"
   : >"$tmp_dir/resolved_complexity"; : >"$tmp_dir/prompt_override_args"
+  : >"$tmp_dir/mal_calls"
   rm -rf "${tmp_dir:?}/cycle" "${tmp_dir:?}/clone" "${tmp_dir:?}/state"
   env -i PATH="$PATH" HOME="$HOME" \
     T="$tmp_dir" SCRIPT_DIR="$SCRIPT_DIR" PR_URL="$URL" \
@@ -251,6 +257,7 @@ run_case() {
   printf '%s' "$?"
 }
 
+mal_calls() { cat "$tmp_dir/mal_calls"; }
 posts() { cat "$tmp_dir/posts"; }
 launches() { cat "$tmp_dir/launches"; }
 escalations() { cat "$tmp_dir/escalations"; }
@@ -266,6 +273,8 @@ assert_eq "at human the stage returns 0" "0" "$rc"
 assert_eq "  ... posts no review" "0" "$(count posts)"
 assert_eq "  ... launches no model" "0" "$(count launches)"
 assert_eq "  ... and logs nothing at all" "0" "$(count events)"
+assert_eq "  ... but still asks merge_autonomy_effective_level for a FRESH read (issue #513)" \
+  "fresh" "$(mal_calls | awk '{print $NF}')"
 
 # --- Trivial tier: deterministic, no model (requirement 8b) -------------------
 

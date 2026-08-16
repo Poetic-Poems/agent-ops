@@ -1240,8 +1240,11 @@ implements.
       that repository. Judged per repository, inside the same per-repository
       loop the count is already taken in, against the effective level (not
       the configured one), so a fleet-wide kill switch or a merge-budget
-      freeze (requirement 2.3c) affecting the effective level immediately
-      un-excludes those pull requests again, the same cycle it takes effect.
+      freeze (requirement 2.3c) affecting the effective level un-excludes
+      those pull requests again by the next cycle's process — this read is
+      advisory, not a site that acts on the level, so it is memoised for the
+      running process's whole lifetime like every other advisory read
+      (requirement 2.3a).
 
       The logged reason — of the stand-down here and of the restriction
       warning in 2.2a — states the count's full composition:
@@ -1523,13 +1526,25 @@ implements.
    this level's flags and requirements 2.1, 2.3b and 2.3c's alike, since all
    of them go through the one `fleet_flag_fetch_status`. A `live` or `clear`
    answer — the two the state repository actually confirmed — is served to
-   every later read of the same flag through the same `state_dir` in that
-   process without a second contents-API call, so a cycle consulting one flag
+   every later read of the same flag through the same `state_dir` and the
+   same 404 mode in that process without a second contents-API call, so a
+   cycle consulting one flag
    once per repository (requirement 2.2's own per-repository read of
    `merge_autonomy_effective_level`) spends one read on it rather than one per
-   repository. A `cached` or `unreachable` answer is never memoised: it is
+   repository. The mode is part of that key because the default mode and
+   `probe-404` deliberately resolve one and the same contents-API 404
+   differently (requirement 2.3b), so a `clear` memoised by a default-mode
+   read must never be served to a `probe-404` read of the same flag, which
+   would silently disarm a fail-closed flag for the rest of the process. A
+   `cached` or `unreachable` answer is never memoised: it is
    already this process's own uncertainty about a fetch that did not complete,
    so one bad moment must not decide every read for the rest of the run. A
+   memoised answer is served only when it is present *and* non-empty — the
+   entry is read in one step rather than tested for existence and then read,
+   so a memo file that has vanished, or that an interrupted write left empty,
+   falls through to a live fetch instead of being served as an empty answer
+   (which on the kill switch reads as `enabled`, the one direction it must
+   not fail in). A
    write or delete the process itself performs drops its own memo of that
    flag, so a flag it just set is never shadowed by its own earlier read. And
    a memo left in `TMPDIR` by a *dead* process is dropped when `lib/toggle.sh`
@@ -1540,7 +1555,19 @@ implements.
    What the memo costs is mid-cycle freshness: a flag someone sets while a
    cycle is running is picked up by the next cycle's process rather than
    part-way through this one, which is the same staleness the interval between
-   cycles already accepts.
+   cycles already accepts. The kill switch's own *advisory* reads — the
+   back-pressure count and `void_obsolete_ctx_json` — pay exactly this cost,
+   same as any other flag. A caller that is about to take an outward action
+   under the level rather than merely compute with it — `run_approver_stage`
+   is the one such site today, D18 WI-7's arming step (not yet landed) the
+   next —
+   asks `merge_autonomy_effective_level` for a fresh read instead: a non-empty
+   FRESH argument skips this one call's memo hit and always asks GitHub, so a
+   kill set from outside the process is seen at the stage boundary rather than
+   replaying the cycle's first answer, at the cost of one extra contents-API
+   read per acting site per cycle. The fresh answer is still written back to
+   the memo afterwards, so a later advisory read in the same process benefits
+   from it rather than repeating the fetch.
 
    **`--this-node` (requirement 2.3) opts a single node out of this level
    entirely.** `--disable --this-node` writes only the local record and skips
@@ -1590,7 +1617,14 @@ implements.
    `merge_autonomy` level to `human` immediately, fleet-wide, without touching
    `config.json` or restarting a container, while cycles keep running exactly
    as they would with the switch clear — killing merge autonomy stops
-   approval and landing decisions, nothing else. It reuses `lib/toggle.sh`'s
+   approval and landing decisions, nothing else. "Immediately" is exact only
+   at the site that acts on the level: `run_approver_stage` asks
+   `merge_autonomy_effective_level` for a fresh read (requirement 2.3a's own
+   FRESH argument) rather than the process-lifetime memo every other reader
+   uses, so a kill set mid-cycle stops that stage at its own boundary; an
+   advisory reader elsewhere in the same process still sees the cycle's first
+   answer until the next cycle's process, exactly as requirement 2.3a
+   describes. It reuses `lib/toggle.sh`'s
    generic fleet-flag machinery outright (`fleet_flag_fetch_status`/`_write`/
    `_delete`, the same CAS-guarded contents-API mechanism `fleet/disabled.json`
    already uses) under its own flag name, so a peer with an unreachable state
@@ -10121,11 +10155,17 @@ What exists, and the requirements each part answers to:
     `mergedAt`, `mergedBy.login` and `labels`.
     `merge_budget_oldest_waiting SLUG PR_LABEL` is a second,
     best-effort read of SLUG's open pull requests for a `hold` decision's
-    backlog, from `gh pr list --state open --search "sort:created-asc"`: the
-    search qualifier asks GitHub to order the listing itself, so the first
-    non-draft entry is the true oldest regardless of `--limit`'s page cap —
-    without it, past `GITHUB_PR_LIST_LIMIT` open labelled pull requests the
-    unsorted page's own oldest is not necessarily the oldest waiting overall.
+    backlog, from `gh pr list --state open --search "sort:created-asc
+    draft:false"`: the search qualifiers ask GitHub to order the listing
+    itself and to drop drafts from it before `--limit` cuts the page, so the
+    first entry is the true oldest non-draft regardless of that page cap.
+    Without the sort, past `GITHUB_PR_LIST_LIMIT` open labelled pull requests
+    the unsorted page's own oldest is not necessarily the oldest waiting
+    overall; without `draft:false`, a page whose oldest `GITHUB_PR_LIST_LIMIT`
+    entries are all drafts leaves the local non-draft filter nothing to find
+    and reports no backlog at all, even though an older non-draft is waiting
+    just past the page. The local non-draft filter stays regardless, against
+    the search index's own eventual consistency.
     `merge_budget_decide` composes both into one JSON object —
     `{decision, cap, count, anomaly, waiting_backlog}` — with no log events
     and no writes: `merge_budget_apply_decision DECISION_JSON SLUG
@@ -10742,6 +10782,13 @@ pull request, run the ones the change touches and any it could regress.
    reaches peers through `toggle_switch_summary`; and a record written
    without the field reads as `node` through both `toggle_scope` and the
    summary.
+
+   The same file covers the per-process memo's own key and its hit
+   (requirement 2.3a): a `clear` memoised by a default-mode read is not
+   served to a `probe-404` read of the same flag and the same `state_dir`,
+   which probes for itself and reads `unreachable`; and a memo entry that is
+   empty, or that has vanished since it was written, falls through to a live
+   fetch rather than being served as a confirmed answer.
 1f. **A provider-qualified model id resolves; an unsupported one fails fast
    (requirement 1a).** `test/model-id.test.sh` passes: a bare id and its
    `anthropic/`-qualified form resolve to the same value; an empty value (the
@@ -12787,7 +12834,9 @@ pull request, run the ones the change touches and any it could regress.
     `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
     `agent-cycle.sh` and drives them with every GitHub call, model launch and
     log write stubbed: at `merge_autonomy: human` the stage posts no review,
-    launches no model and logs nothing at all; at `agent-approves` a
+    launches no model and logs nothing at all, having asked
+    `merge_autonomy_effective_level` for a *fresh* read of the level rather
+    than the process-lifetime memo (requirement 2.3a); at `agent-approves` a
     `complexity:low` pull request gets a deterministic `APPROVE` with no
     model launched, `medium` and `high` launch `approver_model_default` and
     `approver_model_complex` respectively — the launched prompt assembled
@@ -13492,6 +13541,36 @@ requirements above, which state only what is.
   confirmed clear`, and an operator is no longer left reading
   `check_repo_access`'s state-repo report as the only way to tell the two
   apart.
+- **The fleet-flag memo (issue #502, requirement 2.3a) is per-mode as well as
+  per-flag, and an acting site can ask it for a fresh read (issue #513, PR
+  #506 review follow-up).** Two gaps followed from shipping the memo against
+  only `(NAME, STATE_DIR)`: first, the default mode and `probe-404` resolve
+  one and the same contents-API 404 differently (clear vs a possible
+  `unreachable`), so a default-mode `clear` memoised first could have been
+  served to a later `probe-404` read of the same flag — no caller mixes
+  modes for one flag name today, so the gap never fired, but nothing said it
+  could not; `_fleet_flag_memo_file` now folds MODE into the memo's own
+  filename, so `probe-404` and the default mode never share an entry.
+  Second, the memo's whole bargain — one contents-API read per process
+  rather than one per read — is right for a read that only ever computes
+  with the answer (the back-pressure count, `void_obsolete_ctx_json`), and
+  wrong the moment a read is what an outward action turns on:
+  `run_approver_stage` posts a real GitHub review under the level it reads,
+  so a kill an operator sets mid-cycle must stop it at that stage boundary,
+  not wait for the process to end. Clearing the memo by hand at the call
+  site (`_fleet_flag_memo_clear`) was rejected as the fix, because
+  D18 WI-7's arming step (not yet landed) needs the identical fresh read and
+  must not be built on an underscore-private function two work items away
+  from each other — `fleet_flag_fetch_status` instead grew a `FRESH`
+  argument, a supported and documented part of its own contract, threaded
+  through `merge_autonomy_kill_state` and `merge_autonomy_effective_level`
+  so any future acting site opts in the same way. A fresh read still writes
+  its answer back to the memo, so it costs exactly one extra contents-API
+  read at the acting site itself and nothing downstream — the back-pressure
+  loop's own N→1 saving (PR #499 review follow-up,
+  test/backpressure-wiring.test.sh's "one kill-switch fetch per cycle
+  regardless of repository count") is unaffected, since that read never
+  passes FRESH.
 - **The merge-budget freeze's own reachability fails open, the opposite of
   the kill switch it sits beside (requirement 2.3c).** Both are fleet flags
   managed through the same `lib/toggle.sh` machinery, and both cap
