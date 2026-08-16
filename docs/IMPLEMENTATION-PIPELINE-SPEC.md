@@ -847,7 +847,11 @@ resolution, `lib/merge-autonomy.sh`):
   round, also clears: the required checks are green and the security-alert
   delta is clean at the current head (`review_gate_verdict`, stricter here
   than the ordinary ready-gate handoff — an alerts-only `unknown` refuses
-  arming even though it only warns there); no human `CHANGES_REQUESTED`
+  arming even though it only warns there); the Approver App's own review is
+  genuinely standing `APPROVED` on GitHub right now — not merely this
+  round's own in-process verdict, since a write GitHub itself refused still
+  reports success to the stage that requested it (requirement 8b's own "a
+  missing review, never a stranded PR"); no human `CHANGES_REQUESTED`
   stands; the merge budget (below) says `arm`, not `hold` or `refuse`; and
   the pull request is not already in the merge queue. **Any of these that
   cannot be read is a refusal, logged `landing-refused`, never a pass** —
@@ -4441,17 +4445,21 @@ implements.
       (requirement 31a): there, an alerts-only `unknown` still lets the
       handoff proceed with a logged warning; here, any word but `clean` —
       `dirty` or either flavour of `unknown` — refuses arming outright.
-   4. No human `CHANGES_REQUESTED` stands
+   4. The Approver App's own review is genuinely standing `APPROVED` on
+      GitHub right now (`landing_approver_standing_review`,
+      `lib/landing.sh`), and no human `CHANGES_REQUESTED` stands
       (`_handoff_blocking_reviewers`, `lib/handoff.sh`, requirement 34a's
-      own standing-position computation, reused rather than re-derived) —
-      a fresh read, since a push or a review submitted after the Approver
-      posted is exactly the fact this must catch. The Approver's own
-      standing approval for this round is gate 0 above (the explicit,
-      non-adjudicating `approve` this function already required before
-      reaching this list); re-deriving it from the reviews list a second
-      time would answer nothing that verdict does not already answer, and
-      the Approver's own review is a bot-authored one that
-      `_handoff_blocking_reviewers` excludes by construction regardless.
+      own standing-position computation, reused rather than re-derived for
+      the human half). Both fresh reads, and the first is not redundant
+      with the explicit `approve` gate 0 already required: `approver_post_or_warn`
+      always returns 0 even when the write itself failed ("a missing
+      review, never a stranded PR", requirement 8b) — a review GitHub
+      itself refused reaches this point with `approver_stage_verdict` still
+      reading `approve`, which is this process's own *intent*, never proof
+      the review exists. `_handoff_latest_reviews` cannot answer the first
+      half either way — it excludes bots outright (requirement 34a), and
+      the Approver posts as one — so `landing_approver_standing_review`
+      reads the same endpoint directly, filtered to the App's own login.
    5. `merge_budget_decide`/`merge_budget_apply_decision`
       (`lib/merge-budget.sh`, requirement 2.3c) — only `arm` proceeds.
       `hold` (the budget is exhausted) and `refuse` (the count could not be
@@ -13057,7 +13065,12 @@ pull request, run the ones the change touches and any it could regress.
     clears — with a pinned case confirming the `source` comparison is exact
     string equality, never expanded against the four `issues:<band>` ranks
     (an `issues:low` routine-list entry never matches a real issues work
-    order's own plain `"issues"` source); `landing_arm` enqueues via
+    order's own plain `"issues"` source); `landing_approver_standing_review`
+    reads a login's own most recent standing `APPROVED`/`CHANGES_REQUESTED`
+    review — ignoring `COMMENTED`/`DISMISSED` — reading empty for a login
+    that never reviewed, and non-zero on an unreadable list, confirming this
+    is a fresh GitHub read independent of whatever `agent-cycle.sh`'s own
+    in-process verdict says; `landing_arm` enqueues via
     `enqueuePullRequest` when `merge_queue_for_branch` reports an active
     queue on the pull request's base branch, falls back to `gh pr merge
     --auto --squash` when it reports none, issues either write with
@@ -13078,8 +13091,11 @@ pull request, run the ones the change touches and any it could regress.
     run each leave `run_landing_stage` returning immediately with nothing
     armed; at `merge_autonomy: human` and `agent-approves` no arming path
     executes at all and every existing pr-ready/Approver behaviour is
-    unchanged; a standing human `CHANGES_REQUESTED` prevents arming
-    regardless of the App's own approval; a `merge_budget_decide` result of
+    unchanged; a local `approve` verdict whose review GitHub itself refused
+    to post is caught by the fresh standing-review re-read and refuses
+    arming rather than trusting the in-process verdict; a standing human
+    `CHANGES_REQUESTED` prevents arming regardless of the App's own
+    approval; a `merge_budget_decide` result of
     `hold` or `refuse` reaches `merge_budget_apply_decision` and arms
     nothing; a successful arm logs `landing-armed` exactly once and never
     withholds `pr-ready`, the claim release or the Approver's own review;

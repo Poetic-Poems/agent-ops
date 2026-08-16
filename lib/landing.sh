@@ -18,16 +18,20 @@
 # lands a pull request, not only the review that approved it.
 #
 # `agent-cycle.sh`'s own arming block (`run_landing_stage`, immediately
-# after `run_approver_stage`) is what re-reads every other gate fresh at
-# the moment of decision and calls these three functions; nothing in this
-# file talks to `lib/approver.sh`, `lib/handoff.sh`, `lib/review-gate.sh` or
-# `lib/merge-budget.sh` directly; nothing in this file decides whether the
-# Approver approved. Ships dormant: this file changes nothing about what a
-# cycle does unless a caller reaches `landing_arm`, and the only caller
-# (`run_landing_stage`) only reaches it once `merge_autonomy_effective_level`
-# is `agent-merges-routine` or above — unset in every installation's
-# `config.json` today (`merge_autonomy`'s own default is `human`), so this
-# file is fully implemented and regression-tested (test/landing.test.sh) but
+# after `run_approver_stage`) is what re-reads every other gate fresh at the
+# moment of decision and calls these four functions; nothing in this file
+# talks to `lib/review-gate.sh` or `lib/merge-budget.sh` directly, and
+# nothing in this file decides whether the Approver *should* approve — only
+# `landing_approver_standing_review` reads GitHub's own review list at all,
+# and only to confirm a write `agent-cycle.sh` already decided to make
+# actually landed (see that function's own header for why this round's
+# in-process verdict is not proof enough on its own). Ships dormant: this
+# file changes nothing about what a cycle does unless a caller reaches
+# `landing_arm`, and the only caller (`run_landing_stage`) only reaches it
+# once `merge_autonomy_effective_level` is `agent-merges-routine` or above —
+# unset in every installation's `config.json` today (`merge_autonomy`'s own
+# default is `human`), so this file is fully implemented and
+# regression-tested (test/landing.test.sh) but
 # otherwise inert until an operator raises the level (D16, §6).
 #
 # ## The protected-path list (risk register item 1)
@@ -267,6 +271,44 @@ landing_eligible() {
   esac
 
   printf 'eligible'
+}
+
+# landing_approver_standing_review SLUG NUMBER LOGIN
+# Print LOGIN's own most recent *standing* review state on SLUG#NUMBER —
+# `APPROVED`, `CHANGES_REQUESTED`, or empty when LOGIN has left no standing
+# review at all (never reviewed, or only left COMMENTED/DISMISSED ones) —
+# the same "last of APPROVED/CHANGES_REQUESTED, ignoring COMMENTED and
+# DISMISSED" rule `lib/handoff.sh`'s own `_handoff_latest_reviews` applies
+# for every reviewer it considers. Returns non-zero, printing nothing, when
+# the reviews list could not be read at all — the caller must not read that
+# as "not approved", the same "could not ask" convention every other
+# reviews-list reader in this codebase follows.
+#
+# This exists, and duplicates rather than reuses `_handoff_latest_reviews`,
+# because that function excludes bots outright (requirement 34a: a bot's
+# review is never a human's standing position) — and the Approver posts as
+# one, `<slug>[bot]`. `run_landing_stage` needs exactly the fact
+# `_handoff_latest_reviews` is built to discard: whether *this* bot's review
+# is genuinely standing on GitHub right now. That is not the same fact as
+# `agent-cycle.sh`'s own in-process `approver_stage_verdict` from this
+# round: `approver_post_or_warn` always returns 0 even when the write itself
+# failed — "a missing review, never a stranded PR" is correct for that
+# stage's own purpose, but it means a `verdict` of `approve` is this
+# process's *intent*, not GitHub's own record, and a token that expired
+# between minting and posting, or an API hiccup on the write, would
+# otherwise arm a merge for a pull request that carries no actual Approver
+# review at all. This read is what closes that gap, and it is why gate 4
+# cannot simply trust gate 0's own precondition.
+landing_approver_standing_review() {
+  local slug="$1" number="${2:-}" login="${3:-}" gh_bin="${LANDING_GH:-gh}" lines
+  [[ -n "$slug" && "$number" =~ ^[0-9]+$ && -n "$login" ]] || return 1
+  lines="$("$gh_bin" api "repos/$slug/pulls/$number/reviews" --paginate \
+            --jq '.[] | select(.submitted_at != null) | {login: .user.login, at: .submitted_at, state: .state}' \
+            2>/dev/null)" || return 1
+  jq -s -r --arg l "$login" '
+    [.[] | select(.login == $l and (.state == "APPROVED" or .state == "CHANGES_REQUESTED"))]
+    | sort_by(.at) | last | (.state // "")
+  ' <<<"$lines" 2>/dev/null || return 1
 }
 
 # landing_arm SLUG NUMBER TOKEN

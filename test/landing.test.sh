@@ -83,8 +83,21 @@ if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/*/files ]]; the
   exit 0
 fi
 
+# --- gh api repos/SLUG/pulls/NUMBER/reviews --paginate --jq ... ---
+if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/*/reviews ]]; then
+  [[ -f "$f/reviews-fail" ]] && exit 1
+  jqfilter="" prev=""
+  for a in "${args[@]}"; do
+    [[ "$prev" == "--jq" ]] && jqfilter="$a"
+    prev="$a"
+  done
+  jq -c "$jqfilter" "$f/reviews.json" 2>/dev/null
+  exit 0
+fi
+
 # --- gh api repos/SLUG/pulls/NUMBER --jq '{id,base}' ---
-if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/* && "${args[1]:-}" != */files ]]; then
+if [[ "${args[0]:-}" == "api" && "${args[1]:-}" == repos/*/pulls/* \
+      && "${args[1]:-}" != */files && "${args[1]:-}" != */reviews ]]; then
   [[ -f "$f/pr-fail" ]] && exit 1
   cat "$f/pr.json" 2>/dev/null
   exit 0
@@ -142,6 +155,11 @@ queue() {  # queue null|OBJECT — the raw mergeQueue value, wrapped as the
            # (.data.repository.mergeQueue) expects.
   jq -nc --argjson mq "$1" '{data:{repository:{mergeQueue: $mq}}}' > "$fixtures/queue-response.json"
 }
+review() {  # review LOGIN STATE AT
+  jq -nc --arg l "$1" --arg s "$2" --arg at "$3" \
+    '{user: {login: $l}, submitted_at: $at, state: $s}'
+}
+set_reviews() { jq -sc '.' > "$fixtures/reviews.json"; }  # one `review …` per stdin line
 
 prd "PR_kwDOfake" "main"
 queue null
@@ -248,6 +266,52 @@ assert_eq "an issues:low routine entry never matches the plain word 'issues' a r
 out="$(landing_eligible "$banded_cfg" acme/widgets 12 medium "issues:low" agent-merges-routine)"
 assert_eq "...but the literal banded string does match, confirming the comparison is exact-string, not banded" \
   "eligible" "$out"
+
+# --- landing_approver_standing_review ----------------------------------------
+# The fresh GitHub read that catches a review agent-cycle.sh's own in-process
+# verdict believes was posted but GitHub itself never actually recorded
+# (approver_post_or_warn always returns 0, even on a failed write).
+
+set_reviews <<REVIEWS
+$(review "pullwright-approver[bot]" APPROVED "2026-08-17T10:00:00Z")
+REVIEWS
+out="$(landing_approver_standing_review acme/widgets 12 "pullwright-approver[bot]")"; rc=$?
+assert_eq "a standing APPROVED review reads APPROVED" "APPROVED" "$out"
+assert_eq "  ... exit 0" "0" "$rc"
+
+set_reviews <<REVIEWS
+$(review "pullwright-approver[bot]" APPROVED "2026-08-17T10:00:00Z")
+$(review "pullwright-approver[bot]" CHANGES_REQUESTED "2026-08-17T11:00:00Z")
+REVIEWS
+out="$(landing_approver_standing_review acme/widgets 12 "pullwright-approver[bot]")"
+assert_eq "the most recent standing review wins over an earlier approval" "CHANGES_REQUESTED" "$out"
+
+set_reviews <<REVIEWS
+$(review "pullwright-approver[bot]" CHANGES_REQUESTED "2026-08-17T09:00:00Z")
+$(review "pullwright-approver[bot]" COMMENTED "2026-08-17T12:00:00Z")
+REVIEWS
+out="$(landing_approver_standing_review acme/widgets 12 "pullwright-approver[bot]")"
+assert_eq "a later COMMENTED review does not change the standing position" "CHANGES_REQUESTED" "$out"
+
+set_reviews <<REVIEWS
+$(review "a-human" APPROVED "2026-08-17T10:00:00Z")
+REVIEWS
+out="$(landing_approver_standing_review acme/widgets 12 "pullwright-approver[bot]")"
+assert_eq "a different login's approval is not this login's standing review" "" "$out"
+
+set_reviews <<REVIEWS
+$(review "pullwright-approver[bot]" APPROVED "2026-08-17T10:00:00Z")
+REVIEWS
+: > "$fixtures/reviews-fail"
+out="$(landing_approver_standing_review acme/widgets 12 "pullwright-approver[bot]")"; rc=$?
+assert_eq "an unreadable reviews list: non-zero, nothing printed — never read as \"not approved\"" "1" "$rc"
+assert_eq "  ... nothing printed" "" "$out"
+rm -f "$fixtures/reviews-fail"
+
+out="$(landing_approver_standing_review "" 12 "pullwright-approver[bot]")"; rc=$?
+assert_eq "an empty slug is rejected before calling gh" "1" "$rc"
+out="$(landing_approver_standing_review acme/widgets 12 "")"; rc=$?
+assert_eq "an empty login is rejected before calling gh" "1" "$rc"
 
 # --- landing_arm ---------------------------------------------------------------
 

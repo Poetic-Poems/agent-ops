@@ -3875,14 +3875,18 @@ _landing_refuse() {
 #      both refuse (stricter than the ordinary ready-gate handoff, which
 #      tolerates an alerts-only `unknown` as a warning — arming an
 #      automatic merge does not).
-#   4. No human `CHANGES_REQUESTED` stands (`_handoff_blocking_reviewers`,
-#      lib/handoff.sh) — a fresh read, since a push or a review submitted
-#      after the Approver posted is exactly the fact this must catch. The
-#      Approver's own standing approval is step 1 above, already
-#      established for this round; a bot's own review is invisible to
-#      `_handoff_blocking_reviewers` by construction (it excludes bots), so
-#      re-deriving that half here would answer nothing this round's verdict
-#      does not already answer.
+#   4. The Approver App's own review is genuinely standing `APPROVED` on
+#      GitHub right now (`landing_approver_standing_review`, lib/landing.sh)
+#      — never inferred from this round's own `approver_stage_verdict`
+#      alone: `approver_post_or_warn` always returns 0 even when the write
+#      itself failed ("a missing review, never a stranded PR"), so a local
+#      `approve` verdict is this process's *intent*, not GitHub's own
+#      record — and no human `CHANGES_REQUESTED` stands
+#      (`_handoff_blocking_reviewers`, lib/handoff.sh, requirement 34a's own
+#      standing-position computation, reused for the human half rather than
+#      re-derived). Both are fresh reads: a token that expired between
+#      minting and posting, or a push/review submitted after the Approver
+#      ran, are exactly the facts this step must catch.
 #   5. `merge_budget_decide`/`merge_budget_apply_decision`
 #      (lib/merge-budget.sh) — only `arm` proceeds; `hold` and `refuse` are
 #      applied and stop here.
@@ -3933,6 +3937,22 @@ run_landing_stage() {
     return 0
   fi
 
+  local login
+  if ! login="$(approver_token_identity_login "")" || [[ -z "$login" ]]; then
+    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login"
+    return 0
+  fi
+
+  local standing
+  if ! standing="$(landing_approver_standing_review "$slug" "$number" "$login")"; then
+    _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm the Approver's review actually landed"
+    return 0
+  fi
+  if [[ "$standing" != "APPROVED" ]]; then
+    _landing_refuse "$pr_url" "$slug" "the Approver's own review is not standing APPROVED on GitHub (state: ${standing:-none})"
+    return 0
+  fi
+
   local blocking
   if ! blocking="$(_handoff_blocking_reviewers "$slug" "$number")"; then
     _landing_refuse "$pr_url" "$slug" "could not read $pr_url's own review list to confirm no human CHANGES_REQUESTED stands"
@@ -3943,13 +3963,8 @@ run_landing_stage() {
     return 0
   fi
 
-  local budget_login
-  if ! budget_login="$(approver_token_identity_login "")" || [[ -z "$budget_login" ]]; then
-    _landing_refuse "$pr_url" "$slug" "could not read the Approver App's own login to evaluate the merge budget"
-    return 0
-  fi
   local budget_json budget_decision
-  budget_json="$(merge_budget_decide "$DEFAULTED_CONFIG" "$slug" "$pr_label" "$budget_login")"
+  budget_json="$(merge_budget_decide "$DEFAULTED_CONFIG" "$slug" "$pr_label" "$login")"
   budget_decision="$(jq -r '.decision' <<<"$budget_json" 2>/dev/null)"
   if [[ "$budget_decision" != "arm" ]]; then
     merge_budget_apply_decision "$budget_json" "$slug" "$state_repo" "$enabler_escalation_label" "$enabler_assignee"
