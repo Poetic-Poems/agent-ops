@@ -9444,9 +9444,10 @@ What exists, and the requirements each part answers to:
     the ordinary `run_claude_stage` launch every other stage uses. Sourced,
     never executed. Regression-tested in `test/approver.test.sh` against a
     stubbed `gh`, and the wiring those primitives hang off in
-    `test/approver-wiring.test.sh`, which lifts `run_approver_stage` and
-    `approver_post_or_warn` verbatim out of `agent-cycle.sh` rather than
-    restating their logic (acceptance check 8s). Must pass `shellcheck`.
+    `test/approver-wiring.test.sh`, which lifts `run_approver_stage`,
+    `approver_post_or_warn` and `approver_stage_complexity` verbatim out of
+    `agent-cycle.sh` rather than restating their logic (acceptance check 8s).
+    Must pass `shellcheck`.
 15. `lib/labels.sh` implementing requirement 6a: `labels_catalogue` (what a
     repository in a given role — `target`, `review`, `escalation` — needs, as
     `name`/`colour`/`description`, with the names taken from the config as
