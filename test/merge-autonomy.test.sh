@@ -321,6 +321,68 @@ assert_eq "and carries no fail-closed marker either" "" \
   "$(merge_autonomy_kill_state "$slug" "$fs_pretty" | jq -r '.record.kind // ""')"
 rm -f "$gh_backing/fleet/merge-autonomy-kill.json"
 
+# --- merge_autonomy_status_report (#454): the --status headline tells "an
+#     operator pulled the lever" (KILLED) apart from "this node cannot
+#     confirm the switch is clear" (FAIL-CLOSED), branching on the
+#     `record.kind: "fail-closed"` marker exactly as scripts/doctor.sh does.
+#     Reporting-only — the effective-level assertions above already pin that
+#     both states resolve to human. The block is lifted verbatim out of
+#     agent-cycle.sh (the same pattern test/approver-wiring.test.sh uses), so
+#     these assertions are about the shipped reporter, not a copy of it. ---
+
+extract() {  # <function name>
+  awk -v fn="^$1\\\\(\\\\) \\\\{" '$0 ~ fn { on = 1 } on { print } on && /^\}$/ { exit }' \
+    "$SCRIPT_DIR/agent-cycle.sh"
+}
+status_block="$(extract merge_autonomy_status_report)"
+if [[ -z "$status_block" || "$status_block" != *"merge_autonomy_kill_state"* ]]; then
+  printf 'FAIL - could not extract merge_autonomy_status_report from agent-cycle.sh — has it moved?\n'
+  failures=$(( failures + 1 ))
+else
+  eval "$status_block"
+  headline() { head -1 <<<"$1" | awk '{print $2}'; }
+  state_repo="$slug"
+
+  # A genuine kill: the operator's own record — headline KILLED, reason and
+  # the restore command both present.
+  state_dir="$tmp_dir/fleet-state-status-killed"
+  mkdir -p "$state_dir"
+  merge_autonomy_kill_set "$slug" "status-report coverage" "test-operator" >/dev/null
+  out="$(merge_autonomy_status_report)"
+  assert_eq "a genuine kill headlines KILLED" "KILLED" "$(headline "$out")"
+  assert_eq "  ... carrying the operator's own reason" "status-report coverage" \
+    "$(grep -o 'status-report coverage' <<<"$out" | head -1)"
+  assert_eq "  ... and pointing at --restore-merge-autonomy" "--restore-merge-autonomy clears it" \
+    "$(grep -o '\-\-restore-merge-autonomy clears it' <<<"$out")"
+
+  # A cached set record survives the repo going unreachable: still a real
+  # kill, still KILLED (the ambiguity #454 is about is only the no-cache
+  # synthesis).
+  out="$(GH_STUB_MODE=down merge_autonomy_status_report)"
+  assert_eq "a cached set record on an unreachable repo still headlines KILLED" \
+    "KILLED" "$(headline "$out")"
+  merge_autonomy_kill_clear "$slug" "$state_dir" >/dev/null
+
+  # The fail-closed synthesis: fresh node, no cache, unreachable state repo —
+  # a different headline, no KILLED, and no pointer at a restore command
+  # that would not help.
+  state_dir="$tmp_dir/fleet-state-status-fresh"
+  mkdir -p "$state_dir"
+  out="$(GH_STUB_MODE=down merge_autonomy_status_report)"
+  assert_eq "the unreachable-no-cache synthesis headlines FAIL-CLOSED" \
+    "FAIL-CLOSED" "$(headline "$out")"
+  assert_eq "  ... never KILLED" "" "$(grep -o 'KILLED' <<<"$out")"
+  assert_eq "  ... naming the state repo as the thing to check" \
+    "state repo unreachable and no cached copy" \
+    "$(grep -o 'state repo unreachable and no cached copy' <<<"$out" | head -1)"
+  assert_eq "  ... and not offering --restore-merge-autonomy as the fix" "" \
+    "$(grep -o '\-\-restore-merge-autonomy clears it' <<<"$out")"
+
+  # Clear switch, reachable repo: the quiet line.
+  out="$(merge_autonomy_status_report)"
+  assert_eq "a clear switch reports not killed" "not" "$(headline "$out")"
+fi
+
 echo
 if (( failures == 0 )); then
   echo "All merge-autonomy assertions passed."

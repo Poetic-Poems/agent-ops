@@ -813,8 +813,21 @@ merge_autonomy_status_report() {
   # while reading as "not killed" here, which is the one way this report can
   # tell an operator the opposite of what the pipeline is doing.
   if [[ "$(jq -r '.state' <<<"$ma_state")" != "enabled" ]]; then
-    printf 'merge_autonomy: KILLED — %s\n' "$(toggle_describe "$(jq -c '.record' <<<"$ma_state")")"
-    printf '          every repo'"'"'s effective level is human regardless of merge_autonomy; --restore-merge-autonomy clears it\n'
+    # The fail-closed synthesis names itself — `record.kind: "fail-closed"`,
+    # written by merge_autonomy_kill_state and nothing else, the same
+    # discriminator scripts/doctor.sh branches on (requirement 2.3b, #454).
+    # Nobody has necessarily set anything in that state: the node simply
+    # cannot confirm the switch is clear, so KILLED here would send the
+    # operator hunting a lever-pull that never happened, and
+    # --restore-merge-autonomy would not help. Reporting-only — both branches
+    # resolve every repo's effective level to human, unchanged.
+    if [[ "$(jq -r '.record.kind // ""' <<<"$ma_state")" == "fail-closed" ]]; then
+      printf 'merge_autonomy: FAIL-CLOSED — %s\n' "$(jq -r '.record.reason // "state repo unreachable"' <<<"$ma_state")"
+      printf '          nobody has necessarily set the switch; check connectivity and state-repo health — --restore-merge-autonomy does not apply\n'
+    else
+      printf 'merge_autonomy: KILLED — %s\n' "$(toggle_describe "$(jq -c '.record' <<<"$ma_state")")"
+      printf '          every repo'"'"'s effective level is human regardless of merge_autonomy; --restore-merge-autonomy clears it\n'
+    fi
   else
     printf 'merge_autonomy: not killed — each repo runs at its configured level\n'
   fi

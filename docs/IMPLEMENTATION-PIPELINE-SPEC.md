@@ -1554,8 +1554,11 @@ implements.
    apply and deliberately not where they don't: a reason is required on
    `--kill-merge-autonomy`, the record carries `actor`/`kind` exactly as
    `toggle_disable`'s own (`kind` always `manual` — nothing automatic writes
-   this flag), and `--status` reports it (`merge_autonomy: KILLED — …` or
-   `not killed`) alongside the switch and the usage-limit stand-down — a
+   this flag), and `--status` reports it (`merge_autonomy: KILLED — …`; or
+   `merge_autonomy: FAIL-CLOSED — …` when the record is the unreachable
+   synthesis, the same `record.kind: "fail-closed"` split `scripts/doctor.sh`
+   makes and reporting-only either way, #454; or `not killed`) alongside the
+   switch and the usage-limit stand-down — a
    report driven by the same "anything but clear reads as killed" test
    `merge_autonomy_effective_level` applies, so what `--status` and
    `scripts/doctor.sh` say and what a level resolution does cannot disagree.
@@ -9642,7 +9645,11 @@ What exists, and the requirements each part answers to:
     checks, requirement 2.3b); depends on `lib/toggle.sh`, sourced first by
     both. Regression-tested in `test/merge-autonomy.test.sh` against the
     same stubbed contents-API `gh` `test/toggle.test.sh` uses for the fleet
-    flags it wraps. Must pass `shellcheck`.
+    flags it wraps; the same suite lifts `merge_autonomy_status_report` out
+    of `agent-cycle.sh` and asserts the `--status` headline split — KILLED
+    for a real record (cached-set included), FAIL-CLOSED for the unreachable
+    synthesis, with the restore pointer only on the former (#454). Must pass
+    `shellcheck`.
 14b. `lib/approver-token.sh` — the Pullwright Approver's installation-token
     minting wrapper (D18 §5.3; the Approver identity requirement 2.3b's
     ladder needs above `human`). `gh` cannot mint one: it authenticates as
