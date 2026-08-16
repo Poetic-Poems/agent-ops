@@ -537,17 +537,30 @@ _fleet_flag_memo_dir() {
   printf '%s/%s' "$(_fleet_flag_memo_root)" "$1"
 }
 
-# _fleet_flag_memo_file NAME STATE_DIR
-# One flag's memo, further keyed by STATE_DIR: two callers in the same
-# process reading the same NAME through two different local caches are two
-# different readers (the fail-closed-vs-established-node distinction
+# _fleet_flag_memo_file NAME STATE_DIR [MODE]
+# One flag's memo, further keyed by STATE_DIR and MODE: two callers in the
+# same process reading the same NAME through two different local caches are
+# two different readers (the fail-closed-vs-established-node distinction
 # TD-PPagop-26081507 depends on), so a live answer fetched on behalf of one
 # must never be handed to the other. The state repo itself is fixed for a
 # process's whole run (the header's own words) and the freeze flags already
-# vary their NAME per slug, so this is the one further split memoisation
-# actually needs.
+# vary their NAME per slug, so STATE_DIR is the one further split
+# memoisation actually needs there.
+#
+# MODE is a second split the same argument applies to (issue #513, PR #506
+# review follow-up): the default mode and `probe-404` deliberately disagree
+# about one underlying GitHub response — a contents-API 404 is `clear` by
+# default, while `probe-404` may resolve the identical 404 to `unreachable`
+# once it fails to confirm the repo is visible (TD-PPagop-26081602). A
+# default-mode `clear` memoised first must never be served to a later
+# `probe-404` read of the same (NAME, STATE_DIR), or a fail-closed flag's
+# whole point is silently disarmed for the rest of the process. No caller
+# mixes modes for one name today (verified for both of #506's reviews), but
+# the invariant that would let one is enforced here, not by convention.
+# `_fleet_flag_memo_clear`'s whole-directory drop still invalidates every
+# mode at once, since it removes NAME's directory outright.
 _fleet_flag_memo_file() {
-  printf '%s/%s' "$(_fleet_flag_memo_dir "$1")" "${2//\//_}"
+  printf '%s/%s.%s' "$(_fleet_flag_memo_dir "$1")" "${2//\//_}" "${3:-default}"
 }
 
 # _fleet_flag_memo_clear NAME
@@ -601,7 +614,7 @@ fleet_repo_visible() {
   _fleet_gh api "repos/$1" >/dev/null 2>"$2"
 }
 
-# fleet_flag_fetch_status STATE_REPO STATE_DIR NAME [MODE]
+# fleet_flag_fetch_status STATE_REPO STATE_DIR NAME [MODE] [FRESH]
 # fleet_flag_fetch's own body, printing STATUS<TAB>RAW instead of RAW alone —
 # STATUS<TAB>RAW travels as one string on stdout, the same compound-return
 # idiom lib/review-gate.sh's own functions use. Split it with parameter
@@ -653,14 +666,41 @@ fleet_repo_visible() {
 # flag this process itself writes or deletes drops every state_dir's memo of
 # it too (fleet_flag_write, fleet_flag_delete), so a set/clear this same
 # process performs is never shadowed by its own earlier read. At most one
-# cycle of staleness follows from that — a human toggling the flag from
-# elsewhere is picked up fresh next cycle's process, never mid-cycle — which
-# is the same staleness this flag's own polling interval already accepts.
+# cycle of staleness follows from that for an advisory reader — a human
+# toggling the flag from elsewhere is picked up fresh next cycle's process,
+# never mid-cycle — which is the same staleness this flag's own polling
+# interval already accepts (requirement 2.3a).
+#
+# FRESH (issue #513, PR #506 review follow-up) is the escape from that
+# staleness for a caller taking an outward action under the answer, rather
+# than merely computing with it — `run_approver_stage` (agent-cycle.sh) is
+# the one site today, and PR #512's arming step needs the identical read. A
+# non-empty FRESH skips the memo hit below (this one call only) and always
+# talks to `_fleet_gh`, so a kill set from outside this process is seen at
+# the moment of decision rather than replaying the cycle's first answer for
+# this (NAME, STATE_DIR, MODE). The fresh answer is still written back to the
+# memo afterwards — a later, non-fresh, advisory read in the same process
+# benefits from it rather than repeating the fetch — so FRESH costs exactly
+# one extra request at the acting site itself, never more.
+#
+# The memo hit is read into a variable, not tested with `[[ -f ]]` and then
+# `cat`, and served only if non-empty (issue #513, PR #506 review follow-up):
+# the file could vanish between the test and the read, and an interrupted
+# write can leave it present but empty, and either way `[[ -f ]] && cat`
+# would have returned success with nothing on stdout — an empty STATUS/RAW
+# that `merge_autonomy_kill_state` resolves to `{"state":"enabled"}`, the
+# same fail-open direction the recycled-PID bug 97539b7 fixed. Falling
+# through to a live fetch instead costs one avoidable request in the
+# vanishingly rare case the file is merely stale-but-fine, against never
+# serving a torn or missing memo as an answer.
 fleet_flag_fetch_status() {
-  local repo="$1" state_dir="$2" name="$3" mode="${4:-}" cache resp raw memo
+  local repo="$1" state_dir="$2" name="$3" mode="${4:-}" fresh="${5:-}" cache resp raw memo memo_hit
   [[ -n "$repo" ]] || { printf 'clear\t'; return 0; }
-  memo="$(_fleet_flag_memo_file "$name" "$state_dir")"
-  [[ -f "$memo" ]] && { cat "$memo"; return 0; }
+  memo="$(_fleet_flag_memo_file "$name" "$state_dir" "$mode")"
+  if [[ -z "$fresh" ]]; then
+    memo_hit="$(cat "$memo" 2>/dev/null)" || memo_hit=""
+    [[ -n "$memo_hit" ]] && { printf '%s' "$memo_hit"; return 0; }
+  fi
   cache="$(fleet_cache_file "$state_dir" "$name")"
   mkdir -p "${cache%/*}" 2>/dev/null || true
   if resp="$(_fleet_gh api "repos/$repo/contents/$(fleet_flag_path "$name")?ref=main" 2>"$cache.err")"; then

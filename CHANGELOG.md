@@ -39,7 +39,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `merge-budget-hold` event names as the one waiting longest) now sorts
   GitHub's own listing oldest-first before paging, so a repository with more
   than `GITHUB_PR_LIST_LIMIT` open, labelled pull requests names the true
-  oldest rather than the oldest of whatever page happened to come back.
+  oldest rather than the oldest of whatever page happened to come back. Its
+  search now also excludes drafts server-side (`draft:false`), so a
+  repository whose oldest page is entirely drafts still names its true
+  oldest non-draft instead of reporting no backlog at all.
+- The per-process fleet-flag memo (issue #502) is now keyed by mode as well
+  as by flag and `state_dir`, so a default-mode `clear` answer can never be
+  served to a later `probe-404` read of the same flag, and reads it into a
+  variable rather than testing-then-reading the memo file, so a file that
+  vanishes or is empty mid-write falls through to a live fetch instead of
+  being served as an (incorrectly) confirmed answer. `run_approver_stage`'s
+  own read of the merge-autonomy kill switch now always bypasses the memo,
+  so an operator's mid-cycle kill stops the stage at its own boundary rather
+  than waiting for the next cycle's process to notice.
 - `approver_escalate`'s "could not settle, and the escalation issue could not
   be filed" warning event now carries `pr_url` and a `detail` naming it — a
   pre-existing bug (a bash string interpolation, not the intended jq `--arg`)

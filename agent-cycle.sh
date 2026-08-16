@@ -3603,7 +3603,11 @@ run_approver_stage() {
   local prompt out rc status_json verdict="" reasons_json="[]"
   local token review_body prior_section adj_bool
 
-  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$selected_repo" "$state_repo" "$state_dir")"
+  # `fresh` (issue #513, PR #506 review follow-up): this stage posts a real
+  # App review under the level it reads, so an operator's mid-cycle kill must
+  # stop it here, not wait for the next cycle's process — see
+  # merge_autonomy_effective_level's own comment on FRESH.
+  level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$selected_repo" "$state_repo" "$state_dir" fresh)"
   [[ "$level" != "human" ]] || return 0
 
   if [[ -z "$approver_model_default" ]]; then
@@ -5546,8 +5550,10 @@ while IFS= read -r slug; do
   # this repo's count below. Read once per repo, against the effective level
   # (never the configured one — merge_autonomy_effective_level is the one
   # function every reader of this key must go through), so a fleet-wide kill
-  # switch or a merge-budget freeze (requirement 2.3c) un-excludes those
-  # pull requests again the moment either takes effect.
+  # switch or a merge-budget freeze (requirement 2.3c) un-excludes those pull
+  # requests again by the next cycle's process — this read is advisory, not
+  # an acting site, so it is memoised for this process's whole run like every
+  # other advisory read (requirement 2.3a, issue #513).
   slug_level="$(merge_autonomy_effective_level "$DEFAULTED_CONFIG" "$slug" "$state_repo" "$state_dir")"
   slug_level_rank="$(merge_autonomy_rank "$slug_level" 2>/dev/null)" || slug_level_rank=0
   prs_json="$(gh pr list -R "$slug" --state open --label "$pr_label" \

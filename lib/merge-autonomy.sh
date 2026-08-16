@@ -97,7 +97,7 @@ merge_autonomy_configured_level() {
   printf '%s' "$top_level"
 }
 
-# merge_autonomy_kill_state STATE_REPO STATE_DIR
+# merge_autonomy_kill_state STATE_REPO STATE_DIR [FRESH]
 # The kill switch, in toggle_state's own vocabulary
 # (`{"state":"enabled"}` / `{"state":"disabled","record":{...}}`) — "enabled"
 # here means merge autonomy runs at its configured level; "disabled" means
@@ -130,9 +130,16 @@ merge_autonomy_configured_level() {
 # editor, and the present-but-garbage record above, are both genuine kills
 # and neither carries a `kind` at all (scripts/doctor.sh is the reader that
 # needs this).
+#
+# FRESH (issue #513, PR #506 review follow-up) is threaded straight through
+# to `fleet_flag_fetch_status`'s own FRESH: a non-empty value skips this
+# process's memo of the switch and always asks GitHub, for a caller that is
+# about to act on the answer rather than merely compute with it. Leave it
+# empty for every advisory read — the back-pressure count and
+# `void_obsolete_ctx_json` both do, and stay memoised.
 merge_autonomy_kill_state() {
   local combined status raw
-  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG" probe-404)"
+  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG" probe-404 "${3:-}")"
   # Parameter expansion, not `IFS=$'\t' read` — see fleet_flag_fetch_status's
   # own comment: RAW is a file from the state repository and may be several
   # lines, which a `read` would truncate to the first one.
@@ -174,7 +181,7 @@ merge_autonomy_kill_clear() {
   fleet_flag_delete_outcome "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG"
 }
 
-# merge_autonomy_effective_level CONFIG_JSON SLUG STATE_REPO STATE_DIR
+# merge_autonomy_effective_level CONFIG_JSON SLUG STATE_REPO STATE_DIR [FRESH]
 # What SLUG is actually governed by right now: `human` whenever the kill
 # switch is set (or its own state cannot be read as clear — see
 # merge_autonomy_kill_state); else, capped at `agent-approves` whenever
@@ -194,10 +201,18 @@ merge_autonomy_kill_clear() {
 # repository governed at `human` (requirement 2's own default, and every
 # repository's until an operator opts one up) is the common case this skips
 # a fetch for on every single read.
+#
+# FRESH (issue #513, PR #506 review follow-up) reaches only the kill switch's
+# own read, never the freeze's: the kill switch is the one flag an acting
+# site (`run_approver_stage`) must see set from outside this process without
+# waiting for the next cycle (requirement 2.3a); the freeze read stays
+# memoised regardless, exactly as before, so the back-pressure loop's N→1
+# saving (PR #499 review follow-up, asserted in
+# test/backpressure-wiring.test.sh) is unaffected by a caller passing FRESH.
 merge_autonomy_effective_level() {
-  local config_json="$1" slug="$2" state_repo="$3" state_dir="$4"
+  local config_json="$1" slug="$2" state_repo="$3" state_dir="$4" fresh="${5:-}"
   local kill_state configured configured_rank cap_rank freeze_state
-  kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir")" 2>/dev/null)"
+  kill_state="$(jq -r '.state' <<<"$(merge_autonomy_kill_state "$state_repo" "$state_dir" "$fresh")" 2>/dev/null)"
   if [[ "$kill_state" != "enabled" ]]; then
     printf 'human'
     return 0

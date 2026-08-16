@@ -185,19 +185,26 @@ merge_budget_window_status() {
 # backlog a `hold` decision names, not an arming-eligibility filter — the
 # work item that arms landing may apply a tighter one of its own on top.
 #
-# `--search "sort:created-asc"` (PR #499 review follow-up) asks GitHub to
-# order the listing itself, so `first` after `sort_by` names the true oldest
-# regardless of the `--limit` page cap: unscoped, `gh pr list` returns the
-# newest-created page, and past `GITHUB_PR_LIST_LIMIT` open labelled pull
-# requests the local `sort_by(.createdAt) | first` above would silently name
-# the oldest of that newest page — not the oldest waiting, the one thing this
-# function exists to name — with nothing to say it had missed the real one.
-# The search index's own eventual consistency is immaterial here: a
-# pull request too fresh to appear yet is never the oldest.
+# `--search "sort:created-asc draft:false"` (PR #499 review follow-up; the
+# `draft:false` qualifier added by issue #513, PR #506 review follow-up) asks
+# GitHub to order the listing itself and drop drafts from it, so `first`
+# after `sort_by` names the true oldest *non-draft* regardless of the
+# `--limit` page cap: unscoped, `gh pr list` returns the newest-created page,
+# and past `GITHUB_PR_LIST_LIMIT` open labelled pull requests the local
+# `sort_by(.createdAt) | first` above would silently name the oldest of that
+# newest page — not the oldest waiting, the one thing this function exists to
+# name — with nothing to say it had missed the real one. `draft:false` closes
+# a second way the same page cap could miss it: without it, a page whose
+# `GITHUB_PR_LIST_LIMIT` oldest entries are all drafts leaves nothing for the
+# local `select(.isDraft | not)` filter below to find, and this reports
+# `null` — no backlog at all — even though an older non-draft is waiting just
+# past the page. The local filter stays regardless, belt-and-braces against
+# the search index's own eventual consistency; a pull request too fresh to
+# appear yet is never the oldest either way.
 merge_budget_oldest_waiting() {
   local slug="$1" pr_label="$2" raw
   raw="$(gh pr list -R "$slug" --state open --label "$pr_label" \
-    --search "sort:created-asc" \
+    --search "sort:created-asc draft:false" \
     --limit "$GITHUB_PR_LIST_LIMIT" --json number,url,createdAt,isDraft 2>/dev/null)" || raw=''
   [[ -n "$raw" ]] || raw='[]'
   jq -c '[.[] | select(.isDraft | not)] | sort_by(.createdAt) | first
