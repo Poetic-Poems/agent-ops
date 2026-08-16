@@ -925,9 +925,9 @@ implements.
    resolves every `$ref` it finds regardless of whether any config key
    reaches it, including a `$defs` entry nothing currently references and an
    `items` schema behind an array the config leaves empty; its fault is
-   reported in schema space (`schema.$defs.label`, `schema.properties.
-   pr_label`) rather than borrowing a config path it no longer has, so the
-   two kinds of fault read distinctly.
+   reported in schema space (`schema.$defs.label`,
+   `schema.properties.pr_label`) rather than borrowing a config path it no
+   longer has, so the two kinds of fault read distinctly.
    `config_defaults` resolves the same fixpoint so an inner `$def`'s
    `default` reaches through a chain too, but performs no validation of its
    own: there, an unresolved `$ref` just means no `default` to find at that
