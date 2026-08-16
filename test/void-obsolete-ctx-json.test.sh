@@ -155,8 +155,9 @@ assert_eq "merge_autonomy_level is the real function's answer" "agent-merges-all
 assert_eq "cycle carries the current cycle id" "$cycle_id" \
   "$(jq -r '.cycle' <<<"$ctx")"
 now_epoch="$(jq -r '.now_epoch' <<<"$ctx")"
-assert_eq "now_epoch is numeric" "0" \
-  "$([[ "$now_epoch" =~ ^[0-9]+$ ]]; echo $?)"
+now_epoch_is_numeric=0
+[[ "$now_epoch" =~ ^[0-9]+$ ]] || now_epoch_is_numeric=1
+assert_eq "now_epoch is numeric" "0" "$now_epoch_is_numeric"
 assert_eq "now_epoch falls within the call's own window" "1" \
   "$(( now_epoch >= before_epoch && now_epoch <= after_epoch ))"
 assert_eq "flags carries the union log's draft-obsolete-flagged event" "$expected_flags" \
