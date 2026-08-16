@@ -572,7 +572,11 @@ refiner_policy_value() {
 # `implementation_plan` — that the Refiner may spend an engagement on: its
 # source's policy is not `exempt` (requirement 39a), it carries no refinement
 # yet (REFINEMENTS_JSON, requirement 3h), and it is not already blocked,
-# void, or held by an ordinary implementation claim.
+# void, or held by an ordinary implementation claim — except an `issues`
+# entry gather-issues.sh marked `priority_set: false`, which is a candidate
+# even when already refined, solely for its missing `Priority` band
+# (requirement 39g). Such an entry carries `triage_only: true` so the Refiner
+# knows not to write a second specification for it.
 #
 # Each entry is `{repo, source, item, entry}` — `entry` is the gatherer's own
 # object verbatim (an issue's full thread, a finding's title and severity, a
@@ -615,6 +619,22 @@ refiner_candidate_items() {
     def is_claimed($repo; $item):
       $claimed | any((.repo // "") == $repo
                      and ((.item // "") | tostring) == ($item | tostring));
+    # requirement 39g: an `issues` entry gather-issues.sh marked
+    # `priority_set: false` is unbanded. When such an entry is *also* already
+    # refined, it would otherwise never reach the Refiner again (is_refined
+    # excludes it) — so a mechanical Priority triage would have to fall to a
+    # human forever. `triage_only` lets it through solely for the band: the
+    # existing exempt/blocked/void/claimed exclusions still bind unchanged,
+    # only the is_refined exclusion is bypassed, and only for this reason.
+    # An entry with no `priority_set` key at all (every source but `issues`,
+    # and any `issues` entry gathered before this field existed) never
+    # qualifies here. Deliberately `has("priority_set") and .priority_set ==
+    # false` rather than `(.priority_set // null) == false`: the `//`
+    # operator substitutes on a `false` left-hand side exactly as it does on
+    # `null`, so the shorter form would collapse a real `priority_set: false`
+    # into `null` and never match.
+    def is_unbanded_issue($source; $e):
+      $source == "issues" and ($e | has("priority_set")) and ($e.priority_set == false);
     [ $repos[] as $r
       | ($r.slug // "") as $repo
       | ( ($r.findings // [])[]?, ($r.review_feedback // [])[]?,
@@ -628,11 +648,14 @@ refiner_candidate_items() {
       | ($e.ref // "" | tostring) as $item
       | select($repo != "" and $source != "" and $item != "")
       | select(exempt($source) | not)
-      | select(is_refined($repo; $item) | not)
+      | (is_refined($repo; $item)) as $refined
+      | (is_unbanded_issue($source; $e) and $refined) as $triage_only
+      | select($triage_only or ($refined | not))
       | select(is_blocked($repo; $item) | not)
       | select(is_void($repo; $item) | not)
       | select(is_claimed($repo; $item) | not)
-      | {repo: $repo, source: $source, item: $item, entry: $e} ]
+      | {repo: $repo, source: $source, item: $item, entry: $e}
+        + (if $triage_only then {triage_only: true} else {} end) ]
   ' <<<"$docs" 2>/dev/null || printf '[]'
 }
 

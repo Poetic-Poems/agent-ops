@@ -111,6 +111,8 @@ export AGENT_OPS_ROOT="$SCRIPT_DIR"
 # shellcheck source=lib/refinement.sh
 # Sourced after void-guard.sh, which defines the `entry_field_text` it uses.
 . "$SCRIPT_DIR/lib/refinement.sh"
+# shellcheck source=lib/issue-priority.sh
+. "$SCRIPT_DIR/lib/issue-priority.sh"
 # shellcheck source=lib/label-marker.sh
 . "$SCRIPT_DIR/lib/label-marker.sh"
 # shellcheck source=lib/prompt-overrides.sh
@@ -4593,7 +4595,8 @@ maybe_run_refiner() {
   local entry repo source item key live_resume live_epoch input prompt out rc=0 result parsed detail
   local items_named_json
   local ex e_repo e_item verdict e_reason claimed_entry e_source outcome extra
-  local e_synthetic e_block_ok e_refined_fields e_number
+  local e_synthetic e_block_ok e_refined_fields e_number e_triage_only
+  local e_priority priority_result priority_applied priority_reason
 
   # --- Guards, mirroring requirement 35's for the Enabler ---
   (( lock_acquired )) || return 0
@@ -4737,34 +4740,45 @@ $(jq . <<<"$input")
     e_source="$(jq -r '.source // ""' <<<"$claimed_entry")"
     outcome="$verdict"
     extra='{}'
+    e_number=""
+    [[ "$e_source" == "issues" ]] && e_number="$e_item"
+    # requirement 39g: an entry the candidate rule (refiner_candidate_items)
+    # marked `triage_only` is one already refined — the Refiner was offered
+    # it solely to band it, never to write a second specification, so a
+    # `refined` verdict on it carries no spec/comment and must not be judged
+    # against the corroboration bar below, or recorded as a fresh refinement.
+    e_triage_only="$(jq -r 'if (.triage_only // false) == true then "true" else "false" end' \
+      <<<"$claimed_entry" 2>/dev/null || printf 'false')"
 
     case "$verdict" in
       refined)
-        e_refined_fields="$(refinement_record_fields "$ex")"
-        e_number=""
-        if [[ "$e_source" == "issues" ]]; then
-          e_number="$e_item"
-          if [[ -z "$(jq -r '.comment_url // ""' <<<"$e_refined_fields")" ]]; then
-            log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment — nothing was posted for the Co-Ordinator to find; not recorded as refined" \
+        if [[ "$e_triage_only" == "true" ]]; then
+          outcome="triage-only"
+        else
+          e_refined_fields="$(refinement_record_fields "$ex")"
+          if [[ "$e_source" == "issues" ]]; then
+            if [[ -z "$(jq -r '.comment_url // ""' <<<"$e_refined_fields")" ]]; then
+              log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo#$e_item carries no comment — nothing was posted for the Co-Ordinator to find; not recorded as refined" \
+                '{detail: $d}')"
+              outcome="refined-uncorroborated"
+            fi
+          elif [[ -z "$(jq -r '.spec // ""' <<<"$e_refined_fields")" ]]; then
+            log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo $e_item carries no spec — there is nowhere else this item type's specification lives; not recorded as refined" \
               '{detail: $d}')"
             outcome="refined-uncorroborated"
           fi
-        elif [[ -z "$(jq -r '.spec // ""' <<<"$e_refined_fields")" ]]; then
-          log_event "warning" "$(jq -nc --arg d "refiner: refined $e_repo $e_item carries no spec — there is nowhere else this item type's specification lives; not recorded as refined" \
-            '{detail: $d}')"
-          outcome="refined-uncorroborated"
-        fi
-        if [[ "$outcome" == "refined" ]]; then
-          log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
-            --argjson x "$e_refined_fields" '{repo: $r, item: $i, by: $by} + $x')"
-          if [[ -n "$e_number" && -n "$refined_label" ]] && ! (( DRY_RUN )); then
-            if refinement_label_add "$e_repo" "$e_number" "$refined_label"; then
-              log_event "own-label-action" \
-                "$(label_own_action_fields "$e_repo" "$e_number" "$refined_label" "add")"
-            else
-              log_event "warning" "$(jq -nc \
-                --arg d "could not apply the $refined_label label to $e_repo#$e_number (does it exist in that repo?) — the refinement is recorded either way" \
-                '{detail: $d}')"
+          if [[ "$outcome" == "refined" ]]; then
+            log_event "item-refined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+              --argjson x "$e_refined_fields" '{repo: $r, item: $i, by: $by} + $x')"
+            if [[ -n "$e_number" && -n "$refined_label" ]] && ! (( DRY_RUN )); then
+              if refinement_label_add "$e_repo" "$e_number" "$refined_label"; then
+                log_event "own-label-action" \
+                  "$(label_own_action_fields "$e_repo" "$e_number" "$refined_label" "add")"
+              else
+                log_event "warning" "$(jq -nc \
+                  --arg d "could not apply the $refined_label label to $e_repo#$e_number (does it exist in that repo?) — the refinement is recorded either way" \
+                  '{detail: $d}')"
+              fi
             fi
           fi
         fi
@@ -4789,6 +4803,37 @@ $(jq . <<<"$input")
           '{detail: $d}')"
         ;;
     esac
+
+    # requirement 39g: the priority band is a side channel of the verdict,
+    # independent of whether it was `refined` or `needs-refinement` above — a
+    # failed or skipped write here must never retract the refinement (or
+    # block) already recorded. Only the four band names are honoured; the
+    # Refiner naming anything else is silently ignored rather than warned
+    # about, on the same terms as an omitted field.
+    e_priority="$(jq -r '.priority // ""' <<<"$ex" 2>/dev/null || true)"
+    case "$e_priority" in
+      Urgent | High | Medium | Low) ;;
+      *) e_priority="" ;;
+    esac
+    if [[ -n "$e_priority" && "$e_source" == "issues" && -n "$e_number" ]] && ! (( DRY_RUN )); then
+      priority_result="$(issue_priority_apply "$e_repo" "$e_number" "$e_priority" 2>/dev/null || true)"
+      [[ -n "$priority_result" ]] || priority_result='{}'
+      priority_applied="$(jq -r '.applied // false' <<<"$priority_result" 2>/dev/null || printf 'false')"
+      priority_reason="$(jq -r '.reason // "unknown"' <<<"$priority_result" 2>/dev/null || printf 'unknown')"
+      if [[ "$priority_applied" == "true" ]]; then
+        log_event "issue-prioritised" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+          --argjson x "$priority_result" \
+          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}')"
+      elif [[ "$priority_reason" == "skipped-lower-or-equal" ]]; then
+        log_event "issue-prioritised-skipped" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg by "refiner" \
+          --argjson x "$priority_result" \
+          '{repo: $r, item: $i, priority: $x.priority, previous: $x.previous, by: $by}')"
+      else
+        log_event "warning" "$(jq -nc \
+          --arg d "refiner: could not set Priority on $e_repo#$e_number to $e_priority ($priority_reason) — the refinement verdict above is recorded either way" \
+          '{detail: $d}')"
+      fi
+    fi
 
     log_event "refiner-examined" "$(jq -nc --arg r "$e_repo" --arg i "$e_item" --arg s "$e_source" \
       --arg o "$outcome" --arg d "$e_reason" --argjson x "$extra" \

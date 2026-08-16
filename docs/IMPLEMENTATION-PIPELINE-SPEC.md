@@ -71,9 +71,11 @@ cron (hourly)
    it takes ends `refined` — the specification posted as a comment on the
    item's own issue, or returned as `refined_spec` where the source has no
    thread to write into — or `needs-refinement`, where only a human can supply
-   what is missing (requirements 39c and 39d). Its powers are deliberately
-   narrower than the Enabler's: it writes no code, raises no pull request, and
-   can neither escalate nor void.
+   what is missing (requirements 39c and 39d). It also bands every open issue
+   whose `Priority` is unset, a one-way ratchet the Script alone enforces
+   (requirement 39g). Its powers are otherwise deliberately narrower than the
+   Enabler's: it writes no code, raises no pull request, and can neither
+   escalate nor void.
 
 ## Environment (verified 2026-07-20)
 
@@ -8939,6 +8941,84 @@ implements.
     finds it with its block gone, rather than sitting on the issue meaning
     nothing until a human removes it by hand.
 
+39g. **Priority triage, a one-way ratchet the Refiner sets and the Script
+    alone enforces (D18 WI-11; agent-ops#414).** Every open `issues`-source
+    item carries GitHub's own `Priority` `IssueFieldSingleSelect` — the band
+    requirement 15e already ranks the Co-Ordinator's walk by — and most of
+    the backlog never has it set: `gather-issues.sh`'s `priority` collapses
+    "unset", "unreadable" and "explicitly Medium" into the same value
+    (deliberately, to agree with the Co-Ordinator's own default), so it
+    emits a second field, `priority_set` (boolean), for exactly this duty to
+    read. `gather-source-state.sh`'s own digest keeps parsing the band
+    identically (requirement 3b) but does not gain `priority_set`: nothing
+    downstream of that digest needs it, since `maybe_run_refiner` below
+    engages from every cycle's own exit trap unconditionally on the no-op
+    fingerprint that digest feeds.
+
+    An `issues` entry with `priority_set: false` is a Refiner candidate
+    (requirement 39a) even when `refinements_map` already names it refined
+    — the one exception to that exclusion in this whole file — marked
+    `triage_only: true` (`refiner_candidate_items`, `lib/refinement.sh`) so
+    the Refiner knows not to write a second specification for an item that
+    already has one; every other requirement 39a exclusion (policy exempt,
+    blocked, void, claimed) still applies unchanged. An entry with no
+    `priority_set` key at all — every non-`issues` source, and any `issues`
+    entry gathered before this requirement existed — never qualifies.
+
+    The Refiner's verdict (`parsed.refined[]`, requirement 39c) gains an
+    optional `priority` field, one of the four band names, independent of
+    `verdict` itself: an ordinary item may carry both a specification and a
+    band in the same verdict; a `triage_only` item carries `priority` alone
+    and no `comments_posted`/`refined_spec` at all — its
+    `refined-uncorroborated` degradation (requirement 39c) does not apply to
+    it, since it was never asked for a specification, and its outcome is
+    recorded as `triage-only` rather than `refined`; and a `needs-refinement`
+    decline may still carry a band. `maybe_run_refiner` applies the priority
+    side of a verdict after the refined/needs-refinement switch, entirely
+    independent of its outcome: a failed or skipped band write never
+    retracts an `item-refined` or `attempt-failed` already recorded, and the
+    reverse.
+
+    The write and its ratchet live in `lib/issue-priority.sh`, never in the
+    prompt — a prompt rule is a request, and the Script is the only writer of
+    the pipeline's records (the same reasoning `prompts/refiner.md` itself
+    states). `issue_priority_field_ids` resolves the field's own id and its
+    four option ids live, per repository, via GraphQL introspection
+    (`issueFields`) — never hardcoded, since both are per-repository objects
+    and the field is `ORG_ONLY` visibility, so a token without organisation
+    membership must read "cannot see the field" as failure, not as "nothing
+    to band" (the same direction the Priority read already takes, and the
+    one that stops a naive implementation from banding the entire backlog
+    once field visibility fails). Resolution is cached to a directory
+    (`ISSUE_PRIORITY_CACHE_DIR`) rather than an in-process variable, because
+    every caller reaches it through a command substitution — a subshell —
+    whose own variable writes never reach the parent; a file on disk
+    survives that boundary where a shell variable cannot. `issue_priority_apply`
+    then re-reads the issue's current band immediately before writing
+    (`issue_priority_current`, the same REST `issue_field_values` parse
+    `gather-issues.sh` and `gather-source-state.sh` use), so a band a human
+    — or another engagement — set between this cycle's pre-fetch and this
+    write is honoured, never clobbered by a stale read, and applies the
+    verdict's band via the GraphQL `setIssueFieldValue` mutation only when
+    the issue currently carries no band or the verdict's band strictly
+    outranks it (`Urgent > High > Medium > Low`); an equal or lower band is
+    skipped, not written.
+
+    Every outcome is logged: `issue-prioritised` `{repo, item, priority,
+    previous, by: "refiner"}` on a successful write, `issue-prioritised-skipped`
+    with the same shape when the ratchet declines a band that does not
+    outrank the current one, and a `warning` naming the repo, item and band
+    when the field cannot be resolved, the issue cannot be read, or the
+    mutation itself fails — never a `warning` for an ordinary skip, which is
+    the ratchet working as designed rather than a failure.
+
+    `scripts/doctor.sh` warns, for every configured repository whose
+    `sources` lists `issues`, when its `Priority` field cannot be resolved
+    at all, or resolves without one of the four expected option names — the
+    one thing that would otherwise tell an operator this duty is silently
+    doing nothing in that repository (the same shape as the existing
+    per-repository label warnings).
+
 ### The Approver
 
 D18 WI-5 (agent-ops#408; design `docs/reviews/2026-08-14-autonomy-investigation.md`
@@ -12112,6 +12192,32 @@ pull request, run the ones the change touches and any it could regress.
     after the Script's last action, one whose removal was recorded as having
     succeeded, and one whose own block is still open, all earn their existing
     treatment and none is ever handed back to retry.
+39g. **Priority triage bands correctly and never lowers a band
+    (requirement 39g).** `test/refiner-priority-triage.test.sh` passes:
+    `refiner_candidate_items` admits an already-refined `issues` entry only
+    when `priority_set` is literally `false`, marks it `triage_only: true`,
+    excludes a banded or claimed/blocked/void/exempt one exactly as
+    requirement 39a already requires, and never admits an entry carrying no
+    `priority_set` key at all — the pre-existing shape every source but
+    `issues` still carries. `lib/issue-priority.sh`'s ratchet, driven
+    against a stubbed `gh`: `issue_priority_field_ids` resolves the field
+    and option ids from a live GraphQL read and fails (never an empty
+    result read as "nothing to band") when the field is absent;
+    `issue_priority_apply` re-reads the issue's current band immediately
+    before writing, applies only when unset or strictly outranked by the
+    verdict's own band, and skips — logged, not warned — an equal or lower
+    one, asserted from both directions; a field or issue read failure, and a
+    failed mutation, are each a distinct failure reason, never silently
+    read as a skip. `maybe_run_refiner`'s wiring: an ordinary `refined`
+    verdict carrying `priority` records both `item-refined` and
+    `issue-prioritised`; a `triage_only` item's `priority`-only verdict
+    records neither `item-refined` nor a label, with outcome `triage-only`
+    and no uncorroborated-comment warning; a `needs-refinement` verdict
+    carrying `priority` still applies the band despite the decline; a
+    failed band write is a `warning` that leaves the refinement or block
+    already recorded untouched; and `DRY_RUN` reaches no `gh` call and
+    writes no event at all — `maybe_run_refiner`'s own first guard already
+    returns before any candidate is claimed.
 11c. **A broken Enabler cannot break a cycle (requirement 37).** With a stubbed
     stage that times out, exits non-zero, or (after requirement 9e's salvage
     resume also fails to parse) returns prose instead of JSON: the

@@ -48,6 +48,7 @@ heading, the Script gives you one JSON object:
       "repo": "Poetic-Poems/poetic-fiddle",
       "source": "issues",
       "item": "125",
+      "triage_only": false,
       "entry": {
         "source": "issues",
         "ref": "125",
@@ -55,6 +56,7 @@ heading, the Script gives you one JSON object:
         "url": "https://github.com/…/issues/125",
         "title": "…",
         "priority": "Medium",
+        "priority_set": false,
         "labels": ["…"],
         "author": "…",
         "created_at": "…", "updated_at": "…",
@@ -88,6 +90,12 @@ heading, the Script gives you one JSON object:
 - `refined_label` is the label the Script projects onto an issue once you
   refine it (empty if the installation has switched that off — it changes
   nothing about what you do).
+- `triage_only` (issues only) is `true` when this item reached you solely
+  because its `Priority` is unset — it is already refined, and you are not
+  here to write it a second specification. See "Banding" below.
+- `entry.priority_set` (issues only) tells you whether `entry.priority`
+  reflects a real field value or is just the `Medium` default standing in for
+  "nobody has triaged this" — see "Banding".
 
 ## What you are here to establish
 
@@ -165,7 +173,52 @@ what the item already says: those are yours to settle.
   opinion disagreeing with the first is a question only a human should settle.
   (In the ordinary case this will not arise: a refined item is not a candidate
   again unless something cleared the refinement, and that something is worth
-  naming in your `reason`.)
+  naming in your `reason`. The one deliberate exception is `triage_only` — see
+  "Banding" — where you are offered an already-refined item on purpose, and
+  writing a second specification for it would still be wrong; band it and
+  nothing else.)
+
+## Banding
+
+Every open issue in this pipeline carries a `Priority` band — `Urgent`,
+`High`, `Medium` or `Low` — which decides where the Co-Ordinator's walk
+reaches it (`prompts/coordinator.md`'s own table under "Issue priority"
+defines what each band means and ranks; read it there, it is not restated
+here). You are the one place in this pipeline that sets an unset band, so
+that a human never has to do it by hand.
+
+- **When `entry.priority_set` is `false`**, nobody has triaged this issue —
+  `entry.priority` is only the `Medium` default standing in for "unknown",
+  not a real value. Read the thread for an explicit statement of the band:
+  a `Priority: <band>` line the author put in the body, or in a later
+  comment, is their own stated band and you adopt it verbatim. Absent that,
+  judge the band the same way the Co-Ordinator's table implies it should
+  rank against the rest of that repo's backlog, and say so in `priority`.
+- **The band is a rank, and nothing else.** It says when this issue is
+  reached in the walk, never whether the work should happen, how good the
+  specification needs to be, or anything about severity or quality. Do not
+  let a `Low` band lower the standard of a specification you write for the
+  same item, and do not use the band as a proxy for `needs-refinement`.
+- **`triage_only: true`** means this item is a candidate solely for its
+  missing band — it already carries a refinement, so do not write it a
+  second specification (see "never write a second specification" above).
+  Read enough of the thread to judge the band, set `priority`, and return
+  `refined` with no `comments_posted`/`refined_spec` at all: the Script
+  reads `priority` alone as this item's whole verdict when `triage_only` is
+  `true`, and skips the corroboration it would otherwise require.
+- **An ordinary (non-`triage_only`) item may carry both.** If you are
+  writing a specification for an unbanded issue anyway, set `priority`
+  alongside `comments_posted` in the same verdict — one engagement, one
+  read of the thread, both outputs.
+- **The Script enforces a one-way ratchet you never see.** A `priority` you
+  return is applied only if the issue currently has no band, or your band
+  outranks the current one; a `priority` at or below the current band is
+  silently skipped. You do not need to check the current band yourself
+  before setting `priority` — reading it into your verdict costs nothing
+  even when the Script ends up skipping the write.
+- **Omit `priority` entirely** for a banded issue (`entry.priority_set` is
+  already `true`) or for any non-`issues` source — there is no field to set
+  and nothing reads it.
 
 ## Choosing a verdict
 
@@ -177,7 +230,9 @@ One verdict per item.
   `refined_spec` as self-contained markdown — there is no thread to write
   into, and you may not edit the register or the underlying object. A
   `refined` verdict carrying neither is recorded as a warning and treated as
-  though you had declined, so always attach one or the other.
+  though you had declined, so always attach one or the other — **except** a
+  `triage_only` item, where `priority` alone is the whole verdict; see
+  "Banding".
 - **`needs-refinement`** — you could not write one without deciding something
   that belongs to a human, or without information that exists only in their
   head, or the item's own premise looks wrong to you (see "never void" above).
@@ -237,6 +292,7 @@ final message is a wire format, not a report.
       "reason": "one line: what you concluded and on what evidence",
       "comments_posted": ["https://github.com/…/issues/125#issuecomment-…"],
       "refined_spec": "non-issue sources only: the specification, as self-contained markdown",
+      "priority": "issues only, optional: one of Urgent, High, Medium, Low",
       "missing": "needs-refinement only: what a selectable version would need",
       "evidence": "needs-refinement only: what you actually read"
     }
@@ -253,7 +309,10 @@ final message is a wire format, not a report.
   unrefined until its claim expires, which delays it by hours for nothing.
 - `comments_posted` and `refined_spec` belong only to `refined` — the former
   for an `issues`-source item, the latter for every other source; a `refined`
-  entry needs exactly the one its source calls for.
+  entry needs exactly the one its source calls for, **except** a
+  `triage_only` item, which needs neither — see "Banding".
+- `priority` is optional and belongs on an `issues`-source item only, on
+  either verdict — see "Banding" for when to set it and what it means.
 - `missing` and `evidence` belong only to `needs-refinement`, on the same
   discipline as a Co-Ordinator's own `needs_refinement` report: `missing` is
   what the human (or a later Refiner, once they have acted) starts from, and an

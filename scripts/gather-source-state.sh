@@ -124,6 +124,16 @@ head_sha="$(api_json '""' '.sha | @json' "repos/$slug/commits/$branch")" || ok=f
 #
 # `repos/<slug>/issues` returns pull requests too; they are dropped here and
 # sampled properly below.
+#
+# `p`'s parse is deliberately identical to gather-issues.sh's own — same
+# field, same four names, same Medium default — and stays that way on
+# purpose (requirement 3b). gather-issues.sh additionally emits
+# `priority_set` (requirement 39g), a boolean the Refiner's triage candidate
+# rule needs to tell "unset" from "explicitly Medium"; it is not added here
+# for symmetry's own sake, because nothing downstream of this digest needs
+# it: `maybe_run_refiner` (agent-cycle.sh) engages the Refiner from every
+# cycle's own exit trap, unconditionally on the no-op fingerprint this file
+# feeds, so a candidate set this digest never causes a skipped cycle to miss.
 issues="$(api_json '[]' \
   '[.[] | select(has("pull_request") | not)
         | {n: .number, u: .updated_at, l: ([.labels[].name] | sort), a: (.assignee.login // ""),

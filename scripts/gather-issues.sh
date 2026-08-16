@@ -17,6 +17,7 @@
 #     "url": "https://github.com/…/issues/125",
 #     "title": "…",
 #     "priority": "Medium",          // the Priority band, default Medium (15e)
+#     "priority_set": false,         // true iff a real band was read, never the default (requirement 39g)
 #     "labels": ["…"],
 #     "author": "…",
 #     "created_at": "…", "updated_at": "…",
@@ -77,7 +78,12 @@
 # the fingerprint digest — same field, same four names, same Medium default —
 # because if the two disagreed, the digest would be stable while the
 # candidate set changed (or the reverse), which is the failure requirement 3b
-# exists to prevent.
+# exists to prevent. `priority_set` is this script's own addition, not
+# gather-source-state.sh's: `priority` alone collapses "unset", "unreadable"
+# and "explicitly Medium" into the same value (deliberately — it must agree
+# with the Co-Ordinator's own default), so the Refiner's triage candidate rule
+# (requirement 39g, `refiner_candidate_items`) needs this second boolean to
+# tell an untriaged issue from a deliberately-Medium one at all.
 #
 # ## Degrading, and the 100-item windows
 #
@@ -155,13 +161,15 @@ candidates="$(jq -c '
    | select(has("pull_request") | not)
    | select(((.assignees // []) | length) == 0)
    | select(([.labels[]?.name | ascii_downcase] | index("blocked")) | not)
+   | ([.issue_field_values[]? | select(.issue_field_name == "Priority")
+                              | .single_select_option.name
+                              | select(. == "Urgent" or . == "High"
+                                       or . == "Medium" or . == "Low")]) as $priority_values
    | {number: .number,
       url: .html_url,
       title: .title,
-      priority: (([.issue_field_values[]? | select(.issue_field_name == "Priority")
-                                          | .single_select_option.name
-                                          | select(. == "Urgent" or . == "High"
-                                                   or . == "Medium" or . == "Low")] | first) // "Medium"),
+      priority: (($priority_values | first) // "Medium"),
+      priority_set: (($priority_values | length) > 0),
       labels: ([.labels[]?.name] | sort),
       author: (.user.login // ""),
       created_at: .created_at,
