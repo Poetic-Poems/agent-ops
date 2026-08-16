@@ -8,6 +8,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Priority triage (D18 WI-11, requirement 39g; agent-ops#414): the Refiner now
+  bands every open issue whose `Priority` field is unset, so the owner never
+  has to set it by hand. `gather-issues.sh` emits a new `priority_set`
+  boolean alongside `priority`, an unbanded-but-already-refined issue is
+  offered to the Refiner solely for its band (`triage_only: true`) — and a
+  `needs-refinement` decline of such an item is refused rather than recorded,
+  so banding an already-refined issue can never block it — and
+  `lib/issue-priority.sh` enforces a one-way ratchet: a band is written only
+  when the issue currently has none, or the Refiner's verdict strictly
+  outranks the current one, re-read live immediately before writing.
+  `scripts/doctor.sh` warns when a configured repository's `Priority` field
+  cannot be resolved.
 - `merge_budget_per_day` (D18 §5.4, requirement 2.3c): a rolling-24-hour cap,
   per repository, on pull requests this pipeline may land, with a `repos[]`
   override on the same precedence `merge_autonomy` uses. Default `8`, `0`

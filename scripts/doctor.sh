@@ -61,6 +61,8 @@ source "$SCRIPT_DIR/lib/merge-budget.sh"
 source "$SCRIPT_DIR/lib/merge-autonomy.sh"
 # shellcheck source=lib/approver-token.sh
 source "$SCRIPT_DIR/lib/approver-token.sh"
+# shellcheck source=lib/issue-priority.sh
+source "$SCRIPT_DIR/lib/issue-priority.sh"
 
 usage() {
   cat >&2 <<'USAGE'
@@ -680,6 +682,31 @@ if ((gh_ready)); then
     fi
   }
 
+  # requirement 39g: the Refiner's Priority triage duty (issue #414) depends
+  # on a `Priority` `IssueFieldSingleSelect` this token can read, carrying
+  # all four band names — nothing else here would tell an operator that duty
+  # is silently doing nothing in a repository. Checked only where the issues
+  # source is actually configured, the same gate the cycle's own gather uses
+  # (`startswith("issues")`, agent-cycle.sh), since a repository that never
+  # gathers issues has nothing for the duty to act on either way. That gate
+  # has to be the prefix and not `== "issues"`: the source is one source at
+  # four ranks and the schema's `sources` enum offers only the four banded
+  # tokens (`issues:urgent` … `issues:low`), so an equality test against the
+  # bare name matches no valid configuration at all and this check would
+  # never run.
+  check_priority_field() {
+    local slug="$1" field_json
+    if field_json="$(issue_priority_field_ids "$slug" 2>/dev/null)"; then
+      if issue_priority_options_complete "$field_json"; then
+        ok "$slug's Priority field is readable and carries all four bands"
+      else
+        warn "$slug's Priority field is readable but is missing one of Urgent/High/Medium/Low — the Refiner's triage duty can band only the options actually present"
+      fi
+    else
+      warn "$slug exposes no readable Priority field to this token — the Refiner's triage duty (and requirement 15e's own ranking) silently treats every issue as Medium here"
+    fi
+  }
+
   while IFS= read -r slug; do
     [[ -n "$slug" ]] || continue
     if check_repo_labels "$slug" target; then
@@ -688,6 +715,11 @@ if ((gh_ready)); then
       fail "$slug is unreachable with this token — a repository the pipeline cannot read is a work source that silently reports no work"
     fi
     check_repo_access "$slug"
+    if jq -e --arg s "$slug" \
+         '(.repos[] | select(.slug == $s) | .sources // []) | any(startswith("issues"))' \
+         <<<"$DEFAULTED_CONFIG" >/dev/null 2>&1; then
+      check_priority_field "$slug"
+    fi
   done < <(cfg '.repos[]?.slug // empty')
 
   # requirement 38's ruleset dependency (agent-ops#391): GitHub computes

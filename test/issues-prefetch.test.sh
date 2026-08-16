@@ -174,6 +174,8 @@ entry5="$(jq -c '.[] | select(.number == 5)' <<<"$candidates_json")"
 assert_eq "the entry's source is issues" "issues" "$(jq -r '.source' <<<"$entry5")"
 assert_eq "the ref is the bare issue number, as a string" "5" "$(jq -r '.ref' <<<"$entry5")"
 assert_eq "the Priority band arrives as priority" "High" "$(jq -r '.priority' <<<"$entry5")"
+assert_eq "a real band arrives with priority_set true (requirement 39g)" \
+  "true" "$(jq -r '.priority_set' <<<"$entry5")"
 assert_eq "labels arrive sorted" '["backend","enhancement"]' "$(jq -c '.labels' <<<"$entry5")"
 assert_eq "the body arrives verbatim" "The body of five." "$(jq -r '.body' <<<"$entry5")"
 assert_eq "the whole thread arrives" "2" "$(jq '.comments | length' <<<"$entry5")"
@@ -184,6 +186,8 @@ assert_eq "a comment keeps its author, timestamp and body" \
 entry9="$(jq -c '.[] | select(.number == 9)' <<<"$candidates_json")"
 assert_eq "an untriaged issue defaults to Medium, not lowest" \
   "Medium" "$(jq -r '.priority' <<<"$entry9")"
+assert_eq "...but the Medium default carries priority_set false, distinguishing it from a real band" \
+  "false" "$(jq -r '.priority_set' <<<"$entry9")"
 assert_eq "a commentless issue carries an empty comments array, not null" \
   "[]" "$(jq -c '.comments' <<<"$entry9")"
 
