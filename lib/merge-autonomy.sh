@@ -99,14 +99,27 @@ merge_autonomy_configured_level() {
 # lever, and is the one caller of fleet_flag_fetch_status in this codebase
 # that needs the distinction — see its own comment in lib/toggle.sh for why
 # fleet_disabled_state and the limit flag are unaffected and still fail open.
-# "Unreachable" means a transport-level failure: a repo-level 404 (the state
-# repo missing, or invisible to this token) is indistinguishable from a clear
-# flag at the contents API and still fails open — TD-PPagop-26081602.
+# "Unreachable" covers two cases underneath, both fail-closed here: a
+# transport-level failure fetching the flag file itself, and a repo-level 404
+# — the state repo missing, or invisible to this token — which the `probe-404`
+# mode this caller (alone in the codebase) asks of fleet_flag_fetch_status
+# tells apart from the flag file's own 404 (TD-PPagop-26081602). Only a probe
+# that confirms the repo is visible reads as clear; a misconfigured
+# state_repo slug or a token whose scopes lost access now fails closed the
+# same as a DNS failure would.
 # present-but-garbage reads as set, not clear, the same as every other flag
 # lib/toggle.sh evaluates.
+#
+# The synthesised fail-closed record names itself — `kind: "fail-closed"`,
+# written here and nowhere else — so a reader can tell "nobody could read the
+# switch" from "somebody set the switch" without inferring it from the
+# absence of `kind: "manual"`: a flag file set by hand through GitHub's web
+# editor, and the present-but-garbage record above, are both genuine kills
+# and neither carries a `kind` at all (scripts/doctor.sh is the reader that
+# needs this).
 merge_autonomy_kill_state() {
   local combined status raw
-  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG")"
+  combined="$(fleet_flag_fetch_status "$1" "$2" "$MERGE_AUTONOMY_KILL_FLAG" probe-404)"
   # Parameter expansion, not `IFS=$'\t' read` — see fleet_flag_fetch_status's
   # own comment: RAW is a file from the state repository and may be several
   # lines, which a `read` would truncate to the first one.
@@ -114,7 +127,7 @@ merge_autonomy_kill_state() {
   raw="${combined#*$'\t'}"
   if [[ -z "$raw" ]]; then
     if [[ "$status" == "unreachable" ]]; then
-      printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":""}}'
+      printf '%s' '{"state":"disabled","record":{"reason":"state repo unreachable and no cached copy of the kill switch — failing closed to human until a fetch succeeds (TD-PPagop-26081507)","expires_at":null,"by":"","disabled_at":"","kind":"fail-closed"}}'
       return 0
     fi
     printf '{"state":"enabled"}'

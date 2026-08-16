@@ -488,7 +488,15 @@ toggle_status_report() {
 # idempotent, so "whoever gets there first" is the whole protocol.
 #
 # Failure directions, chosen deliberately:
-#   404             → the flag is clear. Definitive, not an error.
+#   404 (flag file) → the flag is clear. Definitive, not an error — for this
+#     level's own fail-open flags. The contents API answers "this repository
+#     does not exist, or is invisible to this token" with the same 404 as
+#     "the flag file does not exist" (TD-PPagop-26081602), and for these
+#     flags the collapse is accepted: mistaking an invisible repo for a
+#     clear flag fails open, which is their chosen direction anyway. A
+#     caller whose flag must not fail open asks fleet_flag_fetch_status for
+#     its probing mode instead, which resolves the ambiguity before calling
+#     either 404 clear — see its header below.
 #   unreachable     → fall back to the copy cached at the last successful
 #     fetch (stale beats blind), and to *enabled* when there is none. Failing
 #     open here is safe because it is not the last line of defence: a node
@@ -518,7 +526,17 @@ fleet_flag_path() { printf 'fleet/%s.json' "$1"; }
 # Where the last successfully fetched copy of a flag lives locally.
 fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 
-# fleet_flag_fetch_status STATE_REPO STATE_DIR NAME
+# fleet_repo_visible STATE_REPO ERR_FILE
+# The repo-existence probe (TD-PPagop-26081602): `repos/<repo>`, no
+# `/contents/` — succeeds iff the repo exists and this token can see it,
+# which is what turns a flag file's ambiguous 404 into a definitive one.
+# One shared helper, so the clear path's own 404 ambiguity can reuse it
+# rather than grow a second probe that drifts (TD-PPagop-26081604).
+fleet_repo_visible() {
+  _fleet_gh api "repos/$1" >/dev/null 2>"$2"
+}
+
+# fleet_flag_fetch_status STATE_REPO STATE_DIR NAME [MODE]
 # fleet_flag_fetch's own body, printing STATUS<TAB>RAW instead of RAW alone —
 # STATUS<TAB>RAW travels as one string on stdout, the same compound-return
 # idiom lib/review-gate.sh's own functions use. Split it with parameter
@@ -531,25 +549,33 @@ fleet_cache_file() { printf '%s/fleet-cache/%s.json' "$1" "$2"; }
 #   status="${combined%%$'\t'*}"
 #   raw="${combined#*$'\t'}"
 # STATUS is one of:
-#   clear        — no state repo configured, or a 404: the flag file does
-#                  not exist — or, indistinguishably at the contents API,
-#                  the repo itself is missing or invisible to this token,
-#                  which therefore still reads as clear (TD-PPagop-26081602)
+#   clear        — no state repo configured, or a 404 on the flag file: the
+#                  flag does not exist. In the default mode that is the
+#                  contents API's word alone, which cannot tell a missing
+#                  flag file from a missing-or-invisible repo — accepted for
+#                  the fail-open flags (the header's 404 entry). With MODE
+#                  `probe-404` a 404 resolves to clear only after
+#                  fleet_repo_visible confirms the repo, so the 404 was
+#                  definitively the flag file's own (TD-PPagop-26081602)
 #   live         — the fetch against the state repo just succeeded
-#   cached       — the state repo was unreachable; RAW is the last
+#   cached       — the state repo — or, under `probe-404`, a flag-file 404's
+#                  repo probe — was unreachable; RAW is the last
 #                  successfully fetched copy
-#   unreachable  — the state repo was unreachable and there is no cached
-#                  copy at all
+#   unreachable  — the same, with no cached copy at all
 # fleet_flag_fetch is a thin wrapper over this that keeps its own RAW-only
 # contract byte-for-byte unchanged for its three existing callers
 # (fleet_disabled_state, fleet_limit_resume_at, fleet_limit_publish), which by
 # design cannot tell "clear" from "unreachable" apart — see the header for why
-# that is safe for them. merge_autonomy_kill_state is the one caller that
-# needs the distinction (TD-PPagop-26081507): "clear" and "unreachable" both
-# print an empty RAW, but only "unreachable" must make the kill switch fail
-# closed.
+# that is safe for them. It never passes `probe-404`: that is what keeps the
+# contract byte-identical (a flag-file 404 stays terminal, cache dropped) and
+# spends no probe call on the fail-open flags' steady state, whose 404 is the
+# common case. merge_autonomy_kill_state is the one caller that needs the
+# distinction (TD-PPagop-26081507): "clear" and "unreachable" both print an
+# empty RAW, but only "unreachable" must make the kill switch fail closed —
+# and it is the one caller that asks for `probe-404`, because a fail-closed
+# flag mistaken for clear is the exact harm TD-PPagop-26081602 closes.
 fleet_flag_fetch_status() {
-  local repo="$1" state_dir="$2" name="$3" cache resp raw
+  local repo="$1" state_dir="$2" name="$3" mode="${4:-}" cache resp raw
   [[ -n "$repo" ]] || { printf 'clear\t'; return 0; }
   cache="$(fleet_cache_file "$state_dir" "$name")"
   mkdir -p "${cache%/*}" 2>/dev/null || true
@@ -560,9 +586,23 @@ fleet_flag_fetch_status() {
     return 0
   fi
   if grep -qiE 'HTTP 404|Not Found' "$cache.err" 2>/dev/null; then
-    rm -f "$cache"
-    printf 'clear\t'
-    return 0
+    # The flag file's own 404 is ambiguous at the contents API — it means
+    # either "this file does not exist" or "this repository does not exist,
+    # or is invisible to this token" (deliberately, so a private repo stays
+    # indistinguishable from a missing one). The default mode accepts the
+    # collapse and stays terminal — these flags fail open, and the ambiguity
+    # only adds one more way of doing so (the header's 404 entry). A
+    # fail-closed caller passes `probe-404` and pays one probe of the repo
+    # itself to tell the two apart (TD-PPagop-26081602): only a repo the
+    # token can actually see turns this into a genuine "flag file missing"
+    # clear. Any probe failure — 404, 403, a timeout, anything short of
+    # success — falls through to the same cached-or-unreachable handling a
+    # transport failure gets below, rather than being read as clear.
+    if [[ "$mode" != "probe-404" ]] || fleet_repo_visible "$repo" "$cache.repo-err"; then
+      rm -f "$cache"
+      printf 'clear\t'
+      return 0
+    fi
   fi
   if [[ -f "$cache" ]]; then
     printf 'cached\t'

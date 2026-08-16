@@ -108,6 +108,20 @@ case "$1" in
     case "$endpoint" in
       user) printf '"stub-user"\n' ;;
       repos/*/labels) printf '' ;;
+      repos/*/contents/*)
+        # The fleet-flag read (merge_autonomy_kill_state's kill-switch fetch,
+        # requirement 2.3b). STUB_FLEET_FLAG_JSON is the record the flag file
+        # holds, served the way the contents API does (base64 under .content);
+        # unset, the flag file does not exist (a 404 whose repo probe then
+        # lands on `repos/*` below); STUB_FLEET_FLAG_FAIL=1 is a
+        # transport-level failure — exit 1 with no HTTP status at all.
+        [[ "${STUB_FLEET_FLAG_FAIL:-0}" != "1" ]] || exit 1
+        flag_json="${STUB_FLEET_FLAG_JSON:-}"
+        if [[ -z "$flag_json" ]]; then
+          echo "gh: Not Found (HTTP 404)" >&2
+          exit 1
+        fi
+        printf '{"content":"%s"}' "$(printf '%s' "$flag_json" | base64 -w0)" | jq -c "$jq_filter" ;;
       repos/*/rulesets/*)
         [[ "${STUB_RULESET_DETAIL_FAIL:-0}" != "1" ]] || exit 1
         # Per-id detail first (`STUB_RULESET_DETAIL_JSON_<id>`), so a case can
@@ -443,6 +457,49 @@ assert_not_contains "merge_autonomy at the default (human) needs no approver_mod
 run_doctor
 assert_contains "with no state_repo configured, the kill switch is reported not-set" \
   "[ ok ] the merge-autonomy kill switch is not set" "$out"
+
+# With a state_repo configured the report has three ways to go
+# (TD-PPagop-26081602), and doctor.sh's own branching — not
+# merge_autonomy_kill_state's, which test/merge-autonomy.test.sh covers — is
+# what decides among them: a probed clear reads not-set; a record served
+# live reads SET whether or not it carries a `kind` (a flag file an operator
+# set by hand carries none and is a real kill, not the synthesis); an
+# unreadable flag with no cached copy reads "could not be confirmed clear",
+# keyed on the fail-closed synthesis naming itself `kind: "fail-closed"`.
+kill_config="$tmp/kill-config.json"
+mkdir -p "$tmp/kill-state-dir"
+jq --arg slug "$slug" --arg sd "$tmp/kill-state-dir" \
+  '.repos = [] | .review.repos = [] | .state_repo = $slug | .state_dir = $sd' \
+  "$base_config" > "$kill_config"
+run_kill_doctor() {
+  # Each case owns its cache: a live fetch in one would otherwise hand the
+  # next a cached copy and change which branch it exercises.
+  rm -rf "$tmp/kill-state-dir/fleet-cache"
+  out="$(env PATH="$stub_bin:$PATH" \
+    STUB_REPO_JSON='{"permissions":{"push":true},"archived":false}' \
+    "$@" bash "$DOCTOR" --config "$kill_config" 2>&1)"
+  rc=$?
+}
+
+run_kill_doctor
+assert_contains "a flag-file 404 whose repo probe succeeds is reported not-set" \
+  "[ ok ] the merge-autonomy kill switch is not set" "$out"
+
+run_kill_doctor STUB_FLEET_FLAG_JSON='{"disabled_at":"2026-08-16T00:00:00Z","expires_at":null,"by":"an operator","reason":"drill","kind":"manual"}'
+assert_contains "a real kill is reported SET, naming the command that clears it" \
+  "[warn] the merge-autonomy kill switch is SET" "$out"
+
+run_kill_doctor STUB_FLEET_FLAG_JSON='{"reason":"stop everything now","by":"an operator in a hurry","expires_at":null}'
+assert_contains "a hand-set record with no kind at all is still reported SET" \
+  "[warn] the merge-autonomy kill switch is SET" "$out"
+assert_not_contains "and never as the fail-closed synthesis" \
+  "could not be confirmed clear" "$out"
+
+run_kill_doctor STUB_FLEET_FLAG_FAIL=1
+assert_contains "an unreadable flag with no cache is reported unconfirmed, with the synthesis's own reason" \
+  "[warn] the merge-autonomy kill switch could not be confirmed clear — state repo unreachable and no cached copy" "$out"
+assert_not_contains "and not as a kill somebody set" \
+  "the merge-autonomy kill switch is SET" "$out"
 
 # --- The Approver identity's two sources of truth are reconciled ------------
 # The token wrapper (requirement 14b) reads PULLWRIGHT_APPROVER_APP_ID from
