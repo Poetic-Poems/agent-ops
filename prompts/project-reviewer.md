@@ -131,10 +131,19 @@ Both target repos follow these rules:
    subagents, as the skill describes; keep each subagent on the lowest-cost
    model tier likely to do its slice correctly.
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
-   record it in the existing register following the "Filing an item" workflow
-   in `TECH-DEBT.md` exactly — reserve an ID with `scripts/reserve-tech-debt-id.pl`,
-   check out the `td/<id>` branch it creates, and add each record as a new
-   `tech-debt/<id>.md` item file (frontmatter plus body).
+   record it in the existing register — but not via `TECH-DEBT.md`'s "Filing
+   an item" workflow's single-item shape, where the `td/<id>` branch is both
+   the reservation and the filing branch. This review files every item it
+   surfaces in **one** pull request (step 4), so reservation and filing are
+   two separate steps: for each item, reserve an ID with
+   `scripts/reserve-tech-debt-id.pl`, but do **not** check out or commit to
+   the `td/<id>` branch it creates — that branch is the reservation only, a
+   lock against a concurrent filing minting the same ID. Instead add the
+   record as a new `tech-debt/<id>.md` item file (frontmatter plus body) on
+   **this review's own branch**. Keep the list of every id you reserve —
+   step 4's pull request body must name all of them and the command to
+   delete their `td/<id>` branches, since nothing else releases a
+   reservation once that pull request merges.
    Mark items the review finds already resolved with a frontmatter status
    flip rather than deleting their history — item files are never deleted
    or renamed. Do not create a competing tech-debt file.
@@ -179,7 +188,11 @@ Both target repos follow these rules:
      - Body: a short verdict summary and a link to the review index
        (`reviews/project-review-<review_date>/README.md`); note that the
        recommendations feed the implementation pipeline's `tech-debt` source
-       and the `project-remediation` skill.
+       and the `project-remediation` skill. Where step 2 reserved any
+       `td/<id>` ids, list every one of them and the command to delete them
+       (`git push origin --delete td/<id1> td/<id2> …`) so the human who
+       merges this pull request is the one who releases the reservations —
+       nothing else does.
      - Label it `pr_label`.
    - **Immediately** after the PR exists, record its URL where the Script can
      find it even if this session ends before your final message does:
