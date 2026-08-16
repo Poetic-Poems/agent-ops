@@ -91,8 +91,8 @@ repositories"); not repeated here. The two target repositories are the same
 `Poetic-Poems/poetic` and `Poetic-Poems/poetic-fiddle`, and their shared
 conventions (protected `main`, squash-merge so the PR title becomes the commit,
 Conventional Commits, the per-item tech-debt register (`tech-debt/`, with
-`scripts/next-tech-debt-id.pl`) bind the Reviewer-Agent exactly as they bind
-the Implementor.
+`scripts/reserve-tech-debt-id.pl` allocating new IDs) bind the Reviewer-Agent
+exactly as they bind the Implementor.
 
 One repository-specific fact worth noting: `poetic` already stores prior
 reviews under `reviews/project-review-YYYY-MM-DD/`; `poetic-fiddle` does not
@@ -627,12 +627,14 @@ R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
    `review-state.json`) so only the finished reports remain.
 
 R12. **Tech-debt conventions.** When the review adds tech-debt items, follow
-   the repo's own register workflow exactly — allocate IDs with
-   `scripts/next-tech-debt-id.pl`, then add each record as a new
-   `tech-debt/<id>.md` item file (frontmatter plus a Markdown body),
-   preserving the existing per-item conventions rather than inventing a
-   competing structure. Mark items the review finds already resolved per the
-   register's own rules, not by deleting their history: a frontmatter status
+   the repo's own register workflow exactly — reserve each ID atomically
+   with `scripts/reserve-tech-debt-id.pl` (the "Filing an item" workflow's
+   reservation step, built on `scripts/next-tech-debt-id.pl`'s scan), then
+   add each record as a new `tech-debt/<id>.md` item file (frontmatter plus
+   a Markdown body), preserving the existing per-item conventions rather
+   than inventing a competing structure. Mark items the review finds already
+   resolved per the register's own rules, not by deleting their history: a
+   frontmatter status
    flip, with the item file never deleted or renamed and its body kept in
    place. The skill updates the register in place; this requirement pins it
    to *this* repo's conventions.

@@ -425,7 +425,7 @@ analysis, not just files in the tree:
   list**, and, more strongly, **any security-related candidate takes
   precedence over every non-security candidate regardless of which source it
   came from** — including a GitHub issue labelled `security`/`vulnerability`
-  or a `TECH-DEBT.md` entry flagged as a security concern. Security work is
+  or a tech-debt item flagged as a security concern. Security work is
   always prioritised.
 - **`code-quality`** — the remaining open **code-scanning alerts** (those
   *without* a security severity: maintainability, correctness, and style
