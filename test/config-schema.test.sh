@@ -385,6 +385,57 @@ assert_defaults_ref "config_defaults degrades an unresolvable \$ref to no defaul
   '.properties.pr_label = {"$ref": "#/$defs/labbel"}' 'del(.pr_label)' \
   '(.pr_label // null) == null'
 
+# --- Schema-wide $ref sweep (TD-PPagop-26081606): every case above reaches
+#     its broken $ref by *walking into* a config key, so a $ref sitting on a
+#     property the operator has omitted was never resolved and its fault
+#     never reported. config_schema_errors also sweeps the schema on its own
+#     terms — through properties/items/$defs, regardless of any config key —
+#     so these mutate the schema without ever giving the config a matching
+#     key, and the message is prefixed `schema.` rather than `config.` to
+#     show it was found this way, not by walking the config. ---
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_rejected_ref "an unresolvable \$ref on a property the config never sets is still a schema fault" \
+  '.properties.schedule.properties.hours = {"$ref": "#/$defs/nope"}' \
+  'del(.schedule)' \
+  'schema.properties.schedule.properties.hours: $ref #/$defs/nope does not resolve'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_rejected_ref "an unresolvable \$ref inside an items schema behind an array the config leaves empty is still a schema fault" \
+  '.properties.schedule.properties.excluded_minutes.items = {"$ref": "#/$defs/nope"}' \
+  '.schedule.excluded_minutes = []' \
+  'schema.properties.schedule.properties.excluded_minutes.items: $ref #/$defs/nope does not resolve'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_rejected_ref "an unresolvable \$ref inside a \$def nothing currently references is still a schema fault" \
+  '.["$defs"].orphan = {"$ref": "#/$defs/nope"}' '.' \
+  'schema.$defs.orphan: $ref #/$defs/nope does not resolve'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_rejected_ref "a cyclic \$ref chain not reached by any config key is still a schema fault" \
+  '.["$defs"].cycleA = {"$ref": "#/$defs/cycleB"}
+   | .["$defs"].cycleB = {"$ref": "#/$defs/cycleA"}
+   | .properties.schedule.properties.hours = {"$ref": "#/$defs/cycleA"}' \
+  'del(.schedule)' \
+  'schema.properties.schedule.properties.hours: $ref chain'
+
+# The one case PR #484 left asymmetric: a $ref combined with a sibling
+# default, on a key the config omits, used to have the one-hop deref leave
+# the sibling default in place (getpath on the missing target returned null,
+# and null + {default} kept it), so config_defaults still applied it; the
+# fixpoint deref throws instead, so config_defaults's catch null now finds no
+# default there either — and until the schema-wide sweep above,
+# config_schema_errors reported nothing for it, since the config never
+# reaches the key. The sweep closes that gap; config_defaults needs no
+# separate fix, but the degraded-default half is asserted here so a change to
+# either cannot let the two drift apart unnoticed again.
+# shellcheck disable=SC2016  # a jq program, not meant to expand
+schema_ref_with_default='.properties.schedule.properties.hours = {"$ref": "#/$defs/nope", "default": "x"}'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_rejected_ref "a \$ref with a sibling default, on a key the config omits, is a schema fault" \
+  "$schema_ref_with_default" 'del(.schedule)' \
+  'schema.properties.schedule.properties.hours: $ref #/$defs/nope does not resolve'
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_defaults_ref "config_defaults still finds no default for that same key, degrading rather than failing" \
+  "$schema_ref_with_default" 'del(.schedule)' \
+  '(.schedule.hours // null) == null'
+
 # The two deref copies are separate strings inside two jq programs (no shared
 # point to source a jq function from) and so cannot be enforced equal by the
 # language — this is the only thing that keeps them from drifting apart.

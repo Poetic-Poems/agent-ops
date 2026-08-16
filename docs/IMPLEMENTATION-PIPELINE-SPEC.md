@@ -915,15 +915,30 @@ implements.
    constraints at all (`getpath` on an absent path returns `null`, and jq's
    `null + {...}` would otherwise silently keep only the sibling keywords,
    turning a typo'd `$ref` into a hole under `additionalProperties: false`).
-   It is reported at the config path the `$ref` was reached from, which is
-   the reach of the check: both cycles gate on the raw config, and the walk
-   descends only into keys that config actually sets, so a `$ref` on a
-   property the operator has omitted is never resolved and its fault is not
-   seen — TD-PPagop-26081606 carries closing that half.
+   Reported that way alone, at the config path the `$ref` was reached from,
+   the check's reach would be only as deep as the config: both cycles gate on
+   the raw config, and a walk that descends only into keys the config
+   actually sets would never resolve a `$ref` on a property the operator has
+   omitted, leaving that property's own typo exactly as silent as before.
+   `config_schema_errors` therefore also sweeps the schema on its own
+   terms — descending only through the keywords the validator itself
+   understands (`properties`, `items`, `$defs`), never over every `paths`,
+   which cannot tell a schema node from a `default`, `const` or `enum` value
+   that happens to carry a `$ref` key of its own, and a false positive there
+   would fail both pipelines' startup gate for every installation. This sweep
+   resolves every `$ref` it finds regardless of whether any config key
+   reaches it, including a `$defs` entry nothing currently references and an
+   `items` schema behind an array the config leaves empty; its fault is
+   reported in schema space (`schema.$defs.label`,
+   `schema.properties.pr_label`) rather than borrowing a config path it no
+   longer has, so the two kinds of fault read distinctly.
    `config_defaults` resolves the same fixpoint so an inner `$def`'s
    `default` reaches through a chain too, but performs no validation of its
    own: there, an unresolved `$ref` just means no `default` to find at that
-   hop, the same as an ordinary `$def` carrying none.
+   hop, the same as an ordinary `$def` carrying none — including a `$ref`
+   combined with a sibling `default` on a key the config omits, which the
+   schema-wide sweep above catches as a fault even though `config_defaults`
+   still degrades it to nothing there.
 
    The schema is likewise the single statement of the *values* a reader falls
    back to, and not merely a description of them. `lib/config-schema.sh`'s

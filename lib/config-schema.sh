@@ -89,6 +89,48 @@ config_schema_errors() {
           then error("$ref chain at \($resolved["$ref"]) is too deep (or cyclic)")
           else $resolved end;
 
+    # schema_faults($s; $p) sweeps the schema on its own terms, independent of
+    # anything a config sets: `errs` below only resolves a `$ref` it walks
+    # *into*, and it walks into a key only because the config has that key, so
+    # a `$ref` sitting on a property the operator has omitted — or inside an
+    # `items` schema behind an array the config leaves empty — was never
+    # reached and its fault never reported (TD-PPagop-26081606). This walks
+    # schema space instead, descending only through the keywords the
+    # validator itself understands (`properties`, `items`, `$defs`) rather
+    # than every `paths`, which cannot tell a schema node from a `default`,
+    # `const` or `enum` value that happens to carry a `$ref` key of its own —
+    # a false positive there would fail both pipelines'\'' startup gate for
+    # every installation. Never chases a `$ref` to its resolved target: a
+    # `$defs` entry is already visited once, on its own, as `$defs`'\''s own
+    # child, so nothing here would walk it a second time through every site
+    # that references it. That also means a `$defs` entry nothing currently
+    # references is still swept — deliberately: catching a fault there is the
+    # point of a schema-wide sweep, even though the config could never reach
+    # it either way.
+    def schema_fault($s; $p):
+        (try deref($s) catch {"__schema_fault__": .}) as $r
+        | if ($r | type) == "object" and ($r | has("__schema_fault__"))
+          then ["schema.\($p): \($r.__schema_fault__)"]
+          else [] end;
+    def schema_faults($s; $p):
+        if ($s | type) != "object" then []
+        else
+          schema_fault($s; $p)
+          + (if ($s | has("properties")) then
+               [ ($s.properties | keys_unsorted[]) as $k
+                 | schema_faults($s.properties[$k];
+                     (if $p == "" then "properties.\($k)" else "\($p).properties.\($k)" end))[] ]
+             else [] end)
+          + (if ($s | has("items")) then
+               schema_faults($s.items; (if $p == "" then "items" else "\($p).items" end))
+             else [] end)
+          + (if ($s | has("$defs")) then
+               [ ($s["$defs"] | keys_unsorted[]) as $k
+                 | schema_faults($s["$defs"][$k];
+                     (if $p == "" then "$defs.\($k)" else "\($p).$defs.\($k)" end))[] ]
+             else [] end)
+        end;
+
     # JSON Schema types over JSON values: `integer` is a number with nothing
     # after the point, and `number` accepts integers too.
     def type_ok($v; $want):
@@ -179,7 +221,7 @@ config_schema_errors() {
               end
           end;
 
-    errs($root; .; "config")[]
+    (schema_faults($root; "") + errs($root; .; "config"))[]
   ' "$config_file" 2>&1)"
 
   if [[ -n "$errors" ]]; then
