@@ -1975,10 +1975,21 @@ implements.
      (`lib/handoff.sh`) and `_sweep_round_answered`
      (`scripts/sweep-human-visibility.sh`) already use
      (tech-debt/TD-PPagop-26081306.md).
-3e. **Abandoned-drafts pre-fetch.** For each configured repo whose `sources`
-   include `abandoned-drafts`, run `scripts/gather-abandoned-drafts.sh <slug>
+3e. **Abandoned-drafts pre-fetch.** For each configured repo, run
+   `scripts/gather-abandoned-drafts.sh <slug>
    <pr_label> <branch_prefix> <abandoned_draft_after_hours>` and attach the array
-   to that repo's entry as `abandoned_drafts`. It prints the draft PRs *this
+   to that repo's entry as `abandoned_drafts` — unconditionally, because
+   `abandoned-drafts` is a required member of every repository's `sources`
+   (the schema's `contains` rule, enforced by requirement 1b's gate; decided
+   in #472). It is the only route back to a draft this system raised and
+   then abandoned: the other finishing sources exclude drafts by
+   construction (requirements 3c, 3g, 3z), the draft's own branch is the
+   claim the item was taken under so nothing can re-attempt it, and
+   requirement 17b's sweep recovers an orphan precisely by minting the draft
+   this source is the only reader of — so a repository able to omit the
+   token would leave every stalled draft it ever raises unreachable. Its
+   *position* in `sources` remains the installation's choice: required means
+   listed, not ranked anywhere in particular. It prints the draft PRs *this
    system raised and then abandoned*: open, **draft**, carrying `pr_label`, head
    branch under `branch_prefix` (or `td/`), and whose last **real** activity
    (below) is older than `now − abandoned_draft_after_hours`. Each entry carries
@@ -5943,29 +5954,25 @@ implements.
     all yet, so nothing caught it. A refused `complete_handoff` does not undo
     the item's own `unblocked` verdict, which still stands: the underlying
     impediment the Enabler diagnosed is still cleared, and the stalled pull
-    request is left for a Reviewer to actually examine — which, **for a
-    repository whose `sources` include `abandoned-drafts`**, is what that
-    source (requirement 3e) does once the draft goes stale, handing it to a
-    fresh Implementor-then-Reviewer pass.
+    request is left for a Reviewer to actually examine — which is what the
+    `abandoned-drafts` source (requirement 3e) does once the draft goes
+    stale, handing it to a fresh Implementor-then-Reviewer pass.
 
-    **That recovery is a property of the repository's configuration, and
-    nothing stands behind it.** `abandoned-drafts` is a per-repo entry in
-    `sources` like any other and requirement 3e runs only for a repository
-    that lists it, so the hedge above is load-bearing rather than cautious.
-    Nor does the item ever find its own way back, with the source or without
-    it: the draft's branch *is* the claim the item was taken under, so every
-    later claim on it 422s and the Co-Ordinator's exclusion reads "claimed, skip"
-    — requirement 17b's mechanism, in precisely the state that requirement's
-    sweep exists to convert *into* this one — and the other three finishing
-    sources exclude drafts by construction (requirements 3c, 3g, 3z), because
-    a draft is the Implementor's own claim marker rather than work awaiting a
-    human. A repository configured without `abandoned-drafts` therefore leaves
-    this draft for a human, along with every other stalled draft it ever
-    raises, whatever stalled it. That is a gap in what such a configuration
-    recovers — not a reason to soften the refusal, whose alternative is
-    flipping to ready a pull request nothing has reviewed. Whether the source
-    should be optional at all is agent-ops#472's decision, not this
-    requirement's.
+    **That recovery is structural, not configurational.** The item never
+    finds its own way back: the draft's branch *is* the claim the item was
+    taken under, so every later claim on it 422s and the Co-Ordinator's
+    exclusion reads "claimed, skip" — requirement 17b's mechanism, in
+    precisely the state that requirement's sweep exists to convert *into*
+    this one — and the other three finishing sources exclude drafts by
+    construction (requirements 3c, 3g, 3z), because a draft is the
+    Implementor's own claim marker rather than work awaiting a human. That
+    is why `abandoned-drafts` is a required member of every repository's
+    `sources` (requirement 3e; agent-ops#472's decision): a repository able
+    to omit it would leave this draft for a human, along with every other
+    stalled draft it ever raises, whatever stalled it. The refusal can
+    therefore count on requirement 3e re-detecting the draft — and it stays
+    a refusal either way, since the alternative is flipping to ready a pull
+    request nothing has reviewed.
 
     Once a Reviewer verdict is on record, `handoff_complete_review`'s own gate
     still applies exactly as requirement 31c describes it: `dirty` (either
@@ -9512,7 +9519,7 @@ What exists, and the requirements each part answers to:
     the library validates a config against it (the JSON Schema subset the
     schema uses: `type`, `enum`, `const`, `minimum`, `maximum`,
     `exclusiveMinimum`, `exclusiveMaximum`, `minLength`, `pattern`,
-    `minItems`, `uniqueItems`, `properties`, `required`,
+    `minItems`, `uniqueItems`, `contains`, `properties`, `required`,
     `additionalProperties: false`, `items`, and local `$ref`s into `$defs`),
     returning 0 valid, 1 invalid with one message per offending path, and 2
     when a file is missing or will not parse — a config that is not there is

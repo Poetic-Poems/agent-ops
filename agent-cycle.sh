@@ -5578,12 +5578,13 @@ while IFS=$'\t' read -r _ slug default_branch; do
     emit_first_seen "$slug" review-feedback "$review_feedback_raw"
     review_feedback="$(exclude_claimed_items "$(exclude_claimed_prs "$review_feedback_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   fi
-  abandoned_drafts="[]"
-  if jq -e 'any(.[]; . == "abandoned-drafts")' <<<"$sources" >/dev/null 2>&1; then
-    abandoned_drafts_raw="$(gather_abandoned_drafts "$slug")"
-    emit_first_seen "$slug" abandoned-drafts "$abandoned_drafts_raw"
-    abandoned_drafts="$(exclude_claimed_items "$(exclude_claimed_prs "$abandoned_drafts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
-  fi
+  # Unconditional, unlike its neighbours: `abandoned-drafts` is a required
+  # member of every repository's `sources` (the schema's `contains` rule;
+  # requirement 3e, agent-ops#472) — the only route back to a draft this
+  # system raised and then abandoned.
+  abandoned_drafts_raw="$(gather_abandoned_drafts "$slug")"
+  emit_first_seen "$slug" abandoned-drafts "$abandoned_drafts_raw"
+  abandoned_drafts="$(exclude_claimed_items "$(exclude_claimed_prs "$abandoned_drafts_raw" "$claimed_pr_numbers_json")" "$claimed_item_refs_json")"
   merge_conflicts="[]"
   if jq -e 'any(.[]; . == "merge-conflicts")' <<<"$sources" >/dev/null 2>&1; then
     merge_conflicts_raw="$(gather_merge_conflicts "$slug")"
