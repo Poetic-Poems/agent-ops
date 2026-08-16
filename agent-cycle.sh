@@ -2329,7 +2329,14 @@ gather_issues() {
   safe="${slug//\//_}"
   raw="$("$SCRIPT_DIR/scripts/gather-issues.sh" "$slug" \
         2>"$cycle_dir/issues-$safe.err" || true)"
-  candidates='[]'; excl='[]'
+  # `excl` defaults to `null`, not `[]` (review decision on agent-ops#452
+  # concern 3): a gather that failed to produce the object shape at all —
+  # the catastrophic case this fallback covers, distinct from the
+  # gatherer's own degrade() — knows nothing about what was excluded, and
+  # `null` says so. The existing `.excluded | type == "array"` check below
+  # already routes a gatherer-reported `excluded: null` (its own degrade)
+  # to this same default.
+  candidates='[]'; excl='null'
   if [[ -n "$raw" ]] && jq -e 'type == "object"' <<<"$raw" >/dev/null 2>&1; then
     if jq -e '.candidates | type == "array"' <<<"$raw" >/dev/null 2>&1; then
       candidates="$(jq -c '.candidates' <<<"$raw")"
@@ -2345,18 +2352,23 @@ gather_issues() {
 }
 
 # gather_issues_excluded SLUG — read back the sibling exclusion report
-# `gather_issues` (above) just wrote for this repo, or `[]` if it never ran
-# (a repo whose `sources` carries no `issues` band, or one whose gather
-# failed entirely). Kept a separate read rather than a second return value,
-# because a shell function has only the one stdout channel and `gather_issues`
-# already spends it on the candidates array every existing caller depends on.
+# `gather_issues` (above) just wrote for this repo, or `null` if it never ran
+# (a repo whose `sources` carries no `issues` band) or the sidecar does not
+# hold a well-formed array (the gather failed or degraded). `null` here means
+# exactly what it means on the sidecar: the exclusion set is unknown, not
+# known-empty (review decision on agent-ops#452 concern 3) — the absent-file
+# case cannot arise at the one call site, which runs immediately after
+# `gather_issues`, so it is not worth a separate `[]` reading. Kept a
+# separate read rather than a second return value, because a shell function
+# has only the one stdout channel and `gather_issues` already spends it on
+# the candidates array every existing caller depends on.
 gather_issues_excluded() {
   local slug="$1" file
   file="$(issues_excluded_sidecar_path "$slug")"
   if [[ -s "$file" ]] && jq -e 'type == "array"' <"$file" >/dev/null 2>&1; then
     jq -c '.' <"$file"
   else
-    printf '[]'
+    printf 'null'
   fi
 }
 
@@ -5169,27 +5181,46 @@ while IFS=$'\t' read -r _ slug default_branch; do
     # an onset and a release are both changes, so "now empty" logs exactly as
     # "now non-empty" does, and a quiet cycle logs nothing because nothing
     # changed — not because $issues_excluded happens to be empty this time.
-    # Fail open: if the previous state cannot be read, log unconditionally
-    # rather than risk staying silent — silence is the #447 failure class
-    # this event exists to remove.
-    issues_excluded="$(gather_issues_excluded "$slug")"
-    issues_excluded_changed=1
-    if prev_issues_excluded="$(jq -ce --arg r "$slug" '(.[$r] // [])' \
-          <<<"$latest_issues_excluded_json" 2>/dev/null)"; then
-      if issues_excluded_same="$(jq -nc --argjson prev "$prev_issues_excluded" --argjson cur "$issues_excluded" \
-            '($prev | sort_by(.number, .reason)) == ($cur | sort_by(.number, .reason))' 2>/dev/null)" \
-          && [[ "$issues_excluded_same" == "true" ]]; then
-        issues_excluded_changed=0
+    # Fail open on the *previous*-state read: if it cannot be read, log
+    # unconditionally rather than risk staying silent — silence is the #447
+    # failure class this event exists to remove.
+    #
+    # The *current* set gets no such leniency (review decision on
+    # agent-ops#452 concern 3): `gather_issues_excluded` reports `null`,
+    # never `[]`, when the gather failed or degraded — the deterministic
+    # filter did not run to completion, so the exclusion set is unknown, not
+    # known-empty. Comparing an unknown current set against a known previous
+    # one would fabricate a release event on an ordinary `gh` hiccup and, by
+    # overwriting the baseline, mask a genuinely stuck exclusion behind a
+    # flapping gatherer. A `null` current set therefore skips the
+    # comparison, the event and the baseline update entirely — a failed
+    # gather is a no-op on the event stream, not a claim about it — while
+    # the Co-Ordinator's own runtime input still gets an array: `[]` for
+    # "nothing to report", the same reading requirement 3j already gives an
+    # empty `candidates`.
+    issues_excluded_raw="$(gather_issues_excluded "$slug")"
+    if [[ "$issues_excluded_raw" != "null" ]]; then
+      issues_excluded="$issues_excluded_raw"
+      issues_excluded_changed=1
+      if prev_issues_excluded="$(jq -ce --arg r "$slug" '(.[$r] // [])' \
+            <<<"$latest_issues_excluded_json" 2>/dev/null)"; then
+        if issues_excluded_same="$(jq -nc --argjson prev "$prev_issues_excluded" --argjson cur "$issues_excluded" \
+              '($prev | sort_by(.number, .reason)) == ($cur | sort_by(.number, .reason))' 2>/dev/null)" \
+            && [[ "$issues_excluded_same" == "true" ]]; then
+          issues_excluded_changed=0
+        fi
       fi
-    fi
-    if [[ "$issues_excluded_changed" == "1" ]]; then
-      log_event "issues-excluded" "$(jq -nc --arg r "$slug" --argjson ex "$issues_excluded" \
-        '{repo: $r, count: ($ex | length),
-          detail: (($ex | length | tostring) + " issue(s) excluded: "
-                   + ([$ex[] | "#\(.number) (\(.reason))"] | join(", "))),
-          excluded: $ex}')"
-      latest_issues_excluded_json="$(jq -c --arg r "$slug" --argjson ex "$issues_excluded" \
-        '.[$r] = $ex' <<<"$latest_issues_excluded_json" 2>/dev/null || printf '%s' "$latest_issues_excluded_json")"
+      if [[ "$issues_excluded_changed" == "1" ]]; then
+        log_event "issues-excluded" "$(jq -nc --arg r "$slug" --argjson ex "$issues_excluded" \
+          '{repo: $r, count: ($ex | length),
+            detail: (($ex | length | tostring) + " issue(s) excluded"
+                     + (if ($ex | length) > 0
+                        then ": " + ([$ex[] | "#\(.number) (\(.reason))"] | join(", "))
+                        else "" end)),
+            excluded: $ex}')"
+        latest_issues_excluded_json="$(jq -c --arg r "$slug" --argjson ex "$issues_excluded" \
+          '.[$r] = $ex' <<<"$latest_issues_excluded_json" 2>/dev/null || printf '%s' "$latest_issues_excluded_json")"
+      fi
     fi
   fi
   tech_debt="[]"

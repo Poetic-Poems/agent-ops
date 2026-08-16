@@ -6,7 +6,7 @@
 #
 # Usage: gather-issues.sh <owner/repo>
 #
-# Prints one JSON object, `{"candidates": […], "excluded": […]}`:
+# Prints one JSON object, `{"candidates": […], "excluded": […]|null}`:
 #
 # `candidates` — one entry per candidate issue:
 #
@@ -32,7 +32,11 @@
 # caller report "N issues excluded, and why" instead of a drop nothing else
 # ever recorded: before this, the three deterministic drops removed an issue
 # from candidacy with nothing on stdout, nothing on stderr, and nothing in
-# the shared log to say it had happened.
+# the shared log to say it had happened. `excluded` is `null`, never `[]`,
+# when the deterministic filter did not run to completion (see "Degrading"
+# below) — an empty array asserts "gathered, and nothing was excluded",
+# which a failed or partial gather does not know to be true (review decision
+# on agent-ops#452 concern 3).
 #
 # ## Why issues are pre-fetched at all
 #
@@ -78,14 +82,18 @@
 # ## Degrading, and the 100-item windows
 #
 # Like gather-findings.sh — and unlike gather-source-state.sh — this output
-# is *given to* the Co-Ordinator, so degrading to the empty shape (exit 0) on
-# any API failure is safe: the fingerprint then faithfully records "the
+# is *given to* the Co-Ordinator, so degrading `candidates` to `[]` (exit 0)
+# on any API failure is safe: the fingerprint then faithfully records "the
 # Co-Ordinator saw no issues", and the source-state issues digest, sampled
 # independently, still busts the fingerprint when a real issue changes.
-# Failures are loud on stderr (teed into the cycle record as
-# issues-<repo>.err) for the same reason gather-review-feedback.sh's are: an
-# empty result indistinguishable from "no open issues" once cost a debugging
-# round.
+# `excluded` degrades to `null`, not `[]` — the caller's on-change
+# `issues-excluded` logging (agent-cycle.sh, requirement 33) treats `null` as
+# "unknown, do not compare" rather than as a release from exclusion, which an
+# empty array would otherwise fabricate on every ordinary `gh` hiccup (review
+# decision on agent-ops#452 concern 3). Failures are loud on stderr (teed
+# into the cycle record as issues-<repo>.err) for the same reason
+# gather-review-feedback.sh's are: an empty result indistinguishable from "no
+# open issues" once cost a debugging round.
 #
 # Both reads take one 100-item page, like every gatherer here. More than 100
 # open unassigned issues, or a thread past 100 comments, is a repo-hygiene
@@ -111,9 +119,10 @@ fi
 
 # Print the empty shape and exit 0, having said why on stderr: a gatherer
 # that aborted the cycle would make cost control a reliability risk.
+# `excluded: null`, not `[]` — see "Degrading" above.
 degrade() {
   echo "gather-issues: $slug: $*" >&2
-  printf '{"candidates":[],"excluded":[]}\n'
+  printf '{"candidates":[],"excluded":null}\n'
   exit 0
 }
 

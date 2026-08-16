@@ -27,6 +27,13 @@
 #      repeat a byte-identical row every cycle onto a log that is never
 #      rotated — but a release from exclusion (the set clearing) is exactly
 #      as visible as an onset was.
+#   4. **The unknown-skips rule** the review decided on agent-ops#452
+#      concern 3: `gather_issues_excluded` reporting `null` — a degraded or
+#      failed gather, distinct from a gather that ran and found nothing —
+#      must be a no-op on the event stream: no comparison, no event, no
+#      baseline update, so a transient `gh` hiccup neither fabricates a
+#      release from exclusion nor resets the staleness clock requirement
+#      16.4 depends on.
 #
 # Each function/block under test is lifted whole out of agent-cycle.sh by its
 # own literal start/end lines, the same technique test/repo-entry-build.test.sh
@@ -153,21 +160,37 @@ assert_eq "round trip: the shared helper computes the same path gather_issues wr
   "1" "$( [[ -f "$expected_sidecar" ]] && echo 1 || echo 0 )"
 
 # Degrade 1: the gatherer's output is not the {candidates, excluded} object —
-# a bare array, the pre-agent-ops#447 shape — so both fields fall back to [].
+# a bare array, the pre-agent-ops#447 shape — so candidates falls back to []
+# and excluded falls back to null: this catastrophic shape means "gather
+# did not run to completion", not "gathered, nothing excluded" (review
+# decision on agent-ops#452 concern 3).
 slug2="Poetic-Poems/poetic-fiddle"
 jq -nc '[1, 2, 3]' > "$stub_output"
 candidates_out2="$(run_gather_issues "$slug2")"
 excluded_out2="$(run_gather_issues_excluded "$slug2")"
 assert_eq "degrade: a non-object gatherer output falls back to empty candidates" \
   "[]" "$candidates_out2"
-assert_eq "degrade: a non-object gatherer output falls back to empty excluded" \
-  "[]" "$excluded_out2"
+assert_eq "degrade: a non-object gatherer output falls back to null (unknown) excluded" \
+  "null" "$excluded_out2"
+
+# Degrade 1b: the gatherer ran and reported its own degrade — {candidates:
+# [], excluded: null} — which round-trips through the sidecar unchanged.
+slug2b="Poetic-Poems/poetic-mobile"
+jq -nc '{candidates: [], excluded: null}' > "$stub_output"
+candidates_out2b="$(run_gather_issues "$slug2b")"
+excluded_out2b="$(run_gather_issues_excluded "$slug2b")"
+assert_eq "degrade: the gatherer's own null excluded round-trips as empty candidates" \
+  "[]" "$candidates_out2b"
+assert_eq "degrade: the gatherer's own null excluded round-trips as null" \
+  "null" "$excluded_out2b"
 
 # Degrade 2: a slug gather_issues never ran for at all — no sidecar file —
-# reads back as [], not an error.
+# reads back as null: the absent-file case cannot arise at the one real call
+# site (it always runs right after gather_issues), so it gets the same
+# unknown reading rather than a special-cased [].
 never_out="$(run_gather_issues_excluded "Poetic-Poems/never-gathered")"
-assert_eq "degrade: an absent sidecar reads back as empty excluded" \
-  "[]" "$never_out"
+assert_eq "degrade: an absent sidecar reads back as null (unknown) excluded" \
+  "null" "$never_out"
 
 # =============================================================================
 # Part 2 and 3: the issues-excluded event, and its on-change semantics
@@ -282,6 +305,8 @@ assert_eq "the cleared set logs with count 0" \
   "0" "$(jq -r '.count' <<<"$last_line")"
 assert_eq "the cleared set logs with an empty excluded array" \
   "[]" "$(jq -c '.excluded' <<<"$last_line")"
+assert_eq "the cleared set's detail has no dangling colon" \
+  "0 issue(s) excluded" "$(jq -r '.detail' <<<"$last_line")"
 
 # ... and staying cleared next cycle logs nothing further.
 before="$(lines_before)"
@@ -304,6 +329,66 @@ run_issues_excluded_cycle "o/r" '[]'
 after="$(lines_before)"
 assert_eq "a corrupt previous-state map fails open (logs, does not stay silent)" \
   "1" "$(( after - before ))"
+
+# =============================================================================
+# Part 4: the unknown-skips rule (review decision on agent-ops#452 concern 3)
+# =============================================================================
+#
+# `gather_issues_excluded` reporting `null` means the gather failed or
+# degraded — the current exclusion set is unknown, not known-empty — and
+# must be a no-op on the event stream: no comparison, no event, no baseline
+# update. Asserting a release from exclusion on an ordinary `gh` hiccup would
+# be a falsehood a healthy empty set never is, and overwriting the baseline
+# would let a flapping gatherer erase the staleness signal requirement 16.4
+# depends on.
+printf '{}' > "$map_file_path"
+
+# Establish a non-empty baseline for a fresh repo.
+before="$(lines_before)"
+run_issues_excluded_cycle "o/degrade" '[{"number":77,"reason":"assigned"}]'
+after="$(lines_before)"
+assert_eq "unknown-skips: establishing a baseline logs exactly one event" \
+  "1" "$(( after - before ))"
+
+# A degraded gather (`null`) leaves both the log and the baseline untouched.
+before="$(lines_before)"
+run_issues_excluded_cycle "o/degrade" 'null'
+after="$(lines_before)"
+assert_eq "unknown-skips: a degraded gather (null) logs nothing" \
+  "0" "$(( after - before ))"
+baseline_after_degrade="$(jq -c '.["o/degrade"]' "$map_file_path")"
+assert_eq "unknown-skips: a degraded gather leaves the baseline untouched" \
+  '[{"number":77,"reason":"assigned"}]' "$baseline_after_degrade"
+
+# A recovered gather reporting the same real set logs nothing — the
+# baseline survived the degraded cycle in between.
+before="$(lines_before)"
+run_issues_excluded_cycle "o/degrade" '[{"number":77,"reason":"assigned"}]'
+after="$(lines_before)"
+assert_eq "unknown-skips: a recovered gather reporting the unchanged set logs nothing" \
+  "0" "$(( after - before ))"
+
+# A recovered gather reporting a genuinely changed set logs the real edge —
+# the degraded cycle in between did not mask it.
+before="$(lines_before)"
+run_issues_excluded_cycle "o/degrade" \
+  '[{"number":77,"reason":"assigned"},{"number":88,"reason":"blocked-label"}]'
+after="$(lines_before)"
+assert_eq "unknown-skips: a recovered gather reporting a changed set logs exactly one event" \
+  "1" "$(( after - before ))"
+last_line="$(tail -n 1 "$log_file_path")"
+assert_eq "unknown-skips: the changed set's count reflects the new size" \
+  "2" "$(jq -r '.count' <<<"$last_line")"
+
+# A degraded gather on a repo whose baseline was already empty stays quiet
+# too, and does not spuriously create a map entry.
+before="$(lines_before)"
+run_issues_excluded_cycle "o/never-excluded" 'null'
+after="$(lines_before)"
+assert_eq "unknown-skips: a degraded gather with no prior baseline logs nothing" \
+  "0" "$(( after - before ))"
+assert_eq "unknown-skips: ... and adds no baseline entry" \
+  "null" "$(jq -c '.["o/never-excluded"] // null' "$map_file_path")"
 
 printf '\n%s\n' "----------------------------------------"
 if (( failures == 0 )); then

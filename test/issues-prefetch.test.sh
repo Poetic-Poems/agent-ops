@@ -19,11 +19,14 @@
 #     the sibling `excluded` array with its number and why — agent-ops#447:
 #     before this, a drop here left no trace anywhere a human or the
 #     dashboard could read.
-#   - **Degrading.** An API failure must yield the empty shape
-#     (`{"candidates":[],"excluded":[]}`, exit 0) with the failure on stderr:
-#     the output is *given to* the Co-Ordinator, so an empty result is a
-#     faithful record of its input, and aborting the cycle would make cost
-#     control a reliability risk.
+#   - **Degrading.** An API failure must yield `{"candidates":[],
+#     "excluded":null}` (exit 0) with the failure on stderr: the output is
+#     *given to* the Co-Ordinator, so an empty `candidates` is a faithful
+#     record of its input, and aborting the cycle would make cost control a
+#     reliability risk. `excluded` degrades to `null`, not `[]` — the
+#     deterministic filter did not run to completion, so the exclusion set
+#     is unknown, not known-empty (review decision on agent-ops#452
+#     concern 3).
 #   - **The fingerprint.** An *edit* to an existing comment moves no field the
 #     issues digest samples — not even `updated_at`, which GitHub moves for
 #     new comments but not edits — while the Co-Ordinator reads the thread
@@ -230,8 +233,8 @@ degraded="$("$SCRIPT_DIR/scripts/gather-issues.sh" o/r 2>"$tmp_dir/degrade.err")
 degraded_rc=$?
 assert_eq "a failing API degrades to an empty candidates array" \
   "[]" "$(jq -c '.candidates' <<<"$degraded")"
-assert_eq "  ... and an empty excluded array" \
-  "[]" "$(jq -c '.excluded' <<<"$degraded")"
+assert_eq "  ... and a null (unknown, not known-empty) excluded" \
+  "null" "$(jq -c '.excluded' <<<"$degraded")"
 assert_eq "and still exits 0" "0" "$degraded_rc"
 if [[ -s "$tmp_dir/degrade.err" ]]; then
   printf 'ok   - %s\n' "and the failure is loud on stderr"

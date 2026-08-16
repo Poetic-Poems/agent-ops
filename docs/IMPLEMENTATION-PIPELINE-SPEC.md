@@ -2246,8 +2246,11 @@ runs unattended.
 3j. **Issues pre-fetch.** For each configured repo whose `sources` include any
    `issues:<band>` entry (one source at four ranks — any band warrants the one
    fetch), run `scripts/gather-issues.sh <slug>`, which prints
-   `{"candidates": […], "excluded": […]}`, and attach `.candidates` to that
-   repo's entry as `issues` and `.excluded` as `issues_excluded`. Each
+   `{"candidates": […], "excluded": […]|null}`, and attach `.candidates` to
+   that repo's entry as `issues` and `.excluded` as `issues_excluded` — or
+   `[]` when `.excluded` is `null` (the gather did not run to completion; see
+   "Degrades…" below), since the Co-Ordinator's own runtime input specifies
+   `issues_excluded` as an array. Each
    `issues` entry is one candidate issue, whole thread included:
    `source: "issues"`, the bare issue number as `ref` (and as `number`),
    `url`, `title`, the `Priority` band as `priority` (read exactly as the
@@ -2307,12 +2310,19 @@ runs unattended.
      (prompts/coordinator.md) — informational only, never a candidate list:
      nothing in it is eligible for selection, a re-check, or a
      `needs_refinement` report.
-   - **Degrades to the empty shape (exit 0) on any API failure**, like
-     requirement 3a and unlike the source-state digest: the output is *given
-     to* the Co-Ordinator, so an empty `candidates`/`issues_excluded` pair is
+   - **Degrades to `candidates: []`, `excluded: null` (exit 0) on any API
+     failure**, like requirement 3a and unlike the source-state digest: the
+     output is *given to* the Co-Ordinator, so an empty `candidates` array is
      a faithful record of the input it got, and the independently sampled
      issues digest still busts the fingerprint when a real issue moves during
-     the degradation. Failures are loud on stderr (teed to
+     the degradation. `excluded` degrades to `null`, not `[]` (review
+     decision on agent-ops#452 concern 3): the deterministic filter did not
+     run to completion, so the exclusion set is unknown, not known-empty, and
+     an empty array would read downstream as "gathered, and nothing was
+     excluded" — a claim the degrade cannot back. `agent-cycle.sh`'s own
+     `gather_issues` carries the same reading one layer up, defaulting to
+     `excluded: null` for the shapes it falls back on itself (a gather that
+     produced no object at all). Failures are loud on stderr (teed to
      `issues-<repo>.err` in the cycle record).
    - Both reads take one 100-item page, like every gatherer. The bound is
      stated in the script header rather than silently applied.
@@ -4449,7 +4459,11 @@ runs unattended.
       issues it exists to keep off the list. A live `issues_excluded` entry
       on the Co-Ordinator's own input whose most recent `issues-excluded`
       event (requirement 33) is old is now the signal a human needs to
-      notice a stuck removal and clear it by hand — see also
+      notice a stuck removal and clear it by hand — a reading requirement
+      33's own unknown-skips rule protects: a cycle whose gather failed or
+      degraded leaves that event untouched rather than logging a fabricated
+      change, so a transient `gh` hiccup does not refresh the timestamp and
+      hide a genuinely stuck exclusion behind it — see also
       requirement 36b's own duty to say so directly in a refinement's own
       comment, when the item being refined is assigned at the time;
     - a security finding whose only available fix is one a human must choose
@@ -5663,11 +5677,12 @@ runs unattended.
     `issues-excluded` event (requirement 3j; agent-ops#447) carries `repo`,
     `count` and `excluded` — the same `{number, reason}` array
     `scripts/gather-issues.sh` reports as `issues_excluded` — plus a `detail`
-    string ("N issue(s) excluded: #125 (assigned), …") for the dashboard's
-    generic log-tail renderer, which shows any event's `detail` verbatim with
-    no event-specific rendering of its own. Logged by `gather_issues`'s
-    caller (agent-cycle.sh) on change only (review decision on
-    agent-ops#452 concern 1): once per repo per cycle when that repo's
+    string ("N issue(s) excluded: #125 (assigned), …", or plain "0 issue(s)
+    excluded" with no trailing colon when the set is empty) for the
+    dashboard's generic log-tail renderer, which shows any event's `detail`
+    verbatim with no event-specific rendering of its own. Logged by
+    `gather_issues`'s caller (agent-cycle.sh) on change only (review decision
+    on agent-ops#452 concern 1): once per repo per cycle when that repo's
     exclusion set differs from the one carried by the most recent
     `issues-excluded` event logged for it — `lib/cycle-state.sh`'s
     `latest_issues_excluded`, read off the union log once per cycle the same
@@ -5679,13 +5694,33 @@ runs unattended.
     further, so an operator scanning a quiet cycle does not have to skip past
     a row repeating what an earlier row already said; "how long has this
     repo's exclusion held" is then the age of its own last `issues-excluded`
-    event, not a count of identical rows. The previous-state read fails open:
-    any error reading it logs the event unconditionally rather than risk
-    staying silent, since silence is exactly the #447 failure class this
-    event exists to remove. Unlike
-    `first-seen` and `review-gate-checks-read`, it **stays** in the dashboard's
-    log tail: every row now reports a transition, which is precisely the kind
-    of fact an operator can act on, not bookkeeping to hide. A
+    event, not a count of identical rows.
+
+    The previous- and current-state reads are deliberately asymmetric
+    (review decision on agent-ops#452 concern 3): the previous-state read
+    fails open — any error reading it logs the event unconditionally rather
+    than risk staying silent, since silence is exactly the #447 failure
+    class this event exists to remove — while the current state does not,
+    because logging asserts the *current* exclusion set and that assertion
+    must be known to be made at all. `scripts/gather-issues.sh` reports
+    `excluded: null`, not `[]`, when its deterministic filter did not run to
+    completion (an API failure mid-gather), and `gather_issues`
+    (agent-cycle.sh) carries the same `null` one layer up for its own
+    catastrophic-fallback shapes; `gather_issues_excluded` returns that
+    `null` verbatim. A `null` current set skips the comparison, the event and
+    the baseline update entirely — the degraded mode must never assert
+    something it doesn't know, and an empty array here would otherwise
+    fabricate a release from exclusion on an ordinary `gh` hiccup, then
+    overwrite the baseline so the next healthy cycle logs a spurious onset
+    back. Leaving both untouched on a degraded cycle is what lets the
+    staleness reading above ("how long has this repo's exclusion held")
+    survive a flapping gatherer rather than resetting on every blip. The
+    Co-Ordinator's own runtime input is unaffected either way: a `null`
+    current set still reaches it as `issues_excluded: []`, the same "nothing
+    to report" reading an empty `candidates` already gets. Unlike
+    `first-seen` and `review-gate-checks-read`, this event **stays** in the
+    dashboard's log tail: every row reports a transition, which is precisely
+    the kind of fact an operator can act on, not bookkeeping to hide. A
     `dependabot-rebase-requested` (requirement 3s)
     carries the `repo` and the `number` of the Dependabot pull request this
     cycle asked to rebase itself; a nudge that could not be posted is a
