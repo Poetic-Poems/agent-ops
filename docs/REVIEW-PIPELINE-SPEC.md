@@ -633,13 +633,22 @@ R11. **Run the skill end-to-end.** Invoke the vendored `project-review` skill
    Complete the skill's own resumability book-keeping (delete `worknotes/` and
    `review-state.json`) so only the finished reports remain.
 
-R12. **Tech-debt conventions.** When the review adds tech-debt items, follow
-   the repo's own register workflow exactly — reserve each ID atomically
-   with `scripts/reserve-tech-debt-id.pl` (the "Filing an item" workflow's
-   reservation step, built on `scripts/next-tech-debt-id.pl`'s scan), then
-   add each record as a new `tech-debt/<id>.md` item file (frontmatter plus
-   a Markdown body), preserving the existing per-item conventions rather
-   than inventing a competing structure. Mark items the review finds already
+R12. **Tech-debt conventions.** The review's own filing does not fit the
+   register's single-item shape — one `td/<id>` branch that is both the
+   reservation and the filing branch — because R13 requires every item the
+   review surfaces to land in **one** pull request rather than one per item.
+   So reservation and filing are two separate steps: reserve one ID per item
+   atomically with `scripts/reserve-tech-debt-id.pl` (the "Filing an item"
+   workflow's reservation step, built on `scripts/next-tech-debt-id.pl`'s
+   scan), but never check out or commit to the `td/<id>` branch it creates —
+   that branch is the reservation, standing only as a lock against a
+   concurrent filing minting the same ID. Instead add each record as a new
+   `tech-debt/<id>.md` item file (frontmatter plus a Markdown body) on the
+   review's own branch (R13), preserving the existing per-item conventions
+   rather than inventing a competing structure. A reservation's `td/<id>`
+   branch stands until R13's pull request merges; nothing deletes it
+   automatically, so R13's pull request body is where that deletion is
+   handed to the human who merges it. Mark items the review finds already
    resolved per the register's own rules, not by deleting their history: a
    frontmatter status
    flip, with the item file never deleted or renamed and its body kept in
@@ -674,12 +683,18 @@ R13. **Raise one pull request.** Create the branch
    `<branch_prefix><date>` (`review/<date>` by default; this repository's own
    resolved `branch_prefix`) from the
    default branch; commit the review folder and the updated tech-debt
-   register; open **one** pull request, **ready for review** (not draft),
+   register — including every item R12 reserved an ID for, filed here on this
+   branch rather than on its own `td/<id>` reservation branch; open **one**
+   pull request, **ready for review** (not draft),
    labelled with this repository's own resolved `project_review` pr_label,
    with a Conventional-Commits title
    (`docs(review): weekly project review <date>` — it becomes the squash commit
-   on `main`) and a body that summarises the verdict and links the review
-   index. Record the PR URL to `.git/agent-ops-review-pr-url` immediately on
+   on `main`) and a body that summarises the verdict, links the review
+   index, and — where R12 reserved any ids — lists every `td/<id>` it
+   reserved and the command to release them once this pull request merges
+   (`git push origin --delete td/<id1> td/<id2> …`), since nothing else
+   deletes those reservation branches. Record the PR URL to
+   `.git/agent-ops-review-pr-url` immediately on
    opening it (the breadcrumb R5d relies on).
 
 R14. **Prove it is landable.** Run the repo's own checks (as its `CLAUDE.md`
