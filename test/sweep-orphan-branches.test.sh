@@ -371,6 +371,30 @@ assert_eq "an unrelated same-scope tech-debt id is not read as a rival" \
   "td/TD-PPagop-26081403" \
   "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
 
+# --- Case 11: the compare payload itself carries no readable first-commit date ---
+# Distinct from case 9 (the rivals list fetch failing): here the compare
+# call the sweep already made for `ahead_by` comes back without a commit
+# date to anchor the rival search on at all, so the rivals lookup is never
+# even attempted — but this is still a failure to get an answer, not a
+# clean "no rival found", so it must warn exactly as case 9 does rather
+# than fall silent.
+c="$tmp_dir/no-first-commit-date"; mkdir -p "$c"
+: > "$c/refs-td_tsv"
+printf 'agent/baz-dddddddddddd\tsha-baz\n' > "$c/refs-agent_tsv"
+echo "$stale" > "$c/date-sha-baz"
+compare_fixture "$c" agent/baz-dddddddddddd 1
+
+out="$(run_sweep "$c")"
+calls="$(cat "$c/calls.log")"
+assert_eq "an unreadable first-commit date still files the recovery draft" \
+  "agent/baz-dddddddddddd" \
+  "$(jq -r 'select(.action == "recovered") | .branch' <<<"$out")"
+assert_contains "and warns, naming the branch, rather than staying silent" \
+  "could not check for a rival branch" \
+  "$(jq -r 'select(.action == "warning" and .branch == "agent/baz-dddddddddddd") | .detail' <<<"$out")"
+assert_not_contains "without ever asking GitHub for rivals at all" \
+  "pulls?state=closed" "$calls"
+
 printf '\n'
 if (( failures )); then
   printf '%d assertion(s) failed\n' "$failures"

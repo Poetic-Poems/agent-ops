@@ -254,7 +254,8 @@ sweep_branch() {  # <branch> <tip-sha>
   my_stem="$(stem "$branch")"
   first_commit_date="$(jq -r '.commits[0].commit.committer.date // empty' \
     <<<"$compare_json" 2>/dev/null)"
-  first_commit_epoch="$(date -d "$first_commit_date" +%s 2>/dev/null || echo 0)"
+  first_commit_epoch=0
+  [[ -n "$first_commit_date" ]] && first_commit_epoch="$(date -d "$first_commit_date" +%s 2>/dev/null || echo 0)"
   superseded_by=""
   rival_lookup_failed=0
   if (( first_commit_epoch > 0 )); then
@@ -274,6 +275,8 @@ sweep_branch() {  # <branch> <tip-sha>
     else
       rival_lookup_failed=1
     fi
+  else
+    rival_lookup_failed=1
   fi
   if [[ -n "$superseded_by" ]]; then
     if "$GH" api -X DELETE "repos/$slug/git/refs/heads/$branch" >/dev/null 2>&1; then
