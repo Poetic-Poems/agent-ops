@@ -1462,8 +1462,24 @@ implements.
    successful fetch (`state_dir/fleet-cache/`), and to enabled when there is
    none — safe to fail open because a node that charges ahead blind meets
    per-item claims that fail closed (requirement 17a); a flag that exists
-   but does not parse is *disabled*, exactly as for the local record. An
-   expired fleet disable is cleared by whichever cycle sees it first — the
+   but does not parse is *disabled*, exactly as for the local record.
+
+   Those directions are the *read*'s. The **clear** side never accepts a 404
+   on its own, because `absent` there is a claim that the flag has been
+   cleared rather than merely that nothing stands the fleet down:
+   `fleet_flag_delete` probes `repos/<state_repo>` — `fleet_repo_visible`,
+   the same probe requirement 2.3b's read spends — on every 404 its
+   read-for-sha meets, unconditionally, and only a probe that confirms the
+   repo is visible resolves to `absent`. Anything else the probe returns —
+   404, 403, a timed-out call — is a failed delete: `fleet_flag_delete`
+   returns non-zero, `fleet_flag_delete_outcome` reports `failed`, and
+   `--enable`, `--clear-limit` and `--restore-merge-autonomy` (requirement
+   12) each warn and name the manual fallback rather than report the flag
+   clear. Unlike the read there is no cached-or-unreachable fallback to take
+   instead — a delete has no cached copy of "the flag is gone"
+   (TD-PPagop-26081604).
+
+   An expired fleet disable is cleared by whichever cycle sees it first — the
    delete is sha-guarded and idempotent, so a lost race means a peer got
    there, and there is no singleton chore (requirement 2.5). The weekly
    review honours the fleet switch but never sets or clears it, mirroring
@@ -12978,21 +12994,22 @@ requirements above, which state only what is.
   and "this repository does not exist, or is invisible to this token" — but
   only for the one caller that asked for it (`probe-404` mode); every other
   reader kept accepting the collapse, because their flags are fail-open by
-  design and the ambiguity only adds one more way of doing so. `fleet_flag_
-  delete` reused the same 404 branch and inherited the same collapse, but
-  a delete is not a fail-open flag: `absent` is the word `fleet_flag_delete_
-  outcome` and its callers (`--enable`, `--clear-limit`, `--restore-merge-
-  autonomy`, the fleet-disable-expiry sweep) report as `unconfigured`, and
-  an operator reading that word believes the flag is gone. On a
-  misconfigured `state_repo` slug or a token whose scopes lost access, it
-  was not — the flag stayed set for every peer whose token could still see
-  it, and the issuing node's own cache (dropped on the strength of the
-  false clear) stopped confirming the disagreement locally too. The
+  design and the ambiguity only adds one more way of doing so.
+  `fleet_flag_delete` reused the same 404 branch and inherited the same
+  collapse, but a delete is not a fail-open flag: `absent` is the word
+  `fleet_flag_delete_outcome` and its callers (`--enable`, `--clear-limit`,
+  `--restore-merge-autonomy`, the fleet-disable-expiry sweep) report as
+  `unconfigured`, and an operator reading that word believes the flag is
+  gone. On a misconfigured `state_repo` slug or a token whose scopes lost
+  access, it was not — the flag stayed set for every peer whose token could
+  still see it, and the issuing node's own cache (dropped on the strength of
+  the false clear) stopped confirming the disagreement locally too. The
   asymmetry argument that justifies the read side's fail-open 404 does not
   carry over: there, the cost of getting it wrong is a node running a cycle
   a human still gates, recoverable at the next fetch; here the report is
   simply false, in the one direction this switch exists never to be. So the
-  fix does not add a mode — it removes the unconditional branch outright.
+  clear side has no mode to opt into — the unconditional accept is gone
+  outright.
   `fleet_flag_delete` reuses `fleet_repo_visible` (extracted for exactly
   this reuse, per its own header) directly, unconditionally, on every 404
   its read-for-sha meets: only a probe that confirms the repo is visible
