@@ -28,6 +28,10 @@ if (!fixturePath) { console.error("usage: node dashboard-render-harness.js <fixt
 // tokens instead and this resolves them against one `now` per run:
 //   "@now"        -> the current instant
 //   "@ago:<N><u>" -> N units (s/m/h/d) before now
+//   "@day:<N>"    -> the UTC calendar day N days before today, as YYYYMMDD
+//                    (N=0 is today) — for cost_rows fixtures (issue #334),
+//                    whose `day` field is a plain YYYYMMDD string rather than
+//                    an ISO instant.
 var now = Date.now();
 function resolveTokens(text) {
   return text
@@ -35,6 +39,12 @@ function resolveTokens(text) {
     .replace(/"@ago:(\d+)(s|m|h|d)"/g, function (_, n, u) {
       var ms = { s: 1000, m: 60000, h: 3600000, d: 86400000 }[u] * Number(n);
       return '"' + new Date(now - ms).toISOString() + '"';
+    })
+    .replace(/"@day:(\d+)"/g, function (_, n) {
+      var d = new Date(now - 86400000 * Number(n));
+      var y = d.getUTCFullYear(), mo = String(d.getUTCMonth() + 1).padStart(2, "0"),
+          da = String(d.getUTCDate()).padStart(2, "0");
+      return '"' + y + mo + da + '"';
     });
 }
 var data = JSON.parse(resolveTokens(fs.readFileSync(fixturePath, "utf8")));

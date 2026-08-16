@@ -1,0 +1,57 @@
+{
+  "generated_at": "@now",
+  "node": "poetic-1",
+  "config": {
+    "timeout_coordinator": 15, "timeout_implementor": 90,
+    "timeout_reviewer": 30, "timeout_enabler": 30,
+    "lock_stale_after": 4, "dashboard_refresh_seconds": 5,
+    "repos": [
+      {
+        "slug": "Poetic-Poems/poetic",
+        "sources": ["security", "tech-debt"]
+      }
+    ]
+  },
+  "status": {
+    "switch": {"disabled": false},
+    "limit": {"active": false},
+    "running": false,
+    "lock": null,
+    "current": null,
+    "last_cycle": null
+  },
+  "counts": {
+    "spend_today_usd": 3.0, "spend_total_usd": 12.5,
+    "failures_shown": 0, "cycles_shown": 0, "prs_reached_ready": 0,
+    "by_day": [],
+    "by_model": [
+      {"model": "claude-opus-5-20260101",   "usd": 11.0, "n": 2},
+      {"model": "claude-sonnet-5-20260101", "usd": 1.5,  "n": 2}
+    ],
+    "by_actor": [
+      {"actor": "reviewer",    "usd": 9.0, "n": 1},
+      {"actor": "coordinator", "usd": 2.0, "n": 1},
+      {"actor": "implementor", "usd": 1.5, "n": 2}
+    ],
+    "cost_rows": [
+      {"day": "@day:0", "model": "claude-sonnet-5-20260101", "actor": "implementor", "usd": 1.0},
+      {"day": "@day:0", "model": "claude-opus-5-20260101",   "actor": "coordinator", "usd": 2.0},
+      {"day": "@day:3", "model": "claude-sonnet-5-20260101", "actor": "implementor", "usd": 0.5},
+      {"day": "@day:40", "model": "claude-opus-5-20260101",  "actor": "reviewer",    "usd": 9.0}
+    ]
+  },
+  "cycles": [],
+  "blocked": [],
+  "void": [],
+  "github": {
+    "ok": true, "fetched_at": "@ago:1m", "prs": [], "pr_index": {},
+    "inputs": {
+      "Poetic-Poems/poetic": {
+        "issues": [], "failed_runs": [], "tech_debt": [], "findings": []
+      }
+    }
+  },
+  "log_tail": [],
+  "cron_tail": ["30 * * * *  /app/agent-cycle.sh"],
+  "max_open_agent_prs": 3
+}

@@ -178,6 +178,10 @@
   @media (max-width: 760px) { .costgrid { column-count: 1; } }
   .costgrid > * { break-inside: avoid; margin: 0 0 20px; }
   .costgrid > *:last-child { margin-bottom: 0; }
+  .costwindow-bar { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 12px; }
+  .costwindow-bar select.costwindow { font: inherit; color: var(--ink); background: var(--panel);
+    border: 1px solid var(--line); border-radius: 6px; padding: 3px 8px; }
+  .costwindow-bar select.costwindow:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
   code.inline { font-family: var(--mono); background: var(--grey-bg); padding: 1px 5px; border-radius: 4px; font-size: 12px; }
 
   /* ---------- pull-request references ---------- */
@@ -706,6 +710,118 @@
     try { window.localStorage.setItem(SPEND_MODE_KEY, mode); } catch (e) { /* private-mode storage, etc. */ }
   }
   var spendMode = loadSpendMode();
+
+  // ---------- cost-window: the time frame the model/actor cost charts cover
+  // (issue #334) ------------------------------------------------------------
+  // "Est. token cost by model" and "Est. token cost by actor" gave no sign of
+  // what span they summed, and a reader had to assume it was the pipeline's
+  // whole lifetime (bounded, in practice, by the Publisher's own
+  // COST_SCAN_DAYS). `days: null` is that assumption made explicit and kept
+  // as the default, so a reader who never touches the control sees no
+  // behaviour change; picking a narrower window re-aggregates
+  // `D.counts.cost_rows` — the per-row data the Publisher ships alongside the
+  // already-summed `by_model`/`by_actor` — so one control drives both charts
+  // client-side, with no re-fetch. Persisted the same way `spendMode` is
+  // (#186): a reader's choice should survive a page reload, not just an
+  // in-place refresh.
+  var COST_WINDOWS = [
+    {key: "1",   label: "1 day",   days: 1},
+    {key: "7",   label: "7 days",  days: 7},
+    {key: "30",  label: "30 days", days: 30},
+    {key: "90",  label: "90 days", days: 90},
+    {key: "all", label: "Lifetime (no filter)", days: null}
+  ];
+  var COST_WINDOW_KEY = "dashboard.costWindow";
+  function loadCostWindow() {
+    try {
+      var v = window.localStorage.getItem(COST_WINDOW_KEY);
+      return COST_WINDOWS.some(function (w) { return w.key === v; }) ? v : "all";
+    } catch (e) { return "all"; }
+  }
+  function saveCostWindow(key) {
+    try { window.localStorage.setItem(COST_WINDOW_KEY, key); } catch (e) { /* private-mode storage, etc. */ }
+  }
+  var costWindow = loadCostWindow();
+  // `day` fields are `YYYYMMDD` UTC strings (the cycle/review id's own date),
+  // so a lexical `>=` against another `YYYYMMDD` string is a correct date
+  // comparison — the same trick the Publisher's own `day_cut` uses server-side.
+  function costWindowCutoff(key) {
+    var w = COST_WINDOWS.filter(function (w) { return w.key === key; })[0];
+    if (!w || w.days == null) return null;
+    var now = new Date();
+    var d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - (w.days - 1)));
+    return String(d.getUTCFullYear())
+      + String(d.getUTCMonth() + 1).padStart(2, "0")
+      + String(d.getUTCDate()).padStart(2, "0");
+  }
+  function costRowsForWindow(key) {
+    var rows = (D.counts && D.counts.cost_rows) || [];
+    var cutoff = costWindowCutoff(key);
+    return cutoff == null ? rows : rows.filter(function (r) { return r.day >= cutoff; });
+  }
+  // Mirrors the Publisher's own `group_by(...) | map(sum)` shape for
+  // `by_model`/`by_actor` (`scripts/publish-dashboard.sh`), just run here
+  // against whatever slice of `cost_rows` the picked window selects.
+  function aggregateCostRows(rows, keyFn) {
+    var order = [], sums = Object.create(null), counts = Object.create(null);
+    rows.forEach(function (r) {
+      var k = keyFn(r);
+      if (!(k in sums)) { order.push(k); sums[k] = 0; counts[k] = 0; }
+      sums[k] += r.usd || 0;
+      counts[k] += 1;
+    });
+    return order.map(function (k) { return {key: k, usd: sums[k], n: counts[k]}; })
+      .sort(function (a, b) { return b.usd - a.usd; });
+  }
+  // How many days of real history `cost_rows` actually spans, counted back
+  // from today inclusive (so a fleet whose oldest row is today itself spans
+  // 1 day, matching `costWindowCutoff`'s own "N days including today"
+  // semantics). This is capped by both the Publisher's own COST_SCAN_DAYS
+  // truncation and, on a younger fleet, by how long the pipeline has actually
+  // been running — either way, it is the true span behind `cost_rows`, so an
+  // option promising more than this would show identically to a narrower one
+  // (or to "Lifetime") without saying so.
+  function costWindowAvailableDays() {
+    var rows = (D.counts && D.counts.cost_rows) || [];
+    var oldest = rows.reduce(function (min, r) {
+      return (r.day && (min == null || r.day < min)) ? r.day : min;
+    }, null);
+    if (oldest == null) return 0;
+    var now = new Date();
+    var today = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    var oldestDate = Date.UTC(Number(oldest.slice(0, 4)), Number(oldest.slice(4, 6)) - 1, Number(oldest.slice(6, 8)));
+    return Math.round((today - oldestDate) / 86400000) + 1;
+  }
+  // The window actually used to render: a persisted choice whose `days`
+  // exceeds what `cost_rows` actually spans would be indistinguishable from a
+  // no-op filter (or worse, look like a real 90-day view that's secretly
+  // capped at 60) — falling back to "Lifetime" for it here keeps the control
+  // and the chart it drives in agreement, and reverts to the persisted choice
+  // on its own once enough history accumulates.
+  function effectiveCostWindow(availableDays) {
+    if (costWindow === "all") return "all";
+    var w = COST_WINDOWS.filter(function (w) { return w.key === costWindow; })[0];
+    if (!w || w.days == null || w.days > availableDays) return "all";
+    return costWindow;
+  }
+  function costWindowControl() {
+    var availableDays = costWindowAvailableDays();
+    var effective = effectiveCostWindow(availableDays);
+    var select = el("select", {class: "costwindow", onchange: function (e) {
+      costWindow = e.target.value;
+      saveCostWindow(costWindow);
+      renderBody();
+    }}, COST_WINDOWS.map(function (w) {
+      var disabled = w.days != null && w.days > availableDays;
+      return el("option", {value: w.key, text: w.label,
+        selected: w.key === effective ? "" : null,
+        disabled: disabled ? "" : null});
+    }));
+    return el("div", {class: "costwindow-bar"}, [
+      el("label", {class: "muted", text: "Time frame (model & actor charts): "}),
+      select
+    ]);
+  }
 
   // ---------- fleet helpers ----------
   function fleetNodes()  { return (D.fleet && D.fleet.nodes)  || []; }
@@ -1916,9 +2032,30 @@
       ]);
     }));
   }
+  // `costWindow === "all"` (the default) reads the Publisher's own
+  // already-summed `by_model`/`by_actor` rather than re-deriving the same
+  // totals from `cost_rows` — a reader who never touches the time-frame
+  // control gets exactly the figures the page always rendered, not a
+  // client-recomputed lookalike (the same "cheap path when untouched"
+  // reasoning `spendMode` already follows). Older `data.js` payloads with no
+  // `cost_rows` fall back the same way, so a narrower window is simply
+  // unavailable rather than blanking the chart. Uses `effectiveCostWindow`,
+  // not the raw persisted choice, so a selection the control has since
+  // disabled (its `days` now exceeds what `cost_rows` spans) renders as
+  // "Lifetime" here too, in agreement with what the disabled `<option>` shows.
+  function windowedCostBreakdown(keyFn) {
+    var effective = effectiveCostWindow(costWindowAvailableDays());
+    if (effective === "all" || !(D.counts && D.counts.cost_rows)) return null;
+    return aggregateCostRows(costRowsForWindow(effective), keyFn);
+  }
   function spendByModel() {
-    var ms = (D.counts && D.counts.by_model) || [];
-    if (!ms.length) return el("div", {class:"empty", text:"No token cost recorded."});
+    var agg = windowedCostBreakdown(function (r) { return r.model || "unknown"; });
+    var ms = agg
+      ? agg.map(function (a) { return {model: a.key, usd: a.usd, n: a.n}; })
+           .filter(function (m) { return m.model !== "unknown" || m.usd > 0; })
+      : (D.counts && D.counts.by_model) || [];
+    if (!ms.length) return el("div", {class:"empty",
+      text: agg ? "No token cost recorded in this time frame." : "No token cost recorded."});
     var max = Math.max.apply(null, ms.map(function (m){ return m.usd; })) || 1;
     return el("div", {class:"bars"}, ms.map(function (m) {
       return el("div", {class:"bar"}, [
@@ -1947,8 +2084,11 @@
   // whole message, and a hue per actor would be identity encoding on a chart
   // where identity is already the axis label.
   function spendByActor() {
-    var as = (D.counts && D.counts.by_actor) || [];
-    if (!as.length) return el("div", {class:"empty", text:"No token cost recorded."});
+    var agg = windowedCostBreakdown(function (r) { return r.actor || "unknown"; });
+    var as = agg ? agg.map(function (a) { return {actor: a.key, usd: a.usd, n: a.n}; })
+                 : (D.counts && D.counts.by_actor) || [];
+    if (!as.length) return el("div", {class:"empty",
+      text: agg ? "No token cost recorded in this time frame." : "No token cost recorded."});
     var max = Math.max.apply(null, as.map(function (a){ return a.usd; })) || 1;
     return el("div", {class:"bars wide"}, as.map(function (a) {
       var m = ACTOR[a.actor] || [a.actor, "actor: " + a.actor];
@@ -2401,7 +2541,7 @@
     costgrid.appendChild(el("p", {class:"costnote", text:
       "All figures on this page are US dollars (USD), regardless of the " +
       "Claude account's own billing currency or region."}));
-    app.appendChild(el("section", {}, costgrid));
+    app.appendChild(el("section", {}, [costWindowControl(), costgrid]));
 
     app.appendChild(sectionOf(nodeFilter ? "Recent log events — " + nodeFilter + " only (click its card to clear)" : "Recent log events",
       logPanel()));

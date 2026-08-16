@@ -793,6 +793,12 @@ done
 # doesn't match the expected shape (a hand-placed or future format change)
 # rather than a guess, so a malformed name drops out of `recent_costs` below
 # without corrupting the totals that never depended on it.
+#
+# `cost_rows` (issue #334) is this same set, trimmed to {day, model, actor,
+# usd} — every row `by_day`/`by_model`/`by_actor` already summed, but
+# un-summed, so the page can re-aggregate the model/actor breakdowns over
+# whatever time frame the reader picks instead of only the whole
+# COST_SCAN_DAYS window those three arrays are fixed to.
 # shellcheck disable=SC2016  # `$p` below is a jq binding, not a shell variable
 find "${cost_dirs[@]}" -name '*.out' -type f -print0 2>/dev/null | sort -z \
   | xargs -0 -r -n 25 jq -c '
@@ -824,10 +830,10 @@ today="$(date -u +%Y%m%d)"
 # "last 24h" only ever reaches 24h back — while staying a rounding error next
 # to the 60-day `by_day` window it rides alongside.
 recent_cut="$(date -u -d "-3 days" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || echo "1970-01-01T00:00:00Z")"
-counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$costs_file" \
+counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile costs_in "$costs_file" \
   --arg today "$today" --arg recent_cut "$recent_cut" '
   ($cyc[0]) as $cycles
-  | ($cost_rows[0]) as $costs
+  | ($costs_in[0]) as $costs
   | {
     cycles_shown: ($cycles | length),
     failures_shown: ($cycles | map(select(.outcome=="failed")) | length),
@@ -839,7 +845,8 @@ counts_json="$(jq -n --slurpfile cyc "$cycles_file" --slurpfile cost_rows "$cost
                       | map(select(.model != "unknown" or .usd > 0)) | sort_by(-.usd)),
     by_actor: ($costs | group_by(.actor) | map({actor: .[0].actor, usd: (map(.cost)|add), n: length})
                       | sort_by(-.usd)),
-    recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost}))
+    recent_costs: ($costs | map(select(.ts != null and .ts >= $recent_cut)) | map({ts, cost})),
+    cost_rows: ($costs | map({day, model, actor, usd: .cost}))
   }')"
 
 # --- Co-Ordinator verdict quality (requirement 3w, issue #319) ----------------
