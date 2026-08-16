@@ -402,6 +402,29 @@ else
   failures=$(( failures + 1 ))
 fi
 
+# --- #483: `branch_prefix`, `min_days_between_reviews` and `not_before`
+#     under `project_review.repos[]` now `$ref` the same `$defs` entry as the
+#     matching key under `project_review.defaults`, so a constraint tightened
+#     on one is enforced on the other without a second edit. Demonstrated by
+#     tightening the shared `branchPrefix` $def with a `pattern` and
+#     confirming a `repos[]` override the new pattern forbids is rejected too
+#     — reported against the `repos[]` path, not only `defaults`' — which is
+#     the drift a second, unshared copy of the constraint would have missed. ---
+tightened_schema="$tmp/tightened-schema.json"
+jq '.["$defs"].branchPrefix.pattern = "^review/"' "$SCHEMA" > "$tightened_schema"
+jq '.project_review.repos[0].branch_prefix = "not-review-prefixed/"' "$CONFIG" > "$tmp/c.json"
+desc="a constraint tightened on the shared branchPrefix \$def is enforced against a repos[] override"
+if out="$(config_schema_errors "$tmp/c.json" "$tightened_schema")"; then
+  printf 'FAIL - %s\n     expected a rejection, got none\n' "$desc"
+  failures=$(( failures + 1 ))
+elif [[ "$out" == *"config.project_review.repos[0].branch_prefix"* ]]; then
+  pass "$desc"
+else
+  printf 'FAIL - %s\n     expected message containing: %s\n     actual: %s\n' \
+    "$desc" "config.project_review.repos[0].branch_prefix" "$out"
+  failures=$(( failures + 1 ))
+fi
+
 # --- Types. The failure this catches is a number written as a string, which
 #     jq reads back without complaint and bash then compares as text. ---
 assert_rejected "a number written as a string is rejected" \
