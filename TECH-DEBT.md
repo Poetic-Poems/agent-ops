@@ -13,22 +13,35 @@ format, ID grammar and scope-code registry are specified in
 
 `perl scripts/td-check.pl` validates the
 register and runs on every pull request via
-`.github/workflows/tech-debt-register.yml`, alongside two guards: no file
+`.github/workflows/tech-debt-register.yml`, alongside three guards: no file
 in `tech-debt/` may ever be deleted or renamed once on `main` (the
-append-only Ledger guarantee — IDs are never reused), and no old-format
+append-only Ledger guarantee — IDs are never reused), an open item's body is
+append-only — existing text may not change while `status:` stays `open`, new
+text may be appended, and rewriting existing text requires the status to
+move (see "Resolution and history" below — a rewrite of existing text on an
+item that stays `open` is either a stale writer silently overwriting an
+already-merged record or a policy breach, and either way CI should catch it
+rather than let a permanent record change quietly), and no old-format
 `### TD` item sections may reappear in this file.
 
 ## Filing an item
 
-1. Allocate the ID with `scripts/next-tech-debt-id.pl --ref origin/main`
-   (after a `git fetch origin`). It cannot see IDs allocated on unmerged
-   branches, so also skim open pull requests and `td/*` branches. If two
-   filings do collide, git surfaces it as an add/add conflict on the
-   filename; the later one renames to the next free NN before merging.
-2. Create `tech-debt/<id>.md` with frontmatter `id`, `title`,
+1. Reserve the ID with `scripts/reserve-tech-debt-id.pl`. It fetches
+   `origin/main` itself and pushes a `td/<id>` branch from it — the same
+   race-safe lock "Claiming an item" below uses — retrying with the next
+   `NN` itself whenever a push is rejected, so unlike a plain scan there is
+   nothing left to check for a collision by hand. It prints the reserved
+   `id` on success.
+2. `git fetch origin td/<id>` and check out that branch. Create
+   `tech-debt/<id>.md` on it with frontmatter `id`, `title`,
    `status: open`, `filed` (today, matching the ID's date), an optional
    `review:` provenance line (`<review-folder> R-NN`), and a body
-   describing what, why it matters, where, and a suggested fix.
+   describing what, why it matters, where, and a suggested fix. Commit and
+   push, then open a pull request — this is the same `td/<id>` branch
+   "Claiming an item" would later reuse to work the item once merged,
+   deleted, and re-created; abandoning the filing (closing the PR without
+   merging and deleting the branch) simply releases the reservation, the
+   same way abandoning a claim does.
    (`legacy-id:` appears only on items migrated from the old single-file
    register; segments of either ID resolve via
    `scripts/get-tech-debt-record.pl`.)
