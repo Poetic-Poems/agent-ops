@@ -285,6 +285,123 @@ assert_defaults "no project_review per-repo override is fabricated into a repos 
 assert_defaults "config_defaults performs no schema validation of its own" \
   '.pr_labell = "x"' '.pr_labell == "x"'
 
+# --- $ref resolution (issue #482): deref must resolve to a fixpoint, not one
+#     hop, and fail closed on a $ref that does not resolve. The shipped schema
+#     has no chained $def today (`pr_label` itself $refs `#/$defs/label` in one
+#     hop), so these mutate a throwaway copy of the schema, on top of the
+#     shipped one — the shape #483's consolidation would leave `pr_label`'s
+#     `minLength: 1` in (a `requiredLabel` $defs entry $reffing `label`), which
+#     is exactly case 1 the issue describes. ---
+assert_valid_ref() {
+  local desc="$1" schema_mutation="$2" config_mutation="$3" out
+  jq "$schema_mutation" "$SCHEMA" > "$tmp/s.json" || { bad "$desc (schema mutation did not apply)"; return; }
+  jq "$config_mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
+  if out="$(config_schema_errors "$tmp/c.json" "$tmp/s.json")"; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     unexpected error(s): %s\n' "$desc" "$out"
+    failures=$(( failures + 1 ))
+  fi
+}
+assert_rejected_ref() {
+  local desc="$1" schema_mutation="$2" config_mutation="$3" expect="$4" out
+  jq "$schema_mutation" "$SCHEMA" > "$tmp/s.json" || { bad "$desc (schema mutation did not apply)"; return; }
+  jq "$config_mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
+  if out="$(config_schema_errors "$tmp/c.json" "$tmp/s.json")"; then
+    printf 'FAIL - %s\n     expected a rejection, got none\n' "$desc"
+    failures=$(( failures + 1 ))
+  elif [[ "$out" == *"$expect"* ]]; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     expected message containing: %s\n     actual: %s\n' \
+      "$desc" "$expect" "$out"
+    failures=$(( failures + 1 ))
+  fi
+}
+assert_defaults_ref() {
+  local desc="$1" schema_mutation="$2" config_mutation="$3" jq_check="$4" out
+  jq "$schema_mutation" "$SCHEMA" > "$tmp/s.json" || { bad "$desc (schema mutation did not apply)"; return; }
+  jq "$config_mutation" "$CONFIG" > "$tmp/c.json" || { bad "$desc (config mutation did not apply)"; return; }
+  if ! out="$(config_defaults "$tmp/c.json" "$tmp/s.json")"; then
+    printf 'FAIL - %s\n     config_defaults itself failed\n' "$desc"
+    failures=$(( failures + 1 ))
+    return
+  fi
+  if jq -e "$jq_check" <<<"$out" >/dev/null 2>&1; then
+    pass "$desc"
+  else
+    printf 'FAIL - %s\n     check: %s\n     against: %s\n' "$desc" "$jq_check" "$out"
+    failures=$(( failures + 1 ))
+  fi
+}
+
+# requiredLabel $refs label, and pr_label $refs requiredLabel — a $def
+# chained through another $def, two hops deep.
+# shellcheck disable=SC2016  # a jq program, not meant to expand
+chained_pr_label='
+  .["$defs"].requiredLabel = {"$ref": "#/$defs/label", "minLength": 1}
+  | .properties.pr_label = {"$ref": "#/$defs/requiredLabel"}
+'
+assert_rejected_ref "a \$ref chained through another \$def still enforces the inner def's type" \
+  "$chained_pr_label" '.pr_label = 42' \
+  'config.pr_label: expected string, got number'
+assert_rejected_ref "a \$ref chained through another \$def still enforces the inner def's pattern" \
+  "$chained_pr_label" '.pr_label = "a,b"' \
+  'config.pr_label: "a,b" does not match'
+assert_rejected_ref "a \$ref chained through another \$def still enforces the outer def's own keyword" \
+  "$chained_pr_label" '.pr_label = ""' \
+  'config.pr_label: must not be empty'
+assert_valid_ref "a \$ref chained through another \$def accepts a value passing every level" \
+  "$chained_pr_label" '.pr_label = "ok"'
+# shellcheck disable=SC2016  # a jq program, not meant to expand
+assert_defaults_ref "an inner def's default reaches config_defaults through a chain" \
+  '.["$defs"].requiredLabel = {"$ref": "#/$defs/label"}
+   | .properties.pr_label = {"$ref": "#/$defs/requiredLabel"}
+   | .["$defs"].label.default = "chained-default"' \
+  'del(.pr_label)' \
+  '.pr_label == "chained-default"'
+
+# A $ref naming a $defs path that does not exist is a fault in the schema
+# itself, not the config: fail closed, rather than getpath's null degrading
+# the property to "no constraints" the way one hop used to (additionalProperties:
+# false is the whole point of having this schema — this is a hole under it).
+# shellcheck disable=SC2016  # a jq program and its expected output, not meant to expand
+assert_rejected_ref "a \$ref naming a target that does not exist is reported as a schema fault, not accepted" \
+  '.properties.pr_label = {"$ref": "#/$defs/labbel"}' '.pr_label = {"nonsense": true}' \
+  'config.pr_label: $ref #/$defs/labbel does not resolve'
+# shellcheck disable=SC2016  # a jq program, not meant to expand
+assert_rejected_ref "a cyclic \$ref chain is reported as a schema fault once the resolution bound is hit" \
+  '.["$defs"].cycleA = {"$ref": "#/$defs/cycleB"}
+   | .["$defs"].cycleB = {"$ref": "#/$defs/cycleA"}
+   | .properties.pr_label = {"$ref": "#/$defs/cycleA"}' \
+  '.pr_label = "x"' \
+  'config.pr_label: $ref chain'
+# config_defaults performs no validation (asserted above), so the same
+# unresolvable $ref must not make it crash either — it just finds no default
+# at that hop, exactly as an ordinary $def with none.
+# shellcheck disable=SC2016  # a jq program, not meant to expand
+assert_defaults_ref "config_defaults degrades an unresolvable \$ref to no default, rather than failing" \
+  '.properties.pr_label = {"$ref": "#/$defs/labbel"}' 'del(.pr_label)' \
+  '(.pr_label // null) == null'
+
+# The two deref copies are separate strings inside two jq programs (no shared
+# point to source a jq function from) and so cannot be enforced equal by the
+# language — this is the only thing that keeps them from drifting apart.
+# shellcheck disable=SC2016  # the literal jq def name to grep for, not meant to expand
+deref_start1="$(grep -n 'def deref($s):' "$SCRIPT_DIR/lib/config-schema.sh" | sed -n '1p' | cut -d: -f1)"
+# shellcheck disable=SC2016  # the literal jq def name to grep for, not meant to expand
+deref_start2="$(grep -n 'def deref($s):' "$SCRIPT_DIR/lib/config-schema.sh" | sed -n '2p' | cut -d: -f1)"
+deref_end1="$(awk -v start="$deref_start1" 'NR>=start && /else \$resolved end;/{print NR; exit}' "$SCRIPT_DIR/lib/config-schema.sh")"
+deref_end2="$(awk -v start="$deref_start2" 'NR>=start && /else \$resolved end;/{print NR; exit}' "$SCRIPT_DIR/lib/config-schema.sh")"
+if [[ -n "$deref_start1" && -n "$deref_start2" && -n "$deref_end1" && -n "$deref_end2" ]] \
+  && diff -q <(sed -n "${deref_start1},${deref_end1}p" "$SCRIPT_DIR/lib/config-schema.sh") \
+             <(sed -n "${deref_start2},${deref_end2}p" "$SCRIPT_DIR/lib/config-schema.sh") >/dev/null; then
+  pass "the two deref copies (config_schema_errors and config_defaults) are byte-identical"
+else
+  printf 'FAIL - the two deref copies are byte-identical\n'
+  failures=$(( failures + 1 ))
+fi
+
 # --- Types. The failure this catches is a number written as a string, which
 #     jq reads back without complaint and bash then compares as text. ---
 assert_rejected "a number written as a string is rejected" \

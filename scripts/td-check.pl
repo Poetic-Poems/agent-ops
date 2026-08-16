@@ -13,7 +13,10 @@
 # frontmatter parses and carries id/title/status/filed, with id equal to
 # the filename stem and scoped to the `scope:` declared in the frontmatter
 # of the TECH-DEBT.md beside the directory, a recognised status, resolution
-# fields consistent with that status, and a filed date matching the ID's.
+# fields consistent with that status, a filed date matching the ID's, and,
+# while status is open or in-progress, a body containing non-whitespace
+# text (resolved/not-debt items are exempt, to grandfather legacy items
+# migrated with an empty body).
 # Problem labels:
 #   BAD NAME, BAD FRONTMATTER, MISSING FIELD, BAD FIELD, BAD STATUS,
 #   BAD SCOPE, NO SCOPE, ID MISMATCH, DATE MISMATCH, STALE FIELD,
@@ -125,11 +128,11 @@ sub check_dir {
     }
 
     my $st = $meta{status};
+    my $live = defined $st && ($st eq 'open' || $st eq 'in-progress');
     if (defined $st and length $st) {
       if ($st =~ /^(open|in-progress|resolved|not-debt)$/) {
         $status{$name} = $st;
         push @order, $name;
-        my $live = $st eq 'open' || $st eq 'in-progress';
         if ($live) {
           for my $key (qw(resolved ref)) {
             push @problems, problem_line('STALE FIELD',
@@ -162,6 +165,12 @@ sub check_dir {
     my $legacy = $meta{'legacy-id'};
     push @problems, problem_line('BAD FIELD', "$name (legacy-id: $legacy)")
       if defined $legacy and length $legacy and $legacy !~ /^TD\d{8}$/;
+
+    if ($live) {
+      my $body = join '', @lines[$end + 1 .. $#lines];
+      push @problems, problem_line('MISSING FIELD', "$name (body must contain non-whitespace)")
+        unless $body =~ /\S/;
+    }
   }
 
   printf "%s: %d items\n", $dir, scalar @order;

@@ -899,6 +899,28 @@ implements.
    added to the schema and forgotten in a prose copy the way `unvoid_label`
    and `state_local_cycles_retained` both once were.
 
+   A `$ref` resolves to a fixpoint, not one hop: a `$def` that itself carries
+   a `$ref` — `pr_label`'s `minLength: 1` folded into a `requiredLabel` that
+   `$ref`s `label`, say — has every level's keywords enforced, not only the
+   outermost, and each hop's sibling keywords keep winning over the target's
+   own. Resolution is bounded to a handful of iterations so a cyclic `$ref`
+   cannot hang jq. A `$ref` naming a `$defs` path that does not exist, or a
+   chain still unresolved past the bound, is a fault in the schema itself —
+   `config_schema_errors` reports it as an offending path, the same as any
+   other invalid config, rather than treating the missing target as no
+   constraints at all (`getpath` on an absent path returns `null`, and jq's
+   `null + {...}` would otherwise silently keep only the sibling keywords,
+   turning a typo'd `$ref` into a hole under `additionalProperties: false`).
+   It is reported at the config path the `$ref` was reached from, which is
+   the reach of the check: both cycles gate on the raw config, and the walk
+   descends only into keys that config actually sets, so a `$ref` on a
+   property the operator has omitted is never resolved and its fault is not
+   seen — TD-PPagop-26081606 carries closing that half.
+   `config_defaults` resolves the same fixpoint so an inner `$def`'s
+   `default` reaches through a chain too, but performs no validation of its
+   own: there, an unresolved `$ref` just means no `default` to find at that
+   hop, the same as an ordinary `$def` carrying none.
+
    The schema is likewise the single statement of the *values* a reader falls
    back to, and not merely a description of them. `lib/config-schema.sh`'s
    `config_defaults` merges a config with every `default` the schema declares
@@ -1462,8 +1484,24 @@ implements.
    successful fetch (`state_dir/fleet-cache/`), and to enabled when there is
    none — safe to fail open because a node that charges ahead blind meets
    per-item claims that fail closed (requirement 17a); a flag that exists
-   but does not parse is *disabled*, exactly as for the local record. An
-   expired fleet disable is cleared by whichever cycle sees it first — the
+   but does not parse is *disabled*, exactly as for the local record.
+
+   Those directions are the *read*'s. The **clear** side never accepts a 404
+   on its own, because `absent` there is a claim that the flag has been
+   cleared rather than merely that nothing stands the fleet down:
+   `fleet_flag_delete` probes `repos/<state_repo>` — `fleet_repo_visible`,
+   the same probe requirement 2.3b's read spends — on every 404 its
+   read-for-sha meets, unconditionally, and only a probe that confirms the
+   repo is visible resolves to `absent`. Anything else the probe returns —
+   404, 403, a timed-out call — is a failed delete: `fleet_flag_delete`
+   returns non-zero, `fleet_flag_delete_outcome` reports `failed`, and
+   `--enable`, `--clear-limit` and `--restore-merge-autonomy` (requirement
+   12) each warn and name the manual fallback rather than report the flag
+   clear. Unlike the read there is no cached-or-unreachable fallback to take
+   instead — a delete has no cached copy of "the flag is gone"
+   (TD-PPagop-26081604).
+
+   An expired fleet disable is cleared by whichever cycle sees it first — the
    delete is sha-guarded and idempotent, so a lost race means a peer got
    there, and there is no singleton chore (requirement 2.5). The weekly
    review honours the fleet switch but never sets or clears it, mirroring
@@ -10233,15 +10271,18 @@ pull request, run the ones the change touches and any it could regress.
    state repo falls back to the cached copy, and to enabled with none; a
    404 is clear and clears the cache; a garbage flag is disabled; the limit
    flag only ever extends; a delete never reports cleared for a flag still
-   set, and reports which of the two ways it can succeed actually happened —
-   `deleted` when a flag was removed, `absent` when there was nothing to
-   remove — which `fleet_flag_write_outcome`/`fleet_flag_delete_outcome`
-   (issue #426) translate, along with a genuine failure, into the
-   `ok`/`failed`/`unconfigured` vocabulary requirement 33 documents; and —
-   end to end, offline — `--disable` on node A publishes
-   `fleet/disabled.json` and both real pipelines on node B stand down
-   naming the fleet switch, `--enable` on A genuinely removes the flag, and
-   a `fleet/limit.json` published by A stands B down until its `resume_at`.
+   set — including on a repo-level 404 from its read-for-sha, which it
+   probes with `fleet_repo_visible` unconditionally rather than accepting as
+   clear (TD-PPagop-26081604) — and reports which of the two ways it can
+   succeed actually happened — `deleted` when a flag was removed, `absent`
+   when there was nothing to remove — which
+   `fleet_flag_write_outcome`/`fleet_flag_delete_outcome` (issue #426)
+   translate, along with a genuine failure, into the `ok`/`failed`/
+   `unconfigured` vocabulary requirement 33 documents; and — end to end,
+   offline — `--disable` on node A publishes `fleet/disabled.json` and both
+   real pipelines on node B stand down naming the fleet switch, `--enable`
+   on A genuinely removes the flag, and a `fleet/limit.json` published by A
+   stands B down until its `resume_at`.
    The same file covers requirement 2.3's actor/kind fields and requirement
    2's kind gates (#244): a disable record carries `kind: manual` and a
    non-empty `actor` that is never `unknown` (`NODE_NAME` when set, the
@@ -12968,6 +13009,39 @@ requirements above, which state only what is.
   confirmed clear`, and an operator is no longer left reading
   `check_repo_access`'s state-repo report as the only way to tell the two
   apart.
+- **`fleet_flag_delete` probes every 404 unconditionally — there is no
+  fail-open mode to opt into (requirement 2.3a, TD-PPagop-26081604).**
+  TD-PPagop-26081602 taught the *read* side of the fleet-flag machinery to
+  tell the contents API's two 404s apart — "the flag file does not exist"
+  and "this repository does not exist, or is invisible to this token" — but
+  only for the one caller that asked for it (`probe-404` mode); every other
+  reader kept accepting the collapse, because their flags are fail-open by
+  design and the ambiguity only adds one more way of doing so.
+  `fleet_flag_delete` reused the same 404 branch and inherited the same
+  collapse, but a delete is not a fail-open flag: `absent` is the word
+  `fleet_flag_delete_outcome` and its callers (`--enable`, `--clear-limit`,
+  `--restore-merge-autonomy`, the fleet-disable-expiry sweep) report as
+  `unconfigured`, and an operator reading that word believes the flag is
+  gone. On a misconfigured `state_repo` slug or a token whose scopes lost
+  access, it was not — the flag stayed set for every peer whose token could
+  still see it, and the issuing node's own cache (dropped on the strength of
+  the false clear) stopped confirming the disagreement locally too. The
+  asymmetry argument that justifies the read side's fail-open 404 does not
+  carry over: there, the cost of getting it wrong is a node running a cycle
+  a human still gates, recoverable at the next fetch; here the report is
+  simply false, in the one direction this switch exists never to be. So the
+  clear side has no mode to opt into — the unconditional accept is gone
+  outright.
+  `fleet_flag_delete` reuses `fleet_repo_visible` (extracted for exactly
+  this reuse, per its own header) directly, unconditionally, on every 404
+  its read-for-sha meets: only a probe that confirms the repo is visible
+  resolves to `absent`. Anything else — 404, 403, a timeout — returns 1,
+  which `fleet_flag_delete_outcome` already translates to `failed`; the
+  vocabulary and its callers' warning branches (issue #426) needed no
+  change; only the delete's own 404 branch did. Unlike the fetch side,
+  there is deliberately no cached-or-unreachable fallback here — a delete
+  has no cached copy of "the flag is gone" to fall back to, only the honest
+  failure.
 - **`approver_app_id` is one fleet-wide scalar, typed as a string.** D18's
   end-state is exactly one Approver App identity governing the whole
   installation (§6 — the same fact that denies the kill switch a
