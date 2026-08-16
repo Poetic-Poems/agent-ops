@@ -107,9 +107,11 @@ Both target repos follow these rules:
   individual commit on the branch, so write every commit in that format too.
 - The tech-debt register is per-item: one `tech-debt/<id>.md` file per
   record (frontmatter status plus a permanent body), `TECH-DEBT.md` holding
-  only policy and the repository's scope. `scripts/next-tech-debt-id.pl`
-  allocates new IDs; `scripts/get-tech-debt-record.pl` resolves one. Never
-  reuse an ID or hand-count them; item files are never deleted or renamed.
+  only policy and the repository's scope. A new ID is allocated atomically by
+  `scripts/reserve-tech-debt-id.pl` (the "Filing an item" workflow's
+  reservation step), which builds on `scripts/next-tech-debt-id.pl`'s scan;
+  `scripts/get-tech-debt-record.pl` resolves one. Never reuse an ID or
+  hand-count them; item files are never deleted or renamed.
 - CI runs on every PR: the repo's build/lint/typecheck/format/test workflow,
   CodeQL, and a commit-format check — plus a trailing-whitespace check
   (`npm run check`). Read `.github/workflows/` to see exactly what runs.
@@ -129,9 +131,10 @@ Both target repos follow these rules:
    subagents, as the skill describes; keep each subagent on the lowest-cost
    model tier likely to do its slice correctly.
 2. **Update the tech-debt register in place.** Where the review surfaces debt,
-   record it in the existing register following this repo's own workflow
-   exactly — allocate IDs with `scripts/next-tech-debt-id.pl`, and add each
-   record as a new `tech-debt/<id>.md` item file (frontmatter plus body).
+   record it in the existing register following the "Filing an item" workflow
+   in `TECH-DEBT.md` exactly — reserve an ID with `scripts/reserve-tech-debt-id.pl`,
+   check out the `td/<id>` branch it creates, and add each record as a new
+   `tech-debt/<id>.md` item file (frontmatter plus body).
    Mark items the review finds already resolved with a frontmatter status
    flip rather than deleting their history — item files are never deleted
    or renamed. Do not create a competing tech-debt file.
